@@ -12,7 +12,6 @@ import { CitationBadge } from "./tool-ui-knowledge-base";
 export const DocumentSourcesGroup: FC<{ sources: Citation[] }> = ({
   sources: all,
 }) => {
-  // Map updates keep first-seen order, so dedup to best-scoring chunk per doc.
   const byDoc = new Map<string, Citation>();
   for (const c of all) {
     const key = c.documentId ?? c.filename;

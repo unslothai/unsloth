@@ -221,21 +221,14 @@ const LABEL_CLASS =
   "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
   "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
-// Same surface token as the panel's fields and textareas.
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-[var(--panel-input-surface)] hover:bg-[var(--panel-input-surface-hover)] dark:bg-[var(--panel-input-surface)] dark:hover:bg-[var(--panel-input-surface-hover)]";
-// One width for every typed field: a box that resized per keystroke would jump under the
-// caret. Narrow, so the label beside it is not clipped in a ~240px panel.
+// Fixed width so the box does not jump under the caret; narrow for a ~240px panel.
 const INPUT_WIDTH_CLASS = "w-[calc(84px*var(--ui-space-scale,1))] shrink-0";
-// A select holds one of a known set of values, so it sizes to that value.
 const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
-// .panel-select-trigger carries the surface, padding and type; this adds the layout.
 const SELECT_TRIGGER_CLASS = `panel-select-trigger grid h-8! min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 ${SELECT_WIDTH_CLASS} [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0`;
-// .panel-field carries the surface and the value's alignment; the field adds its size.
 const NUMBER_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS}`;
 const TEXT_INPUT_CLASS = `panel-field h-8 ${INPUT_WIDTH_CLASS} min-w-0`;
-// Matches the Preset section's Save/Delete pair rather than the Button's own `sm` metrics.
-// Width is the label plus this padding, so a pill is never wider than what it says.
 const FOOTER_BUTTON_CLASS =
   "h-9 w-auto px-4 rounded-full text-ui-13 font-medium tracking-nav";
 
@@ -255,7 +248,6 @@ const SPECULATIVE_TYPE_LABELS: Record<
   off: "Off",
 };
 
-// Lower-case where the value is the flag's own spelling, so the pick reads the same as the launch command.
 const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
   auto: "Auto",
   none: "None",
@@ -265,14 +257,10 @@ const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
   dio: "DirectIO",
 };
 
-// What "Don't reserve system RAM" vetoes: allocated or locked host weight buffers. Windows mmap can still hold the
-// file pages resident, which is what the DirectIO policy is for.
 // Mirrors _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES in llama_server_args.py.
 const RAM_RESERVING_LOAD_MODES = new Set(["none", "mlock", "mmap+mlock"]);
 
-/** What Model Memory does to this load mode, or null when the pick reaches the command line
- *  untouched: a row showing the pick alone would name a flag the child never sees. Keep
- *  resident is first, because it wins outright. */
+/** null when the pick reaches the command line untouched; Keep resident wins outright. */
 function loadModeOverrideNotice(
   mode: string | null,
   settings: ModelMemorySettings | null,
@@ -291,9 +279,7 @@ function loadModeOverrideNotice(
   return null;
 }
 
-/** The batch size llama-server will not go below for this load. Two is its own hard floor, and
- *  above that the floor follows the slots the launch SERVES, which is not always the number
- *  chosen here: a build without --kv-unified serves one slot however many are asked for. */
+/** Hard floor 2, else served slots; a build without --kv-unified serves one slot. */
 function effectiveBatchFloor(
   requestedSlots: number | null | undefined,
   limits:
@@ -324,8 +310,7 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.tensorParallel ||
     config.disableVision ||
     config.chatTemplateOverride != null ||
-    // Hidden flags can change what the model does, so a panel that opens collapsed over them says
-    // "defaults" about a load that is anything but.
+    // Hidden flags change behaviour, so do not open collapsed claiming defaults.
     (config.llamaExtraArgs != null && config.llamaExtraArgs.length > 0) ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
     (config.gpuLayers != null && config.gpuLayers >= 0) ||
@@ -366,12 +351,9 @@ function withoutUnsupportedDiffusionSettings(
     reasoningBudgetMessage: "",
     tensorParallel: false,
     disableVision: false,
-    // the diffusion runner ignores the llama-server batch flags
     nBatch: null,
     nUbatch: null,
-    // The diffusion shim never appends llama-server flags to its command, but the load records
-    // them as though it had, so a box filled before classification flipped would leave the
-    // model running without what it says.
+    // The diffusion shim never passes llama-server flags but the load would record them.
     llamaExtraArgs: null,
     ...(hasUnsupportedGpuPick
       ? {
@@ -471,8 +453,6 @@ function MaxSeqLengthSetting({
   windowUnknown?: boolean;
   hint?: string;
 }) {
-  // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
-  // shows the length that will be served, not "Auto". A dash only while it is unknown.
   const label = isMlx ? "Context Length" : "Max Seq Length";
   return (
     <div className="space-y-2">
@@ -508,8 +488,7 @@ function MaxSeqLengthSetting({
         min={MAX_SEQ_LENGTH_MIN}
         max={max}
         step={MAX_SEQ_LENGTH_STEP}
-        // Outside the control's range it sits at the nearer edge, or the first nudge
-        // would step from the shown number onto the bound.
+        // Clamp into range, or the first nudge would step from the shown number onto the bound.
         value={[Math.min(Math.max(value, MAX_SEQ_LENGTH_MIN), max)]}
         onValueChange={([next]) => onChange(next)}
         className="panel-slider"
@@ -583,13 +562,9 @@ function AdvancedGpuSlider({
   );
 }
 
-// How much of each card a load may claim. SERVER-WIDE, not a per-model override: it replaces
-// two constants the fit reads. Driven in whole percent so a dragged value round-trips
-// exactly; the fraction is rebuilt at the API boundary.
+// Server-wide, not per model. Whole percents so a dragged value round-trips exactly.
 function VramBudgetRow() {
-  // macOS is gated here too: it reports no discrete GPUs, so the Metal path sizes itself from
-  // _APPLE_UNIFIED_MEMORY_FRACTION and fits with budget_frac = 1.0, and the slider would
-  // promise "applies on the next load" for a setting it ignores.
+  // macOS sizes Metal from _APPLE_UNIFIED_MEMORY_FRACTION and ignores this budget.
   const isMac = usePlatformStore((s) => s.deviceType === "mac");
   const [settings, setSettings] = useState<VramBudgetSettings | null>(null);
   const [percent, setPercent] = useState<number | null>(null);
@@ -597,14 +572,11 @@ function VramBudgetRow() {
   const adviceId = useId();
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const wasModelLoading = useRef(false);
-  // Closed while a Run is settling this budget: an edit made in that window would be flushed by
-  // the teardown alongside the load request.
+  // Locked while Run settles the budget, or an edit would be flushed with the load.
   const [locked, setLocked] = useState(isVramBudgetLocked);
   useEffect(() => subscribeVramBudgetLock(setLocked), []);
 
-  // Adopt what the last save or read published: the row's own GET races the PUT a previous
-  // unmount fired. A queued edit outranks the publish, or a save landing mid-drag would pull
-  // the slider out from under the pointer.
+  // A queued edit outranks the publish, or a save landing mid-drag would move the slider.
   useEffect(() => {
     if (isMac) {
       return;
@@ -621,7 +593,6 @@ function VramBudgetRow() {
   useEffect(() => {
     let cancelled = false;
     if (isMac) {
-      // Nothing to show, so do not even ask; the row is hidden below.
       return;
     }
     loadVramBudgetSettings().then((loaded) => {
@@ -637,9 +608,7 @@ function VramBudgetRow() {
     // deviceType settles once /api/health answers, so re-run if the seed guess flips.
   }, [isMac]);
 
-  // reloadRequired describes the running child, so it goes stale the moment a load finishes and
-  // nothing remounts this row. Only the falling edge: the read during a load answers about
-  // the child being replaced.
+  // reloadRequired goes stale when a load finishes; refresh on the falling edge only.
   useEffect(() => {
     const finished = wasModelLoading.current && !modelLoading;
     wasModelLoading.current = modelLoading;
@@ -647,8 +616,7 @@ function VramBudgetRow() {
       return;
     }
     let cancelled = false;
-    // Forced: a read that began before the load finished describes the child being replaced, and
-    // sharing it would republish the notice this refresh is clearing.
+    // Forced: an earlier read describes the child being replaced.
     loadVramBudgetSettings({ force: true }).then((loaded) => {
       if (cancelled || !loaded) {
         return;
@@ -660,9 +628,7 @@ function VramBudgetRow() {
     };
   }, [isMac, modelLoading]);
 
-  // Flush, do not drop: the timer is cleared so nothing fires against a torn-down view, but the
-  // fraction is still sent, since it is held nowhere else. The response only reaches
-  // subscribers, the view being gone.
+  // Flush, do not drop: the fraction is held nowhere else.
   useEffect(
     () => () => {
       if (saveTimer.current) {
@@ -678,14 +644,12 @@ function VramBudgetRow() {
     [],
   );
 
-  // A null response means an older backend; hide rather than render a dead control.
   if (isMac || !settings || percent === null) {
     return null;
   }
 
   const defaultPercent = vramFractionToPercent(settings.defaultFraction);
-  // Stored beats UNSLOTH_VRAM_FRACTION, so once the slider has been touched there is otherwise
-  // no way back to inheriting it. Clearing is what the null the API accepts is for.
+  // Stored beats UNSLOTH_VRAM_FRACTION; clearing (null) returns to inheriting it.
   const resetBudget = () => {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
@@ -706,8 +670,6 @@ function VramBudgetRow() {
   };
   const commit = (next: number) => {
     setPercent(next);
-    // Debounced: the slider fires per pointer move, so a drag would be dozens of writes, each
-    // invalidating the read cache.
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
     }
@@ -717,7 +679,7 @@ function VramBudgetRow() {
       flushVramBudgetSave()
         ?.then(setSettings)
         .catch((error: unknown) => {
-          // The client re-stages it, where the write generation can say whether it is still the newest intent.
+          // The client re-stages it, where the write generation can tell if it is still the newest.
           toast.error(
             error instanceof Error ? error.message : "Failed to save VRAM budget",
           );
@@ -783,7 +745,6 @@ function VramBudgetRow() {
   );
 }
 
-// GPU Memory placement controls, GGUF only. Slider ceilings come from the GGUF header dims;
 // --tensor-split is set per GPU row but not persisted per model.
 function GpuMemorySettings({
   config,
@@ -807,9 +768,9 @@ function GpuMemorySettings({
   const mode = config.gpuMemoryMode ?? "auto";
   const isManual = mode === "manual";
   const gpuLayers = config.gpuLayers ?? GPU_LAYERS_AUTO;
-  // Slider at Auto: llama.cpp --fit owns the layout, so MoE-offload does not apply.
+  // At Auto, llama.cpp --fit owns the layout, so MoE-offload does not apply.
   const autoLayers = isManual && gpuLayers < 0;
-  // Ceiling = layer count + 1 (llama.cpp counts the output layer as offloadable), else a fallback.
+  // llama.cpp counts the output layer as offloadable, hence +1.
   const gpuLayersMax = layerCount != null ? layerCount + 1 : 256;
   const nCpuMoe = config.nCpuMoe ?? 0;
   const moeLayersMax = moeLayerCount ?? 0;
@@ -819,12 +780,10 @@ function GpuMemorySettings({
   const pinnableDevices = gpuContext.devices ?? [];
   const gpuIndexKind = gpuContext.indexKind ?? null;
   const singleGpuInUse = (selectedGpuIds ?? gpuContext.ids ?? []).length <= 1;
-  // Multi-GPU only, with one backend-declared index namespace. null = automatic.
   const showGpuPicker = (gpuContext.ids?.length ?? 0) > 1;
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
-  // The list order IS the device order the backend pins, so a re-checked GPU goes
-  // to the end rather than back to its numeric slot.
+  // List order is the device order the backend pins, so a re-checked GPU goes to the end.
   const orderedGpuIds = selectedGpuIds ?? gpuContext.ids ?? [];
   // Mirrors the backend's --tensor-split gate.
   const splitTotal = Math.max(0, Math.min(gpuLayers, gpuLayersMax));
@@ -840,7 +799,6 @@ function GpuMemorySettings({
   const tensorSplit = config.tensorSplit ?? null;
   const splitIsCustom =
     tensorSplit != null && tensorSplit.length === orderedGpuIds.length;
-  // Untouched: show a VRAM-proportional split and send nothing.
   const splitShares = showSplit
     ? distributeByWeight(
         splitScale,
@@ -858,7 +816,7 @@ function GpuMemorySettings({
     update({ tensorSplit: rebalanceSplit(splitScale, splitShares, k, value) });
   };
   const commitGpuIds = (next: number[], nextSplit: number[] | null = null) => {
-    if (next.length === 0) return; // keep at least one GPU selected
+    if (next.length === 0) return;
     update({
       selectedGpuIds: next,
       selectedGpuIndexKind: gpuIndexKind,
@@ -873,7 +831,6 @@ function GpuMemorySettings({
         : [...orderedGpuIds, index],
     );
   };
-  // Selected devices in the order they will be given to the model, then the rest.
   const orderedPinnableDevices = [
     ...orderedGpuIds
       .map((id) => pinnableDevices.find((d) => d.index === id))
@@ -914,7 +871,6 @@ function GpuMemorySettings({
         <Select
           value={mode}
           onValueChange={(v) =>
-            // Default clears every Manual-only setting.
             update(
               v === "manual"
                 ? { gpuMemoryMode: "manual" }
@@ -943,9 +899,6 @@ function GpuMemorySettings({
           </SelectContent>
         </Select>
       </div>
-      {/* A fixed manual layer count is the one placement the budget cannot move, and a CPU-only host
-          has no GPU to act on, so "applies on the next load" would be false. Manual + Auto is
-          included: --fit-target still carries the budget to llama.cpp's fitter. */}
       {!isDiffusion && (!isManual || autoLayers) && gpuDevices.length > 0 && (
         <VramBudgetRow />
       )}
@@ -1096,7 +1049,6 @@ function AdvancedSettingsToggle({
   onCheckedChange: (next: boolean) => void;
 }) {
   return (
-    // Ruled off from the context controls above, matching the estimate row's divider.
     <div className={`${ROW_CLASS} border-t border-border pt-5`}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
@@ -1184,18 +1136,14 @@ function MlxAdvancedSettings({
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
-  /** What the backend reported for this exact setting on the loaded model. */
   outcome: string | null;
-  /** KV quantization is MLX-only; a CUDA safetensors model has no such control. */
   servedByMlx: boolean;
   int8PrefillAvailable: boolean;
   onInt8PrefillChange: (checked: boolean) => void;
   onEditTemplate: () => void;
-  /** Why the loaded model could not take the override it was given. */
   templateOutcome: string | null;
 }) {
   return (
-    // Same row spacing as the GGUF rows, whose fragment sits in the list above.
     <div className="flex flex-col gap-5">
       {servedByMlx && (
         <div className="space-y-1">
@@ -1239,7 +1187,6 @@ function MlxAdvancedSettings({
       ) : null}
         </div>
       )}
-      {/* An enabled choice stays visible so it can be turned off when availability is unknown. */}
       {servedByMlx && (int8PrefillAvailable || config.mlxInt8Prefill) && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -1276,8 +1223,7 @@ function MlxAdvancedSettings({
   );
 }
 
-/** Mmap/Mlock, with the note that says when Settings wins. Its own component because it
- *  subscribes to the Model Memory settings and must keep following them. */
+/** Its own component because it must keep following the Model Memory settings. */
 function LoadModeRow({
   config,
   update,
@@ -1379,25 +1325,16 @@ function GgufAdvancedSettings({
   gpuDevices: SystemGpuDevice[];
   gpuLayersInputRef?: Ref<NumericValueInputHandle>;
   moeLayersInputRef?: Ref<NumericValueInputHandle>;
-  /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
   const llamaBackend = useLlamaCppBackend();
-  // llama-server aborts below 2 and below the slot count, so the loader raises the emitted value
-  // to max(slots, 2). Surfaced so the number typed here is not silently different from the
-  // one that runs. With Slots blank only the hard floor of 2 is asserted.
-  // GGML_ASSERT(n_tokens_all <= cparams.n_batch) below 2, and
-  // GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max) below the slot count.
+  // llama-server asserts batch >= 2 and >= slot count, so the loader raises it to max(slots, 2).
   const batchFloor = Math.max(2, config.nParallel ?? 2);
   const batchBelowFloor = config.nBatch != null && config.nBatch < batchFloor;
-  // llama.cpp runs at min(batch, ubatch) and the /status echo is the REQUESTED size, so the
-  // control would keep showing a value the server never used: batch 8 / ubatch 4096 measured 8.8x
-  // slower. Measured against the EMITTED batch, or the two advisories contradict, since batch 4 /
-  // slots 8 launches at 8. A blank batch runs llama.cpp's own 2048, which extras or
-  // LLAMA_ARG_BATCH can move without this page seeing it.
+  // llama.cpp runs at min(batch, ubatch) while /status echoes the request; judged on the emitted batch.
   const effectiveBatch =
     config.nBatch != null
       ? Math.max(config.nBatch, batchFloor)
@@ -1459,8 +1396,7 @@ function GgufAdvancedSettings({
               specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
                 ? config.specDraftNMax
                 : null,
-              // Dropped with the drafter, like the depth above: the draft context exists only while a
-              // separate model is loaded.
+              // The draft context exists only while a separate model is loaded.
               specDraftCacheDtype: SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(v)
                 ? config.specDraftCacheDtype
                 : null,
@@ -1655,8 +1591,6 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      {/* withoutUnsupportedDiffusionSettings forces tensorParallel back to false and the diffusion
-          runner never reads it, so the switch flipped back under the pointer. */}
       {!isDiffusion && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -1674,8 +1608,6 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a diffusion model
-          and the runner never reads it, so the switch would flip back under the pointer. */}
       {!isDiffusion && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -1768,8 +1700,6 @@ function GgufAdvancedSettings({
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
 
-      {/* Host-side knobs, after the ones that shape the model itself. All three are llama-server's
-          own, and the diffusion runner launches no llama-server, so they are hidden for it. */}
       {!isDiffusion && (
         <>
           <LoadModeRow config={config} update={update} />
@@ -1852,8 +1782,6 @@ function GgufAdvancedSettings({
         </>
       )}
 
-      {/* Last, because it is the escape hatch for everything the rows above do not cover, and
-          llama.cpp's last-wins parsing means these really are appended after them. GGUF only. */}
       {!isDiffusion && (
         <ExtraArgsRow
           config={config}
@@ -1866,10 +1794,7 @@ function GgufAdvancedSettings({
   );
 }
 
-/** Pass-through llama-server arguments for this model. llama-server documents 283 flags and
- *  Unsloth manages about 115, so the long tail is a text box rather than 168 more controls.
- *  The boundary is `validate_extra_args`; this row shows that judgement early, plus a check
- *  against the flags THIS build documents. */
+/** The long tail of llama-server flags; validate_extra_args is the real boundary. */
 function ExtraArgsRow({
   config,
   update,
@@ -1883,20 +1808,16 @@ function ExtraArgsRow({
 }) {
   const [catalog, setCatalog] = useState<LlamaFlagCatalog | null>(null);
   const adviceId = useId();
-  // What is typed, not what is stored (argv tokens). On the draft, or the second editor
-  // re-quotes a half-typed line into balanced text and judges it loadable.
+  // The typed draft, not stored tokens, or the other editor re-quotes half-typed input.
   const edit = useSyncExternalStore(
     subscribeModelConfigDraft,
     () => readExtraArgsEditForDraft(draftKey),
   );
   const external = formatExtraArgs(config.llamaExtraArgs);
-  // Comparing against what the edit published, not the config, is what stops a re-quote per
-  // keystroke. Reset and hydration drop the edit outright.
+  // Comparing against the edit's own source stops a re-quote per keystroke.
   const text = edit && edit.source === external ? edit.text : external;
 
-  // Re-read on invalidation, not only on mount: updating llama.cpp from the banner replaces the
-  // binary while this panel stays open, and the old catalogue would judge arity against help
-  // text that no longer describes the server.
+  // Re-read on invalidation: a llama.cpp update replaces the binary while the panel stays open.
   const [catalogEpoch, setCatalogEpoch] = useState(0);
   useEffect(
     () => subscribeLlamaFlagCatalog(() => setCatalogEpoch((epoch) => epoch + 1)),
@@ -1906,8 +1827,7 @@ function ExtraArgsRow({
     let cancelled = false;
     loadLlamaFlagCatalog().then((loaded) => {
       if (!cancelled) {
-        // Null is "cannot verify": adopted as well, or the row would keep checking against the
-        // previous binary after an update it cannot read.
+        // Adopt null (cannot verify) too, or the row checks against the previous binary.
         setCatalog(loaded);
       }
     });
@@ -1916,9 +1836,7 @@ function ExtraArgsRow({
     };
   }, [catalogEpoch]);
 
-  // Model Memory removes some of these before the launch: apply_model_memory_policy emits its
-  // own load mode and strips the rest, so an --mlock typed here would be shown, saved, and
-  // never passed. A failed read leaves the row quiet rather than claiming a removal.
+  // apply_model_memory_policy strips load-mode flags, so a typed --mlock would never be passed.
   const [modelMemory, setModelMemory] = useState<ModelMemorySettings | null>(
     null,
   );
@@ -1941,41 +1859,34 @@ function ExtraArgsRow({
   const diagnostics = diagnoseExtraArgs(text, catalog, {
     gpuSelectionActive: config.selectedGpuIds != null,
     manualGpuMemory: config.gpuMemoryMode === "manual",
-    // Only manual mode with a resolved layer count of 0 or more rewrites --tensor-split; at Auto
-    // layers the launcher drops it, so the value never reaches llama-server.
+    // Only manual mode with layers >= 0 rewrites --tensor-split; at Auto the launcher drops it.
     gpuLayers: config.gpuLayers,
-    // The same floor the batch control shows: with Slots blank the count is the server default
-    // this page cannot see, so only the hard 2 holds. A build that clamps serves one slot
-    // whatever is chosen, so an explicit Slots value must not raise the floor.
+    // A clamping build serves one slot, so an explicit Slots value must not raise the floor.
     batchFloor: effectiveBatchFloor(config.nParallel, catalog),
     keepResident: modelMemory?.keepResident ?? false,
     noRamReserve: modelMemory?.noRamReserve ?? false,
   });
   const tokenCount = parseExtraArgs(text).tokens.length;
 
-  // The panel owns the Load button, and an error here is one validate_extra_args would refuse.
-  // Reported up rather than only painted red, so the load is not started just to fail.
+  // Reported up so the load is not started just to fail.
   const loadable = extraArgsAreLoadable(diagnostics);
   useEffect(() => {
     onLoadableChange(loadable);
-    // On the draft too: only this row reads the raw text. An unprobed row may only LOWER the
-    // verdict, or it clears a refusal another row verified; a parse failure still holds.
+    // An unprobed row may only lower the verdict.
     if (catalog !== null || !loadable) {
       setExtraArgsEditLoadableForDraft(draftKey, loadable);
     }
-    // Deliberately no cleanup: collapsing Advanced settings unmounts this row while the tokens
-    // stay in the config and still go out with the load. The panel clears it on model change.
+    // No cleanup: the row unmounts on collapse but its tokens still load; cleared on model change.
   }, [loadable, onLoadableChange, draftKey, catalog]);
 
   const commit = (next: string) => {
     const { tokens } = parseExtraArgs(next);
-    // Before the update, so the config change it causes still matches this edit's own source.
+    // Before the update, so the resulting config change matches this edit's source.
     setExtraArgsEditForDraft(draftKey, {
       text: next,
       source: formatExtraArgs(tokens.length > 0 ? tokens : null),
     });
-    // null, not [], so the panel's own "no flags" reads the same as the stored one; toApiOverride
-    // turns it into the explicit [] that clears the server's copy.
+    // null, not []; toApiOverride turns it into the explicit [] that clears the server copy.
     update({ llamaExtraArgs: tokens.length > 0 ? tokens : null });
   };
 
@@ -1997,7 +1908,6 @@ function ExtraArgsRow({
           </div>
         </InfoHint>
       </div>
-      {/* Grouped so the notes sit 4px under the field, as advice does elsewhere. */}
       <div className="space-y-1">
         <div className="panel-text-surface h-20 w-full overflow-hidden corner-squircle">
           <textarea
@@ -2047,8 +1957,6 @@ interface ModelConfigPageProps {
   initialConfig?: PerModelConfig | null;
   isDiffusion?: boolean;
   variant?: "page" | "sidebar";
-  /** Page variant only: render the built-in "Run settings" title block. A host that already shows
-   *  the model name as its page heading turns this off. */
   showHeader?: boolean;
 }
 
@@ -2065,8 +1973,7 @@ export function ModelConfigPage({
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
-  // Apple Silicon specifically, and used ONLY for wording: "Unified" is what Apple calls its
-  // pool, where an AMD APU's is "Shared". NOT the signal for capacity - see hasUnifiedMemory.
+  // Wording only ("Unified" vs "Shared"); not the capacity signal, see hasUnifiedMemory.
   const isAppleUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
@@ -2100,7 +2007,6 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.maxContextLength,
   );
-  // What settings are stored under, which is not always what loads; the probes keep target.id.
   const configId = target.configId ?? target.id;
   const targetIsNpu = isNpuModelId(target.id);
   const gpuDevices = useGpuDevices();
@@ -2121,8 +2027,7 @@ export function ModelConfigPage({
   };
   const draftKey = modelConfigDraftKey(configId, target.ggufVariant);
   const liveSignature = loadedConfigSignature(loadedConfig);
-  // LAYOUT, above the prime: a live change remounts under the same key, and only layout
-  // cleanups run before the new instance re-primes. Released passively it deleted its draft.
+  // Layout effect: only layout cleanups run before a same-key remount re-primes.
   useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: liveSignature summarizes loadedConfig
   useLayoutEffect(() => {
@@ -2154,8 +2059,7 @@ export function ModelConfigPage({
   const remember = draftSnapshot?.remember ?? initialFallback.remembered;
   const savedRemember =
     draftSnapshot?.savedRemember ?? initialFallback.remembered;
-  // The peer's row may be refusing what is typed while this editor has none: Advanced starts
-  // collapsed, and the check below judges the TOKENS, which formatExtraArgs rebalances.
+  // The peer's row may refuse text this editor has none of while Advanced is collapsed.
   const sharedExtraArgsEdit = useSyncExternalStore(
     subscribeModelConfigDraft,
     () => readExtraArgsEditForDraft(draftKey),
@@ -2165,19 +2069,16 @@ export function ModelConfigPage({
     sharedExtraArgsEdit.source === formatExtraArgs(configState.llamaExtraArgs);
   const sharedExtraArgsRefused =
     sharedExtraArgsCurrent && sharedExtraArgsEdit.loadable === false;
-  // This editor's row keeps its refusal after unmounting, so a peer that fixed the text lifts it.
   const sharedExtraArgsCleared =
     sharedExtraArgsCurrent && sharedExtraArgsEdit.loadable === true;
-  // The live config, for the async reads below: an effect that closed over it would hold
-  // whatever it was when the request started.
+  // Live config for async reads; a closure would hold the value from request start.
   const configRef = useRef(configState);
   configRef.current = configState;
   const rememberRef = useRef(remember);
   rememberRef.current = remember;
   const setConfig = useCallback(
     (action: SetStateAction<PerModelConfig>) => {
-      // A plain value REPLACES, as the useState setter this stands in for does. Merging left
-      // Reset's DEFAULT_PER_MODEL_CONFIG, which names no GPU field, unable to clear a pick.
+      // A plain value replaces, like useState; merging could not clear a GPU pick on Reset.
       patchModelConfigDraft(draftKey, (current) =>
         typeof action === "function" ? action(current) : action,
       );
@@ -2197,30 +2098,23 @@ export function ModelConfigPage({
     [draftKey],
   );
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
-  // Same substitution as speculativeFallback: only "manual" is persisted per model, so an absent
-  // mode means "follow the standing preference" rather than Auto, and pricing the absence as
-  // Auto rated a Manual launch against the wrong plan.
+  // Only "manual" is persisted, so absent means the standing preference, not Auto.
   const [gpuMemoryModeFallback] = useState(readPersistedGpuMemoryMode);
   const [templateOpen, setTemplateOpen] = useState(false);
-  // Raised by the extra-arguments row when what is typed is something validate_extra_args would
-  // refuse. Held by the panel rather than the row, since the row unmounts whenever Advanced
-  // settings collapse while its tokens stay in the config.
+  // Held by the panel because the row unmounts when Advanced collapses.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
-  // True until the server-row read below settles: a load started before it lands sends none of the
-  // row's settings, and with Remember unchecked it forgets the row it never read.
+  // A load before the server-row read lands would send none of its settings.
   const [extraArgsHydrating, setExtraArgsHydrating] = useState(
     () => !isDiffusion,
   );
-  // The row does not withdraw its own objection when it unmounts, or collapsing Advanced settings
-  // would re-enable Load for arguments the backend refuses. Only a different model retires it.
+  // Only a different model retires the row's objection, not its unmount.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
   useEffect(() => {
     setExtraArgsLoadable(true);
     setExtraArgsHydrating(!isDiffusion);
   }, [configId, target.ggufVariant, target.isGguf, isDiffusion]);
 
-  // Compare against what the backend was asked for, not what it applied: staging a new value
-  // must retire a verdict that answered a different request.
+  // Compare to what was requested, so a staged value retires a verdict for a different request.
   const chatTemplateOutcome =
     isActiveModel &&
     (configState.chatTemplateOverride ?? null) ===
@@ -2230,7 +2124,7 @@ export function ModelConfigPage({
   const mlxKvQuantOutcome =
     isActiveModel &&
     (configState.mlxKvQuant ?? null) === (loadedMlxKvQuantRequested ?? null)
-      ?  // Both, not either: dropping the note promises savings before the offset where quantization actually starts.
+      ? // Both: dropping the note promises savings before quantization starts.
         [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null
       : null;
   const servedByMlx = isServedByMlx(
@@ -2246,14 +2140,13 @@ export function ModelConfigPage({
     hfToken || null,
   );
   const [int8PrefillConfirmOpen, setInt8PrefillConfirmOpen] = useState(false);
-  // Read live, not snapshotted at mount: the sidebar copy stays mounted while collapsed.
+  // Read live: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
     readAdvancedSettingsOpen,
     () => null,
   );
-  // Until the switch is used anywhere, a model carrying non-default advanced values opens the
-  // section itself. Frozen at mount so editing a field back to its default cannot close it.
+  // Frozen at mount so editing a field back to default cannot close the section.
   const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
     hasNonDefaultAdvanced(configState),
   );
@@ -2266,14 +2159,11 @@ export function ModelConfigPage({
       setAutoOpenAdvanced(true);
     }
   }, []);
-  // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
-  // section the user just closed.
   const [initialMlxKvQuant] = useState(() => configState.mlxKvQuant ?? null);
   const [initialMlxInt8Prefill] = useState(
     () => configState.mlxInt8Prefill ?? false,
   );
-  // Applicability stays live, unlike the snapshot above: MLX can become available after mount,
-  // and a width that starts applying then has to surface.
+  // Applicability stays live: MLX can become available after mount.
   const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
   const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
   const showAdvanced =
@@ -2306,7 +2196,6 @@ export function ModelConfigPage({
     ? false
     : templateDefaults.loading;
 
-  // Fetch GGUF header dims to size the GPU Memory sliders; the context also fills in below.
   const contextFetchKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
@@ -2367,23 +2256,17 @@ export function ModelConfigPage({
   ]);
   const stagedDims =
     fetchedStagedDims?.key === contextFetchKey ? fetchedStagedDims : null;
-  // Tri-state on purpose: an inconclusive probe stays undefined so onRun hands "unknown" on.
-  // Collapsing it to false would let a compare pane inherit another model's split (#7574).
+  // Tri-state on purpose: collapsing unknown to false lets a compare pane inherit another split.
   const classifiedIsDiffusion = resolveStagedDiffusionClassification(
     isDiffusion,
     stagedDims,
   );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
-  // Speech, music and ASR GGUFs the backend runs on its audio runtime: no llama-server launches,
-  // so none of its knobs apply. Their own options live under Advanced on the Audio page.
+  // Audio-runtime GGUFs launch no llama-server, so none of its knobs apply.
   const audioRuntimeGguf =
     target.isGguf && isAudioRuntimeGguf(target.id, target.meta.audioType);
 
-  // The one field on this page whose stored value the local config may never have seen:
-  // llama_extra_args can be set through the overrides API with no UI involved, so an empty box
-  // would read as "none" and the first edit would drop them. Fetched, not guessed. A verdict
-  // reached before the catalogue arrived did not know this build's flags, so while the row is
-  // unmounted the panel re-judges the config once the catalogue lands.
+  // llama_extra_args can be set via the API with no UI, so fetch rather than assume none.
   const [hiddenCatalogEpoch, setHiddenCatalogEpoch] = useState(0);
   useEffect(
     () =>
@@ -2399,31 +2282,23 @@ export function ModelConfigPage({
     }
     const args = configState.llamaExtraArgs;
     if (args == null || args.length === 0) {
-      // The row leaves its objection standing when it unmounts, because those tokens still go out
-      // with the load. Once there are none there is nothing to object to: Reset with Advanced
-      // collapsed used to leave Load disabled.
+      // Reset with Advanced collapsed must re-enable Load.
       setExtraArgsLoadable(true);
       return;
     }
     let cancelled = false;
     loadLlamaFlagCatalog().then((catalog) => {
       if (cancelled || !catalog) {
-        // Null is "cannot verify": leaving the standing verdict alone is the same benefit of the doubt
-        // the row gives an unprobed build.
         return;
       }
       const loadable = extraArgsAreLoadable(
         diagnoseExtraArgs(formatExtraArgs(args), catalog, {
           gpuSelectionActive: configState.selectedGpuIds != null,
           manualGpuMemory: configState.gpuMemoryMode === "manual",
-          // The server-wide default when the Slots field is blank: that is the count the launch will
-          // serve, and llama-server aborts on a batch below it.
           batchFloor: effectiveBatchFloor(configState.nParallel, catalog),
         }),
       );
-      // Only ever tightens. This judges the TOKENS, and formatExtraArgs quotes them back into a
-      // balanced string, so an unclosed quote the row objected to reads as fine here and raising
-      // the verdict would re-enable Load over unfinished input.
+      // Only ever tightens: formatExtraArgs rebalances quotes, so this cannot see unfinished input.
       if (!loadable) {
         setExtraArgsLoadable(false);
       }
@@ -2442,20 +2317,14 @@ export function ModelConfigPage({
     hiddenCatalogEpoch,
   ]);
 
-  // The server copy is shared by Desktop, LAN, and tunnel origins, so hydrate the whole
-  // remembered config here; localStorage is only the immediate seed. This also runs while
-  // Advanced is closed, since the row reaches every load whether or not it is shown.
+  // The server copy is shared across Desktop, LAN and tunnel origins; localStorage is only a seed.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
   useEffect(() => {
     if (resolvedIsDiffusion) {
-      // A diffusion model runs through the shim, which appends no llama-server flags, so it keeps
-      // Load free of this read.
       setExtraArgsHydrating(false);
       return;
     }
-    // The order the auto-switch loader tries, and for the same reason: the settings UI keys a local
-    // row by the path it loads from while configId is a derived alias, so reading the alias
-    // first let an older entry stay the one API loads apply.
+    // Same order as the auto-switch loader: load path first, then the derived configId alias.
     const loadId = target.id;
     const fileVariant =
       !target.ggufVariant && loadId.toLowerCase().endsWith(".gguf")
@@ -2468,34 +2337,27 @@ export function ModelConfigPage({
       ...(fileVariant ? [`${loadId}:${fileVariant}`] : []),
       configId,
     ].filter((key, index, all) => all.indexOf(key) === index);
-    // The draft alone, never a string built from `keys`: the hosts derive different candidate
-    // lists. Retaining an unedited draft clears it, so a fresh editor still sees a newer row.
+    // The draft alone: hosts derive different candidate key lists.
     if (isExtraArgsHydratedForDraft(draftKey)) {
       setExtraArgsHydrating(false);
       return;
     }
     let cancelled = false;
-    // What the config held BEFORE the request went out. Anything else at the end of it was typed
-    // while the request was in flight, and sanitizing that would rewrite live input.
+    // Anything changed after this was typed in flight; sanitizing it would rewrite live input.
     const configAtStart = configRef.current;
     const storedAtStart = resolveInitialConfig(configId, target.ggufVariant);
     const rememberAtStart = rememberRef.current;
     const localAtStart = configAtStart.llamaExtraArgs;
-    // The denylist, not the catalogue: sanitizing a stored list needs only the flags Unsloth
-    // refuses, and that route answers without running `llama-server --help`. A last-resort
-    // release, so a request that never settles cannot disable Load for good.
+    // Last-resort release so a request that never settles cannot disable Load forever.
     const release = setTimeout(() => setExtraArgsHydrating(false), 15000);
     Promise.all([
-      // Resolved by the backend, which owns the rules; the local resolver stays as the fallback for
-      // a backend that predates the parameter.
       fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys).then(
         (row) => panelOverrideRow(row, target.isGguf),
       ),
       target.isGguf ? loadManagedLlamaFlags() : null,
     ])
       .then(([resolvedOverride, managed]) => {
-        // Marked here rather than before the request: StrictMode replays the effect, so a key marked
-        // up front would leave the first fetch cancelled and the box never filled in development.
+        // Marked here, not before the request: StrictMode replays the effect.
         if (cancelled) {
           return;
         }
@@ -2504,27 +2366,21 @@ export function ModelConfigPage({
           tokens: resolvedOverride?.llama_extra_args ?? [],
           explicit: Array.isArray(resolvedOverride?.llama_extra_args),
         };
-        // Through the resolver, not a literal lookup: the backend folds identities and reads whole
-        // entries in its own order. Sanitised before it becomes a request, since hydrating turns a
-        // stored list into an EXPLICIT one that /load validates strictly, so an install upgraded
-        // across a denylist change would otherwise stop loading a model that worked yesterday.
+        // Sanitised because hydration makes the list explicit, which /load validates strictly.
         const stored = sanitizeStoredExtraArgs(
           resolvedArgs.tokens,
           managed?.managed ?? new Set<string>(),
-          // The host's bounds, not the constants: a Windows server takes 24 KiB and holds a
-          // quoted-command budget as well, so trimming to 32 KiB here sends a list /load 400s on.
+          // The host's bounds: Windows takes 24 KiB plus a quoted-command budget.
           {
             maxBytes: managed?.maxBytes,
             windowsCommandBudget: managed?.windowsCommandBudget,
           },
         );
-        // A list this build refuses can equally have come from local storage, saved by a build that
-        // still allowed it, and nothing else would catch it while Advanced stays collapsed.
+        // A list saved by an older, more permissive build can come from local storage too.
         const local = target.isGguf
           ? configRef.current.llamaExtraArgs
           : undefined;
-        // Kept for the merge below as well as for the box: a row that carries no arguments leaves the
-        // local list standing, and handing back a refused list would re-enable Load.
+        // Handing back a refused list would re-enable Load.
         let sanitizedLocal = localAtStart;
         if (local != null && local.length > 0 && local === localAtStart) {
           const cleaned = sanitizeStoredExtraArgs(
@@ -2544,8 +2400,6 @@ export function ModelConfigPage({
             );
           }
         }
-        // The row as it should be read: its own fields, with the arguments it carries sanitized against
-        // what this build refuses.
         const resolvedRow = resolvedOverride
           ? {
               ...resolvedOverride,
@@ -2558,9 +2412,7 @@ export function ModelConfigPage({
               llamaExtraArgs: sanitizedLocal,
             })
           : null;
-        // What hydration would leave in the config: the row's list when it carries one, this browser's
-        // when it does not. Judged as a whole, or a local flag the expanded row already refused is
-        // declared loadable by a verdict read off the empty server list.
+        // Judged as a whole, or an empty server list would clear a locally refused flag.
         const hydratedArgs = serverConfig?.llamaExtraArgs ?? stored;
         const hydratedIsLoadable =
           !target.isGguf || hydratedArgs.length === 0
@@ -2588,12 +2440,7 @@ export function ModelConfigPage({
                 ),
               );
 
-        // The shared row outranks the local seed for every field it carries, so LAN and Desktop cannot
-        // show different remembered values; fromApiOverride keeps the rest of this browser's config,
-        // since an absent field is as much a gap in the mirror as a chosen default. Never over an
-        // edit made while the request was in flight.
-        // The edited check is load-bearing: an edit the OTHER editor made before this read
-        // started is already in configAtStart, so the comparison below reads as untouched.
+        // The shared row outranks the local seed for fields it carries, never over an in-flight edit.
         if (
           resolvedRow &&
           serverConfig &&
@@ -2616,24 +2463,17 @@ export function ModelConfigPage({
           if (hasNonDefaultAdvanced(serverConfig)) {
             setAutoOpenAdvanced(true);
           }
-          // Unconditionally, because savePerModelConfig says "no settings" by DELETING the entry: a merge
-          // that comes out default is a clear that has to travel. Skipping it stranded the old flag
-          // for model-selector's quick select; writing when no record exists is already a no-op.
+          // Unconditionally: savePerModelConfig clears by deleting, so a default merge must still travel.
           const rememberedConfig = fromApiOverride(
             resolvedRow,
             storedConfig.config,
           );
-          // Same budget as any other write, so the same clean-up: eviction is silent and still reports
-          // success, and a dropped model would keep applying its server row to API loads. Not a
-          // Forget: only the mirrored fields go.
+          // Eviction is silent, so drop evicted models' mirrored server fields (not a Forget).
           const hydrationEvicted: {
             modelId: string;
             ggufVariant: string | null;
           }[] = [];
-          // Checked for the same reason the Save path checks it: the write can fail outright and say so
-          // in the return rather than throwing. Marked saved regardless, the panel would claim the
-          // settings are remembered while quick select and background loads, which read
-          // resolveInitialConfig and never open this panel, still saw the stale record or none.
+          // The write can fail via its return value; do not claim settings are remembered then.
           const hydrationSaved = savePerModelConfig(
             configId,
             target.ggufVariant,
@@ -2649,10 +2489,7 @@ export function ModelConfigPage({
           return;
         }
         if (stored.length === 0) {
-          // An EXPLICIT empty row is a decision, not an absence: the settings page writes one when the
-          // box is cleared for a quant whose bare-repository row still carries arguments. Left
-          // undefined the panel omits the field on Load, and /load carries the resident model's
-          // arguments over. Only when nothing was typed here meanwhile.
+          // An explicit empty row is a decision; left undefined /load carries the resident args over.
           const local = configRef.current.llamaExtraArgs;
           if (resolvedArgs.explicit && local === undefined) {
             setExtraArgsLoadable(true);
@@ -2664,11 +2501,8 @@ export function ModelConfigPage({
           }
           return;
         }
-        // Read from a ref rather than inside the updater below: an updater must stay free of side
-        // effects (StrictMode calls it twice), and this decides one.
+        // Decided outside the updater, which must be side-effect free (StrictMode calls it twice).
         if (configRef.current.llamaExtraArgs !== undefined) {
-          // Typed into while this was in flight: the row is judging that text and its verdict is the
-          // live one, so this answer about the stored list must not overwrite either.
           return;
         }
         setExtraArgsLoadable(hydratedIsLoadable);
@@ -2678,8 +2512,7 @@ export function ModelConfigPage({
             ? { ...current, llamaExtraArgs: stored }
             : current,
         );
-        // The frozen snapshot above was taken before this answer arrived, so without this a model whose
-        // arguments live only on the server opens looking like every default. A preference wins.
+        // Server-only arguments arrive after the auto-open snapshot, so open Advanced now.
         setAutoOpenAdvanced(true);
       })
       .catch(() => {
@@ -2687,7 +2520,7 @@ export function ModelConfigPage({
         // overrides service far more clearly.
       })
       .finally(() => {
-        // Including the failure: an overrides service that is down must not leave Load disabled for good.
+        // Including failure: a down overrides service must not leave Load disabled.
         if (!cancelled) {
           setExtraArgsHydrating(false);
         }
@@ -2709,11 +2542,8 @@ export function ModelConfigPage({
     resolvedIsDiffusion,
     gpuDevices,
   );
-  // Held for the window where Run is waiting on a budget PUT rather than on the load it looks like it started.
   const [budgetSettling, setBudgetSettling] = useState(false);
-  // The budget is on no per-model field, so changing it leaves this page at its baseline and the
-  // Reload button disabled, with the row asking for a reload the user could not start. Read
-  // off the same publish the row uses.
+  // The budget is not a per-model field, so track its reload requirement separately.
   const [budgetReloadRequired, setBudgetReloadRequired] = useState(false);
   useEffect(
     () =>
@@ -2737,8 +2567,7 @@ export function ModelConfigPage({
   };
   const update = (patch: Partial<PerModelConfig>) => {
     handleSharedConfigEdit();
-    // Every control lands here and nothing else does: the hydration effect's own sanitising
-    // writes go through setConfig, and marking those would have the read refuse its result.
+    // Hydration writes go through setConfig; marking those would make the read refuse its result.
     markModelConfigDraftEdited(draftKey);
     setConfig((current) => ({
       ...reconcileConfigGpuSelection(current, resolvedIsDiffusion, gpuDevices),
@@ -2746,13 +2575,10 @@ export function ModelConfigPage({
     }));
   };
 
-  // True for every mode that takes a draft depth, DSpark included, so this gates the Draft
-  // Tokens row rather than naming a drafter.
   const showDraftTokens =
     config.speculativeType != null &&
     DRAFT_N_MAX_SPEC_TYPES.has(config.speculativeType);
-  // Narrower than the row above: the dtype needs a second context, and only the sidecar modes
-  // always load one. MTP may read baked-in heads out of the target GGUF.
+  // Only sidecar modes always load a second context; MTP may use heads in the target GGUF.
   const showSpecDraftCacheDtype =
     config.speculativeType != null &&
     SEPARATE_DRAFT_MODEL_SPEC_TYPES.has(config.speculativeType);
@@ -2760,8 +2586,7 @@ export function ModelConfigPage({
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
-  // resolveLoadMaxSeqLength returns 0 for a builtin-default GGUF load before it looks at the
-  // resident context, so the estimate must not fall back to it either.
+  // resolveLoadMaxSeqLength returns 0 for a builtin-default GGUF load, so do not fall back to it.
   const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
   const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
@@ -2810,9 +2635,7 @@ export function ModelConfigPage({
   const atBaseline = perModelConfigsEqual(config, baseline, {
     followGlobal: true,
   });
-  // The fitted value is an outcome, not an override. Auto stays at the default even
-  // when a loaded model reports less than its native context. A non-GGUF pin is an
-  // override too, read from whichever field it was saved in.
+  // The fitted value is an outcome, not an override.
   const contextAtDefault = !target.isGguf
     ? savedContextPin(config) == null
     : config.customContextLength == null;
@@ -2828,10 +2651,7 @@ export function ModelConfigPage({
         ? target.meta.contextLength
         : modelMaxPosition.maxPositionEmbeddings,
     ) ?? MAX_SEQ_LENGTH_MAX;
-  // The pin, else the length a self-sizing backend would serve, so the control states a
-  // context rather than declining to. Only an unread window falls back to the app default,
-  // and Reset clears the pin to null so no fallback may rebuild one from a runtime value.
-  // Reported as it stands, not snapped to the request step: 2,056 would read 2,048.
+  // Reported as is, not snapped to the request step.
   const servedWindow = (value: unknown) =>
     typeof value === "number" && Number.isFinite(value) && value > 0
       ? Math.floor(value)
@@ -2839,23 +2659,16 @@ export function ModelConfigPage({
   const mlxNativeWindow = targetIsMlx
     ? servedWindow(modelMaxPosition.maxPositionEmbeddings)
     : null;
-  // What a load would serve. The backend clamps an auto-sized window to the request
-  // ceiling, so a wider native one (Scout declares 10,485,760) would name a length no
-  // load can serve. Native above stays raw: metadata, not a promise.
+  // The backend clamps auto-sized windows to the request ceiling.
   const mlxProspectiveWindow =
     mlxNativeWindow == null
       ? null
       : Math.min(mlxNativeWindow, MAX_SEQ_LENGTH_MAX);
-  // An auto-fit-below-native GGUF shows activeLoadedContext while
-  // customContextLength stays null. If the user fixes GPU Layers (Manual) and
-  // remembers, pin that shown context so a later fresh load keeps the fitted
-  // placement instead of sending native/0 for fixed layers and recreating the OOM.
+  // Pin the shown fitted context when layers are fixed, or a fresh load recreates the OOM.
   const loadableConfig = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(config, gpuIndexKind)
     : config;
-  // A model classified as diffusion after the box was typed into keeps the row's objection while
-  // the arguments are stripped from what loads, and the row does not withdraw it on unmount.
-  // Retired here, or Load stays disabled over arguments the request no longer carries.
+  // Reclassification as diffusion strips the args, so retire the row's objection here.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the classification, not on the setter
   useEffect(() => {
     if (resolvedIsDiffusion) {
@@ -2869,8 +2682,6 @@ export function ModelConfigPage({
     loadableConfig.gpuLayers >= 0 &&
     loadableConfig.customContextLength == null &&
     activeLoadedContext != null;
-  // Kept as-is so isDefaultConfig clears a remembered override rather than pinning the
-  // app default; the write rule already settled which field holds the pin.
   const runtimeConfig = target.isGguf
     ? pinFixedLayerContext
       ? { ...loadableConfig, customContextLength: activeLoadedContext }
@@ -2878,10 +2689,7 @@ export function ModelConfigPage({
     : loadableConfig;
   const runtimeGpuMemoryMode =
     runtimeConfig.gpuMemoryMode ?? gpuMemoryModeFallback;
-  // Priced against the config that would actually load, at the context on screen. Diffusion
-  // stands down, since its runner allocates on a different plan. The tri-state is read as a
-  // tri-state, not through resolvedIsDiffusion: a GGUF still being classified may be
-  // DiffusionGemma, and guessing paints a footprint from the wrong plan that never clears.
+  // Read the classification as a tri-state: an unclassified GGUF may be DiffusionGemma.
   const memoryEstimateRequest =
     shouldRequestMemoryEstimate({
       isGguf: Boolean(target.isGguf),
@@ -2893,13 +2701,10 @@ export function ModelConfigPage({
           ggufVariant: target.ggufVariant ?? null,
           hfToken: hfToken || null,
           nativePathToken,
-          // The context the Load button sends, not the one the control displays: an unset length with no
-          // header yet shows 32,768 and loads at native.
+          // The context Load sends, not the displayed one (which shows 32,768 before the header).
           nCtx: resolveEstimateContext(
             runtimeConfig.customContextLength ?? null,
             activeLoadedContext,
-            // The two shapes where resolveLoadMaxSeqLength answers 0 before it reaches the resident
-            // context: --fit owns the sizing, or a builtin-default preset on a GGUF load.
             (target.isGguf === true &&
               runtimeGpuMemoryMode === "manual" &&
               (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0) ||
@@ -2914,10 +2719,7 @@ export function ModelConfigPage({
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
-          // The same substitution applyPerModelConfigToRuntime makes at load: a model with no per-model
-          // override sends null, which the backend reads as Auto, while the selector has been showing
-          // the global fallback. With the global Off and an 11 GB DSpark sidecar in the repo, the row
-          // charged the sidecar for a load that disables it.
+          // Same substitution applyPerModelConfigToRuntime makes at load.
           speculativeType: runtimeConfig.speculativeType ?? speculativeFallback ?? null,
           specDraftNMax: runtimeConfig.specDraftNMax,
           specDraftCacheType: runtimeConfig.specDraftCacheDtype ?? null,
@@ -2956,7 +2758,6 @@ export function ModelConfigPage({
     MAX_SEQ_LENGTH_MAX,
     Math.max(nativeMaxSeqLength, maxSeqLengthValue),
   );
-  // No resident credit without a reported context; pending settings cannot price it.
   // activeLoadedContext is GGUF-only; an MLX resident reports its served window here.
   const residentContext = servedWindow(
     targetIsMlx && isActiveModel ? loadedContextLength : activeLoadedContext,
@@ -2972,7 +2773,6 @@ export function ModelConfigPage({
   const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
     refreshMemory: true,
   });
-  // Only settled estimates can establish resident credit.
   const reclaimableEstimate =
     residentEstimateRequest &&
     residentEstimate.estimate?.available &&
@@ -2990,7 +2790,6 @@ export function ModelConfigPage({
     {
       cpuFallback: loadedCpuFallback,
       devices: gpuDevices,
-      // Fitted placement does not report its final layer count.
       gpuPlacementKnown:
         residentEstimateRequest?.gpuMemoryMode === "manual" &&
         residentEstimateRequest.gpuLayers != null &&
@@ -3001,17 +2800,10 @@ export function ModelConfigPage({
   );
   const [memoryBreakdownOpen, setMemoryBreakdownOpen] = useState(false);
   const inferenceGpu = useInferenceGpuInfo();
-  // A pin can only draw on the cards it names, so the verdict is measured against those: judging
-  // a one-card pin against a two-card total called an 8 GB load a fit on 16 GB it cannot reach.
+  // A pin can only use the cards it names, so judge the fit against those.
   const pinnedGpuIds = runtimeConfig.selectedGpuIds;
-  // Whether the devices THIS LOAD will use draw on one pool with the rest of the system, from
-  // the backend's per-device unified_memory flag rather than from the platform: adding VRAM to
-  // system RAM on a shared pool counts the same bytes twice. `.every()` is the right question
-  // for CAPACITY, since one independent-memory device means real VRAM beside system RAM: reading
-  // the host-wide flag collapsed totalCapacityGb from 143.5 to 15.5 GiB, and `.some()` under a pin
-  // reported 62.1. The empty set is excluded explicitly, since `[].every()` is true, and the Apple
-  // fallback stays host-wide, covering the window before the per-device probe lands. use-gpu-info.ts
-  // deliberately uses `.some()` for its own flag, which answers a different question.
+  // Per-device unified_memory, `.every()`: one discrete device means real VRAM beside RAM.
+  // `[].every()` is true, so the empty set is excluded; use-gpu-info.ts uses `.some()` on purpose.
   const hasUnifiedMemory = useMemo(() => {
     if (isAppleUnifiedMemory) return true;
     const governing =
@@ -3021,13 +2813,8 @@ export function ModelConfigPage({
     if (governing.length === 0) return false;
     return governing.every((device) => device.unifiedMemory === true);
   }, [gpuDevices, pinnedGpuIds, isAppleUnifiedMemory]);
-  // The VRAM Budget slider caps what the next load may claim per GPU, so the verdict is measured
-  // against the capped figure or the row contradicts the control above it. Subscribed as well
-  // as read once, since dragging must re-classify without a remount. Seeded with the loader's
-  // own default rather than a full card, since the read is async and null on failure.
-  // Seeded with the loader's own default: the read is async and returns null on an older backend, and
-  // in both windows the launch still applies VRAM_FRACTION_DEFAULT. Starting at 1 claimed a reserve
-  // no setting of that slider ever gives back.
+  // The budget slider caps per-GPU use; seeded with VRAM_FRACTION_DEFAULT, which loads apply
+  // until the async read lands (or on an older backend).
   const [memoryVramBudgetFraction, setMemoryVramBudgetFraction] =
     useState(DEFAULT_VRAM_FRACTION);
   useEffect(() => {
@@ -3045,22 +2832,14 @@ export function ModelConfigPage({
       unsubscribe();
     };
   }, []);
-  // What is free RIGHT NOW on the cards this load may use: _select_gpus admits on free-minus-
-  // reserve, not on totals. WARNS, never refuses: the bytes a pending load reclaims are mostly
-  // the resident model's own, which cannot be attributed per device from here. A fixed Manual
-  // placement is launched verbatim, so the server-wide budget never reaches the planner.
-  // A fixed Manual placement is launched verbatim -- load_model empties its probed GPU set and emits
-  // --gpu-layers N --fit off -- so the VRAM Budget never reaches the planner. Discounting capacity
-  // by it called a 16 GiB fixed placement on a 24 GiB card over budget at 50%. Auto is still budgeted.
+  // Fixed Manual placement launches verbatim (--fit off), so the VRAM budget does not apply.
   const memoryBudgetGovernsLaunch =
     runtimeGpuMemoryMode !== "manual" ||
     (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0;
   const memoryEffectiveBudgetFraction = memoryBudgetGovernsLaunch
     ? memoryVramBudgetFraction
     : 1;
-  // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of the system before
-  // admitting an offloaded load. The HOST reading, not the sum-shaped one beside it, which is
-  // zeroed whenever ANY device shares system RAM. Hoisted for the free-capacity memo.
+  // _HOST_RAM_HEADROOM_MIB: the 2 GiB the loader keeps for the rest of the system.
   const memoryUsableSystemRamGb = Math.max(
     0,
     (inferenceGpu.systemRamAvailableHostGb || 0) - 2,
@@ -3069,10 +2848,7 @@ export function ModelConfigPage({
     0,
     2 - (inferenceGpu.systemRamAvailableHostGb || 0),
   );
-  // The rule itself lives in gpu-vram.ts, beside the aggregates it is built from and
-  // reachable from the test runner: memory-unified-apu.test.ts exercises the non-Apple
-  // unified path directly rather than reading these lines back as text, which is what
-  // broke twice as the block around them moved.
+  // The rule lives in gpu-vram.ts so tests exercise it directly.
   const {
     gb: memoryFreeGpuCapacityGb,
     known: memoryFreeGpuCapacityKnown,
@@ -3119,13 +2895,9 @@ export function ModelConfigPage({
       hostDedicatedGpuTotalGb: inferenceGpu.dedicatedMemoryTotalGb,
       hostSharesSystemRam: inferenceGpu.sharedMemory,
       systemRamTotalGb: inferenceGpu.systemRamTotalGb,
-      // The GENERAL signal, not the Apple-only one: a ROCm APU reports unified_memory per device and
-      // shares one pool exactly as Apple does, but reading appleSilicon here charged it as
-      // discrete VRAM PLUS host RAM, the same bytes twice.
+      // General signal: ROCm APUs share one pool like Apple, so appleSilicon would double count.
       unifiedMemory: hasUnifiedMemory,
-      // "One pool" and "how big is the pool" are different questions: Apple's memory_total_gb IS the
-      // machine's unified memory, while a ROCm APU's is a BIOS-carved window onto system RAM, so
-      // taking it as the ceiling reported 46.56 GiB on a 96 GiB machine.
+      // A ROCm APU's memory_total_gb is a BIOS window onto RAM, not the pool size.
       unifiedPoolReportedAsGpuMemory: isAppleUnifiedMemory,
     });
 
@@ -3141,9 +2913,7 @@ export function ModelConfigPage({
 
   const [engineReady, setEngineReady] = useState(true);
   const commitDraft = () => {
-    // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
-    // blur handler, which runs after this click closure captured the stale value, so commit
-    // every numeric input imperatively.
+    // Numeric drafts flush on blur after this closure captured them, so commit imperatively.
     const committedContext = target.isGguf
       ? contextInputRef.current?.commit()
       : undefined;
@@ -3176,8 +2946,7 @@ export function ModelConfigPage({
       committedGpuLayers != null ||
       committedMoeLayers != null;
 
-    // The peer's focused input commits on blur during this click, into the shared draft, and
-    // the refs above reach only this editor's. So read the draft, not the render closure.
+    // The peer's focused input commits into the shared draft during this click.
     const liveDraftConfig = readModelConfigDraft(draftKey)?.config;
     const baseConfig = liveDraftConfig
       ? reconcileConfigGpuSelection(liveDraftConfig, resolvedIsDiffusion, gpuDevices)
@@ -3194,9 +2963,7 @@ export function ModelConfigPage({
             reasoningBudget: -1,
             reasoningBudgetMessage: "",
           };
-    // pinFixedLayerContext above was computed from the render-time config, before the same-click
-    // GPU Layers draft was committed, so recompute from effectiveConfig or a later fresh load
-    // recreates the OOM.
+    // Recompute from effectiveConfig: the same-click GPU Layers draft was not yet committed.
     const effectivePinFixedLayerContext =
       target.isGguf &&
       effectiveConfig.gpuMemoryMode === "manual" &&
@@ -3209,7 +2976,6 @@ export function ModelConfigPage({
         ? { ...effectiveConfig, customContextLength: activeLoadedContext }
         : effectiveConfig
       : runtimeConfig;
-    // Non-GGUF load substitutes the resolved max sequence length; recompute from the committed draft.
     const effectiveMaxSeqLengthValue =
       committedMaxSeqLength == null && !peerChanged
         ? maxSeqLengthValue
@@ -3219,17 +2985,13 @@ export function ModelConfigPage({
   };
 
   const persistConfig = (next: PerModelConfig) => {
-    // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
+    // savePerModelConfig normalizes first, so judge the normalized config.
     const normalized = normalizePerModelConfig(next);
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     const saved = remember
       ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
       : deletePerModelConfig(configId, target.ggufVariant);
-    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
-    // skipped when the localStorage write failed or the two would permanently disagree. Gated on
-    // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
-    // native-path lease is the same.
-    // A forget also drops the local records for every other spelling the server reports clearing.
+    // Skipped when the localStorage write failed; gated on auto-switch reach, not GGUF-ness.
     if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) {
       syncModelOverride(
         configId,
@@ -3247,13 +3009,11 @@ export function ModelConfigPage({
           : undefined,
       );
     }
-    // Only once the write landed: a blocked or full localStorage leaves the values on screen,
-    // and clearing anyway let the next read replace them with the older stored row.
+    // Only once the write landed, or the next read replaces on-screen values with the old row.
     if (saved) {
       clearModelConfigDraftEdited(draftKey);
     }
-    // Saving can push the local map over budget and drop other models, whose server entries would
-    // keep applying with nothing able to forget them. Not a Forget: only mirrored fields go.
+    // Evicted models' server entries would keep applying; clear their mirrored fields.
     for (const dropped of evicted) {
       syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
         keepLaunchFlags: true,
@@ -3285,9 +3045,7 @@ export function ModelConfigPage({
       toast.error("Couldn't save settings for this model.");
       return;
     }
-    // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
-    // Not on a forget: that stored nothing, and pinning here would change the next load.
-    // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
+    // setConfig, not update: this mirrors the save, so the draft must stay unedited.
     if (
       remember &&
       effectiveRuntimeConfig.customContextLength !== config.customContextLength
@@ -3309,7 +3067,6 @@ export function ModelConfigPage({
     }
     const { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue } =
       commitDraft();
-    // Recheck the committed draft so Save/Forget reloads when needed.
     const effectivePersistenceOnly =
       isActiveModel &&
       perModelConfigsEqual(effectiveConfig, baseline, {
@@ -3332,26 +3089,17 @@ export function ModelConfigPage({
       target.isGguf || pinsContextLength
         ? effectiveRuntimeConfig
         : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
-    // Same reason as the numeric commits above: the budget row flushes on unmount,
-    // which for this click lands after onRun has staged the load, so that load (the
-    // very one the control promises) would use the old fraction. A failed save must
-    // not swallow the load, hence finally; nothing staged stays synchronous.
-    // Closed before the settle, not after: the control has to stop taking edits at
-    // the moment this click owns the fraction, or a drag landing in between is the
-    // very race the lock exists to remove.
+    // The budget row flushes on unmount, after onRun staged the load, so save it first. Locked
+    // before the settle so no drag lands in between.
     setVramBudgetLocked(true);
     const stagedBudget = settleVramBudgetSave();
     if (stagedBudget) {
-      // The click is answered by a network round trip now, so the button stays live for as long as
-      // that takes and a second click would run onRun twice.
+      // Stays busy during the round trip, or a second click runs onRun twice.
       setBudgetSettling(true);
-      // Caught, not voided: finally alone re-rejects into an unhandled rejection, and the load would
-      // proceed on the old fraction with nothing said.
+      // Caught, not voided: finally alone re-rejects as an unhandled rejection.
       void stagedBudget
         .catch((error: unknown) => {
-            // Dropped rather than left for the next flush: the picker teardown that onRun triggers flushes
-            // it, and that PUT would race the load request this click is about to send. Only the retry
-            // goes, never a newer edit staged over it.
+            // Drop the retry, or the teardown flush would race this load's request.
           dropVramBudgetRetry();
           toast.error(
             error instanceof Error ? error.message : "Failed to save VRAM budget",
@@ -3364,7 +3112,6 @@ export function ModelConfigPage({
         });
       return;
     }
-    // Nothing to wait for, so the control never actually closes for the user.
     setVramBudgetLocked(false);
     onRun(effectiveLoadConfig, classifiedIsDiffusion);
   };
@@ -3379,8 +3126,7 @@ export function ModelConfigPage({
       }}
     >
       {variant === "page" && showHeader && (
-        // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
-        // the same left edge as the rows below.
+        // -ml-1.5 cancels the icon's inset so the chevron aligns with the rows below.
         <div className="flex items-center gap-2.5 pb-5">
           {onBack && (
             <button
@@ -3479,7 +3225,6 @@ export function ModelConfigPage({
                   size={8}
                 />
               </div>
-              {/* Grouped so the warning sits 4px under the slider, as advice does elsewhere. */}
               <div className="space-y-1">
                 {nativeContextLength != null ? (
                   <div className="space-y-1">
@@ -3491,8 +3236,7 @@ export function ModelConfigPage({
                       onValueChange={([v]) => setContextSliderValue(v)}
                       className="panel-slider"
                       aria-label="Context Length"
-                      // Position 0 is Auto, not a zero-token context, so aria-valuenow alone reads as a length no
-                      // model has. The number is only spoken once one exists.
+                      // Position 0 is Auto, not a zero-token context.
                       thumbValueText={(v) =>
                         v !== 0
                           ? `${v.toLocaleString()} tokens`
@@ -3531,7 +3275,6 @@ export function ModelConfigPage({
               </div>
             </div>
 
-            {/* Above the block it reveals, so expanding never moves the switch. */}
             <AdvancedSettingsToggle
               checked={showAdvanced}
               onCheckedChange={toggleAdvanced}
@@ -3611,16 +3354,13 @@ export function ModelConfigPage({
         )}
       </div>
 
-      {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
-          commits a draft mounts Save settings, moving Load out from under the cursor. */}
       <div className="mt-5 flex flex-col gap-2 border-t border-border pt-5">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
             checked={remember}
             onCheckedChange={(checked) => {
-              // Not in setRemember, which the save path calls again to settle the box. An
-              // unticked Remember is a pending Forget the next read would otherwise re-tick.
+              // Not in setRemember, which the save path calls again; an unticked box is a pending Forget.
               markModelConfigDraftEdited(draftKey);
               setRemember(checked === true);
             }}
@@ -3633,7 +3373,6 @@ export function ModelConfigPage({
           </label>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
             type="button"
             size="sm"
@@ -3655,16 +3394,13 @@ export function ModelConfigPage({
           >
             {primaryActionLabel}
           </Button>
-          {/* Hidden with nothing to save or forget, else never-remembered models show a dead Forget. */}
           {!persistenceOnly && (remember || savedRemember) && (
             <Button
               type="button"
               variant="outline"
               size="sm"
               className={FOOTER_BUTTON_CLASS}
-              // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
-              // settings the load path strips or has already captured. Forget stores nothing, so
-              // broken saved arguments must not lock it.
+              // Same gates as Load; Forget stores nothing, so broken saved args must not lock it.
               disabled={
                 sharedVariantUnresolved ||
                 stagedMetadataPending ||
@@ -3689,12 +3425,10 @@ export function ModelConfigPage({
               handleSharedConfigEdit();
               // Reset writes through setConfig, not update, so it marks the draft itself.
               markModelConfigDraftEdited(draftKey);
-              // And drops the raw edit: token equality alone would make the discarded text
-              // current again the moment a later value formatted to the same tokens.
+              // Token equality alone would revive the discarded text later.
               clearExtraArgsEditForDraft(draftKey);
               setConfig({
-                // null, not the default's absent: absent omits the field, and the load then INHERITS the
-                // running process's arguments, so a reload after Reset kept the flags the box says are gone.
+                // null, not absent: absent makes the load inherit the running process's arguments.
                 ...DEFAULT_PER_MODEL_CONFIG,
                 llamaExtraArgs: null,
               });

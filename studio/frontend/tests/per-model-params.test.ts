@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The rules the per-model memory follows, including where it must NOT act: a
-// model with nothing remembered keeps what is on screen, and an edit that moved
-// nothing must not mark the map dirty.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -41,7 +37,6 @@ function params(overrides: Partial<InferenceParams> = {}): InferenceParams {
   } as InferenceParams;
 }
 
-/** What the store passes: the edit that moved, plus the full resulting params. */
 function record(
   paramsByModel: Record<string, Record<string, unknown>>,
   modelId: string | undefined,
@@ -67,8 +62,7 @@ test("an edit is filed against the model it was made for", () => {
   assert.equal(next?.[QWEN].temperature, 0.2);
 });
 
-// The entry has to be the whole snapshot. Replay overlays it onto the outgoing
-// model's params, so anything missing would silently keep the other model's value.
+// Replay overlays onto the outgoing model's params, so missing keys leak across models.
 test("an entry records every param, not only the one that moved", () => {
   const next = record(
     {},
@@ -95,8 +89,6 @@ test("editing one model leaves every other model's memory alone", () => {
   assert.deepEqual(before, { [LLAMA]: { temperature: 0.9 } });
 });
 
-// The reported failure: A remembered only its temperature, so switching back
-// overlaid it onto B's prompt and A ran under settings it was never given.
 test("a model returns to the prompt it was last used with", () => {
   const aParams = params({
     checkpoint: QWEN,
@@ -106,7 +98,6 @@ test("a model returns to the prompt it was last used with", () => {
   const memory = record({}, QWEN, { temperature: 0.2 }, aParams);
   assert.ok(memory);
 
-  // Switch to B, which has no memory, then change only B's prompt.
   const onB = getReplayedParams(true, memory, aParams, LLAMA, true);
   const bParams = { ...onB, checkpoint: LLAMA, systemPrompt: "B" };
   const afterB = record(memory, LLAMA, { systemPrompt: "B" }, bParams);
@@ -117,8 +108,7 @@ test("a model returns to the prompt it was last used with", () => {
   assert.equal(backOnA.temperature, 0.2);
 });
 
-// The interactive local load calls setParams with the destination checkpoint,
-// not setCheckpoint, so replaying only there left the common switch dead.
+// Local load calls setParams with the destination checkpoint, not setCheckpoint.
 test("a local model load replays memory over the backend's recommendation", () => {
   let memory: Record<string, ReturnType<typeof pickRememberedParams>> = {};
   let live = params({ checkpoint: QWEN });
@@ -152,10 +142,7 @@ test("a local model load replays memory over the backend's recommendation", () =
   );
 });
 
-// Without snapshotting the model being left, an install upgrading from the
-// single global set loses whatever the resident model ran with.
 test("the model being switched away from is remembered", () => {
-  // Startup after an upgrade: global params hydrated, nothing remembered yet.
   const onA = params({ checkpoint: QWEN, temperature: 0.2, systemPrompt: "A" });
   const memory = record({}, QWEN, pickRememberedParams(onA), onA);
   assert.ok(memory, "leaving A records what A was running with");
@@ -170,8 +157,6 @@ test("the model being switched away from is remembered", () => {
   assert.equal(backOnA.temperature, 0.2);
 });
 
-// The auto-load follows setCheckpoint with setParams carrying the load
-// response, so replay must run there too or the load's budget wins.
 test("a load response does not overwrite a remembered token budget", () => {
   const memory = {
     [QWEN]: { ...pickRememberedParams(params()), maxTokens: 4096 },
@@ -179,8 +164,6 @@ test("a load response does not overwrite a remembered token budget", () => {
   const afterCheckpoint = getReplayedParams(true, memory, params(), QWEN, true);
   assert.equal(afterCheckpoint.maxTokens, 4096);
 
-  // setParams(fromModelLoad) with the load response: checkpoint unchanged, so
-  // only the forced replay keeps the remembered budget.
   const loadResponse = { ...afterCheckpoint, maxTokens: 131072 };
   const withoutForcedReplay = getReplayedParams(
     true,
@@ -205,8 +188,6 @@ test("a load response does not overwrite a remembered token budget", () => {
   assert.equal(withForcedReplay.maxTokens, 4096);
 });
 
-// A load or status re-applies the model's defaults, so replaying afterwards is
-// what keeps its own settings while leaving an unremembered model its default.
 test("a model's defaults do not outrank what it is remembered with", async () => {
   const { mergeBackendRecommendedInference } = await import(
     "../src/features/chat/presets/preset-policy.ts"
@@ -231,8 +212,6 @@ test("a model's defaults do not outrank what it is remembered with", async () =>
     QWEN,
   );
   assert.equal(tuned.temperature, 0.9, "this is the reported clobber");
-  // setParams(fromModelDefaults) forces the replay even though the checkpoint
-  // did not change.
   const replayed = getReplayedParams(true, memory, tuned, QWEN, true);
   assert.equal(replayed.temperature, 0.2);
   assert.equal(replayed.maxTokens, 4096);
@@ -251,7 +230,6 @@ test("a model's defaults do not outrank what it is remembered with", async () =>
   );
 });
 
-// Null is how the store leaves the map and its hydration version untouched.
 test("nothing is recorded when there is nothing to record", () => {
   const snapshot = pickRememberedParams(params());
   assert.equal(
@@ -293,7 +271,6 @@ test("switching models replays that model's own settings", () => {
   );
   assert.equal(replayed.temperature, 0.1);
   assert.equal(replayed.systemPrompt, "Be terse.");
-  // Params the model never pinned carry over rather than snapping to defaults.
   assert.equal(replayed.topP, current.topP);
 });
 
@@ -305,8 +282,6 @@ test("a model with nothing remembered keeps the settings on screen", () => {
 
 test("re-selecting the same model does not replay over a live edit", () => {
   const current = params({ temperature: 0.33 });
-  // checkpointChanged=false: the user just nudged a slider, and replaying the
-  // stored value here would undo the edit they are making.
   const replayed = getReplayedParams(
     true,
     { [QWEN]: { temperature: 0.9 } },
@@ -329,8 +304,6 @@ test("the feature being off leaves a model switch alone", () => {
   assert.equal(replayed, current);
 });
 
-// Turning the setting on adopts what is on screen for the active model, so the
-// first switch away and back returns to it rather than to nothing.
 test("the snapshot covers every remembered key and excludes the checkpoint", () => {
   const picked = pickRememberedParams(params());
   assert.equal(
@@ -355,8 +328,6 @@ test("the snapshot drops params the current model never set", () => {
   assert.equal("topK" in picked, false);
 });
 
-// The row accepts every persisted key from any writer, so the read side has to
-// hold the write side's rules rather than trust the entry's shape.
 test("a maxSeqLength in a stored entry is not replayed over the loaded context", () => {
   const replayed = getReplayedParams(
     true,
@@ -366,7 +337,6 @@ test("a maxSeqLength in a stored entry is not replayed over the loaded context",
     true,
   );
   assert.equal(replayed.temperature, 0.2, "the remembered value still replays");
-  // A second copy of the context would advertise one the backend never loaded.
   assert.equal(replayed.maxSeqLength, 4096);
 });
 
@@ -383,9 +353,6 @@ test("a key that is not an inference param cannot reach the live params", () => 
   assert.equal("notAParam" in replayed, false);
 });
 
-// Model ids are opaque keys: a Hub repo, an absolute path on any OS, or a
-// provider-qualified external id. One that did not round trip would mean that
-// platform silently cannot remember settings.
 for (const [label, id] of [
   ["a Windows drive path", "C:\\Users\\Daniel\\models\\Qwen3-8B"],
   ["a UNC share path", "\\\\fileserver\\models\\gemma-3-270m-it"],

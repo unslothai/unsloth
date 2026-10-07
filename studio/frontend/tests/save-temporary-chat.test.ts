@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Saving a temporary chat to history. runtime-provider.tsx cannot load under stubs, so the
-// ordering helper is run on its own and the rest is pinned on source.
+// runtime-provider.tsx cannot load under stubs, so the rest is pinned on source.
 
 import assert from "node:assert/strict";
 import { stripTypeScriptTypes } from "node:module";
@@ -30,7 +29,6 @@ function persistBody(): string {
 }
 
 test("every message is saved after its parent, on every branch", () => {
-  // Two replies to u1 (a regenerate), and a child listed before its parent.
   const ordered = ids(
     parentsFirst([item("a2", "u2"), item("u1"), item("a1", "u1"), item("u2", "a1"), item("b1", "u1")]),
   );
@@ -56,7 +54,6 @@ test("messages are written in one batch, so a failure cannot leave a truncated c
   const body = persistBody();
   assert.match(body, /await syncStoredChatMessages\(threadId, records, \{ pruneMissing: false \}\);/);
   assert.doesNotMatch(body, /saveStoredChatMessage\(/);
-  // The row comes first, since the batch needs it.
   assert.ok(body.indexOf("await ensureThreadRecord(") < body.indexOf("await syncStoredChatMessages("));
 });
 
@@ -65,7 +62,6 @@ test("the saved chat keeps the model it started on, not the one loaded at save t
     provider.indexOf("export async function ensureThreadRecord({"),
     provider.indexOf("/** Parents before children"),
   );
-  // Both early returns for a temporary thread keep what it was started with.
   assert.equal(ensure.match(/markThreadIncognito\(threadId\);\s*temporaryThreadCreation\.set\(threadId, creation\);/g)?.length, 2);
   const body = persistBody();
   assert.match(body, /const creation = temporaryThreadCreation\.get\(threadId\);/);

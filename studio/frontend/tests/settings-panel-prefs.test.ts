@@ -15,7 +15,6 @@ const { store } = installLocalStorageFake();
 
 const KEY = "unsloth_settings_panel_prefs";
 
-// A record written before the sanitiser existed, holding every field.
 store.set(
   KEY,
   JSON.stringify({
@@ -95,8 +94,7 @@ test("the Agents command shell override persists and rejects unknown values", ()
   assert.equal(out.agentsOs, null);
 });
 
-// The reason the sanitiser exists: agentsModel reaches `.toLowerCase()` and the
-// path checks in agents-tab, so a non-string takes the whole app down.
+// agentsModel reaches .toLowerCase(), so a non-string takes the whole app down.
 test("a non-string model is refused rather than handed to the tab", () => {
   const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
   assert.ok(merged, "merge must be supplied, or untrusted JSON reaches the UI");
@@ -118,8 +116,6 @@ test("a persisted blob cannot replace the store actions", () => {
   assert.equal(typeof out.setFineTuneAction, "function");
 });
 
-// The case agentsVariantModel exists for: the tab keeps following the resident
-// model, but the quant picked against it still survives the unmount.
 test("a quant picked while following the resident model does not pin a model", () => {
   const s = useSettingsPanelPrefsStore.getState();
   s.setAgentsModel(null, null);
@@ -130,7 +126,6 @@ test("a quant picked while following the resident model does not pin a model", (
   assert.equal(next.agentsVariantModel, "unsloth/Qux-GGUF");
 });
 
-// Half a pair is unusable: a quant with no model can never be scoped to one.
 test("a quant with no model to scope it to is dropped", () => {
   const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
   assert.ok(merged);
@@ -142,8 +137,7 @@ test("a quant with no model to scope it to is dropped", () => {
   assert.equal(out.agentsVariantModel, null);
 });
 
-// A downgrade must not read a newer record: the field names may have been
-// reused with different meaning.
+// A downgrade must not read a newer record: field names may be reused.
 test("a record from a newer build falls back to defaults", () => {
   const { migrate, version } = useSettingsPanelPrefsStore.persist.getOptions();
   assert.ok(migrate);
@@ -154,8 +148,7 @@ test("a record from a newer build falls back to defaults", () => {
   });
 });
 
-// Settling in a .finally let a superseded or failed poll release the retire
-// with no resident model recorded, which erased the saved model and quant.
+// Settling in .finally let a superseded poll erase the saved model and quant.
 test("the status poll settles only on the read that applied", async () => {
   const sync = AGENTS_TAB.slice(
     AGENTS_TAB.indexOf("const sync = ()"),
@@ -173,7 +166,6 @@ test("the status poll settles only on the read that applied", async () => {
   assert.match(applied, /setStatusSettled\(true\)/);
 });
 
-// Reset-all is the only in-app escape hatch from a bad pinned model.
 test("Reset all local preferences clears this key", async () => {
   const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const keys = source.slice(
@@ -187,9 +179,7 @@ test("Reset all local preferences clears this key", async () => {
   );
 });
 
-// A quant is scoped to the repo it was picked for, and the catalog, cache and
-// status endpoints can disagree on repo-id casing, so that scope check has to
-// normalize or the user's quant is dropped when the spelling differs.
+// Endpoints disagree on repo-id casing, so the scope check normalizes.
 test("the remembered quant is scoped through modelKey, not an exact compare", async () => {
   assert.match(
     AGENTS_TAB,
@@ -206,8 +196,6 @@ test("the remembered quant is scoped through modelKey, not an exact compare", as
   );
 });
 
-// An unreadable record leaves the pre-PR defaults, so a mangled blob never
-// changes how the tabs behave.
 test("an unreadable record leaves the defaults", () => {
   const merged = useSettingsPanelPrefsStore.persist.getOptions().merge;
   assert.ok(merged);
@@ -218,7 +206,7 @@ test("an unreadable record leaves the defaults", () => {
   assert.equal(out.fineTuneAction, "train");
 });
 
-// Last: it rehydrates the store. Corrupt JSON must not take settings down.
+// Last: it rehydrates the store.
 test("corrupt JSON does not break the store", async () => {
   store.set(KEY, "{not json");
   await assert.doesNotReject(async () => {

@@ -2,14 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Streamdown sanitizes with its default schema before hardening, and that schema allows only
- * http(s) image sources: a `data:image/...` src is stripped before the harden stage, which does
- * allow data images (`allowDataImages: true`), so the message renders "[Image blocked: …]" instead
- * of the image. Streamdown extends its own schema with caller `allowedTags` only when it receives
- * its default pipeline (identity check), so callers that pass one must carry that merge themselves.
- *
- * Sanitize also drops every tag outside the schema, which erases `<placeholder>` and `Vec<T>`, so
- * those become text before `raw`. Sanitize and harden still decide every element.
+ * Streamdown's default sanitize schema strips `data:image` srcs before harden runs, and it only
+ * extends the schema with `allowedTags` for its own default pipeline (identity check), so callers
+ * passing one must merge it themselves. Unknown tags are made text before `raw` so they survive.
+ * Sanitize and harden still decide every element.
  */
 import type { Element, Root, RootContent } from "hast";
 import type { Pluggable, Plugin } from "unified";
@@ -23,9 +19,7 @@ interface SanitizeSchema {
 
 const HTML_TAG_NAME = /^\s*<\/?([a-z][^\s/<>]*)/i;
 const INNER_TAG = /<(\/?)([a-z][^\s/<>]*)/gi;
-// Formatting tags outside the schema that documents use as markup. Where a pipeline opts in, they are
-// left for sanitize to unwrap so their text shows: always in a raw HTML block, which closes them
-// implicitly, and in prose only when matched, so "the <small> tag" stays text like any unknown tag.
+// Formatting tags left for sanitize to unwrap: in raw HTML blocks always, in prose only matched.
 const UNWRAPPED_TAGS = new Set([
   "abbr",
   "big",
@@ -41,7 +35,6 @@ const UNWRAPPED_TAGS = new Set([
   "u",
 ]);
 
-/** `child:offset` of every matched formatting-tag opener and closer among the raw children. */
 function matchedFormattingTags(children: RootContent[]): Set<string> {
   const matched = new Set<string>();
   const open = new Map<string, string[]>();
@@ -136,9 +129,7 @@ function literalTagPipeline(
     SanitizeSchema,
   ];
   const [sanitizePlugin, schema] = sanitize;
-  // Positional by design: Streamdown itself builds its default pipeline as `Object.values` of this
-  // same object, so spreading it in the same order reproduces that pipeline exactly. Naming the keys
-  // would pin OUR order instead of theirs.
+  // Positional on purpose: Streamdown builds its default pipeline from `Object.values` in order.
   const [raw, , harden] = Object.values(defaultRehypePlugins);
   const tagNames = [...(schema.tagNames ?? []), ...Object.keys(allowedTags)];
   return [
@@ -161,20 +152,17 @@ function literalTagPipeline(
   ];
 }
 
-/** Streamdown's default pipeline plus `allowedTags` for documents: tags outside the schema stay text,
- * formatting tags used as markup are unwrapped. */
 export function withLiteralUnknownTags(
   allowedTags: Record<string, string[]> = {},
 ): Pluggable[] {
   return literalTagPipeline(allowedTags, [], [], true);
 }
 
-/** Keep data images, keep tags outside the schema as text, resolve sandbox paths before URL hardening. */
 export function withDataImageSupport(
   allowedTags: Record<string, string[]>,
   beforeHarden: Pluggable[] = [],
 ): Pluggable[] {
-  // Harden still gates the scheme on `allowDataImages` and only honors `data:image/*`.
-  // Replies mention tags in prose more often than they format with them, so none are unwrapped.
+  // Harden still gates on `allowDataImages` and only honors `data:image/*`.
+  // Replies mention tags in prose, so none are unwrapped.
   return literalTagPipeline(allowedTags, ["data"], beforeHarden, false);
 }

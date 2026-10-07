@@ -13,10 +13,8 @@ const page = readSrc("features/audio/pages/edit-page.tsx");
 
 test("the recording takes uploads, recordings and history, not saved voices", () => {
   assert.match(page, /id="edit-recording"[\s\S]*?allowSavedVoice=\{false\}/);
-  // A long recording is refused, so the card does not promise its first 30 s.
   assert.match(page, /id="edit-recording"[\s\S]*?usesFirstSeconds=\{null\}/);
   assert.match(page, /maxRecordSeconds=\{EDIT_SOURCE_MAX_SECONDS\}/);
-  // History hides an edit's original.
   const gallery = readSrc("features/audio/hooks/use-audio-gallery.tsx");
   assert.match(gallery, /clip\.role !== "source"/);
 });
@@ -58,10 +56,8 @@ test("a result opens on Edited at 0; switching keeps the moment and the playing 
   const paused = { ...playing, playing: false };
   assert.equal(switchSide(paused, "original", 4.7).playing, false);
   assert.equal(switchSide(playing, "edited", 1), playing);
-  // Clamped to the other clip's length.
   const late = { side: "original" as const, position: 4.6, playing: true };
   assert.equal(switchSide(late, "edited", 3.2).position, 3.2);
-  // Unknown length keeps the position; the element clamps it once loaded.
   assert.equal(switchSide(late, "edited", null).position, 4.6);
   assert.equal(clampPosition(-1, 3), 0);
   assert.equal(clampPosition(Number.NaN, 3), 0);
@@ -85,7 +81,6 @@ test("the A/B player is one keyboard-operable slider over a single audio element
     assert.ok(compare.includes(`event.key === ${key}`), key);
   }
   assert.equal(compare.match(/<audio\b/g)?.length, 1);
-  // A new pair resets the player; the Original's file arriving does not.
   assert.match(compare, /\}, \[originalKey, editedKey\]\);/);
 });
 

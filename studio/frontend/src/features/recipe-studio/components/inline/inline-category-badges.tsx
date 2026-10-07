@@ -25,7 +25,6 @@ export function InlineCategoryBadges({
     }
 
     const containerWidth = container.clientWidth;
-    // Reserve space for the "+N" badge (~36px)
     const overflowBadgeWidth = 36;
     let count = 0;
     let usedWidth = 0;
@@ -54,7 +53,6 @@ export function InlineCategoryBadges({
 
   return (
     <div className="relative">
-      {/* Hidden measurer */}
       <div
         ref={containerRef}
         className="pointer-events-none invisible absolute inset-x-0 top-0 flex flex-nowrap gap-1"
@@ -70,7 +68,6 @@ export function InlineCategoryBadges({
           </Badge>
         ))}
       </div>
-      {/* Visible badges */}
       <div className="flex flex-wrap gap-1">
         {values.slice(0, visibleCount).map((v, i) => (
           <Badge

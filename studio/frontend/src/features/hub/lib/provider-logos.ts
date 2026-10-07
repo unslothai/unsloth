@@ -2,62 +2,31 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Provider-logo registry for Unsloth re-uploads. Unsloth re-uploads upstream
- * models (e.g. unsloth/Qwen2.5-7B is Alibaba's Qwen); we show the upstream
- * provider's logo in place of the Unsloth picture (username stays "unsloth").
- *
- * Matching: providers are evaluated in declaration order; a provider matches if
- * any of its `prefixes` is a prefix of the repo name (the part after "owner/").
- * Most-specific providers MUST be declared first (first match wins): e.g.
- * NVIDIA's Nemotron/Minitron/Mistral-NeMo before meta-llama/mistralai, and
- * DeepSeek-R1-Distill- before Qwen/meta-llama. Repo names are case-sensitive -
- * match the publisher's exact casing (e.g. `phi-` for v1/v2 vs `Phi-` for v3+).
- *
- * A provider's own Hub orgs are listed in `owners` and take its mark directly,
- * whatever the repo is named (meta-models/Muse-Glimmer-30B -> Meta).
+ * Shows the upstream provider's logo for Unsloth re-uploads. First prefix match wins, so
+ * most-specific providers must come first; prefixes are case-sensitive.
  */
 
-/**
- * Logo coloring. "original" = file as-is; "mono-theme" = CSS mask in current
- * text color (follows theme); "mono-black" = mask always pure black.
- */
+/** "mono-theme" masks in the current text color; "mono-black" masks in pure black. */
 export type LogoTreatment = "original" | "mono-theme" | "mono-black";
 
-/** Tile background. "white" keeps colored marks readable; "transparent" shows the surface. */
 export type LogoBackground = "white" | "transparent";
 
-/**
- * Logo sizing (only for "original"; mono always pads). "contain" pads at ~75%;
- * "cover" is full-bleed.
- */
+/** Only for "original" (mono always pads). "contain" pads at ~75%; "cover" is full-bleed. */
 export type LogoFit = "contain" | "cover";
 
 export interface ProviderLogo {
-	/** Stable kebab-case identifier (debug/telemetry only). */
 	id: string;
-	/** Display name used as the avatar's accessible label. */
 	name: string;
-	/** Path to the logo under /public. */
 	logoPath: string;
 	treatment: LogoTreatment;
 	background: LogoBackground;
 	/** Only consulted when treatment is "original". Defaults to "contain". */
 	fit?: LogoFit;
-	/**
-	 * Repo-name prefixes (after `owner/`) that map to this provider. A prefix
-	 * match suffices - variants (-Instruct, -bnb-4bit, -GGUF) ride along. Match
-	 * on the family stem so future minor versions are picked up automatically.
-	 */
+	/** Repo-name prefixes (after `owner/`); match the family stem so variants ride along. */
 	prefixes: readonly string[];
-	/**
-	 * Case-insensitive fallback after all prefixes miss; matched at a word boundary
-	 * (`gemma` -> `diffusiongemma-`, `gemma-3n`, not `gemmafy`). Use stems unique to one provider.
-	 */
+	/** Case-insensitive word-boundary fallback after all prefixes miss. Use provider-unique stems. */
 	stems?: readonly string[];
-	/**
-	 * The provider's own Hub orgs. Matched in full and case-insensitively, never as
-	 * a prefix, so `metavoice` is not Meta.
-	 */
+	/** The provider's own Hub orgs, matched in full and case-insensitively, never as a prefix. */
 	owners?: readonly string[];
 }
 
@@ -85,7 +54,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		],
 	},
 
-	// `DeepSeek-R1-Distill-*` must beat Qwen/meta-llama on the suffix family.
+	// `DeepSeek-R1-Distill-*` must beat Qwen/meta-llama.
 	{
 		id: "deepseek-ai",
 		name: "DeepSeek",
@@ -119,7 +88,6 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		],
 	},
 
-	// The broad `Qwen` prefix catches Qwen1.5/2/2.5/3/future versions without explicit entries.
 	{
 		id: "qwen",
 		name: "Qwen",
@@ -139,7 +107,6 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["Kimi-", "Moonlight-"],
 	},
 
-	// Z.ai (THUDM successor).
 	{
 		id: "zai-org",
 		name: "Z.ai",
@@ -168,7 +135,6 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["MiniMax-"],
 	},
 
-	// SmolLM family lives under HuggingFaceTB.
 	{
 		id: "huggingface",
 		name: "Hugging Face",
@@ -233,7 +199,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		stems: ["gemma"],
 	},
 
-	// After NVIDIA so `Mistral-NeMo-` wins; generic Mistral-/Mixtral- fall through here.
+	// After NVIDIA so `Mistral-NeMo-` wins.
 	{
 		id: "mistralai",
 		name: "Mistral AI",
@@ -243,7 +209,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 		prefixes: ["Mistral-", "Mixtral-", "Codestral-", "Pixtral-", "Devstral-", "Ministral-", "Voxtral-", "Magistral-"],
 	},
 
-	// Last among Llama-prefix providers so NVIDIA's Llama-3.x-Nemotron/Minitron match first.
+	// Last among Llama-prefix providers so NVIDIA's Nemotron/Minitron match first.
 	{
 		id: "meta-llama",
 		name: "Meta",
@@ -258,11 +224,9 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"Llama-",
 			"llama-",
 			"meta-",
-			// Carries no Llama token, so the re-upload needs its own stem.
 			"Muse-Glimmer"
 		],
-		// "Meta Inc." / "Meta Llama" / "AI at Meta". Not facebookresearch, which is
-		// an unrelated account despite the name.
+		// Not facebookresearch, which is an unrelated account.
 		owners: ["meta-models", "meta-llama", "facebook"],
 	},
 ];
@@ -275,11 +239,7 @@ function stemMatchesAtBoundary(haystack: string, stem: string): boolean {
 	return false;
 }
 
-/**
- * Resolve a repo name (after `owner/`) to its provider, or null. Pass 1: prefix
- * match in declaration order (first wins). Pass 2: case-insensitive `stems`
- * boundary fallback; prefixes always win.
- */
+/** Resolve a repo name to its provider: prefixes in declaration order, then `stems`. */
 export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	if (!repoName) return null;
 	for (const provider of PROVIDER_LOGOS) {
@@ -296,10 +256,8 @@ export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	return null;
 }
 
-// Owners whose avatars get swapped for the matched provider's logo.
 const RELABELED_OWNERS: ReadonlySet<string> = new Set(["unsloth"]);
 
-/** True if the owner's avatars get replaced with the upstream provider's logo. */
 export function isProviderRelabeledOwner(
 	owner: string | null | undefined,
 ): boolean {
@@ -307,7 +265,6 @@ export function isProviderRelabeledOwner(
 	return RELABELED_OWNERS.has(owner.toLowerCase());
 }
 
-/** Hub org -> the provider publishing under it, or null. Full-string, case-insensitive. */
 export function matchProviderLogoByOwner(
 	owner: string | null | undefined,
 ): ProviderLogo | null {
@@ -321,11 +278,6 @@ export function matchProviderLogoByOwner(
 	return null;
 }
 
-/**
- * Provider logo to render in place of the owner's profile picture, or null.
- * A provider's own org takes its mark; otherwise only RELABELED_OWNERS are
- * eligible, by repo name.
- */
 export function resolveOwnerProviderLogo(
 	owner: string | null | undefined,
 	repoName: string | null | undefined,

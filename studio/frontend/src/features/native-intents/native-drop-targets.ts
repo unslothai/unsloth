@@ -9,19 +9,15 @@ export interface NativeDropTargetHandlers {
   onDragOver?: (over: boolean) => void;
 }
 
-// Tauri delivers OS drops window-wide with a physical position and suppresses
-// the webview's own drop events, so which element was dropped on has to be
-// resolved here instead of by DOM event routing.
+// Tauri delivers OS drops window-wide and suppresses webview drop events, so targets are hit-tested here.
 const targets = new Map<HTMLElement, NativeDropTargetHandlers>();
 
 let scaleFactor =
   typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
 let hovered: HTMLElement | null = null;
 let listening = false;
-// Outside Tauri the DOM routes drops itself, so there is no listener to wait on.
 let ready = !isTauri;
 
-/** The innermost registered target under `position`, or null. */
 export function nativeDropTargetAt(position: {
   x: number;
   y: number;
@@ -63,13 +59,10 @@ function listen(): void {
         setHovered(null);
         if (target) targets.get(target)?.onDrop(payload.paths);
       });
-      // Only now can a target be claimed: before this the window-wide handlers
-      // would step aside for a listener that cannot deliver, losing the drop.
+      // Only now can a target be claimed, else window-wide handlers defer to a dead listener.
       ready = true;
 
-      // Scale is a refinement; the devicePixelRatio seed holds until it lands.
-      // Failing here must not reset `listening`, or the next registration would
-      // stack a second drop listener and double every drop.
+      // Failing here must not reset `listening`, or a second listener doubles every drop.
       let scaleReported = false;
       await currentWindow
         .onScaleChanged(({ payload }) => {
@@ -85,8 +78,7 @@ function listen(): void {
     });
 }
 
-// Start the install now rather than on first registration, so the async window
-// above is spent during app start instead of under the user's first drop.
+// Install at app start, not under the user's first drop.
 listen();
 
 export function registerNativeDropTarget(

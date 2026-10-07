@@ -92,7 +92,6 @@ export function useNpuCatalog(
   return {
     status,
     ready: status.ready,
-    // The store outlives this hook; a runtime that is not ready lists nothing.
     models: ready ? models : null,
     listError,
     enabling,

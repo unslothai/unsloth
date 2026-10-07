@@ -18,9 +18,7 @@ import {
 interface ShutdownDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Called after shutdown succeeds, before we replace document.body. Lets
-   *  callers remove their beforeunload listener so the browser doesn't prompt
-   *  "Leave site?" when closing the final tab. */
+  /** Lets callers remove beforeunload so closing the last tab does not prompt. */
   onAfterShutdown?: () => void;
 }
 
@@ -43,7 +41,6 @@ export function ShutdownDialog({
         return;
       }
     } catch {
-      // Network error: request never reached the server
       toastError("Could not reach server");
       setStopping(false);
       return;
@@ -72,11 +69,7 @@ export function ShutdownDialog({
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             onClick={(event) => {
-              // AlertDialogAction auto-closes the dialog by default.
-              // On the shutdown error path we toast + reset `stopping`
-              // to let the user retry, which only works if the dialog
-              // stays open. preventDefault keeps it open; on success
-              // the handler replaces document.body anyway.
+              // Keep the dialog open so the error path can retry; success replaces the body.
               event.preventDefault();
               void handleStop();
             }}

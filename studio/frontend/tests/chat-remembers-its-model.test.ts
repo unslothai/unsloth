@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Every thread row has carried modelId since long before this notice, so the model a chat
-// was started on is already known for chats that already exist. What was missing was
-// offering it back. The rules below are the ones that keep the offer from becoming a
-// nuisance: it never loads anything on its own, and it stays quiet whenever it could not
-// be honoured.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -59,7 +53,6 @@ const switchSource = readText(
   "../src/features/chat/components/chat-model-notice-switch.ts",
 );
 
-/** The selection handleCheckpointChange builds from the meta, mirrored field for field. */
 function switchBackSelection(
   target: { modelId: string; ggufVariant?: string | null },
   rows: Parameters<typeof chatModelSwitchMeta>[1] = [],
@@ -83,19 +76,13 @@ function slice(source: string, from: string, to: string): string {
   return source.slice(start, end);
 }
 
-// Source assertions: the notice reaches external-providers, which does not resolve in a
-// bare node test. The sibling thread-scoped suites do the same for the same reason.
-
 test("the notice never switches a model on its own", () => {
-  // Opening a chat must not evict what is resident: a local load is multi-gigabyte.
   assert.doesNotMatch(notice, /loadModel|setCheckpoint/);
-  // The only way out of it is the button.
   assert.match(notice, /onClick=\{\(\) => onSwitch\(switchTarget\)\}/);
 });
 
 test("the notice stays quiet when it has nothing to offer", () => {
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  // no stamp, already on the pick (including snapshot vs repo id), or a model that has since gone away
   assert.match(body, /if \(!createdModel\) return null;/);
   assert.match(
     body,
@@ -108,11 +95,7 @@ test("the notice stays quiet when it has nothing to offer", () => {
 });
 
 test("switching chats does not show the outgoing chat's model", () => {
-  // The read is async, so a stale value would sit over the incoming chat until it lands.
-  // Clearing it inside the effect is not enough: the effect is passive, so the first
-  // render for the incoming chat commits with the outgoing chat's model already on
-  // screen. The answer is keyed by the chat it was read for, so a foreign value cannot
-  // be returned at all rather than being returned briefly.
+  // The answer is keyed by chat id so a stale async value can never render for another chat.
   const hook = notice.slice(
     notice.indexOf("export function useChatCreatedModel"),
     notice.indexOf("type ChatModelNoticeProps"),
@@ -163,9 +146,7 @@ test("a thread update wins over an older initial model read", () => {
 });
 
 test("the notice is wired to the picker's own handler, not a private path", () => {
-  // handleCheckpointChange carries the confirmations, VRAM checks and external
-  // handling; a second switch path would drift from it. The wrapper only
-  // resolves the row metadata the picker also supplies, then calls it.
+  // The switch back must reuse handleCheckpointChange so confirmations and checks do not drift.
   assert.match(page, /onSwitch=\{handleSwitchBackToChatModel\}/);
   const wrapper = slice(
     page,
@@ -175,7 +156,6 @@ test("the notice is wired to the picker's own handler, not a private path", () =
   assert.match(wrapper, /handleCheckpointChange\(/);
   assert.match(wrapper, /chatModelSwitchMeta\(target, loraModels\)/);
   assert.match(page, /selectableModelIds=\{selectableModelIds\}/);
-  // Offered only for a real saved chat, in the single-chat view.
   assert.match(page, /view\.mode === "single" && \(\s*<ChatModelNotice/);
 });
 
@@ -215,7 +195,6 @@ test("Switch Back resolves a snapshot-path chat to the live picker row", () => {
     ),
     null,
   );
-  // a plain local file collapses to a bare stem, which is no repo
   assert.equal(
     chatModelSelectableId(
       "/srv/models/a/Repo-Q4_K_M.gguf",
@@ -271,39 +250,24 @@ test("a snapshot-path chat is labelled by its repo name, not the revision sha", 
 });
 
 test("the notice clears the chat header instead of rendering underneath it", () => {
-  // The bug this pins: the notice was an in-flow sibling of the chat header, and the
-  // header is `absolute ... top-[--studio-content-top-inset] z-40` with an OPAQUE
-  // bg-background. Per CSS painting order a positioned element is painted above every
-  // non-positioned one whatever the source order, so the whole bar sat underneath the
-  // header and only the 10px the header's `right-[10px]` leaves uncovered was visible.
-  // Measured on a built Unsloth: the notice's rect was {x:280,y:0,w:1220,h:37}, exactly
-  // the header's own band, and the before/after screenshots differed by a 10x37 sliver.
+  // A positioned header paints above in-flow siblings, so the notice must itself be positioned.
   const header = slice(page, "chat-header-fade", "</div>");
   assert.match(header, /z-40/, "the header is still the z-40 absolute overlay");
 
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  // Anchored on the marker attribute, not on `<div className="`: the bar carries
-  // other attributes now, and the shape of the opening tag is not the contract.
   const tag = slice(body, "data-chat-model-notice", "\n    >");
   const div = slice(tag, 'className="', '"');
-  // Positioned, so it is not painted under the header.
   assert.match(div, /\babsolute\b/);
-  // Offset by the SAME header height the header, its fade and the drop overlay use,
-  // so a change to either variable moves all four together.
   assert.match(
     div,
     /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/,
   );
-  // Between the header fade (z-20) and the header itself (z-40): over the gradient,
-  // under the model picker, whose menu must stay clickable.
   const z = /\bz-(\d+)\b/.exec(div);
   assert.ok(z, "the notice needs an explicit z-index");
   assert.ok(
     Number(z[1]) > 20 && Number(z[1]) < 40,
     `notice z-${z[1]} must sit above the z-20 fade and below the z-40 header`,
   );
-  // An overlay over the scrolling conversation must be opaque, or messages read
-  // through it. bg-muted/40 was fine only while the bar took its own row.
   assert.doesNotMatch(
     div,
     /bg-muted\//,
@@ -312,28 +276,12 @@ test("the notice clears the chat header instead of rendering underneath it", () 
 });
 
 test("the conversation reserves the space the notice overlay takes", () => {
-  // Measured on a built Unsloth before this: the viewport reserved exactly the
-  // header's 48px, the notice sat opaque at y 48..85, and the first message's own
-  // rect started at y=48 -- elementFromPoint returned the notice for every sample
-  // across its band, in a 2-turn chat AND in a 40-turn chat scrolled to the top.
-  // An overlay that reserves nothing hides content; the header gets away with it
-  // only because chat-header-fade dissolves what slides under it.
-
-  // One declaration of the height, on the nearest ancestor of both, so the bar and
-  // the padding cannot drift apart.
-  //
-  // `has-[>...]`, not `has-[...]`: the descendant form made every DOM change anywhere in the
-  // thread re-check this `:has()` on an ancestor of every message, and answering it walks the
-  // whole thread. Measured at the 500K rung on a 357,843-element thread, appending one empty span
-  // inside a message cost 17.5 / 18.6 ms with the descendant form and 0.10 ms once this rule and
-  // the sidebar wrapper's were both put in their child form. The notice is a direct child of the
-  // declaring element, so the two selectors match the same elements; that is asserted separately
-  // in `tests/thread-ancestor-has-scope.test.ts`, which is what keeps the child form honest.
+  // One height declaration on the common ancestor. `has-[>...]` (child form) avoids re-checking
+  // `:has()` on every DOM change; see tests/thread-ancestor-has-scope.test.ts.
   assert.match(
     page,
     /has-\[>\[data-chat-model-notice\]\]:\[--studio-chat-notice-height:2\.25rem\]/,
   );
-  // The notice claims the same variable rather than a padding of its own.
   assert.match(notice, /data-chat-model-notice=""/);
   assert.match(notice, /h-\[var\(--studio-chat-notice-height,2\.25rem\)\]/);
   assert.doesNotMatch(
@@ -341,37 +289,17 @@ test("the conversation reserves the space the notice overlay takes", () => {
     /py-1\.5/,
     "a fixed height and a vertical padding would disagree about the bar's size",
   );
-  // The viewport adds it to what it already reserved for the header, defaulting to
-  // 0px so every surface without a notice keeps exactly the padding it had.
   assert.match(
     thread,
     /\[--thread-header-offset:calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\+var\(--studio-chat-notice-height,0px\)\)\] pt-\[var\(--thread-header-offset\)\]/,
   );
-  // And the fade moves down with it, or it would dissolve behind the opaque bar.
   const fade = slice(page, "chat-header-fade", '"');
   assert.match(fade, /\+var\(--studio-chat-notice-height,0px\)\)\]/);
 });
 
 test("the research panel reserves the notice's height too", () => {
-  // The thread viewport is not the only surface the bar covers. The notice is an
-  // absolute child of the chat content container (chat-page.tsx), so its
-  // containing block is that whole container -- the deep-research column
-  // included, not just the thread pane. ResearchActivityPanel offsets itself by
-  // the header height for exactly the same reason, which lands its header at the
-  // notice's top edge.
-  //
-  // Measured on an Unsloth built from this tree, saved chat on claude-opus-4-5 with
-  // the composer on gpt-5-mini and the research panel open: notice rect
-  // {top:48,bottom:84,left:280,right:1590}, aside {top:48,left:1099.41,right:1600}
-  // -> 36px x 490.59px of the aside covered, which is its entire header band.
-  // elementFromPoint at the centre of the "Deep research" h2 (1212,73) and at the
-  // centre of the close button (1568,78) BOTH returned the notice, so it was
-  // swallowing the clicks, not merely painting over them. With the checkpoint set
-  // to the chat's own model the notice self-suppresses and both return the h2 and
-  // the button. The aside's margin-top was 48px in every case: nothing
-  // compensated for it.
+  // The notice spans the whole chat container, including the research panel, which must offset too.
   const style = slice(researchPanel, 'variant === "panel"', ": undefined");
-  // Both edges move, or the panel keeps its old height and overflows the bottom.
   assert.match(
     style,
     /marginTop:\s*\n?\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ var\(--studio-chat-header-height, 48px\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
@@ -380,8 +308,6 @@ test("the research panel reserves the notice's height too", () => {
     style,
     /height:\s*\n?\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - var\(--studio-chat-header-height, 48px\) - var\(--studio-chat-notice-height, 0px\)\)"/,
   );
-  // 0px is the only safe fallback: the sheet variant and every chat without a
-  // notice must keep the exact geometry they had before this notice existed.
   assert.doesNotMatch(
     style,
     /--studio-chat-notice-height,\s*2\.25rem/,
@@ -390,9 +316,7 @@ test("the research panel reserves the notice's height too", () => {
 });
 
 test("a chat started as New Chat gets the notice once its row exists", () => {
-  // ?new=<nonce> carries no thread in the URL and keeps none after the first send, so
-  // the notice saw nothing until the chat was reopened. The store's id is only this
-  // chat's after ThreadNewChatSwitch has blanked the previous one, hence the latch.
+  // ?new=<nonce> carries no thread id, hence the latch on the persisted id.
   const gate = slice(
     page,
     "const newChatBlankedRef",
@@ -406,7 +330,6 @@ test("a chat started as New Chat gets the notice once its row exists", () => {
 
   const derived = slice(page, "const newChatThreadId =", "\n  const");
   assert.match(derived, /newChatBlankedRef\.current === search\.new/);
-  // The latched id is only ever the persisted one, so an unsent chat still offers nothing.
   assert.match(derived, /\? persistedActiveThreadId/);
   assert.match(derived, /: null/);
 
@@ -468,7 +391,6 @@ test("queued model backfill changes only a fresh empty thread row", () => {
     false,
   );
   assert.equal(shouldPersistResolvedQueuedModel(undefined), false);
-  // The caller has already returned on a queued checkpoint four lines earlier.
   assert.match(
     slice(
       adapter,
@@ -479,11 +401,7 @@ test("queued model backfill changes only a fresh empty thread row", () => {
   );
 });
 
-// The switch back is the picker's handler, so it has to arrive carrying what the picker
-// itself would have put on it. A local or fine-tuned row is in neither /api/models/list
-// nor the external ids, so with the bare id selectModel resolves isGguf false and the
-// /load request loses n_parallel, n_batch, n_ubatch and llama_extra_args and sizes the
-// context down the transformers path.
+// Switch back must carry the picker's metadata, or a local GGUF loads down the transformers path.
 
 test("switching back to a single-file local GGUF still loads as a GGUF", () => {
   const meta = chatModelSwitchMeta({ modelId: "/models/qwen3-4b-q4.gguf" }, [
@@ -504,8 +422,6 @@ test("switching back to a single-file local GGUF still loads as a GGUF", () => {
 });
 
 test("a single .gguf file carries its format out of the local inventory", () => {
-  // chatLocalModelOptions is where the format is either kept or lost; the resolver
-  // above has nothing else to read it from.
   const [option] = chatLocalModelOptions([
     {
       id: "/models/qwen3-4b-q4.gguf",
@@ -549,17 +465,13 @@ test("a saved GGUF variant is carried back exactly", () => {
 
 test("switching back to a hub GGUF loads it instead of staging a download", () => {
   store.clear();
-  // stageOrLoad routes a pick with source "hub" and no isDownloaded through the download
-  // manager. Two of requestStart's outcomes, conflict and busy, toast and return without
-  // loading, so a switch back that lands there silently does nothing.
+  // Hub picks without isDownloaded go through the download manager, which can silently do nothing.
   const selection = switchBackSelection({
     modelId: "unsloth/Qwen3-4B-GGUF",
     ggufVariant: "Q8_0",
   });
   assert.equal(wantsDownloadManagerStaging(selection), false);
-  // and the variant, the one thing no resolver can recover, still travels
   assert.equal(selection.ggufVariant, "Q8_0");
-  // A pick the picker itself marks as a hub row still stages, so nothing else moved.
   assert.equal(
     wantsDownloadManagerStaging({
       id: "unsloth/Qwen3-4B-GGUF",
@@ -568,7 +480,6 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
     }),
     true,
   );
-  // The selection mapping above and the predicate under test are the page's own.
   const built = slice(
     page,
     "const selection = {",
@@ -603,8 +514,6 @@ test("switching back to a hub GGUF loads it instead of staging a download", () =
 });
 
 test("a history update that leaves the model alone is not re-emitted", () => {
-  // Every CHAT_HISTORY_UPDATED_EVENT for the thread reaches applyUpdate, renames and
-  // archives included, and a fresh object each time re-renders the notice for nothing.
   const seen: unknown[] = [];
   const reader = createChatModelHistoryReader("thread-1", (model) => {
     seen.push(model);
@@ -658,7 +567,6 @@ test("a legacy GGUF directory recovers its sole saved variant and context", () =
   const meta = chatModelSwitchMeta(target, [option]);
   assert.equal(meta?.isGguf, true);
   assert.equal(meta?.ggufVariant?.toLowerCase(), "q6_k");
-  // The variant is the key the saved 32768 is filed under; stageOrLoad does the lookup.
   assert.equal(
     resolveInitialConfig(modelId, target.ggufVariant ?? undefined).config
       .customContextLength,
@@ -725,7 +633,6 @@ test("the switch back leaves the remembered config to stageOrLoad", () => {
       isDirectGguf: true,
     },
   ]);
-  // A config on the meta would duplicate the lookup stageOrLoad already does.
   assert.doesNotMatch(
     slice(switchSource, "import type {", "export type ChatModelSwitchTarget"),
     /resolveInitialConfig/,
@@ -784,7 +691,6 @@ test("switch back recovers a repo-keyed context through a snapshot path", () => 
 });
 
 test("switching back to a fine-tuned row mirrors the picker's own metadata", () => {
-  // Same fields the fine-tuned list's selectionMeta sets, so the two doors agree.
   const adapters = [
     { id: "run-1", name: "run-1", source: "training" as const },
     {
@@ -809,9 +715,6 @@ test("switching back to a fine-tuned row mirrors the picker's own metadata", () 
 });
 
 test("a Hub or external id is still switched on the id alone", () => {
-  // Those two resolve without help: /api/models/list carries isGguf, and
-  // isExternalModelId routes the rest. Inventing a "local" source for them would
-  // send them down the wrong branch of handleCheckpointChange.
   assert.equal(
     chatModelSwitchMeta({ modelId: "unsloth/Qwen3-4B-GGUF" }, []),
     undefined,

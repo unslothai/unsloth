@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Asserted at the source level: a future edit calling the tombstone helpers directly would
-// reintroduce the leak on whichever delete path a runtime test did not cover.
-
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -27,7 +24,6 @@ function parseModule(): ts.SourceFile {
   );
 }
 
-/** Names of functions calling `markChatThread(s)Deleted`, by enclosing declaration. */
 function tombstoneCallers(sf: ts.SourceFile): string[] {
   const callers: string[] = [];
   const visit = (node: ts.Node, enclosing: string | null): void => {

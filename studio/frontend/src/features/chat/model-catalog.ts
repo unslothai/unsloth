@@ -16,8 +16,7 @@ export type ReasoningEffortLevel =
   | "xhigh"
   | "max";
 
-/** Weakest -> strongest. Must stay in sync with _REASONING_EFFORT_SCALE in
- *  backend core/inference/llama_cpp.py. */
+/** Weakest -> strongest. Keep in sync with _REASONING_EFFORT_SCALE in llama_cpp.py. */
 export const REASONING_EFFORT_SCALE = [
   "none",
   "minimal",
@@ -35,7 +34,6 @@ export interface ModelCatalogEntry {
   defaultEffort: ReasoningEffortLevel | null;
   inputModalities: readonly string[] | null;
   maxOutputTokens: number | null;
-  /** Total context window the provider publishes, or null when it publishes none. */
   contextLength: number | null;
 }
 
@@ -67,7 +65,6 @@ export function subscribeModelCatalog(listener: () => void): () => void {
   };
 }
 
-/** `useSyncExternalStore` snapshot: changes whenever a catalog lands, so capability reads re-render. */
 export function modelCatalogVersion(): number {
   return catalogVersion;
 }
@@ -169,12 +166,9 @@ export function modelsDevCatalogFetchedAt(): number | null {
   return modelsDev?.fetched_at ?? null;
 }
 
-// Merged namespaces, rebuilt whenever a served catalog lands.
 let mergedNamespaces: Map<string, Readonly<Record<string, ModelCatalogSnapshotEntry>>> | null = null;
 
-/** Provider types with no catalogue namespace of their own. A Codex subscription serves OpenAI's
- *  models under OpenAI's ids, and getExternalReasoningCapabilities already aliases it the same
- *  way; without this every Codex lookup resolved to null and read as "not published". */
+/** Codex serves OpenAI models under OpenAI ids, so it reuses that namespace. */
 const CATALOG_NAMESPACE_ALIASES: Record<string, string> = {
   openai_codex: "openai",
 };
@@ -192,16 +186,13 @@ function snapshotNamespace(
   const bundled = MODEL_CATALOG_SNAPSHOT[providerType];
   if (!served) return bundled;
   if (!bundled) return served;
-  // Per MODEL, not per namespace: a cache that survived an upgrade, or the expired copy served
-  // offline, would otherwise hide models the newer bundled snapshot knows.
+  // Merge per model so a stale cache cannot hide models the bundled snapshot knows.
   if (!mergedNamespaces) mergedNamespaces = new Map();
   const cached = mergedNamespaces.get(providerType);
   if (cached) return cached;
   const merged: Record<string, ModelCatalogSnapshotEntry> = { ...bundled };
   for (const [id, entry] of Object.entries(served)) {
-    // A served entry replaces the bundled one, except that it cannot take away a context window
-    // it has no field for: a backend older than that field, or its cached payload inside the
-    // day-long TTL, would otherwise report every model it covers as not publishing one.
+    // Older backends lack the context field, so fall back to the bundled value.
     const context = entry.context ?? bundled[id]?.context;
     merged[id] = context == null ? entry : { ...entry, context };
   }
@@ -224,7 +215,6 @@ function fromLiveModel(model: ProviderModelCapabilityInfo): ModelCatalogEntry {
       typeof model.max_output_tokens === "number" && model.max_output_tokens > 0
         ? model.max_output_tokens
         : null,
-    // The live response carries no context window; resolveModelCatalogEntry backfills it.
     contextLength: null,
   };
 }
@@ -315,8 +305,6 @@ export function resolveModelCatalogEntry(
     for (const candidate of candidates) {
       const entry = live[candidate];
       if (!entry) continue;
-      // A live entry wins on what it states, but states no context window, so that one field
-      // falls through to the snapshot instead of reading as unpublished.
       if (entry.contextLength != null || !snapshot) return entry;
       const fallback = candidates
         .map((id) => snapshot[id]?.context)
@@ -330,7 +318,7 @@ export function resolveModelCatalogEntry(
     if (entry) return fromSnapshotEntry(entry);
   }
   if (normalizedProvider === "ollama") {
-    // An instruct-only tag has no thinking even when a sibling does, and Ollama 400s a thinking request on it.
+    // Ollama 400s a thinking request on an instruct-only tag.
     if (modelId.toLowerCase().includes("instruct")) return null;
     const match = findByBaseName(snapshot, candidates[candidates.length - 1]);
     if (match) return fromSnapshotEntry(snapshot[match]);

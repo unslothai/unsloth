@@ -284,13 +284,11 @@ function ModelStatusChips({
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
 }) {
-  // The Images/Video pages run these, so they are not "unsupported" to a user even though chat cannot load them.
+  // Images/Video pages run these, so they are not unsupported even though chat cannot.
   const showUnsupported =
     !isDataset &&
     unslothSupport.status === "unsupported" &&
     !unslothSupport.supportedIn;
-  // The format-unsupported chip already explains itself; this one covers the
-  // supported-format model a chat-only host still can't run.
   const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
   const showVram = !isDataset && vramInfo && !isGguf;
   if (!showUnsupported && !showChatOnly && !showVram) return null;
@@ -396,7 +394,6 @@ export type ModelInspectorRuntime = {
     status: "fits" | "tight" | "exceeds";
   } | null;
   gpuGb?: number;
-  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
   gpuCount?: number;
   systemRamGb?: number;
 };
@@ -457,9 +454,7 @@ export const ModelInspector = memo(function ModelInspector({
   const datasetSize = useDatasetSize(datasetRepoId, {
     token: hfToken || undefined,
   });
-  // Inventory rows are snapshots; the download manager is the live source of
-  // truth. When a download is in flight, route through the download-aware section
-  // so progress/cancel stays visible across refreshes.
+  // Inventory rows are snapshots; route active downloads through the download-aware section.
   const activeDownloadRepoId = model?.hubRepoId ?? null;
   const hasActiveHubDownload = useDownloadManagerStore((state) =>
     activeDownloadRepoId

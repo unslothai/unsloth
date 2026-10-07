@@ -9,8 +9,7 @@ import {
   downloadStopMode,
 } from "../src/features/hub/catalog/use-download-card-state.ts";
 
-// The 4th argument is the backend's "an interrupted file leaves resumable bytes" verdict.
-// huggingface_hub >= 1.18 refetches from zero, so Pause has to be earned, not assumed.
+// huggingface_hub >= 1.18 refetches from zero, so Pause requires the backend's resumable verdict.
 const RESUMABLE = true;
 
 test("an HTTP download pauses, because its partial can be continued", () => {
@@ -54,8 +53,6 @@ test("the accessible label matches what the button does", () => {
 });
 
 test("a Xet run that fell back to HTTP still cancels, not pauses", () => {
-  // The retry reclaims the job as HTTP but keeps the Xet cancel marker, so
-  // stopping it leaves a partial that has to start over.
   assert.equal(downloadStopMode("http", null, "xet", RESUMABLE), "cancel");
 });
 

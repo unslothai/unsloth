@@ -97,7 +97,6 @@ test("interface scale is rounded and clamped to a usable range", async () => {
   assert.equal(mod.sanitizeInterfaceScale(66.6), 67);
   assert.equal(mod.sanitizeInterfaceScale(500), 200);
   assert.equal(mod.interfaceScaleToZoom(55), 0.55);
-  // Below the floor the zoom clamps too, rather than reaching the webview raw.
   assert.equal(mod.interfaceScaleToZoom(25), 0.5);
 });
 
@@ -151,10 +150,8 @@ test("the latest scale wins while an older native update is pending", async () =
 
 test("first paint is not held hostage by a wedged native bridge", async () => {
   const { mod, control } = await load(true);
-  // Park the abandoned call INSIDE setZoom, not on the dynamic import ahead of it. The stub
-  // reads `__TAURI_WEBVIEW_STUB__` when setZoom is called, so a call still waiting on its
-  // import when this test ends resumes against the NEXT test's control and records a zoom
-  // there. That is one leaked 0.75 in a later assertion, blamed on the test it lands in.
+  // Park the abandoned call inside setZoom: the stub reads `__TAURI_WEBVIEW_STUB__` at call time,
+  // so a call still on its import would leak a zoom into the next test.
   let markWedged: () => void = () => undefined;
   const wedgedEntered = new Promise<void>((resolve) => {
     markWedged = resolve;
@@ -168,9 +165,7 @@ test("first paint is not held hostage by a wedged native bridge", async () => {
   await wedgedEntered;
 });
 
-// Timed, because the regression these two cover is a queue that never drains: without the
-// release the awaits below hang rather than fail, and an unbounded hang wedges the runner
-// instead of reporting.
+// Timed: without the release the awaits below hang rather than fail.
 test(
   "a scale change after a wedged first paint still applies",
   { timeout: 5_000 },
@@ -191,11 +186,8 @@ test(
     };
 
     await mod.applyInterfaceScaleBeforeFirstPaint(75, 10);
-    // Wait for the abandoned call to be parked inside setZoom before unwedging. Without this
-    // the deadline can fire while it is still on its dynamic import, and it then reaches a
-    // setZoom that is no longer wedged and records the stale 0.75 the assertion forbids.
+    // Wait until the abandoned call is inside setZoom, or it may record the stale 0.75.
     await wedgedEntered;
-    // The bridge comes back. Nothing about the abandoned call may keep the queue closed.
     wedged = false;
     await mod.applyInterfaceScale(125);
 
@@ -269,17 +261,13 @@ test("browser scale never calls the native webview", async () => {
 });
 
 test("browser scale resizes the UI through the tokens", async () => {
-  // The page cannot zoom itself: CSS zoom on the root overflows every
-  // viewport unit. It multiplies the font scale instead, which spacing and
-  // icons derive from.
+  // CSS zoom on the root overflows viewport units, so the page multiplies the font scale instead.
   const { mod, styles } = await load(false);
   await mod.applyInterfaceScale(125);
   assert.equal(styles.get("--ui-interface-scale"), "1.25");
   assert.equal(mod.webInterfaceScaleFactor(125), 1.25);
-  // At 100% nothing is left behind, so the default document is unchanged.
   await mod.applyInterfaceScale(100);
   assert.equal(styles.has("--ui-interface-scale"), false);
-  // Never below the floor, same as the desktop zoom.
   await mod.applyInterfaceScaleBeforeFirstPaint(10, 5_000);
   assert.equal(styles.get("--ui-interface-scale"), "0.5");
 });
@@ -336,7 +324,6 @@ test("startup, live changes, and both resets use the local scale", async () => {
     provider,
     /useInterfaceScaleStore\(\(s\) => s\.scale\)[\s\S]*applyInterfaceScale\(interfaceScale\)/,
   );
-  // Every build: the browser scales through the tokens, desktop through zoom.
   assert.match(tab, /settings\.appearance\.custom\.interfaceScale\.label/);
   assert.doesNotMatch(tab, /isTauri && \(/);
   assert.match(controls, /resetAll\(\);\s*resetInterfaceScale\(\);/);

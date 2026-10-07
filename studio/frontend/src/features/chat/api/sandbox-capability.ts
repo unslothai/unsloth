@@ -143,7 +143,6 @@ let inFlight: Promise<SandboxCapability | null> | null = null;
 let latestRequest = 0;
 const changeListeners = new Set<() => void>();
 
-/** Called after a new answer is cached or the cache is dropped (a setup finished). */
 export function onSandboxCapabilityChange(listener: () => void): () => void {
   changeListeners.add(listener);
   return () => {

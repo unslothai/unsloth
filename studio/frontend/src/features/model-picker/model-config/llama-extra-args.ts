@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Turn what the user types into the argv tokens the API takes: `LoadRequest.llama_extra_args` is
- *  one token per entry, so the single string lives only in the control. Deliberately not a
- *  shell, since nothing runs `sh -c` on this path; quotes and backslashes are handled only
- *  because a chat template or grammar needs a space inside one token. */
+/** Not a shell: quotes and backslashes exist only so a template or grammar can hold spaces. */
 
 // Hoisted: these run per token, and biome flags a literal in a hot path.
 const NEEDS_QUOTING = /[\s"'\\]/;
@@ -12,17 +9,15 @@ const DOUBLE_QUOTE_ESCAPES = /(["\\$`])/g;
 const DIGIT = /[0-9]/;
 const UNDERSCORE = /_/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: mirroring the backend's own check
-// The same rule as CONTROL_IN_ARGV below, and as the backend's own check.
+// Same rule as CONTROL_IN_ARGV below and the backend's check.
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b-\u001f]/;
 const INTEGER = /^-?[0-9]+$/;
-/** A NUL, or any other C0 control except tab and newline. The two exceptions are the backend's,
- *  from _has_control_characters: a grammar or chat template is routinely multi-line. */
+/** C0 controls except tab and newline, matching backend _has_control_characters. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: that is exactly what this finds
 const CONTROL_IN_ARGV = /[\u0000-\u0008\u000B-\u001F]/;
 
-/** Whether this token is something execve could not carry. The surrogate half is found by walking
- *  the string rather than with a character class, since a class matches BOTH units of a
- *  well-formed pair. Only an UNPAIRED surrogate is refused, which is what Popen raises on. */
+/** Walks the string because a class would match both halves of a valid pair; only unpaired
+ *  surrogates are refused, as Popen does. */
 function isUnusableInArgv(token: string): boolean {
   if (CONTROL_IN_ARGV.test(token)) {
     return true;
@@ -41,20 +36,16 @@ function isUnusableInArgv(token: string): boolean {
   }
   return false;
 }
-// Hoisted for the same reason as the patterns above: this runs on every keystroke.
 const TEXT_ENCODER = new TextEncoder();
 
-/** Longest input the editor will parse, mirroring MAX_EXTRA_ARGS_BYTES in llama_server_args.py. */
+/** Mirrors MAX_EXTRA_ARGS_BYTES in llama_server_args.py. */
 export const EXTRA_ARGS_MAX_BYTES = 32 * 1024;
 /** Mirrors MAX_EXTRA_ARG_TOKENS in llama_server_args.py. */
 export const EXTRA_ARGS_MAX_TOKENS = 256;
 
-/** The one option in llama-server's help that takes two values. */
 const TWO_VALUE_FLAGS = new Set(["--control-vector-layer-range"]);
 
-/** Options that take a second value on SOME builds. Today's llama.cpp writes the scale into the
- *  value ("--lora-scaled FNAME:SCALE") while older ones took a separate token, and
- *  _sidecar_weight_files reads both, so the second token is allowed but never required. */
+/** Newer llama.cpp writes the scale into the value, older took a separate token; allowed, not required. */
 const OPTIONAL_SECOND_VALUE_FLAGS = new Set([
   "--lora-scaled",
   "--control-vector-scaled",
@@ -62,29 +53,19 @@ const OPTIONAL_SECOND_VALUE_FLAGS = new Set([
 
 export type ExtraArgsParse = {
   tokens: string[];
-  /** Set when a quote is left open, so the row can say so instead of silently dropping it. */
   unterminatedQuote: '"' | "'" | null;
-  /** Indices of tokens the user QUOTED, which argv cannot record. `--chat-template '- hello'` is one
-   *  option and its value, but the quotes are gone by the time it is a token list and "- hello"
-   *  is flag-shaped, so the row called the value missing. Only the editor can tell them apart. */
+  /** Quoted token indices: `--chat-template '- hello'` must not read the value as a flag. */
   quotedIndices: ReadonlySet<number>;
 };
 
-/** A stored list with the flags this build refuses removed, values and all. The panel sends what
- *  it holds as an explicit list, which /load validates strictly, so an install upgraded across
- *  a denylist change would fail to load a model that worked yesterday. Mirrors
- *  drop_managed_flags: a flag takes its value, or the orphan reads as a model path. */
-/** What `subprocess.list2cmdline` would put on a Windows command line for these. A port of
- *  CPython's rule, because that is the serializer Popen uses and it is not a sum of lengths:
- *  an argument needing quotes has each backslash run before a quote doubled. */
+/** Port of CPython list2cmdline (used by Popen): backslash runs before a quote double. */
 export function windowsCommandLength(tokens: readonly string[]): number {
   const result: string[] = [];
   for (const token of tokens) {
     if (result.length > 0) {
       result.push(" ");
     }
-    // Quoted only for whitespace or emptiness, as CPython does: a token that merely contains a quote
-    // is not quoted, though its backslashes still double.
+    // Quoted only for whitespace or emptiness, as CPython does.
     const needQuote = token.includes(" ") || token.includes("\t") || token === "";
     if (needQuote) {
       result.push('"');
@@ -109,7 +90,7 @@ export function windowsCommandLength(tokens: readonly string[]): number {
     }
     if (backslashes > 0) {
       result.push("\\".repeat(backslashes));
-      // And once more inside the quotes, or the run would escape the closing one.
+      // Again inside quotes, or the run would escape the closing one.
       if (needQuote) {
         result.push("\\".repeat(backslashes));
       }
@@ -121,10 +102,8 @@ export function windowsCommandLength(tokens: readonly string[]): number {
   return result.join("").length;
 }
 
-/** Whether this token carries its own value instead of expecting the next one. Not "the name
- *  changed": extraArgFlagName also folds llama.cpp's underscore spelling, so comparing the
- *  folded name against the raw token read "--ctx_size 4096" as attached. Only "=" and an
- *  attached short like -np8 are values in the same token. Mirrors _value_is_attached. */
+/** Only "=" and attached shorts like -np8 carry a value; the folded name must not be compared.
+ *  Mirrors _value_is_attached. */
 function valueIsAttached(token: string, flag: string): boolean {
   const raw = token.trim();
   if (raw.includes("=")) {
@@ -133,7 +112,6 @@ function valueIsAttached(token: string, flag: string): boolean {
   return raw.replace(UNDERSCORE, "-") !== flag;
 }
 
-/** Whether this token's value is the NEXT token rather than part of itself. */
 function takesNextToken(
   token: string,
   flag: string,
@@ -145,10 +123,8 @@ function takesNextToken(
   return next !== undefined && extraArgFlagName(next) === null;
 }
 
-/** A stored list reduced to what THIS build would accept. Mirrors drop_managed_flags: denied flags
- *  go, tokens carrying control characters or unpaired surrogates go, anything past the size
- *  bounds goes, and a flag never outlives its value (an orphan reads as the model path). The
- *  panel needs this because hydrating turns a stored list into an EXPLICIT request. */
+/** Mirrors drop_managed_flags so an install upgraded across a denylist change still loads; a flag
+ *  never outlives its value (an orphan reads as the model path). */
 export function sanitizeStoredExtraArgs(
   tokens: readonly string[],
   managed: ReadonlySet<string>,
@@ -184,17 +160,13 @@ export function sanitizeStoredExtraArgs(
       next !== undefined &&
       isUnusableInArgv(next)
     ) {
-      // Its value is about to be dropped, so the flag goes with it.
       continue;
     }
     kept.push(token);
   }
-  // Then the shapes validate_extra_args refuses outright, whatever their size: a token belonging to
-  // no flag, and a two-value option left half-written. The backend re-validates after every
-  // cut; this mirror trims by size alone, so it has to know the same rules.
+  // Drop shapes validate_extra_args refuses outright: ownerless tokens and half-written two-value options.
   let bounded = dropUnvalidatableTokens(dropUnusableValues(kept));
-  // Then the bounds, shed from the tail, never leaving a flag without its value. The host's own
-  // limits when the caller has them: a Windows install takes 24 KiB, not 32.
+  // Shed from the tail with the host's limits (Windows takes 24 KiB, not 32).
   const maxBytes = limits?.maxBytes || EXTRA_ARGS_MAX_BYTES;
   const commandBudget = limits?.windowsCommandBudget ?? 0;
   const overBounds = (): boolean =>
@@ -205,23 +177,17 @@ export function sanitizeStoredExtraArgs(
     bounded.pop();
     const last = bounded[bounded.length - 1];
     const lastFlag = last === undefined ? null : extraArgFlagName(last);
-    // Any flag whose value has just gone, not only one spelled exactly as it normalizes:
-    // extraArgFlagName folds llama.cpp's underscores, so comparing the normalized name against
-    // the raw token left "--grammar_file" standing after its value was trimmed.
+    // extraArgFlagName folds underscores, so check attachment rather than the normalized spelling.
     if (last !== undefined && lastFlag !== null && !valueIsAttached(last, lastFlag)) {
       bounded.pop();
     }
-    // Re-applied after every cut, exactly as the backend re-validates after its own: shedding one
-    // value of a two-value option leaves the other looking ordinary.
+    // Re-applied after every cut, as the backend re-validates.
     bounded = dropUnvalidatableTokens(dropUnusableValues(bounded));
   }
   return bounded;
 }
 
-/** A list with the flags whose VALUE the backend's own parsers refuse removed. parse_ctx_override
- *  and its siblings raise on a missing or unreadable value, which is a 400 rather than a note.
- *  drop_managed_flags repairs these by shedding its tail, which costs whatever followed;
- *  removing just the option and its value keeps the rest of a legacy list working. */
+/** Removes flags whose value the backend parsers refuse (a 400), keeping the rest of a legacy list. */
 function dropUnusableValues(tokens: readonly string[]): string[] {
   const out: string[] = [];
   let skipNext = false;
@@ -248,7 +214,7 @@ function dropUnusableValues(tokens: readonly string[]): string[] {
     const minimum = INTEGER_VALUE_MINIMUM[flag];
     const unusable =
       missing ||
-      // false: a STORED list, whose mode is unknown, so only what NO mode can run is dropped.
+      // false: a stored list's mode is unknown, so drop only what no mode can run.
       (RATIO_VALUE_FLAGS.has(flag) &&
         ratioValueProblem(flag, value, false) !== null) ||
       (INTEGER_VALUE_FLAGS.has(flag) &&
@@ -258,25 +224,18 @@ function dropUnusableValues(tokens: readonly string[]): string[] {
       out.push(token);
       continue;
     }
-    // The value goes with the flag, or it is left as a bare token, which is the one thing llama-server
-    // would read as a model path.
+    // The value goes too, or llama-server reads it as a model path.
     skipNext = !attached && !missing;
   }
   return out;
 }
 
-/** A list reduced to what validate_extra_args would accept on shape alone. Two rules, both
- *  enforced by re-validating after each cut: a bare token belonging to no flag is refused
- *  (llama-server reads a positional as the model path), and a two-value option needs both.
- *  Everything else is left alone, since this side does not know an ordinary flag's arity. */
+/** Drops ownerless tokens (read as model path) and incomplete two-value options. */
 function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
   const out: string[] = [];
   let pending = 0;
   let twoValuePending = 0;
-  // Values still owed to a flag that was itself dropped, so they go rather than being kept as
-  // tokens belonging to nothing.
   let droppedOwes = 0;
-  // Where the incomplete two-value option starts, so the whole of it can go.
   let ownerAt = -1;
   for (const token of tokens) {
     const flag = extraArgFlagName(token);
@@ -287,7 +246,7 @@ function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
     droppedOwes = 0;
     if (flag === null) {
       if (pending <= 0) {
-        // Ownerless. Dropped rather than kept, which is what drop_managed_flags does with the same token.
+        // Matches drop_managed_flags.
         continue;
       }
       pending -= 1;
@@ -301,20 +260,17 @@ function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
       continue;
     }
     if (twoValuePending > 0 && ownerAt >= 0) {
-      // A new flag arrived while the option still owed a value: the whole option goes, along with the value it did get.
       out.length = ownerAt;
     }
     if (token.includes("=")) {
-      // llama.cpp looks the whole token up in its option map, so "--top-k=20" is an argument it has
-      // never heard of and validate_extra_args refuses it. The value is inside the token.
+      // llama.cpp looks up the whole token, so "--top-k=20" is an unknown option.
       pending = 0;
       twoValuePending = 0;
       ownerAt = -1;
       continue;
     }
     if (token !== token.trim()) {
-      // Refused for the same reason: the padding is part of the token llama.cpp looks up, so a quoted
-      // "--top-k " never arrives as a flag. Its value goes with it, or the orphan is positional.
+      // Padding is part of the looked-up token; drop its value too or it becomes positional.
       droppedOwes = valueIsAttached(token, flag) ? 0 : 1;
       pending = 0;
       twoValuePending = 0;
@@ -323,12 +279,10 @@ function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
     }
     const attached = valueIsAttached(token, flag);
     if (TWO_VALUE_FLAGS.has(flag)) {
-      // An attached value is one of the two, so the option still owes its END.
       pending = attached ? 1 : 2;
       twoValuePending = pending;
       ownerAt = out.length;
     } else if (OPTIONAL_SECOND_VALUE_FLAGS.has(flag)) {
-      // Allowed, not owed, so nothing here removes the option for want of it.
       pending = attached ? 1 : 2;
       twoValuePending = 0;
       ownerAt = -1;
@@ -345,7 +299,6 @@ function dropUnvalidatableTokens(tokens: readonly string[]): string[] {
   return out;
 }
 
-/** The denylist half of the sanitizer, for a caller that only has that to apply. */
 export function dropManagedExtraArgs(
   tokens: readonly string[],
   managed: ReadonlySet<string>,
@@ -367,8 +320,7 @@ export function dropManagedExtraArgs(
   return kept;
 }
 
-/** Split a command-line fragment into argv tokens. Newlines are separators like spaces, so a
- *  multi-line box reads as one command and a user can put each flag on its own line. */
+/** Newlines separate like spaces, so each flag may sit on its own line. */
 export function parseExtraArgs(input: string): ExtraArgsParse {
   const tokens: string[] = [];
   const quotedIndices = new Set<number>();
@@ -396,19 +348,15 @@ export function parseExtraArgs(input: string): ExtraArgsParse {
       continue;
     }
 
-    // A backslash escapes the next character, but only where a shell would: inside single quotes it
-    // is literal, which is what makes '\d' usable in a grammar.
+    // Backslash is literal inside single quotes, which keeps '\d' usable in a grammar.
     if (ch === "\\" && quote !== "'" && i + 1 < input.length) {
       const next = input[i + 1];
-      // Inside double quotes only these are escapes; elsewhere the backslash stands.
       if (quote === '"' && !['"', "\\", "$", "`", "\n"].includes(next)) {
         current += ch;
         started = true;
         continue;
       }
-      // A backslash-newline is a line continuation, so pasting a wrapped command works. It contributes
-      // nothing, so `started` is left as it was: setting it would make the next line's indentation
-      // close an empty token and send an empty positional argument.
+      // Line continuation; leave `started` alone or the next line's indent emits an empty token.
       if (next === "\n") {
         i += 1;
         continue;
@@ -421,7 +369,7 @@ export function parseExtraArgs(input: string): ExtraArgsParse {
 
     if (quote === null && (ch === '"' || ch === "'")) {
       quote = ch;
-      // An empty quoted string is still a token: --grammar '' means something.
+      // An empty quoted string is still a token.
       started = true;
       currentQuoted = true;
       continue;
@@ -445,9 +393,7 @@ export function parseExtraArgs(input: string): ExtraArgsParse {
   return { tokens, unterminatedQuote: quote, quotedIndices };
 }
 
-/** Render tokens back into one editable line. Round-tripping matters: the stored value is a token
- *  list, so this is what the box shows when the panel reopens. Quote only what has to be
- *  quoted, or every reopen would add another layer of escaping. */
+/** Must round-trip: quote only what needs it, or each reopen adds escaping. */
 export function formatExtraArgs(
   tokens: readonly string[] | null | undefined,
 ): string {
@@ -462,8 +408,6 @@ export function formatExtraArgs(
       if (!NEEDS_QUOTING.test(token)) {
         return token;
       }
-      // Single quotes unless the token contains one, since they escape nothing and leave a grammar or a
-      // template readable.
       if (!token.includes("'")) {
         return `'${token}'`;
       }
@@ -472,13 +416,13 @@ export function formatExtraArgs(
     .join(" ");
 }
 
-/** The flag name a token carries, or null when it is a value. Mirrors `_flag_name`. */
+/** Mirrors `_flag_name`. */
 export function extraArgFlagName(token: string): string | null {
   const trimmed = token.trim();
   if (!trimmed.startsWith("-") || trimmed === "-" || trimmed === "--") {
     return null;
   }
-  // A negative number is a value, not a flag: shorts always start with a letter.
+  // A negative number is a value: shorts always start with a letter.
   if (trimmed.length >= 2 && (DIGIT.test(trimmed[1]) || trimmed[1] === ".")) {
     return null;
   }
@@ -486,8 +430,7 @@ export function extraArgFlagName(token: string): string | null {
   if (name.startsWith("--")) {
     name = name.replace(UNDERSCORE, "-");
   }
-  // Attached `-np8` normalises to `-np`, or a denied flag slips through glued to its value. Mirrors
-  // the same branch in _flag_name.
+  // Attached `-np8` normalises to `-np`, or a denied flag slips through. Mirrors _flag_name.
   if (name.length > 3 && name.startsWith("-np")) {
     const suffix = name.slice(3);
     if (
@@ -500,7 +443,6 @@ export function extraArgFlagName(token: string): string | null {
   return name;
 }
 
-/** Every flag token in a parsed list, in order, deduplicated. */
 export function extraArgFlags(tokens: readonly string[]): string[] {
   const seen = new Set<string>();
   for (const token of tokens) {
@@ -512,30 +454,24 @@ export function extraArgFlags(tokens: readonly string[]): string[] {
   return [...seen];
 }
 
-// Kept in this file rather than beside it: the node test harness resolves value imports at
-// runtime with no bundler, so a tested helper importing a sibling by path cannot load.
+// Kept here: the node test harness has no bundler, so a tested helper cannot import a sibling.
 
 import type { LlamaFlagCatalog } from "../api/llama-flags";
 
-/** What to tell the user about what they typed, before the load tries it. Three levels: an `error`
- *  is refused by the backend so the load cannot start, a `warning` is allowed through because
- *  we may be unable to verify it, and a `note` is correct usage worth stating. */
+/** `error` blocks the load, `warning` is unverifiable, `note` is correct usage worth stating. */
 export type ExtraArgsDiagnostic = {
   level: "error" | "warning" | "note";
   message: string;
 };
 
-/** Managed flags whose supported replacement is a control in this panel. Available while the async
- *  flag catalogue is loading: the backend denies these unconditionally, so they must never
- *  fall through to the "wins" note. */
+/** Hard-coded since the backend always denies these, even before the async catalogue loads. */
 const MANAGED_CONTROL_FLAGS: Record<string, string> = {
   "--parallel": "Parallel Slots",
   "--n-parallel": "Parallel Slots",
   "-np": "Parallel Slots",
 };
 
-/** Pass-through flags that a control in this panel also emits. The backend appends these last and
- *  reconciles the ones that affect its sizing, so the mapping explains which value wins. */
+/** The backend appends these last and reconciles sizing ones, so this explains which value wins. */
 const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "--ctx-size": "Context Length",
   "-c": "Context Length",
@@ -560,8 +496,7 @@ const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "--chat-template-file": "Chat Template",
   "--load-mode": "Mmap/Mlock",
   "-lm": "Mmap/Mlock",
-  // Both halves, since the control sets one dtype for the pair, and both spellings, since which one
-  // a build understands is a version question.
+  // Both halves and both spellings, since builds differ.
   "--spec-draft-type-k": "Spec Decoding KV Cache Dtype",
   "-ctkd": "Spec Decoding KV Cache Dtype",
   "--cache-type-k-draft": "Spec Decoding KV Cache Dtype",
@@ -570,14 +505,13 @@ const CONTROL_OWNED_FLAGS: Record<string, string> = {
   "--cache-type-v-draft": "Spec Decoding KV Cache Dtype",
   "--ctx-checkpoints": "Checkpoints",
   "-ctxcp": "Checkpoints",
-  // upstream's older spelling of the same flag
+  // Older upstream spelling.
   "--swa-checkpoints": "Checkpoints",
   "--cache-ram": "Cache RAM",
   "-cram": "Cache RAM",
 };
 
-/** Flags the launch REMOVES when the GPU picker owns placement. Not a shadow the user wins:
- *  `_strip_device_extra_args` deletes these whenever gpu_ids is set. */
+/** `_strip_device_extra_args` deletes these whenever gpu_ids is set. */
 const GPU_SELECTION_STRIPPED_FLAGS: Record<string, string> = {
   "--device": "GPU selection",
   "-dev": "GPU selection",
@@ -585,10 +519,7 @@ const GPU_SELECTION_STRIPPED_FLAGS: Record<string, string> = {
   "-mg": "GPU selection",
 };
 
-/** Flags Manual GPU memory REMOVES without translating, unlike the layer count. `/load` calls
- *  strip_shadowing_flags(strip_offload=True) whenever gpu_memory_mode is manual; an -ngl
- *  survives because the route writes it into the first-class field first, while the MoE count
- *  and the fitter are dropped and the controls' own values run. */
+/** strip_shadowing_flags(strip_offload=True) drops these in manual mode; -ngl is promoted instead. */
 const MANUAL_OFFLOAD_STRIPPED_FLAGS: Record<string, string> = {
   "--n-cpu-moe": "MoE Layers on CPU",
   "-ncmoe": "MoE Layers on CPU",
@@ -598,10 +529,7 @@ const MANUAL_OFFLOAD_STRIPPED_FLAGS: Record<string, string> = {
   "-fit": "GPU Memory",
 };
 
-/** Flags Model Memory removes, per setting. apply_model_memory_policy runs before the extras reach
- *  the command line: "Keep model in GPU memory" emits its own load mode and strips every
- *  other load-mode-bearing flag, since a trailing one resets the whole mode; "Don't reserve
- *  system RAM" drops the flags that would hold a full host copy. */
+/** apply_model_memory_policy strips these: keep-resident owns the load mode. */
 const KEEP_RESIDENT_STRIPPED_FLAGS: Record<string, string> = {
   "--mlock": "Keep model in GPU memory",
   "-mlock": "Keep model in GPU memory",
@@ -616,7 +544,7 @@ const KEEP_RESIDENT_STRIPPED_FLAGS: Record<string, string> = {
   "-ndio": "Keep model in GPU memory",
 };
 
-/** The subset no-reserve vetoes: mmap and dio hold no full host copy, so they stay. */
+/** mmap and dio hold no full host copy, so they stay. */
 const NO_RAM_RESERVE_STRIPPED_FLAGS: Record<string, string> = {
   "--mlock": "Don't reserve system RAM",
   "-mlock": "Don't reserve system RAM",
@@ -626,9 +554,7 @@ const NO_RAM_RESERVE_STRIPPED_FLAGS: Record<string, string> = {
   "-ndio": "Don't reserve system RAM",
 };
 
-/** Smallest value the backend's own parser accepts, per flag. parse_ctx_override refuses a negative
- *  context; parse_gpu_layers_override accepts -1 and nothing below. The rest are checked for
- *  being integers only. */
+/** Mirrors parse_ctx_override / parse_gpu_layers_override minimums. */
 const INTEGER_VALUE_MINIMUM: Record<string, number> = {
   "--ctx-size": 0,
   "-c": 0,
@@ -638,9 +564,7 @@ const INTEGER_VALUE_MINIMUM: Record<string, number> = {
 };
 
 
-/** Values the backend parses as integers, and refuses the load over. */
-/** Flags whose value the backend reads with _last_flag_value, which raises when it is missing or
- *  empty. Not integers, so only presence is checked. */
+/** Read with _last_flag_value, which raises when missing or empty. */
 const VALUE_REQUIRED_FLAGS = new Set([
   "--cache-type-k",
   "-ctk",
@@ -656,16 +580,14 @@ const VALUE_REQUIRED_FLAGS = new Set([
   "--spec-draft-type-v",
   "-ctvd",
   "--cache-type-v-draft",
-  // read with _last_flag_value, so a bare -ts is a 400, not a flag left to llama-server
+  // Read with _last_flag_value, so a bare -ts is a 400.
   "--tensor-split",
   "-ts",
 ]);
 
-/** The spellings the GPU Layers control also emits. */
 const GPU_LAYERS_FLAGS = new Set(["--gpu-layers", "--n-gpu-layers", "-ngl"]);
 
-/** The last-wins integer value for `flags` in `tokens`, or null. Mirrors parse_gpu_layers_override
- *  only as far as the one question asked here: is the resolved layer count non-negative. */
+/** Mirrors parse_gpu_layers_override only for: is the resolved count non-negative. */
 function lastIntegerFlagValue(
   tokens: readonly string[],
   flags: ReadonlySet<string>,
@@ -685,38 +607,29 @@ function lastIntegerFlagValue(
   return found;
 }
 
-/** Flags whose value the backend reads as a per-GPU ratio, refusing unreadable, negative or
- *  non-finite entries and a zero total with a 400 (parse_tensor_split_override). */
+/** See parse_tensor_split_override. */
 const RATIO_VALUE_FLAGS = new Set(["--tensor-split", "-ts"]);
 
-/** llama.cpp splits --tensor-split on this exact class, so "3/1" is "3,1". */
+/** llama.cpp splits on this class, so "3/1" is "3,1". */
 const RATIO_DELIMITER = /[,/]+/;
 
-/** The spellings Python's float() accepts and math.isfinite() then rejects. */
 const NON_FINITE = /^[+-]?(nan|inf(inity)?)$/i;
 
-/** Python's `floatvalue` production (docs: functions#float), which is NOT what Number() takes:
- *  Number() reads 0x/0b/0o literals the backend refuses, and refuses the `1_0` digit grouping
- *  PEP 515 made valid, so a Number()-based mirror disagrees with /validate in both directions. */
+/** Python float() grammar: Number() accepts 0x/0b/0o and refuses PEP 515 `1_0`. */
 const PY_FLOAT =
   /^[+-]?(?:(?:\d(?:_?\d)*)?\.\d(?:_?\d)*|\d(?:_?\d)*\.?)(?:[eE][+-]?\d(?:_?\d)*)?$/;
 
-/** Largest per-GPU share llama.cpp's float array holds; std::stof throws out_of_range above it. */
+/** std::stof throws out_of_range above this. */
 const FLOAT32_MAX = 3.4028234663852886e38;
 
-/** FLT_MIN. libstdc++ reports every SUBNORMAL result as ERANGE too, so std::stof refuses a share
- *  below this just as it refuses one above FLOAT32_MAX; exactly 0 is fine. */
+/** libstdc++ std::stof reports subnormals as ERANGE too; exactly 0 is fine. */
 const FLOAT32_MIN_NORMAL = 1.1754943508222875e-38;
 
-/** `value` rounded to float32, so the check follows the rounding std::stof does, not the literal. */
 const toFloat32 = (value: number): number => Math.fround(value);
 
-/** `value` as the manual launcher will WRITE it: Python's `f"{x:g}"`, six significant digits.
- *  A share validated at full precision can lose its range in that round trip, so both sides judge
- *  the text the child actually parses. */
+/** The manual launcher writes f"{x:g}" (six digits), so judge the text the child parses. */
 const asEmitted = (value: number): number => Number(value.toPrecision(6));
 
-/** The three ways parse_tensor_split_override refuses a ratio, or null when it would take it. */
 function ratioValueProblem(
   flag: string,
   value: string,
@@ -729,12 +642,10 @@ function ratioValueProblem(
     return `${flag} takes a comma- or slash-separated list of numbers.`;
   }
   const trimmed = parts.map((part) => part.trim());
-  // Readability is decided by Python's grammar, never by Number(): "nan"/"inf" are readable and
-  // fail the finite test below, while 0x10 is unreadable to float() even though Number() takes it.
+  // Readability follows Python's grammar, never Number().
   if (trimmed.some((part) => !PY_FLOAT.test(part) && !NON_FINITE.test(part))) {
     return `${flag} takes a comma- or slash-separated list of numbers, and "${value}" is not one.`;
   }
-  // Underscores are grouping to float() and NaN to Number(), so strip them before converting.
   const numbers = trimmed.map((part) => Number(part.replace(/_/g, "")));
   if (numbers.some((entry) => !Number.isFinite(entry) || entry < 0)) {
     return `${flag} entries must be finite and non-negative.`;
@@ -742,9 +653,7 @@ function ratioValueProblem(
   if (numbers.reduce((total, entry) => total + entry, 0) <= 0) {
     return `${flag} must have a positive total.`;
   }
-  // Which text llama-server will parse: the user's own under pass-through, the launcher's
-  // six-digit rendering once manual mode promotes and rewrites the ratio. Rounding a
-  // pass-through value here would refuse input that runs exactly as typed.
+  // Pass-through keeps the user's text; only manual mode rewrites to six digits.
   const shares = numbers.map((entry) =>
     toFloat32(reserialized ? asEmitted(entry) : entry),
   );
@@ -758,8 +667,7 @@ function ratioValueProblem(
   ) {
     return `${flag} entries must be 0 or at least ${FLOAT32_MIN_NORMAL.toExponential(4)}.`;
   }
-  // Accumulated the way llama.cpp prefix-sums the shares it parsed, in float32 and step by step.
-  // A single float64 reduction disagrees with that near the top of the range.
+  // Float32 step-by-step prefix sum, as llama.cpp does; a float64 reduction disagrees near the top.
   let running = 0;
   for (const share of shares) {
     running = toFloat32(running + share);
@@ -770,7 +678,6 @@ function ratioValueProblem(
   return null;
 }
 
-/** The pass-through spellings of the batch size the floor above applies to. */
 const BATCH_SIZE_FLAGS = new Set(["--batch-size", "-b"]);
 
 const INTEGER_VALUE_FLAGS = new Set([
@@ -789,12 +696,11 @@ const INTEGER_VALUE_FLAGS = new Set([
   "--ctx-checkpoints",
   "-ctxcp",
   "--swa-checkpoints",
-  // -1 (no limit) and 0 (disable) are both valid, so only integer-ness is checked
+  // -1 (no limit) and 0 (disable) are both valid.
   "--cache-ram",
   "-cram",
 ]);
 
-/** Sampling belongs to the conversation, not the launch. */
 const REQUEST_SCOPED_FLAGS = new Set([
   "--temp",
   "--temperature",
@@ -809,29 +715,19 @@ const REQUEST_SCOPED_FLAGS = new Set([
   "--n-predict",
 ]);
 
-/** The load settings that decide which flags survive to the command line. */
 export type ExtraArgsContext = {
-  /** The GPU picker owns placement, which removes the device flags. */
   gpuSelectionActive?: boolean;
-  /** GPU Memory is Manual, which removes the offload flags its controls own. */
   manualGpuMemory?: boolean;
-  /** The control's GPU Layers value. Only manual mode with a RESOLVED count of 0 or more rewrites
-   *  --tensor-split; at Auto layers the flag is dropped, so it never reaches llama-server. */
+  /** Only manual mode with a resolved count >= 0 rewrites --tensor-split; at Auto it is dropped. */
   gpuLayers?: number;
-  /** Smallest --batch-size this launch can run, max(slots, 2). */
   batchFloor?: number;
-  /** Model Memory keeps the weights resident, which owns the load mode. */
   keepResident?: boolean;
-  /** Model Memory reserves no system RAM, which vetoes the reserving flags. */
   noRamReserve?: boolean;
 };
 
 export function diagnoseExtraArgs(
   input: string,
   catalog: LlamaFlagCatalog | null,
-  /** What this load's own settings do to the arguments, so the row can say which of them the launch
-   *  will remove. An object rather than a run of booleans: a positional list of five would be
-   *  read wrong at the call site long before it stopped compiling. */
   context: ExtraArgsContext = {},
 ): ExtraArgsDiagnostic[] {
   const gpuSelectionActive = context.gpuSelectionActive ?? false;
@@ -841,14 +737,11 @@ export function diagnoseExtraArgs(
   const noRamReserve = context.noRamReserve ?? false;
   const out: ExtraArgsDiagnostic[] = [];
   const { tokens, unterminatedQuote, quotedIndices } = parseExtraArgs(input);
-  // Mirrors _should_strip_tensor_split: an -ngl in the extras is promoted first, so the count
-  // that decides is the RESOLVED one, not the control's.
+  // Mirrors _should_strip_tensor_split: an extras -ngl is promoted first.
   const nglOverride = lastIntegerFlagValue(tokens, GPU_LAYERS_FLAGS);
   const resolvedGpuLayers = nglOverride ?? context.gpuLayers ?? -1;
   const reserializesSplit = manualGpuMemory && resolvedGpuLayers >= 0;
-  // Tokens the walk below consumed as somebody's value. A quoted token in value POSITION is a value
-  // whatever it starts with, since llama.cpp takes the next argv element without looking.
-  // Position matters as much as the quotes: a user quoting out of habit still wrote a flag.
+  // A token in value position is a value whatever it starts with; llama.cpp takes the next argv blindly.
   const valueIndices = new Set<number>();
 
   if (unterminatedQuote) {
@@ -863,9 +756,7 @@ export function diagnoseExtraArgs(
       message: `Too many arguments: ${tokens.length}, limit ${EXTRA_ARGS_MAX_TOKENS}.`,
     });
   }
-  // The other half of the backend's bounds: a grammar or JSON schema is one long token, so a payload
-  // can sit inside the token cap and still be refused on size. The host's own limit when it has
-  // told us one, smaller on Windows, where the whole command line shares a 32767-character budget.
+  // A grammar or schema can fit the token cap yet exceed the byte cap (smaller on Windows).
   const maxBytes = catalog?.maxBytes || EXTRA_ARGS_MAX_BYTES;
   const bytes = TEXT_ENCODER.encode(tokens.join("")).length;
   if (bytes > maxBytes) {
@@ -874,8 +765,7 @@ export function diagnoseExtraArgs(
       message: `Arguments are too large: ${bytes} bytes, limit ${maxBytes}.`,
     });
   }
-  // And on Windows, what the quoting makes of them: a backslash run before a quote doubles, so bytes
-  // alone do not say whether the launch fits.
+  // Windows quoting doubles backslash runs, so bytes alone do not say whether it fits.
   if (catalog?.windowsCommandBudget) {
     const quoted = windowsCommandLength(tokens);
     if (quoted > catalog.windowsCommandBudget) {
@@ -886,31 +776,23 @@ export function diagnoseExtraArgs(
     }
   }
 
-  // The backend refuses any token carrying one, and a command copied out of coloured terminal output
-  // is the usual way one arrives.
   if (tokens.some((token) => CONTROL_CHARACTERS.test(token))) {
     out.push({
       level: "error",
       message: "Arguments cannot contain control characters.",
     });
   } else if (tokens.some((token) => isUnusableInArgv(token))) {
-    // What is left once control characters are ruled out: half a surrogate pair, which pasting a
-    // truncated string can produce. Popen raises while encoding argv rather than starting
-    // llama-server; an emoji is a whole pair and stays fine.
+    // Unpaired surrogate (truncated paste): Popen raises encoding argv. Emoji pairs are fine.
     out.push({
       level: "error",
       message: "Arguments contain an incomplete character.",
     });
   }
 
-  // A token belonging to no flag. llama-server answers "invalid argument" and refuses to start, and
-  // validate_extra_args refuses it outright, so saying so here is the difference between a red
-  // line and a failed load. Two-value flags are allowed for.
+  // Ownerless tokens: llama-server refuses to start and validate_extra_args refuses them.
   let pendingValues = 0;
   let pendingOwner: string | null = null;
-  // A flag left waiting for its value. Reported only when the arity is known: the catalogue read
-  // this build's own help, or it is the two-value flag whose arity needs no probe. An
-  // unverified flag keeps the benefit of the doubt.
+  // Reported only when arity is known; unverified flags get the benefit of the doubt.
   const owedValues: string[] = [];
   const noteOwed = (owner: string | null, pending: number) => {
     if (owner === null || pending <= 0) {
@@ -943,29 +825,26 @@ export function diagnoseExtraArgs(
       }
       continue;
     }
-    // Before the obligation is replaced: "--numa --verbose" leaves --numa without the value it needs,
-    // and only this point in the walk still knows that.
+    // Before the obligation is replaced: "--numa --verbose" leaves --numa owed.
     noteOwed(pendingOwner, pendingValues);
     const attached = valueIsAttached(token, flag);
     pendingValues = TWO_VALUE_FLAGS.has(flag)
-      ? // An attached value is ONE of the two, so the option still owes its END.
+      ?
         attached
         ? 1
         : 2
       : OPTIONAL_SECOND_VALUE_FLAGS.has(flag)
-        ? // Allowed, not owed: the second token is taken if it is there.
+        ?
           attached
           ? 1
           : 2
         : attached
           ? 0
-          // A flag THIS build documents as taking no value claims none, so the next bare token has
-          // no owner. Only when the catalogue actually knows the flag.
+          // A flag the catalogue documents as valueless claims no next token.
           :
             catalog?.switches.has(flag)
             ? 0
             : 1;
-    // Never reported as owing a value: only the flags whose arity is certain are.
     pendingOwner =
       pendingValues > 0 && !OPTIONAL_SECOND_VALUE_FLAGS.has(flag) ? flag : null;
   }
@@ -979,20 +858,16 @@ export function diagnoseExtraArgs(
   const memoryStripped: [string, string][] = [];
   const reportedValues = new Set<string>();
   for (const [index, token] of tokens.entries()) {
-    // Judged the same way the walk above judged it, or a quoted value beginning with a hyphen would be
-    // reported here as an unknown flag.
+    // Judged as the walk above did, or a quoted hyphen value reads as an unknown flag.
     const flag = valueIndices.has(index) ? null : extraArgFlagName(token);
     if (flag === null) {
       continue;
     }
-    // Before the de-duplication below, because llama.cpp reads the LAST occurrence: in `-ngl 20 -ngl
-    // many` it is the second one the backend parses and refuses, so checking only the first would
-    // leave Load enabled for a request that 400s.
+    // Before de-duplication: llama.cpp reads the LAST occurrence, so `-ngl 20 -ngl many` must 400 here.
     if (INTEGER_VALUE_FLAGS.has(flag) || VALUE_REQUIRED_FLAGS.has(flag)) {
       const attached = valueIsAttached(token, flag);
       const value = attached ? token.split("=")[1] : tokens[index + 1];
-      // A flag whose value is the next token has none when that token is itself a flag: `--ctx-size
-      // --numa` reads --numa as the value in a shell and as a missing one here, as the parser does.
+      // `--ctx-size --numa` reads as a missing value, as the backend parser does.
       const missing =
         value === undefined ||
         value === "" ||
@@ -1021,8 +896,7 @@ export function diagnoseExtraArgs(
         BATCH_SIZE_FLAGS.has(flag) &&
         Number(value.trim()) < Math.max(2, batchFloor)
       ) {
-        // Not raised the way the first-class control is: this flag is appended after the launcher's own
-        // --batch-size and wins it, so the load starts and llama-server aborts on the assertion.
+        // Appended after the launcher's --batch-size so it wins; llama-server then aborts on the assertion.
         const floor = Math.max(2, batchFloor);
         message =
           floor > 2
@@ -1043,16 +917,13 @@ export function diagnoseExtraArgs(
       managedControl !== undefined || Boolean(catalog?.managed.has(flag));
 
     if (token !== token.trim()) {
-      // The padding is part of the token llama.cpp looks up, so a quoted "--top-k " never arrives as a
-      // flag: it answers "error: invalid argument: --top-k", naming a flag that looks correct in
-      // the log. Reported whether or not a control owns the flag.
+      // Padding is part of the looked-up token, so a quoted "--top-k " fails as an invalid argument.
       out.push({
         level: "error",
         message: `Remove the spaces around "${token}". llama-server reads them as part of the flag.`,
       });
     } else if (token.includes("=") && !isManaged) {
-      // Measured on b10342 and b10360: "--top-k=20", "--ctx-size=4096" and "--flash-attn=on" each exit
-      // with "error: invalid argument". A managed flag is left to the message below.
+      // llama.cpp rejects "--flag=value" as an invalid argument (e.g. "--top-k=20").
       out.push({
         level: "error",
         message: `llama-server does not read "${flag}=value". Write ${flag} and its value as two arguments.`,
@@ -1077,7 +948,7 @@ export function diagnoseExtraArgs(
       manualStripped.push(flag);
       continue;
     }
-    // No-reserve first: with both settings on it is the one that runs, and its own veto is what removes the flag.
+    // No-reserve first: with both settings on, its veto is the one that removes the flag.
     if (noRamReserve && NO_RAM_RESERVE_STRIPPED_FLAGS[flag]) {
       memoryStripped.push([flag, NO_RAM_RESERVE_STRIPPED_FLAGS[flag]]);
       continue;
@@ -1098,8 +969,7 @@ export function diagnoseExtraArgs(
       });
       continue;
     }
-    // Only when the catalogue was actually read: a build we could not probe must not have every one of
-    // its flags called a typo.
+    // Only when the catalogue was read, so an unprobed build's flags are not all called typos.
     if (catalog?.probeOk && !(flag in catalog.flags)) {
       unknown.push(flag);
     }
@@ -1154,7 +1024,6 @@ export function diagnoseExtraArgs(
   return out;
 }
 
-/** True when nothing here would stop the load. */
 export function extraArgsAreLoadable(
   diagnostics: readonly ExtraArgsDiagnostic[],
 ): boolean {

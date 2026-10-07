@@ -97,7 +97,6 @@ test("a compare pair copies with each half under its model", async () => {
     ],
     build,
   );
-  // Named, so the reader can tell which model wrote which answer.
   assert.match(markdown, /^# Chat - Qwen3-8B\n\n## User/);
   assert.ok(markdown.includes("\n---\n\n# Chat - gpt-oss-20b\n\n## User"));
 });
@@ -133,9 +132,6 @@ test("a title carrying a line break stays on its heading", async () => {
   assert.match(markdown, /^# Two lines - base\n\n## User/);
 });
 
-// Search results render their images from tokens the answer text carries. Both
-// ways out of a thread go through the one builder, so neither can start
-// shipping them as prose.
 test("renderer tokens never leave a thread, downloaded or copied", async () => {
   const answer = "Golden Retriever\n\n[[img:0123456789ab]]\n\nDone.";
   const stripped = "Golden Retriever\n\nDone.";

@@ -102,7 +102,6 @@ function reading(
   } as ProgressLike;
 }
 
-// Replays polls after an attempt change: the first is the reset poll, and `hold` mirrors poll-loop.
 function replayRetry(polls: ProgressLike[], hold: boolean): number[] {
   let current = job();
   let floorHold = hold
@@ -130,10 +129,6 @@ function replayRetry(polls: ProgressLike[], hold: boolean): number[] {
   return fractions;
 }
 
-// Shape measured in a real session (Qwen3-14B-GGUF BF16, Xet worker SIGKILLed at 34%): the reclaim
-// bumps the attempt before the retry worker purges the killed partial, so the reset poll reads that
-// partial -- a few more bytes than the last poll but a fraction a hair lower -- and the restart only
-// shows up on later polls.
 test("a reset spent on the killed run's partial still lets the bar follow the restart", () => {
   const polls = [
     reading(2 * GB + 100 * MB, EXPECTED, 0.3995),
@@ -153,8 +148,6 @@ test("a reset spent on the killed run's partial still lets the bar follow the re
   assert.ok(followed[4] > followed[3] && followed[4] < 0.1, `${followed}`);
 });
 
-// A split GGUF whose first 1 GB shard finished during the killed attempt: the reclaim re-measures the
-// completed baseline, so the stale reading loses 1 GB from both counters before the partial is purged.
 test("a re-measured completed baseline does not end the hold before the purge", () => {
   const polls = [
     reading(1 * GB, 4 * GB),

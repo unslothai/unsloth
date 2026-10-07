@@ -60,10 +60,8 @@ export function closestDurationIndex(
   return bestIndex;
 }
 
-/**
- * A stored recipe owns the first status seed. Later model changes apply their own defaults, unless
- * the user claimed the form after the pick that is being confirmed: their choice is the newer one.
- */
+/** A stored recipe owns the first seed; later model defaults apply unless the user claimed
+ *  the form after the pick. */
 export function shouldApplyModelDefaults(
   alreadySeeded: boolean,
   storedRecipe: boolean,

@@ -3,10 +3,7 @@
 
 import { create } from "zustand";
 
-/**
- * One list, so the type and the persisted-tab check cannot drift: a tab added
- * to the union alone used to be rejected on reload and fall back to General.
- */
+/** One list so the type and the persisted-tab check cannot drift. */
 export const SETTINGS_TABS = [
   "general",
   "profile",
@@ -44,7 +41,6 @@ export type SettingsScrollTarget =
   | "resources-caches"
   | "sandbox-permissions";
 
-/** Which archive the Data tab should open straight into. */
 export type ArchivedShelf = "chats" | "images" | "videos" | "audio";
 
 interface OpenDialogOptions {
@@ -57,26 +53,21 @@ interface SettingsDialogState {
   open: boolean;
   activeTab: SettingsTab;
   scrollTarget: SettingsScrollTarget | null;
-  // Element focused when openDialog() ran. Radix's FocusScope normally tracks this, but the
-  // rAF-scheduled focus() in settings-dialog.tsx races its previous-focus capture, leaving focus on
-  // <body> after close. We restore explicitly via onCloseAutoFocus.
+  // The rAF focus in settings-dialog.tsx races Radix's previous-focus capture, so restore it
+  // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   openerFallback: HTMLElement | null;
-  // Set when something asks to jump straight to an archive listing (the archive
-  // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
-  // for how long it lives unconsumed.
+  // DataTab uses it as its initial subpage, then clears it. See requestsFor for its lifetime.
   archivedRequested: ArchivedShelf | null;
   logFamilyRequested: string | null;
   logSourcePathRequested: string | null;
-  /** Bumped per View logs click, so a repeated identical request still reads as new. */
+  /** Bumped per click so an identical request still reads as new. */
   logRequestSeq: number;
-  // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
   connectionRequested: string | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
   openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
-  /** Open Connections with `providerId`'s edit form already up. */
   openConnectionSettings: (providerId: string) => void;
   consumeArchivedChatsRequest: () => void;
   openLogs: (family?: string, sourcePath?: string | null) => void;
@@ -135,7 +126,7 @@ function loadInitialTab(): SettingsTab {
     : "general";
 }
 
-/** The panel that delivers each scroll target, so a navigation elsewhere abandons it. */
+/** A navigation elsewhere abandons the scroll target. */
 const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "chat-composer": "chat",
   "about-updates": "about",
@@ -162,13 +153,8 @@ export function resolveScrollRequest(
 }
 
 /**
- * The unconsumed deep-link requests that outlive a navigation landing on `tab`.
- *
- * Only the panel that performs a jump clears its request, and panels are fetched on first
- * view, so a navigation can move before the chunk arrives. A request therefore lives while
- * the dialog is open on the tab that reads it: reselecting keeps it, anything else drops
- * it, and closing (below) always does. Held wider, a stale request replays on a later
- * visit; held narrower, reselecting loses a deep-link still in flight.
+ * A request lives while the dialog is open on the tab that reads it: panels load on first view,
+ * so reselecting keeps it, anything else drops it, and closing always does.
  */
 function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
   return {
@@ -279,9 +265,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,
     })),
-  // Do NOT clear `opener` here. onCloseAutoFocus runs on the next render
-  // pass after `open: false` lands, so the opener must still be readable
-  // from the store at that point. The next openDialog() overwrites it.
+  // Do NOT clear `opener`: onCloseAutoFocus reads it on the render after `open: false`.
   closeDialog: () =>
     set({
       open: false,

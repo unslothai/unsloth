@@ -32,22 +32,18 @@ const {
   resolveExternalMaxTokensClamp,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
-// The UI type is what the dialog draws (`resolveUiProviderTypeFromConfig`); the backend
-// type is what the server row holds. They disagree for a row saved as `openai` with a
-// custom display name or base URL.
+// UI type and backend type disagree for an openai row with a custom name or base URL.
 test("the override is offered on every connection except a ChatGPT subscription", () => {
   assert.equal(supportsProviderMaxOutputTokens("custom", "custom"), true);
   assert.equal(supportsProviderMaxOutputTokens("custom", "openai"), true);
   assert.equal(supportsProviderMaxOutputTokens("openrouter", "openrouter"), true);
   assert.equal(supportsProviderMaxOutputTokens("anthropic", "anthropic"), true);
 
-  // a codex override would be stored and never read, and either type saying so is enough
   assert.equal(supportsProviderMaxOutputTokens("openai_codex", "openai_codex"), false);
   assert.equal(supportsProviderMaxOutputTokens("openai_codex", null), false);
   assert.equal(supportsProviderMaxOutputTokens("openai", "openai_codex"), false);
 
-  // Unknown backend type: a connection being created has no server row yet, and an entry
-  // synced before the field existed carries no value. The UI type decides both.
+  // A new connection has no server row yet, so the UI type decides.
   assert.equal(supportsProviderMaxOutputTokens("custom", null), true);
   assert.equal(supportsProviderMaxOutputTokens("custom", undefined), true);
   assert.equal(supportsProviderMaxOutputTokens("custom", ""), true);
@@ -59,7 +55,6 @@ test("a stored override is dropped unless it is a usable value", () => {
   assert.equal(normalizeProviderMaxOutputTokens(384000), 384000);
   assert.equal(normalizeProviderMaxOutputTokens(PROVIDER_MAX_OUTPUT_TOKENS_MIN), 64);
 
-  // anything a hand-edited or older localStorage entry could hold
   for (const junk of [
     "384000", 384000.5, -1, 0, 63, Number.NaN, Number.POSITIVE_INFINITY,
     null, undefined, {}, [], 2 ** 53,
@@ -85,16 +80,12 @@ test("a documented per-model cap bounds the connection override", () => {
       getExternalMaxOutputTokens(providerType, modelId, 999999),
       documented,
     );
-    // lowering is the whole point of a limit, so that half is honoured
     assert.equal(getExternalMaxOutputTokens(providerType, modelId, 8192), 8192);
   }
 });
 
 test("every OpenAI family the picker admits carries its documented cap", () => {
-  // A missing or too-generous row turns a raised Max Tokens into a failed
-  // request; the 4,096 pair is under the 8,192 default, so those two fail on
-  // an untouched config. The bare `gpt-5` and `gpt-4` rows are last, so this
-  // also pins that a more specific family keeps its own cap.
+  // A missing or too-generous row turns a raised Max Tokens into a failed request.
   const caps: Array<[string, number]> = [
     ["gpt-5.6-sol", 128000],
     ["gpt-5.5", 128000],
@@ -128,8 +119,7 @@ test("every OpenAI family the picker admits carries its documented cap", () => {
 });
 
 test("the dated Anthropic ids carry their documented cap", () => {
-  // Opus 4.1 and Opus 4 sit at 32,000, under the 32,768 fallback, so without
-  // a row a raised Max Tokens overshoots them.
+  // Opus 4.1 and Opus 4 cap at 32,000, under the 32,768 fallback.
   const caps: Array<[string, number]> = [
     ["claude-opus-4-5-20251101", 64000],
     ["claude-sonnet-4-5-20250929", 64000],
@@ -145,7 +135,6 @@ test("the dated Anthropic ids carry their documented cap", () => {
 });
 
 test("a model with no documented cap takes the connection override", () => {
-  // the reported case: a router id no capability row matches pinned at 32,768
   const undocumented: Array<[string, string | null]> = [
     ["openrouter", "minimax/minimax-m3"],
     ["openai", "o3"],
@@ -161,7 +150,6 @@ test("a model with no documented cap takes the connection override", () => {
     );
     assert.equal(getExternalMaxOutputTokens(providerType, modelId, 262144), 262144);
     assert.equal(getExternalMaxOutputTokens(providerType, modelId, 1024), 1024);
-    // an unusable stored value fails closed to the fallback rather than to 0
     assert.equal(
       getExternalMaxOutputTokens(providerType, modelId, 0),
       EXTERNAL_MAX_OUTPUT_TOKENS,
@@ -169,9 +157,7 @@ test("a model with no documented cap takes the connection override", () => {
   }
 });
 
-/** Kimi is the one provider with an output floor of its own (16,000) and no documented
- * per-model cap, so without this its override alone could set the slider's max below
- * the slider's min. */
+/** Kimi's own 16,000 output floor must outrank a lower override, or slider max < min. */
 test("a provider's own output floor outranks a lower connection override", () => {
   const kimiFloor = getExternalMinOutputTokens("kimi");
   assert.equal(kimiFloor, 16000);
@@ -184,9 +170,7 @@ test("a provider's own output floor outranks a lower connection override", () =>
   );
 });
 
-// The settings panel PERSISTS what this returns and it only ever lowers, so the
-// availability guards are what stop a blink in the provider list from destroying a
-// configured override.
+// The settings panel persists this lowered value, so an unresolved provider must not clamp.
 test("a live Max Tokens is only lowered when the cap is actually known", () => {
   const base = {
     settingsHydrated: true,
@@ -197,20 +181,16 @@ test("a live Max Tokens is only lowered when the cap is actually known", () => {
   };
   assert.equal(resolveExternalMaxTokensClamp(base), 32768);
 
-  // No resolved provider: connections toggled off, settings hydrated before the sync
-  // lands, or a connection deleted while selected. The cap reads as the 32,768 fallback
-  // in all of those, and clamping would be permanent.
+  // Unresolved provider reads as the 32,768 fallback, and clamping would be permanent.
   assert.equal(
     resolveExternalMaxTokensClamp({ ...base, hasActiveExternalProvider: false }),
     null,
   );
   assert.equal(resolveExternalMaxTokensClamp({ ...base, settingsHydrated: false }), null);
   assert.equal(resolveExternalMaxTokensClamp({ ...base, isExternalModel: false }), null);
-  // already within the cap, and exactly at it
   assert.equal(resolveExternalMaxTokensClamp({ ...base, maxTokens: 8192 }), null);
   assert.equal(resolveExternalMaxTokensClamp({ ...base, maxTokens: 32768 }), null);
 
-  // converges in one pass: feeding the result back asks for no further change
   const once = resolveExternalMaxTokensClamp(base);
   assert.equal(resolveExternalMaxTokensClamp({ ...base, maxTokens: once as number }), null);
 });
@@ -234,16 +214,13 @@ test("an entry saved by an older install loads without gaining a cap", () => {
   assert.equal(loaded.backendProviderType, undefined);
   assert.equal(loaded.models.length, 1);
 
-  // a round trip through save keeps the stored type once it is known
   saveExternalProviders([{ ...loaded, backendProviderType: "openai", maxOutputTokens: 384000 }]);
   const [reloaded] = loadExternalProviders();
   assert.equal(reloaded.backendProviderType, "openai");
   assert.equal(reloaded.maxOutputTokens, 384000);
 });
 
-// The guard has to hold at every clamp site, not just the effect: a preset or checkpoint
-// applied while the provider is unresolved would lower the value permanently. Source-level
-// assertions, since neither call site is reachable without a DOM.
+// Source-level: neither clamp call site is reachable without a DOM.
 test("every clamp site waits for a resolved provider", () => {
   const settings = readSrc("features/chat/chat-settings-sheet.tsx");
   assert.match(
@@ -279,7 +256,6 @@ test("a grounded ceiling is only sent when something documents or overrides it",
 });
 
 test("an openrouter model is not grounded by the direct provider's published cap", () => {
-  // The id resolves through the DIRECT provider's table; the router serves it far below.
   assert.equal(
     getExternalMaxOutputTokens("openrouter", "deepseek/deepseek-r1-0528", null),
     384000,
@@ -300,7 +276,6 @@ test("the grounding of a ceiling is reported alongside it", () => {
     externalMaxOutputTokensNeedsConnectionCap("custom", "some-self-hosted-model"),
     true,
   );
-  // A router id resolves through a table that does not describe the endpoint.
   assert.equal(
     externalMaxOutputTokensNeedsConnectionCap("openrouter", "deepseek/deepseek-r1-0528"),
     true,

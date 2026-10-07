@@ -24,12 +24,8 @@ interface TransformersUpgradeCheckResponse {
   install_breaks_exact_resume?: boolean;
 }
 
-/** Ask whether loading `modelName` needs a newer transformers than any installed sidecar.
- *
- * The pre-load half of the consent gate for callers that do not run chat's `/validate`
- * (the Train tab). The token rides in the POST body, never the URL, like the scan route.
- * `options` carries the cache pin, so the answer describes the snapshot the load will
- * open rather than the repo's current config, and for a resume the run it precedes. */
+/** Pre-load half of the consent gate for callers without chat's `/validate`. The token rides
+ * in the body; `options` pins the snapshot (and resume run) to answer about. */
 export async function checkTransformersUpgrade(
   modelName: string,
   hfToken?: string | null,
@@ -71,19 +67,14 @@ interface InstallLatestTransformersResponse {
   success: boolean;
   version: string;
   message: string;
-  /** The server unloaded the active chat model before the swap (set even on a
-   *  structured failure, so callers can restore their model state). */
+  /** Set even on a structured failure, so callers can restore their model state. */
   model_unloaded?: boolean;
-  /** On a version-mismatch failure: the release that superseded the requested
-   *  one, so Retry can use it. */
+  /** On a version mismatch, the newer release Retry should use. */
   latest_version?: string | null;
 }
 
-/** Consented install of the latest transformers into the sidecar; synchronous, can take minutes.
- *
- * `forceCancelActive` carries the answer the user already gave the model swap's "stop N
- * chats" prompt: without it the install 409s while those chats run, and nothing between the
- * two dialogs stops them. Only ever true after that confirmation. */
+/** Synchronous, can take minutes. `forceCancelActive` carries the user's "stop N chats" answer;
+ * without it the install 409s on those chats. */
 export async function installLatestTransformers(
   version: string,
   forceCancelActive = false,

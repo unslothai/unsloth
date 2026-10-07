@@ -35,10 +35,7 @@ function reportRevealError(
   });
 }
 
-/**
- * "Open chat folder" (desktop app only). A compare chat outside a project spans two
- * sandboxes, so it gets no item.
- */
+/** "Open chat folder" (desktop only). Compare chats outside a project get no item. */
 export function OpenChatFolderItem({
   item,
   Item = DropdownMenuItem,
@@ -117,15 +114,11 @@ export function OpenProjectFolderItem({
 }
 
 /**
- * "Open chat folder" for a browser session, where the backend's file manager is not the user's.
- * Radix's `disabled` takes the row's pointer events away and a tooltip is blocked while the menu
- * owns the screen, so the row stays enabled, refuses the select itself, and drives a controlled
- * tooltip off a pointer-events-none anchor (as the MCP rows do). The reason is carried twice: that
- * tooltip opens on hover, which a screen reader never reaches and a touch device does not have, so
- * `title` describes the row and selecting it opens the hint rather than doing nothing.
+ * Browser-session variant. Radix `disabled` blocks pointer events, so the row stays enabled,
+ * refuses select itself, and drives a controlled tooltip; `title` covers screen readers.
  */
 export function OpenChatFolderUnavailableItem({
-  // The sidebar renders this row into its right-click menu too, which is a different Radix set.
+  // The sidebar renders this into its context menu, a different Radix set.
   Item = DropdownMenuItem,
   label,
   hint: hintOverride,

@@ -7,8 +7,7 @@ import { register } from "node:module";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-// sandbox-reveal reaches authFetch through the auth barrel, which re-exports
-// login-page.tsx. See helpers/auth-stub.mjs.
+// sandbox-reveal imports the auth barrel, which re-exports login-page.tsx; see auth-stub.mjs.
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 
 const { sandboxRevealPath, revealSandbox, sandboxHasFiles } = await import(
@@ -23,8 +22,7 @@ test("a path-safe session id reveals through its own path segment", () => {
 });
 
 test("an id the router cannot carry moves to the query, after the verb", () => {
-  // ASGI decodes %2F before matching, so a slashed id cannot ride in the path.
-  // The suffix must land BEFORE the query or the backend answers the listing.
+  // ASGI decodes %2F before matching; the suffix must land before the query.
   assert.equal(
     sandboxRevealPath("thread/with/slashes"),
     "/api/inference/sandbox/_/reveal?session=thread%2Fwith%2Fslashes",
@@ -74,8 +72,7 @@ test("a body that is not JSON leaves the status as the only thing to report", as
 });
 
 test("an old backend with no reveal route rejects rather than resolving silently", async () => {
-  // A self-updating desktop bundle can meet a backend predating this route.
-  // It answers 405: the download route claims the same path for GET/HEAD.
+  // An updated desktop bundle can meet an older backend, which answers 405 here.
   globalThis.fetch = (async () =>
     respond(
       405,
@@ -103,7 +100,6 @@ const SIDEBAR = readFileSync(
   fileURLToPath(new URL("../src/components/app-sidebar.tsx", import.meta.url)),
   "utf-8",
 );
-// The probe below is shared by every chat row menu, so it lives beside the rest of them.
 const ROW_MENU = readFileSync(
   fileURLToPath(
     new URL("../src/features/chat/components/chat-row-menu.ts", import.meta.url),
@@ -122,10 +118,7 @@ const PROJECTS_PAGE = readFileSync(
 );
 
 test("a failed history read is reported, not mistaken for a chat that ran no tools", () => {
-  // No React renderer here, so this asserts on source, like ~50 sibling tests.
-  // A per-pane catch makes a failed read look like "never ran a tool", and the
-  // fallback is project membership, the answer the recorded id overrides.
-  // Both "Open chat folder" and "Copy session id" read through this helper.
+  // A per-pane catch would make a failed read look like "never ran a tool".
   const start = ROW_MENU.indexOf("async function recordedSandboxSessionIds");
   const end = ROW_MENU.indexOf("\n}", start);
   assert.ok(start !== -1 && end > start, "the read block moved");
@@ -141,9 +134,7 @@ test("a failed history read is reported, not mistaken for a chat that ran no too
 });
 
 test("one thread that outlived a move counts as two folders, not one", () => {
-  // A chat can name two sandboxes on its own: ran a tool, moved between
-  // projects, ran another. Taking one id per thread would leave the refusal
-  // blind to that and hand out the newer id as though it were the only one.
+  // A chat can name two sandboxes after moving between projects.
   const start = ROW_MENU.indexOf("async function recordedSandboxSessionIds");
   const end = ROW_MENU.indexOf("\n}", start);
   const block = ROW_MENU.slice(start, end);
@@ -151,16 +142,13 @@ test("one thread that outlived a move counts as two folders, not one", () => {
     block,
     /recorded\.push\(\n\s*\.\.\.allRecordedSandboxSessionIds\(await listStoredChatMessages\(threadId\)\),\n\s*\);/,
   );
-  // Every action refuses on more than one, rather than picking a folder.
   assert.equal(SIDEBAR.split("distinct.length > 1").length - 1, 1);
   assert.equal(OPEN_CHAT_FOLDER.split("distinct.length > 1").length - 1, 1);
-  // The Projects page draws the shared item, so it has no refusal of its own.
   assert.equal(PROJECTS_PAGE.split("distinct.length > 1").length - 1, 0);
 });
 
 test("a sandbox holding files is told apart from one that was never written", async () => {
-  // The legacy-folder probe. A missing sandbox lists as 200 with an empty
-  // array rather than an error, so both cases must read as "not this one".
+  // A missing sandbox lists as 200 with an empty array, not an error.
   globalThis.fetch = (async () =>
     ({
       ok: true,
@@ -179,9 +167,7 @@ test("a sandbox holding files is told apart from one that was never written", as
 });
 
 test("a probe that could not be answered is reported, not read as an empty folder", async () => {
-  // "No sandbox" is already a 200 with an empty list, so a non-OK is a backend
-  // or storage failure. Reading it as "no files" would fall through to the
-  // current project scope and open a different workspace, silently.
+  // A non-OK is a storage failure; treating it as "no files" would open another workspace.
   globalThis.fetch = (async () =>
     ({
       ok: false,
@@ -194,27 +180,16 @@ test("a probe that could not be answered is reported, not read as an empty folde
 });
 
 test("the legacy probe runs whichever project the chat sits in now", () => {
-  // This used to skip a chat outside a project, on the grounds that one moved
-  // OUT wrote under project-<id> and nothing retains which one. A chat can join
-  // a project, record that session, and move back out, and skipping the probe
-  // there reported one folder while its older files stayed hidden. The thread
-  // folder is probed whichever project the chat sits in now; the project
-  // workspace is not, since every chat in the project writes to it.
+  // The thread folder is probed whatever project the chat is in now; the shared workspace is not.
   const start = ROW_MENU.indexOf("async function sandboxSessionIdsHolding");
   assert.notEqual(start, -1, "the legacy probe moved");
   const block = ROW_MENU.slice(start, ROW_MENU.indexOf("\n}", start));
   assert.ok(!block.includes("if (!item.projectId) return recorded;"));
   assert.ok(block.includes("sandboxHasFiles(candidate)"));
-  // Not the project workspace: it is shared by every chat in the project, so
-  // files there say nothing about this one.
   assert.ok(!block.includes("sandboxSessionIdFor("));
 });
 
 test("a recorded session does not hide a legacy folder beside it", () => {
-  // The mixed history: a tool ran before results carried a session, the chat
-  // moved into a project, another tool ran and recorded one. Treating the
-  // recorded id as proof that nothing else holds files answers for one folder
-  // while the older keeps the rest.
   const start = ROW_MENU.indexOf("async function sandboxSessionIdsHolding");
   const block = ROW_MENU.slice(start, ROW_MENU.indexOf("\n}", start));
   // A union, so a recorded id cannot short-circuit the probe.
@@ -223,14 +198,10 @@ test("a recorded session does not hide a legacy folder beside it", () => {
     !block.includes("recorded.length > 0"),
     "an early return on any recorded id is what hid the legacy folder",
   );
-  // Probing an id that is already named would only cost a request.
   assert.match(block, /if \(recorded\.includes\(candidate\)\) continue;/);
 });
 
 test("both the folder and the session id are answered from the same probe", () => {
-  // They drifted once: only the reveal path fell back to the legacy folder, so
-  // Copy session id answered a legacy chat that had since joined a project with
-  // project-<id>, a folder it had never written to, and called it a success.
   const callers = SIDEBAR.match(/await sandboxSessionIdsHolding\(/g) ?? [];
   assert.equal(callers.length, 1);
   assert.notEqual(SIDEBAR.indexOf("copyChatSessionId"), -1, "copyChatSessionId moved");
@@ -239,24 +210,18 @@ test("both the folder and the session id are answered from the same probe", () =
     1,
   );
   assert.notEqual(OPEN_CHAT_FOLDER.indexOf('t("library.chats.folder.openChat")'), -1);
-  // The Projects page draws the same item, so it reads the same probe.
   assert.equal(
     (PROJECTS_PAGE.match(/await sandboxSessionIdsHolding\(/g) ?? []).length,
     0,
   );
   assert.match(PROJECTS_PAGE, /<OpenChatFolderItem item=\{chat\} \/>/);
-  // Neither may reach past it to the recorded ids alone.
   const copyAt = SIDEBAR.indexOf("async function copyChatSessionId");
   const copy = SIDEBAR.slice(copyAt, SIDEBAR.indexOf("\n  }\n", copyAt));
   assert.ok(!copy.includes("await recordedSandboxSessionIds("));
 });
 
 test("a sandbox tool result is wrapped even when it carries no envelope", () => {
-  // chat-adapter.ts reaches JSX barrels and cannot be imported, so this asserts
-  // on source. The session id is the only record of WHERE a call ran, and the
-  // backend suppresses __FILES__ when a concurrent call shared the directory,
-  // so a run that did write files can arrive bare and a moved chat would then
-  // name a folder from its current scope that it never wrote to.
+  // chat-adapter.ts reaches JSX barrels, so assert on source. __FILES__ can be suppressed.
   const adapter = readFileSync(
     fileURLToPath(
       new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
@@ -278,9 +243,6 @@ test("a sandbox tool result is wrapped even when it carries no envelope", () => 
 });
 
 test("the sandbox reads stay off Promise.all, as the export contract requires", () => {
-  // test_desktop_reliability_frontend_contract.py forbids `await Promise.all(`
-  // here: every batch ends in a native save dialog, and concurrent ones race
-  // and lose cancellation. Asserted from this side so the reason travels with
-  // the code, not only with the Python guard that fails the build.
+  // Batches end in native save dialogs; concurrent ones race and lose cancellation.
   assert.ok(!SIDEBAR.includes("await Promise.all("));
 });

@@ -29,7 +29,6 @@ function clamp(value: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, value));
 }
 
-/** Room kept clear around a picture shown at fit, in px. */
 export type MediaInset = { top: number; right: number; bottom: number; left: number };
 
 const NO_INSET: MediaInset = { top: 0, right: 0, bottom: 0, left: 0 };
@@ -42,7 +41,6 @@ export function MediaZoomStage({
 }: {
   zoom: MediaZoom;
   onFitScale: (scale: number | null) => void;
-  /** Fit within the stage less this; a picture larger than that area may use the whole stage. */
   inset?: MediaInset;
   children: ReactNode;
 }) {
@@ -220,7 +218,6 @@ export function MediaZoomStage({
             ? {
                 width: box.width,
                 height: box.height,
-                // Centred in the clear area while it fits there, in the whole stage once larger.
                 left:
                   room && box.width <= room.width
                     ? inset.left + (room.width - box.width) / 2

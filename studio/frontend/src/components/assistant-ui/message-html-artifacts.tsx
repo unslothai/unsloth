@@ -16,20 +16,16 @@ import {
 import { useAuiState } from "@assistant-ui/react";
 import { type FC, useMemo } from "react";
 
-// A char that cannot occur in chat text, used to keep text parts separate so a
-// fence is never stitched across a non-text part (tool call, source, reasoning).
+// Cannot occur in chat text; keeps a fence from being stitched across non-text parts.
 const PART_SEPARATOR = "\u0000";
 
 export const MessageHtmlArtifacts: FC = () => {
-  // Skip while streaming; "!== running" also covers loaded historical messages.
   const isRunning = useAuiState(
     ({ message }) => message.status?.type === "running",
   );
   const hasRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),
   );
-  // Visible assistant text parts only (no reasoning, tools, sources, or errors),
-  // kept separate so a fence stays within the part the user actually sees.
   const textBlob = useAuiState(({ message }) =>
     message.content
       .filter((part) => part.type === "text" && "text" in part)
@@ -56,7 +52,6 @@ export const MessageHtmlArtifacts: FC = () => {
       .flatMap((part) => extractHtmlFences(part))
       .filter(
         (fence) =>
-          // Skip only the plain fences the in-place collapse actually handles.
           !(fence.isFullDocument && fence.isPlainFence && collapsesFullDocs),
       );
   }, [isRunning, hasRenderHtmlTool, textBlob, collapsesFullDocs]);

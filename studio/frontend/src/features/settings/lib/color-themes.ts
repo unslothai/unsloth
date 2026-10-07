@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Color themes (the `palette` preference). Tokens live in index.css under
-// html[data-palette]. Keep ids in sync with public/theme-boot.js and the
-// backend `palette` Literal in routes/settings.py.
+// Tokens live in index.css under html[data-palette]. Keep ids in sync with public/theme-boot.js and
+// the backend `palette` Literal in routes/settings.py.
 
 export const UNSLOTH_THEME_IDS = ["standard", "classic", "minimal"] as const;
 
@@ -43,12 +42,10 @@ export type ThemeModeColors = {
   accent: string;
   background: string;
   foreground: string;
-  /** Flavor themes only: card and menu color. */
   surface?: string;
 };
 
 type ColorThemeMeta = {
-  /** Flavor themes only; Unsloth themes use i18n keys. */
   name?: string;
   light: ThemeModeColors;
   dark: ThemeModeColors;

@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-// The module imports the auth layer, so the pattern is lifted from source; the assertion keeps the copy honest.
 const SKILLS_API_SOURCE = readFileSync(
   new URL("../src/features/chat/api/skills-api.ts", import.meta.url),
   "utf8",
@@ -25,7 +24,6 @@ const names = (text: string): string[] =>
 test("spec-shaped names at a word boundary are mentions", () => {
   assert.deepEqual(names("@probe-alpha"), ["probe-alpha"]);
   assert.deepEqual(names("use @probe-alpha."), ["probe-alpha"]);
-  // No whitespace before the first @, so only the second one is a mention.
   assert.deepEqual(names("(@probe-alpha), then @beta2!"), ["beta2"]);
   assert.deepEqual(names("@a @b9 x"), ["a", "b9"]);
   assert.deepEqual(names(`say "@probe-alpha"`), []);
@@ -35,7 +33,7 @@ test("spec-shaped names at a word boundary are mentions", () => {
 test("emails, underscores, uppercase and dangling hyphens are not mentions", () => {
   assert.deepEqual(names("mail foo@example.com"), []);
   assert.deepEqual(names("@example.com please"), []);
-  // Digit-led names are valid per spec, so `@3pm` stays a candidate; the send path re-reads under a deadline.
+  // Digit-led names are valid per spec; the send path re-reads under a deadline.
   assert.deepEqual(names("meet @3pm"), ["3pm"]);
   assert.deepEqual(names("@probe_alpha"), []);
   assert.deepEqual(names("@Probe-Alpha"), []);

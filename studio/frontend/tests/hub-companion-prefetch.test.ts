@@ -32,7 +32,6 @@ function localRow(companionPrefetch: boolean) {
 }
 
 test("a companion-only base repo is neither on device nor partial in model Discover", () => {
-  // The cached and the local listing both describe it; either one carrying the flag is enough.
   const fromCached = buildDiscoverRows(
     [RESULT],
     [
@@ -135,7 +134,6 @@ test("the detail pane offers a plain Download, never Run, for a companion-only r
 });
 
 test("a companion fetch finishing changes the Discover memo key", () => {
-  // Mid-fetch and finished, both rows are partial; only the flag moves.
   const fetching = discoveryInventorySignature([], localRow(false));
   const finished = discoveryInventorySignature([], localRow(true));
   assert.notEqual(fetching, finished);

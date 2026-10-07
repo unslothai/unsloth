@@ -24,7 +24,6 @@ export function matchesFormat(
       : modelFormat;
   if (formatFilter === "gguf") return normalized === "gguf";
   if (formatFilter === "mlx") return normalized === "mlx";
-  // NPU models come from Lemonade's catalog, never from a Hub repo or the disk scan.
   if (formatFilter === "npu") return false;
   return normalized === "safetensors" || normalized === "checkpoint";
 }
@@ -44,11 +43,9 @@ export function detectResultFormat(result: {
   return "safetensors";
 }
 
-// Inference-only quant formats Unsloth cannot fine-tune. Matched on the repo
-// name since the search listing often omits the quant config.
+// Matched on the repo name since the search listing often omits the quant config.
 const NON_FINETUNABLE_NAME =
   /(?:^|[-_/.])(?:fp8|nvfp4|mxfp4|w4a16|w8a8|w8a16|int4|int8|gptq|awq|mobile|litert|tflite)(?:[-_/.]|$)/i;
-// Quant methods Unsloth can fine-tune: full precision (none) or bitsandbytes.
 const FINETUNABLE_QUANT = new Set(["bitsandbytes", "bnb", "bnb_4bit"]);
 
 export function isUnslothFinetunable(result: {

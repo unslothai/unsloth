@@ -18,7 +18,6 @@ import {
 } from "../api/export-api";
 import type { ExportMethod } from "../constants";
 
-/** Thrown by status recovery when the backend reports the op was cancelled. */
 class ExportCanceledError extends Error {
   constructor() {
     super("Export canceled");
@@ -26,22 +25,16 @@ class ExportCanceledError extends Error {
   }
 }
 
-// Status-recovery tuning (used when a blocking export POST is cut off by a
-// Cloudflare tunnel 524 while the backend op keeps running).
+// Recovery when a Cloudflare 524 cuts off a blocking export POST while the op keeps running.
 const RECOVERY_POLL_INTERVAL_MS = 1500;
 const RECOVERY_GRACE_MS = 15000; // wait this long for the op to appear on status
-const RECOVERY_MAX_MS = 2 * 60 * 60 * 1000; // hard cap (exports can be long)
-const RECOVERY_MAX_STATUS_FAILS = 5; // give up if status itself is unreachable
+const RECOVERY_MAX_MS = 2 * 60 * 60 * 1000;
+const RECOVERY_MAX_STATUS_FAILS = 5;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Settle an export phase whose blocking POST was cut off by a tunnel timeout, by
- * polling /api/export/status until the still-running backend op finishes, then
- * reading its recorded outcome. `baseline` is `last_op_seq` captured before the
- * POST; a record is "ours" once the op went inactive AND either we observed it
- * active or its seq advanced past the baseline (single serial driver ⇒ exact).
- */
+/** Settle a phase whose POST hit a tunnel timeout by polling status. A record is ours once
+ *  the op is inactive and we saw it active or its seq passed `baseline`. */
 async function recoverViaStatus(
   baseline: number | null,
   isCurrent: () => boolean,
@@ -59,8 +52,6 @@ async function recoverViaStatus(
       st = await getExportStatus();
       statusFails = 0;
     } catch {
-      // Status itself is transiently unreachable; tolerate a few, then (past the
-      // grace window) give up so a truly-down backend surfaces a real error.
       statusFails += 1;
       if (
         Date.now() - start > RECOVERY_GRACE_MS &&
@@ -86,8 +77,7 @@ async function recoverViaStatus(
       throw new Error(st.last_op_error || "Export failed");
     }
 
-    // Inactive but our op was never observed: the POST likely died before the
-    // backend started it. Allow a grace window for the op to appear, then fail.
+    // Our op was never observed: the POST likely died first. Fail after a grace window.
     if (Date.now() - start > RECOVERY_GRACE_MS) {
       throw new Error(
         "The export request failed before the server started the operation.",
@@ -97,8 +87,7 @@ async function recoverViaStatus(
   throw new Error("Timed out waiting for the export to finish.");
 }
 
-// Keep the same scrollback depth as the backend ring buffer so the inline
-// panel shows the full server-side history.
+// Matches the backend ring buffer depth.
 const MAX_LOG_LINES = 4000;
 
 export type ExportPhase =
@@ -111,47 +100,35 @@ export type ExportPhase =
 
 export type ExportDestination = "local" | "hub";
 
-/** Snapshot of what is being exported, captured when a run starts. */
 export interface ExportRunSummary {
   baseModelName: string;
   checkpointLabel: string | null;
   methodLabel: string;
   method: ExportMethod;
   quantLevels: string[];
-  /** Merged: the selected format values (for the summary "Formats" row and to reseed the picker). */
   mergedFormats: string[];
   destination: ExportDestination;
 }
 
-/** Everything `runExport` needs to drive the load -> export -> cleanup sequence. */
 export interface RunExportParams {
   sourceMode: "checkpoint" | "model";
-  /** Resolved on-disk checkpoint path (checkpoint mode). */
   checkpointPath: string | null;
-  /** Raw source id passed to load-checkpoint (model mode: HF id or local path). */
   source: string;
   modelSource: "hf" | "local";
   trustRemoteCode: boolean;
-  /** Consent fingerprint from the load-time remote-code review dialog (HF custom code). */
   approvedRemoteCodeFingerprint?: string | null;
-  /** HF token for loading a gated/private source model (separate from the Hub upload token). */
   loadToken?: string | null;
   exportMethod: ExportMethod;
   isAdapter: boolean;
   quantLevels: string[];
-  /** GGUF: use an importance matrix, auto-downloaded unless imatrixPath is set; required for the IQ quants. */
   useImatrix?: boolean;
   imatrixPath?: string;
-  /** GGUF: also write a FastFlowLM Q4NX folder for the AMD Ryzen AI NPU. */
   npuQ4nx?: boolean;
-  /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit.
-   *  `label` is the display name for the success banner's per-format output line. */
   mergedSelections?: {
     formatType: string;
     compressedMethod: string | null;
     label: string;
   }[];
-  /** LoRA: also emit a GGUF LoRA adapter (llama.cpp `--lora`), and its output float type. */
   loraGguf?: boolean;
   adapterFormat?: "mlx" | "peft";
   loraGgufOuttype?: string;
@@ -167,27 +144,21 @@ export interface RunExportParams {
 
 interface ExportRuntimeState {
   phase: ExportPhase;
-  /** True from the moment a run starts until it reaches a terminal phase. */
   isExporting: boolean;
-  /** True while this store's own `runExport` drives the sequence (vs a run
-   *  recovered from the backend after a reload). Gates status-poll takeovers. */
+  /** True while this store's runExport drives the run (not a reload-recovered one). */
   ownsRun: boolean;
   method: ExportMethod | null;
   summary: ExportRunSummary | null;
   quantTotal: number;
-  /** Number of GGUF quants finished so far (0-based current = this value). */
   quantIndex: number;
-  /** Latest high-level status line surfaced by the worker. */
   stage: string | null;
   logLines: ExportLogEntry[];
   lastSeq: number | null;
   connected: boolean;
-  /** True while a phase POST's response was lost (tunnel timeout) and we are
-   *  settling the run by polling /api/export/status instead. Logs keep streaming. */
+  /** POST response lost to a tunnel timeout; settling via /api/export/status. */
   reconnecting: boolean;
   startedAt: number | null;
-  /** `outputPath` is the first path (back-compat); `outputPaths` is one entry per written folder
-   *  so a multi-format merged run can list every sibling directory it created. */
+  /** `outputPath` is kept for back-compat; `outputPaths` has one entry per folder. */
   result: {
     outputPath: string | null;
     outputPaths: { label: string; path: string }[];
@@ -197,16 +168,13 @@ interface ExportRuntimeState {
   cancelRequested: boolean;
   hasHydrated: boolean;
   backendActive: boolean;
-  /** Bumped on every run so stale async callbacks can detect they were superseded. */
   runId: number;
 }
 
 interface ExportRuntimeActions {
   runExport: (params: RunExportParams) => Promise<void>;
   requestCancel: () => Promise<void>;
-  /** Append one streamed line (SSE). De-duped by seq against the poll path. */
   appendLog: (entry: ExportLogEntry, seq?: number) => void;
-  /** Merge a batch of polled lines (JSON fallback). De-duped by seq. */
   appendLogs: (entries: ExportLogPollEntry[]) => void;
   setConnected: (value: boolean) => void;
   applyBackendStatus: (status: ExportStatus) => void;
@@ -244,8 +212,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
 
   appendLog: (entry, seq) =>
     set((state) => {
-      // De-dupe by seq: the SSE stream and the JSON poll fallback both feed
-      // logs, so ignore anything at or below the highest seq already seen.
+      // SSE and the poll fallback both feed logs, so dedupe by seq.
       if (
         typeof seq === "number" &&
         state.lastSeq !== null &&
@@ -261,16 +228,12 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       return {
         logLines: next,
         lastSeq: typeof seq === "number" ? seq : state.lastSeq,
-        // `status` lines are the worker's high-level progress markers; surface
-        // the most recent one as the stage label.
         stage: entry.stream === "status" ? entry.line : state.stage,
       };
     }),
 
   appendLogs: (entries) =>
     set((state) => {
-      // Keep only lines newer than the highest seq we've shown (covers overlap
-      // with the SSE stream and with the previous poll batch).
       const fresh =
         state.lastSeq === null
           ? entries
@@ -285,7 +248,6 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           ? merged.slice(merged.length - MAX_LOG_LINES)
           : merged;
 
-      // Latest `status` line in the batch becomes the stage label.
       let stage = state.stage;
       for (const e of fresh) {
         if (e.stream === "status") stage = e.line;
@@ -300,8 +262,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
   applyBackendStatus: (status) =>
     set((state) => {
       const base = { hasHydrated: true, backendActive: status.is_export_active };
-      // Recover a run started before this store existed (full page reload, or
-      // an export kicked off in another browser tab): show it live.
+      // Recover a run started before this store existed (reload or another tab).
       if (status.is_export_active && !state.isExporting && !state.ownsRun) {
         return {
           ...base,
@@ -310,12 +271,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           startedAt: state.startedAt ?? Date.now(),
         };
       }
-      // A recovered (not store-owned) run finished on the backend. Settle from the last-op record
-      // when present (accurate success/error/output path), else fall back to the optimistic guess.
       if (!status.is_export_active && state.isExporting && !state.ownsRun) {
-        // A standalone load_checkpoint (or no recorded op) is not an export and
-        // must never settle as a finished export. A completed export ends on its
-        // export_* op or the trailing cleanup, both of which count.
+        // A standalone load_checkpoint must never settle as a finished export.
         const wasExport =
           !!status.last_op_kind && status.last_op_kind !== "load_checkpoint";
         if (status.last_op_status === "error") {
@@ -336,7 +293,6 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             phase: "success" as const,
             result: {
               outputPath: status.last_op_output_path ?? null,
-              // A run recovered from the backend only knows the last output path.
               outputPaths: status.last_op_output_path
                 ? [{ label: "", path: status.last_op_output_path }]
                 : [],
@@ -344,7 +300,6 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             },
           };
         }
-        // Load-only op, or no clear success record: nothing was exported.
         return { ...base, isExporting: false, phase: "idle" as const };
       }
       return base;
@@ -364,8 +319,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
     try {
       await cancelExport();
     } catch {
-      // Best-effort: the in-flight export POST will still reject when the
-      // worker dies, which runExport turns into the canceled phase.
+      // The in-flight POST still rejects when the worker dies, giving the canceled phase.
     }
   },
 
@@ -401,10 +355,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
     const isCurrent = () => get().runId === runId;
     const pushToHub = params.destination === "hub";
 
-    // Run a phase POST so it survives a Cloudflare tunnel 524: capture the
-    // last-op baseline, fire the POST, and on a recoverable transport failure
-    // settle the still-running backend op via short status polls instead of
-    // failing. Returns the resolved output path (null for load/hub-only).
+    // Survive a Cloudflare 524 by settling a recoverable failure through status polls.
     const runRecoverableOp = async (
       post: () => Promise<ExportOperationResponse>,
     ): Promise<{ outputPath: string | null }> => {
@@ -412,7 +363,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       try {
         baseline = (await getExportStatus()).last_op_seq ?? 0;
       } catch {
-        baseline = null; // pre-read failed; recovery falls back to "saw active"
+        baseline = null;
       }
       try {
         const resp = await post();
@@ -429,7 +380,6 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
     };
 
     try {
-      // 1. Load the model source into a fresh export subprocess.
       if (params.sourceMode === "checkpoint") {
         if (!params.checkpointPath) {
           throw new Error("No checkpoint selected");
@@ -456,13 +406,10 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       }
       if (!isCurrent()) return;
 
-      // 2. Run the export. Collect every resolved output_path so the success
-      // banner can list each sibling directory a multi-format run created.
       set({ phase: "exporting" });
       const outputs: { label: string; path: string }[] = [];
 
       if (params.exportMethod === "merged") {
-        // Each selected format writes its own sibling directory (PEFT or non-PEFT base alike).
         const selections =
           params.mergedSelections && params.mergedSelections.length > 0
             ? params.mergedSelections
@@ -490,16 +437,14 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           set({ quantIndex: i + 1 });
         }
       } else if (params.exportMethod === "gguf") {
-        // Send the whole quant list in ONE call: the model is merged once and every GGUF comes
-        // from that single merge (unsloth save_to_gguf loops internally).
+        // One call for all quants: the model is merged once and save_to_gguf loops internally.
         const { outputPath } = await runRecoverableOp(() =>
           exportGGUF({
             save_directory: params.saveDirectory,
             quantization_method: params.quantLevels,
             push_to_hub: pushToHub,
             repo_id: params.repoId,
-            // A local imatrix export resolves the matrix from a Hub repo, so fall back to the load
-            // token when there is no hub-upload token (both are the same HF token).
+            // Fall back to the load token; both are the same HF token.
             hf_token: params.token ?? params.loadToken ?? null,
             imatrix: params.useImatrix,
             imatrix_path: params.useImatrix
@@ -522,8 +467,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             save_directory: params.saveDirectory,
             push_to_hub: pushToHub,
             repo_id: params.repoId,
-            // A local GGUF LoRA export still reloads a possibly-gated base config, so fall back to
-            // the load token when there is no hub-upload token (both are the same HF token).
+            // Fall back to the load token; both are the same HF token.
             hf_token: params.token ?? params.loadToken ?? null,
             private: params.privateRepo,
             gguf: params.loraGguf ?? false,
@@ -568,9 +512,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         });
       }
     } finally {
-      // Cleanup is best-effort and runs after the terminal phase is set, so it
-      // does not gate the success banner. Only the run that still owns the
-      // store releases ownership and frees the worker.
+      // Only the run that still owns the store releases ownership and frees the worker.
       if (isCurrent()) {
         try {
           await cleanupExport();
@@ -585,17 +527,12 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
   },
 }));
 
-/**
- * Map the run phase to a 0-100 progress value. There is no byte-level signal
- * from llama.cpp / the HF uploader, so progress is phase + quant-index based:
- * loading occupies a small head band, the export body advances per completed
- * GGUF quant, and success pins to 100.
- */
+/** No byte-level signal exists, so progress is phase plus completed-quant based. */
 export function selectExportProgressPercent(state: ExportRuntimeStore): number {
   const total = Math.max(1, state.quantTotal);
   const exportBand = () => {
     const done = Math.min(Math.max(state.quantIndex, 0), total);
-    return Math.round(15 + (done / total) * 72); // 15..87
+    return Math.round(15 + (done / total) * 72);
   };
   switch (state.phase) {
     case "idle":
@@ -615,7 +552,6 @@ export function selectExportProgressPercent(state: ExportRuntimeStore): number {
   }
 }
 
-/** Whether the inline run panel should be visible (a run is active or terminal). */
 export function isExportPanelActive(state: ExportRuntimeStore): boolean {
   return state.isExporting || state.phase !== "idle";
 }

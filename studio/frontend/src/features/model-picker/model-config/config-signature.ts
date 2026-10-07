@@ -1,22 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Identity of one ModelConfigPage editor instance. The page seeds its state from `loadedConfig`
-// in a useState initializer, so it reads that prop once per mount: a host that opens it before
-// status hydrates gets null first and the live config a moment later, and without the config
-// in the React key the instance keeps showing saved values, which Apply then writes back.
+// ModelConfigPage seeds state once per mount, so the live config must be in the React key or Apply
+// writes back stale saved values.
 
 import type { PerModelConfig } from "./per-model-config";
 
-// Serialize the GPU knobs with the store's "absent == default" coalescing: mode auto, gpuLayers
-// Auto (< 0), nCpuMoe 0, null or absent GPU picks as automatic, and no split as the default one.
+// Uses the store's "absent == default" coalescing.
 export function gpuFieldsSignature(config: PerModelConfig): string {
   const gpuSelection =
     config.selectedGpuIds == null
       ? "automatic"
       : [
-          // Order-preserving: the list order is the device order, so sorting here
-          // made a reorder read as no change and left Apply disabled on it.
+          // Order-preserving: list order is device order, so a reorder must count as a change.
           config.selectedGpuIds.join(","),
           config.selectedGpuIndexKind === undefined
             ? "physical"
@@ -39,8 +35,7 @@ function hashString(value: string): number {
   return hash;
 }
 
-/** Signature of the live config an editor was seeded from. `null` (not resident, or status has
- *  not answered yet) is its own value: the arrival of the live config must remount. */
+/** `null` is its own value: the live config's arrival must remount. */
 export function loadedConfigSignature(
   config: PerModelConfig | null | undefined,
 ): string {
@@ -79,8 +74,6 @@ export function loadedConfigSignature(
   ].join("|");
 }
 
-/** React key for one ModelConfigPage instance, so every host agrees on when the editor re-seeds:
- *  a different model, a different quant, or a change in the live config. */
 export function modelConfigInstanceKey(
   modelId: string,
   ggufVariant: string | null | undefined,

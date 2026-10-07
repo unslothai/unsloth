@@ -91,7 +91,6 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
 
   const resultText = result == null ? "" : stringifyToolResult(result);
   const citations = useMemo(() => parseCitations(result), [result]);
-  // Citations render in RagSourcesGroup; this block keeps a one-line summary.
   const docCount = useMemo(
     () => new Set(citations.map((c) => c.documentId ?? c.filename)).size,
     [citations],
@@ -105,8 +104,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  // Ask permission gates every local tool call, and what is being approved
-  // lives inside the content while Allow/Deny render outside it.
+  // What is being approved lives inside the content, while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 

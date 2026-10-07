@@ -87,8 +87,7 @@ function ContextMenuContent({
         )}
         {...props}
       >
-        {/* Scroll an inner viewport, as DropdownMenuContent does: a scrollbar on the rounded
-            surface squares its corners, and the surface padding insets it clear of the curve. */}
+        {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners. */}
         <div
           data-slot="context-menu-viewport"
           className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
@@ -160,9 +159,7 @@ function ContextMenuSubContent({
 }: React.ComponentProps<typeof ContextMenuPrimitive.SubContent>) {
   const snappedRef = useSnappedPaddingRef(ref);
   return (
-    // Portaled like DropdownMenuSubContent, for the same reason: rendered inline, the fixed
-    // popper wrapper sits inside ContextMenuContent, whose open animation transforms it. That
-    // makes it the containing block and its overflow clips the submenu away.
+    // Portaled: inline, the parent's open-animation transform would clip the submenu.
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.SubContent
         ref={snappedRef}

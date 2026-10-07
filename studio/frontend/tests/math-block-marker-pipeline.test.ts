@@ -14,20 +14,7 @@ import { unified } from "unified";
 
 import { withMathBlockMarker } from "../src/components/assistant-ui/math-block-marker.ts";
 
-/*
- * THE MARKER, RUN THROUGH THE PIPELINE IT ACTUALLY RUNS IN, rather than over a tree this file
- * built to suit itself.
- *
- * `tests/math-block-marker.test.ts` feeds the transform hast trees it constructs. That cannot
- * catch the failure this change was one refactor away from shipping: the class landing somewhere
- * the SANITIZER strips it. `rehype-sanitize`'s `defaultSchema` permits `className` on `a`, `code`,
- * `h2`, `li`, `ol`, `section` and `ul` and nowhere else, so a class put on a `<p>` before the
- * sanitize pass disappears without a word, and the whole change measures as doing nothing.
- *
- * So this reproduces Streamdown's real plugin order -- parse, gfm, remark-math, remark-rehype,
- * raw, sanitize, and only then the maths plugin's rehype pass with the marker composed in front of
- * it -- and asserts on the tree that comes out.
- */
+/* Runs Streamdown's real plugin order: the sanitizer strips a className put on <p> before it. */
 
 const MARKDOWN = [
   "Energy is $E=mc^2$ in prose and $p=mv$ too.",
@@ -36,23 +23,16 @@ const MARKDOWN = [
   "\\frac{a^3}{b}",
   "$$",
   "",
-  // A LOOSE list, with the blank line that makes it one. A TIGHT list is unwrapped by
-  // `mdast-util-to-hast`, so its item holds the maths directly and the hoist past an inline
-  // paragraph never runs. A fixture built on a tight list leaves that hoist untested while
-  // looking as though it covers it.
+  // Loose list: a tight list is unwrapped and skips the paragraph hoist.
   "- loose item with $x_i$ inline",
   "",
   "- a second item, which is what makes the list loose",
   "",
-  // Inside a blockquote, so that hoisting PAST the cell would have somewhere to land. A
-  // root-level table has no containable ancestor at all, so it cannot tell the abandon apart
-  // from the walk simply running out of tree.
+  // In a blockquote so a wrong hoist past the cell has somewhere to land.
   "> | h |",
   "> |---|",
   "> | $y$ |",
   "",
-  // Same reasoning for display maths: inside a blockquote, so treating it as inline would put a
-  // class somewhere visible to this test.
   "> $$",
   "> \\frac{c}{d}",
   "> $$",
@@ -84,8 +64,7 @@ const render = async (markdown: string) => {
     .use(remarkRehype, { allowDangerousHtml: true })
     .use(rehypeRaw)
     .use(rehypeSanitize, defaultSchema)
-    // unified's `Plugin` generics cannot describe an attacher composed at runtime. This is the
-    // same value Streamdown takes as `MathPlugin["rehypePlugin"]`, where it typechecks.
+    // unified's Plugin generics cannot describe a runtime-composed attacher.
     .use(withMathBlockMarker(baseMath.rehypePlugin) as never);
   return (await processor.run(processor.parse(markdown))) as unknown as Node;
 };
@@ -113,8 +92,6 @@ test("the class survives the sanitizer and lands on the right blocks", async () 
   const tree = await render(MARKDOWN);
   const { marked, displayRoots, mathRoots } = collect(tree);
 
-  // PRECONDITION: the pipeline really rendered maths. If KaTeX silently did nothing, every
-  // assertion below would be about an empty document and would still be capable of passing.
   assert.ok(
     mathRoots >= 6,
     `PRECONDITION: KaTeX rendered maths, saw ${mathRoots} roots`,
@@ -139,8 +116,6 @@ test("the class survives the sanitizer and lands on the right blocks", async () 
 });
 
 test("the list item in the fixture really does carry maths, so its absence means something", async () => {
-  // Without this the assertion above passes just as well on a fixture whose list item never had a
-  // formula in it, which is the shape of a test that stops testing when the fixture drifts.
   const tree = await render(MARKDOWN);
   const items: Node[] = [];
   const walk = (node: Node): void => {
@@ -157,7 +132,6 @@ test("the list item in the fixture really does carry maths, so its absence means
 });
 
 test("two inline formulae in one paragraph mark it once", async () => {
-  // The fixture's first paragraph deliberately carries two.
   const tree = await render(MARKDOWN);
   const paragraphs = collect(tree).marked.filter((tag) => tag === "p");
   assert.equal(
@@ -167,15 +141,7 @@ test("two inline formulae in one paragraph mark it once", async () => {
   );
 });
 
-/*
- * The two fixtures below are wrapped in a blockquote, and that is the whole point of them.
- *
- * At the root of a document there is no containable ancestor above a `pre` or above a `table`, so
- * a marker that WRONGLY treated display maths as inline, or that WRONGLY hoisted past a table
- * cell, would still mark nothing and the test would still pass. Both properties would be
- * non-load-bearing while looking covered. The blockquote gives the wrong behaviour somewhere to
- * land, so these assertions discriminate. Each one asserts that ancestor is there first.
- */
+/* Blockquote wrapping gives wrong behaviour a containable ancestor to land on. */
 
 const containableAncestors = (tree: Node): string[] => {
   const found: string[] = [];

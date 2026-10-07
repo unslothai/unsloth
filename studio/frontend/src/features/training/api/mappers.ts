@@ -33,11 +33,7 @@ function buildS3PayloadConfig(config: TrainingConfigState) {
   return s3;
 }
 
-/** Whether this configuration asks the backend for a bnb 4-bit load.
- *
- * Exported so the UI can say what the run will do: the backend refuses 4-bit for models
- * routed to the latest-transformers sidecar, and a preview reading "QLoRA · 4-bit" for a
- * 16-bit run understates its VRAM by a wide margin. */
+/** The backend refuses 4-bit for models routed to the latest-transformers sidecar. */
 export function trainingLoadsIn4Bit(
   config: Pick<TrainingConfigState, "trainingMethod" | "selectedModel">,
 ): boolean {
@@ -85,7 +81,6 @@ export function buildTrainingStartPayload(
       ? { ...config.datasetManualMapping }
       : undefined;
 
-  // Inject conversion advisor metadata into the mapping (__ prefix keys)
   const hasAdvisorMeta =
     config.datasetSystemPrompt ||
     Object.keys(config.datasetLabelMapping).length > 0;
@@ -150,9 +145,8 @@ export function buildTrainingStartPayload(
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
-    // max_grad_norm omitted on purpose: the backend now honors an explicit value,
-    // so hardcoding 0 here would pin every UI run to "clipping off" and override
-    // that. Guarded by tests/training-start-payload-grad-norm.test.ts.
+    // max_grad_norm omitted on purpose: the backend honors an explicit value. Guarded by
+    // tests/training-start-payload-grad-norm.test.ts.
     max_grad_value: null,
     random_seed: config.randomSeed,
     packing: isEmbedding || isDecision ? false : config.packing,

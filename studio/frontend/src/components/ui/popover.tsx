@@ -35,8 +35,7 @@ function PopoverContent({
   container?: HTMLElement | null;
 }) {
   const snappedRef = useSnappedPaddingRef(ref);
-  // Inside a modal dialog the body scroll lock swallows wheel events on
-  // body-portaled content; portal into the dialog instead (like Select).
+  // Inside a modal dialog the body scroll lock swallows wheel events; portal into the dialog.
   const dialogContainer = useDialogPortalContainer();
   return (
     <PopoverPrimitive.Portal

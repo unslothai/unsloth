@@ -281,11 +281,8 @@ export async function startFreshTrainingRun(): Promise<boolean> {
     if (useTrainingRuntimeStore.getState().stopRequested) {
       return attempt.cancel();
     }
-    // Upgrade consent first, then the custom-code gate: the same order chat loads use,
-    // because installing a newer transformers changes what the load would even run.
-    // The upgrade check already read this model's config, so carry its custom-code
-    // verdict into the next gate rather than let that gate's fallback re-derive it from
-    // the stored flag, which a fresh run leaves false.
+    // Upgrade consent first, as in chat, since a newer transformers changes what loads. Carry its
+    // custom-code verdict forward; the gate's fallback reads a flag a fresh run leaves false.
     const upgradeVerdict = { requiresTrustRemoteCode: false };
     if (
       !(await confirmSelectedModelTransformersUpgrade(
@@ -480,9 +477,7 @@ async function confirmSelectedModelTransformersUpgrade(
   const outcome = await confirmTrainingTransformersUpgrade({
     modelName,
     hfToken,
-    // Same pin the custom-code gate resolves, so both read one config.json: a cached
-    // model loads from its pinned snapshot, whose architecture can differ from the one
-    // the repo publishes today.
+    // Same pin as the custom-code gate: a cached snapshot's architecture can differ from the repo's.
     modelCachePin: freshModelCachePin(attempt),
   });
   verdict.requiresTrustRemoteCode = outcome.requiresTrustRemoteCode;
@@ -492,7 +487,6 @@ async function confirmSelectedModelTransformersUpgrade(
   return outcome.proceed || attempt.cancel(outcome.error);
 }
 
-/** The copy of the model this start loads, for every gate that has to inspect it. */
 function freshModelCachePin(attempt: FreshTrainingStartAttempt): {
   preferLocalCache: boolean;
   modelLocalPath: string | null;

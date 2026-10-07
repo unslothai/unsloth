@@ -63,7 +63,7 @@ export function useLibraryPreviewUrl(
       cancelled = true;
       void next.then(({ url, streamed }) => !streamed && URL.revokeObjectURL(url), () => {});
     };
-    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // `key` carries the item's identity and version; the object changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   const current = body && state?.key === key ? state : null;
@@ -153,14 +153,13 @@ export function useLibraryThumbnail(
       cancelled = true;
       release();
     };
-    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // `key` carries the item's identity and version; the object changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
   const current = enabled && state?.key === key ? state : null;
   return { url: current?.url ?? null, failed: current !== null && current.url === null };
 }
 
-/** True once the element has come within a screen of the viewport; never flips back. */
 export function useSeen(ref: RefObject<Element | null>): boolean {
   const [seen, setSeen] = useState(() => typeof IntersectionObserver === "undefined");
   useEffect(() => {

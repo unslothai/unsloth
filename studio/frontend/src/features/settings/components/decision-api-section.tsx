@@ -227,7 +227,7 @@ export function DecisionApiSection(): ReactElement | null {
     setBusy(true);
     setError(null);
     try {
-      // Offer the download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
+      // Offer the download on the switch so a first API call does not wait on a 700 MB transfer.
       const nextEnabled = patch.enabled ?? settings?.enabled;
       const nextModel = patch.model ?? settings?.model;
       const settingsPatch =

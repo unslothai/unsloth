@@ -13,16 +13,7 @@ export type SandboxImageState =
 
 const IDLE: SandboxImageState = { status: "idle" };
 
-/**
- * Fetches one auth-protected sandbox file into an object URL.
- *
- * The route answers on the Authorization header (`_authenticate_header_or_query`), so a bare
- * `<img src>` hitting it straight gets a 401 and the renderer's "Image not available" placeholder.
- * Pass the URL from `sandboxFilePath()`/`markdownSandboxImageSrc()` and render what comes back.
- *
- * Keyed by url: an element that moves to another file reads idle rather than showing the previous
- * file's blob, and a stale response can never write state for a url it was not fetched for.
- */
+/** The route needs the Authorization header, so a bare <img src> 401s. Keyed by url. */
 export function useSandboxImage(url: string | null): {
   ref: RefObject<HTMLImageElement | null>;
   state: SandboxImageState;
@@ -94,8 +85,7 @@ export function useSandboxImage(url: string | null): {
 
     return () => {
       controller.abort();
-      // The URL is ours to give up: an aborted fetch that had already made one would otherwise
-      // pin the bytes for the rest of the session.
+      // Revoke even if aborted, or the bytes stay pinned for the session.
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [url, nearViewport]);

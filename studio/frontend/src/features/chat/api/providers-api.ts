@@ -194,9 +194,8 @@ export async function encryptProviderApiKey(
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  // include_hidden asks for the backend-only entries (the self-hosted presets), which carry the
-  // studio-tools capability the composer gates on. An older backend ignores the parameter and
-  // returns the visible entries, so the capability reads as unknown and the pills stay closed.
+  // include_hidden returns the self-hosted presets carrying the studio-tools capability; older
+  // backends ignore it, leaving the capability unknown.
   const response = await authFetch(
     "/api/providers/registry?include_hidden=true&include_oauth=true",
   );
@@ -247,8 +246,7 @@ export async function deleteProviderConfig(providerId: string): Promise<void> {
   const response = await authFetch(`/api/providers/${providerId}`, {
     method: "DELETE",
   });
-  // Treat 404 as success: another tab already deleted this provider, so pruning the stale cache is
-  // correct. Otherwise the caller throws and the user is stuck with an entry they cannot remove.
+  // 404 means another tab deleted it; prune the cache instead of throwing.
   if (response.status === 404) {
     return;
   }

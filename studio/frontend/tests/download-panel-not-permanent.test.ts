@@ -1,18 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The Downloads overlay must unmount when the job list is empty (#9849, which
- * shipped a permanent corner FAB and was reverted by #10298).
- *
- * The second consequence is the one that reads as harmless: the rail is a
- * `flex flex-col gap-2` column, so a panel returning a wrapper instead of
- * `null` takes a slot and its gap, pushing the loaded models card off the
- * corner it is meant to hold.
- *
- * Read from the source: the node suite has no DOM. Matched through the AST, so
- * reformatting or a rename of `jobKeys` cannot quietly retire it.
- */
+/** The Downloads overlay must return null when empty; matched via the AST, not text. */
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -51,7 +40,6 @@ function panelComponent(): ts.FunctionDeclaration {
   return found;
 }
 
-/** The ordered-job-keys local, found by its initializer so a rename cannot slip past. */
 function jobKeysBinding(component: ts.FunctionDeclaration): string {
   let name: string | null = null;
   const visit = (node: ts.Node): void => {
@@ -80,11 +68,9 @@ job list at all, it can no longer know when to unmount.`,
   return name;
 }
 
-/** Operand order matters: unordered also accepts `0 < jobKeys.length`, the inverse. */
 function isEmptyTest(node: ts.Node, jobKeys: string): boolean {
   const length = `${jobKeys}.length`;
   const K = ts.SyntaxKind;
-  // [left, operator, right], each meaning the list is empty.
   const shapes: [string, ts.SyntaxKind, string][] = [
     [length, K.EqualsEqualsEqualsToken, "0"],
     ["0", K.EqualsEqualsEqualsToken, length],
@@ -106,16 +92,9 @@ function isEmptyTest(node: ts.Node, jobKeys: string): boolean {
   );
 }
 
-/**
- * Does an empty list force `condition` true? Finding the comparison somewhere
- * inside it is a different question, wrong in both directions: `... === 0 &&
- * activeCount > 0` covers some empty states, `!(... === 0)` none. Evaluated with
- * the empty test pinned true and every other term unknown.
- */
 type Truth = true | false | null;
 
 function underAnEmptyList(node: ts.Node, jobKeys: string): Truth {
-  // Queued plans show before their first job exists, so the panel hides only when both are empty.
   const queued = panelComponent().body?.statements.flatMap(statement =>
     ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : []
   ).find(declaration => declaration.initializer?.getText() === "useQueuedHubEntries()")?.name.getText();
@@ -145,7 +124,7 @@ function underAnEmptyList(node: ts.Node, jobKeys: string): Truth {
       return null;
     }
   }
-  return null; // Unknown, so it cannot carry the guard.
+  return null;
 }
 
 function returnsNull(statement: ts.Statement): boolean {
@@ -162,7 +141,6 @@ test("the Downloads overlay unmounts when there are no jobs", () => {
   const jobKeys = jobKeysBinding(component);
   const statements = component.body?.statements ?? ts.factory.createNodeArray();
 
-  // Top level only: a nested guard still leaves mounted-and-empty states.
   const guarded = statements.some(
     (statement) =>
       ts.isIfStatement(statement) &&
@@ -185,8 +163,6 @@ Expected something of the shape:  if (... || ${jobKeys}.length === 0) return nul
 });
 
 test("the rail-facing wrapper can still be squeezed by the rail's cap", () => {
-  // min-h-0: without it a flex item floors at auto and the capped rail squeezes
-  // the update card above instead of this list.
   const source = readFileSync(
     new URL(`../src/${PANEL_PATH}`, import.meta.url),
     "utf8",
@@ -211,7 +187,6 @@ squeeze the update card above this list instead of the list`,
 });
 
 test("the Downloads panel sits above the loaded models card in both rails", () => {
-  // The loaded models card holds the corner; this one comes and goes above it.
   const tags: { name: string; at: number }[] = [];
   const visit = (node: ts.Node): void => {
     const opening = openingTag(node);

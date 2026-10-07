@@ -12,8 +12,7 @@ import {
 const VIEWPORT = { width: 1440, height: 900 };
 const CARD = { width: 268, height: 160 };
 
-// The collapsed pill is both the drag handle and the button that expands the
-// card, so a press that barely moves has to stay a click.
+// The collapsed pill is also the expand button, so tiny moves stay clicks.
 test("a press that barely moves is a click, not a drag", () => {
   assert.equal(passedDragThreshold(0, 0), false);
   assert.equal(passedDragThreshold(2, 2), false);
@@ -52,8 +51,6 @@ test("dragging past an edge keeps the whole card on screen", () => {
   assert.deepEqual(offTopLeft, { left: 8, top: 8 });
 });
 
-// Expanding a pill that was dragged to the bottom edge grows the card
-// downwards, which is what the re-clamp on resize has to catch.
 test("a card taller than the space left is pulled back up", () => {
   const grown = clampToViewport(
     { left: 100, top: VIEWPORT.height - 60 },

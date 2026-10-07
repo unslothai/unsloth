@@ -54,7 +54,6 @@ function findNode<T extends ts.Node>(
   return found;
 }
 
-// Execute the shipped callback and persistence guard without mounting the UI.
 const selector = readSource(
   "../src/features/model-picker/components/model-selector.tsx",
 );

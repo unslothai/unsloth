@@ -25,8 +25,7 @@ import { updateHubSource, useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 import { useHubName, useHubSource } from "@/lib/hf-endpoint";
 
-// Only a browser reporting itself offline earns "You're offline". Calling a DNS
-// filter or extension block "offline" is what made these bugs undiagnosable.
+// Only navigator offline earns "You're offline"; DNS filters and blockers are not offline.
 function describeFailure(
   failure: HubFailure | null | undefined,
   online: boolean,
@@ -62,7 +61,6 @@ function describeFailure(
             : failure.message,
         offlineLike: false,
       };
-    // Reached and refused: the fix is the token, not the connection or the hub.
     case "auth-rejected":
       return {
         title: `${hub} rejected your token`,
@@ -153,8 +151,7 @@ export function NetworkErrorState({
   onSwitchDevice?: () => void;
   resourceLabel?: "models" | "datasets";
 }) {
-  // An SDK error the network layer never saw (the Hub answered 401) carries only
-  // its text, so the refusal is recovered from it rather than called unreachable.
+  // An SDK 401 error carries only text, so the refusal is recovered from the message.
   const shown = failure ?? hubAuthFailure({ message });
   const { title, body, offlineLike, tokenRejected } = describeFailure(
     shown,
@@ -183,7 +180,6 @@ export function NetworkErrorState({
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
         {tokenRejected ? <UpdateTokenButton /> : null}
-        {/* A reachable hub answering an HTTP error is no reason to switch hubs. */}
         {shown && !offlineLike && !tokenRejected ? <UseModelScopeButton /> : null}
         {onSwitchDevice ? (
           <button
@@ -232,7 +228,6 @@ export function HubFailureHint({
       <div className="space-y-0.5">
         <p className="text-xs font-medium text-foreground">{title}</p>
         <p className="text-xs leading-relaxed text-muted-foreground">{body}</p>
-        {/* A classified failure already names the cause; an HTTP error only has its message. */}
         {failure || !message ? null : (
           <p className="text-xs text-muted-foreground/70">{message}</p>
         )}
@@ -328,16 +323,13 @@ export function DiscoverFetchMoreFooter({
   hasActiveFilters: boolean;
   isLoadingMore: boolean;
   onFetchMore: () => void;
-  /** The last attempt failed, so this is the only recovery left on screen. */
   failed?: boolean;
-  /** The classified, already sanitized cause. Shown here because this footer
-   *  outlives the toast that would otherwise be the only place it appeared. */
+  /** Shown here because this footer outlives the toast. */
   failureText?: string;
   onRetry?: () => void;
 }) {
   return (
     <div className="relative z-10 flex flex-col items-center gap-2 rounded-[16px] bg-card px-4 py-4 text-center">
-      {/* Only warn about hidden results when a filter is actually narrowing them. */}
       {hasActiveFilters && (
         <p className="text-ui-11p5 leading-4 text-muted-foreground">
           Some results may be hidden by your filters.
@@ -449,8 +441,7 @@ const MIN_SKELETON_ROWS = 4;
 const MAX_SKELETON_ROWS = 24;
 const DEFAULT_SKELETON_ROWS = 6;
 
-// The row's padding, avatar and bars follow the UI font size, so the estimate
-// does too, or the list under-fills at small sizes and overflows at large.
+// Follows the UI font scale, or the list under- or over-fills.
 function clampSkeletonCount(height: number, scale: number): number {
   if (!Number.isFinite(height) || height <= 0) return DEFAULT_SKELETON_ROWS;
   const rowHeight = SKELETON_ROW_ESTIMATE_PX * scale;

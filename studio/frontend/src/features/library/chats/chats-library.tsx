@@ -245,7 +245,6 @@ export interface FavoriteChatEntries {
   cards: { key: string; node: ReactNode }[];
 }
 
-/** The Chats tab. `embedded`: starred items only, for Favorites, with no header or filters. */
 export function ChatsLibrary({
   search,
   title,
@@ -266,10 +265,8 @@ export function ChatsLibrary({
   const navigate = useNavigate();
 
   const section: ChatsSection = search.chatSection ? "chats" : (search.chatView ?? "all");
-  // Open section page; `section` is the pill. Projects have no page here: they open in Chat.
   const openSectionId = search.chatSection ?? null;
 
-  // Metadata only, like the sidebar. The default reads every message.
   const {
     items,
     archivedItems,
@@ -284,7 +281,6 @@ export function ChatsLibrary({
   const unpinProject = usePinnedProjectsStore((s) => s.unpin);
   const alwaysDeleteChatFiles = useChatPreferencesStore((s) => s.alwaysDeleteChatFiles);
   const confirmDeleteChats = useChatPreferencesStore((s) => s.confirmDeleteChats);
-  // Shared with the sidebar: filing a chat here files it there.
   const sections = useSidebarOrganizationStore((s) => s.customSections);
   const sectionByChatId = useSidebarOrganizationStore((s) => s.sectionByChatId);
   const setChatsSection = useSidebarOrganizationStore((s) => s.setChatsSection);
@@ -329,7 +325,7 @@ export function ChatsLibrary({
   const [filters, setFilters] = useState<ChatFilters>(EMPTY_CHAT_FILTERS);
   const [selection, setSelectionState] = useState<Set<string>>(new Set());
   const selectionAnchor = useRef<string | null>(null);
-  // Clearing drops the shift-click anchor too, or the next range reaches a row no longer selected.
+  // Clearing drops the shift-click anchor too, or the next range targets an unselected row.
   const setSelection = useCallback((next: SetStateAction<Set<string>>) => {
     if (typeof next !== "function" && next.size === 0) selectionAnchor.current = null;
     setSelectionState(next);
@@ -338,7 +334,6 @@ export function ChatsLibrary({
   const [renaming, setRenaming] = useState<SidebarItem | null>(null);
   const [editing, setEditing] = useState<ProjectRecord | null>(null);
   const [creatingProject, setCreatingProject] = useState(false);
-  // Section a project made from its menu is filed in.
   const [newProjectSection, setNewProjectSection] = useState<string | null>(null);
   const newProjectInSection = (sectionId: string) => {
     setNewProjectSection(sectionId);
@@ -350,7 +345,7 @@ export function ChatsLibrary({
     chats: SidebarItem[];
     project?: ProjectRecord;
   } | null>(null);
-  // Just-created section: its store update lands a render after the page opens.
+  // Its store update lands a render after the page opens.
   const [awaitedSection, setAwaitedSection] = useState<string | null>(null);
   const [renamingSection, setRenamingSection] = useState<SidebarCustomSection | null>(null);
   if (awaitedSection !== null && sections.some((entry) => entry.id === awaitedSection)) {
@@ -406,7 +401,6 @@ export function ChatsLibrary({
   ];
   const ungrouped = embedded || section === "all";
   const groupBy = !ungrouped && groupOptions.includes(prefs.groupBy) ? prefs.groupBy : "none";
-  // Pinned chats get their own group; floating them within groups broke time order.
   const pinnedFirst = prefs.pinnedFirst && !archived && !embedded;
   const visibleChats = useMemo(() => {
     const matched = filterChats(scoped, listQuery, filters, context);
@@ -507,7 +501,6 @@ export function ChatsLibrary({
     () => groups.flatMap((group) => group.items.map((chat) => chat.id)),
     [groups],
   );
-  // Headings count all matches, not just the loaded page.
   const groupTotals = useMemo(
     () =>
       groupBy === "none"
@@ -545,7 +538,7 @@ export function ChatsLibrary({
     [openSectionId, projects, sections, allModelFacets, filters.models],
   );
 
-  // Drop ticked filters whose project, section or model is gone: they can't be unticked.
+  // Gone filters cannot be unticked, so drop them.
   if (loaded && projectsLoaded) {
     const liveProjects = [...filters.projects].filter((id) => id === NO_PROJECT || projectNames.has(id));
     const liveSections = [...filters.sections].filter(
@@ -608,7 +601,6 @@ export function ChatsLibrary({
     }
   };
 
-  /** Files the new chat on its first send; the sidebar watches for the mark set here. */
   const newChatInSection = (sectionId: string) => {
     const nonce = crypto.randomUUID();
     clearNewChatDraft();
@@ -661,7 +653,6 @@ export function ChatsLibrary({
     );
   };
 
-  /** null unfiles. Filing unpins (Pinned would still show it) and unhides the section. */
   const fileInSection = (chats: SidebarItem[], sectionId: string | null, name?: string) => {
     const ids = chats.map((chat) => chat.id);
     setSelection(new Set());
@@ -797,7 +788,6 @@ export function ChatsLibrary({
           await deleteChatItems(target.chats, activeChatId(), () => {}, {
             deleteFiles: target.deleteFiles,
           });
-          // After the delete: a failed one restores the chats with their marks.
           const ids = target.chats.map((chat) => chat.id);
           setFavoriteChats(ids, false);
           setPinned(ids, false);
@@ -1431,7 +1421,6 @@ export function ChatsLibrary({
       return {
         title: t("library.dialog.deleteTitle", { name: pendingDelete.project.name }),
         description: t("library.chats.dialog.deleteProjectDescription", {
-          // Archived chats are deleted with the project too.
           count:
             (stats.get(pendingDelete.project.id)?.chats ?? 0) +
             (stats.get(pendingDelete.project.id)?.archived ?? 0),

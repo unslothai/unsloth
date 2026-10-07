@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Compatibility of the stored MLX context pin, which moved from `maxSeqLength` into
-// `customContextLength` without a schema bump: `toStoredConfig` stamps both shapes
-// version 1, so neither direction can tell them apart.
-//
-// Backwards works: `savedContextPin` reads either field.
-//
-// Forwards does not, and the last section demonstrates it rather than asserting it away.
-// An old client's model-config page resolves a non-GGUF context from `config.maxSeqLength`
-// alone (model-config-page.tsx on main, ~2711), so a new record reads as 4096 and as "at
-// default settings". Only that page: main's `resolveLoadMaxSeqLength` and its compare-pane
-// rule both read `customContextLength` first, so auto-load and compare still honour it.
+// The pin moved fields without a schema bump, so an old client's config page misreads new
+// records (its auto-load and compare pane still honour them).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -47,11 +38,9 @@ const { resolveLoadMaxSeqLength } = await import(
 
 const STORAGE_KEY = "unsloth_model_configs";
 const MODEL = "mlx-community/Qwen3-8B-4bit";
-/** The window an MLX model of this size reports; only used as the "native" input. */
 const NATIVE = 262144;
 
 
-/** The storage key `savePerModelConfig` uses for MODEL, discovered rather than guessed. */
 function storageKeyForModel(): string {
   store.clear();
   assert.ok(
@@ -75,7 +64,6 @@ function storageKeyForModel(): string {
 
 const MODEL_KEY = storageKeyForModel();
 
-/** Put `raw` in storage verbatim, bypassing normalization, and read it back the way the app does. */
 function stage(raw: Record<string, unknown>) {
   store.clear();
   // The legacy migration runs on the first read and would merge an unrelated blob in.
@@ -84,7 +72,6 @@ function stage(raw: Record<string, unknown>) {
   return resolveInitialConfig(MODEL, null);
 }
 
-/** The version `toStoredConfig` stamps on a record carrying this pin and nothing else. */
 function stampedVersion(patch: Record<string, unknown>): number {
   store.clear();
   assert.ok(
@@ -101,14 +88,10 @@ function stampedVersion(patch: Record<string, unknown>): number {
 type Row = {
   name: string;
   raw: Record<string, unknown>;
-  /** After `normalize`, which is what every reader outside a raw preset sees. */
   normalizedPin: number | null;
-  /** `savedContextPin` applied to the RAW record, which preset code does reach. */
   rawPin: number | null;
   isDefault: boolean;
-  /** `readable: false` means the future-schema guard refuses the record entirely. */
   readable: boolean;
-  /** What /load is asked for on each backend, with the control untouched. */
   mlxRequest: number;
   transformersRequest: number;
   note?: string;
@@ -165,8 +148,7 @@ const ROWS: Row[] = [
     name: "zero in both fields",
     raw: { version: 1, customContextLength: 0, maxSeqLength: 0 },
     normalizedPin: null,
-    // 0 is neither null nor undefined, so `??` keeps it: an unnormalized record yields a
-    // falsy 0 "pin". Reachable because preset code calls savedContextPin on raw shapes.
+    // `??` keeps 0, so an unnormalized record yields a falsy 0 pin.
     rawPin: 0,
     isDefault: true,
     readable: true,
@@ -186,7 +168,6 @@ const ROWS: Row[] = [
   {
     name: "non-integer in both fields",
     raw: { version: 1, customContextLength: 8192.7, maxSeqLength: 8192.7 },
-    // Floors vs snaps to 128: both land on 8192 by different arithmetic.
     normalizedPin: 8192,
     rawPin: 8192.7,
     isDefault: false,
@@ -213,15 +194,13 @@ const ROWS: Row[] = [
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
-    // Above STORAGE_SCHEMA_VERSION: loadPerModelConfig refuses it, so the pin is unread
-    // and the record is safe from being overwritten.
+    // Above STORAGE_SCHEMA_VERSION: loadPerModelConfig refuses it.
     readable: false,
     mlxRequest: 0,
     transformersRequest: DEFAULT_MAX_SEQ_LENGTH,
   },
 ];
 
-/** The n_ctx `/load` is asked for, through the shipped resolver, control untouched. */
 function loadRequest(
   config: { customContextLength: number | null; maxSeqLength: number | null },
   isMlx: boolean,
@@ -280,7 +259,6 @@ test("contextPinPatch writes the pin in exactly one field and clears the other",
 });
 
 test("contextPinPatch bounds without snapping, and never writes a blank", () => {
-  // Bounded to what /load accepts, not snapped to the control's 128 step.
   assert.equal(contextPinPatch(8193, true).customContextLength, 8193);
   assert.equal(contextPinPatch(8192.7, true).customContextLength, 8192);
   assert.equal(
@@ -317,7 +295,6 @@ test("a patched pin round-trips through storage on both backends", () => {
     assert.ok(remembered);
     assert.equal(savedContextPin(config), 32768, `isMlx=${isMlx}`);
     assert.equal(loadRequest(config, isMlx), 32768, `isMlx=${isMlx}`);
-    // And the cross-backend read: the same record on a host serving the OTHER backend.
     assert.equal(
       loadRequest(config, !isMlx),
       32768,
@@ -330,8 +307,6 @@ test("a patched pin round-trips through storage on both backends", () => {
 test("both pin shapes are stamped version 1, so neither is distinguishable by version", () => {
   assert.equal(stampedVersion({ customContextLength: 32768 }), 1);
   assert.equal(stampedVersion({ maxSeqLength: 32768 }), 1);
-  // The current client's forwards guard is `version > 9`, and v1 invites any client
-  // back to v1 to rewrite the record.
   assert.equal(
     stage({ version: 1, customContextLength: 32768 }).remembered,
     true,
@@ -376,23 +351,7 @@ test("int8 prefill defaults off, and only an enabled one stamps v9", () => {
 });
 
 
-/**
- * The old model-config page's read rule for a NON-GGUF target, transcribed from
- * `studio/frontend/src/features/model-picker/components/model-config-page.tsx` on main:
- *
- *   ~2699  const contextAtDefault = !target.isGguf || config.customContextLength == null;
- *   ~2700  const atDefault = contextAtDefault && perModelConfigsEqual(
- *              { ...config, customContextLength: null }, DEFAULT_PER_MODEL_CONFIG);
- *   ~2711  const maxSeqLengthValue =
- *              normalizeMaxSeqLength(config.maxSeqLength) ??
- *              clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
- *   ~3126  const effectiveLoadConfig = target.isGguf
- *              ? effectiveRuntimeConfig
- *              : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
- *
- * `customContextLength` appears in none of the three that decide the number, and the one
- * place it does appear deletes it before comparing.
- */
+/** Old model-config-page.tsx rule for non-GGUF: reads only maxSeqLength. */
 function oldClientConfigPage(
   config: PerModelConfig,
   native: number,
@@ -401,7 +360,6 @@ function oldClientConfigPage(
   const shown =
     normalizeMaxSeqLength(config.maxSeqLength) ??
     clamp(DEFAULT_MAX_SEQ_LENGTH, native);
-  // contextAtDefault is unconditional for non-GGUF and nulls customContextLength out.
   const showsAsDefault = isDefaultConfig({
     ...config,
     customContextLength: null,
@@ -436,7 +394,7 @@ test("FORWARDS-COMPAT GAP: an old client's config page silently drops a new reco
   assert.equal(old.loadRequests, DEFAULT_MAX_SEQ_LENGTH);
   assert.equal(old.showsAsDefault, true);
 
-  // Nothing in the record could warn it: the stamp is 1 and its guard is `version > 5`.
+  // The stamp is 1 and the old client's guard is `version > 5`, so nothing warns it.
   assert.ok((record.version as number) <= 5);
 
   const table = [
@@ -463,10 +421,7 @@ test("FORWARDS-COMPAT GAP: an old client's config page silently drops a new reco
 });
 
 test("the gap is the config page's, not resolveLoadMaxSeqLength's", () => {
-  // main's resolveLoadMaxSeqLength reads customContextLength first, unconditionally, for
-  // every backend -- the signature changed in this PR but that first branch did not. So
-  // the auto-load path in chat-adapter still honours a new record on an old client, and
-  // "the old client loses the pin" would be too strong a claim to make unqualified.
+  // main's resolveLoadMaxSeqLength reads customContextLength first, so auto-load keeps the pin.
   store.clear();
   assert.ok(
     savePerModelConfig(MODEL, null, {
@@ -475,13 +430,11 @@ test("the gap is the config page's, not resolveLoadMaxSeqLength's", () => {
     }),
   );
   const { config } = resolveInitialConfig(MODEL, null);
-  // The old signature, with the old argument names, on the same record.
   const oldResolverAnswer =
     config.customContextLength != null
       ? config.customContextLength
       : (normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH);
   assert.equal(oldResolverAnswer, 32768);
-  // And main's compare-pane rule (shared-composer.tsx ~1404), likewise.
   const oldComparePaneAnswer =
     config.customContextLength ??
     normalizeMaxSeqLength(config.maxSeqLength) ??

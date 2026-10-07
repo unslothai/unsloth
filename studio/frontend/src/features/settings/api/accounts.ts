@@ -44,7 +44,7 @@ async function accountsRequest(
   return response;
 }
 const accountPath = (accountId: string) => `/${encodeURIComponent(accountId)}`;
-// Recheck installation policy after mutations; a failed status read must not lose a one-time code.
+// A failed status read must not lose a one-time code.
 async function refreshAccountPolicy(): Promise<void> {
   await fetchAuthStatus().catch(() => undefined);
 }

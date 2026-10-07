@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Image/video auto-switch rides the shared auto-switch PUT but is its own
-// setting: saving it must not carry any other field along, and a backend that
-// predates it must read as off rather than inheriting the chat toggle.
+// A backend predating this setting must read as off, not inherit the chat toggle.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -11,8 +9,7 @@ import test from "node:test";
 
 import { installLocalStorageFake } from "./helpers/kit.ts";
 
-// The settings API modules reach authFetch through the auth barrel, which
-// re-exports login-page.tsx. See helpers/auth-stub.mjs.
+// The settings API reaches authFetch via the auth barrel; see helpers/auth-stub.mjs.
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
 installLocalStorageFake();
 
@@ -92,7 +89,7 @@ test("saving it alone leaves the other switches untouched", async () => {
 });
 
 test("a false toggle is sent, not dropped as absent", async () => {
-  // Only `undefined` means "leave stored"; turning the switch OFF has to reach the server.
+  // Only undefined means leave stored; false must reach the server.
   invalidateOpenAIAutoSwitchSettings();
   bodies.length = 0;
   await updateOpenAIAutoSwitchSettings({

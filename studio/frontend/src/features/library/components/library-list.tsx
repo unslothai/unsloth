@@ -23,7 +23,6 @@ function targetKey(target: LibraryTarget): string {
 }
 
 const ROW_INSET = "pl-4 pr-6";
-// Gap, not padding, so each row's hover area keeps its width.
 export const LIST_ROW_GAP = "gap-1";
 
 const CELL = "hidden text-ui-13 text-muted-foreground sm:block";
@@ -191,7 +190,6 @@ export function LibraryList({
   sort: LibrarySortState;
   onSortChange: (key: LibrarySortKey) => void;
   activity: boolean;
-  /** Rows listed first, with own menus and no selection (Favorites' starred chats). */
   leading?: ReactNode;
   favoriteMarks?: boolean;
 }) {
@@ -213,7 +211,6 @@ export function LibraryList({
 
   return (
     <div>
-      {/* The padding sits outside the row, so the checkbox centers on the column titles. */}
       <div className="pb-2">
         <div
           className={cn(
@@ -221,7 +218,6 @@ export function LibraryList({
             ROW_INSET,
           )}
         >
-          {/* Ticked only once everything is: a partial tick read as every row being selected. */}
           <GutterCheckbox
             checked={allSelected}
             visible={selecting}

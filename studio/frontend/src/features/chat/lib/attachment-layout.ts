@@ -9,7 +9,6 @@ export const SENT_ATTACHMENT_LIST_MAX = 6;
 export const COMPOSER_ATTACHMENT_MAX_ROWS = 2;
 
 export function sentAttachmentLayout(
-  // The Appearance setting of the same name; spelled out so this module imports nothing.
   setting: "auto" | "list" | "chips",
   count: number,
 ): SentAttachmentLayout {
@@ -26,7 +25,7 @@ export function composerAttachmentsOverflow(
   gap: number,
 ): boolean {
   if (count === 0 || cardWidth <= 0) return false;
-  // Cards sized to a fifth of the row divide it exactly; the slack absorbs subpixel rounding.
+  // The slack absorbs subpixel rounding.
   const perRow = Math.max(1, Math.floor((width + gap) / (cardWidth + gap) + 0.01));
   return Math.ceil(count / perRow) > COMPOSER_ATTACHMENT_MAX_ROWS;
 }

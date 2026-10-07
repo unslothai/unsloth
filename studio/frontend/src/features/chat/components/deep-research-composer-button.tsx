@@ -25,7 +25,6 @@ import {
 import { MAX_RESEARCH_MODEL_TIMEOUT_SECONDS } from "../utils/mirrored-chat-settings";
 import type { ResearchWebsitePolicy } from "../types/research";
 
-// The field is in minutes; its ceiling is the seconds cap the backend enforces.
 const MAX_RESEARCH_MODEL_TIMEOUT_MINUTES = Math.floor(
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60,
 );
@@ -99,7 +98,6 @@ function DomainList({
           {description}
         </p>
       </div>
-      {/* One Input-styled field with the domains as chips. A click anywhere focuses it. */}
       <div
         onClick={(event) => event.currentTarget.querySelector("input")?.focus()}
         className={cn(
@@ -181,7 +179,6 @@ export function DeepResearchComposerButton({
         <XIcon className="composer-pill-x" />
       </span>
       <span>Deep research</span>
-      {/* Same caret as the other composer pills, so the arrows match. */}
       <HugeiconsIcon
         icon={ChevronDownStandardIcon}
         strokeWidth={1.5}
@@ -239,7 +236,6 @@ function DeepResearchWebsiteAccessContent({
 }) {
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
   const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
-  // Unlimited has no minutes of its own, so turning the limit back on offers the default.
   const [timeoutMinutes, setTimeoutMinutes] = useState(
     String(
       Math.ceil(
@@ -247,14 +243,12 @@ function DeepResearchWebsiteAccessContent({
       ),
     ),
   );
-  // The API accepts second-level values the minutes field cannot spell, so saving an untouched
-  // control must replay the stored seconds rather than the rounded minutes.
+  // Replay stored seconds when untouched: the minutes field cannot spell every API value.
   const [timeoutEdited, setTimeoutEdited] = useState(false);
 
   return (
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        {/* Icon and title, as in the Skills dialog. */}
         <div className="flex items-center gap-2">
           <HugeiconsIcon icon={Telescope02Icon} strokeWidth={1.75} className="size-5 text-primary" />
           <DialogTitle>Deep research</DialogTitle>
@@ -276,7 +270,6 @@ function DeepResearchWebsiteAccessContent({
                   : "Maximum time for each model request, so a run of many requests can take longer. Output stall safeguards stay active."}
               </p>
             </div>
-            {/* A switch: it is a state, so its label never flips. */}
             <label
               htmlFor="research-no-time-limit"
               className="flex shrink-0 cursor-pointer items-center gap-2 pt-0.5 text-sm text-muted-foreground"
@@ -332,8 +325,7 @@ function DeepResearchWebsiteAccessContent({
           onClick={() => {
             setPolicy(draft);
             const minutes = Number(timeoutMinutes);
-            // The max attribute does not stop a typed value reaching here, and falling through to the default
-            // would hand someone asking for a long run a short one.
+            // max does not stop a typed value; falling to the default would shorten a long run.
             setModelTimeoutSeconds(
               unlimited
                 ? 0

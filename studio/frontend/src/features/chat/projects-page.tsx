@@ -107,17 +107,12 @@ import {
 import { clearNewChatDraft } from "./utils/composer-draft";
 import { runChatImport } from "./utils/import-chats";
 
-// Reveal this many more projects each time the user scrolls near the bottom.
 const PROJECTS_PAGE_STEP = 12;
-// A streaming chat fires the history event per chunk; one reload per quiet window is enough.
+// Streaming fires the history event per chunk, so debounce reloads.
 const PROJECT_CHATS_REFRESH_DEBOUNCE_MS = 300;
-// Visible count before the fit-to-height measurement runs.
 const PROJECTS_INITIAL_FALLBACK = 8;
-// Approx list row height in px, used to estimate how many rows fit the page.
 const PROJECTS_ROW_HEIGHT = 68;
 
-// Updated column, matching a file-list feel: Today / Yesterday / N days ago, then a short date
-// once it is over a week old.
 function formatUpdated(ts: number): string {
   if (!Number.isFinite(ts)) return "";
   const now = new Date();
@@ -150,9 +145,7 @@ export function ProjectsPage() {
   const { projects, hasLoaded } = useChatProjects();
 
   const [query, setQuery] = useState("");
-  // Newest first, the way a file list opens.
   const [sortDir, setSortDir] = useState<"desc" | "asc">("desc");
-  // Rows that fit the page height (measured), plus any revealed via Show more.
   const [baseFit, setBaseFit] = useState(PROJECTS_INITIAL_FALLBACK);
   const [extraCount, setExtraCount] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
@@ -185,7 +178,6 @@ export function ProjectsPage() {
   const [renamingChat, setRenamingChat] = useState<SidebarItem | null>(null);
   const [chatNameDraft, setChatNameDraft] = useState("");
   const [deletingChat, setDeletingChat] = useState<SidebarItem | null>(null);
-  // Whether the open confirmation takes the files too. Seeded per delete, never left standing.
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
 
   const globalImportRef = useRef<HTMLInputElement>(null);
@@ -194,18 +186,13 @@ export function ProjectsPage() {
   const [importing, setImporting] = useState(false);
   // null = Recents
   const [importTargetId, setImportTargetId] = useState<string | null>(null);
-  // Rows open their own chats in place, loaded the first time they are opened.
   const [openProjectIds, setOpenProjectIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  // Grouped as the sidebar groups them, so a comparison is one row that opens as one.
-  // "error" is a failed first load: the row says so and offers a retry, and reopening it loads
-  // again rather than trusting the entry.
+  // "error" is a failed first load; reopening retries rather than trusting it.
   const [projectChats, setProjectChats] = useState<
     Record<string, SidebarItem[] | "loading" | "error">
   >({});
-  // Rows kept on screen after a reload failed: they may miss a chat or show one that is gone,
-  // so the row says so, and its next open asks again.
   const [staleProjectIds, setStaleProjectIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -219,13 +206,11 @@ export function ProjectsPage() {
     });
   }, []);
 
-  // One sequence per project: a response that a newer request overtook is dropped, so a chat
-  // moved or deleted mid-flight cannot come back.
+  // Per-project sequence so an overtaken response cannot resurrect moved chats.
   const loadSeqRef = useRef(new Map<string, number>());
   const loadProjectChats = useCallback((projectId: string, silent = false) => {
     const seq = (loadSeqRef.current.get(projectId) ?? 0) + 1;
     loadSeqRef.current.set(projectId, seq);
-    // A reload keeps the rows on screen; only a first load shows the skeleton.
     if (!silent) {
       setProjectChats((prev) => ({ ...prev, [projectId]: "loading" }));
     }
@@ -242,9 +227,6 @@ export function ProjectsPage() {
       })
       .catch(() => {
         if (loadSeqRef.current.get(projectId) !== seq) return;
-        // A failed reload keeps rows already showing, marked stale; anything else becomes a
-        // retryable error, including a first load this reload overtook while it was still
-        // pending, and a folder loaded as empty, which the reload may have been about to fill.
         setProjectChats((prev) => {
           const rows = prev[projectId];
           if (silent && Array.isArray(rows) && rows.length > 0) {
@@ -256,9 +238,6 @@ export function ProjectsPage() {
       });
   }, [setStale]);
 
-  // A loaded list goes stale when chats are imported, moved or deleted. Streaming fires the
-  // event per chunk, so the reload is debounced: open rows reload in place, the rest load
-  // again on their next open.
   const openProjectIdsRef = useRef(openProjectIds);
   useEffect(() => {
     openProjectIdsRef.current = openProjectIds;
@@ -270,7 +249,7 @@ export function ProjectsPage() {
       timer = setTimeout(() => {
         timer = null;
         const open = openProjectIdsRef.current;
-        // A closed project's load may still be in flight; its answer must not refill the cache.
+        // A closed project's load may still be in flight; it must not refill the cache.
         for (const [id, seq] of loadSeqRef.current) {
           if (!open.has(id)) loadSeqRef.current.set(id, seq + 1);
         }
@@ -337,8 +316,6 @@ export function ProjectsPage() {
     );
     return filtered;
   }, [projects, query, sortDir]);
-  // Default view shows as many rows as fit the page, then loads more as the user scrolls near the
-  // bottom. Search always spans every project.
   const isSearching = query.trim() !== "";
   const visibleCount = baseFit + extraCount;
   const visibleProjects = isSearching
@@ -346,7 +323,6 @@ export function ProjectsPage() {
     : sortedProjects.slice(0, visibleCount);
   const hasMore = !isSearching && sortedProjects.length > visibleCount;
 
-  // The list only renders once at least one project exists, so its step is dropped until then.
   const tourSteps = useMemo(
     () => buildProjectsTourSteps({ hasProjects: visibleProjects.length > 0 }),
     [visibleProjects.length],
@@ -361,14 +337,12 @@ export function ProjectsPage() {
     signalReady();
   }, [hasLoaded, signalReady]);
 
-  // Estimate how many rows fit below the list's top so the first page fills the screen without
-  // loading everything up front.
   useEffect(() => {
     function measure() {
       const el = listRef.current;
       if (!el) return;
       const top = el.getBoundingClientRect().top;
-      const reserve = 24; // bottom breathing room
+      const reserve = 24;
       const fits = Math.floor(
         (window.innerHeight - top - reserve) / PROJECTS_ROW_HEIGHT,
       );
@@ -379,7 +353,6 @@ export function ProjectsPage() {
     return () => window.removeEventListener("resize", measure);
   }, [hasLoaded]);
 
-  // Infinite scroll: reveal another page-step whenever the sentinel near the list bottom scrolls into view.
   useEffect(() => {
     const el = sentinelRef.current;
     if (!el || !hasMore) return;
@@ -393,8 +366,7 @@ export function ProjectsPage() {
     );
     io.observe(el);
     return () => io.disconnect();
-    // Re-observe after each load so it keeps filling while the sentinel stays in view
-    // (IntersectionObserver does not re-fire on a steady intersection).
+    // IntersectionObserver does not re-fire on a steady intersection, so re-observe.
   }, [hasMore, visibleCount]);
 
   function toggleProjectChats(projectId: string) {
@@ -405,8 +377,6 @@ export function ProjectsPage() {
       else next.delete(projectId);
       return next;
     });
-    // Only an open asks: a close after a failed load must not start a request the reopen
-    // then waits on.
     if (!opening) return;
     const cached = projectChats[projectId];
     const loaded = cached !== undefined && cached !== "error";
@@ -418,7 +388,6 @@ export function ProjectsPage() {
   function openChat(item: SidebarItem, projectId: string) {
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveProjectId(projectId);
-    // A comparison restores from its pair id; a pane opened as a thread is half of it.
     if (item.type === "compare") {
       runtime.setActiveThreadId(null);
       navigate({ to: "/chat", search: { compare: item.id, project: projectId } });
@@ -435,7 +404,6 @@ export function ProjectsPage() {
     navigate({ to: "/chat", search: { project: projectId } });
   }
 
-  // A saved chat with an empty composer, as the sidebar's New chat.
   function newChatInProject(projectId: string) {
     clearNewChatDraft();
     useChatRuntimeStore.getState().setIncognito(false);
@@ -476,7 +444,6 @@ export function ProjectsPage() {
     }
   }
 
-  // Chat row actions, the same calls the sidebar's chat menu makes.
   async function commitChatRename() {
     const target = renamingChat;
     const name = chatNameDraft.trim();
@@ -492,7 +459,6 @@ export function ProjectsPage() {
     }
   }
 
-  // The open chat is the runtime's, not this page's, so its id comes from there.
   function activeThreadId(): string | undefined {
     return useChatRuntimeStore.getState().activeThreadId ?? undefined;
   }
@@ -510,7 +476,7 @@ export function ProjectsPage() {
   async function deleteChat(chat: SidebarItem, deleteFiles: boolean) {
     try {
       await deleteChatItem(chat, activeThreadId(), () => {}, { deleteFiles });
-      // Pins are stored apart from the chats, so a deleted one leaves its id behind forever.
+      // Pins are stored apart from chats, so remove the id explicitly.
       unpinChat(chat.id);
     } catch (err) {
       toast.error("Failed to delete chat", {
@@ -519,9 +485,7 @@ export function ProjectsPage() {
     }
   }
 
-  /** Always through here, as the sidebar does it: a switch left over from the last delete would
-   *  take files this one was never asked to. A chat follows the preference, so the dialog shows
-   *  what is about to happen; a project workspace is bigger, so it asks from scratch. */
+  /** Always reset here, or a leftover switch deletes files this delete never asked for. */
   function openChatDelete(chat: SidebarItem) {
     setDeleteFilesOnDelete(alwaysDeleteChatFiles);
     setDeletingChat(chat);
@@ -574,7 +538,6 @@ export function ProjectsPage() {
   return (
     <main className="mx-auto w-full max-w-5xl 4xl:max-w-6xl px-6 pb-10 pt-8 max-sm:px-4 font-heading sm:px-10">
       <GuidedTour {...tour.tourProps} />
-      {/* Global import file input */}
       <input
         ref={globalImportRef}
         type="file"
@@ -593,9 +556,6 @@ export function ProjectsPage() {
         <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
           Projects
         </h1>
-        {/* The Updated column orders the list, so search takes the room a sort control had.
-            Below sm the group wraps to its own row: beside the heading the two buttons left the
-            field narrower than its own padding. */}
         <div className="flex w-full min-w-0 items-center justify-end gap-3 sm:w-auto sm:flex-1">
           <div className="relative min-w-0 flex-1 sm:max-w-md">
             <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
@@ -689,7 +649,6 @@ export function ProjectsPage() {
 
       {!hasLoaded ? (
         <div className="mt-16">
-          {/* The loaded header without its sort control, which has nothing to sort yet. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
             <span className="shrink-0 sm:w-40">Updated</span>
@@ -730,14 +689,8 @@ export function ProjectsPage() {
       ) : (
         <>
         <div className="mt-16">
-          {/* Column header. Name starts at the folder icon's left edge, and the trailing
-              spacers stand in for the row's pin and menu so Updated sits over its values.
-              Below sm the values go, since 160px of date left a nested chat row no width for
-              its title and pushed its actions off a phone screen; the control stays, shrunk to
-              its label, as the only way to turn the order around. */}
           <div className="mb-1 flex items-center gap-3 px-5 pb-1 text-ui-13 font-medium text-muted-foreground">
             <span className="flex-1">Name</span>
-            {/* The column sorts the list, and the arrow says which way. */}
             <button
               type="button"
               onClick={() => setSortDir((dir) => (dir === "desc" ? "asc" : "desc"))}
@@ -745,7 +698,6 @@ export function ProjectsPage() {
               className="flex shrink-0 cursor-pointer items-center gap-1 text-left transition-colors hover:text-foreground sm:w-40"
             >
               Updated
-              {/* Down for newest first, up for oldest, as a sorted column reads. */}
               <ArrowDownIcon
                 strokeWidth={1.75}
                 className={cn(
@@ -768,8 +720,6 @@ export function ProjectsPage() {
               key={project.id}
               className="group/project-row relative flex items-center gap-3 rounded-xl px-5 py-4 text-left transition-colors duration-150 hover:bg-muted/70 dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
             >
-              {/* The disclosure belongs to the name, so it sits beside it rather than out by
-                  the Updated column, where it read as another row action. */}
               <span className="flex min-w-0 flex-1 items-center gap-2">
                 {/* A real button holding only text. Giving the whole row the button role made
                     its pin and menu presentational children: one control where there are four. */}
@@ -789,7 +739,6 @@ export function ProjectsPage() {
                     {project.name}
                   </span>
                 </button>
-                {/* Opens the project's chats in place, without leaving the list. */}
                 <button
                   type="button"
                   aria-label={chatsOpen ? "Hide chats" : "Show chats"}
@@ -822,7 +771,6 @@ export function ProjectsPage() {
               <span className="hidden w-40 shrink-0 text-sm text-muted-foreground sm:block">
                 {formatUpdated(project.updatedAt)}
               </span>
-              {/* Pinning is one click here, as it is on a sidebar row. */}
               <button
                 type="button"
                 aria-label={pinned ? "Unpin project" : "Pin project"}
@@ -830,7 +778,6 @@ export function ProjectsPage() {
                   e.stopPropagation();
                   togglePinProject(project.id);
                 }}
-                // On show for every row, hover or not, so pinning is never hidden.
                 className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
               >
                 <HugeiconsIcon
@@ -840,7 +787,6 @@ export function ProjectsPage() {
                 />
               </button>
               <div className="relative flex w-8 shrink-0 items-center justify-end">
-                {/* On show beside the pin, so the row's actions read the same at rest. */}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
@@ -898,8 +844,6 @@ export function ProjectsPage() {
                         key={chat.id}
                         className="group/chat-row flex items-center gap-3 rounded-xl py-1.5 pl-2 pr-5 text-left text-sm text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.055*var(--contrast-wash-gain,1)))]"
                       >
-                        {/* A real button holding only text. Giving the whole row the button role
-                            made its pin and menu presentational children. */}
                         <button
                           type="button"
                           onClick={() => openChat(chat, project.id)}
@@ -911,14 +855,10 @@ export function ProjectsPage() {
                             className="size-4 shrink-0"
                           />
                           <span className="min-w-0 flex-1 truncate">{chat.title}</span>
-                          {/* Same widths as a project row, so the columns line up under it, and
-                              gone with it below sm, where a nested row has no room for both. */}
                           <span className="hidden w-40 shrink-0 sm:block">
                             {formatUpdated(chat.updatedAt)}
                           </span>
                         </button>
-                        {/* A chat's actions belong to the row the cursor is on, so they stay
-                            hover-revealed, and show outright without a cursor to hover with. */}
                         <button
                           type="button"
                           aria-label={chatPinned ? "Unpin chat" : "Pin chat"}
@@ -1001,7 +941,6 @@ export function ProjectsPage() {
                                     </DropdownMenuItem>
                                   ))}
                                   <DropdownMenuSeparator />
-                                  {/* Bulk export and import live in Settings -> Data. */}
                                   <DropdownMenuItem
                                     onSelect={() =>
                                       useSettingsDialogStore
@@ -1052,17 +991,14 @@ export function ProjectsPage() {
             </div>
             );
           })}
-          {/* Loads the next page-step when scrolled into view. */}
           {hasMore && <div ref={sentinelRef} className="h-px w-full" />}
           </div>
         </div>
         </>
       )}
 
-      {/* Create project (name + drag-and-drop sources) */}
       <NewProjectDialog open={creating} onOpenChange={setCreating} />
 
-      {/* Edit project (name + instructions + source folders), the sidebar's dialog. */}
       <SectionNameDialog
         open={sectionFor !== null}
         mode="create"
@@ -1079,11 +1015,9 @@ export function ProjectsPage() {
         onOpenChange={(open) => {
           if (!open) setEditing(null);
         }}
-        // Delete keeps this page's own confirmation.
         onDelete={(project) => openProjectDelete(project)}
       />
 
-      {/* Rename chat */}
       <Dialog
         open={renamingChat !== null}
         onOpenChange={(open) => {
@@ -1127,7 +1061,6 @@ export function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete chat */}
       <Dialog
         open={deletingChat !== null}
         onOpenChange={(open) => {
@@ -1142,7 +1075,6 @@ export function ProjectsPage() {
             Are you sure you want to delete <em>{deletingChat?.title}</em>? Its messages
             will be permanently deleted.
           </p>
-          {/* The files are a second thing to lose, so the delete says so and can be told not to. */}
           <DeleteChatFilesSwitch
             id="projects-delete-chat-files"
             checked={deleteFilesOnDelete}
@@ -1163,7 +1095,6 @@ export function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Import destination picker */}
       <Dialog open={importFile !== null} onOpenChange={(open) => { if (!open) setImportFile(null); }}>
         <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
           <DialogHeader>
@@ -1171,8 +1102,6 @@ export function ProjectsPage() {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             Choose where to import{" "}
-            {/* A picked local file, and the dialog portals out of any marked
-                ancestor, so the name needs its own marker. */}
             <span
               data-reload-snapshot-sensitive
               className="font-medium text-foreground"
@@ -1202,7 +1131,6 @@ export function ProjectsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete project */}
       <Dialog
         open={deleting !== null}
         onOpenChange={(open) => {
@@ -1217,7 +1145,6 @@ export function ProjectsPage() {
             Are you sure you want to delete <em>{deleting?.name}</em>? Its chats will
             be permanently deleted.
           </p>
-          {/* Same offer the sidebar makes, naming the folder when the record carries one. */}
           <DeleteChatFilesSwitch
             id="projects-delete-project-files"
             checked={deleteFilesOnDelete}

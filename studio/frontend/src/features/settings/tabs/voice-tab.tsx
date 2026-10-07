@@ -97,12 +97,10 @@ import {
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
-/** Backends that report a runtime name where a device would go. */
 const STT_RUNTIME_NAMES = new Set(["whisper.cpp", "llama.cpp"]);
 
-// Languages shared by browser speech recognition and local STT.
 const DICTATION_LANGUAGES: { value: string; label: string }[] = [
-  { value: "auto", label: "" }, // label rendered via i18n
+  { value: "auto", label: "" },
   { value: "en-US", label: "English (US)" },
   { value: "en-GB", label: "English (UK)" },
   { value: "zh-CN", label: "中文 (简体)" },
@@ -121,15 +119,11 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
   { value: "he-IL", label: "עברית" },
 ];
 
-// Keep spoken preview content independent of the interface locale. The system
-// voice and loaded local model may not support the language used by the UI.
+// Independent of UI locale: the voice or model may not support that language.
 const TTS_PREVIEW_TEXT =
   "Hello from Unsloth! This is a preview of the selected voice.";
 
-/** Source repository shown under a model row. Curated Whisper models download
- * from the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py).
- * A package of the shared GGUF repo is already named after its folder, so its
- * row shows the name alone. */
+/** Curated Whisper models come from the Unsloth GGUF repos (stt_ggml_sidecar.py). */
 function sttModelSource(model: SttModel): string {
   if (AUDIO_CPP_STT_MODELS.has(model) || isAudioCppFolderId(model)) {
     return sttModelName(model);
@@ -244,7 +238,7 @@ function SttModelPicker({
     if (!isSttModelId(model) || validating) {
       return;
     }
-    // The validator checks Transformers Whisper checkpoints; a GGUF audio runtime repo is checked when it loads.
+    // The validator checks Transformers checkpoints; a GGUF audio runtime repo is checked on load.
     if (!isCuratedSttModel(model) && sttEngineFor(model) !== "audiocpp") {
       setValidating(true);
       try {
@@ -329,9 +323,7 @@ function SttModelPicker({
             </div>
           ) : (
             items.map((model) => {
-              // A custom repo's name is its id: one-line rows keep a pill
-              // shape, two-line rows use a squarer radius. Not rounded-sm: the
-              // theme's --radius makes that 13.6px, too round at this height.
+              // Not rounded-sm: the theme's --radius makes that 13.6px, too round at this height.
               const twoLines = sttModelSource(model) !== sttModelName(model);
               const size = sttModelSize(model) || folderSizes.get(model);
               return (
@@ -397,7 +389,7 @@ function useAudioInputDevices() {
       setDevices(inputs);
       setHasLabels(inputs.some((d) => d.label));
     } catch {
-      // Enumeration can fail in insecure contexts; leave the list empty.
+      // Enumeration can fail in insecure contexts.
     }
   }, []);
 
@@ -418,7 +410,7 @@ function useAudioInputDevices() {
         setHasLabels(inputs.some((device) => device.label));
       })
       .catch(() => {
-        // Enumeration can fail in insecure contexts; leave the list empty.
+        // Enumeration can fail in insecure contexts.
       });
     media.addEventListener("devicechange", refresh);
     return () => {
@@ -427,15 +419,14 @@ function useAudioInputDevices() {
     };
   }, [refresh]);
 
-  // Labels are hidden until mic permission; open a short stream to get them.
+  // Labels are hidden until mic permission; a short stream unlocks them.
   const requestAccess = useCallback(async () => {
     // Insecure contexts (plain http on a LAN address) have no mediaDevices.
     if (!navigator.mediaDevices?.getUserMedia) {
       toast.error(t("settings.voice.dictation.micAccessUnsupported"));
       return;
     }
-    // Clear a saved deny first: this button is the only way back from one, and WebView2
-    // would otherwise reject the request without ever prompting (#9001).
+    // Clear a saved deny first, or WebView2 rejects without prompting.
     await resetMicrophonePermission();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -446,8 +437,7 @@ function useAudioInputDevices() {
       }
       await refresh();
     } catch {
-      // A browser keeps its own saved deny and resetMicrophonePermission cannot
-      // touch it, so only the desktop build can promise another prompt.
+      // resetMicrophonePermission cannot clear a browser's deny, so only desktop can promise a prompt.
       toast.error(
         t(
           isTauri
@@ -555,8 +545,7 @@ export function VoiceTab() {
     [rawVoices, ttsVoiceURI, dictationLanguage],
   );
   const [previewing, setPreviewing] = useState(false);
-  // A studio preview generates the whole clip before it plays; separate from `previewing`
-  // so the wait shows as work.
+  // A studio preview generates the whole clip first; shown as work.
   const [preparingPreview, setPreparingPreview] = useState(false);
   const [subpage, setSubpage] = useState<"main" | "recents" | "dictionary">(
     "main",
@@ -571,8 +560,7 @@ export function VoiceTab() {
     }
   }, [hasSelectedSttConnection, setSttProviderId, sttProviderId]);
 
-  // A deleted connection would otherwise stay selected and every read aloud would
-  // post the stale id, so drop it the way the dictation selection does.
+  // Drop a deleted connection, or every read aloud posts the stale id.
   useEffect(() => {
     if (ttsProviderId && !hasSelectedTtsConnection) {
       setTtsProviderId("");
@@ -625,9 +613,6 @@ export function VoiceTab() {
   const [sttUnloading, setSttUnloading] = useState(false);
   const isLocalEngine = dictationEngine === "model";
   const isCustomEngine = dictationEngine === "custom";
-  // The model decides the backend: curated ids run GGML through whisper.cpp,
-  // custom repos run through Transformers.
-  // Progress of the selected engine's model download, from /stt/status.
   const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
     null,
   );
@@ -724,8 +709,7 @@ export function VoiceTab() {
     }
     let cancelled = false;
     void (async () => {
-      // Only surface "checking" on the first poll; background refreshes keep
-      // the last phase so the status line doesn't flicker while polling.
+      // Only the first poll shows "checking" so polling does not flicker.
       setSttPhase((phase) => (phase === "idle" ? "checking" : phase));
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
@@ -768,13 +752,11 @@ export function VoiceTab() {
               : "missing",
         });
         if (download.downloading) {
-          // Adopt a transfer that outlived the page that started it, so it
-          // still shows in the download panel.
+          // Adopt a transfer that outlived the page that started it.
           if (download.model && !isTrackingSttDownload(download.model)) {
             trackSttDownload(download.model);
           }
           watchedDownloadRef.current = download.model;
-          // Keep the status line fresh.
           window.setTimeout(() => {
             if (!cancelled) setStatusNonce((n) => n + 1);
           }, 800);
@@ -825,8 +807,7 @@ export function VoiceTab() {
           );
           return;
         }
-        // Merely opening settings or selecting local STT never downloads or
-        // loads a model. Loading begins from Load or when recording starts.
+        // Opening settings never downloads or loads a model; Load or recording does.
         setSttDevice(null);
         setSttPhase("on-demand");
       } catch {
@@ -855,8 +836,7 @@ export function VoiceTab() {
       case "on-demand":
         return t("settings.voice.dictation.sttOnDemand");
       case "ready":
-        // whisper.cpp, llama.cpp and audio.cpp report a runtime name, not a
-        // device; show a plain "Loaded" rather than surfacing it.
+        // These runtimes report their own name, not a device.
         return sttDevice &&
           !STT_RUNTIME_NAMES.has(sttDevice) &&
           !sttDevice.startsWith("audio.cpp")
@@ -896,7 +876,6 @@ export function VoiceTab() {
       case "missing":
         return t("settings.voice.dictation.sttNotDownloaded");
       case "error":
-        // This state means the download itself failed, not the status check.
         return t("settings.voice.dictation.sttDownloadFailed");
       case "downloaded":
         return sttStatusText;
@@ -905,8 +884,7 @@ export function VoiceTab() {
     }
   })();
 
-  // Pressing Download is the confirmation. The prompt is for the paths that
-  // never asked for one, like the mic finding nothing on disk.
+  // Pressing Download is the confirmation; the prompt is for paths that never asked.
   const beginSttDownload = async () => {
     setSttDownloadStarting(true);
     try {
@@ -963,17 +941,13 @@ export function VoiceTab() {
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewAbortRef = useRef<AbortController | null>(null);
-  // Mirrors `previewing` so unmount cleanup can tell whether this tab owns
-  // the current speechSynthesis utterance; read-aloud shares the global
-  // synthesizer and must not be cancelled by merely closing settings.
+  // Read-aloud shares the global synthesizer; only cancel an utterance this tab owns.
   const previewingRef = useRef(false);
-  // Only a system-voice preview owns the shared speechSynthesis channel; a
-  // studio (Audio) preview must not cancel an unrelated chat read-aloud.
+  // A studio preview must not cancel an unrelated chat read-aloud.
   const ownsSystemPreviewRef = useRef(false);
   const markPreviewing = useCallback((value: boolean) => {
     previewingRef.current = value;
     setPreviewing(value);
-    // Every exit from the generate await clears previewing, so clear both here.
     if (!value) setPreparingPreview(false);
   }, []);
 
@@ -981,7 +955,7 @@ export function VoiceTab() {
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
       releaseTtsAudioUrl(previewAudioRef.current.src);
-      // removeAttribute, not `src = ""`: an empty src fires a media error toasting "preview failed".
+      // removeAttribute, not `src = ""`: an empty src fires a media error toast.
       previewAudioRef.current.removeAttribute("src");
       previewAudioRef.current = null;
     }
@@ -1001,8 +975,7 @@ export function VoiceTab() {
 
   const previewTts = async () => {
     if (!ttsSupported) return;
-    // Ref, not state: a double-click before rerender still reads previewing
-    // as false and would start a second request that orphans the first.
+    // A ref so a double-click before rerender cannot start a second request.
     if (previewingRef.current) {
       stopPreview();
       return;
@@ -1074,7 +1047,6 @@ export function VoiceTab() {
     markPreviewing(true);
   };
 
-  // Stop any preview playback when the tab unmounts.
   useEffect(() => stopPreview, [stopPreview]);
 
   if (subpage === "recents") {
@@ -1257,8 +1229,7 @@ export function VoiceTab() {
                       size="sm"
                       className="h-7 px-2 text-xs"
                       disabled={downloadingThisModel || sttDownloadStarting}
-                      // Restart: the sidecar error is sticky until a new
-                      // start(), so re-polling alone never clears it.
+                      // The sidecar error is sticky until a new start().
                       onClick={() => void beginSttDownload()}
                     >
                       {t("settings.voice.dictation.sttRetry")}
@@ -1291,8 +1262,6 @@ export function VoiceTab() {
                           : t("settings.voice.dictation.sttUnload")}
                       </Button>
                     ) : sttPhase === "loading" || sttPhase === "checking" ? (
-                      // The status line already says "Loading model…"; the
-                      // button only needs the spinner.
                       <Button
                         variant="outline"
                         size="icon-sm"
@@ -1412,9 +1381,8 @@ export function VoiceTab() {
               onValueChange={(value) => {
                 const next = value === "cpu" ? "cpu" : "auto";
                 if (next === sttDevicePreference) return;
-                // Scoped, so moving our placement cannot evict a model another surface
-                // swapped in. wait:false so a decoding dictation is not killed for a
-                // setting the next load applies anyway.
+                // Scoped so another surface's model is not evicted; wait:false spares a decoding
+                // dictation.
                 void unloadSttModel(sttEngineFor(sttModel), sttModel, {
                   wait: false,
                 }).catch(() => {});

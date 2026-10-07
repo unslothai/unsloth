@@ -3,14 +3,8 @@
 
 import { type RefObject, useCallback, useEffect, useRef } from "react";
 
-/**
- * Locks the nearest scrollable ancestor's scrollTop during a collapsible
- * animation so the page doesn't jump when content height changes.
- *
- * Unlike @assistant-ui/react's `useScrollLock`, this does NOT toggle
- * `scrollbar-width: none` on the container; hiding the scrollbar mid-animation
- * caused a visible flicker on tool-call collapsibles.
- */
+/** Unlike @assistant-ui/react's `useScrollLock`, does not hide the scrollbar mid-animation, which
+ * flickered on tool-call collapsibles. */
 export function useCollapseScrollLock(
   animatedElementRef: RefObject<HTMLElement | null>,
   animationDurationMs: number,

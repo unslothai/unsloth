@@ -191,9 +191,7 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
     "features/model-picker/components/model-selector/pickers.tsx",
   );
   const guards = pickers.match(/\(!rowFilter \|\|\s*rowFilter\(\{/g) ?? [];
-  // Cached GGUF, cached repos, LM Studio, ./models and custom folders; Hub search rows stay unfiltered.
   assert.equal(guards.length, 5);
-  // Each On Device list applies it, so a custom-folder speech model is not offered on the Music page.
   for (const list of [
     "sortedCachedGguf",
     "sortedCachedModels",
@@ -222,7 +220,6 @@ test("a speech editing model lists on Edit beside its other pages", () => {
     ],
     // DotTTS's other packages do not edit.
     ["DotTTS-MF-GGUF", { audioWorkflows: ["speak"] }, ["speak"]],
-    // Without the backend's list, the catalog seed decides.
     ["Vevo2-GGUF", { audioType: "audiocpp_tts" }, ["clone", "edit", "convert"]],
   ];
   for (const [folder, row, workflows] of rows) {
@@ -260,7 +257,6 @@ test("Hub search rows for clone-only families outside the catalog list on Clone,
     assert.equal(audioRowMatchesWorkflow(row, "clone"), true, id);
     assert.equal(audioRowMatchesWorkflow(row, "speak"), false, id);
   }
-  // Backend workflows still win once the row is downloaded.
   assert.equal(
     audioRowMatchesWorkflow(
       { id: "x/MioTTS-GGUF", task: "text-to-speech", audioWorkflows: ["speak"] },

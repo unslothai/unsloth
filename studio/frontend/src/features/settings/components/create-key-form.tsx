@@ -36,8 +36,7 @@ export function CreateKeyForm({
       onCreated(result.key);
       setName("");
     } catch {
-      // api-keys.ts throws English Error messages; use the translated one so
-      // zh-CN users don't see English bleed through from internal exceptions.
+      // api-keys.ts throws English messages; show the translated one.
       onError(t("settings.apiKeys.createError"));
     } finally {
       setLoading(false);

@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The handoff is read off the tool events every loop publishes, and those events also close a
-// call that never ran. Reading a run out of one spends the chat's single Deep Research on a
-// question the loop refused to pass on, and hiding a gated call's card hangs the turn on a
-// verdict the user is never asked for.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -61,8 +56,6 @@ test("a start whose question could not be read falls back to the user's message"
 
 test("a denied call is not a handoff, and keeps the card that asked", () => {
   const handoff = newDeepResearchHandoff();
-  // A gated start has to reach the renderer, or the Allow / Deny buttons never paint and the
-  // loop blocks on a verdict for the rest of the turn.
   assert.equal(
     readDeepResearchToolEvent(handoff, start({ awaiting_confirmation: true })),
     false,

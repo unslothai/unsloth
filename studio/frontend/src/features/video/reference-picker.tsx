@@ -23,20 +23,16 @@ import {
 } from "./reference-budget";
 import { classifiedAttachmentFile } from "@/lib/video-utils";
 
-/** One staged reference file: the data URL the request carries, plus its name for the chip. */
 export interface ReferenceMedia {
   name: string;
   dataUrl: string;
   durationSeconds?: number;
 }
 
-/** How long to wait for a browser to report a clip's duration before giving up on it. */
 export const REFERENCE_DURATION_TIMEOUT_MS = 15_000;
 
-/** Read a clip's duration, resolving undefined when the browser cannot report one. An element
- *  firing neither loadedmetadata nor error would leave this pending forever, and its picker slot
- *  with it, so the wait is bounded; callers already treat an unknown duration as "no auto trim".
- *  The source stays a data URL because WebKit reports no metadata for an object URL. */
+/** Bounded, since an element firing neither event would hang the slot. Stays a data URL
+ * because WebKit reports no metadata for an object URL. */
 function readVideoDuration(dataUrl: string): Promise<number | undefined> {
   return new Promise((resolve) => {
     const media = document.createElement("video");
@@ -48,7 +44,7 @@ function readVideoDuration(dataUrl: string): Promise<number | undefined> {
       media.onloadedmetadata = null;
       media.onerror = null;
       media.removeAttribute("src");
-      // Without a load() the element can keep the resource it was decoding.
+      // Without load() the element can keep the resource it was decoding.
       media.load();
       resolve(duration);
     };
@@ -61,7 +57,6 @@ function readVideoDuration(dataUrl: string): Promise<number | undefined> {
   });
 }
 
-/** Reference video or audio picker that displays the selected filename. */
 export function ReferenceMediaPicker({
   kind,
   value,
@@ -72,13 +67,10 @@ export function ReferenceMediaPicker({
   kind: "video" | "audio";
   value: ReferenceMedia | null;
   onChange: (media: ReferenceMedia | null) => void;
-  /** Prompt shown in the empty state. */
   label: string;
-  /** Half-height row, for the soundtrack slot that sits under its video. */
   compact?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  // Only the newest read from this mounted picker may update the list.
   const [gate] = useState(createReferenceSelectionGate);
   useEffect(() => gate.mount(), [gate]);
   // Index-keyed slots can receive a sibling when an earlier reference is removed.
@@ -93,8 +85,7 @@ export function ReferenceMediaPicker({
     async (picked: File | undefined | null) => {
       if (!picked) return;
       const claim = gate.begin();
-      // A .3gp is a recording or a clip and its name says neither, so read the
-      // container's tracks before the kind check, as chat and compare do.
+      // A .3gp may be a recording or a clip, so read its tracks before the kind check.
       const file = await classifiedAttachmentFile(picked);
       if (!claim.isCurrent()) return;
       readReferenceFile(kind, file, {
@@ -119,8 +110,7 @@ export function ReferenceMediaPicker({
     [gate, kind, onChange],
   );
 
-  // Tauri suppresses the webview's own drop events, so the handlers below never fire on the desktop
-  // app; this claims the OS drop for the button (#9036).
+  // Tauri suppresses webview drop events, so claim the OS drop here (#9036).
   const { ref: dropRef, dragging, dragHandlers } = useNativeFileDrop({
     onFiles: (files) => void readFile(files[0]),
     accept: REFERENCE_DROP_ACCEPT[kind],

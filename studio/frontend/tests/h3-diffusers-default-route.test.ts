@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// MiniMax-H3's Diffusers INT8 row versus its GGUF (stable-diffusion.cpp) row. The catalog's static
-// tiers send a 48 GB card with ~77 GiB available RAM to the GGUF row, which measured 3.2x slower than
-// the INT8 path. The backend now reports the tiers it can actually run (`/api/system.diffusers_offload_tiers`);
-// the picker unions them with the catalog's, so they widen and never narrow.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -24,20 +19,17 @@ if (!h3Group)
   throw new Error("MiniMax-H3 group missing from the video catalog");
 const h3 = h3Group;
 const notDownloaded = () => false;
-// The shape /api/system reports, after normalisation. Values mirror the backend table.
 const EXTRA = {
   "minimaxai/minimax-h3": [
     { gpuGb: 14, systemRamGb: 66, requiresQuantisedStreaming: true },
   ],
 };
 
-// GiB as the picker sees them: nvidia-smi MiB / 1024, psutil available / 1024**3.
 const HOSTS = {
   ada48: { gpuGb: 47.99, systemRamGb: 77 },
   rtx3090: { gpuGb: 24, systemRamGb: 80 },
   a100_40: { gpuGb: 39.39, systemRamGb: 72 },
   g4: { gpuGb: 95.59, systemRamGb: 160 },
-  // 16 / 12 GB cards on a 96 GB RAM desktop (~88 GiB available).
   card16: { gpuGb: 15.99, systemRamGb: 88 },
   card12: { gpuGb: 12, systemRamGb: 88 },
 };
@@ -86,10 +78,7 @@ test("GGUF stays the fallback when RAM, VRAM or streaming cannot fit", () => {
   const cases = [
     { gpuGb: 8, systemRamGb: 120, quantisedStreaming: true },
     { gpuGb: 48, systemRamGb: 40, quantisedStreaming: true },
-    // The page's default request (1344x768, default length) needs ~13.5 GiB, so a 12 GB card keeps GGUF as its
-    // default; the Diffusers row still renders 960x544 there when chosen.
     { gpuGb: 12, systemRamGb: 88, quantisedStreaming: true },
-    // A 64 GB RAM desktop (~58 GiB available) is under the measured 70 GB streamed-set floor.
     { gpuGb: 12, systemRamGb: 58, quantisedStreaming: true },
     { gpuGb: 24, systemRamGb: 58, quantisedStreaming: true },
     { gpuGb: 48, systemRamGb: 120, quantisedStreaming: false },

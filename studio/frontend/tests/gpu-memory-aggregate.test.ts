@@ -9,7 +9,6 @@ import {
   aggregateGpuMemoryTotalGb,
 } from "../src/hooks/gpu-vram.ts";
 
-// 183359 MiB rounded to 2dp by the backend, the per-device figure a B200 reports.
 const B200_GIB = 179.06;
 
 function dedicated(count: number, memory = B200_GIB): MemoryTotalDevice[] {
@@ -17,8 +16,7 @@ function dedicated(count: number, memory = B200_GIB): MemoryTotalDevice[] {
 }
 
 test("the total of several identical GPUs carries no float residue", () => {
-  // Summing three 179.06 values is 537.1800000000001 before rounding, and the
-  // run preview card prints the total without rounding it again.
+  // Summing three 179.06 values gives 537.1800000000001 before rounding.
   const total = aggregateGpuMemoryTotalGb(dedicated(3));
   assert.equal(total, 537.18);
   assert.equal(String(total), "537.18");

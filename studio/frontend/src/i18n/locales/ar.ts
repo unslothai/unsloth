@@ -351,7 +351,6 @@ export const ar = {
       clearDataFailed: "تعذّر مسح بيانات المواقع. حاول مرة أخرى.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "وضع حماية نظام التشغيل غير متاح",
@@ -442,7 +441,6 @@ export const ar = {
     queueingOnHint: "الرسائل الجديدة تنتظر دورها.",
     queueingHintShared: "يبقى الطابور كما هو.",
   },
-  // The chat header's "…" menu.
   chatMenu: {
     more: "خيارات المحادثة",
     copy: "نسخ",
@@ -501,7 +499,6 @@ export const ar = {
     shutdown: "إيقاف التشغيل",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "الوثائق",
       keyboardShortcuts: "اختصارات لوحة المفاتيح",
@@ -570,11 +567,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
-      // Shown under an empty project folder in the sidebar.
       noChats: "لا توجد محادثات",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "كل المشاريع مثبتة",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "كل المشاريع مثبتة أو ضمن أقسام",
       noProjects: "لا توجد مشاريع",
       showMore: "عرض المزيد",
@@ -675,11 +669,9 @@ export const ar = {
       organizeChats: "تنظيم المحادثات",
       organizeProjects: "تنظيم المشاريع",
       sortPinnedChats: "ترتيب المحادثات المثبتة",
-      // Header of the menu's section-visibility toggles.
       show: "إظهار",
       newSection: "قسم جديد",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "قسم جديد",
       createDescription: "جمّع المحادثات والمشاريع بالطريقة التي تناسبك",
@@ -690,16 +682,13 @@ export const ar = {
       edit: "تعديل",
       remove: "إزالة القسم",
       markAllRead: "تعليم الكل كمقروء",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "نقل إلى",
       section: "قسم",
       sectionsHeading: "الأقسام",
       removeFromProject: "إزالة من المشروع",
       newSection: "قسم جديد",
       removeFromSection: "إزالة من القسم",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "إزالة من {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "اسحب المحادثات أو المشاريع إلى هنا",
       sectionOptions: "خيارات القسم",
       newChatInSection: "محادثة جديدة في {name}",
@@ -2082,7 +2071,6 @@ export const ar = {
           updateChecksDisabled:
             "عمليات التحقق من التحديثات معطّلة (UNSLOTH_DISABLE_UPDATE_CHECK=1)، لذلك لا يتم البحث عن الخلفيات المتاحة.",
         },
-        // لا يظهر: كلمات إضافية لبحث الإعدادات.
         llamaBackendKeywords:
           "llama.cpp backend gguf استدلال cuda rocm hip vulkan metal cpu gpu مسرّع prebuilt تبديل محرك",
       },
@@ -2103,7 +2091,6 @@ export const ar = {
         reloadRequired: "أعد تحميل النموذج لتطبيق خيارات الذاكرة الجديدة.",
         loadError: "تعذّر تحميل إعدادات ذاكرة النموذج",
         saveError: "تعذّر حفظ إعدادات ذاكرة النموذج",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu ذاكرة رام مقيم تثبيت قفل إبقاء محمل تفريغ خامل mmap no-mmap load-mode تبديل ترحيل",
       },
@@ -2230,8 +2217,6 @@ export const ar = {
       docs: "التوثيق",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -3685,7 +3670,6 @@ export const ar = {
       all: "الكل",
       chats: "المحادثات",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "المحادثات",

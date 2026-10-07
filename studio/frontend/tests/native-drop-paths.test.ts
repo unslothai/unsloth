@@ -240,7 +240,6 @@ test("documents and images can be dropped together", () => {
 });
 
 test("a mixed or unsupported drop is rejected", () => {
-  // The regression in #7661: these used to be reported as "GGUF models only".
   assert.equal(
     classifyDropPaths(["/docs/a.pdf", "/models/q.gguf"]).kind,
     "unsupported",
@@ -288,8 +287,7 @@ test("attachment batches stay bound to the chat that received the drop", () => {
   assert.deepEqual(remaining, {});
 });
 
-// Registration crosses into Rust before the queue exists, and a send in that gap
-// would go out without the image.
+// Registration crosses into Rust before the queue exists; a send then would lose the image.
 test("registering image drops hold the gate before the queue can", () => {
   const store = useNativeIntentStore.getState();
   assert.equal(store.registeringImageDrops, 0);
@@ -305,7 +303,6 @@ test("registering image drops hold the gate before the queue can", () => {
   store.endImageDropRegistration();
   assert.equal(useNativeIntentStore.getState().registeringImageDrops, 0);
 
-  // A stray end can't drive it negative and wedge the gate shut.
   store.endImageDropRegistration();
   assert.equal(useNativeIntentStore.getState().registeringImageDrops, 0);
 });
@@ -349,9 +346,7 @@ test("frontend and Rust accept the same chat image extensions", () => {
   assert.deepEqual(rust, frontend);
 });
 
-// One more seam of #7963's shape: Rust stamps the File's MIME type and the
-// composer routes by MIME, so a type VisionImageAdapter does not claim lands on
-// the wrong adapter or nowhere.
+// Rust stamps the MIME and the composer routes by it, so every type needs an adapter.
 test("every MIME type Rust stamps is one the vision adapter claims", () => {
   const rustSource = readText("../../src-tauri/src/native_intents.rs");
   const stamped = [
@@ -370,8 +365,6 @@ test("every MIME type Rust stamps is one the vision adapter claims", () => {
   assert.deepEqual(stamped, accepted);
 });
 
-// The join between the two tests above: without it an extension can reach both
-// allow-lists with no MIME arm, and the reader refuses it after the drop.
 test("every accepted image extension has a Rust MIME arm", () => {
   const policySource = readText("../../src-tauri/src/native_path_policy.rs");
   const accepted = [
@@ -424,7 +417,6 @@ test("every dropped image extension is a type the composers accept", () => {
   assert.deepEqual([...new Set(dropped)].sort(), [...CHAT_IMAGE_MIMES].sort());
 });
 
-// A remount means the instance that queued the batch cannot hand it over.
 test("a remounted composer claims image and OpenDocument batches", () => {
   const store = useNativeIntentStore.getState();
   const intent = {
@@ -444,7 +436,6 @@ test("a remounted composer claims image and OpenDocument batches", () => {
   store.addOpenDocumentAttachments("single:new", [openDocument]);
   store.noteImageDropOwner("single:new", "composer-1");
 
-  // A different composer must not take it.
   store.claimImageAttachments("composer-2", "single:other");
   assert.equal(
     useNativeIntentStore.getState().pendingImageAttachments["single:new"]
@@ -478,9 +469,7 @@ test("ownership recorded after a claim is still picked up", () => {
     },
   } as unknown as NativeIntent;
 
-  // The replacement composer claims first, finding nothing.
   store.claimImageAttachments("composer-3", "single:thread-9");
-  // Only then does the outgoing drain put its batch back and tag it.
   store.addImageAttachments("single:new", [intent]);
   store.noteImageDropOwner("single:new", "composer-3");
 
@@ -512,8 +501,7 @@ test("image failures cannot consume queued OpenDocuments", () => {
 });
 
 test("document, image and audio drop extensions stay disjoint", () => {
-  // classifyDropPaths sums the three filters; an overlap double-counts and
-  // turns a good drop into "unsupported".
+  // classifyDropPaths sums the filters, so an overlap double-counts.
   const exts = [
     RAG_UPLOAD_ACCEPT,
     CHAT_IMAGE_DROP_ACCEPT,
@@ -527,7 +515,6 @@ test("document, image and audio drop extensions stay disjoint", () => {
   );
 });
 
-// A dropped clip has to reach the same adapter an upload does.
 test("a single audio file routes to chat audio attachments", () => {
   const dropped = classifyDropPaths(["/clips/take.WAV"]);
   assert.equal(dropped.kind, "audio");
@@ -536,7 +523,6 @@ test("a single audio file routes to chat audio attachments", () => {
   ]);
 });
 
-// Models like Gemma 4 take several clips in one message, so a batch routes whole.
 test("multi-audio drops route to chat audio attachments", () => {
   const dropped = classifyDropPaths([
     "/clips/take.WAV",
@@ -564,7 +550,6 @@ test("several clips alongside other attachments route together", () => {
   ]);
 });
 
-// Past the per-message cap a batch would attach only partly, so it is turned away before it is read.
 test("an audio batch over the per-message cap is rejected", () => {
   const dropped = classifyDropPaths(
     Array.from({ length: MAX_AUDIO_FILES + 1 }, (_, i) => `/clips/${i}.wav`),
@@ -594,8 +579,7 @@ test("a video routes to chat video attachments", () => {
   }
 });
 
-// llama-server expands one clip into a run of frames, so a batch would spend
-// the whole context before the model saw any of it.
+// llama-server expands a clip into many frames, so several would fill the context.
 test("more than one video is not a drop target", () => {
   assert.equal(
     classifyDropPaths(["/clips/a.mp4", "/clips/b.mov"]).kind,
@@ -634,8 +618,6 @@ test("frontend and Rust accept the same chat video extensions", () => {
   assert.deepEqual(rust, frontend);
 });
 
-// Same seam as the vision and audio checks: a video MIME the adapter does not
-// claim would be read off disk and then refused by the composer.
 test("every video MIME Rust stamps is one the video adapter claims", () => {
   const rustSource = readText("../../src-tauri/src/native_intents.rs");
   const claimed = new Set(
@@ -674,8 +656,6 @@ test("frontend and Rust accept the same chat audio extensions", () => {
   assert.deepEqual(rust, frontend);
 });
 
-// Same seam as the vision check: an audio MIME the adapter does not claim
-// lands nowhere.
 test("every audio MIME Rust stamps is one the audio adapter claims", () => {
   const rustSource = readText("../../src-tauri/src/native_intents.rs");
   const claimed = new Set(
@@ -693,9 +673,7 @@ test("every audio MIME Rust stamps is one the audio adapter claims", () => {
   }
 });
 
-// The native reader's video cap bounds the FILE; the reference picker's cap
-// bounds the data URL it builds from it. Set to the base64 figure, Rust reads
-// and encodes 96 MiB (128 MiB over the bridge) for a clip the picker rejects.
+// The native cap bounds the raw file; the picker cap bounds the base64 data URL.
 test("the native video cap is the raw limit the reference picker enforces", () => {
   const rustSource = readText("../../src-tauri/src/native_intents.rs");
   const rustCap = Number(
@@ -706,7 +684,6 @@ test("the native video cap is the raw limit the reference picker enforces", () =
 
   assert.ok(Number.isFinite(rustCap), "MAX_NATIVE_VIDEO_BYTES not found");
   assert.equal(rustCap, MAX_REFERENCE_BYTES.video);
-  // The thing that made this wrong: the two differ by a third.
   assert.ok(rustCap < 96 * 1024 * 1024);
 });
 
@@ -837,7 +814,6 @@ test("compiled Fortran modules are rejected, text .mod files are not", async () 
     ),
     false,
   );
-  // An uncompressed gfortran module is readable text and stays accepted.
   assert.equal(
     await isCompiledFortranModule(
       new File(["GFORTRAN module version '15'\n"], "kinds.mod"),
@@ -851,8 +827,7 @@ test("compiled Fortran modules are rejected, text .mod files are not", async () 
 });
 
 test("a legacy code page subtitle is named, not guessed at", async () => {
-  // The same byte is a different letter in windows-1252, windows-1251 and
-  // Shift-JIS, so decoding it as any one of them sends confident mojibake.
+  // The same byte differs across code pages, so guessing one yields mojibake.
   const srt = new Uint8Array([
     ...new TextEncoder().encode("1\n00:00:01,000 --> 00:00:02,000\nCaf"),
     0xe9, // valid in several code pages, invalid on its own in UTF-8
@@ -876,13 +851,10 @@ test("valid UTF-8 keeps its own decoding", async () => {
 });
 
 test("a preview cut mid-character stays UTF-8", () => {
-  // The bounded preview slices at a byte offset, so the last character can be
-  // half-read. That is a truncation, not a legacy encoding.
+  // A bounded preview can cut a character, which is truncation, not a legacy encoding.
   const full = new TextEncoder().encode("caf\u00e9");
   const cut = full.subarray(0, full.length - 1);
   assert.equal(decodeTextAttachmentBytes(cut, "notes.txt", true), "caf");
-  // A whole file gets no such licence: a dangling lead byte is a bad encoding,
-  // not a cut, and dropping it silently would lose the character.
   assert.throws(
     () => decodeTextAttachmentBytes(cut, "notes.txt"),
     (error: Error) => error instanceof UndecodableTextError,
@@ -898,7 +870,6 @@ test("legacy Office templates are rejected, text templates are not", async () =>
     true,
   );
   assert.equal(await isBinaryOfficeTemplate(new File([ole], "deck.pot")), true);
-  // Graphviz and gettext keep the same extensions and stay accepted.
   assert.equal(
     await isBinaryOfficeTemplate(
       new File(["digraph G { a -> b; }"], "graph.dot"),
@@ -915,7 +886,6 @@ test("legacy Office templates are rejected, text templates are not", async () =>
 });
 
 test("an 8-bit email is decoded with the charset it declares", async () => {
-  // A standards-valid ISO-8859-1 message is not a guess: the file says so.
   const eml = new Uint8Array([
     ...new TextEncoder().encode(
       "From: a@example.com\r\n" +
@@ -944,8 +914,7 @@ test("a folded Content-Type header still yields its charset", async () => {
 });
 
 test("a UTF-8 email is not remapped by a stale declaration", async () => {
-  // The charset is a fallback for bytes UTF-8 rejects, never a rewrite of text
-  // that already decoded.
+  // The charset is only a fallback for bytes UTF-8 rejects.
   const eml = new TextEncoder().encode(
     "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf\u00e9 \u2014 na\u00efve",
   );
@@ -967,8 +936,7 @@ test("an email with no declared charset is still named, not guessed", async () =
 });
 
 test("the browser text cap matches the native one", () => {
-  // Reading happens while attaching now, so an unbounded .mbox would decode
-  // gigabytes into the webview before the user could send it.
+  // Reading happens on attach, so an unbounded file would decode into the webview.
   assert.equal(MAX_TEXT_ATTACHMENT_BYTES, 20 * 1024 * 1024);
   const rust = readText("../../src-tauri/src/native_intents.rs");
   const native = rust.match(
@@ -982,8 +950,7 @@ test("the browser text cap matches the native one", () => {
 });
 
 test("a text attachment is read once, not once per stage", async () => {
-  // The composer decodes while attaching so a bad encoding is reported there;
-  // sending must reuse that answer rather than read the whole file again.
+  // Sending reuses the attach-time decode instead of rereading the file.
   const file = new File(["hello"], "notes.txt");
   let reads = 0;
   const real = file.arrayBuffer.bind(file);
@@ -996,7 +963,6 @@ test("a text attachment is read once, not once per stage", async () => {
   assert.equal(await readTextAttachmentOnce(file), "hello");
   assert.equal(await readTextAttachmentOnce(file), "hello");
   assert.equal(reads, 1);
-  // A different file is its own entry, not a stale hit.
   assert.equal(await readTextAttachmentOnce(new File(["bye"], "b.txt")), "bye");
 });
 
@@ -1007,9 +973,7 @@ test("both attachment stages go through the decode-once path", () => {
   );
   assert.ok(adapter.length > 0, "text adapter not found");
   assert.equal(adapter.includes("readTextAttachmentOnce"), true);
-  // The unbounded read stays out of both stages.
   assert.equal(/await readTextAttachment\(/.test(adapter), false);
-  // The size cap comes before any read, including the signature slices.
   assert.ok(
     adapter.indexOf("MAX_TEXT_ATTACHMENT_BYTES") <
       adapter.indexOf("isBinaryPropertyList"),
@@ -1017,10 +981,7 @@ test("both attachment stages go through the decode-once path", () => {
 });
 
 test("every basename the picker claims is one the drop paths accept", () => {
-  // assistant-ui derives the extension as `.${name.split(".").pop()}`, so an
-  // extensionless "Dockerfile" matches the ".dockerfile" token and the picker
-  // takes it. A drop of the same file has to agree, or the two disagree on one
-  // conventional build file.
+  // assistant-ui maps extensionless "Dockerfile" to ".dockerfile"; drops must agree.
   for (const name of ["Dockerfile", "Makefile", "Containerfile"]) {
     const derived = `.${name.split(".").pop()!.toLowerCase()}`;
     assert.ok(
@@ -1029,14 +990,11 @@ test("every basename the picker claims is one the drop paths accept", () => {
     );
     assert.equal(isTextAttachmentName(name), true, `${name} is droppable`);
   }
-  // A name with no matching token stays out of both, rather than being widened.
   assert.equal(TEXT_ATTACHMENT_EXTENSIONS.includes(".gnumakefile"), false);
   assert.equal(isTextAttachmentName("GNUmakefile"), false);
 });
 
 test("a container declaring two charsets is refused, not part-decoded", async () => {
-  // Decoding the whole file with the first declaration would corrupt every
-  // later part, which is the failure mode the strict decoder exists to avoid.
   const mixed = new Uint8Array([
     ...new TextEncoder().encode(
       "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n" +
@@ -1060,8 +1018,6 @@ test("a container declaring two charsets is refused, not part-decoded", async ()
 });
 
 test("a multipart message whose parts agree is decoded with that charset", async () => {
-  // The outer header carries no charset, so reading only the first Content-Type
-  // rejected a file that says plainly what it is.
   const eml = new Uint8Array([
     ...new TextEncoder().encode(
       "Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n" +
@@ -1091,8 +1047,7 @@ test("a vCard property charset is honoured like an email's", async () => {
 });
 
 test("compare mode takes the same audio files the chat composer does", () => {
-  // Browsers leave file.type empty for several of these containers, so a
-  // MIME-only check dropped them silently.
+  // Browsers leave file.type empty for these, so MIME-only checks drop them.
   for (const name of ["clip.wma", "voice.amr", "note.caf", "take.aiff"]) {
     assert.equal(isAudioAttachmentFile(new File([], name, { type: "" })), true);
   }
@@ -1101,22 +1056,19 @@ test("compare mode takes the same audio files the chat composer does", () => {
     true,
   );
   assert.equal(isAudioAttachmentFile(new File([], "notes.txt", { type: "" })), false);
-  // The compare composer classifies through the shared helper, not file.type.
   assert.equal(/file\.type\.match\(\/\^audio/.test(SHARED_COMPOSER), false);
   assert.match(SHARED_COMPOSER, /isAudioAttachmentFile\(file\)/);
   assert.match(SHARED_COMPOSER, /accept=\{AUDIO_PICKER_ACCEPT\}/);
 });
 
 test("a declaration past the first pages is not missed", async () => {
-  // A prefix-scan cutoff decoded the whole archive as the first message's
-  // charset, so a later message in another one came out as mojibake. Any cutoff
-  // has that failure, which is why the scan reads the file the cap already
-  // bounds. Padded well past the 64 KiB the scan used to stop at.
+  // Any prefix cutoff can miss a later message's charset, so scan the already-capped file.
   const enc = new TextEncoder();
   const mbox = new Uint8Array([
     ...enc.encode(
       "From a@example.com Mon Jan  1 00:00:00 2024\r\n" +
         "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\n" +
+        // Padded past the 64 KiB the scan used to stop at.
         "x".repeat(70 * 1024) +
         "\r\n\r\nFrom b@example.com Mon Jan  1 00:00:00 2024\r\n" +
         "Content-Type: text/plain; charset=windows-1251\r\n\r\n",
@@ -1136,13 +1088,11 @@ test("a declaration past the first pages is not missed", async () => {
       return true;
     },
   );
-  // The source carries no byte ceiling on the scan for a cutoff to creep back in.
   assert.equal(TEXT_ATTACHMENT_ACCEPT_2.includes("DECLARATION_SCAN_BYTES"), false);
 });
 
 test("a header-shaped line in the body is not a declaration", async () => {
-  // Quoted mail and config snippets put "Content-Type:" at the start of a body
-  // line. Counting those as declarations refused files that say one thing.
+  // Body lines in quoted mail can start with "Content-Type:" and must not count.
   const eml = new Uint8Array([
     ...new TextEncoder().encode(
       "Content-Type: text/plain; charset=ISO-8859-1\r\n\r\n" +
@@ -1159,8 +1109,6 @@ test("a header-shaped line in the body is not a declaration", async () => {
 });
 
 test("parts after a boundary are still read as headers", async () => {
-  // The narrowing must not lose real part headers, which is what made the
-  // multipart case work in the first place.
   const enc = new TextEncoder();
   const mixed = new Uint8Array([
     ...enc.encode(
@@ -1182,9 +1130,7 @@ test("parts after a boundary are still read as headers", async () => {
 });
 
 test("a signature marker is not a MIME boundary", async () => {
-  // "-- " opens a signature block in most mail clients. Treating every line
-  // starting with "--" as a boundary put the body back into header mode, so a
-  // quoted header below it became a second declaration and refused the file.
+  // "-- " opens a signature, not a boundary.
   const enc = new TextEncoder();
   const eml = new Uint8Array([
     ...enc.encode("Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf"),
@@ -1198,8 +1144,6 @@ test("a signature marker is not a MIME boundary", async () => {
 });
 
 test("a closing delimiter ends its part instead of starting one", async () => {
-  // "--b--" closes the multipart; the epilogue after it is body text, so a
-  // header-shaped line there declares nothing.
   const enc = new TextEncoder();
   const eml = new Uint8Array([
     ...enc.encode(
@@ -1213,8 +1157,6 @@ test("a closing delimiter ends its part instead of starting one", async () => {
 });
 
 test("a vCard charset in a value is not a property parameter", async () => {
-  // The escaped semicolon is part of the NOTE text. Matching it added a second
-  // declaration and refused a card that names exactly one charset.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
@@ -1225,8 +1167,7 @@ test("a vCard charset in a value is not a property parameter", async () => {
 });
 
 test("each vCard property is read under its own declared charset", async () => {
-  // CHARSET is a property parameter, so a card naming two of them says plainly
-  // what each value holds. Reading it as one unit corrupted all but one.
+  // CHARSET is a per-property parameter in vCard.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
@@ -1239,7 +1180,6 @@ test("each vCard property is read under its own declared charset", async () => {
   const text = await readTextAttachment(new File([vcf], "contact.vcf"));
   assert.match(text, /FN;CHARSET=windows-1252:Café/);
   assert.match(text, /ORG;CHARSET=windows-1251:Пр/);
-  // Names, parameters, undeclared properties and line endings survive intact.
   assert.match(text, /TEL:\+15551234/);
   assert.ok(text.startsWith("BEGIN:VCARD\r\nVERSION:2.1\r\n"));
   assert.ok(text.endsWith("END:VCARD\r\n"));
@@ -1261,8 +1201,7 @@ test("a folded value keeps the charset of the property above it", async () => {
 });
 
 test("a vCard naming a charset it does not hold is still refused", async () => {
-  // The per-property read only replaces the refusal when it can account for
-  // every value; a property whose bytes break its own declaration is not that.
+  // The per-property read only wins when it can account for every value.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=utf-8:Caf"),
@@ -1275,8 +1214,6 @@ test("a vCard naming a charset it does not hold is still refused", async () => {
   await assert.rejects(
     readTextAttachment(new File([vcf], "contact.vcf")),
     (error: Error) => {
-      // The property that broke its declaration, not a list of every charset
-      // the card names: only one of them is the reason it cannot be read.
       assert.match(
         error.message,
         /declares charset "utf-8" but does not hold valid utf-8 text/,
@@ -1287,7 +1224,6 @@ test("a vCard naming a charset it does not hold is still refused", async () => {
 });
 
 test("a multipart mail declaring two charsets is still refused", async () => {
-  // Only the vCard reading changed: a MIME container needs a parser this is not.
   const enc = new TextEncoder();
   const mixed = new Uint8Array([
     ...enc.encode(
@@ -1309,8 +1245,6 @@ test("a multipart mail declaring two charsets is still refused", async () => {
 });
 
 test("an XML prolog encoding is honoured for every XML dialect", async () => {
-  // .resx, .xliff and friends are XML documents that state their encoding, so
-  // refusing them for carrying the bytes they describe was wrong.
   const enc = new TextEncoder();
   for (const name of ["Strings.resx", "ui.xliff", "app.xlf", "icon.svg"]) {
     const bytes = new Uint8Array([
@@ -1336,11 +1270,7 @@ test("an XML prolog encoding is honoured for every XML dialect", async () => {
 });
 
 test("the tracker magic tables agree, and cover ProTracker's second marker", async () => {
-  // The two lists are hand-mirrored, so drift is only visible if something
-  // compares them. !PM! is the marker that was missing from both: file(1) lists
-  // it at 1080 beside M.K., and a 31-sample module puts byte 470 inside a
-  // sample name rather than the order table, so the Soundtracker fallback does
-  // not catch one either and the module was read as UTF-8 text.
+  // Hand-mirrored with Rust; !PM! at offset 1080 was missing from both lists.
   const rust = readText("../../src-tauri/src/native_path_policy.rs");
   const table = rust.match(
     /const TRACKER_MOD_MAGICS: &\[&\[u8; 4\]\] = &\[([\s\S]*?)\];/,
@@ -1360,14 +1290,12 @@ test("the tracker magic tables agree, and cover ProTracker's second marker", asy
   assert.deepEqual([...tsMagics].sort(), [...rustMagics].sort());
   assert.ok(module.isBinaryTrackerModule, "the sniffer is still exported");
 
-  // And the marker is actually acted on, not merely listed.
   const bytes = new Uint8Array(1084 + 4);
   bytes.set(new TextEncoder().encode("!PM!"), 1080);
   assert.equal(
     await module.isBinaryTrackerModule(new File([bytes], "tune.mod")),
     true,
   );
-  // A go.mod of the same length is still text.
   const text = new Uint8Array(1084 + 4).fill(0x20);
   assert.equal(
     await module.isBinaryTrackerModule(new File([text], "go.mod")),
@@ -1376,12 +1304,8 @@ test("the tracker magic tables agree, and cover ProTracker's second marker", asy
 });
 
 test("a charset with no decoder here is reported, not swallowed", async () => {
-  // The composer only toasts an UndecodableTextError; a bare Error failed that
-  // check and the attachment vanished with no message at all. These are not
-  // exotic labels: the Encoding Standard maps the ISO-2022-KR, ISO-2022-CN and
-  // HZ-GB-2312 families to "replacement", which TextDecoder is required to
-  // refuse, so a Korean or Chinese card declaring its own charset went out
-  // silently on every engine.
+  // The composer only toasts UndecodableTextError; ISO-2022-KR/CN and HZ map to "replacement",
+  // which TextDecoder refuses.
   for (const charset of ["ISO-2022-KR", "HZ-GB-2312", "ISO-2022-CN", "cp437"]) {
     const card = new File(
       [`BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=${charset}:name\r\nEND:VCARD\r\n`],
@@ -1403,9 +1327,7 @@ test("a charset with no decoder here is reported, not swallowed", async () => {
 });
 
 test("a declared charset is decoded as strictly as an undeclared one", async () => {
-  // The declared-charset paths used a lenient decoder, so a file claiming UTF-8
-  // and holding broken bytes came through as replacement characters, which is
-  // the corruption the strict default was added to stop.
+  // Declared-charset paths must decode strictly, not with replacement characters.
   const enc = new TextEncoder();
   const broken = [0xc3, 0x28]; // a lead byte followed by an invalid continuation
   for (const [name, head] of [
@@ -1425,7 +1347,6 @@ test("a declared charset is decoded as strictly as an undeclared one", async () 
       `${name} is refused rather than corrupted`,
     );
   }
-  // A single-byte charset maps every byte, so those files are unaffected.
   const latin = new Uint8Array([
     ...enc.encode('<?xml version="1.0" encoding="windows-1252"?><r>Caf'),
     0xe9,
@@ -1434,7 +1355,6 @@ test("a declared charset is decoded as strictly as an undeclared one", async () 
     await readTextAttachment(new File([latin], "strings.resx")),
     /Caf\u00e9/,
   );
-  // A bounded preview keeps its allowance for the character the slice cut.
   const cut = new Uint8Array([
     ...enc.encode('<?xml version="1.0" encoding="UTF-8"?><r>caf'),
     0xc3,
@@ -1446,9 +1366,7 @@ test("a declared charset is decoded as strictly as an undeclared one", async () 
 });
 
 test("an XML prolog decides the encoding before UTF-8 is tried", async () => {
-  // 0xC3 0xA9 is valid UTF-8 for "e-acute", so a UTF-8-first decode succeeded and
-  // the prolog was never consulted. Per the spec those bytes are two windows-1252
-  // characters, which is what an XML parser reads and what we must send.
+  // Per the XML spec the prolog wins even when the bytes are valid UTF-8.
   const bytes = new Uint8Array([
     ...new TextEncoder().encode('<?xml version="1.0" encoding="windows-1252"?><r>'),
     0xc3,
@@ -1460,23 +1378,18 @@ test("an XML prolog decides the encoding before UTF-8 is tried", async () => {
 });
 
 test("a BOM-marked file decodes as strictly as everything else", async () => {
-  // An odd trailing byte used to be padded with a replacement character and
-  // attached as though it had been read.
   const odd = new Uint8Array([0xff, 0xfe, 0x61, 0x00, 0x62]);
   await assert.rejects(
     readTextAttachment(new File([odd], "export.reg")),
     (error: Error) => error instanceof UndecodableTextError,
   );
-  // A bounded preview still drops only the incomplete unit at the cut.
   assert.equal(decodeTextAttachmentBytes(odd, "export.reg", true), "a");
-  // Well-formed UTF-16 is unaffected.
   const good = new Uint8Array([0xff, 0xfe, 0x61, 0x00, 0x62, 0x00]);
   assert.equal(await readTextAttachment(new File([good], "export.reg")), "ab");
 });
 
 test("a body of boundary-shaped lines does not stall the composer", () => {
-  // Restarting the header search from every candidate boundary was quadratic:
-  // a megabyte of diff hunks took 14 seconds, inside add(), on the UI thread.
+  // Restarting the header search per boundary was quadratic on the UI thread.
   const body = "--- a/file.txt\n".repeat(70_000);
   const bytes = new Uint8Array([
     ...new TextEncoder().encode(
@@ -1591,11 +1504,8 @@ test("the composer adapter reads the shared text accept list", () => {
   );
 });
 
-// Mirrors `bmff_box` and `three_gp_with_tracks` in native_intents.rs, so the
-// browser classifier is tested against the same containers as the native one.
-// The return types name their buffer: a bare Uint8Array is generic over
-// ArrayBufferLike, which includes SharedArrayBuffer, and BlobPart takes neither
-// that nor a view onto it. Every one of these ends up inside a File.
+// Mirrors `bmff_box` and `three_gp_with_tracks` in native_intents.rs.
+// Typed Uint8Array<ArrayBuffer> because BlobPart rejects SharedArrayBuffer views.
 function bmffBox(kind: string, payload: Uint8Array): Uint8Array<ArrayBuffer> {
   const boxed = new Uint8Array(8 + payload.length);
   new DataView(boxed.buffer).setUint32(0, boxed.length);
@@ -1626,7 +1536,6 @@ test("3GP tracks decide audio or video, as they do natively", () => {
   assert.equal(isAudioOnly3gpBytes(threeGpWithTracks(["soun"])), true);
   assert.equal(isAudioOnly3gpBytes(threeGpWithTracks(["vide"])), false);
   assert.equal(isAudioOnly3gpBytes(threeGpWithTracks(["soun", "vide"])), false);
-  // Not a container at all, and a truncated one.
   assert.equal(isAudioOnly3gpBytes(new Uint8Array([1, 2, 3])), false);
   assert.equal(
     isAudioOnly3gpBytes(threeGpWithTracks(["soun"]).subarray(0, 20)),
@@ -1635,8 +1544,7 @@ test("3GP tracks decide audio or video, as they do natively", () => {
 });
 
 test("an audio-only 3GP recording is classified as audio, not video", async () => {
-  // The browser answers "" or video/3gpp for both kinds, and the video accept
-  // list claims .3gp, so without this the recording reached the video adapter.
+  // Browsers type both as "" or video/3gpp, so without this the recording hit the video adapter.
   const recording = new File([threeGpWithTracks(["soun"])], "voice.3gp", {
     type: "",
   });
@@ -1666,8 +1574,7 @@ test("classification leaves every other container untouched", async () => {
 });
 
 test("the restamped recording routes to the audio adapter", async () => {
-  // The composite's own matcher, not a copy of it: audio is registered before
-  // video, so a file the audio accept list claims never reaches the video one.
+  // Audio is registered before video, so audio-claimed files never reach video.
   const { fileMatchesAccept } = (await import(
     new URL(
       "../node_modules/@assistant-ui/core/dist/adapters/attachment.js",
@@ -1735,10 +1642,7 @@ test("a transport stream named .m2ts, .ts or .mts routes to video, TypeScript to
 });
 
 test("a file dialog offers 3GP recordings, and routing still does not", () => {
-  // A dialog decides what is selectable, so it has to name .3gp: a platform
-  // that maps it to video/3gpp, or to nothing, greys the recording out. Routing
-  // must not, or the audio adapter would claim every 3GP video ahead of the
-  // video one, which is matched after it.
+  // The dialog must list .3gp so a recording is selectable; routing must not claim videos.
   assert.ok(AUDIO_PICKER_ACCEPT.split(",").includes(".3gp"));
   assert.equal(AUDIO_ATTACHMENT_ACCEPT.split(",").includes(".3gp"), false);
   assert.ok(AUDIO_PICKER_ACCEPT.startsWith(AUDIO_ATTACHMENT_ACCEPT));
@@ -1758,8 +1662,7 @@ test("a 3GP clip picked through the audio dialog is still refused as video", asy
 });
 
 test("the composer classifies before an adapter is picked", () => {
-  // A composite matches on name and MIME synchronously, so the restamping has
-  // to happen in the wrapper above it rather than inside an adapter.
+  // Composites match synchronously, so restamping happens in the wrapper above.
   assert.match(
     RUNTIME_PROVIDER,
     /class PreStreamAwareAttachmentAdapter[\s\S]*?if \(!needsAttachmentTrackInspection\(state\.file\)\)[\s\S]*?await classifiedAttachmentFile\(state\.file\)/,
@@ -1768,8 +1671,7 @@ test("the composer classifies before an adapter is picked", () => {
 });
 
 test("a From line separates messages in an archive, not in one message", async () => {
-  // An mbox escapes a body line that starts with "From "; a standalone .eml has
-  // no separator at all, so an ordinary sentence opening that way is body text.
+  // A standalone .eml has no mbox separator, so "From " lines are body text.
   const enc = new TextEncoder();
   const bytes = new Uint8Array([
     ...enc.encode("Content-Type: text/plain; charset=ISO-8859-1\r\n\r\nCaf"),
@@ -1803,7 +1705,6 @@ function threeGpFile(
   return new File([ftyp, moov, mdat], name, { type: "" });
 }
 
-/** Records every range read from a file, and forbids reading it whole. */
 function watchReads(file: File): Array<[number, number]> {
   const reads: Array<[number, number]> = [];
   const slice = file.slice.bind(file);
@@ -1822,8 +1723,7 @@ function watchReads(file: File): Array<[number, number]> {
 }
 
 test("only the track table is read, not the samples beside it", async () => {
-  // moov holds the handlers and mdat the audio, so reading the file to reach a
-  // handler retains the whole clip: 64 MB for one, and that per file in a drop.
+  // Read only the handlers, not the whole clip, to bound memory.
   const file = threeGpFile("voice.3gp", ["soun"], 2 * 1024 * 1024);
   const reads = watchReads(file);
 
@@ -1837,8 +1737,7 @@ test("only the track table is read, not the samples beside it", async () => {
 });
 
 test("a dropped batch is inspected one container at a time", async () => {
-  // Promise.all put every container's payload in memory at once, so ten clips
-  // at the 64 MB limit came to 640 MB before anything could be rejected.
+  // Read containers sequentially, not via Promise.all, to bound peak memory.
   const files = ["a.3gp", "b.3gp", "c.3gp"].map((name) =>
     threeGpFile(name, ["soun"], 64 * 1024),
   );
@@ -1858,7 +1757,6 @@ test("a dropped batch is inspected one container at a time", async () => {
     classified.map((file) => file.type),
     ["audio/3gpp", "audio/3gpp", "audio/3gpp"],
   );
-  // Grouped, not interleaved: every read of a file precedes the next one's.
   assert.deepEqual([...new Set(order)], ["a.3gp", "b.3gp", "c.3gp"]);
   assert.deepEqual(
     order,
@@ -1867,8 +1765,6 @@ test("a dropped batch is inspected one container at a time", async () => {
 });
 
 test("a vCard charset decides before UTF-8, like the other declarations", async () => {
-  // C3 A9 is valid UTF-8 for "é" and two windows-1252 characters. The card says
-  // which it holds, so decoding as UTF-8 delivered characters it never named.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
@@ -1880,7 +1776,6 @@ test("a vCard charset decides before UTF-8, like the other declarations", async 
     await readTextAttachment(new File([vcf], "contact.vcf")),
     /CafÃ©/,
   );
-  // A card that names UTF-8 still reads as UTF-8, so nothing regresses there.
   const utf8 = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:3.0\r\nFN;CHARSET=UTF-8:Caf"),
     0xc3,
@@ -1888,7 +1783,6 @@ test("a vCard charset decides before UTF-8, like the other declarations", async 
     ...enc.encode("\r\nEND:VCARD\r\n"),
   ]);
   assert.match(await readTextAttachment(new File([utf8], "modern.vcf")), /Café/);
-  // A card with no charset parameter at all is untouched by this.
   const plain = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Caf"),
     0xc3,
@@ -1910,8 +1804,6 @@ test("a mail Content-Type stays a fallback, unlike the vCard parameter", async (
 });
 
 test("a boundary does not carry into the next message of an archive", async () => {
-  // Each message declares its own. A later body line repeating an earlier one
-  // reopened the headers there, and the next header-shaped line counted.
   const enc = new TextEncoder();
   const mbox = new Uint8Array([
     ...enc.encode(
@@ -1931,8 +1823,6 @@ test("a boundary does not carry into the next message of an archive", async () =
 });
 
 test("a gettext header past the prefix is still read", async () => {
-  // A catalog with more than 64 KiB of translator comments above its header was
-  // refused for carrying exactly the bytes that header describes.
   const enc = new TextEncoder();
   const comments = "# a translator comment line\n".repeat(4_000);
   assert.ok(comments.length > 64 * 1024);
@@ -1966,7 +1856,6 @@ test("the reference picker takes the formats its drop path does", async () => {
     referenceFileRejection("video", { type: "", size: 10, name: "take.mkv" }),
     null,
   );
-  // The kind check still holds, by name as well as by type.
   assert.equal(
     referenceFileRejection("audio", { type: "", size: 10, name: "clip.mkv" }),
     "Please choose an audio file",
@@ -1975,7 +1864,6 @@ test("the reference picker takes the formats its drop path does", async () => {
     referenceFileRejection("video", { type: "image/png", size: 10 }),
     "Please choose a video file",
   );
-  // Every extension the native drop accepts is offered by the dialog too.
   for (const ext of CHAT_AUDIO_DROP_ACCEPT.split(",")) {
     assert.ok(REFERENCE_PICKER_ACCEPT.audio.split(",").includes(ext), ext);
   }
@@ -1987,8 +1875,6 @@ test("the reference picker takes the formats its drop path does", async () => {
 });
 
 test("one vCard declaration speaks for its property, not for the file", async () => {
-  // A 2.1 card beside a 3.0 one, which declares nothing because it cannot. The
-  // whole-file reading turned the 3.0 record's UTF-8 into windows-1252 mojibake.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
@@ -2004,7 +1890,6 @@ test("one vCard declaration speaks for its property, not for the file", async ()
 });
 
 test("a card whose value breaks its declaration still reads as one unit", async () => {
-  // Falling back has to keep working: the per-property read is all-or-nothing.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
@@ -2013,8 +1898,6 @@ test("a card whose value breaks its declaration still reads as one unit", async 
     0xe9,
     ...enc.encode("\r\nEND:VCARD\r\n"),
   ]);
-  // NOTE declares nothing and is not UTF-8, so the per-property read gives up
-  // and the single declaration is applied to the file as it was before.
   assert.match(
     await readTextAttachment(new File([vcf], "contact.vcf")),
     /NOTE:plain é/,
@@ -2022,8 +1905,7 @@ test("a card whose value breaks its declaration still reads as one unit", async 
 });
 
 test("a folded boundary parameter is still a boundary", async () => {
-  // "multipart/mixed;\r\n boundary=..." is an ordinary wrap. Missing it meant
-  // no part header was ever scanned, so the charset they declare went too.
+  // Header continuation lines must be unfolded or part headers are never scanned.
   const enc = new TextEncoder();
   const eml = new Uint8Array([
     ...enc.encode(
@@ -2037,8 +1919,6 @@ test("a folded boundary parameter is still a boundary", async () => {
 });
 
 test("a nested boundary stops being one after its multipart closes", async () => {
-  // The inner delimiter is finished at "--inner--", so a sibling part repeating
-  // that line is body text and the header-shaped line below it declares nothing.
   const enc = new TextEncoder();
   const eml = new Uint8Array([
     ...enc.encode(
@@ -2058,8 +1938,7 @@ test("a nested boundary stops being one after its multipart closes", async () =>
 });
 
 test("two spellings of one encoding are one declaration", async () => {
-  // windows-1252, CP1252 and latin1 are three names for the same decoder, so an
-  // archive using them in different messages is not a multi-charset one.
+  // windows-1252, CP1252 and latin1 are one decoder, not multiple charsets.
   const enc = new TextEncoder();
   for (const [first, second] of [
     ["windows-1252", "CP1252"],
@@ -2082,7 +1961,6 @@ test("two spellings of one encoding are one declaration", async () => {
     assert.match(text, /Café/, `${first} + ${second}`);
     assert.match(text, /naïve/, `${first} + ${second}`);
   }
-  // Genuinely different encodings are still two.
   const mixed = new Uint8Array([
     ...enc.encode("Content-Type: text/plain; charset=windows-1252\r\n\r\nCaf"),
     0xe9,
@@ -2103,8 +1981,7 @@ test("two spellings of one encoding are one declaration", async () => {
 });
 
 test("a wide XML declaration still names its encoding", async () => {
-  // The grammar puts no bound on the whitespace between the parts, so a fixed
-  // prefix could cut `encoding` off and refuse a file that states it plainly.
+  // The XML grammar does not bound whitespace, so a fixed prefix could cut `encoding` off.
   const enc = new TextEncoder();
   const padding = " ".repeat(400);
   const xml = new Uint8Array([
@@ -2113,7 +1990,6 @@ test("a wide XML declaration still names its encoding", async () => {
     ...enc.encode("</t>"),
   ]);
   assert.match(await readTextAttachment(new File([xml], "ui.resx")), /Café/);
-  // A document that does not open with a declaration is untouched by the scan.
   const plain = new Uint8Array([
     ...enc.encode("<t>Caf"),
     0xc3,
@@ -2127,7 +2003,6 @@ test("the audio reference picker reads a 3GP recording's tracks", async () => {
   const { REFERENCE_PICKER_ACCEPT, referenceFileRejection } = await import(
     "../src/features/video/reference-budget.ts"
   );
-  // Offered by the dialog, then settled from the container once it is in hand.
   assert.ok(REFERENCE_PICKER_ACCEPT.audio.split(",").includes(".3gp"));
 
   const recording = new File([threeGpWithTracks(["soun"])], "voice.3gp", {
@@ -2135,7 +2010,6 @@ test("the audio reference picker reads a 3GP recording's tracks", async () => {
   });
   const classifiedRecording = await classifiedAttachmentFile(recording);
   assert.equal(referenceFileRejection("audio", classifiedRecording), null);
-  // And a real clip picked there is refused, rather than staged as audio.
   const clip = new File([threeGpWithTracks(["soun", "vide"])], "clip.3gp", {
     type: "",
   });
@@ -2143,7 +2017,6 @@ test("the audio reference picker reads a 3GP recording's tracks", async () => {
     referenceFileRejection("audio", await classifiedAttachmentFile(clip)),
     "Please choose an audio file",
   );
-  // The video picker does not take the recording either, extension or not.
   assert.equal(isVideoFile(classifiedRecording), false);
   assert.equal(
     referenceFileRejection("video", classifiedRecording),
@@ -2154,8 +2027,7 @@ test("the audio reference picker reads a 3GP recording's tracks", async () => {
 });
 
 test("only a real charset parameter is a charset declaration", async () => {
-  // "name=" can carry a filename that reads like one. Taking the first match
-  // anywhere in the header stopped at the filename and never saw the parameter.
+  // A filename may contain "name="-like text, so match the real parameter.
   const enc = new TextEncoder();
   const named = new Uint8Array([
     ...enc.encode(
@@ -2168,8 +2040,6 @@ test("only a real charset parameter is a charset declaration", async () => {
     await readTextAttachment(new File([named], "message.eml")),
     /Café/,
   );
-  // A filename naming a supported label would otherwise pick the wrong decoder
-  // silently, which is the worse half of the same bug.
   const plausible = new Uint8Array([
     ...enc.encode(
       'Content-Type: text/plain; name="charset=windows-1251";' +
@@ -2181,7 +2051,6 @@ test("only a real charset parameter is a charset declaration", async () => {
     await readTextAttachment(new File([plausible], "message.eml")),
     /Café/,
   );
-  // An ordinary header is unaffected, quoted or not.
   for (const header of [
     "Content-Type: text/plain; charset=windows-1252",
     'Content-Type: text/plain; charset="windows-1252"',
@@ -2201,8 +2070,7 @@ test("only a real charset parameter is a charset declaration", async () => {
 });
 
 test("a truncated vCard preview reads per property too", async () => {
-  // The preview pane decodes a prefix. Applying the sole declaration to all of
-  // it showed CafÃ© for text the sent attachment renders as Café.
+  // The preview decodes a prefix but must render the same as the sent attachment.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
@@ -2217,16 +2085,13 @@ test("a truncated vCard preview reads per property too", async () => {
   assert.match(preview, /FN:Straße/);
   assert.equal(preview, await readTextAttachment(new File([vcf], "export.vcf")));
 
-  // A prefix cut through a character drops it rather than failing the read.
   const cut = vcf.subarray(0, vcf.length - 12);
   const cutPreview = decodeTextAttachmentBytes(cut, "export.vcf", true);
   assert.match(cutPreview, /FN;CHARSET=windows-1252:Café/);
 });
 
 test("a 3GP is inspected however large the surface taking it allows", async () => {
-  // The ceiling here was the composer's video cap, and the video reference
-  // surface accepts a larger file, so a recording in between was staged as a
-  // video reference on its extension alone.
+  // The ceiling must not be one surface's video cap; others accept larger files.
   const { MAX_REFERENCE_BYTES: limits } = await import(
     "../src/features/video/reference-budget.ts"
   );
@@ -2239,8 +2104,6 @@ test("a 3GP is inspected however large the surface taking it allows", async () =
   assert.equal(classified.type, "audio/3gpp");
   assert.equal(isVideoFile(classified), false);
 
-  // Nothing in the predicate turns on size any more, so no surface's limit can
-  // drift past it again.
   const source = readSrc("lib/video-utils.ts");
   assert.match(
     source,
@@ -2249,8 +2112,7 @@ test("a 3GP is inspected however large the surface taking it allows", async () =
 });
 
 test("a boundary counts only on the header that owns the parts", async () => {
-  // A quoted filename on any header could register a delimiter, and a body line
-  // repeating it then reopened the headers.
+  // Only a multipart Content-Type boundary registers a delimiter, not any quoted filename.
   const enc = new TextEncoder();
   const eml = new Uint8Array([
     ...enc.encode(
@@ -2264,7 +2126,6 @@ test("a boundary counts only on the header that owns the parts", async () => {
   ]);
   assert.match(await readTextAttachment(new File([eml], "message.eml")), /Café/);
 
-  // A real multipart boundary still registers, quoted or bare.
   for (const header of [
     'Content-Type: multipart/mixed; boundary="part"',
     "Content-Type: multipart/alternative; boundary=part",
@@ -2284,11 +2145,8 @@ test("a boundary counts only on the header that owns the parts", async () => {
 });
 
 test("a preview finds a declaration that sits past its own slice", async () => {
-  // The preview decodes a bounded prefix. Looking for the declaration inside
-  // that prefix reported an error for a file the attachment itself decodes.
+  // Find the declaration in the whole file, not just the bounded preview prefix.
   const enc = new TextEncoder();
-  // A translator comment in the file's own encoding, so the prefix is not UTF-8
-  // and the strict decode has to fall back to the declaration to read it.
   const comment = new Uint8Array([
     ...enc.encode("# "),
     0xcf,
@@ -2306,7 +2164,6 @@ test("a preview finds a declaration that sits past its own slice", async () => {
     0xf0,
     ...enc.encode('"\n'),
   ]);
-  // The slice stops above the header entry, exactly as the preview cap would.
   const slice = whole.subarray(0, comment.length * 200 - 40);
   assert.throws(() => decodeTextAttachmentBytes(slice, "ru.po", true));
   assert.equal(
@@ -2319,8 +2176,7 @@ test("a preview finds a declaration that sits past its own slice", async () => {
 });
 
 test("a 3GP typed as audio by the platform is still inspected", async () => {
-  // A platform that maps the shared extension to audio/3gpp says so for a clip
-  // too, and the audio adapter is matched before the video one.
+  // Audio is matched before video, so a platform typing a clip audio/3gpp must be corrected.
   const clip = new File([threeGpWithTracks(["soun", "vide"])], "clip.3gp", {
     type: "audio/3gpp",
   });
@@ -2329,13 +2185,11 @@ test("a 3GP typed as audio by the platform is still inspected", async () => {
   assert.equal(isVideoFile(classified), true);
   assert.equal(isAudioAttachmentFile(classified), false);
 
-  // A recording already typed correctly is returned untouched, not rewrapped.
   const recording = new File([threeGpWithTracks(["soun"])], "voice.3gp", {
     type: "audio/3gpp",
   });
   assert.equal(await classifiedAttachmentFile(recording), recording);
 
-  // Tracks that cannot be read decide nothing.
   const unreadable = new File([new Uint8Array([1, 2, 3, 4])], "odd.3gp", {
     type: "audio/3gpp",
   });
@@ -2346,8 +2200,7 @@ test("the reference drop zone takes what its dialog offers", async () => {
   const { REFERENCE_DROP_ACCEPT, REFERENCE_PICKER_ACCEPT: picker } = await import(
     "../src/features/video/reference-budget.ts"
   );
-  // The zone filters on the name before the classifier can look at the file, so
-  // a list narrower than the dialog's refused what the button accepts.
+  // The zone filters by name first, so its list must be no narrower than the dialog's.
   assert.ok(REFERENCE_DROP_ACCEPT.audio.split(",").includes(".3gp"));
   for (const [kind, offered] of Object.entries(picker)) {
     const dropped = REFERENCE_DROP_ACCEPT[kind as "audio" | "video"].split(",");
@@ -2358,7 +2211,6 @@ test("the reference drop zone takes what its dialog offers", async () => {
     // Extensions only: the zone shows this list verbatim when it refuses a file.
     assert.equal(dropped.some((entry) => entry.includes("/")), false, kind);
   }
-  // Nothing the chat drop lists may be missing from it either.
   for (const ext of CHAT_AUDIO_DROP_ACCEPT.split(",")) {
     assert.ok(REFERENCE_DROP_ACCEPT.audio.split(",").includes(ext), ext);
   }
@@ -2370,8 +2222,6 @@ test("the reference drop zone takes what its dialog offers", async () => {
 });
 
 test("a quoted parameter value resolves its escapes", async () => {
-  // The splitter honours "\\X" already; the unquoting did not, so a value
-  // carrying a quote stopped at the escaped one and kept the backslashes.
   const enc = new TextEncoder();
   const eml = new Uint8Array([
     ...enc.encode(
@@ -2382,8 +2232,6 @@ test("a quoted parameter value resolves its escapes", async () => {
   ]);
   assert.match(await readTextAttachment(new File([eml], "message.eml")), /Café/);
 
-  // And a parameter after the escaped quote is still found, rather than being
-  // swallowed by a value that never terminated.
   const named = new Uint8Array([
     ...enc.encode(
       'Content-Type: text/plain; name="say \\"hi\\""; charset=windows-1252\r\n\r\nCaf',
@@ -2394,8 +2242,7 @@ test("a quoted parameter value resolves its escapes", async () => {
 });
 
 test("the clipboard reader takes what the native side hands it", () => {
-  // Rust reads a pasted clip to MAX_CLIPBOARD_VIDEO_BYTES; refusing it here
-  // threw away a file already read and encoded, and dropped the paste with it.
+  // Rust already read the clip up to MAX_CLIPBOARD_VIDEO_BYTES; refusing it here drops it.
   const source = readSrc("features/chat/utils/clipboard-files.ts");
   const rust = readText("../../src-tauri/src/native_clipboard.rs");
   const rustLimit = (name: string): number => {
@@ -2425,10 +2272,8 @@ test("the clipboard reader takes what the native side hands it", () => {
     frontLimit("MAX_CLIPBOARD_NON_AUDIO_BYTES"),
     rustLimit("MAX_CLIPBOARD_SOURCE_BYTES"),
   );
-  // The total may not refuse a single file the per-file limits allow.
   assert.match(source, /const MAX_CLIPBOARD_BYTES = MAX_CLIPBOARD_VIDEO_BYTES;/);
   assert.match(rust, /const MAX_CLIPBOARD_TOTAL_BYTES: u64 = MAX_CLIPBOARD_VIDEO_BYTES;/);
-  // And video is classified before the catch-all, as it is natively.
   assert.match(
     source,
     /file\.mimeType\.startsWith\("video\/"\)\s*\?\s*MAX_CLIPBOARD_VIDEO_BYTES/,
@@ -2436,10 +2281,7 @@ test("the clipboard reader takes what the native side hands it", () => {
 });
 
 test("an unsupported charset is refused however many others sit beside it", async () => {
-  // The per-property read cannot honour UTF-7, and the fallback then read the
-  // card as UTF-8 and accepted it with the escapes literal, because every other
-  // byte in it happened to be ASCII. The same declaration alone was refused, so
-  // one card's fate turned on how many of its neighbours declared anything.
+  // UTF-7 cannot be honoured per property, so the fallback must refuse rather than read ASCII.
   const card = (extra: string) =>
     new File(
       [
@@ -2480,9 +2322,6 @@ test("a property declaring two charsets is refused rather than read as UTF-8", a
 });
 
 test("a card whose undeclared property is legacy still reports its charsets", async () => {
-  // Nothing about the declarations blocks this reading: it is an undeclared
-  // property holding bytes that are not UTF-8. That case keeps the answer it
-  // had, so the change only reaches files a declaration itself defeats.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode(
@@ -2501,7 +2340,6 @@ test("a card whose undeclared property is legacy still reports its charsets", as
 });
 
 test("a card every property of which reads still decodes per property", async () => {
-  // The guard above must not refuse cards the per-property read handles.
   const enc = new TextEncoder();
   const vcf = new Uint8Array([
     ...enc.encode("BEGIN:VCARD\r\nVERSION:2.1\r\nFN;CHARSET=windows-1252:Caf"),
@@ -2517,9 +2355,7 @@ test("a card every property of which reads still decodes per property", async ()
 });
 
 test("a processing instruction is not read as the document's declaration", async () => {
-  // `xml-stylesheet` and `xml-model` open with the same five bytes as a
-  // declaration. Taking one for the prolog decoded a UTF-8 document as a code
-  // page and returned mojibake, which no error accompanies.
+  // `xml-stylesheet`/`xml-model` share the prefix with a declaration and must not count.
   const doc =
     '<?xml-stylesheet type="text/xsl" href="s.xsl" encoding="windows-1252"?>\n' +
     "<note>café naïve</note>\n";
@@ -2545,9 +2381,7 @@ test("a declaration still needs only the whitespace its grammar requires", async
 });
 
 test("a gettext charset split across two literals reads as one label", async () => {
-  // PO concatenates adjacent quoted pieces, so the header is not the source
-  // text. Matching the raw entry read `windows-` and refused the catalog for a
-  // charset it does not declare.
+  // PO concatenates adjacent quoted pieces, so match the joined value.
   const enc = new TextEncoder();
   const po = new Uint8Array([
     ...enc.encode(
@@ -2564,14 +2398,11 @@ test("a gettext charset split across two literals reads as one label", async () 
 });
 
 test("a header entry the prefix cuts is answered from the whole file", async () => {
-  // The same truncation by a different route: the 64 KiB prefix ends inside the
-  // charset, and the last complete piece stops at `windows-`. An entry that runs
-  // to the cut has to be re-read rather than answered from half a value.
+  // An entry running to the 64 KiB cut must be re-read, not answered from half a value.
   const enc = new TextEncoder();
   const head = 'msgid ""\nmsgstr ""\n"Content-Type: text/plain; charset=windows-';
   const comment = "# " + "c".repeat(64 * 1024 - head.length - 4) + "\n";
   const source = comment + head;
-  // The cut lands inside the value, with the rest of it in the next piece.
   assert.ok(source.length > 64 * 1024 - 8 && source.length <= 64 * 1024);
   const po = new Uint8Array([
     ...enc.encode(`${source}"\n"1252\\n"\n\nmsgid "c"\nmsgstr "caf`),
@@ -2582,8 +2413,6 @@ test("a header entry the prefix cuts is answered from the whole file", async () 
 });
 
 test("escapes in a header entry resolve before the charset is read", async () => {
-  // `\n` is a newline, not the letter: emitting it literally glued the charset
-  // to the header that follows and made `utf-8` read as `utf-8nContent`.
   const po =
     'msgid ""\nmsgstr ""\n' +
     '"Content-Type: text/plain; charset=utf-8\\nContent-Transfer-Encoding: 8bit\\n"\n\n' +

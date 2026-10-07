@@ -26,13 +26,11 @@ type CompanionPlanRequest = [
   sizeBytes: number,
 ];
 
-/** dependency_key groups variants with identical companions. Without one (video
- *  families among them) companions can differ per file, so each file is its own group. */
+/** Without a dependency_key, companions may differ per file, so each file is its own group. */
 function companionKey(variant: GgufVariantDetail): string {
   return variant.dependency_key ?? `file:${variant.filename}`;
 }
 
-/** One plan per keyed group; an unkeyed file is planned only once selected. */
 export function companionPlanRequests(
   page: MediaStudioPage | undefined,
   variants: readonly GgufVariantDetail[] | null,
@@ -55,7 +53,6 @@ export function companionPlanRequests(
   return Array.from(byKey.values());
 }
 
-/** Companion bytes Run would still download with default load settings, or null for none. */
 export async function resolveCompanionBytes(
   page: MediaStudioPage,
   repoId: string,
@@ -90,7 +87,6 @@ export async function resolveCompanionBytes(
   return companionBytes > 0 ? companionBytes : null;
 }
 
-/** Partial rows keep their "X left" size. Downloaded rows still get companions, which Run fetches. */
 export function ggufVariantFootprint(
   variant: GgufVariantDetail,
   companionBytesByKey: ReadonlyMap<string, number>,
@@ -104,8 +100,6 @@ export function ggufVariantFootprint(
   };
 }
 
-/** Companion bytes by group. Plans live as long as the card, so returning from Run,
- *  which fetches the companions, plans again. */
 export function useMediaCompanionBytes(
   page: MediaStudioPage | undefined,
   repoId: string,
@@ -124,7 +118,6 @@ export function useMediaCompanionBytes(
     identity: string;
     companionBytes: ReadonlyMap<string, number>;
   }>(() => ({ identity: "", companionBytes: EMPTY_COMPANION_BYTES }));
-  // Variant refetches and reselection rerun the effect; this keeps them from re-planning.
   const plans = useRef(new Map<string, Promise<number | null>>());
 
   useEffect(() => {

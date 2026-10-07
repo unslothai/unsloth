@@ -37,7 +37,6 @@ export type RequestEdits = (prompt: string) => void;
  *  `files` (an annotation screenshot) go in the same message. */
 export type SendAnnotations = (annotations: DocumentAnnotations, files?: File[]) => Promise<boolean>;
 
-/** Stages a file in the chat's composer; false when it refused it (it says why). */
 export type AttachToChat = (file: File) => Promise<boolean>;
 
 export type FileViewMode = "preview" | "source";
@@ -72,7 +71,6 @@ export type BrowserTab = {
   /** The name the reader gave the tab; kept as it navigates. */
   customTitle: string | null;
   muted: boolean;
-  /** The sidebar pin this tab shows (pinned-pages-store), kept as it navigates. */
   pinnedId: string | null;
 };
 
@@ -113,8 +111,7 @@ export function setNativeWebHistory(native: boolean): void {
 
 const MAX_HISTORY = 50;
 
-// Loaded pages by history entry, so back and forward skip the fetch. Reload drops only its own entry.
-// Fewer on a low-memory machine.
+// Page cache by history entry for back/forward; smaller on low-memory machines.
 const cacheLimit = cacheLimits(reportedDeviceMemory());
 const pageCache = new PageCache<BrowserEntry>(cacheLimit.maxPages, cacheLimit.maxTotalBytes);
 
@@ -251,7 +248,6 @@ type BrowserState = {
   fullView: boolean;
   chatDock: ChatDock;
   chatSide: ChatSide;
-  /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
   requestEdits: RequestEdits | null;
   sendAnnotations: SendAnnotations | null;
   attachToChat: AttachToChat | null;
@@ -263,16 +259,12 @@ type BrowserState = {
   closePanel: () => void;
   togglePanel: () => void;
   newTab: () => void;
-  /** A new tab just after `tabId`, as its menu's New tab to the right opens. */
   newTabAfter: (tabId: string) => void;
-  /** A copy of the tab and its history, just after it. */
   duplicateTab: (tabId: string) => void;
-  /** Opens a pinned page in a tab of its own, or shows the tab already showing it. */
   openPinned: (pinnedId: string, url: string, title: string) => void;
   setTabPinned: (tabId: string, pinnedId: string | null) => void;
   renamingTabId: string | null;
   setRenamingTab: (tabId: string | null) => void;
-  /** A name for the tab, or null for the page's own title. */
   renameTab: (tabId: string, title: string | null) => void;
   setMuted: (tabId: string, muted: boolean) => void;
   closeOtherTabs: (tabId: string) => void;
@@ -292,7 +284,6 @@ type BrowserState = {
   reload: (tabId: string) => void;
   activateTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
-  /** Moves a tab to `index` in the strip, as dragging it there does. */
   moveTab: (tabId: string, index: number) => void;
   updateTab: (
     tabId: string,

@@ -70,11 +70,7 @@ export type ToolFallbackRootProps = Omit<
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   defaultOpen?: boolean;
-  /**
-   * Parked on an allow/deny decision. Pins the card open above `open` and the
-   * collapse preference, so what is being approved stays readable. Groups do
-   * the same with `hasPendingConfirmation`.
-   */
+  /** Pins the card open above `open` and the collapse preference while awaiting a decision. */
   awaitingApproval?: boolean;
 };
 
@@ -160,8 +156,6 @@ function ToolFallbackRoot({
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
-// The shared app tick is icon data, not a component; wrap it to slot into the
-// status map alongside the lucide icons.
 function CompleteTickIcon(props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">) {
   return <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} {...props} />;
 }
@@ -182,9 +176,7 @@ function ToolFallbackTrigger({
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
-  // Straight off the wire: provider SSE is relayed verbatim, and a non-string
-  // name matches nothing in thread.tsx's by_name map, which is exactly why it
-  // lands HERE, where formatMcpToolName calls `.startsWith` on it.
+  // Relayed verbatim from provider SSE, so a non-string name lands here; formatMcpToolName needs a string.
   toolName: unknown;
   mcpServer?: string;
   mcpTool?: string;
@@ -204,8 +196,6 @@ function ToolFallbackTrigger({
     <CollapsibleTrigger
       data-slot="tool-fallback-trigger"
       className={cn(
-        // Brightens on hover like the Thinking trigger. The icon inherits this; the label
-        // sets its own colour and picks it up through the group below.
         "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-sm transition-colors hover:text-foreground",
         className,
       )}
@@ -390,8 +380,7 @@ function ToolFallbackResult({
   }
 
   const imageResult = isMcpImageResult(result) ? result : null;
-  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR escapes that a plain
-  // <pre> cannot style; strip them so the pane stays readable (#7962).
+  // Strip SGR escapes from colourised CLIs; a plain <pre> cannot style them.
   const resultText = imageResult ? null : stringifyToolResult(result);
 
   return (
@@ -477,9 +466,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   status,
   ...rest
 }) => {
-  // Allow/Deny confirmation controls are rendered uniformly for every tool
-  // card (built-in and fallback) by the `withToolConfirmation` wrapper in
-  // thread.tsx, so this renderer stays purely presentational.
+  // Confirmation controls come from thread.tsx's `withToolConfirmation`; this stays presentational.
   const provenance = (rest as { provenance?: unknown }).provenance;
   const isCancelled = isToolCallCancelled(status);
   // A widget result's pane shows the text (and images) the model saw, never its UI seed.

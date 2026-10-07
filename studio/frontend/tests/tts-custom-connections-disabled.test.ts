@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #9214: "Enable connections" is a frontend-only flag, so the request guard is the
-// whole enforcement; custom TTS posted assistant text with connections switched off.
+// "Enable connections" is frontend-only, so the request guard is the whole enforcement.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -35,7 +34,6 @@ type StubProvider = {
   updatedAt?: number;
 };
 
-/** The adapter with both stores faked and a fetch that only logs. */
 function load(
   connectionsEnabled: boolean,
   {
@@ -307,7 +305,7 @@ test("authFetch invokes its policy guard after refresh and before retry", async 
   }
 });
 
-// #9214: a failed key migration leaves the connection selectable on the retained key.
+// A failed key migration leaves the connection selectable on the retained key.
 test("custom TTS forwards a retained legacy key when the connection has none saved", async () => {
   const { adapter, posted } = load(true, {
     providers: [
@@ -339,8 +337,7 @@ test("custom TTS sends no key when the connection already has one saved", async 
   assert.equal("encrypted_api_key" in JSON.parse(posted[0]), false);
 });
 
-// #9214: a deleted connection left ttsProviderId persisted, so the select pointed at a
-// missing item and every read aloud posted the stale id. Mirrors the dictation guard.
+// A deleted connection must not leave a stale ttsProviderId posted on every read aloud.
 test("the custom TTS selection is dropped when its connection disappears", () => {
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(

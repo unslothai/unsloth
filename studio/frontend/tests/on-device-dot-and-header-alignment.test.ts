@@ -9,8 +9,7 @@ import { fileURLToPath } from "node:url";
 import { atDefaultUiScale } from "./helpers/kit.ts";
 
 function read(path: string): string {
-  // Lengths here are compared to each other in px, so read them at the default
-  // UI font size; --ui-space-scale moves every one of them by the same factor.
+  // Lengths are compared in px, so read them at the default UI font size.
   return atDefaultUiScale(
     readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8"),
   );
@@ -36,8 +35,6 @@ const CSS = read("../src/index.css");
 test("a downloaded row is marked the way the Hub marks one", () => {
   const start = PICKERS.indexOf("function DownloadedBadge()");
   const badge = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
-  // A download arrow read as "click to fetch this" on the one row that needs
-  // no fetching. The Hub already had the right answer.
   assert.ok(!badge.includes("Download01Icon"), "no download glyph");
   assert.match(badge, /size-\[5px\] rounded-full bg-status-success/);
   assert.match(badge, /aria-label="On device"/);
@@ -48,25 +45,18 @@ test("a downloaded row is marked the way the Hub marks one", () => {
 });
 
 test("the download glyph is gone from the picker entirely", () => {
-  // Left behind, it would still be imported for nothing.
   assert.ok(!PICKERS.includes("Download01Icon"));
 });
 
 test("the scoped badge column reserves the wider on-device marker", () => {
-  // Video can show one 26px capability pill, a 4px gap and the 14px marker. If the
-  // fixed width is any narrower, min-w-min expands only those rows and shifts all
-  // metadata columns after the badge slot.
+  // Video fits a 26px pill, 4px gap and 14px marker; narrower would shift columns.
   assert.ok(PICKERS.includes('badgeMid: "min-w-min min-[560px]:w-[44px]"'));
 });
 
 test("the unscoped badge column is sized per list, not to the union of both", () => {
-  // Sized to the widest set each list can draw, not to both lists at once. On Device is the vision
-  // badge alone (26px), so the quant chip sits beside it.
   assert.ok(PICKERS.includes('badgeDevice: "min-w-min min-[560px]:w-[26px]"'));
-  // Hub: one 26px capability pill, a gap-1 and the disk mark.
   assert.ok(PICKERS.includes('badgeWide: "min-w-min min-[560px]:w-[44px]"'));
-  // Both marks can land on one On Device row, so the partial mark sits with the name, as Loaded
-  // does. In the slot it would widen that row alone and shift its quant chip left.
+  // The partial mark sits with the name so it does not widen one row's badge slot.
   const gguf = PICKERS.slice(PICKERS.indexOf("const renderDownloadedGgufRow"));
   const row = gguf.slice(0, gguf.indexOf("\n  };"));
   assert.ok(row.includes('alignMeta="device"'));
@@ -76,7 +66,6 @@ test("the unscoped badge column is sized per list, not to the union of both", ()
     PICKERS,
     /\{alignMeta === "device" && partial \? \(\n\s*<span className="ml-\[max\(6px,6px\)\] flex shrink-0 items-center self-center">\n\s*<PartialBadge resumable=\{partialResumable\} \/>/,
   );
-  // Hub keeps it in the slot, beside the vision badge.
   assert.match(
     PICKERS,
     /\{showVision && <VisionBadge \/>\}\n\s*\{partial && alignMeta !== "device" \? \(\n\s*<PartialBadge resumable=\{partialResumable\} \/>/,
@@ -88,14 +77,12 @@ test("the unscoped badge column is sized per list, not to the union of both", ()
 });
 
 test("a row's leading dot starts where its section label does", () => {
-  // Section labels sit at px-2.5. The dot is centred in a 14px hover target, so its slot starts
-  // at 10 - (14 - 5) / 2 = 5.5px for the dot to land on 10px. px-2 put it at 12.5px.
+  // Dot centred in a 14px target: 10 - (14 - 5) / 2 = 5.5px aligns it with labels.
   assert.match(PICKERS, /py-1\.5 pl-\[5\.5px\] pr-2 text-left text-sm/);
   const label = PICKERS.slice(
     PICKERS.indexOf("flex items-center justify-between gap-1 px-2.5"),
   );
   assert.ok(label.startsWith("flex items-center justify-between gap-1 px-2.5"));
-  // The 14px hover target is what makes 5.5 the right number; shrinking it would move the dot.
   assert.ok(
     PICKERS.includes(
       'className="flex size-[14px] shrink-0 items-center justify-center"',
@@ -104,10 +91,8 @@ test("a row's leading dot starts where its section label does", () => {
 });
 
 test("the parameter and size columns are sized to the ink they hold", () => {
-  // The widest size formatBytes writes ("128GB", no space) is 29.5px, not the ~40px a spaced
-  // "536 MB" would need.
+  // formatBytes writes no space, so the widest size ("128GB") is 29.5px.
   assert.ok(PICKERS.includes('size: "min-w-min min-[560px]:w-[3.2em]"'));
-  // The no-space format is what makes 3.2em enough; a spaced size would need ~4.2em again.
   assert.match(
     PICKERS,
     /No space: "145MB" reads as one value beside the quant chip\./,
@@ -115,41 +100,28 @@ test("the parameter and size columns are sized to the ink they hold", () => {
 });
 
 test("the parameter column is fixed, so the quant column cannot drift row to row", () => {
-  // It is the last variable width to the right of the name group, and the name group is flex-1:
-  // hugging the chip handed a "1B" row -- and more so a row with no param at all -- the leftover,
-  // which carried that row's quant chip further right. 4.4em holds the widest label these lists
-  // draw at text-ui-10 ("235B" is 38.4px, a 5-char "0.35B" 40.9px), so nothing routine trips
-  // min-w-min and shifts the row back out of line.
+  // 4.4em holds the widest param label at text-ui-10 so rows stay aligned.
   assert.ok(PICKERS.includes('param: "min-w-min min-[560px]:w-[4.4em]"'));
-  // Hub keeps its own column: its labels run to "2779.5B".
   assert.ok(PICKERS.includes('paramWide: "min-w-min min-[560px]:w-[5.2em]"'));
 });
 
 test("the parameter chip leads its column, so the modality gap is the cluster's own", () => {
-  // Every chip starts at one x, the cluster gap (6px minimum) after the modality slot. Trailing
-  // put the slack in front of the chip, where it grew that gap with the label.
   assert.match(
     PICKERS,
     /alignMeta === "hub"\n\s*\? cn\("justify-end", META_COLUMN\.paramWide\)\n\s*: cn\("justify-start", META_COLUMN\.param\)/,
   );
-  // Every On Device section ends its rows at one inset, so chips line up across sections.
   assert.equal(PICKERS.split('className="pr-1"').length - 1, 3, "the custom folder rows");
 });
 
 
 
 test("the quant chip is flush right in its slot, so the chips read as one column", () => {
-  // Leftmost meta column: hugs its chip (capped at "UD-Q4_K_XL") so its slack goes to the name.
-  // Chips still end against the fixed badge column.
   assert.ok(PICKERS.includes('quant: "min-[560px]:max-w-[7.2em]"'));
   assert.match(PICKERS, /"flex shrink-0 items-center justify-end text-ui-9"/);
 });
 
 test("the quant chip rides in the meta cluster, not on the end of the name", () => {
-  // The name group is items-baseline and sized by the name's own line box; a chip centred against
-  // THAT agrees with the rest of the row only while the two boxes happen to share a centre. In the
-  // meta cluster one items-center rule lines the chip up with the vision mark, the parameter chip,
-  // the size and the row's buttons, so the agreement is structural.
+  // One items-center rule in the meta cluster aligns chips structurally.
   const meta = PICKERS.slice(
     PICKERS.indexOf('"ml-auto flex shrink-0 items-center"'),
   );
@@ -157,7 +129,6 @@ test("the quant chip rides in the meta cluster, not on the end of the name", () 
   const badgeSlot = meta.indexOf("badgeColumn");
   assert.ok(quantSlot > 0, "the quant slot sits inside the meta cluster");
   assert.ok(quantSlot < badgeSlot, "and leads the badge column");
-  // self-center was what compensated for the baseline box; in an items-center row it is noise.
   assert.ok(
     !PICKERS.includes("justify-end self-center text-ui-9"),
     "no leftover baseline compensation",
@@ -165,17 +136,14 @@ test("the quant chip rides in the meta cluster, not on the end of the name", () 
 });
 
 test("every chip in the row band pins the same height", () => {
-  // ParamChip sized itself from its line box, the one height here that scales with
-  // --ui-font-scale: at 1.0 it stood 1px prouder than the quant and vision chips beside it and at
-  // 0.8125 it sat 1.8px shorter, so the row was only level at the scale where the two crossed.
+  // Fixed chip height, since line box height scales with --ui-font-scale.
   for (const chip of ["QuantChip", "VisionBadge", "CapabilityIcons", "ParamChip"]) {
     const start = PICKERS.indexOf(`function ${chip}(`);
     assert.ok(start > 0, `${chip} exists`);
     const body = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
     assert.ok(body.includes("h-[18px]"), `${chip} pins the band height`);
   }
-  // The height is what centres the label now, so the padding that used to set it is gone. Read
-  // the class list, not the body: the comment above it names py-px as the thing it replaced.
+  // Read the class list, not the body: a comment there mentions py-px.
   const paramStart = PICKERS.indexOf("function ParamChip(");
   const param = PICKERS.slice(paramStart, PICKERS.indexOf("\n}", paramStart));
   const paramClasses = /className="([^"]*)"/.exec(param)?.[1] ?? "";
@@ -188,8 +156,6 @@ test("every chip in the row band pins the same height", () => {
 });
 
 test("an over budget row dims instead of putting a pill on every line", () => {
-  // Recommended is mostly over budget on a normal GPU, so a pill per row was a wall of colour.
-  // The row dims and the pill is painted only while that row is hovered or focused.
   assert.ok(PICKERS.includes("group/row flex w-full flex-col items-stretch"));
   assert.ok(
     PICKERS.includes(
@@ -201,12 +167,10 @@ test("an over budget row dims instead of putting a pill on every line", () => {
       '"opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100"',
     ),
   );
-  // The mark is hidden, not removed, and its slot keeps a width, so revealing it cannot reflow.
   assert.ok(PICKERS.includes('vram: "min-w-min min-[560px]:w-[18px]"'));
 });
 
 test("one fit badge, so a colour or reveal change cannot miss a list", () => {
-  // The quantization rows had their own copy and stayed red when the pill went orange.
   assert.equal(
     PICKERS.split("const VRAM_VERDICT").length - 1,
     1,
@@ -214,8 +178,6 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
   );
   assert.ok(!PICKERS.includes("!text-red-700"), "no red fit badge left");
   assert.ok(!PICKERS.includes(">\n        OOM\n"), "no OOM text pill left");
-  // Variant rows hand the classifier's verdict straight to the badge, with no second mapping
-  // between them to drift.
   assert.match(
     PICKERS,
     /<VramBadge\n\s*status=\{\n\s*diffusionRefuses\(fit, diffusionLoad, hostPooledMemory\)/,
@@ -226,15 +188,11 @@ test("one fit badge, so a colour or reveal change cannot miss a list", () => {
     2,
     "both model row slots reveal on hover",
   );
-  // A selected row is exempt from dimming, so hiding its mark too left it with no verdict at all
-  // until hovered, which is nothing at rest and nothing on touch.
   assert.match(PICKERS, /exceeds &&\n\s*!selected &&/);
 });
 
 test("chat and the Hub answer the fit question with one formula", () => {
-  // The picker carried its own rule: 0.7 of GPU plus 0.7 of RAM against the raw file size, with a
-  // comment claiming it matched _select_gpus. The loader admits against the saved VRAM Budget or
-  // 0.97, over weights PLUS estimated KV, so 0.7 matched neither the loader nor the Hub badge.
+  // The loader admits at the saved budget or 0.97 over weights plus KV, not 0.7.
   assert.ok(
     CATALOG.includes("return classifyGgufFitForDevice(sizeBytes, budget);"),
     "the catalog classifier delegates",
@@ -243,23 +201,18 @@ test("chat and the Hub answer the fit question with one formula", () => {
     RECOMMENDED.includes('from "../../../../lib/gguf-fit.ts"'),
     "and so does the Recommended fit filter",
   );
-  // No copy of the old budget survives in either GGUF path.
   assert.ok(
     !RECOMMENDED.includes("* 0.7"),
     "recommended-fit has no 0.7 budget left",
   );
   assert.ok(!PICKERS.includes("* 0.7"), "pickers has no 0.7 budget left");
-  // model-catalog keeps one, and only for the media pickers: a GGUF offered on Images or Video is
-  // placed by the diffusion backend, whose budget is far below llama.cpp's. On a 64 GiB Mac that
-  // planner allows about 43.5 GiB, this rule 44.8, the llama.cpp rule 62.1. The boundaries are
-  // asserted for real in model-catalog.check.ts.
+  // Media GGUFs use the diffusion planner's lower budget; boundaries tested in model-catalog.check.ts.
   assert.ok(CATALOG.includes("export function classifyMediaGgufFit("));
   assert.match(
     PICKERS,
     /if \(diffusionLoad\) \{\n\s*return classifyMediaGgufFit\(/,
   );
-  // Diffusion tasks only. Audio is task-scoped too but runs its GGUFs under llama.cpp (TTS) and
-  // the whisper sidecars (ASR), so scoring it at 70% hid runnable models and shrank the quant.
+  // Audio GGUFs run under llama.cpp or whisper, so only diffusion tasks use the media rule.
   assert.ok(PICKERS.includes("const DIFFUSION_TASKS: ReadonlySet<string>"));
   assert.match(PICKERS, /\.\.\.IMAGE_GEN_TASKS,\n\s*\.\.\.VIDEO_GEN_TASKS,/);
   assert.ok(
@@ -267,10 +220,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
     "no task-wide media rule",
   );
   assert.ok(RECOMMENDED.includes("mediaLoad: opts.diffusionLoad"));
-  // The RULE and the DEVICE SOURCE both follow the runtime that places the row. A diffusion load
-  // is torch whatever the file format is, and on a Vulkan chat build inferenceGpu is a different
-  // device set: it can see a card torch cannot, so a media GGUF was badged and recommended
-  // against capacity the diffusion loader never gets.
+  // Diffusion loads are torch, so rule and device source follow the runtime, not file format.
   assert.ok(
     RECOMMENDED.includes(
       "opts.diffusionLoad || !opts.isGguf ? opts.gpu : opts.inferenceGpu",
@@ -284,14 +234,10 @@ test("chat and the Hub answer the fit question with one formula", () => {
       "const expanderBudgetGpu = diffusionLoad ? gpu : inferenceGpu;",
     ),
   );
-  // And every expander reads that one budget, rather than reaching for inferenceGpu itself.
   assert.ok(
     !PICKERS.includes("inferenceGpu.systemRamAvailableGb"),
     "no expander takes the GGUF backend's RAM directly",
   );
-  // The custom-folder expander was the one that kept reaching for the raw aggregate: on a media
-  // page it classified against memory the diffusion loader never sees, and it was not even
-  // load-scoped. Every row-level budget in this file now comes from the one chosen source.
   assert.ok(
     !PICKERS.includes("inferenceGpu.memoryTotalGb"),
     "no row takes the GGUF backend's capacity directly",
@@ -305,8 +251,6 @@ test("chat and the Hub answer the fit question with one formula", () => {
     9,
     "seven expanders and the two quant rows beside them",
   );
-  // The Hub card answers llama.cpp's question, so it must not answer it about a diffusion repo:
-  // an oom there would read "still works with offloading" for a load the planner refuses.
   assert.ok(
     HUB_CARD.includes(
       "const showFitInfo = !mediaRuntime && (Boolean(gpuGb) || Boolean(systemRamGb));",
@@ -316,19 +260,14 @@ test("chat and the Hub answer the fit question with one formula", () => {
     INSPECTOR,
     /showMemoryBar=\{!runsOnMediaRuntime\}\n\s*mediaPage=\{mediaPage\}/,
   );
-  // Parent rows and the fit gate take the same rule as the quant rows under them, or a media row
-  // reads as fitting while everything inside it reads as oom.
   assert.match(PICKERS, /diffusionLoad\n\s*\? classifyMediaGgufFit\(/);
-  // Both gates read the flag the same way, or one hides a row the other keeps.
   assert.ok(PICKERS.includes("mediaLoad: diffusionLoad,"));
-  // And every media call site sets the flag, or the guard silently does nothing.
   assert.equal(
     PICKERS.split("diffusionLoad={diffusionLoad}").length - 1,
     7,
     "every task-scoped expander",
   );
-  // The RAM tier is dropped on a host pool, or the media rule adds the APU's window to the very
-  // RAM it is a window INTO and returns partial for a load the planner refuses.
+  // On a host pool drop the RAM tier, or the APU window is counted with the RAM it maps.
   assert.ok(PICKERS.includes("function mediaRamBudgetGb("));
   assert.ok(
     PICKERS.includes("return hostPooled ? 0 : systemRamGb;"),
@@ -338,23 +277,13 @@ test("chat and the Hub answer the fit question with one formula", () => {
     RECOMMENDED.includes("hostPooledMemory ? 0 : (systemRamGb ?? 0)"),
     "the gate drops it too",
   );
-  // The saved VRAM Budget now reaches chat. Moving the slider used to change the Hub's verdicts
-  // and leave the picker's untouched.
   assert.ok(PICKERS.includes("useVramBudgetFraction()"));
   assert.ok(PICKERS.includes("budgetFraction,"));
-  // Threaded through the row filters as well. Passing it to the quant rows alone left the parent
-  // rows and the "Fits on device" gate scoring against the 0.97 default.
   assert.ok(HUB_PAGE.includes("useVramBudgetFraction()"));
   assert.ok(RECOMMENDED.includes("budgetFraction?: number;"));
-  // Both surfaces count the cards, or the Hub badge and the picker badge diverge again the moment
-  // the VRAM Budget goes above the default on a multi-GPU host. The two row gates take it from
-  // the SCOPED source, which is 1 for a media row and the host count otherwise.
+  // Both surfaces must count cards, or badges diverge above the default budget on multi-GPU.
   assert.ok(HUB_PAGE.includes("gpuCount: source.deviceCount"));
   assert.ok(HUB_PAGE.includes("gpuCount: inferenceGpu.deviceCount"));
-  // And both gates ask one helper, which picks the budget by the runtime that places the row: an
-  // image or video repo goes to the diffusion planner on one torch device, under the media rule.
-  // Judged by llama.cpp the Hub kept a 52 GiB media GGUF that clears 62.1 GiB on a 64 GiB Mac
-  // and blows the planner's 44.8.
   assert.equal(
     HUB_PAGE.split("rowFitsDevice(row.result)").length - 1,
     2,
@@ -367,10 +296,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   assert.ok(
     HUB_PAGE.includes("studioPageForTask(result.pipelineTag) !== undefined"),
   );
-  // The count is narrowed WITH the capacity, so it can never describe a different inventory than
-  // the gpuGb beside it. A task page puts the load on one device; charging the per-card reserve
-  // once per host GPU against that one card scored an audio quant at 23.28 GiB where the loader
-  // offers the selected card's 23.5.
+  // The count narrows with the capacity so both describe the same inventory.
   assert.ok(RECOMMENDED.includes("deviceCount: 1,"), "scoped to one device");
   assert.ok(PICKERS.includes("gpuCount: rowInferenceGpu.deviceCount"));
   assert.ok(
@@ -380,8 +306,6 @@ test("chat and the Hub answer the fit question with one formula", () => {
     !PICKERS.includes("gpuCount={inferenceGpu.deviceCount}"),
     "never the unscoped host count",
   );
-  // Counted against the expanders themselves, not a fixed 7: the fine-tuned / exported GGUF list
-  // is the eighth and was missed, so its host read as one card and over-budgeted at a 1.0 setting.
   assert.equal(
     PICKERS.split("gpuCount={expanderGpuCount}").length - 1,
     7,
@@ -397,10 +321,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
     8,
     "and that is every expander there is",
   );
-  // The APU window comes out of the RAM tier where the figure is built, so every rule downstream
-  // sees one pool counted once. The tier hands the RAW devices to gpuSharedHostMemoryGb, which
-  // folds the two flags itself: pre-folding here collapsed a multi-socket unified host to one
-  // socket's worth, so it subtracted 48 GiB of a 96 GiB pool (#11366).
+  // Pass raw devices to gpuSharedHostMemoryGb; pre-folding undercounted multi-socket hosts.
   assert.ok(
     GPU_INFO.includes("gpuSharedHostMemoryGb(devices)"),
     "the RAM tier folds unified in, on the raw devices",
@@ -414,15 +335,10 @@ test("chat and the Hub answer the fit question with one formula", () => {
 });
 
 test("each fit verdict is an info mark that explains itself", () => {
-  // A pill shouted a three letter acronym; the mark says what it means on hover.
   assert.ok(PICKERS.includes("icon={InformationCircleIcon}"));
-  // Keyed by the Hub's five classes, which is how the picker gained the tier it was missing:
-  // over budget but still card-sized needs no system RAM, so it fires on unified memory too.
   assert.ok(PICKERS.includes("marginal: MIGHT_FIT"));
   assert.ok(PICKERS.includes("partial: OFFLOADS"));
-  // Every over-budget GGUF says the same thing, however far over. llama-server never refuses one
-  // on size: _select_gpus returns use_fit and --fit offloads the rest. Splitting the copy here hid
-  // the honest answer on unified memory, where the RAM tier cannot fire and everything reads oom.
+  // llama-server never refuses on size (--fit offloads), so all over-budget GGUFs say offloads.
   assert.ok(PICKERS.includes("oom: OFFLOADS"));
   // A torch pipeline has no --fit, so that one keeps a refusal.
   assert.ok(PICKERS.includes("exceeds: WONT_FIT"));
@@ -432,31 +348,24 @@ test("each fit verdict is an info mark that explains itself", () => {
     ),
   );
   assert.ok(!PICKERS.includes("Larger than your VRAM and system RAM together"));
-  // The training estimator's three words map onto those rather than carrying their own copy.
-  // `tight` reaches the badge only from checkVramFit's 75-100% band, a torch estimate that still
-  // fits on the card. Aliasing it to the GGUF copy told those rows they spill into system RAM.
+  // `tight` comes from checkVramFit's torch estimate that still fits the card.
   assert.ok(PICKERS.includes("tight: DEVICE_TIGHT"));
   assert.ok(
     PICKERS.includes(
       'hint: "Uses nearly all your VRAM, with little headroom for anything else."',
     ),
   );
-  // Only oom fails to load, so only its hint says so; partial offloads and runs slower.
   assert.ok(
     PICKERS.includes(
       'hint: "Model may not fit but still works with offloading. Expect slower inference."',
     ),
   );
-  // The Hub says it in the same words, which is the point of sharing the classifier.
   assert.ok(
     HUB_CARD.includes(
       '"Model may not fit but still works with offloading. Expect slower inference."',
     ),
   );
-  // Neither surface makes a marginal offload conditional on other apps. _vram_usable_mib gives
-  // free - reserve, which on a completely idle card IS the budget this tier has already passed,
-  // so _select_gpus takes --fit every time; other apps only shrink free further. Saying it
-  // "fits with almost no room to spare" promised a resident load the loader never admits.
+  // Marginal always takes --fit even on an idle card, so it must not promise a resident load.
   const mightFitHint =
     "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.";
   assert.ok(PICKERS.includes(mightFitHint));
@@ -470,8 +379,6 @@ test("each fit verdict is an info mark that explains itself", () => {
   assert.ok(!HUB_CARD.includes('label: "Might fit"'));
   assert.ok(!PICKERS.includes("Loading can fail while other apps"));
   assert.ok(!HUB_CARD.includes("Within the last GB of VRAM headroom"));
-  // The Hub's oom row says it too, so the two surfaces read alike on a host where every
-  // over-budget quant lands in that class.
   assert.ok(!HUB_CARD.includes('label: "Won\'t fit"'));
   assert.equal(
     HUB_CARD.split(
@@ -481,29 +388,21 @@ test("each fit verdict is an info mark that explains itself", () => {
     "partial and oom both",
   );
 
-  // Marks are reachable by screen readers without the tooltip.
   assert.ok(PICKERS.includes('label: "Over budget"'));
   assert.ok(PICKERS.includes('label: "Does not fit"'));
-  // "will not load" is right for `exceeds`, which only ever comes from a torch row: inference.py
-  // calls raise_if_offloaded after loading, and that raises ValueError on any CPU or disk offload
-  // ("Inference does not support models loaded with CPU or disk offload"). A GGUF over budget is
-  // handed to --fit instead, which is why it says the opposite.
+  // Torch inference raises on any CPU/disk offload (raise_if_offloaded), so exceeds won't load.
   assert.ok(
     PICKERS.includes(
       'hint: "Needs more memory than this device has. This model will not load."',
     ),
   );
   assert.ok(PICKERS.includes("aria-label={verdict.label}"));
-  // An over-budget figure is a TOTAL: `partial` splits across VRAM and RAM, and the number is
-  // weights plus activations plus KV, so "Needs ~47GB VRAM" argued with the offload verdict.
   assert.ok(PICKERS.includes("`Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`"));
   assert.ok(
     !PICKERS.includes("GB VRAM (GPU:"),
     "no VRAM wording on an overage",
   );
-  // A load that stays on the card still says VRAM, which is what it means there.
   assert.ok(PICKERS.includes("GB VRAM (tight fit on"));
-  // A marginal row is a full GPU load, so it is not dimmed with the over budget ones.
   assert.ok(
     PICKERS.includes(
       'return status === "partial" || status === "ram" || status === "oom" || status === "exceeds";',
@@ -513,14 +412,9 @@ test("each fit verdict is an info mark that explains itself", () => {
 });
 
 test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
-  // This branch used to set "exceeds", the one verdict that says a model will not load. A GGUF is
-  // offloaded by llama-server rather than refused, so the row said the opposite of what happens,
-  // and it is the verdict shown on the Recommended list where most rows are over budget.
   assert.ok(
     PICKERS.includes("status: ggufRowFit(sizeBytes, rowInferenceGpu),"),
   );
-  // A boolean here collapsed marginal and partial into "no badge", so a repo whose smallest quant
-  // already needed offload rendered as a clean fit beside variant rows saying otherwise.
   assert.ok(!PICKERS.includes("exceedsSize"));
   assert.match(
     PICKERS,
@@ -537,23 +431,17 @@ test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
 });
 
 test("a diffusion model too big for a shared pool is refused, not offloaded", () => {
-  // diffusion_memory.py refuses up front on unified memory: offload "moves bytes within that pool
-  // and frees nothing", and without the refusal the load "allocates past physical memory" with
-  // "the failure is the OS killing the process with no Python exception". Saying it still works
-  // with offloading is the worst thing this badge could say there.
+  // diffusion_memory.py refuses on unified memory, where offload frees nothing.
   assert.ok(PICKERS.includes("function diffusionRefuses("));
   assert.ok(
     PICKERS.includes('return fit === "oom" && diffusionLoad && hostPooled;'),
   );
-  // The LOAD DEVICE's pool, folding unified_memory in. hardware.py sets shared_memory only on
-  // Windows, so a Linux ROCm APU arrives unified true / shared false while diffusion_memory.py
-  // still calls it unified_memory and refuses. The aggregate shared flag missed that host.
+  // hardware.py sets shared_memory only on Windows, so fold in unified_memory per device.
   assert.ok(!PICKERS.includes("gpu.sharedMemory"), "not the aggregate flag");
   assert.ok(
     GPU_INFO.includes("loadDeviceSharesHostMemory: sharesHostMemory({"),
     "the flag is the load device's, folded",
   );
-  // Both the quant rows and the parent row take it.
   assert.match(
     PICKERS,
     /diffusionRefuses\(fit, diffusionLoad, hostPooledMemory\)\n\s*\? "exceeds"/,
@@ -563,7 +451,6 @@ test("a diffusion model too big for a shared pool is refused, not offloaded", ()
       "diffusionRefuses(fit, diffusionLoad, gpu.loadDeviceSharesHostMemory)",
     ),
   );
-  // On a shared pool "VRAM" would name a number the user does not have.
   assert.ok(
     PICKERS.includes(
       'hint: "Needs more memory than this device has. This model will not load."',
@@ -578,9 +465,7 @@ test("a diffusion model too big for a shared pool is refused, not offloaded", ()
 });
 
 test("the row tooltip reports the figure the verdict was reached with", () => {
-  // classifyGgufFit scores weights PLUS activations and KV, so a 20 GiB quant needing 24 GiB read
-  // "tight fit" beside a tooltip saying "~20GB VRAM". The media rule scores raw size, so it keeps
-  // the raw number.
+  // The media rule scores raw size, so it keeps the raw number.
   assert.ok(PICKERS.includes("requiredGgufMemoryGb(sizeBytes)"));
   assert.match(
     PICKERS,
@@ -589,8 +474,6 @@ test("the row tooltip reports the figure the verdict was reached with", () => {
 });
 
 test("aligned meta slots spend their slack on the name", () => {
-  // Centring a lone glyph splits the slack either side of it. On Device the badge leads its slot,
-  // so the eye sits the cluster gap from the quant chip.
   assert.ok(PICKERS.includes('"flex shrink-0 items-center gap-1 text-ui-10"'));
   assert.ok(PICKERS.includes('alignMeta === "device" ? "justify-start" : "justify-end"'));
 });
@@ -602,8 +485,6 @@ test("On Device keeps at least 6px between the name, quant, modality and paramet
 });
 
 test("every select-model surface shares that one badge", () => {
-  // Images, Video and Audio render the same ModelSelector, so there is no
-  // second copy of the badge to keep in step.
   const copies = [
     "../src/features/images/images-page.tsx",
     "../src/features/video/video-page.tsx",
@@ -623,8 +504,7 @@ test("every select-model surface shares that one badge", () => {
 });
 
 test("list header actions end where a hovered row's action does", () => {
-  // A row action is `right-0 pr-0.75` inside a pill the list inset by
-  // unrailedRowPadding: 9px in normally, 8px under the desktop titlebar.
+  // Row actions sit inside a pill inset by unrailedRowPadding (9px, 8px under titlebar).
   assert.match(
     CSS,
     /\.sidebar-row-action \{\n\t\t@apply absolute top-0 bottom-0 right-0[^;]*pr-0\.75 /,
@@ -651,9 +531,6 @@ test("list header actions end where a hovered row's action does", () => {
 });
 
 test("every list header takes the same alignment", () => {
-  // Pinned, the custom sections, Projects and Recents share one class string, and none is
-  // nudged on its own.
-  // They are drop zones, so the class list is spread over lines.
   const shared = (
     SIDEBAR.match(
       /"sidebar-sticky-label sidebar-sticky-label-following group\/sidebar-header gap-1",\n\s*headerInset,/g,
@@ -668,8 +545,6 @@ test("capability glyph tags are the vision badge's pill, each in its own colour"
     const start = PICKERS.indexOf(`function ${name}(`);
     return PICKERS.slice(start, PICKERS.indexOf("\n}", start));
   };
-  // Same height and padding around the same 12px glyph, so image, video and audio tags are as
-  // wide as the vision one instead of 18px squares beside a 26px pill.
   for (const name of ["VisionBadge", "CapabilityIcons"]) {
     assert.match(body(name), /h-\[18px\] shrink-0 items-center justify-center rounded-md border border-border px-1\.5/);
   }

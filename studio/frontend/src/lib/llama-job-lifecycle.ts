@@ -19,7 +19,6 @@ export type OwnedLlamaSwitchOutcome =
   | "error"
   | "interrupted";
 
-/** Interpret a status only as the switch job that this surface accepted. */
 export function ownedLlamaSwitchOutcome(
   job: IdentifiedLlamaJob,
   acceptedStartedAt: string | null,
@@ -34,11 +33,7 @@ export function ownedLlamaSwitchOutcome(
   return job.state === "idle" ? "interrupted" : job.state;
 }
 
-/**
- * Whether an `already_running` /update response is the update this apply asked
- * for. A backend switch shares the same job: adopting it would resolve this
- * action as an applied update while the pending release is still uninstalled.
- */
+/** A backend switch shares the update job, so adopting it would mark a pending update applied. */
 export function llamaUpdateAdoptsRunningJob(
   reason: string | null | undefined,
   job: LlamaJob,
@@ -52,7 +47,6 @@ export interface LlamaUpdatePresentation {
   running: boolean;
 }
 
-/** Derive the update banner from every shared-job status transition. */
 export function llamaUpdatePresentation(
   updateAvailable: boolean,
   job: LlamaJob,
@@ -76,13 +70,8 @@ export interface UpdateComponentFlags {
 }
 
 /**
- * Which component's offer the single update card shows.
- *
- * Both can be pending at once and the backend names only one: llama.cpp when its
- * release is behind, whisper.cpp otherwise, so a llama.cpp backend migration is
- * named whisper.cpp when whisper is stale too. If the named one's switch is off
- * and the other has an offer the user does allow, the card shows that one rather
- * than nothing. Update installs everything pending either way.
+ * The backend names llama.cpp when its release is behind, else whisper.cpp. If the named
+ * component's switch is off, fall back to the other allowed offer.
  */
 export function updateBannerComponent(
   named: UpdateComponent,
@@ -99,12 +88,7 @@ export function updateBannerComponent(
     : named;
 }
 
-/**
- * The tag a finished update reports.
- *
- * The job's `to_tag` is the llama.cpp build by definition, so a card showing the
- * whisper.cpp offer reports the release it advertised instead of llama's.
- */
+/** `to_tag` is always llama.cpp's, so a whisper.cpp card reports its advertised release. */
 export function updateToastTag(
   component: UpdateComponent,
   jobTag: string | null | undefined,
@@ -115,13 +99,8 @@ export function updateToastTag(
 }
 
 /**
- * Which notification switch answers for the update card, held across a job.
- *
- * The card is muted by the component it names, and a chained apply renames it
- * when the llama.cpp phase lands and the whisper.cpp phase starts. Reading the
- * live switch there would take a running update off screen halfway through, so
- * the switch the card started under is held until the job is over. `null` means
- * nothing is held and the live switch applies.
+ * A chained apply renames the card mid-job, so the starting switch is held until the job ends.
+ * `null` means nothing is held and the live switch applies.
  */
 export function heldUpdateBannerPref(
   held: boolean | null,
@@ -131,14 +110,7 @@ export function heldUpdateBannerPref(
   return inFlight ? (held ?? live) : null;
 }
 
-/**
- * Whether the banner's version line has anything to say.
- *
- * `updateAvailable` is the only field reporting that the release moved. The tags cannot:
- * `installed_tag` is normalized (`b9596`) while `latest_tag` is the full identity
- * (`b9596-mix-<sha>`), so a fork install shows them differing at the release it is
- * running -- which is exactly where a migration is offered.
- */
+/** Gated on `updateAvailable`: tags alone cannot tell, as `installed_tag` is normalized. */
 export function llamaReleaseChanged(
   updateAvailable: boolean,
   installedTag: string | null,
@@ -149,12 +121,7 @@ export function llamaReleaseChanged(
   );
 }
 
-/** What to tell the user a finished Update actually did.
- *
- * A migration runs at the release already installed and can end on the backend already
- * installed, so "updated to <tag>" describes neither -- and the tag is llama's even when
- * a pending whisper update named the toast. The job's own message is accurate.
- */
+/** A migration may keep the same tag and backend, so the job's own message is used. */
 export function llamaUpdateToastMessage({
   component,
   migrating,
@@ -173,7 +140,6 @@ export function llamaUpdateToastMessage({
   if (!migrationMessage) {
     return `${component} updated to ${updatedTag}.${reloadHint}`;
   }
-  // The phase appends its own reload hint when it has one to give.
   return migrationMessage.includes("Reload")
     ? migrationMessage
     : `${migrationMessage}${reloadHint}`;

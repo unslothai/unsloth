@@ -55,7 +55,6 @@ type ExecutionsViewProps = {
 function downloadOutcomeMessage(outcome: DownloadOutcome): string {
   if (outcome === "saved") return "Dataset downloaded";
   if (outcome === "started") return "Dataset download started";
-  // The server no longer has this run, so what was written is whatever this client still holds.
   return "Downloaded the rows still loaded for this run";
 }
 
@@ -122,9 +121,6 @@ export function ExecutionsView({
     [datasetColumnNames, hiddenDatasetColumns],
   );
 
-  // Columns with at least one long-text row get a wider min-width so the text
-  // is readable without clicking. The wrapper scrolls horizontally, so wide
-  // columns just add a scrollbar instead of squeezing the viewport.
   const wideColumns = useMemo(() => {
     const result = new Set<string>();
     if (!selectedExecution) {

@@ -9,16 +9,14 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
-// ── Types ──
-
 #[derive(Default)]
 pub struct InstallProcess {
-    /// Process group handle — killing this kills the entire subprocess tree.
+    /// Process group handle: killing this kills the entire subprocess tree.
     pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub intentional_stop: bool,
-    /// Packages needing elevated install, parsed from [TAURI:NEED_SUDO] output.
+    /// Parsed from [TAURI:NEED_SUDO] output.
     pub needed_packages: Vec<String>,
-    /// Current diagnostics attempt; kept after NEEDS_ELEVATION so apt output can be linked.
+    /// Kept after NEEDS_ELEVATION so apt output can be linked.
     pub current_attempt: Option<AttemptLog>,
 }
 
@@ -57,7 +55,6 @@ fn unavailable_script_message(script: &Path) -> Option<String> {
     ))
 }
 
-/// Recheck for quarantine during launch, but prefer AMSI and structured installer errors.
 fn failure_message(context: &InstallFailureContext, code: i32, script: &Path) -> String {
     if context.security_block.is_none()
         && context.explicit_error.is_none()
@@ -70,27 +67,16 @@ fn failure_message(context: &InstallFailureContext, code: i32, script: &Path) ->
     context.message(code)
 }
 
-/// PowerShell hands the whole top-level script block to AMSI while compiling it, so a security
-/// product's verdict arrives as a parse error over the entire file before the installer's first
-/// line runs: no `[TAURI:ERROR]` marker, no phase log, just an unexplained stderr tail. Match the
-/// stable error id, never the localized message text.
+/// AMSI verdicts arrive as a parse error over the whole script before its first line runs.
+/// Match the stable error id, never the localized message text.
 const AMSI_MALWARE_ERROR_ID: &str = "ScriptContainedMaliciousContent";
 const AMSI_ADMIN_BLOCK_ERROR_ID: &str = "ScriptHasAdminBlockedContent";
 
-/// The id only means a verdict when it is the VALUE of a `FullyQualifiedErrorId` field, which is
-/// how the parse error prints it. Otherwise a scanner log or a diagnostic that merely names the id
-/// would attach antivirus guidance to an unrelated failure. A record split across writes loses the
-/// guidance rather than inventing one, which is the safe direction.
+/// Only the VALUE of a `FullyQualifiedErrorId` field is a verdict; a mere mention is not.
 const POWERSHELL_ERROR_ID_FIELD: &str = "FullyQualifiedErrorId";
 
-/// "Nothing was changed" only holds for a block on install.ps1 itself, which AMSI rejects before
-/// its first statement. It also runs `unsloth studio setup`, whose child spawns studio/setup.ps1
-/// through the same pipes: a block there arrives with the venv, PyTorch and the packages already
-/// on disk. A `[TAURI:STEP]` marker is the dividing line, since a pre-start block produces none.
-/// Not "nothing was changed": a diagnostics attempt and its phase log are written before
-/// PowerShell is spawned, so the honest claim is that no installation step ran. And not "this is a
-/// false positive": classification proves only that the output carries an error id, and install.ps1
-/// can sit in a user-writable directory.
+/// A block on install.ps1 lands before any step; one in setup.ps1 lands after installs, and
+/// `[TAURI:STEP]` divides them. Claim only that no step ran, never that it is a false positive.
 const AMSI_MALWARE_GUIDANCE_PRE_START: &str = "Security software blocked the installer before it \
      started, so no installation steps ran; only diagnostic logs may have been written. This is \
      usually a false positive: reinstall from an official Unsloth package, and if an unmodified \
@@ -115,8 +101,7 @@ enum SecurityBlockKind {
 }
 
 impl SecurityBlockKind {
-    /// Resolved at message time, not observation time: the two streams are read by independent
-    /// threads, so a `[TAURI:STEP]` written before the block can be observed after it.
+    /// Resolved at message time: the two streams are read by independent threads.
     fn guidance(self, started: bool) -> &'static str {
         match (self, started) {
             (Self::Malware, false) => AMSI_MALWARE_GUIDANCE_PRE_START,
@@ -127,9 +112,7 @@ impl SecurityBlockKind {
     }
 }
 
-/// True when `id` is the value of the `FullyQualifiedErrorId` field rather than merely present on
-/// the line. PowerShell prints `+ FullyQualifiedErrorId : <id>[,<cmdlet>]`, so it follows the
-/// colon; prose naming both does not qualify.
+/// PowerShell prints `+ FullyQualifiedErrorId : <id>[,<cmdlet>]`; prose naming both does not qualify.
 fn is_error_id_value(text: &str, id: &str) -> bool {
     let mut rest = text;
     while let Some(at) = rest.find(POWERSHELL_ERROR_ID_FIELD) {
@@ -268,8 +251,7 @@ impl InstallFailureContext {
         }
     }
 
-    /// Both streams, before marker handling: PowerShell writes the parse error to stderr, but a
-    /// wrapper that folded the streams together would otherwise lose it.
+    /// Both streams: a wrapper may have folded stderr into stdout.
     fn note_security_block(&mut self, text: &str) {
         if self.security_block.is_none() {
             self.security_block = security_block_kind(text);
@@ -277,19 +259,8 @@ impl InstallFailureContext {
     }
 
     fn clear_failure(&mut self, stream: InstallOutputStream, message: &str) {
-        // Clear-TauriInstallError writes ONE logical clear to BOTH streams (install.ps1:198),
-        // read by independent threads, so a verdict can land between a clear and its own twin and
-        // treating the twin as a second clear would discard a real block.
-        //
-        // Pair by message, not against the previous clear alone: a reader can lag several clears
-        // behind, so "is this the message I just saw" answers no and throws the verdict away. Each
-        // logical clear emits exactly two markers, so the first sighting is the clear and the next
-        // pairs with it.
-        //
-        // Keyed by stream as well as message: the same label can be cleared twice for real (an
-        // install and then a repair both emit "install PyTorch recovered"), and a reader that got
-        // ahead would otherwise pair those two same-stream clears with each other. Only the
-        // opposite stream's copy can consume a pending marker.
+        // Clear-TauriInstallError writes each clear to BOTH streams, read by independent threads; pair
+        // twins by (opposite stream, message) so a late twin cannot discard a real block.
         let other = stream.other();
         let twin = match self.unpaired_clears.get_mut(&(message.to_owned(), other)) {
             Some(count) if *count > 0 => {
@@ -305,14 +276,12 @@ impl InstallFailureContext {
             }
         };
         self.unpaired_clears.retain(|_, count| *count > 0);
-        // Producers clear with a small fixed set of labels, and an unbounded map fed by child
-        // output is a memory sink. Dropping the oldest entries only costs a twin match.
+        // Bounded: child output must not grow this map; dropping old entries only costs a twin match.
         if self.unpaired_clears.len() > MAX_UNPAIRED_CLEARS {
             self.unpaired_clears.clear();
         }
         if !twin {
-            // A run that cleared its own failure state was never blocked at parse time, so a
-            // verdict here is stale.
+            // A run that cleared its own failure state was never blocked at parse time.
             self.security_block = None;
         }
         if self.explicit_error_stream == Some(stream) {
@@ -360,8 +329,7 @@ impl InstallFailureContext {
             Some(detail) => format!("Installation failed: {}", detail),
             None => generic_failure_message(code),
         };
-        // Appended, not substituted: the raw id is what a diagnostics report and a vendor
-        // submission need, the guidance is what the user needs.
+        // Appended, not substituted: the raw id is what diagnostics and vendor submissions need.
         match self.security_block {
             Some(kind) => format!("{} {}", base, kind.guidance(self.started)),
             None => base,
@@ -373,11 +341,8 @@ fn is_elevation_request(code: i32, packages: &[String]) -> bool {
     code == 2 && !packages.is_empty()
 }
 
-/// Windows PowerShell 5.1 applies `RemoteSigned` authorization differently to
-/// Win32 verbatim paths (`\\?\C:\...`) than to their ordinary drive/UNC forms.
-/// Tauri resolves resources through `canonicalize`, which always returns the
-/// verbatim form, so convert only the two lossless filesystem forms PowerShell
-/// understands before passing a script to `-File`.
+/// PowerShell 5.1 applies RemoteSigned differently to `\\?\` verbatim paths, which
+/// `canonicalize` returns, so convert the two lossless forms before `-File`.
 #[cfg(windows)]
 fn powershell_script_path(path: &Path) -> PathBuf {
     use std::ffi::OsString;
@@ -414,9 +379,7 @@ fn powershell_script_path(path: &Path) -> PathBuf {
         return path.to_path_buf();
     };
 
-    // Only the verbatim form addresses a path past MAX_PATH; stripping it there
-    // would trade an authorization error for a "path too long" one. MAX_PATH
-    // counts the terminating NUL, so 259 units is the longest legacy path.
+    // Only the verbatim form addresses a path past MAX_PATH (259 units plus NUL).
     if normalized.len() >= 260 {
         return path.to_path_buf();
     }
@@ -424,12 +387,7 @@ fn powershell_script_path(path: &Path) -> PathBuf {
     PathBuf::from(OsString::from_wide(&normalized))
 }
 
-/// Everything passed to `powershell.exe` before the script's own arguments.
-///
-/// Separate from `spawn_script` so a test can assert the property that matters:
-/// that this flag set authorizes this path spelling. #7819 broke first-run
-/// install by editing only the flags, which no test over `powershell_script_path`
-/// can see.
+/// Separate from `spawn_script` so a test can assert this flag set authorizes this path spelling.
 #[cfg(windows)]
 fn powershell_launch_args(script: &Path) -> Vec<std::ffi::OsString> {
     use std::ffi::OsString;
@@ -454,9 +412,7 @@ fn powershell_launch_args(script: &Path) -> Vec<std::ffi::OsString> {
     launch
 }
 
-/// `Command::new` searches the running executable's own directory before the
-/// system one, and a `currentUser` install puts that directory somewhere the
-/// user can write, so resolve the interpreter absolutely.
+/// `Command::new` searches the exe's own (user-writable) directory first, so resolve absolutely.
 #[cfg(windows)]
 fn powershell_exe() -> PathBuf {
     let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
@@ -468,11 +424,7 @@ fn powershell_exe() -> PathBuf {
     }
 }
 
-// ── Script Resolution ──
-
-/// Returns (script_path, args) depending on dev vs production mode.
-/// Dev mode: repo root script + --tauri --local
-/// Production: bundled resource + --tauri
+/// Dev mode: repo root script + --tauri --local. Production: bundled resource + --tauri.
 fn resolve_install_script(app: &AppHandle) -> Result<(PathBuf, Vec<String>), String> {
     let mut args = vec!["--tauri".to_string()];
 
@@ -509,8 +461,6 @@ fn resolve_install_script(app: &AppHandle) -> Result<(PathBuf, Vec<String>), Str
         Ok((script, args))
     }
 }
-
-// ── Emit Helpers ──
 
 #[derive(Clone, Copy)]
 enum InstallEventMode {
@@ -557,11 +507,7 @@ fn emit_complete(app: &AppHandle) {
     let _ = app.emit("install-complete", ());
 }
 
-// ── Spawn ──
-
-/// Spawns the install script in a process group.
-/// Returns (stdout, stderr) handles for streaming.
-/// The GroupChild is stored in state so stop_install() can kill the entire tree.
+/// Spawns the install script in a process group so stop_install() can kill the whole tree.
 fn spawn_script(
     script: &Path,
     args: &[String],
@@ -581,9 +527,8 @@ fn spawn_script(
     install.intentional_stop = false;
     install.needed_packages.clear();
 
-    // Scripts create ~/.unsloth/studio/ themselves but need a writable cwd, and
-    // unlike the CLI children they always want ~/.unsloth. No Windows-directory
-    // rejection: install.ps1 detects a SYSTEM profile itself and explains it.
+    // Scripts need a writable cwd and always want ~/.unsloth. No Windows-directory rejection:
+    // install.ps1 detects a SYSTEM profile itself.
     let work_dir = crate::process::install_working_dir(dirs::home_dir())?;
 
     #[cfg(unix)]
@@ -607,11 +552,8 @@ fn spawn_script(
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // Tauri only does default-root installs; install.sh / install.ps1 reject
-    // these under --tauri. Scrub so an inherited value can't trip the guard.
-    // Applied by hand here, the one managed spawn outside
-    // apply_managed_cli_context: the Python setup.sh starts reads whatever is
-    // exported, even though setup.sh assigns UNSLOTH_HOME itself.
+    // install.sh / install.ps1 reject these under --tauri, so scrub inherited values. Done by hand:
+    // this spawn bypasses apply_managed_cli_context.
     for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
     }
@@ -623,18 +565,14 @@ fn spawn_script(
         cmd.env(name, value);
     }
 
-    // We decode this child as UTF-8 below, so its Python descendants must emit
-    // UTF-8 or the log fills with U+FFFD. The .ps1 entry points set these too;
-    // this covers any path reaching Python without them.
+    // The child is decoded as UTF-8, so its Python descendants must emit UTF-8.
     #[cfg(windows)]
     {
         cmd.env("PYTHONUTF8", "1");
         cmd.env("PYTHONIOENCODING", "utf-8");
     }
 
-    // On Windows, launch the installer directly with CREATE_NO_WINDOW.
-    // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
-    // child cleanup on crash comes from inherited job membership instead.
+    // Child cleanup on crash comes from the KILL_ON_JOB_CLOSE job set up in main.rs.
     #[cfg(windows)]
     let mut child: Box<dyn ChildWrapper + Send> = {
         use std::os::windows::process::CommandExt;
@@ -647,7 +585,6 @@ fn spawn_script(
 
     #[cfg(unix)]
     let mut child: Box<dyn ChildWrapper + Send> = {
-        // Keep the whole installer tree in a process group on Unix.
         let mut wrap = CommandWrap::from(cmd);
         wrap.wrap(ProcessGroup::leader());
         wrap.spawn()
@@ -660,9 +597,6 @@ fn spawn_script(
     Ok((stdout, stderr))
 }
 
-// ── Stream ──
-
-/// Spawns reader threads for stdout/stderr.
 /// Parses structured events from stdout and failure controls from both streams.
 fn stream_output(
     app: &AppHandle,
@@ -697,8 +631,8 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
-                        // Not forwarded: a line per large dependency is noise. install.sh
-                        // sends them on stderr and install.ps1 on stdout, so both filter.
+                        // Per-dependency lines are noise, not forwarded. install.sh sends them on stderr
+                        // and install.ps1 on stdout, so both filter.
                         if install_watchdog::note_progress(&watch_clone, &text) {
                             info!("[install][stdout] {}", text);
                             continue;
@@ -711,7 +645,6 @@ fn stream_output(
                             info!("[install][stdout] {}", text);
                             continue;
                         }
-                        // Parse structured Tauri protocol lines
                         if let Some(packages) = text.strip_prefix("[TAURI:NEED_SUDO] ") {
                             let pkgs: Vec<String> =
                                 packages.split_whitespace().map(String::from).collect();
@@ -750,7 +683,6 @@ fn stream_output(
                                 marker,
                             );
                         }
-                        // Always forward the raw line
                         info!("[install][stdout] {}", text);
                         let _ = app_clone.emit(event_mode.progress_event(), &text);
                     }
@@ -805,10 +737,7 @@ fn stream_output(
     (threads, failure_context)
 }
 
-// ── Wait & Finalize ──
-
-/// Waits for the install process to exit. Returns (exit_status, was_intentional_stop).
-/// The deadline is a backstop, not a patience limit; see install_watchdog.
+/// Returns (exit_status, was_intentional_stop). The deadline is a backstop; see install_watchdog.
 fn wait_for_exit(
     state: &InstallState,
     watch: &WatchState,
@@ -846,11 +775,7 @@ fn wait_for_exit(
     )
 }
 
-// ── Public API ──
-
-/// Run the install script. Returns Ok(()) on success.
 /// Returns Err("NEEDS_ELEVATION") if system packages need elevated install (Linux only).
-/// Returns Err(message) on other failures.
 pub fn run_install(
     app: AppHandle,
     state: InstallState,
@@ -859,9 +784,8 @@ pub fn run_install(
     run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None, false)
 }
 
-/// `upgrade_torch` is Settings' manual "Repair installation": the user asked for a reinstall,
-/// so the installer may move to the newest supported PyTorch instead of keeping the resident one.
-/// The startup auto-repair passes false and keeps it.
+/// `upgrade_torch` (Settings' manual repair) lets the installer move to the newest supported
+/// PyTorch; the startup auto-repair passes false and keeps it.
 pub(crate) fn run_install_for_repair(
     app: AppHandle,
     state: InstallState,
@@ -879,8 +803,7 @@ pub(crate) fn run_install_for_repair(
     )
 }
 
-/// Extra environment for the installer child. UNSLOTH_TORCH_UPGRADE=1 is install.sh's and
-/// install.ps1's opt-out from keeping an existing install's torch release.
+/// UNSLOTH_TORCH_UPGRADE=1 opts out of keeping an existing install's torch release.
 fn installer_env(upgrade_torch: bool) -> Vec<(&'static str, &'static str)> {
     if upgrade_torch {
         vec![("UNSLOTH_TORCH_UPGRADE", "1")]
@@ -967,7 +890,6 @@ fn run_install_with_event_mode(
         stderr,
     );
 
-    // Wait for exit, join reader threads
     let result = wait_for_exit(&state, &watch, &app, event_mode);
     for handle in threads {
         let _ = handle.join();
@@ -995,7 +917,6 @@ fn run_install_with_event_mode(
                 .map(|install| install.needed_packages.clone())
                 .unwrap_or_default();
             if is_elevation_request(code, &packages) {
-                // Script needs elevated package install — report to frontend
                 diagnostics::record_elevation_packages(&diagnostics, &attempt, &packages);
                 diagnostics::finish_attempt(
                     &diagnostics,
@@ -1106,7 +1027,7 @@ pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &Diagn
     }
 }
 
-/// True while an installer runs; quitting now would leave a broken venv.
+/// Quitting while an installer runs would leave a broken venv.
 pub fn is_install_running(state: &InstallState) -> bool {
     state
         .lock()
@@ -1114,9 +1035,7 @@ pub fn is_install_running(state: &InstallState) -> bool {
         .unwrap_or(false)
 }
 
-/// Stop a running install process gracefully.
-/// Unix: SIGTERM to process group -> wait up to 5s -> SIGKILL
-/// Windows: hidden taskkill /T /F to terminate the installer tree
+/// Unix: SIGTERM to the group, wait up to 5s, then SIGKILL. Windows: hidden taskkill /T /F.
 pub fn stop_install(state: &InstallState) -> Result<(), String> {
     let mut child = {
         let mut install = match state.lock() {
@@ -1137,11 +1056,10 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
     let pid = child.id();
     info!("Stopping installer process group (pid {})", pid);
 
-    // Try graceful SIGTERM first so pip/cmake can clean up temp files
+    // Graceful SIGTERM first so pip/cmake can clean up temp files.
     #[cfg(unix)]
     {
         if pid > i32::MAX as u32 {
-            // PID too large for i32 negation, fall back to direct kill
             warn!("PID {} exceeds i32 range, using direct kill", pid);
             let _ = child.kill();
             let _ = child.wait();
@@ -1150,7 +1068,6 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
         unsafe {
             libc::kill(-(pid as i32), libc::SIGTERM);
         }
-        // Wait up to 5s for graceful exit
         for _ in 0..50 {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -1172,7 +1089,6 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
 
     #[cfg(unix)]
     {
-        // Force kill (SIGKILL on Unix)
         let _ = child.kill();
         let _ = child.wait();
         info!("Installer process group force stopped");
@@ -1180,8 +1096,7 @@ pub fn stop_install(state: &InstallState) -> Result<(), String> {
     }
 }
 
-/// Install apt system packages with elevated permissions (Linux only).
-/// Uses `elevated-command` crate for native auth dialog.
+/// Linux only. Uses `elevated-command` for a native auth dialog.
 #[cfg(target_os = "linux")]
 pub fn install_system_packages(
     packages: &[String],
@@ -1221,9 +1136,7 @@ pub fn install_system_packages(
         }
     }
 
-    // install.sh reports Debian package names. Do not pass them to dnf,
-    // zypper, or pacman where names differ; show an explicit support boundary
-    // instead of offering an elevation flow that is likely to fail.
+    // install.sh reports Debian package names, so do not pass them to dnf/zypper/pacman.
     if !Path::new("/usr/bin/apt-get").exists() {
         let msg = "Automatic system package installation is supported on apt-based Linux distributions (Ubuntu/Debian) only. Install the missing dependencies with your package manager and retry."
             .to_string();
@@ -1412,7 +1325,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn powershell_script_path_leaves_unsupported_spellings_verbatim() {
-        // The object manager is case insensitive, so `unc` must normalize too.
         assert_eq!(
             powershell_script_path(Path::new(r"\\?\unc\server\share\install.ps1")),
             PathBuf::from(r"\\server\share\install.ps1")
@@ -1437,7 +1349,6 @@ mod tests {
                 "{unchanged} should be passed through untouched"
             );
         }
-        // MAX_PATH counts the terminating NUL, so 259 units still fits but 260 does not.
         let fits = format!(r"C:\{}\install.ps1", "a".repeat(244));
         assert_eq!(fits.len(), 259);
         assert_eq!(
@@ -1456,17 +1367,13 @@ mod tests {
         }
     }
 
-    /// Run the real interpreter with the real flags against a script addressed
-    /// the way Tauri addresses it. Fails if the execution policy is swapped as
-    /// in #7819, or if `powershell_script_path` is dropped from the call site;
-    /// both leave the assertions over the normalizer itself passing.
+    /// Runs the real interpreter with the real flags against a path spelled as Tauri spells it.
     #[cfg(windows)]
     #[test]
     fn powershell_runs_a_script_addressed_the_way_tauri_addresses_it() {
         use std::fs;
 
         // A temp file has no Zone.Identifier, so RemoteSigned admits it unsigned.
-        // The path spelling and the flag set are what is under test, not signing.
         let dir = std::env::temp_dir().join(format!(
             "unsloth-launch-{}-{}",
             std::process::id(),
@@ -1476,8 +1383,7 @@ mod tests {
         let script = dir.join("install.ps1");
         fs::write(&script, "Write-Output 'unsloth-launcher-ok'\r\n").expect("write script");
 
-        // Resource resolution bottoms out in `canonicalize`, documented to return
-        // extended-length syntax. Assert that, so the test cannot pass vacuously.
+        // Assert the extended-length form so the test cannot pass vacuously.
         let resolved = fs::canonicalize(&script).expect("canonicalize");
         assert!(
             resolved.as_os_str().to_string_lossy().starts_with(r"\\?\"),
@@ -1501,8 +1407,7 @@ mod tests {
         );
     }
 
-    /// Pin the flag set, so a policy swap shows up as a diff. `-File` stays last
-    /// so the script path is never parsed as a flag.
+    /// Pin the flag set. `-File` stays last so the script path is never parsed as a flag.
     #[cfg(windows)]
     #[test]
     fn powershell_launch_args_pin_the_defender_friendly_shape() {
@@ -1524,7 +1429,6 @@ mod tests {
                 r"C:\Users\Owner\install.ps1",
             ]
         );
-        // The pair Microsoft ships as a detection test must not come back.
         assert!(!args.iter().any(|a| a == "Bypass" || a == "-WindowStyle"));
     }
 
@@ -1571,8 +1475,7 @@ mod tests {
         assert!(!is_elevation_request(1, &["cmake".to_string()]));
     }
 
-    /// The exact stderr an AMSI provider produced in #8523. The scan covers the whole script
-    /// block, so the parse error points at line 1 char 1 and no statement ever runs.
+    /// The exact stderr an AMSI provider produced; the parse error points at line 1 char 1.
     const AMSI_BLOCK_STDERR: [&str; 6] = [
         r"At C:\Program Files\Unsloth\install.ps1:1 char:1",
         "+ # Unsloth Studio Installer for Windows PowerShell",
@@ -1589,17 +1492,14 @@ mod tests {
             context.observe_stderr(line);
         }
         let message = context.message(1);
-        // The raw id survives: diagnostics and vendor submissions need it.
         assert!(message.contains("ScriptContainedMaliciousContent"), "{message}");
         assert!(message.starts_with("Installation failed: "), "{message}");
         assert!(message.contains("blocked the installer before it started"), "{message}");
         assert!(message.contains("only diagnostic logs may have been written"), "{message}");
-        // We cannot know a verdict is wrong, so the text must not assert it.
         assert!(!message.contains("This is a false positive"), "{message}");
     }
 
     // PowerShell 5.1 prints its logo even with -NoLogo when the script is missing.
-    // Model stdout arriving last, hiding the stderr error.
     fn observe_missing_script_output(context: &mut InstallFailureContext) {
         context.observe_stderr(concat!(
             r"The argument 'C:\Users\Owner\AppData\Local\Unsloth\install.ps1' ",
@@ -1668,7 +1568,6 @@ mod tests {
         assert!(message.contains(AMSI_MALWARE_GUIDANCE_PRE_START), "{message}");
     }
 
-    // Exercise the real interpreter with the app's launch arguments.
     #[cfg(windows)]
     #[test]
     fn powershell_given_a_missing_script_is_reported_as_missing() {
@@ -1700,9 +1599,7 @@ mod tests {
 
     #[test]
     fn a_block_after_the_install_started_does_not_claim_nothing_changed() {
-        // install.ps1 runs `unsloth studio setup` near the end, and that child spawns
-        // studio/setup.ps1 on the same inherited pipes. A block there lands after the venv and
-        // PyTorch are on disk, so the pre-start reassurance would be false.
+        // A setup.ps1 block lands after the venv and PyTorch are on disk.
         let mut context = InstallFailureContext::default();
         context.observe_stdout("[TAURI:STEP] running unsloth studio setup...");
         for line in AMSI_BLOCK_STDERR {
@@ -1717,9 +1614,7 @@ mod tests {
 
     #[test]
     fn the_wording_follows_the_final_started_state_not_the_arrival_order() {
-        // stdout and stderr are read by independent threads, so the STEP a child wrote before
-        // the block can be observed after it. Deciding the wording when the token arrives would
-        // tell the user nothing was changed on a run that had already installed PyTorch.
+        // Independent stream readers can deliver an earlier STEP after the block.
         let mut context = InstallFailureContext::default();
         for line in AMSI_BLOCK_STDERR {
             context.observe_stderr(line);
@@ -1732,16 +1627,12 @@ mod tests {
 
     #[test]
     fn the_twin_of_an_earlier_clear_does_not_erase_a_later_verdict() {
-        // Clear-TauriInstallError writes one clear to BOTH streams, and independent readers can
-        // interleave them around a block that happened afterwards. install.ps1 clears after each
-        // recovered step, so this is the ordinary shape of a setup.ps1 block late in a run.
         let mut context = InstallFailureContext::default();
         context.observe_stdout("[TAURI:STEP] installing PyTorch");
         context.observe_stderr("[TAURI:ERROR_CLEAR] PyTorch recovered");
         for line in AMSI_BLOCK_STDERR {
             context.observe_stderr(line);
         }
-        // the twin of the same clear, arriving late on the other stream
         context.observe_stdout("[TAURI:ERROR_CLEAR] PyTorch recovered");
         let message = context.message(1);
         assert!(message.contains("blocked part of the installer"), "{message}");
@@ -1749,10 +1640,7 @@ mod tests {
 
     #[test]
     fn two_real_clears_of_one_label_on_one_stream_are_not_twins() {
-        // The same label can be cleared twice for real: _install_torch_default_index emits its
-        // recovery during the install and again during the ROCm repair. Pairing by message alone
-        // treated the second as the twin of the first, so the block that landed between them was
-        // then erased by the genuinely later clear arriving on the other stream.
+        // The same label can be cleared twice for real (install, then ROCm repair).
         let mut context = InstallFailureContext::default();
         context.observe_stdout("[TAURI:STEP] installing PyTorch");
         context.observe_stderr("[TAURI:ERROR_CLEAR] install PyTorch recovered");
@@ -1760,7 +1648,6 @@ mod tests {
         for line in AMSI_BLOCK_STDERR {
             context.observe_stderr(line);
         }
-        // Both twins arrive late on the other stream and consume the two pending clears.
         context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered");
         context.observe_stdout("[TAURI:ERROR_CLEAR] install PyTorch recovered");
         let message = context.message(1);
@@ -1769,9 +1656,7 @@ mod tests {
 
     #[test]
     fn a_twin_lagging_several_clears_behind_still_pairs() {
-        // install.ps1 clears after every recovered step, so a slower reader can be several clears
-        // behind when a block lands. Pairing only against the previous message would treat this
-        // delayed twin of A as a fresh recovery and drop the verdict.
+        // A slow reader can be several clears behind when a block lands.
         let mut context = InstallFailureContext::default();
         context.observe_stdout("[TAURI:STEP] installing PyTorch");
         context.observe_stderr("[TAURI:ERROR_CLEAR] step A recovered");
@@ -1787,7 +1672,6 @@ mod tests {
 
     #[test]
     fn a_genuinely_later_recovery_still_clears_the_verdict() {
-        // Distinct text means a real subsequent recovery, not a twin, and the guidance must go.
         let mut context = InstallFailureContext::default();
         context.observe_stderr("[TAURI:ERROR_CLEAR] PyTorch recovered");
         for line in AMSI_BLOCK_STDERR {
@@ -1803,7 +1687,6 @@ mod tests {
 
     #[test]
     fn the_id_has_to_be_the_field_value_not_just_on_the_line() {
-        // Prose that names both the field and the id is not an error record.
         let mut context = InstallFailureContext::default();
         context.observe_stderr(
             "checking FullyQualifiedErrorId handling for ScriptContainedMaliciousContent",
@@ -1813,12 +1696,10 @@ mod tests {
             context.message(7),
             "Installation failed: Failed to install PyTorch"
         );
-        // A longer token that merely starts with the id is a different id.
         assert!(!is_error_id_value(
             "+ FullyQualifiedErrorId : ScriptContainedMaliciousContentX",
             AMSI_MALWARE_ERROR_ID
         ));
-        // The real record, with and without the cmdlet suffix.
         assert!(is_error_id_value(
             "    + FullyQualifiedErrorId : ScriptContainedMaliciousContent",
             AMSI_MALWARE_ERROR_ID
@@ -1840,9 +1721,6 @@ mod tests {
 
     #[test]
     fn merely_naming_the_error_id_is_not_a_verdict() {
-        // The id is only a verdict as the value of a PowerShell error record's field. A scanner
-        // log or a test fixture that prints the bare string must not attach antivirus guidance
-        // to whatever fails next.
         let mut context = InstallFailureContext::default();
         context.observe_stderr("scanning fixture ScriptContainedMaliciousContent");
         context.observe_stdout("[TAURI:ERROR] Failed to install PyTorch");

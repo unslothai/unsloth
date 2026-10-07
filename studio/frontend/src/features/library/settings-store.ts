@@ -81,8 +81,6 @@ interface LibrarySettingsState extends LibrarySettings {
   reset: () => void;
 }
 
-/** v1 had one mediaTabs switch for Images, Videos and Audio together; before v3, Fine-tunes
- * always showed; before v4, Images showed only once there were images. */
 export function migrateLibrarySettings(persisted: unknown, version: number): Record<string, unknown> {
   const state = { ...(persisted as Record<string, unknown>) };
   if (version < 2) {

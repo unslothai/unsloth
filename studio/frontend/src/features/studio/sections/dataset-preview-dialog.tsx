@@ -54,7 +54,6 @@ import {
   formatCell,
 } from "./dataset-preview-dialog-utils";
 
-/** Chatml → format-specific role remap (only for formats that differ from chatml). */
 const ROLE_REMAP: Record<string, Record<string, string>> = {
   alpaca: { user: "instruction", system: "input", assistant: "output" },
   sharegpt: { user: "human", assistant: "gpt", system: "system" },
@@ -187,7 +186,6 @@ export function DatasetPreviewDialog({
   const { startError, startBlocked, stopRequested, startTrainingRun } =
     useTrainingActions();
 
-  // Treat backend-reported image data as VLM even if the prop hasn't caught up.
   const effectiveIsAudio = !!data?.is_audio;
   const effectiveIsVlm = isVlm || !!data?.is_image;
 
@@ -274,7 +272,6 @@ export function DatasetPreviewDialog({
       }
 
       if (result.success && result.suggested_mapping) {
-        // Remap chatml roles to format-specific roles
         const table = ROLE_REMAP[datasetFormat];
         const mapped: Record<string, string> = {};
         for (const [col, role] of Object.entries(result.suggested_mapping)) {
@@ -282,7 +279,6 @@ export function DatasetPreviewDialog({
         }
         setManualMapping(mapped);
 
-        // Store conversion advisor fields (system prompt, label mapping, notification)
         if (
           result.system_prompt ||
           result.label_mapping ||
@@ -330,7 +326,6 @@ export function DatasetPreviewDialog({
     [],
   );
 
-  // When format changes, remap existing mapping roles to the new format's role names
   const prevFormatRef = useRef(datasetFormat);
   useEffect(() => {
     const prev = prevFormatRef.current;
@@ -345,7 +340,6 @@ export function DatasetPreviewDialog({
       const next = { ...manualMapping };
       delete next[colName];
       if (role) {
-        // Each role maps to one column, so drop any other column holding it
         for (const [col, r] of Object.entries(next)) {
           if (r === role) delete next[col];
         }
@@ -401,7 +395,7 @@ export function DatasetPreviewDialog({
     };
   }, [previewRequest]);
 
-  // Pre-fill mapping from suggested_mapping when data arrives (never overwriting existing entries).
+  // Never overwrites existing entries.
   useEffect(() => {
     if (!open || !datasetName || isDecisionModel) return;
     if (!data?.requires_manual_mapping && !data?.suggested_mapping) return;
@@ -514,7 +508,6 @@ export function DatasetPreviewDialog({
       }),
     );
 
-    // Prepend generated system prompt column when advisor is active
     if (datasetSystemPrompt) {
       dataCols.unshift({
         id: "__system_generated",
@@ -563,7 +556,6 @@ export function DatasetPreviewDialog({
         className="sm:max-w-5xl w-[90vw] max-sm:w-[calc(100vw-1rem)] max-sm:rounded-2xl max-h-[88dvh] flex flex-col gap-0 p-0 overflow-hidden rounded-3xl corner-squircle"
         showCloseButton={true}
       >
-        {/* Header */}
         <DialogHeader className="px-6 max-sm:px-4 pt-5 pb-4 shrink-0">
           <div className="flex items-center gap-3 pr-10">
             <div className="rounded-xl corner-squircle p-2 ring-1 ring-indigo-200 bg-indigo-50 text-indigo-600 dark:ring-indigo-800 dark:bg-indigo-950 dark:text-indigo-400 shrink-0">
@@ -575,9 +567,7 @@ export function DatasetPreviewDialog({
           </div>
         </DialogHeader>
 
-        {/* Body */}
         <div className="flex flex-col min-h-0 flex-1 overflow-auto px-6 pb-6">
-          {/* Loading */}
           {loading && (
             <div className="py-24 flex flex-col items-center justify-center gap-3">
               <div className="rounded-2xl corner-squircle bg-primary/5 p-4">
@@ -596,7 +586,6 @@ export function DatasetPreviewDialog({
             </div>
           )}
 
-          {/* Error */}
           {error && (
             <div className="py-20 flex flex-col items-center justify-center gap-3">
               <div className="rounded-2xl corner-squircle bg-destructive/10 p-3">
@@ -614,10 +603,8 @@ export function DatasetPreviewDialog({
             </div>
           )}
 
-          {/* Content */}
           {!loading && !error && data && (
             <>
-              {/* Metadata card */}
               <div className="rounded-xl corner-squircle ring-1 ring-border/60 bg-muted/30 px-5 py-4 mb-4 space-y-2">
                 <MetaRow label="Source" value={sourceLabel} />
                 <MetaRow
@@ -691,12 +678,10 @@ export function DatasetPreviewDialog({
                 />
               )}
 
-              {/* Data table */}
               <div className="flex-1 min-h-[calc(250px*var(--ui-space-scale,1))] scroll-rounded rounded-xl corner-squircle ring-1 ring-border/60 overflow-auto">
                 <DataTable columns={tableColumns} data={rows} />
               </div>
 
-              {/* Footer */}
               <div className="mt-3">
                 <p className="text-ui-11 text-muted-foreground/60 text-center tabular-nums">
                   Showing {rows.length}

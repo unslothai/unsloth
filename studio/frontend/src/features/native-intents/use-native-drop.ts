@@ -19,17 +19,14 @@ export type NativeModelDropState =
       count: number;
       kind: "docs" | "images" | "audio" | "video" | "mixed";
     }
-  // `reason` explains a refusal the file types alone do not. Absent means the
-  // files themselves are the problem.
+  // Absent `reason` means the files themselves are the problem.
   | { status: "invalid"; reason?: string };
 
 interface NativeModelDropOptions {
   enabled?: boolean;
   attachmentScope?: string;
-  // Where a drop on this window belongs, for reporting a failure back to it.
   attachmentTargetKey?: string;
-  /** Set when this view takes no drops at all. Refuses every droppable payload
-   * with this sentence instead of swallowing it, and loads nothing. */
+  /** Refuses droppable payloads with this sentence instead of swallowing them. */
   dropsUnsupportedReason?: string;
   nativePathLeasesSupported: boolean;
   hasActiveModel: boolean;
@@ -103,8 +100,6 @@ function attachmentCount(
   return 0;
 }
 
-/** Anything this handler would otherwise act on. "none" and "unsupported"
- * already have their own answers. */
 function isActionableKind(
   dropped: ReturnType<typeof classifyDropPaths>,
 ): boolean {
@@ -175,8 +170,7 @@ interface RegisteredDrop {
   error?: Error;
 }
 
-// Per path, not all-or-nothing: one bad file in a batch used to discard every
-// sibling that had already registered, leaving their leases to expire unused.
+// Per path, so one bad file does not discard siblings that already registered.
 async function registerEach(paths: string[]) {
   const settled = await Promise.allSettled(
     paths.map(registerNativeAttachmentPath),
@@ -289,11 +283,9 @@ export function useNativeModelDrop(
     }
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    // "over" carries no paths, so the ones announced on "enter" are what the
-    // overlay keeps reading as the cursor moves across the window.
+    // "over" carries no paths, so keep the ones announced on "enter".
     let draggedPaths: string[] = [];
-    // Tauri repeats "over" per cursor move, so a fresh object each time would
-    // rerender ChatPage at drag frequency. Returning `prev` makes React bail out.
+    // "over" fires per cursor move; returning `prev` makes React bail out.
     const publish = (next: NativeModelDropState) =>
       setDropState((prev) => (sameDropState(prev, next) ? prev : next));
 
@@ -309,7 +301,6 @@ export function useNativeModelDrop(
           if (event.payload.type === "enter") {
             draggedPaths = event.payload.paths;
           }
-          // A drop zone under the cursor owns this drop; leave it alone.
           if (nativeDropTargetAt(event.payload.position)) {
             publish({ status: "idle" });
             return;
@@ -326,8 +317,7 @@ export function useNativeModelDrop(
             toast.error(SUPPORTED_DROP_HINT);
             return;
           }
-          // Before the model branch too: this view loads nothing, so a dropped
-          // GGUF must not replace the active model behind it.
+          // Before the model branch: this view loads nothing, so a GGUF must not replace the model.
           if (
             currentOptions.dropsUnsupportedReason &&
             isActionableKind(dropped)
@@ -399,9 +389,7 @@ export function useNativeModelDrop(
               });
               return;
             }
-            // Hold the send gate across registration too. Between the drop and the
-            // intents reaching the queue there is nothing for the composer to see,
-            // so an Enter in that window would send the text without the attachment.
+            // Hold the send gate across registration, or Enter sends the text without the attachment.
             const store = useNativeIntentStore.getState();
             if (needsComposerAttachments) store.beginImageDropRegistration();
             if (needsAudio) store.beginAudioDropRegistration();
@@ -409,8 +397,7 @@ export function useNativeModelDrop(
             try {
               const registered = await registerDroppedAttachments(dropped);
               const latestOptions = optionsRef.current;
-              // Both callbacks only enqueue against a target key, so a drop that
-              // outlived this listener still reaches the chat it landed on.
+              // Callbacks only enqueue by target key, so a drop outliving this listener still lands.
               const attachOptions =
                 !disposed &&
                 latestOptions.attachmentScope === currentOptions.attachmentScope
@@ -419,8 +406,7 @@ export function useNativeModelDrop(
               if (registered.docs.length > 0) {
                 await attachOptions.onAttach?.(registered.docs);
               }
-              // Documents first: a vision-less model throws on the image and
-              // aborts the batch, which would discard them.
+              // Documents first: a vision-less model throws on the image and aborts the batch.
               const composerAttachments = [
                 ...registered.composerDocuments,
                 ...registered.images,
@@ -442,8 +428,7 @@ export function useNativeModelDrop(
               if (registered.videoFailed > 0 && failureKey) {
                 store.failVideoDropRegistration(failureKey);
               }
-              // A failed document cancels a send parked behind the attachment, audio
-              // or video gates too, or the draft goes out with only what survived.
+              // A failed document cancels the parked send, or the draft goes out partial.
               if (registered.docsFailed > 0 && failureKey) {
                 if (needsComposerAttachments) {
                   store.failImageDropRegistration(failureKey);

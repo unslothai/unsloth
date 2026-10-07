@@ -3,13 +3,10 @@
 
 import { useEffect, useState } from "react";
 
-// Persisted recent Hub search terms, newest first. Uses the localStorage +
-// same-tab CHANGE_EVENT + cross-tab `storage` pattern so consumers stay in sync.
 const STORAGE_KEY = "unsloth.hub.recentSearches";
 const CHANGE_EVENT = "unsloth:hub-recent-searches-change";
 
 export const MAX_RECENT_SEARCHES = 8;
-// Single characters are usually noise (a half-typed query), so skip them.
 const MIN_QUERY_LENGTH = 2;
 
 function readStored(): string[] {
@@ -45,10 +42,6 @@ function writeStored(list: string[]): void {
   window.dispatchEvent(new Event(CHANGE_EVENT));
 }
 
-/**
- * Record a searched term: trims, drops short queries, de-dupes case-insensitively
- * (moving a match to the front), and caps at {@link MAX_RECENT_SEARCHES}.
- */
 export function recordRecentSearch(query: string): void {
   const trimmed = query.trim();
   if (trimmed.length < MIN_QUERY_LENGTH) {

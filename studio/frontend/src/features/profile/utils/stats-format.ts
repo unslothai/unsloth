@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Formatting helpers for the profile stats panel.
- *
- * Kept free of React so the numbers can be unit-tested directly.
- */
-
 import type { Locale } from "@/i18n";
 
 const COMPACT_FORMATTERS = new Map<string, Intl.NumberFormat>();
@@ -31,16 +25,7 @@ function compactFormatter(
   return formatter;
 }
 
-/** Magnitude of the compact form, so "past 100 of a unit" is asked of Intl
- * rather than derived from a hardcoded 1e3/1e6/1e9 ladder that only matches
- * locales grouping in thousands. ja and zh group in 万, hi in लाख.
- *
- * Probed through a latn formatter, never the display one: the default numbering
- * system is per-locale AND per-ICU-build, and ar-EG / ar-SA resolve to `arab`,
- * where the integer part is "١" and Number() gives NaN. NaN < 100 is false, so
- * every Arabic value silently lost its decimal ("٢ مليون" for 1.9M). The unit
- * grouping is identical across numbering systems, so this only changes the
- * digits we parse, not which unit Intl picked. */
+/** Probed through a latn formatter: ar-EG/ar-SA default to arab digits, which Number() reads as NaN. */
 function compactInteger(locale: Locale, value: number): number {
   for (const part of compactFormatter(locale, 1, "latn").formatToParts(value)) {
     if (part.type === "integer") {
@@ -50,35 +35,22 @@ function compactInteger(locale: Locale, value: number): number {
   return 0;
 }
 
-/** Whether the compact form actually applied a unit (K / 万 / लाख), probed in latn for the
- * same reason as compactInteger. */
 function hasCompactUnit(locale: Locale, value: number): boolean {
   return compactFormatter(locale, 1, "latn")
     .formatToParts(value)
     .some((part) => part.type === "compact");
 }
 
-/**
- * Compact form used on every stat tile: 12.3K, 4.5M, 19.8B in English, and
- * each locale's own units elsewhere (1.2万 in ja, 1,9 Mrd. in de, 1.2 लाख in
- * hi). One decimal below 100 of a unit keeps "1.9B" readable; above it the
- * decimal is noise, and asking for zero digits also avoids "1000K", which is
- * not compact.
- */
+/** One decimal below 100 of a unit; zero digits above it also avoids "1000K". */
 export function formatCompactNumber(value: number, locale: Locale): string {
   if (!Number.isFinite(value)) return "0";
-  // Below the locale's first compact unit there is no unit to be a fraction OF, and these
-  // are whole things: averageTokensPerChat is the one fractional caller, and "12.5 tokens"
-  // reads as false precision where the pre-localization code said 13. Asked of Intl (is there
-  // a `compact` part?) rather than a hardcoded 1000, because the first unit is per-locale:
-  // en and hi compact at 1K, ja and de not until 万 and Mio.
+  // Below the locale's first compact unit, format whole numbers; that unit is per-locale (1K vs 万).
   if (!hasCompactUnit(locale, value)) return compactFormatter(locale, 0).format(value);
   return compactInteger(locale, value) < 100
     ? compactFormatter(locale, 1).format(value)
     : compactFormatter(locale, 0).format(value);
 }
 
-/** The exact count behind a tile, grouped the way the chosen locale groups. */
 export function formatFullNumber(value: number, locale: Locale): string {
   if (!Number.isFinite(value)) return "0";
   const cached = FULL_FORMATTERS.get(locale);
@@ -116,7 +88,6 @@ function cachedPluralRules(locale: Locale): Intl.PluralRules {
   return rules;
 }
 
-/** Locale-aware day unit, including languages with multiple plural forms. */
 export function formatDayCount(value: number, locale: Locale): string {
   return cachedFormatter(DAY_FORMATTERS, locale, {
     style: "unit",
@@ -133,9 +104,7 @@ type CountTemplate = { other: string } & Partial<
   Record<PluralCategory, string>
 >;
 
-// Intl formats calendar units such as weeks, but not app-specific nouns such
-// as tokens, messages, or training steps. Keep those forms together here so
-// every call site selects them with the same CLDR plural category.
+// Intl has no plural forms for app nouns like tokens or messages, so they live here.
 const PROFILE_COUNT_TEMPLATES = {
   en: {
     token: { one: "{value} token", other: "{value} tokens" },
@@ -251,7 +220,6 @@ const PROFILE_COUNT_TEMPLATES = {
 
 type ProfileCountLocale = Locale;
 
-/** A localized count phrase for the dynamic nouns used by profile stats. */
 export function formatProfileCount(
   value: number,
   unit: ProfileCountUnit,
@@ -278,7 +246,6 @@ export function formatProfileCount(
   return template.replace("{value}", () => formattedValue);
 }
 
-/** Compact duration for chat and training time: 4h 8m, 12m 30s, 45s. */
 export function formatDuration(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "0m";
   const total = Math.round(seconds);
@@ -299,10 +266,7 @@ export function formatMilliseconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/**
- * Bucket a day's tokens into one of five heatmap intensities (0 = empty).
- * Thresholds are relative to the busiest day so any usage scale looks alive.
- */
+/** Heatmap level 0-4, relative to the busiest day. */
 export function heatLevel(tokens: number, peak: number): 0 | 1 | 2 | 3 | 4 {
   if (tokens <= 0) return 0;
   if (peak <= 0) return 1;
@@ -313,7 +277,7 @@ export function heatLevel(tokens: number, peak: number): 0 | 1 | 2 | 3 | 4 {
   return 1;
 }
 
-/** Local YYYY-MM-DD, matching the backend's day keys (which use local time). */
+/** Local YYYY-MM-DD, matching the backend's local-time day keys. */
 export function toLocalDayKey(date: Date): string {
   const year = date.getFullYear();
   const month = `${date.getMonth() + 1}`.padStart(2, "0");
@@ -321,7 +285,7 @@ export function toLocalDayKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-/** Parse a backend day key as a local date (not UTC, which would shift a day). */
+/** Parse as a local date; UTC would shift a day. */
 export function parseDayKey(key: string): Date {
   const [year, month, day] = key.split("-").map(Number);
   return new Date(year, (month ?? 1) - 1, day ?? 1);
@@ -330,16 +294,8 @@ export function parseDayKey(key: string): Date {
 export type ActivityMode = "daily" | "weekly" | "cumulative";
 
 /**
- * Recast the dense daily series for the selected mode. Weekly sums each
- * calendar week onto its days so the grid shows week-level intensity;
- * cumulative is the running total across the displayed window, not lifetime,
- * since the backend caps the series and seeding it with everything older would
- * flatten every bar against a baseline the grid cannot show.
- */
-/**
- * What to subtract from a cumulative series once the grid drops older days.
- * Without it the first visible bar opens at the hidden total and the whole
- * window flattens against a baseline the user cannot see.
+ * Subtracted from a cumulative series once older days drop, or the first visible bar opens at the
+ * hidden total.
  */
 export function windowBaseline(
   values: number[],
@@ -356,7 +312,6 @@ export type ActivityGridCell = {
 
 export type ActivityGridColumn = ActivityGridCell[];
 
-/** Subtitle headline: weekly reports the busiest week, other modes sum the window. */
 export function activitySummaryForMode(
   grid: ActivityGridColumn[],
   mode: ActivityMode,
@@ -392,7 +347,7 @@ export function seriesForMode(
     });
   }
 
-  // Weekly: every day carries the total of the Monday-started week it sits in.
+  // Weekly: every day carries its Monday-started week's total.
   const weekTotals: number[] = [];
   const weekOfDay: number[] = [];
   let week = -1;

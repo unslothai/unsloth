@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * #8893's fix skips the reload when the picked model is already resident. Identity is not
- * the whole of a load, though: the picker and Hub's Run button both pass a REMEMBERED
- * config without forceReload (chat-page.tsx stageOrLoad, hub-page.tsx handleRun), and the
- * backend reloads for any of those settings changing. Adopting on identity alone dropped
- * them silently, because the same path rolls the panel back to the resident model and so
- * looks consistent either way.
- */
+/** Remembered configs pass without forceReload, so adopting on identity alone drops settings. */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,7 +14,6 @@ registerBundlerResolver();
 const { residentRuntimeMatchesConfig, residentSpeculativeNeedsRepair } =
   await import("../src/features/chat/lib/resident-config-match.ts");
 
-/** Every field unset: what a model the user never configured would carry. */
 const DEFAULT_ISH = {
   customContextLength: null,
   maxSeqLength: null,
@@ -56,28 +48,20 @@ const BLANK = {
   chatTemplateOverride: null,
 };
 
-/** A resident llama-server running nothing but defaults. */
 const DEFAULTS = {};
 
-/**
- * What the applier fills an unset field with. Four fields are not per-model, so leaving
- * them out of a config is not silence: applyPerModelConfigToRuntime resolves them from a
- * standing preference or a constant, and the load sends the result.
- */
+/** Four fields are not per-model: the applier resolves them, and the load sends the result. */
 const STANDING = {
   speculativeType: "auto",
   gpuMemoryMode: "auto" as const,
   gpuLayers: -1,
   nCpuMoe: 0,
-  // Identity by default: reconciliation is exercised on its own below.
   reconcileGpuIds: (ids: number[] | null) => ids,
-  // Auto resolves to 0 here; the resident-repick branch is exercised on its own below.
   resolveContextLength: (customContextLength: number | null) =>
     customContextLength ?? 0,
   parallelSlots: 1,
   splitRatio: null,
-  // Enough of normalizeSpeculativeType for these cases; the real mapping is the store's
-  // and is tested there. What matters here is that the comparator USES it on both sides.
+  // The comparator must normalize the speculative mode on both sides.
   normalizeSpeculative: (v: string | null | undefined) =>
     v == null || !String(v).trim()
       ? null
@@ -86,7 +70,6 @@ const STANDING = {
         : String(v).trim().toLowerCase(),
 };
 
-/** Shorthand: the comparator always needs the standing defaults. */
 const matches = (
   status: Parameters<typeof residentRuntimeMatchesConfig>[0],
   config: Parameters<typeof residentRuntimeMatchesConfig>[1],
@@ -102,7 +85,6 @@ test("a config that pins nothing adopts the resident model", () => {
   assert.equal(matches(DEFAULTS, BLANK), true);
 });
 
-/** The regression this file exists for: the setting must reach the server. */
 test("a remembered context length the resident load does not run is a reload", () => {
   assert.equal(
     matches(
@@ -123,7 +105,6 @@ test("a remembered context length the resident load already runs adopts it", () 
   );
 });
 
-/** Every field the backend's _runtime_matches_intent reloads for, one per row. */
 const FIELDS: {
   name: string;
   config: Record<string, unknown>;
@@ -204,8 +185,7 @@ const FIELDS: {
     differs: { gpu_memory_mode: "auto" },
   },
   {
-    // Manual on both sides: the backend compares the offload knobs only there, and the
-    // MoE count only with a layer pin beside it, so Auto would assert nothing.
+    // The backend compares offload knobs only under Manual, MoE count only with a layer pin.
     name: "GPU layers",
     config: { gpuMemoryMode: "manual", gpuLayers: 20 },
     same: { gpu_memory_mode: "manual", gpu_layers: 20 },
@@ -220,7 +200,6 @@ const FIELDS: {
   {
     name: "GPU placement",
     config: { selectedGpuIds: [0, 2] },
-    // Same ORDER, not merely the same cards: the reordered pair is a reload now.
     same: { requested_gpu_ids: [0, 2] },
     differs: { requested_gpu_ids: [0, 1] },
   },
@@ -240,8 +219,7 @@ for (const field of FIELDS) {
     );
   });
   test(`a ${field.name} the resident load never reported is a real reload`, () => {
-    // An older backend that does not echo the field cannot prove it agrees, and guessing
-    // that it does is the one answer that loses a setting with nothing on screen to say so.
+    // A backend that does not echo the field cannot prove agreement.
     assert.equal(matches({}, { ...BLANK, ...field.config }), false);
   });
 }
@@ -251,10 +229,8 @@ test("Auto adopts a resident model the backend reported as Auto", () => {
   assert.equal(matches({ mlx_kv_quant_requested: "8" }, { ...BLANK, mlxKvQuant: null }), false);
 });
 
-/** Ordering is the backend's to choose: it narrows and reorders placement at fit time. */
 test("GPU placement compares as an order, not as a set", () => {
-  // The picker hands the list to the backend in order and position decides which
-  // card takes the prompt, so a reorder is a different placement and must reload.
+  // Position decides which card takes the prompt, so a reorder is a different placement.
   assert.equal(
     matches(
       { requested_gpu_ids: [3, 1, 0] },
@@ -272,8 +248,6 @@ test("GPU placement compares as an order, not as a set", () => {
 });
 
 test("automatic placement does not adopt a load pinned to chosen GPUs", () => {
-  // Automatic is what the applier resolves an unset selection to, and it is what the load
-  // would then send, so it disagrees with a server placed on a chosen pool.
   assert.equal(
     matches({ requested_gpu_ids: [0, 1] }, { ...BLANK, selectedGpuIds: null }),
     false,
@@ -357,12 +331,10 @@ test("zero is a pinned value, not an absent one", () => {
       { requested_context_length: 0 },
       { ...BLANK, customContextLength: 0 },
     ),
-    // 0 is Auto and PerModelConfig stores "unset" as null, so a stored 0 is a real pin.
     true,
   );
 });
 
-/** Several pins at once, which is what a configured model actually carries. */
 test("one differing field among many agreeing ones is still a reload", () => {
   const config = {
     ...BLANK,
@@ -381,13 +353,8 @@ test("one differing field among many agreeing ones is still a reload", () => {
   assert.equal(matches({ ...status, cache_type_kv: "f16" }, config), false);
 });
 
-/**
- * The comparator only helps if the pick is tested against it BEFORE the reload is decided,
- * and the two gates beside it are invariants rather than preferences: a staged config
- * carries forceReload, and a native pick carries a lease this path cannot adopt.
- */
+/** The config and lease gates must be checked before the reload is decided. */
 test("selectModel weighs the config and the lease before confirming a reload", () => {
-  // Newline-tolerant: the call wraps once its argument list grows.
   const configCheck = USE_CHAT_MODEL_RUNTIME.search(/residentRuntimeMatchesConfig\(\s*status/);
   const identityCheck = USE_CHAT_MODEL_RUNTIME.indexOf("residentModelMatchesPick(status");
   const confirmPrompt = USE_CHAT_MODEL_RUNTIME.indexOf(
@@ -401,13 +368,8 @@ test("selectModel weighs the config and the lease before confirming a reload", (
   assert.ok(confirmPrompt > 0, "selectModel no longer confirms running chats");
   assert.ok(identityCheck < confirmPrompt);
   assert.ok(configCheck < confirmPrompt);
-  // A leased native file is named by a label two files can share, and the lease itself is
-  // written only by a completed load, so this path must not adopt one.
-  // Widened as the gate's preamble grows: what matters is that the guard opens the block
-  // the identity check sits in, not how many reads it makes first.
-  // Scoped to the adoption short-circuit: the runtime also checks residency while
-  // cancelling a superseded run, and adopting an earlier occurrence would read this
-  // guard as missing.
+  // A leased native file's label can be shared and the lease is only written by a load.
+  // Scoped to the adoption short-circuit, since residency is also checked when cancelling.
   const guard = USE_CHAT_MODEL_RUNTIME.lastIndexOf(
     "if (!forceReload && !nativePathToken) {",
     confirmPrompt,
@@ -416,8 +378,6 @@ test("selectModel weighs the config and the lease before confirming a reload", (
     guard > 0,
     "the resident short-circuit no longer excludes native-lease picks",
   );
-  // Scoped past the guard: the runtime also checks residency when it reconciles a
-  // cancelled run, and reading the first occurrence would measure the wrong block.
   const adoptionIdentityCheck = USE_CHAT_MODEL_RUNTIME.indexOf(
     "residentModelMatchesPick(status",
     guard,
@@ -428,15 +388,8 @@ test("selectModel weighs the config and the lease before confirming a reload", (
   );
 });
 
-/**
- * The four fields that are NOT per-model. Leaving one out of a config is not silence:
- * applyPerModelConfigToRuntime resolves it from a standing preference or a constant and
- * the load sends that, so reading it as unpinned let a pick adopt a runtime it did not
- * ask for. Reported on this file by review, reproduced against the applier, fixed here.
- */
+/** Standing fields resolve from a preference or constant, so unset is not silence. */
 test("an unset speculative mode is the standing preference, not silence", () => {
-  // Standing preference is "off"; the resident model is running MTP. The load would send
-  // "off", so this is a real reload even though the config names no mode.
   assert.equal(
     matches({ ...DEFAULTS, speculative_type: "mtp" }, BLANK, {
       ...STANDING,
@@ -444,7 +397,6 @@ test("an unset speculative mode is the standing preference, not silence", () => 
     }),
     false,
   );
-  // Same standing preference, and the resident model already runs it.
   assert.equal(
     matches({ ...DEFAULTS, speculative_type: "off" }, BLANK, {
       ...STANDING,
@@ -466,7 +418,6 @@ test("a config that names a mode still beats the standing preference", () => {
 });
 
 test("the speculative mode is normalized on both sides", () => {
-  // "default" and "auto" are the same mode; a spelling difference is not a reload.
   assert.equal(
     matches({ ...DEFAULTS, speculative_type: "default" }, BLANK),
     true,
@@ -474,9 +425,7 @@ test("the speculative mode is normalized on both sides", () => {
 });
 
 test("the GPU pick is compared after reconciliation, not as saved", () => {
-  // performLoad sends reconcilePersistedGpuIds(ids, kind): a pick saved in another index
-  // namespace, or naming GPUs that are gone, leaves as Automatic. Comparing the saved ids
-  // let a physical [1] adopt a server pinned to Vulkan device 1.
+  // performLoad reconciles saved ids by namespace, so compare the reconciled ids.
   const dropped = { ...STANDING, reconcileGpuIds: () => null };
   assert.equal(
     matches(
@@ -486,8 +435,6 @@ test("the GPU pick is compared after reconciliation, not as saved", () => {
     ),
     false,
   );
-  // The reverse, so the reconciler is not merely refusing everything: once the pick is
-  // Automatic it agrees with a server that was placed automatically.
   assert.equal(
     matches(
       { ...DEFAULTS, requested_gpu_ids: null },
@@ -496,7 +443,6 @@ test("the GPU pick is compared after reconciliation, not as saved", () => {
     ),
     true,
   );
-  // And the kind reaches the reconciler, which is the only thing that can use it.
   const kinds: (string | null | undefined)[] = [];
   matches(
     DEFAULTS,
@@ -513,9 +459,7 @@ test("the GPU pick is compared after reconciliation, not as saved", () => {
 });
 
 test("an unset context length is resolved the way the load resolves it", () => {
-  // resolveLoadMaxSeqLength answers 0 for a cross-model GGUF pick and the resident context
-  // when re-picking the same one. Comparing null against either was a reload the backend
-  // would have deduplicated.
+  // resolveLoadMaxSeqLength gives 0 cross-model and the resident context on re-pick.
   assert.equal(
     matches({ ...DEFAULTS, requested_context_length: 0 }, BLANK),
     true,
@@ -523,12 +467,10 @@ test("an unset context length is resolved the way the load resolves it", () => {
   assert.equal(
     matches({ ...DEFAULTS, requested_context_length: 32768 }, BLANK, {
       ...STANDING,
-      // The re-pick branch: loadedContextLength, not 0.
       resolveContextLength: (pin) => pin ?? 32768,
     }),
     true,
   );
-  // Still a reload when the resolved value really differs.
   assert.equal(
     matches({ ...DEFAULTS, requested_context_length: 32768 }, BLANK),
     false,
@@ -543,9 +485,7 @@ test("an unset context length is resolved the way the load resolves it", () => {
 });
 
 test("an unset slot count is the server default, not null", () => {
-  // _resolve_parallel_slots fills an omitted --parallel from the server-wide default and
-  // stores THAT as requested_parallel_slots, so the status never echoes null. Comparing
-  // null against it reloaded every default pick, which is the common case.
+  // _resolve_parallel_slots stores the server default, so the status never echoes null.
   assert.equal(
     matches({ ...DEFAULTS, requested_parallel_slots: 4 }, BLANK, {
       ...STANDING,
@@ -553,7 +493,6 @@ test("an unset slot count is the server default, not null", () => {
     }),
     true,
   );
-  // A pick that names a different count is still a reload.
   assert.equal(
     matches(
       { ...DEFAULTS, requested_parallel_slots: 4 },
@@ -565,7 +504,6 @@ test("an unset slot count is the server default, not null", () => {
     ),
     false,
   );
-  // And a resident load pinned above the default is not adopted by an unset pick.
   assert.equal(
     matches({ ...DEFAULTS, requested_parallel_slots: 8 }, BLANK, {
       ...STANDING,
@@ -573,7 +511,6 @@ test("an unset slot count is the server default, not null", () => {
     }),
     false,
   );
-  // Unknown default: reload, the safe direction.
   assert.equal(
     matches({ ...DEFAULTS, requested_parallel_slots: 4 }, BLANK, {
       ...STANDING,
@@ -584,8 +521,7 @@ test("an unset slot count is the server default, not null", () => {
 });
 
 test("a pick naming the fitted subset of a wider pool is not a reload", () => {
-  // matches_gpu_ids accepts the request or the effective pool: fitting narrows [0, 1] to
-  // [0] when that is the smallest subset holding the model, and asking for [0] dedupes.
+  // matches_gpu_ids accepts the request or the fitted pool.
   assert.equal(
     matches(
       { ...DEFAULTS, requested_gpu_ids: [0, 1], gpu_ids: [0] },
@@ -593,7 +529,6 @@ test("a pick naming the fitted subset of a wider pool is not a reload", () => {
     ),
     true,
   );
-  // The raw request still answers for itself.
   assert.equal(
     matches(
       { ...DEFAULTS, requested_gpu_ids: [0, 1], gpu_ids: [0] },
@@ -601,7 +536,6 @@ test("a pick naming the fitted subset of a wider pool is not a reload", () => {
     ),
     true,
   );
-  // A pool neither of them names is still a reload.
   assert.equal(
     matches(
       { ...DEFAULTS, requested_gpu_ids: [0, 1], gpu_ids: [0] },
@@ -609,8 +543,7 @@ test("a pick naming the fitted subset of a wider pool is not a reload", () => {
     ),
     false,
   );
-  // An absent echo is no placement, not Automatic: reading it as Automatic would let an
-  // unpinned pick adopt every pinned server.
+  // An absent echo is no placement, not Automatic, or unpinned picks adopt pinned servers.
   assert.equal(
     matches({ ...DEFAULTS, requested_gpu_ids: [0, 1] }, BLANK),
     false,
@@ -618,9 +551,7 @@ test("a pick naming the fitted subset of a wider pool is not a reload", () => {
 });
 
 test("a retry arm that records no fallback reason still declines the shortcut", () => {
-  // _dflash_retry_needed and the capability-probe arm both reject an identical load while
-  // leaving spec_fallback_reason null, so reading only the reason adopted a runtime the
-  // backend would have rebuilt, and nothing else would ever retry it.
+  // Two retry arms leave spec_fallback_reason null, so the reason alone is not enough.
   assert.equal(
     residentSpeculativeNeedsRepair(
       { spec_fallback_reason: null, spec_dflash_retry_pending: true },
@@ -635,7 +566,6 @@ test("a retry arm that records no fallback reason still declines the shortcut", 
     ),
     true,
   );
-  // The backend gates that arm on those two modes; a pick asking for MTP is not it.
   assert.equal(
     residentSpeculativeNeedsRepair(
       { spec_fallback_reason: null, spec_dflash_retry_pending: true },
@@ -643,7 +573,6 @@ test("a retry arm that records no fallback reason still declines the shortcut", 
     ),
     false,
   );
-  // The probe arm has no mode gate at all.
   assert.equal(
     residentSpeculativeNeedsRepair(
       { spec_fallback_reason: null, spec_probe_retry_pending: true },
@@ -651,7 +580,6 @@ test("a retry arm that records no fallback reason still declines the shortcut", 
     ),
     true,
   );
-  // Neither pending, and no reason: nothing to repair.
   assert.equal(
     residentSpeculativeNeedsRepair(
       {
@@ -666,8 +594,7 @@ test("a retry arm that records no fallback reason still declines the shortcut", 
 });
 
 test("a binary stand-down that cannot repair does not decline the shortcut", () => {
-  // spec_binary_fallback_can_retry needs a different llama-server installed before an
-  // identical /load repairs anything; without one it dedupes and the prompt was for nothing.
+  // An identical /load only repairs after a different llama-server is installed.
   assert.equal(
     residentSpeculativeNeedsRepair(
       {
@@ -688,7 +615,6 @@ test("a binary stand-down that cannot repair does not decline the shortcut", () 
     ),
     false,
   );
-  // Updated since launch: the repair the update was for must still go through.
   assert.equal(
     residentSpeculativeNeedsRepair(
       {
@@ -699,7 +625,6 @@ test("a binary stand-down that cannot repair does not decline the shortcut", () 
     ),
     true,
   );
-  // A backend too old to report it keeps the coarser answer rather than suppress a repair.
   assert.equal(
     residentSpeculativeNeedsRepair(
       { spec_fallback_reason: "binary_no_mtp" },
@@ -707,7 +632,6 @@ test("a binary stand-down that cannot repair does not decline the shortcut", () 
     ),
     true,
   );
-  // The flag says nothing about a reason that was never about the binary.
   assert.equal(
     residentSpeculativeNeedsRepair(
       {
@@ -721,9 +645,7 @@ test("a binary stand-down that cannot repair does not decline the shortcut", () 
 });
 
 test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
-  // requested_context_length is set only by the llama.cpp path. A safetensors or MLX
-  // status never carries it, and the resolver answers the generation length for a
-  // non-GGUF pick, so reading the absence as 0 rejected every one of these re-picks.
+  // requested_context_length is GGUF-only, so its absence on safetensors/MLX is not 0.
   assert.equal(
     matches({ ...DEFAULTS, is_gguf: false }, BLANK, {
       ...STANDING,
@@ -731,7 +653,6 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
     }),
     true,
   );
-  // The GGUF side is unchanged: there the absence really is Auto.
   assert.equal(
     matches({ ...DEFAULTS, is_gguf: true }, BLANK, {
       ...STANDING,
@@ -739,7 +660,6 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
     }),
     false,
   );
-  // Non-GGUF matches only what the backend acts on; cache_type_kv is a llama.cpp flag it never reads.
   assert.equal(
     matches({ ...DEFAULTS, is_gguf: false, cache_type_kv: "q8_0" }, BLANK),
     true,
@@ -758,16 +678,13 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
 });
 
 test("a hidden MoE count under Auto layers is not a reload", () => {
-  // The panel keeps nCpuMoe after the layer slider goes back to Auto, and llama.cpp
-  // records n_cpu_moe 0, so comparing it there rejected an identical runtime.
-  // _runtime_matches_intent compares it only under Manual with a non-negative pin.
+  // _runtime_matches_intent compares nCpuMoe only under Manual with a non-negative pin.
   assert.equal(
     matches({ ...DEFAULTS, n_cpu_moe: 0 }, { ...BLANK, nCpuMoe: 8 }),
     true,
   );
   const manual = { ...BLANK, gpuMemoryMode: "manual" as const };
   const running = { ...DEFAULTS, gpu_memory_mode: "manual" as const };
-  // Manual with the layers themselves on Auto: still not compared, same as the backend.
   assert.equal(
     matches(
       { ...running, gpu_layers: -1, n_cpu_moe: 0 },
@@ -775,7 +692,6 @@ test("a hidden MoE count under Auto layers is not a reload", () => {
     ),
     true,
   );
-  // Manual with a real pin: compared, and a difference is a reload.
   assert.equal(
     matches(
       { ...running, gpu_layers: 4, n_cpu_moe: 0 },
@@ -786,17 +702,13 @@ test("a hidden MoE count under Auto layers is not a reload", () => {
 });
 
 test("a standalone .gguf never reaches the drafter retry arm", () => {
-  // The arm is guarded on `intent.gguf_path is None`, and the route sets that field from
-  // the identifier alone, so a directly loaded file dedupes rather than retrying the
-  // fetch. Recorded as a note when the rest of this arm was mirrored, closed now.
+  // The arm is guarded on gguf_path being None, so a directly loaded file dedupes.
   const status = {
     spec_fallback_reason: "drafter_not_found",
     spec_drafter_kind: "mtp",
   };
   assert.equal(residentSpeculativeNeedsRepair(status, "auto", true), false);
-  // A repo id sends no path, so the retry still applies there.
   assert.equal(residentSpeculativeNeedsRepair(status, "auto", false), true);
-  // It only excuses this arm: a binary stand-down repairs whatever the pick names.
   assert.equal(
     residentSpeculativeNeedsRepair(
       {
@@ -819,8 +731,7 @@ test("a standalone .gguf never reaches the drafter retry arm", () => {
 });
 
 test("a permanently absent drafter does not decline the shortcut", () => {
-  // The drafter_not_found arm reloads so the next Apply retries the fetch, and excludes
-  // the two kinds whose absence is not transient. Retrying either relaunches forever.
+  // Two drafter kinds are permanently absent, and retrying them relaunches forever.
   assert.equal(
     residentSpeculativeNeedsRepair(
       {
@@ -842,7 +753,6 @@ test("a permanently absent drafter does not decline the shortcut", () => {
     ),
     false,
   );
-  // A DSpark fetch that merely failed is still worth retrying.
   assert.equal(
     residentSpeculativeNeedsRepair(
       {
@@ -854,7 +764,6 @@ test("a permanently absent drafter does not decline the shortcut", () => {
     ),
     true,
   );
-  // As is an MTP drafter, which the arm never excluded.
   assert.equal(
     residentSpeculativeNeedsRepair(
       { spec_fallback_reason: "drafter_not_found", spec_drafter_kind: "mtp" },
@@ -862,7 +771,6 @@ test("a permanently absent drafter does not decline the shortcut", () => {
     ),
     true,
   );
-  // A backend too old to report the sidecar keeps the coarser answer.
   assert.equal(
     residentSpeculativeNeedsRepair(
       {
@@ -873,7 +781,6 @@ test("a permanently absent drafter does not decline the shortcut", () => {
     ),
     true,
   );
-  // DFlash still declines through its own retry flag, which is the arm that owns it.
   assert.equal(
     residentSpeculativeNeedsRepair(
       {
@@ -888,16 +795,13 @@ test("a permanently absent drafter does not decline the shortcut", () => {
 });
 
 test("a tensor split the architecture gate normalized away still matches", () => {
-  // The gate rewrites a tensor-parallel request to layer mode, so status reports false
-  // for a launch the request produced, and the backend accepts the same true request
-  // back. Comparing raw prompted on every re-pick of a model whose split was gated off.
+  // The gate rewrites tensor-parallel to layer mode, so status false still matches a true request.
   const gated = {
     ...DEFAULTS,
     tensor_parallel: false,
     tensor_parallel_dropped_by_arch_gate: true,
   };
   assert.equal(matches(gated, { ...BLANK, tensorParallel: true }), true);
-  // Without the drop it is an ordinary disagreement.
   assert.equal(
     matches(
       { ...DEFAULTS, tensor_parallel: false },
@@ -905,7 +809,6 @@ test("a tensor split the architecture gate normalized away still matches", () =>
     ),
     false,
   );
-  // A backend too old to report the drop keeps the coarser answer.
   assert.equal(
     matches(
       {
@@ -917,8 +820,6 @@ test("a tensor split the architecture gate normalized away still matches", () =>
     ),
     false,
   );
-  // It only ever excuses a true request: a pick asking for no split against a runtime
-  // that has one is still a reload.
   assert.equal(
     matches(
       {
@@ -933,9 +834,7 @@ test("a tensor split the architecture gate normalized away still matches", () =>
 });
 
 test("the arch-gate excuse reads the resolved split, not the toggle", () => {
-  // resolve_tensor_parallel lets --split-mode tensor in the pass-through args ask for a
-  // split the toggle does not, and that is the request the gate dropped. Reading the raw
-  // toggle here made the excuse miss exactly the configs it exists for.
+  // --split-mode tensor in pass-through args can request the split the toggle does not.
   assert.equal(
     matches(
       {
@@ -952,8 +851,6 @@ test("the arch-gate excuse reads the resolved split, not the toggle", () => {
     ),
     true,
   );
-  // Pass-through args turning the split OFF leave nothing for the gate to have dropped,
-  // so that arm answers on the resolved mode alone, as it did before.
   assert.equal(
     matches(
       {
@@ -968,10 +865,7 @@ test("the arch-gate excuse reads the resolved split, not the toggle", () => {
 });
 
 test("a malformed manual layer override declines rather than normalizing away", () => {
-  // parse_gpu_layers_override RAISES on these, so the load fails and says so. Folding
-  // them into "no override" here stripped the token, found the rest agreeable, adopted,
-  // and the saved setting went missing without a word. Reachable from an Apply that
-  // persisted the config before its load failed.
+  // parse_gpu_layers_override raises on these, so they must not fold into no override.
   const running = {
     ...DEFAULTS,
     gpu_memory_mode: "manual" as const,
@@ -982,7 +876,6 @@ test("a malformed manual layer override declines rather than normalizing away", 
   for (const bad of [["-ngl", "-2"], ["--gpu-layers=many"], ["-ngl", "20.5"]]) {
     assert.equal(matches(running, { ...manual, llamaExtraArgs: bad }), false);
   }
-  // A well-formed override is still read, not refused.
   assert.equal(
     matches(
       { ...running, gpu_layers: 99 },
@@ -993,8 +886,6 @@ test("a malformed manual layer override declines rather than normalizing away", 
     ),
     true,
   );
-  // Automatic never reaches the parser: the args go through untouched and the backend
-  // decides, so a bad token there is not this comparison's to judge.
   assert.equal(
     matches(
       { ...DEFAULTS, requested_llama_extra_args: ["-ngl", "-2"] },
@@ -1009,10 +900,7 @@ test("a malformed manual layer override declines rather than normalizing away", 
 });
 
 test("a virtualised Metal host cannot disagree about placement", () => {
-  // paravirtual_normalized_request rewrites every GGUF request to manual / zero layers /
-  // no split / no MoE, and adopt_load_intent_if_matched applies it before comparing, so
-  // an Auto pick against the resident manual status is the SAME request. Comparing raw
-  // reloaded on every re-pick, which on such a host is every re-pick there is.
+  // Paravirtual hosts normalize every GGUF request to manual zero layers before comparing.
   const pv = {
     ...DEFAULTS,
     gpu_placement_paravirtual: true,
@@ -1032,9 +920,7 @@ test("a virtualised Metal host cannot disagree about placement", () => {
     ),
     true,
   );
-  // Placement only: everything else still decides.
   assert.equal(matches({ ...pv, cache_type_kv: "q8_0" }, BLANK), false);
-  // And a physical Mac is judged normally.
   assert.equal(
     matches({ ...DEFAULTS, gpu_memory_mode: "manual", gpu_layers: 0 }, BLANK),
     false,
@@ -1042,10 +928,7 @@ test("a virtualised Metal host cannot disagree about placement", () => {
 });
 
 test("a diffusion resident is not judged on the chat-only invocation fields", () => {
-  // The diffusion runner receives no --parallel, no batch sizes and no pass-through args.
-  // _runtime_matches_intent guards all four on `not self._is_diffusion`, and
-  // _llama_runtime_fields nulls the ones the status publishes at all, so a config that
-  // pins any of them rejected a load the backend would have deduplicated.
+  // The diffusion runner ignores --parallel, batch sizes and pass-through args.
   const diffusion = {
     ...DEFAULTS,
     is_diffusion: true,
@@ -1064,19 +947,15 @@ test("a diffusion resident is not judged on the chat-only invocation fields", ()
     }),
     true,
   );
-  // A chat resident with the same status is judged on all four.
   assert.equal(
     matches({ ...diffusion, is_diffusion: false }, { ...BLANK, nParallel: 2 }),
     false,
   );
-  // And a real difference outside those four still reloads on diffusion.
   assert.equal(matches({ ...diffusion, cache_type_kv: "q8_0" }, BLANK), false);
 });
 
 test("a dropped diffusion split is rechecked once the shim can apply it", () => {
-  // diffusion_requested_ngl retains the request even when an older shim ignored it, so
-  // once the installed shim gains --ngl support the same request must go through and
-  // finally apply the split. _runtime_matches_intent rejects it for exactly that window.
+  // Once the shim gains --ngl support, the retained request must reload to apply the split.
   const manual = { ...BLANK, gpuMemoryMode: "manual" as const, gpuLayers: 12 };
   const dropped = {
     ...DEFAULTS,
@@ -1088,14 +967,11 @@ test("a dropped diffusion split is rechecked once the shim can apply it", () => 
     matches({ ...dropped, diffusion_split_supported: true }, manual),
     false,
   );
-  // Still no support: the request is as satisfied as it can be, so this adopts.
   assert.equal(
     matches({ ...dropped, diffusion_split_supported: false }, manual),
     true,
   );
-  // A backend too old to report it keeps the coarser answer, which is to adopt.
   assert.equal(matches(dropped, manual), true);
-  // Nothing to apply when the launch already runs the requested count.
   assert.equal(
     matches(
       { ...dropped, gpu_layers: 12, diffusion_split_supported: true },
@@ -1103,7 +979,6 @@ test("a dropped diffusion split is rechecked once the shim can apply it", () => 
     ),
     true,
   );
-  // And no NGL was requested at all, so there is no split to recheck.
   assert.equal(
     matches(
       {
@@ -1120,17 +995,12 @@ test("a dropped diffusion split is rechecked once the shim can apply it", () => 
 });
 
 test("a diffusion pick is reduced to its lowest GPU, as the backend reduces it", () => {
-  // matches_gpu_ids takes [sorted(gpu_ids)[0]] for a diffusion runner, which drives one
-  // device, and the status reports only that id. Comparing the configured set rejected a
-  // runtime the backend would have called identical.
+  // A diffusion runner drives only the lowest GPU id, which is all the status reports.
   const diffusion = { ...DEFAULTS, is_diffusion: true, requested_gpu_ids: [1] };
   assert.equal(matches(diffusion, { ...BLANK, selectedGpuIds: [3, 1] }), true);
   assert.equal(matches(diffusion, { ...BLANK, selectedGpuIds: [1] }), true);
-  // A pool whose lowest is a different device is still a reload.
   assert.equal(matches(diffusion, { ...BLANK, selectedGpuIds: [2, 3] }), false);
-  // Automatic is unchanged: nothing to reduce, and it does not adopt a pinned runtime.
   assert.equal(matches(diffusion, BLANK), false);
-  // Chat is judged on the whole set, as before.
   assert.equal(
     matches(
       { ...DEFAULTS, requested_gpu_ids: [1] },
@@ -1141,10 +1011,7 @@ test("a diffusion pick is reduced to its lowest GPU, as the backend reduces it",
 });
 
 test("no llama.cpp invocation field decides against a non-GGUF resident", () => {
-  // The non-GGUF branch of /load checks identity and _mlx_runtime_settings_match, then
-  // answers already_loaded. Every field here is a llama.cpp flag it never reads, so a
-  // persisted Manual mode, tensor split or batch size raised the prompt for a load that
-  // could not have changed anything.
+  // Non-GGUF /load never reads llama.cpp flags, so they must not force a reload.
   const resident = { ...DEFAULTS, is_gguf: false };
   assert.equal(
     matches(resident, {
@@ -1161,7 +1028,6 @@ test("no llama.cpp invocation field decides against a non-GGUF resident", () => 
     }),
     true,
   );
-  // The same config against a GGUF resident is judged in full.
   assert.equal(
     matches({ ...resident, is_gguf: true }, { ...BLANK, nParallel: 4 }),
     false,
@@ -1182,27 +1048,21 @@ test("a resident decoding at another width is not adopted, whichever backend", (
 });
 
 test("a diffusion resident is judged on its NGL, not on the placement fields", () => {
-  // The diffusion branch of _runtime_matches_intent replaces the placement comparison with
-  // one _diffusion_manual_ngl check, and an older shim that dropped a manual NGL leaves
-  // the status reporting Auto while the request here still says Manual.
+  // An older shim that dropped a manual NGL reports Auto while the request says Manual.
   const diffusion = {
     ...DEFAULTS,
     is_diffusion: true,
     gpu_memory_mode: "auto" as const,
     diffusion_requested_ngl: null,
   };
-  // Manual with Auto layers resolves to no explicit NGL, so it agrees with the runner's
-  // default even though the modes read differently.
   assert.equal(
     matches(diffusion, { ...BLANK, gpuMemoryMode: "manual", gpuLayers: -1 }),
     true,
   );
-  // A real manual pin against a runtime that launched with none is still a reload.
   assert.equal(
     matches(diffusion, { ...BLANK, gpuMemoryMode: "manual", gpuLayers: 12 }),
     false,
   );
-  // And it adopts when the pin is the one the runner was given.
   assert.equal(
     matches(
       { ...diffusion, diffusion_requested_ngl: 12 },
@@ -1210,7 +1070,6 @@ test("a diffusion resident is judged on its NGL, not on the placement fields", (
     ),
     true,
   );
-  // The NGL comparison has no meaning off diffusion, where the modes decide as before.
   assert.equal(
     matches(
       { ...DEFAULTS, gpu_memory_mode: "auto" },
@@ -1221,10 +1080,7 @@ test("a diffusion resident is judged on its NGL, not on the placement fields", (
 });
 
 test("a model switch is judged on the defaults it resets to, not the outgoing settings", () => {
-  // The two directions the outgoing snapshot got wrong. performLoad clears the per-model
-  // fields on a switch, so the request is the defaults: a resident running them should
-  // adopt even when the outgoing model was configured, and a resident matching the
-  // outgoing settings must NOT adopt, since the load would not have asked for them.
+  // performLoad clears per-model fields on a switch, so compare against defaults, not outgoing.
   const outgoing = { ...BLANK, nParallel: 4 };
   const reset = {
     ...DEFAULT_ISH,
@@ -1245,8 +1101,6 @@ test("a model switch is judged on the defaults it resets to, not the outgoing se
     }),
     false,
   );
-  // The same resident against the outgoing snapshot answers the other way round, which is
-  // what made the choice of config the whole question.
   assert.equal(
     matches({ ...DEFAULTS, requested_parallel_slots: 4 }, outgoing, {
       ...STANDING,
@@ -1257,9 +1111,7 @@ test("a model switch is judged on the defaults it resets to, not the outgoing se
 });
 
 test("a pass-through split mode decides the tensor-parallel comparison", () => {
-  // resolve_tensor_parallel lets an explicit --split-mode last-win over the toggle before
-  // the comparator sees it, so comparing the raw toggle judged a request the server never
-  // received.
+  // An explicit --split-mode last-wins over the toggle before the comparator sees it.
   assert.equal(
     matches(
       {
@@ -1286,7 +1138,6 @@ test("a pass-through split mode decides the tensor-parallel comparison", () => {
     ),
     true,
   );
-  // Without an override the toggle still answers for itself.
   assert.equal(
     matches(
       { ...DEFAULTS, tensor_parallel: true },
@@ -1297,9 +1148,7 @@ test("a pass-through split mode decides the tensor-parallel comparison", () => {
 });
 
 test("a manual pass-through layer count is compared as the field it becomes", () => {
-  // The route copies the last -ngl into request.gpu_layers and strips the flag before the
-  // already-loaded comparator runs, so the resident status reports 20 and a stripped list
-  // while the config still carries the raw form.
+  // The route moves the last -ngl into gpu_layers and strips the flag before comparing.
   const manual = { ...BLANK, gpuMemoryMode: "manual" as const };
   const running = {
     ...DEFAULTS,
@@ -1314,7 +1163,6 @@ test("a manual pass-through layer count is compared as the field it becomes", ()
     }),
     true,
   );
-  // A different count is still a reload.
   assert.equal(
     matches(running, {
       ...manual,
@@ -1322,8 +1170,7 @@ test("a manual pass-through layer count is compared as the field it becomes", ()
     }),
     false,
   );
-  // Auto does not own the offload flags, so an inherited -ngl reaches the child and the
-  // list is compared as written.
+  // Auto does not own the offload flags, so an inherited -ngl is compared as written.
   assert.equal(
     matches(
       { ...DEFAULTS, requested_llama_extra_args: ["--flash-attn", "on"] },
@@ -1334,8 +1181,6 @@ test("a manual pass-through layer count is compared as the field it becomes", ()
 });
 
 test("a custom tensor split the config cannot carry is still a reload", () => {
-  // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
-  // default distribution while the resident manual load runs a custom one.
   assert.equal(
     matches({ ...DEFAULTS, tensor_split: [0.7, 0.3] }, BLANK),
     false,
@@ -1351,8 +1196,7 @@ test("a custom tensor split the config cannot carry is still a reload", () => {
 });
 
 test("a preserved Vulkan CPU fallback is not a placement disagreement", () => {
-  // _preserve_cpu_fallback_intent rewrites an eligible Auto request into the resident
-  // manual/zero-layer intent before the comparison, so /load would report already-loaded.
+  // _preserve_cpu_fallback_intent rewrites an eligible Auto request before comparing.
   const fallback = {
     ...DEFAULTS,
     gpu_memory_mode: "manual" as const,
@@ -1360,10 +1204,7 @@ test("a preserved Vulkan CPU fallback is not a placement disagreement", () => {
     cpu_fallback_reason: "vulkan_startup_crash" as const,
   };
   assert.equal(matches(fallback, BLANK), true);
-  // Only placement is exempt: a real setting difference still reloads.
   assert.equal(matches({ ...fallback, cache_type_kv: "q8_0" }, BLANK), false);
-  // And only for a request the backend would actually rewrite. _cpu_fallback_request_eligible
-  // refuses one that pins its own placement.
   assert.equal(matches(fallback, { ...BLANK, selectedGpuIds: [0] }), false);
   assert.equal(matches(fallback, { ...BLANK, tensorParallel: true }), false);
   assert.equal(matches(fallback, { ...BLANK, nCpuMoe: 4 }), false);
@@ -1371,7 +1212,6 @@ test("a preserved Vulkan CPU fallback is not a placement disagreement", () => {
     matches(fallback, { ...BLANK, llamaExtraArgs: ["--device", "Vulkan0"] }),
     false,
   );
-  // A fallback from another cause is not this one.
   assert.equal(
     matches({ ...fallback, cpu_fallback_reason: null }, BLANK),
     false,
@@ -1393,8 +1233,6 @@ test("an unset GPU memory mode is the standing preference, not silence", () => {
 });
 
 test("unset GPU layers and CPU MoE layers resolve to Auto and 0", () => {
-  // GPU_LAYERS_AUTO is -1; a resident manual pin is a real reload. Under Manual, since
-  // that is the only mode the backend compares either knob in.
   const manual = { ...BLANK, gpuMemoryMode: "manual" as const };
   const running = { ...DEFAULTS, gpu_memory_mode: "manual" as const };
   assert.equal(matches({ ...running, gpu_layers: 20 }, manual), false);
@@ -1413,7 +1251,6 @@ test("unset GPU layers and CPU MoE layers resolve to Auto and 0", () => {
     ),
     true,
   );
-  // And under Auto neither is compared: the fitter chooses the offload.
   assert.equal(
     matches({ ...DEFAULTS, gpu_layers: 20, n_cpu_moe: 12 }, BLANK),
     true,
@@ -1421,8 +1258,7 @@ test("unset GPU layers and CPU MoE layers resolve to Auto and 0", () => {
 });
 
 test("no config at all still adopts, whatever the resident runtime is", () => {
-  // Nothing to send means nothing can differ: the load path reads the live runtime, which
-  // was hydrated from the resident model.
+  // The load path reads the live runtime, which was hydrated from the resident model.
   assert.equal(
     matches(
       {
@@ -1437,14 +1273,7 @@ test("no config at all still adopts, whatever the resident runtime is", () => {
   );
 });
 
-/**
- * The nullable per-model settings are pinned for the same reason the standing four are, and
- * the reason is the applier rather than the field's type. `applyModelLoadConfigToRuntime`
- * writes the config over the runtime store before `selectModel` runs (`chat-page.tsx:3242`,
- * `hub-page.tsx:1329`) and resolves each of these with `?? null`, so the snapshot
- * `performLoad` takes reads null rather than inheriting the resident model's value. A pick
- * that leaves the box empty is asking for the default, not for silence.
- */
+/** The applier resolves unset nullable fields to null, so a blank pick asks for the default. */
 test("unset nullable settings ask for the default, not for the resident value", () => {
   const pinnedResident = {
     ...DEFAULTS,
@@ -1457,7 +1286,6 @@ test("unset nullable settings ask for the default, not for the resident value", 
     chat_template_override: "{{ bos }}",
   };
   assert.equal(matches(pinnedResident, BLANK), false);
-  // Field by field, so a regression names itself rather than reporting one false.
   for (const [key, value] of Object.entries({
     requested_context_length: 8192,
     cache_type_kv: "q8_0",
@@ -1473,9 +1301,6 @@ test("unset nullable settings ask for the default, not for the resident value", 
       `${key} pinned on the resident load must not be adopted by a blank config`,
     );
   }
-  // spec_draft_n_max is no exception either: _runtime_matches_intent rejects the
-  // null-against-explicit flip, so a blank pick against a resident override reloads and
-  // that reload does deliver the platform default.
   assert.equal(matches({ ...DEFAULTS, spec_draft_n_max: 16 }, BLANK), false);
   assert.equal(
     matches(
@@ -1484,13 +1309,11 @@ test("unset nullable settings ask for the default, not for the resident value", 
     ),
     false,
   );
-  // And the default-against-default case still adopts, which is the whole point of #8893.
   assert.equal(matches(DEFAULTS, BLANK), true);
 });
 
 test("a blank chat template agrees with a load that has none", () => {
-  // Both ends trim: the applier's cleanTemplate and the load both send "" as null, so an
-  // all-whitespace override is not a difference.
+  // The applier and the load both send whitespace-only templates as null.
   assert.equal(
     matches({ ...DEFAULTS, chat_template_override: "" }, BLANK),
     true,
@@ -1507,13 +1330,7 @@ test("a blank chat template agrees with a load that has none", () => {
   );
 });
 
-/**
- * The speculative repair window. `_runtime_matches_intent` answers False for a retryable
- * drafter failure so the next identical load fixes it, which is the only case where
- * skipping the load is not free. Reading a permanent downgrade as repairable is the
- * opposite failure: it would prompt to stop running chats on every re-pick, which is #8893
- * again, and repair nothing.
- */
+/** Retryable drafter failures must reload; permanent downgrades must not prompt each pick. */
 test("a retryable drafter failure declines the shortcut", () => {
   for (const reason of [
     "drafter_not_found",
@@ -1531,9 +1348,7 @@ test("a retryable drafter failure declines the shortcut", () => {
 });
 
 test("a repaired drafter has to reach the backend to be re-checked", () => {
-  // The sheet's remedy is to replace the sidecar in place, and `adoptable` skips /load
-  // when this returns false, so the re-check would never run. An unchanged file still
-  // dedupes server-side, so declining the shortcut is cheap rather than a teardown.
+  // The remedy replaces the sidecar in place, and adoption would skip the re-check.
   for (const mode of ["auto", "mtp", "mtp+ngram"]) {
     assert.equal(
       residentSpeculativeNeedsRepair(
@@ -1544,8 +1359,7 @@ test("a repaired drafter has to reach the backend to be re-checked", () => {
       `drafter_unloadable under ${mode} must reload`,
     );
   }
-  // No sendsGgufPath exclusion, unlike drafter_not_found: the re-check sits in the drafter
-  // comparison, which a standalone .gguf load reaches, not in the gguf_path-gated refetch.
+  // No sendsGgufPath exclusion: this re-check is in the drafter comparison, not the refetch.
   assert.equal(
     residentSpeculativeNeedsRepair(
       { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
@@ -1555,7 +1369,6 @@ test("a repaired drafter has to reach the backend to be re-checked", () => {
     true,
     "a standalone .gguf load must still reload for a repaired drafter",
   );
-  // And the mode still has to be one that asked for a drafter at all.
   assert.equal(
     residentSpeculativeNeedsRepair(
       { spec_fallback_reason: "drafter_unloadable", spec_drafter_kind: "mtp" },
@@ -1586,8 +1399,6 @@ test("a healthy runtime and a pick wanting no drafter both stay on the shortcut"
     residentSpeculativeNeedsRepair({ spec_fallback_reason: null }, "mtp"),
     false,
   );
-  // Speculation off: the retry arms are all guarded on a speculative mode, so a pick that
-  // asks for none has nothing to repair.
   for (const mode of ["off", "none", "ngram"]) {
     assert.equal(
       residentSpeculativeNeedsRepair(
@@ -1608,13 +1419,7 @@ test("a healthy runtime and a pick wanting no drafter both stay on the shortcut"
   );
 });
 
-/**
- * maxSeqLength is the one setting the comparator deliberately ignores, because no status
- * field echoes it, and that is exactly why the shortcut has to carry it: the rollback that
- * makes the panel agree with the resident server is the last word on a client-only cap, and
- * it speaks for the OUTGOING model. Structural because the write happens inside selectModel
- * against the live store rather than in this leaf.
- */
+/** No status echoes maxSeqLength, so the shortcut must carry the picked model's own cap. */
 test("the resident shortcut keeps the picked model's own sequence cap", () => {
   const configCheck = USE_CHAT_MODEL_RUNTIME.search(/residentRuntimeMatchesConfig\(\s*status/);
   const rollback = USE_CHAT_MODEL_RUNTIME.indexOf("restorePreviousConfig();", configCheck);
@@ -1631,8 +1436,7 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
     "await confirmStopRunningChatsIfNeeded(",
   );
   assert.ok(reapply < confirmPrompt, "the re-apply escaped the shortcut");
-  // An absent cap is not "leave it alone": applyPerModelConfigToRuntime resolves it to the
-  // default, so a pick without one must land on the default rather than the outgoing cap.
+  // applyPerModelConfigToRuntime resolves an absent cap to the default, not the outgoing cap.
   assert.match(
     USE_CHAT_MODEL_RUNTIME.slice(reapply, reapply + 260),
     /\?\?\s*defaultInferenceParams\.maxSeqLength/,
@@ -1640,19 +1444,11 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
   );
 });
 
-/**
- * The one non-settings reason the route refuses its own already-loaded answer.
- *
- * _reuse_loaded_gguf requires _audio_probed, and when it is false load_model reaches its
- * fast path and re-probes there. Nothing else re-probes, so a shortcut that skips /load
- * leaves the model's audio capabilities undetected for as long as the server runs, which
- * is a silent loss rather than one extra reload.
- */
+/** load_model re-probes audio only on its fast path, so an unprobed model must not skip /load. */
 test("an outstanding audio probe keeps the shortcut from skipping the load", () => {
   const identity = USE_CHAT_MODEL_RUNTIME.search(/residentModelMatchesPick\(\s*status/);
   const probe = USE_CHAT_MODEL_RUNTIME.indexOf("status.audio_probe_pending !== true", identity);
-  // The caller tells the repair check whether the load carries a gguf_path, since the
-  // route derives that from the identifier and the drafter retry is guarded on it.
+  // The route derives gguf_path from the identifier, and the drafter retry is guarded on it.
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
     /\(loadPath \?\? modelId\)\.toLowerCase\(\)\.endsWith\("\.gguf"\)/,
@@ -1662,24 +1458,14 @@ test("an outstanding audio probe keeps the shortcut from skipping the load", () 
     probe > identity,
     "the shortcut adopts a model whose audio probe never finished",
   );
-  // Inside the verdict, so the re-read before adopting judges it again.
   const decision = USE_CHAT_MODEL_RUNTIME.indexOf("const confirmedStatus", identity);
   assert.ok(probe < decision, "the probe check escaped the residency verdict");
   // Only an explicit true declines: a backend too old to report it behaves as before.
   assert.match(USE_CHAT_MODEL_RUNTIME.slice(probe - 40, probe + 40), /!== true/);
 });
 
-/**
- * The status that opens the window is not the one adopted.
- *
- * Between the first /api/inference/status and the decision there are awaits: the GPU
- * device cache, the llama-flags catalogue, and the two server-wide settings reads. Another
- * tab can swap the resident model inside that window, and this one is never told
- * (subscribeModelLifecycle dispatches on its own window), so adopting the opening status
- * would leave the picker naming this model while prompts went to the one now loaded.
- */
+/** Another tab can swap the resident model during the awaits, so re-read before adopting. */
 test("the shortcut re-reads and re-judges the status before adopting", () => {
-  // The verdict is a named predicate, so it can be applied to more than one status.
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
     /const adoptable = \(status: InferenceStatusResponse\) =>\s*\(status\.loading\?\.length \?\? 0\) === 0 &&/,
@@ -1697,22 +1483,18 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
     /if \(confirmedStatus && adoptable\(confirmedStatus\)\)/,
     "the re-read is not judged, only fetched",
   );
-  // And the adopted status is the fresh one, not the one the window opened with.
   const adopt = USE_CHAT_MODEL_RUNTIME.indexOf("applyActiveModelStatusToStore(", decision);
   assert.match(
     USE_CHAT_MODEL_RUNTIME.slice(adopt, adopt + 60),
     /applyActiveModelStatusToStore\(confirmedStatus/,
   );
-  // The pick's own GPU selection survives the hydration, which would otherwise widen it
-  // back: the backend records the incoming pool when it adopts on a fitted subset, and
-  // skipping /load skips that, so the status still names the GPUs the user removed.
+  // Skipping /load skips the backend's pool update, so the pick's GPU selection must be restored.
   const restore = USE_CHAT_MODEL_RUNTIME.indexOf("selectedGpuIds: picked", decision);
   const hydrate = USE_CHAT_MODEL_RUNTIME.indexOf("applyActiveModelStatusToStore(", decision);
   assert.ok(
     restore > hydrate,
     "the adopted pick no longer keeps its own GPU selection",
   );
-  // A failed re-read must not adopt either: falling out of the block reaches /load.
   assert.ok(
     USE_CHAT_MODEL_RUNTIME.includes(
       "getInferenceStatus(undefined, modelId).catch(() => null);",
@@ -1721,14 +1503,7 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
   );
 });
 
-/**
- * The comparison must be against what /load would send, and with no saved config that is
- * one of two things. performLoad treats a different checkpoint or variant as a model
- * switch and clears the per-model fields first, so on that door the request is the
- * defaults; where nothing switches, it reads the live runtime store. Passing the absent
- * config straight through made the gate a wildcard, adopting whatever another tab or API
- * client had left running.
- */
+/** With no saved config compare what /load would send: defaults on a switch, else the live store. */
 test("with no saved config the gate compares what the load would send", () => {
   const configCheck = USE_CHAT_MODEL_RUNTIME.search(/residentRuntimeMatchesConfig\(\s*status/);
   assert.ok(
@@ -1736,7 +1511,6 @@ test("with no saved config the gate compares what the load would send", () => {
       /const comparedConfig =\s*\n\s*pendingConfig \?\?/.test(USE_CHAT_MODEL_RUNTIME),
     "the gate takes an absent config as a wildcard again",
   );
-  // Both doors, and the reset one must not be the live store.
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
     /resetsPerModelSettings\s*\?\s*\{\s*\n\s*\.\.\.DEFAULT_PER_MODEL_CONFIG/,
@@ -1750,23 +1524,16 @@ test("with no saved config the gate compares what the load would send", () => {
 });
 
 test("adopting reseeds the slot and batch controls the rollback left behind", () => {
-  // The rollback restores the OUTGOING model's config, so the slot and batch controls in
-  // the store belong to the model the tab just left. Suppressing the model-change reseed
-  // kept them: the adopted model could run 4 slots while the control showed the outgoing
-  // count, and the next Apply saved that over it. Reachable coming back from an external
-  // provider to a still-resident GGUF, which is the case this shortcut began as.
+  // The rollback restores the outgoing model's config, so slot and batch controls must reseed.
   const hydrator = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
   assert.match(
     hydrator.replace(/\s+/g, " "),
     /const slotsModelChanged = hydratingExistingModel;/,
   );
-  // Every other load-param seed at that call site already keys off the same flag, so the
-  // suppression is gone rather than merely unused.
   assert.equal(hydrator.includes("readoptingSameModel"), false);
   assert.equal(USE_CHAT_MODEL_RUNTIME.includes("readoptingSameModel"), false);
 });
 
-/** The repair window is only useful if it is consulted before the reload is decided. */
 test("selectModel asks about a repairable drafter before adopting", () => {
   const repairCheck = USE_CHAT_MODEL_RUNTIME.indexOf("residentSpeculativeNeedsRepair(");
   const confirmPrompt = USE_CHAT_MODEL_RUNTIME.indexOf(
@@ -1780,14 +1547,8 @@ test("selectModel asks about a repairable drafter before adopting", () => {
 });
 
 /**
- * The store's mapping is what the comparator runs on both sides, so it has to agree with
- * the backend's `_LEGACY_SPEC_MODE_MAP`. A stored per-model override reaches the config
- * unnormalized (`model-overrides.ts` binds `speculative_type` straight through), so a
- * spelling the backend canonicalises to "off" must not read as Auto here: the comparator
- * would then weigh Auto against a status already reading "off" and re-send /load on every
- * pick. The store cannot be imported in this suite, its module graph reaching the auth
- * pages, so the function is lifted out of the source the way chat-model-residency.test.ts
- * reads it -- but evaluated, so this asserts behavior rather than spelling.
+ * Must agree with the backend's _LEGACY_SPEC_MODE_MAP. The store cannot be imported here,
+ * so the function is lifted from source and evaluated.
  */
 test("the speculative normalizer reads llama.cpp's disable spellings as off", () => {
   const store = readSrc("features/chat/stores/chat-runtime-store.ts");
@@ -1813,7 +1574,6 @@ test("the speculative normalizer reads llama.cpp's disable spellings as off", ()
   ]) {
     assert.equal(normalize(spelling), "off", `${spelling} must read as off`);
   }
-  // The rest of the mapping is untouched, so an alias cannot swallow a real mode.
   assert.equal(normalize("default"), "auto");
   assert.equal(normalize("draft-mtp"), "mtp");
   assert.equal(normalize("mtp+ngram"), "mtp+ngram");
@@ -1821,21 +1581,13 @@ test("the speculative normalizer reads llama.cpp's disable spellings as off", ()
   assert.equal(normalize(null), null);
 });
 
-/**
- * Forced ngram-mod on a build that does not advertise the mode stands down and records
- * "binary_outdated". The settings comparison cannot see that -- the request the picker
- * would send is identical to the one that stood down -- so the repair check is the only
- * thing that reloads onto an updated llama.cpp. ngram-mod runs no drafter, so this is the
- * one reason that reaches it.
- */
+/** Forced ngram-mod stand-down is invisible to settings, so only the repair check reloads. */
 test("a forced ngram stand-down reloads onto an updated binary", () => {
   const stoodDown = {
     spec_fallback_reason: "binary_outdated",
     spec_fallback_binary_changed: true,
   };
   assert.equal(residentSpeculativeNeedsRepair(stoodDown, "ngram"), true);
-  // Same shape as every other binary stand-down: an unchanged binary repairs nothing,
-  // so the prompt must not fire on each re-pick.
   assert.equal(
     residentSpeculativeNeedsRepair(
       { ...stoodDown, spec_fallback_binary_changed: false },
@@ -1843,26 +1595,17 @@ test("a forced ngram stand-down reloads onto an updated binary", () => {
     ),
     false,
   );
-  // A healthy forced-ngram runtime still adopts.
   assert.equal(
     residentSpeculativeNeedsRepair({ spec_fallback_reason: null }, "ngram"),
     false,
   );
 });
 
-/**
- * The MTP-free recovery clears `_spec_draft_n_max` while `_runtime_matches_intent`
- * keeps comparing against the count retained in `_last_load_intent`, so the status
- * reports null for a load the backend still measures against 8. Reading that null as
- * "the platform default" would agree with a blank pick and skip the reload that
- * clearing the override is supposed to cause.
- */
+/** MTP-free recovery nulls the draft depth while the backend still compares against 8. */
 test("a runtime_error resident does not claim its draft depth is the default", () => {
   const recovered = { ...DEFAULTS, spec_fallback_reason: "runtime_error" };
   assert.equal(matches(recovered, BLANK), false);
   assert.equal(matches(recovered, { ...BLANK, specDraftNMax: 8 }), false);
-  // Every other fallback still compares normally, so this costs one round trip in
-  // exactly the state whose depth the status cannot express.
   for (const reason of [null, "binary_no_mtp", "drafter_not_found", "mtp_partial_offload"]) {
     assert.equal(
       matches({ ...DEFAULTS, spec_fallback_reason: reason }, BLANK),
@@ -1872,15 +1615,7 @@ test("a runtime_error resident does not claim its draft depth is the default", (
   }
 });
 
-/**
- * Auto tensor-parallel now reports a split (unslothai/unsloth#10884): the backend emits
- * one whenever the planner sizes the load itself, and the /status echo carries it. The
- * store never holds a split in auto mode -- applyInferenceStatusToStore nulls it unless
- * the mode is manual -- so comparing the two sides here compares a cleared field against
- * a server that is legitimately running a ratio, and declines to adopt a resident model
- * that is exactly what was asked for. The split is a manual-mode opinion; in auto it is
- * the planner's business.
- */
+/** In auto mode the store never holds a split, while the server legitimately reports one. */
 test("an auto tensor-parallel server that reports a split still adopts", () => {
   assert.equal(
     matches(
@@ -1891,13 +1626,7 @@ test("an auto tensor-parallel server that reports a split still adopts", () => {
   );
 });
 
-/**
- * The limit of the rule above. applyInferenceStatusToStore preserves prevState.splitRatio
- * whenever a gpu-memory edit is pending, so a ratio set under Manual survives the switch
- * to Auto, and the load path sends store.splitRatio in either mode. Adopting on the
- * resident's mode alone would drop a placement change the user made and the server would
- * have applied, since the backend honours a ratio in auto now too.
- */
+/** A pending ratio set under Manual survives the switch to Auto and is still sent. */
 test("a pending ratio the auto resident is not running is still a reload", () => {
   assert.equal(
     matches(
@@ -1910,8 +1639,6 @@ test("a pending ratio the auto resident is not running is still a reload", () =>
 });
 
 test("a pending ratio the auto resident IS running adopts", () => {
-  // The other half of the guard: it must not turn into a blanket reload for anyone who
-  // ever touched the ratio.
   assert.equal(
     matches(
       { gpu_memory_mode: "auto", tensor_parallel: true, tensor_split: [0.75, 0.25] },
@@ -2020,8 +1747,7 @@ test("cancelling a load clears the selection unless kept models stay loaded and 
 });
 
 test("reloading one of several stays in its own slot; a new pick with the setting off replaces as before", () => {
-  // No preliminary unload for the reload: /load finds the model's slot and replaces it there, so
-  // the server's setting gate never sends it to the primary seat.
+  // /load replaces the model in its own slot, so no preliminary unload is needed.
   assert.doesNotMatch(USE_CHAT_MODEL_RUNTIME, /replacesOneOfSeveral/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /const touchesOnlySelected =\s*forceReload &&/);
 });

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What a remote load will apply, otherwise unanswerable from outside the process.
-
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
@@ -28,7 +26,6 @@ function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-/** Summary of the fields the loader will apply, in load order. */
 function describeOverride(override: ApiModelOverride): string[] {
   const parts: string[] = [];
   if (override.engine && override.engine !== "auto") {
@@ -77,8 +74,7 @@ function describeOverride(override: ApiModelOverride): string[] {
   if (override.spec_draft_cache_type) {
     parts.push(`draft KV ${override.spec_draft_cache_type}`);
   }
-  // Both compared against undefined rather than tested for truth: 0 is a value the user can pick
-  // for either (no checkpoints, no host cache) and would otherwise be listed as unset.
+  // 0 is a valid choice for both, so compare against undefined.
   if (override.ctx_checkpoints !== undefined) {
     parts.push(plural(override.ctx_checkpoints, "checkpoint"));
   }
@@ -118,10 +114,7 @@ export function SavedModelSettingsPanel(): ReactElement {
   const [forgetting, setForgetting] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  // Each forget refetches, and a row disables only its own button, so two of them
-  // overlap. The reads answer in whatever order the network gives, and the older one
-  // saw the row the newer forget removed: last issued has to win, or a row the server
-  // no longer holds is painted back and stays until the panel remounts.
+  // Overlapping forgets refetch out of order; last issued must win or a removed row is repainted.
   const loadSeq = useRef(0);
 
   const load = useCallback(async () => {

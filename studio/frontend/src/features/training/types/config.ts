@@ -56,7 +56,6 @@ export interface TrainingMethodProvenance {
   trainOnCompletionsBeforeCpt: boolean | null;
 }
 
-/** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
 export interface TrainingConfigState {

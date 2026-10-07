@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The media picker memoises its option list on `denseQuantSchemes` (useImageModels,
-// curatedRowLabelFor), and the GGUF rows carry a host-dependent "(Slow)" suffix. So a snapshot
-// differing only in free host RAM (re-probed by `refresh_memory=true`) must NOT hand back a fresh
-// array, or every probe rebuilds the list and detaches every row it had just drawn.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import type * as GpuHooks from "../src/hooks/use-gpu-info.ts";
@@ -31,7 +26,6 @@ const hooks = loadWithStubs<typeof GpuHooks>(
   { relativePassthrough: true },
 );
 
-/** A GpuInfo carrying the given schemes and free-RAM reading; every other field is fixed. */
 function snapshot(
   schemes: readonly string[],
   systemRamAvailableGb: number,
@@ -95,7 +89,6 @@ test("the RAM reading the probe refreshed is still published", () => {
 
   const held = hooks.withStableSchemes(current, next);
 
-  // Holding the array must not hold the snapshot: the footprint panel reads these.
   assert.equal(held.systemRamAvailableGb, 28.7);
   assert.equal(held.systemRamAvailableHostGb, 28.7);
 });

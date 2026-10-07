@@ -28,7 +28,6 @@ test("a single format filter admits one dot color, so the dot says nothing", () 
   ] as const;
   for (const filter of ["gguf", "checkpoint", "mlx"] as const) {
     const admitted = formats.filter((f) => matchesFormat(f, filter));
-    // safetensors and checkpoint share one dot.
     const dots = new Set(
       admitted.map((f) => (f === "safetensors" ? "checkpoint" : f)),
     );
@@ -55,7 +54,6 @@ test("every row drops its format dot when told to", () => {
   assert.ok(
     ROWS.includes('{showFormatDot && row.modelFormat === "adapter" && ('),
   );
-  // The tooltip legend describes the dots, so it drops them too.
   assert.ok(ROWS.includes("isGguf: showFormatDot && row.isGguf,"));
 });
 

@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What the settings queue keeps after a failed PUT.
-//
-// The case that matters is the one that used to break the tab: /api/chat/settings
-// is extra="forbid" and rejects the whole body on one bad field, so requeueing a
-// permanently-rejected patch made every later save carry it and fail too. Verified
-// against a live Unsloth in Chromium, Firefox and WebKit before the fix.
+// /api/chat/settings is extra="forbid", so requeueing a rejected patch poisons later saves.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -109,8 +104,6 @@ test("a rejection naming a field the patch does not hold drops nothing extra", (
 });
 
 test("the whole-patch rejection of an old backend leaves nothing pending", () => {
-  // A new bundle against a rolled-back backend: every mirrored field is refused,
-  // the supported ones are not, and the retry carries only those.
   const patch = {
     autoTitle: true,
     inferenceParams: { temperature: 0.7 },
@@ -143,16 +136,12 @@ test("retrying is bounded: each round strictly shrinks the patch", () => {
   assert.deepEqual(patch, { autoTitle: true });
 });
 
-// Fetch caps all in-flight keepalive bodies at 64 KiB and a valid
-// researchWebsitePolicy (2000 domains x 253 characters) is far past that, so a patch
-// sent with keepalive over the budget fails immediately -- measured as "Failed to
-// fetch" in Chromium, "NetworkError" in Firefox and "Load failed" in WebKit.
+// Browsers cap in-flight keepalive bodies at 64 KiB; oversized patches fail immediately.
 
 test("the keepalive budget is decided by bytes, not by string length", () => {
   assert.equal(isUnderKeepaliveBudget(JSON.stringify({ ragTopK: 11 })), true);
   assert.equal(isUnderKeepaliveBudget("x".repeat(20 * 1024)), true);
   assert.equal(isUnderKeepaliveBudget("x".repeat(61 * 1024)), false);
-  // A four-byte character is one UTF-16 pair: a length-only check would call this
-  // 44 KiB and send it, and the request would be refused by the browser.
+  // Counts bytes: a length-only check would undercount four-byte characters.
   assert.equal(isUnderKeepaliveBudget("\u{1f600}".repeat(22 * 1024)), false);
 });

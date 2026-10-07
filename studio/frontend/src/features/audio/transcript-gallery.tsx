@@ -161,8 +161,7 @@ export function TranscriptGallery({
       })
       .catch((error: unknown) => {
         if (ticket !== generation.current) return;
-        // Rows and cursor belong to the view we just left: keeping them renders History
-        // entries under the Archived heading and pages the wrong cursor onto them.
+        // Rows and cursor belong to the view just left; keeping them mislabels and mispages.
         setRecords([]);
         setCursor(null);
         toast.error(

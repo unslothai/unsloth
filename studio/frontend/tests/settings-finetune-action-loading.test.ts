@@ -28,25 +28,18 @@ async function* walk(dir: string): AsyncGenerator<string> {
   }
 }
 
-/**
- * Module specifiers of the `import`/`export ... from` declarations in a file,
- * which is the edge set that fixes bundle membership. A deferred `import(...)`
- * parses as a call expression rather than a declaration, so it is never
- * collected and the pattern this PR adopts stays allowed.
- */
+/** Static import/export specifiers; dynamic import() is a call and is not collected. */
 const staticSpecifiers = (file: string, text: string): string[] => {
   const parsed = ts.createSourceFile(
     file,
     text,
     ts.ScriptTarget.ESNext,
-    // Parent pointers are only needed for getText(); StringLiteral.text is enough.
     false,
     file.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
   const specifiers: string[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      // `export { x }` with no `from` has no specifier and adds no edge.
       const specifier = node.moduleSpecifier;
       if (specifier && ts.isStringLiteral(specifier))
         specifiers.push(specifier.text);
@@ -58,12 +51,7 @@ const staticSpecifiers = (file: string, text: string): string[] => {
 };
 
 test("no module statically imports the fine-tuning workflow", async () => {
-  // Bundle membership follows the static import graph, and the property being
-  // bought is repo-wide: a static import added to any eagerly reached module
-  // would put the whole Recipe Studio chunk back into startup. Parsed rather
-  // than scanned by line, because the import this PR removed spanned four lines
-  // and a line-oriented check keyed on `import` cannot see a specifier that
-  // sits on the closing `} from "..."` line.
+  // Parsed, not line-scanned: a multi-line import hides its specifier on the closing line.
   const offenders: string[] = [];
   for await (const file of walk(SRC)) {
     const text = await readFile(file, "utf8");

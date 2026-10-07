@@ -249,15 +249,8 @@ export function finalize(
   dismissStartToast(key);
   if (!job) return;
   if (TERMINAL_DISPLAY_STATES.has(job.state)) return;
-  // The operation that used the space is the one that should surface the pressure. requestStart
-  // reads the disk before a download, which is the right moment to refuse one, but a download
-  // that STARTS with room and then eats it crosses the threshold with nobody looking: there is
-  // no interval, so without this the warning waits for the next download attempt.
-  //
-  // force, so the reading is taken AFTER the write. Unforced it would be swallowed by the
-  // interval for any download shorter than 30 s, or handed the in-flight pre-download figure
-  // this call exists to correct. Still bounded to one reading in flight and one waiting, so a
-  // queue finishing together costs two rather than one per file.
+  // Re-check disk after a download so pressure surfaces without waiting for the next start.
+  // Forced so the reading is taken after the write rather than swallowed by the throttle.
   void checkDiskSpace({ force: true });
   if (job.kind === DOWNLOAD_KIND.MODEL) {
     invalidateGgufVariantsCache(job.repoId);
@@ -266,7 +259,7 @@ export function finalize(
     notify(job, "onCancelled", 0);
     removeJob(key);
   } else if (outcome === "complete") {
-    // A terminal "complete" before the final progress poll must not leave a stale sub-total, so reconcile to the largest known figure.
+    // A "complete" before the final progress poll must not leave a stale sub-total.
     const bytes = Math.max(
       opts.bytes ?? 0,
       job.downloadedBytes,
@@ -388,7 +381,7 @@ async function finalizeTerminalStatus(
   }
 }
 
-  // Rolling-window rate, withheld until the window is trustworthy: an EMA publishing its first sample verbatim gave "753d 5h left" (#7667). 0 hides both labels.
+  // Rolling-window rate, withheld until trustworthy (an EMA's first sample gave absurd ETAs). 0 hides labels.
 function applySpeedSample(
   rt: JobRuntime,
   downloadedBytes: number,
@@ -431,7 +424,7 @@ function reconcileProgressAndSpeed(
     rt.floorHold = null;
   }
   if (generationChanged) {
-    // Another server owns this transfer, so the old samples describe a different run; the counter cannot say so, since a restart resumes from the same cache.
+    // Another server owns this transfer, so old samples describe a different run.
     rt.speedSamples.length = 0;
   }
   const speed = applySpeedSample(rt, downloadedBytes, expected, Date.now());
@@ -521,7 +514,7 @@ async function tick(key: string): Promise<void> {
     );
     if (!isCurrent(key, epoch)) return;
 
-    // syncServerGeneration persists immediately, so a change seen before the progress path would look unchanged next tick; hold it until a progress poll consumes it.
+    // syncServerGeneration persists immediately, so hold the change until a progress poll consumes it.
     if (syncServerGeneration(key, job, status, rt) !== null) {
       rt.pendingGenerationChange = true;
     }
@@ -661,8 +654,7 @@ export async function startJob(
   const startRoute = opts.originRoute ?? currentRoute();
   const startSelectionEpoch =
     opts.originSelectionEpoch ?? currentStartToastSelectionEpoch();
-  // Peer guard stops a FRESH start from double-starting a variant already downloading. Skipped when ADOPTING:
-  // the restored own entry would look like a peer and freeze the bar, and adoptJob already guards double-polling.
+  // Peer guard prevents double-starts; skipped when adopting, where the own entry looks like a peer.
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     return;
   }
@@ -703,8 +695,8 @@ export async function startJob(
     req.expectedBytes,
   );
   const hfToken = getHfToken() || null;
-  // Carry the stored preference UNRESOLVED so "auto" survives to effectiveTransportMode(); collapsing it to a boolean sends every download over HTTP.
-  // Never awaited for an adopted job: suspending here let a concurrent adoptJob replace this runtime, leaving duplicate timers and a leaked listener.
+  // Keep the preference unresolved so "auto" reaches effectiveTransportMode().
+  // Never awaited when adopting: a concurrent adoptJob could replace this runtime.
   const requestedMode: TransportMode = opts.adopt
     ? TRANSPORT.HTTP
     : opts.useXet === undefined
@@ -724,12 +716,12 @@ export async function startJob(
   const seedDownloaded = carryOverSeed ? (existing?.downloadedBytes ?? 0) : 0;
   const seedCompleted = carryOverSeed ? (existing?.completedBytes ?? 0) : 0;
   const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
-    // Seeding the bytes without carrying the flag said "measured" for a figure the poll only held, which is the "0 B left" the guard exists to stop.
+    // The measured flag must travel with the seeded bytes.
   const seedMeasuredTransfer = seededMeasuredTransfer(
     carryOverSeed,
     existing?.measuredTransfer,
   );
-    // An adopted job never called apiStart, so it learns the run's generation from the probe to scope a later cancel to this exact run.
+    // An adopted job learns the run's generation from the probe to scope a later cancel.
   const seedGeneration = opts.adopt
     ? Number.isSafeInteger(opts.generation)
       ? opts.generation
@@ -770,7 +762,7 @@ export async function startJob(
     bytesPerSec: 0,
     error: null,
     startedAt: opts.adopt ? (existing?.startedAt ?? Date.now()) : Date.now(),
-    // An adopted job prefers the backend's live transport, then the persisted value; never the HTTP placeholder used to skip resolution.
+    // Prefer the backend's live transport, then persisted; never the HTTP placeholder.
     ...(activeTransport ? { transport: activeTransport } : {}),
     ...(adopted.cancelTransport
       ? { cancelTransport: adopted.cancelTransport }
@@ -812,7 +804,7 @@ export async function startJob(
       });
       return;
     }
-    // A cancel during this apiStart round trip can land before the job is claimable, so re-issue against the accepted generation.
+    // A cancel during apiStart can land before the job is claimable, so re-issue it.
     if (rt.cancelRequested && result.accepted) {
       reissueDroppedStartCancel(req, result.generation);
     }
@@ -826,14 +818,12 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
-    // One accepted start, one job-owned toast. A preflight restart disclosure
-    // waits until here so rejected, attached and already-stopping starts cannot
-    // leave a claim behind for the next model selection.
+    // The restart disclosure waits for an accepted start so rejected starts leave no claim behind.
     const stopping = rt.cancelRequested;
     const liveOwnStart =
       result.attached !== true && result.state === "running" && !stopping;
     const discloseRestart = opts.restartDisclosure === true && liveOwnStart;
-    // Checked BEFORE reserving: a reservation is one of three for the life of the install, and spending one on a toast discarded on arrival burns all three unseen.
+    // Check before reserving: only three reservations exist per install.
     const onOriginRoute = currentRoute() === startRoute;
     const onOriginSelection =
       req.kind !== DOWNLOAD_KIND.MODEL ||
@@ -850,9 +840,8 @@ export async function startJob(
       })
     ) {
       void reserveXetNoticeFromServer().then(({ granted }) => {
-        // This round trip can outlive the transfer: finalize() dismisses by id before it resolves, so raising here would leave a finished or cancelled job claiming to run.
+        // finalize() may already have dismissed by id, so raising now would show a finished job as running.
         if (!isCurrent(key, epoch) || rt.cancelRequested) return;
-        // The caller's line can go stale while the transport/restart facts stay true.
         const caller = liveCallerToast(req.callerToast);
         if (discloseRestart) {
           showRestartStartToast(
@@ -892,7 +881,7 @@ export async function startJob(
         showCallerToast(key, caller, startRoute, startSelectionEpoch);
       }
     }
-    // An adopted job may already have fallen back from Xet to HTTP, which keeps its original cancel marker and so its stop control.
+    // An adopted job may already have fallen back from Xet to HTTP, keeping its cancel marker.
     if (isResolvedTransport(result.cancel_transport)) {
       patchJob(key, { cancelTransport: result.cancel_transport });
     }
@@ -1048,7 +1037,7 @@ export async function cancelJob(key: string): Promise<void> {
   } catch (err) {
     const liveAtError = runtimeRegistry.runtimes.get(key);
     if (rt && liveAtError && liveAtError.epoch !== cancelEpoch) return;
-    // apiCancel failed and the probe below is authoritative: disarm the watchdog so it cannot finalize "cancelled" mid-probe and tear down a running worker.
+    // Disarm the watchdog so it cannot finalize "cancelled" mid-probe and kill a running worker.
     clearWatchdog(liveAtError);
 
     const probe = await probeCancelOutcome(key, job, rt, cancelEpoch);
@@ -1083,12 +1072,12 @@ export function adoptJob(
   generation?: number,
   state?: DownloadJobState,
   transport?: ResolvedTransport,
-  // null is the backend reporting no marker, which must clear a stored one; undefined is a caller that cannot report one at all.
+  // null = backend reports no marker (clears stored); undefined = caller cannot report one.
   cancelTransport?: ResolvedTransport | null,
 ): void {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
   if (runtimeRegistry.runtimes.get(key)?.pollingStarted) {
-  // A late backend response must still replace a stale stored value, but only for the run it described: a cancel and restart in between makes this a different job.
+  // Only apply a late response to the run it described; a restart in between is a different job.
     const known = getState().jobs[key]?.serverGeneration;
     if (probeDescribesCurrentRun(known, generation)) {
       const inventoryKind = downloadRequestInventoryKind(req);
@@ -1144,7 +1133,7 @@ export async function probeAndAdopt(
             repoId,
             variant: active.variant,
             expectedBytes: 0,
-            // Carry the live job's file list so the adopted record can be matched against a later start for the same slot; without it any sibling checkpoint's request read as "already started".
+            // Carry the file list so a sibling checkpoint's request is not read as already started.
             ...(active.files && active.files.length > 0 ? { files: [...active.files] } : {}),
           },
           active.generation,
@@ -1158,10 +1147,10 @@ export async function probeAndAdopt(
       return;
     }
 
-  // The active-downloads list, not download-status: only the list reports the transport, without which an adopted HTTP dataset shows Cancel for a transfer that would have resumed.
+  // Only the active-downloads list reports the transport, needed to pick Pause vs Cancel.
     const datasets = await getActiveDatasetDownloads(signal, repoId);
     if (signal.aborted) return;
-  // No repo compare here: the endpoint resolves the cached casing before it filters, so an exact match against the card's spelling would drop the row it just asked for.
+  // No repo compare: the endpoint resolves cached casing before filtering.
     for (const active of datasets) {
       if (active.state !== "running" && active.state !== "cancelling") continue;
       adoptJob(

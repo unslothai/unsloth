@@ -9,42 +9,25 @@ import {
   useTransformersUpgradeDialogStore,
 } from "@/features/transformers-upgrade";
 
-/** What the caller must do next once the upgrade gate has run. */
 export interface TrainingTransformersUpgradeOutcome {
-  /** False when the install was declined or none exists: do not start the run. */
+  /** False when declined or none exists: do not start the run. */
   proceed: boolean;
-  /** Why the start was abandoned; set only when proceed is false. */
   error: string | null;
-  /** The run will load 16-bit, not bnb 4-bit, because it routes to the latest sidecar. */
+  /** Routed to the latest sidecar, which loads 16-bit, not bnb 4-bit. */
   forces16Bit: boolean;
-  /** The model ships its own modeling code. Hand this to the custom-code gate that runs
-   *  next: its fallback otherwise reads the stored config flag, false for a fresh run,
-   *  and skips consent for a model that cannot load without it. Chat does the same. */
+  /** Hand to the custom-code gate next, whose fallback reads a flag that is false for fresh runs. */
   requiresTrustRemoteCode: boolean;
 }
 
-/** What the Configure preview must disclose about transformers and precision. */
 export interface TrainingTransformersUpgradeNotice {
-  /** transformers release the run would offer to install, or null when none is needed. */
   installVersion: string | null;
-  /** The picked method asks for 4-bit but the run would load 16-bit anyway. */
   fourBitUnavailable: boolean;
-  /** 4-bit survives only if the user keeps the model's own code: taking Install instead
-   *  activates the latest sidecar, which trains 16-bit. */
+  /** 4-bit survives only via the model's own code; Install activates the 16-bit sidecar. */
   installSwitchesTo16Bit: boolean;
 }
 
-/** Turn one upgrade check into the preview's disclosure.
- *
- * A model that both ships its own modeling code and is shipped by the offered release
- * gets both dialog actions, and they differ in precision: the custom-code fallback loads
- * 4-bit on the current transformers (so forces_16bit is false), while Install activates
- * the latest sidecar, which trains 16-bit. Disclose that choice rather than advertise
- * "QLoRA - 4-bit" for a run the user may well take at triple the VRAM.
- *
- * `installable && !forces16Bit` catches exactly that case: forces_16bit is
- * `latest_tier_active || install_only_upgrade`, and install_only_upgrade is itself
- * installable-and-no-custom-code. */
+/** With custom code and an installable release, the fallback keeps 4-bit while Install trains
+ * 16-bit. `installable && !forces16Bit` is exactly that case. */
 export function trainingTransformersUpgradeNotice(
   check: TransformersUpgradeCheck,
   loadsIn4Bit: boolean,
@@ -59,38 +42,29 @@ export function trainingTransformersUpgradeNotice(
   };
 }
 
-/** Names the worker's own failure ("... is not supported yet in transformers==x.y.z")
- *  rather than a generic start error, and says what to do about it. */
+/** Names the worker's "not supported yet in transformers==x.y.z" failure and the fix. */
 export function getTrainingTransformersUpgradeRequiredMessage(
   modelName: string,
 ): string {
   return `${modelName} is not supported yet by the installed transformers, and the newer release it needs was not installed. Start the run again to install it.`;
 }
 
-/** Dev-only: the architecture is on the transformers development branch and no PyPI
- *  release ships it, so the dialog has no Install action. "Start again to install it"
- *  would be an instruction the app can never carry out. */
+/** Dev-only: no PyPI release ships it, so there is no Install action to point at. */
 export function getTrainingTransformersUpgradeUnavailableMessage(
   modelName: string,
 ): string {
   return `${modelName} is not supported yet by the installed transformers, and no released transformers version supports it either: the architecture is only on the transformers development branch, which Unsloth does not install. Wait for the next transformers release, or pick a model the installed transformers supports.`;
 }
 
-/** The resume that installing would strand: the checkpoint is attested against a 4-bit
- *  model load the latest sidecar permanently refuses, so the install cannot rescue it. */
+/** The checkpoint needs a 4-bit load the latest sidecar permanently refuses. */
 export function getTrainingResumeUpgradeWouldStrandMessage(
   modelName: string,
 ): string {
   return `${modelName} is not supported yet by the installed transformers, and installing the release it needs would permanently retire the 4-bit model load this checkpoint was attested with, so the resume would still fail. Start a new run on this model instead.`;
 }
 
-/** Gate a training start on the transformers release the model needs.
- *
- * Chat pauses a load on this dialog from `/validate`; training never asked, so a model
- * no installed transformers ships was accepted, spawned, and killed minutes later at
- * model load with an error the user could not act on. Same dialog, raised before the
- * run starts. Additive: a backend that does not serve the check, or fails it, leaves
- * the start as it was. */
+/** Raise chat's upgrade dialog before a run starts instead of failing at model load. Additive:
+ * a backend without the check leaves the start unchanged. */
 export async function confirmTrainingTransformersUpgrade({
   modelName,
   hfToken,
@@ -99,12 +73,8 @@ export async function confirmTrainingTransformersUpgrade({
 }: {
   modelName: string;
   hfToken?: string | null;
-  /** Which copy the run will load, resolved exactly as the custom-code gate resolves
-   *  it: a repo's current config.json often names a different architecture than the
-   *  pinned snapshot on disk. */
+  /** Resolved like the custom-code gate: the repo's config.json may differ from the snapshot. */
   modelCachePin?: ModelCachePin;
-  /** Set on the resume path, so the check can say whether installing would strand
-   *  this checkpoint. */
   resumeRunId?: string | null;
 }): Promise<TrainingTransformersUpgradeOutcome> {
   let check: TransformersUpgradeCheck;
@@ -130,17 +100,14 @@ export async function confirmTrainingTransformersUpgrade({
       requiresTrustRemoteCode,
     };
   }
-  // Only a released version is ever installed, so every branch that talks about
-  // installing checks this first.
+  // Only a released version is ever installed.
   const installable = Boolean(
     check.upgrade.supported_in_pypi && check.upgrade.pypi_version,
   );
   if (check.installBreaksExactResume) {
-    // The checkpoint is attested against a 4-bit load the latest sidecar refuses, and
-    // that sidecar is a persistent overlay: consenting would strand it for good.
+    // The latest sidecar is a persistent overlay that refuses this checkpoint's 4-bit load.
     if (check.requiresTrustRemoteCode) {
-      // The custom-code gate that runs next loads this on the CURRENT transformers, in
-      // the 4-bit mode the checkpoint needs. Nothing to offer.
+      // The custom-code gate loads this on the current transformers in 4-bit. Nothing to offer.
       return {
         proceed: true,
         error: null,
@@ -149,10 +116,8 @@ export async function confirmTrainingTransformersUpgrade({
       };
     }
     if (installable) {
-      // No fallback, and the install is not the way out it looks like: it activates the
-      // latest tier, after which effective_training_load_in_4bit raises for this config
-      // (provenance.py gates on the same disjunction). The resume fails either way, so
-      // consent buys only an irreversible overlay. Say so instead of offering it.
+      // Installing activates the latest tier, after which effective_training_load_in_4bit raises
+      // (provenance.py), so consent buys only an irreversible overlay.
       return {
         proceed: false,
         error: getTrainingResumeUpgradeWouldStrandMessage(modelName),
@@ -160,35 +125,27 @@ export async function confirmTrainingTransformersUpgrade({
         requiresTrustRemoteCode,
       };
     }
-    // Dev-only: no release to install, so nothing can strand anything, and "start a new
-    // run instead" cannot work either. Fall through to the dev-only path, which says the
-    // true thing: wait for the next release.
+    // Dev-only: nothing to install; fall through to the dev-only message.
   }
 
   const upgraded = await confirmTransformersUpgradeIfNeeded({
     modelName,
     upgrade: check.upgrade,
-    // With no installable release, a model shipping its own code can still go through
-    // the trust_remote_code gate the caller runs next, exactly as chat does.
+    // With no installable release, custom code can still go through the trust_remote_code gate.
     trustRemoteCodeFallback: requiresTrustRemoteCode,
-    // No forceCancelActive: training raises no "stop N chats" prompt, so it has no such
-    // answer to carry. A chat mid-generation makes the install refuse and the dialog
-    // says so, rather than this tab killing someone else's stream unasked.
+    // No forceCancelActive: training has no "stop N chats" answer, so the install refuses instead.
   });
-  // Read before the resolve-time state is reused by any later consent.
   const installRan = useTransformersUpgradeDialogStore.getState().installRan;
   if (
     useTransformersUpgradeDialogStore.getState().consumeServerUnloadedChat()
   ) {
-    // The install unloads the active chat model. Nothing on this tab owns that
-    // selection, so resync or chat keeps pointing at a model that is gone.
+    // The install unloads the active chat model, so resync chat.
     void import("@/features/chat")
       .then((chat) => chat.resyncInferenceStatusAfterServerModelChange())
       .catch(() => undefined);
   }
   if (!upgraded) {
-    // "Start again to install it" only means something when there is something to
-    // install; a dev-only upgrade would send the user round a loop that never ends.
+    // "Start again to install it" only applies when something is installable.
     return {
       proceed: false,
       error: installable
@@ -198,8 +155,7 @@ export async function confirmTrainingTransformersUpgrade({
       requiresTrustRemoteCode,
     };
   }
-  // Installed: the model now routes to the latest sidecar, which trains 16-bit. The
-  // custom-code fallback resolves true without installing and still loads 4-bit.
+  // Installed: the latest sidecar trains 16-bit. The custom-code fallback still loads 4-bit.
   return {
     proceed: true,
     error: null,

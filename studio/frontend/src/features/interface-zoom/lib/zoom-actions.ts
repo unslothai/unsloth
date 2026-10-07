@@ -9,7 +9,6 @@ import { create } from "zustand";
 import type { ZoomDirection } from "./zoom-chords.ts";
 
 interface ZoomPopupState {
-  /** Bumped on every zoom to restart the hide timer. */
   token: number;
   open: boolean;
   show: () => void;
@@ -23,7 +22,6 @@ export const useZoomPopupStore = create<ZoomPopupState>()((set) => ({
   hide: () => set({ open: false }),
 }));
 
-/** Step the interface scale and show the popup. */
 export function zoomInterface(direction: ZoomDirection): void {
   const scale = useInterfaceScaleStore.getState();
   if (direction === 0) scale.reset();
@@ -31,7 +29,6 @@ export function zoomInterface(direction: ZoomDirection): void {
   useZoomPopupStore.getState().show();
 }
 
-/** Something with its own zoom (the browser's page): zoom keys, Ctrl+wheel and the View menu zoom it while focus or the pointer is inside. */
 export type ZoomScope = {
   contains: (element: Element) => boolean;
   zoom: (direction: ZoomDirection) => void;
@@ -52,8 +49,7 @@ export function zoomScopeFor(target: EventTarget | null): ZoomScope | null {
   return null;
 }
 
-// Guards against the macOS View menu repeating a chord the page already handled, and a chord a
-// framed page reports after the menu took it: whichever comes second within this is the echo.
+// Dedupes a macOS View menu echo of a chord the page already handled.
 const MENU_ECHO_MS = 150;
 let lastZoom: { source: "chord" | "menu"; at: number } | null = null;
 
@@ -72,7 +68,6 @@ export function zoomScopeFromChord(scope: ZoomScope, direction: ZoomDirection): 
   if (!echoed("chord")) scope.zoom(direction);
 }
 
-/** The View menu's zoom: the focused scope's, else the interface's. */
 export function zoomInterfaceFromMenu(direction: ZoomDirection): void {
   if (echoed("menu")) return;
   const scope = zoomScopeFor(document.activeElement);

@@ -54,28 +54,21 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
-/// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and a
-/// Windows/Linux close button when close-to-tray is disabled), the Unix signal listener, and
-/// `RunEvent::Exit`.
-/// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
+/// Serializes the exit paths that reap the backend (request_quit, the Unix signal listener,
+/// RunEvent::Exit). Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Mutex<bool> = Mutex::new(false);
 
 const IN_APP_RELAUNCH_MARKER_FILE: &str = "in-app-relaunch-v1";
 
 const CLOSE_TO_TRAY_PREFERENCE_FILE: &str = "close-to-tray-v1";
 
-/// The user's answer to "Run Unsloth at login", kept beside the OS entry rather than derived
-/// from it. The Windows entry is one HKCU Run value that outside things delete without asking:
-/// the NSIS uninstaller drops it on any non-update run (installer.nsi), and an antivirus
-/// quarantine or a registry cleaner takes it the same way. Reading the setting back off the
-/// registry alone, as this file used to, turns every one of those into a silent, permanent
-/// "off" that the user only discovers the next morning.
+/// The user's launch-at-login answer, stored separately because the Windows HKCU Run value is
+/// deleted by the NSIS uninstaller, antivirus and registry cleaners without asking.
 const LAUNCH_AT_LOGIN_PREFERENCE_FILE: &str = "launch-at-login-v1";
 
 struct CloseToTrayState(AtomicBool);
 
 fn new_close_to_tray_state() -> CloseToTrayState {
-    // Closing keeps its historical quit behavior until the user explicitly opts in.
     CloseToTrayState(AtomicBool::new(false))
 }
 
@@ -85,7 +78,6 @@ static LAUNCHED_HIDDEN: OnceLock<bool> = OnceLock::new();
 /// Marks the next start as an in-app relaunch, whose inherited `--hidden` is not a login start.
 #[tauri::command]
 fn mark_in_app_relaunch(app: tauri::AppHandle) -> Result<(), String> {
-    // Nothing to suppress without an inherited `--hidden`; the caller stops the restart on failure.
     if !argv_has_hidden_flag() {
         return Ok(());
     }
@@ -127,7 +119,7 @@ fn write_in_app_relaunch_marker(config_dir: &Path) -> Result<(), String> {
     })
 }
 
-/// Consumes the marker. A failed removal can only show a would-be-hidden start, never the reverse.
+/// A failed removal can only show a would-be-hidden start, never the reverse.
 fn take_in_app_relaunch_marker(config_dir: &Path) -> bool {
     let path = in_app_relaunch_marker_path(config_dir);
     if !path.exists() {
@@ -142,21 +134,20 @@ fn take_in_app_relaunch_marker(config_dir: &Path) -> bool {
     true
 }
 
-/// args_os, not args: args panics on non-Unicode argv, e.g. argv[0] under a non-UTF-8 path.
+/// args_os, not args: args panics on non-Unicode argv.
 fn argv_has_hidden_flag() -> bool {
     std::env::args_os().any(|arg| arg == *OsStr::new("--hidden"))
 }
 
 fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
-    // Consume unconditionally, so a marker left by a relaunch that never happened cannot outlive it.
+    // Consume unconditionally, so a stale marker cannot outlive its relaunch.
     let relaunched = in_app_relaunch_config_dir(app)
         .map(|dir| take_in_app_relaunch_marker(&dir))
         .unwrap_or(false);
     argv_has_hidden_flag() && !relaunched
 }
 
-/// True for a login autostart start (window stays in the tray); false for an in-app relaunch,
-/// which inherits `--hidden` without being one.
+/// True for a login autostart; false for an in-app relaunch that inherits `--hidden`.
 #[tauri::command]
 fn was_launched_hidden(app: tauri::AppHandle) -> bool {
     *LAUNCHED_HIDDEN.get_or_init(|| resolve_launched_hidden(&app))
@@ -215,11 +206,7 @@ fn launch_at_login_preference_path(config_dir: &Path) -> PathBuf {
     config_dir.join(LAUNCH_AT_LOGIN_PREFERENCE_FILE)
 }
 
-/// The stored answer, or None when this install has never been told one.
-///
-/// None is not false: an install that predates this file, or one whose preference could not be
-/// read, has no record to restore from, and inventing one would enable autostart for someone who
-/// never asked. Only an explicit `true` ever puts an entry back.
+/// None is not false: with no record, inventing one could enable autostart nobody asked for.
 fn read_launch_at_login_preference(config_dir: &Path) -> Option<bool> {
     let path = launch_at_login_preference_path(config_dir);
     match fs::read_to_string(&path) {
@@ -260,8 +247,7 @@ fn write_launch_at_login_preference(config_dir: &Path, enabled: bool) -> Result<
     })
 }
 
-/// Record the answer without letting a failed write fail the toggle: the OS entry is the thing
-/// the user asked for and it is already written. Losing the record only costs the restore.
+/// A failed write must not fail the toggle: the OS entry is already written.
 fn store_launch_at_login_preference(app: &tauri::AppHandle, enabled: bool) {
     match app.path().app_config_dir() {
         Ok(dir) => {
@@ -333,10 +319,7 @@ fn main_window_close_action(close_to_tray: bool) -> MainWindowCloseAction {
     }
 }
 
-/// The autostart state as the OS records it.
-///
-/// On Windows this reads the two keys itself rather than calling `is_enabled`, which folds them
-/// together through the trailing-bytes rule above and so reports a re-enabled entry as off.
+/// On Windows reads both keys itself: `is_enabled` misreports re-enabled entries as off.
 fn autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
     // is_enabled only checks the entry file exists, so a DE-disabled entry would read as on.
     if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
@@ -344,8 +327,7 @@ fn autostart_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
     }
     #[cfg(windows)]
     {
-        // A Run key we cannot open reads as present and disabled, which is off here and
-        // restores nothing below: an unreadable key is not evidence either way.
+        // An unreadable Run key reads as present and disabled, which restores nothing.
         let (present, disabled) = windows_autostart_entry_state(app);
         Ok(present && !disabled)
     }
@@ -376,8 +358,7 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
     if enabled {
         harden_autostart_entry(&app);
     }
-    // After the OS write, so a failed one leaves no record to restore from, and on both arms:
-    // a stored `false` is what stops the restore from arguing with someone turning this off.
+    // After the OS write, on both arms: a stored `false` stops the restore from fighting the user.
     store_launch_at_login_preference(&app, enabled);
     autostart_enabled(&app)
 }
@@ -427,15 +408,8 @@ fn quote_windows_run_value(app: &tauri::AppHandle) {
     }
 }
 
-/// Whether Windows itself holds the entry disabled, from the StartupApproved bytes.
-///
-/// Task Manager's Startup tab and Settings > Apps > Startup disable an entry by writing a
-/// timestamp into the last eight bytes here; they never delete the Run value. The state lives in
-/// the FIRST byte though: 02 for enabled, 03 for disabled, and 06 for enabled again after the
-/// user switched it back on. Only 02 leaves the trailing bytes zero, so reading them, as
-/// auto-launch does, calls every re-enabled entry disabled and never recovers.
-///
-/// An absent or truncated value is not a state Windows recorded, and it starts such an entry.
+/// StartupApproved state is the FIRST byte: 02 enabled, 03 disabled, 06 re-enabled. Reading the
+/// trailing timestamp bytes (as auto-launch does) misreads re-enabled entries. Absent means enabled.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn startup_approved_disabled(bytes: &[u8]) -> bool {
     match bytes.first() {
@@ -444,12 +418,8 @@ fn startup_approved_disabled(bytes: &[u8]) -> bool {
     }
 }
 
-/// Restore a *deleted* entry, never a disabled one.
-///
-/// The distinction is the whole safety argument. Turning autostart off in Task Manager is a
-/// decision, and re-enabling it on the next launch would be the app overruling the user once a
-/// day. Deletion is not a decision anybody makes: no Windows UI removes the Run value, so an
-/// absent one against a stored `true` is something that happened *to* the install.
+/// Restore a *deleted* entry, never a disabled one: disabling is a user decision, while no
+/// Windows UI deletes the Run value.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn should_restore_autostart_entry(
     stored: Option<bool>,
@@ -459,8 +429,7 @@ fn should_restore_autostart_entry(
     stored == Some(true) && !entry_present && !disabled
 }
 
-/// (Run value present, disabled by Windows). Unreadable registry reads as "present and disabled",
-/// the pair that restores nothing: a key we cannot read is not evidence anything was removed.
+/// Unreadable registry reads as present and disabled, which restores nothing.
 #[cfg(windows)]
 fn windows_autostart_entry_state(app: &tauri::AppHandle) -> (bool, bool) {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE};
@@ -482,17 +451,11 @@ fn windows_autostart_entry_state(app: &tauri::AppHandle) -> (bool, bool) {
         )
         .ok()
         .and_then(|approved| approved.get_raw_value(name).ok())
-        // No override recorded is the state a never-touched entry is in.
         .is_some_and(|value| startup_approved_disabled(&value.bytes));
     (present, disabled)
 }
 
-/// Whether an autostart entry the OS reports as off should be written back.
-///
-/// Windows only, and deliberately so. Removing a login item is a first-class gesture on the other
-/// two: macOS System Settings > Login Items deletes the LaunchAgent, and GNOME's startup UI
-/// deletes the .desktop file, so a restore there would resurrect something the user just removed.
-/// Windows has no such gesture, which is why its entry going missing is a bug and not a choice.
+/// Windows only: macOS and GNOME delete the login item as the user's off switch.
 fn restore_missing_autostart_entry(app: &tauri::AppHandle) -> bool {
     #[cfg(windows)]
     {
@@ -516,8 +479,8 @@ fn restore_missing_autostart_entry(app: &tauri::AppHandle) -> bool {
     }
 }
 
-/// Exec is whitespace-delimited: quote a path holding reserved characters, escaping `"`, `` ` ``,
-/// `$` and `\` inside, and double a literal `%` regardless, since it would start a field code.
+/// Exec is whitespace-delimited: quote paths with reserved characters, escape `"`, `` ` ``, `$`, `\`,
+/// and always double a literal `%`.
 fn exec_quoted(binary: &str) -> String {
     let binary = binary.replace('%', "%%");
     const RESERVED: &str = " \t\n\"'\\><~|&;$*?#()`";
@@ -527,8 +490,7 @@ fn exec_quoted(binary: &str) -> String {
     let mut quoted = String::with_capacity(binary.len() + 2);
     quoted.push('"');
     for c in binary.chars() {
-        // The string rule runs before the quoting rule, so the escaping backslash is itself
-        // escaped; a single one is invalid and launchers drop the whole Exec.
+        // The string rule runs before the quoting rule, so the escaping backslash is itself escaped.
         match c {
             '"' | '`' | '$' => {
                 quoted.push_str("\\\\");
@@ -542,8 +504,7 @@ fn exec_quoted(binary: &str) -> String {
     quoted
 }
 
-/// Quote auto-launch's unquoted Exec binary and add TryExec, which launchers skip when missing, so
-/// a removed install goes inert without postrm touching user homes. TryExec stays unquoted.
+/// TryExec lets launchers skip the entry once the install is removed. TryExec stays unquoted.
 fn hardened_autostart_entry(entry: &str) -> Option<String> {
     if entry.lines().any(|line| line.starts_with("TryExec=")) {
         return None;
@@ -572,7 +533,7 @@ fn hardened_autostart_entry(entry: &str) -> Option<String> {
 }
 
 fn linux_autostart_entry_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    // auto-launch hardcodes ~/.config regardless of XDG_CONFIG_HOME; mirror it or we miss the file.
+    // auto-launch hardcodes ~/.config regardless of XDG_CONFIG_HOME; mirror it.
     Some(
         dirs::home_dir()?
             .join(".config")
@@ -617,8 +578,7 @@ fn xml_escaped(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The plugin's template, but escaped: it interpolates the path unescaped, so a path with & or <
-/// writes a malformed LaunchAgent.
+/// The plugin's template interpolates the path unescaped, so & or < breaks the LaunchAgent.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn macos_launch_agent_plist(label: &str, binary: &str) -> String {
     format!(
@@ -662,8 +622,7 @@ fn rewrite_macos_launch_agent(app: &tauri::AppHandle) {
     let _ = fs::write(&path, plist);
 }
 
-/// A moved or re-downloaded AppImage leaves a stale path that `is_enabled` still accepts, so
-/// repoint the entry at the current executable on every startup.
+/// A moved AppImage leaves a stale path `is_enabled` still accepts, so repoint on every startup.
 fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     use tauri_plugin_autostart::ManagerExt;
     // A dev run would repoint the entry at target/debug.
@@ -675,8 +634,7 @@ fn reconcile_autostart_entry(app: &tauri::AppHandle) {
         return;
     }
     if autostart_enabled(app).unwrap_or(false) {
-        // Adopt an entry made before this install kept a record, so the first thing that
-        // deletes it can be undone rather than being the one loss that teaches us to care.
+        // Adopt an entry made before this install kept a record, so its deletion can be undone.
         if stored_launch_at_login_preference(app).is_none() {
             store_launch_at_login_preference(app, true);
         }
@@ -696,13 +654,8 @@ fn has_saved_window_state(app: tauri::AppHandle) -> bool {
     dir.join(app.filename()).is_file()
 }
 
-/// Append target for `tauri.log` that rotates while the app runs, not only at launch.
-///
-/// The size check used to happen once in `setup_logging`, so a session left open for
-/// days (the backend's own log lines are mirrored here as they arrive) grew the file
-/// past the cap until the next restart. Tracking the byte count as we write applies the
-/// same 5 MiB threshold continuously. Rotation closes the handle before renaming, which
-/// Windows requires and which also means the reopened file is the one being written.
+/// Rotates `tauri.log` at 5 MiB while the app runs, not only at launch. Rotation closes the
+/// handle before renaming, which Windows requires.
 struct RotatingLogFile {
     path: PathBuf,
     rotated_path: PathBuf,
@@ -733,15 +686,13 @@ impl RotatingLogFile {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        // Pick up where a previous session left off, so an already-oversized file
-        // rotates on its first write instead of growing for another whole session.
+        // An already-oversized file rotates on its first write.
         self.written = file.metadata().map(|meta| meta.len()).unwrap_or(0);
         self.file = Some(file);
         Ok(())
     }
 
-    /// Move the current log aside and start a fresh one. Best effort: if reopening
-    /// fails we drop lines rather than take the app down over a log file.
+    /// Best effort: if reopening fails, drop lines rather than crash.
     fn rotate(&mut self) {
         self.file = None;
         let _ = fs::remove_file(&self.rotated_path);
@@ -780,7 +731,6 @@ impl Write for RotatingLogFile {
 fn setup_logging() {
     let mut loggers: Vec<Box<dyn SharedLogger>> = vec![];
 
-    // Always log to stderr for development
     loggers.push(TermLogger::new(
         LevelFilter::Info,
         Config::default(),
@@ -788,7 +738,6 @@ fn setup_logging() {
         simplelog::ColorChoice::Auto,
     ));
 
-    // Try to set up file logging to ~/.unsloth/studio/tauri.log
     if let Some(home) = dirs::home_dir() {
         let log_dir = home.join(".unsloth").join("studio");
         if fs::create_dir_all(&log_dir).is_ok() {
@@ -847,7 +796,7 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-// tao reapplies the config's `resizable: false` on the first configure, wiping setResizable calls made while hidden
+// tao reapplies `resizable: false` on the first configure, wiping setResizable calls made while hidden.
 #[cfg(target_os = "linux")]
 fn keep_resizable_across_first_configure(
     app: &tauri::App,
@@ -864,7 +813,7 @@ fn keep_resizable_across_first_configure(
     let handlers: Rc<RefCell<Vec<glib::SignalHandlerId>>> = Rc::default();
 
     let seen = requested.clone();
-    // "event" fires before tao's configure-event handler; unrealized configures skip that handler, so refresh each time
+    // "event" fires before tao's configure handler; unrealized configures skip it, so refresh each time.
     let before = gtk_window.connect_event(move |window, event| {
         if event.event_type() == gdk::EventType::Configure {
             seen.set(Some(window.is_resizable()));
@@ -885,13 +834,8 @@ fn keep_resizable_across_first_configure(
     Ok(())
 }
 
-// WebKitGTK ships two defaults that together break voice dictation on Linux:
-// `enable-media-stream` is off, and the stock `permission-request` handler
-// denies every request it never saw a listener override, including
-// microphone/camera grabs. Neither is fixable from outside the embedding
-// application, so opt in here and auto-allow only user-media requests --
-// every other permission kind (notifications, geolocation, ...) keeps the
-// default deny.
+// WebKitGTK disables media streams and denies unhandled permission requests by default, which
+// breaks dictation. Allow only user-media requests; every other kind keeps the default deny.
 #[cfg(target_os = "linux")]
 fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use webkit2gtk::{
@@ -919,8 +863,7 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-// Compile in both Windows profiles so dependency skew fails in CI, even though
-// the guard is installed only in release builds.
+// Compile in both Windows profiles so dependency skew fails in CI.
 #[cfg(windows)]
 #[cfg_attr(debug_assertions, allow(dead_code))]
 fn setup_windows_browser_guards(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -939,8 +882,7 @@ fn setup_windows_browser_guards(app: &tauri::App) -> Result<(), Box<dyn std::err
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
     window.with_webview(|webview| unsafe {
-        // Keep the standard menus and non-refresh accelerators that the WebView2
-        // settings would disable together. Tauri does not expose those settings.
+        // Keep the menus and non-refresh accelerators the WebView2 settings would disable together.
         // The explicit type makes dependency version mismatches fail here.
         let controller: ICoreWebView2Controller = webview.controller();
         let accelerator_handler =
@@ -997,8 +939,7 @@ fn setup_windows_browser_guards(app: &tauri::App) -> Result<(), Box<dyn std::err
                 target.IsEditable(&mut is_editable)?;
                 target.HasLinkUri(&mut has_link_uri)?;
                 target.HasSelection(&mut has_selection)?;
-                // Suppress only bare-page browser commands. Keep media, selection,
-                // editable, and link menus; links are page targets with a link URI.
+                // Suppress only bare-page browser commands; keep media, selection, editable and link menus.
                 let is_bare_page = kind == COREWEBVIEW2_CONTEXT_MENU_TARGET_KIND_PAGE
                     && !is_editable.as_bool()
                     && !has_link_uri.as_bool()
@@ -1046,7 +987,6 @@ fn install_is_active(app: &tauri::AppHandle) -> bool {
     install::is_install_running(&state)
 }
 
-/// Ask before quitting while training is starting or active (true to proceed).
 /// Called only from the shared confirmation sequence below.
 fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -1099,7 +1039,6 @@ fn new_renderer_activity_state() -> RendererActivityState {
     std::sync::Arc::new(std::sync::Mutex::new(RendererActivity::default()))
 }
 
-/// The command body without the `tauri::State` wrapper, so tests can drive it directly.
 fn apply_renderer_activity(state: &RendererActivityState, kind: &str, active: bool) {
     if let Ok(mut activity) = state.lock() {
         match kind {
@@ -1148,7 +1087,6 @@ fn confirm_quit_with_unsaved_transcript(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Ask before quitting mid shell update (true to proceed). request_quit only, as below.
 fn confirm_quit_during_shell_update(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -1169,7 +1107,6 @@ fn confirm_quit_during_shell_update(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Ask before quitting mid-download (true to proceed). request_quit only, as below.
 fn confirm_quit_during_downloads(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -1190,10 +1127,8 @@ fn confirm_quit_during_downloads(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
-/// installer, leaving a venv that looks healthy but cannot start. The shared confirmation
-/// sequence is never called from RunEvent::Exit, which must not block on a dialog nobody can
-/// answer.
+/// Cleanup SIGTERMs the installer, leaving a venv that cannot start. Never called from
+/// RunEvent::Exit, which must not block on a dialog.
 fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -1215,8 +1150,7 @@ fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Ask before quitting mid-update (true to proceed): the update is killed part-way
-/// through installing dependencies, which leaves the venv unusable until it is repaired.
+/// A killed update leaves the venv unusable until repaired.
 fn confirm_quit_during_update(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -1241,9 +1175,7 @@ fn confirm_quit_during_update(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Let a later exit run cleanup again. A cancelled or failed installer leaves the
-/// app running with a spent guard, so the retry's pre-exit hook would reap nothing
-/// and then suspend the job with the backend still holding the environment open.
+/// Let a later exit run cleanup again after a cancelled or failed installer spent the guard.
 fn reset_termination_cleanup() {
     match TERMINATION_CLEANUP.lock() {
         Ok(mut done) => *done = false,
@@ -1251,8 +1183,7 @@ fn reset_termination_cleanup() {
     }
 }
 
-/// Native AppKit termination needs to decide synchronously whether it can terminate now or must
-/// return NSTerminateLater while the shared confirmation sequence runs.
+/// AppKit termination must decide synchronously: terminate now or NSTerminateLater.
 #[cfg(target_os = "macos")]
 fn quit_requires_confirmation(app: &tauri::AppHandle) -> bool {
     let update_active = app
@@ -1268,10 +1199,8 @@ fn quit_requires_confirmation(app: &tauri::AppHandle) -> bool {
 }
 
 fn cleanup_child_processes(app: &tauri::AppHandle) {
-    // A resettable guard rather than a `Once`, so `reset_termination_cleanup` can
-    // re-arm it. The flag is set after the body, so a panicking cleanup poisons the
-    // lock and the next caller retries it rather than exiting on a backend that was
-    // never reaped.
+    // Resettable, not `Once`. The flag is set after the body, so a panicking cleanup poisons the
+    // lock and the next caller retries instead of exiting with an unreaped backend.
     let mut done = match TERMINATION_CLEANUP.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {
@@ -1308,10 +1237,8 @@ fn cleanup_child_processes(app: &tauri::AppHandle) {
     *done = true;
 }
 
-/// The backend is spawned as its own process-group leader, so nothing reaps it when the
-/// desktop app is terminated by a signal (logout, `kill`, a shell Ctrl-C). Tauri installs
-/// no handler for those, so without this the app would die and leave the backend running.
-/// Windows gets the same guarantee from the kill-on-close job object in `windows_job`.
+/// The backend is its own process-group leader and Tauri installs no signal handler, so reap it
+/// here. Windows uses the kill-on-close job in `windows_job`.
 #[cfg(unix)]
 fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
@@ -1322,10 +1249,8 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
     std::thread::Builder::new()
         .name("desktop-termination-signal".to_string())
         .spawn(move || {
-            // Terminating is not conditional on cleanup succeeding. If cleanup panicked
-            // and took the exit with it, the app would keep running after SIGTERM, the
-            // session manager would SIGKILL it once its timeout expired, and the backend
-            // would be orphaned: exactly the failure this listener exists to prevent.
+            // Exit regardless of cleanup success, or SIGTERM leaves the app running and the backend
+            // orphaned.
             let cleanup_and_exit = |app: &tauri::AppHandle, exit_code: i32| {
                 let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     cleanup_child_processes(app)
@@ -1341,19 +1266,14 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
                 let name = signal_hook::low_level::signal_name(signal).unwrap_or("unknown signal");
                 let exit_code = 128 + signal;
                 if cleanup_started {
-                    // Cleanup blocks for as long as the backend takes to die. A repeat
-                    // signal is the user asking to stop waiting, so leave straight away
-                    // instead of swallowing it and forcing them to reach for SIGKILL.
+                    // A repeat signal means stop waiting: exit straight away.
                     warn!("Received {name} ({signal}) while cleaning up, exiting immediately");
                     std::process::exit(exit_code);
                 }
                 cleanup_started = true;
                 info!("Received Unix termination signal {name} ({signal})");
 
-                // Clean up on its own thread so this one stays in `signals.forever()` and
-                // can still observe a repeat signal. If that thread cannot be spawned we
-                // fall back to cleaning up here, which gives up the repeat-signal escape
-                // hatch until cleanup finishes.
+                // Clean up on another thread so this one can still observe a repeat signal.
                 let cleanup_handle = app_handle.clone();
                 let cleanup = std::thread::Builder::new()
                     .name("desktop-termination-cleanup".to_string())
@@ -1380,8 +1300,6 @@ fn show_main_window(app: &tauri::AppHandle) {
     browser_webview::window_changed(app, None);
 }
 
-/// Coordinates the one visible quit confirmation and, on macOS, one AppKit termination request
-/// waiting for that confirmation's answer.
 struct QuitConfirmationState {
     in_progress: bool,
     #[cfg(target_os = "macos")]
@@ -1411,8 +1329,6 @@ impl QuitGuard {
     }
 
     /// Atomically close this confirmation to new attachments and take the AppKit reply, if any.
-    /// Once `in_progress` becomes false, a later system request starts its own confirmation instead
-    /// of attaching after this worker's final drain.
     fn finish(mut self) -> bool {
         let mut state = lock_quit_confirmation_state();
         state.in_progress = false;
@@ -1455,9 +1371,7 @@ enum TerminationConfirmation {
     Duplicate,
 }
 
-/// Atomically attach AppKit to a menu/tray confirmation that is already visible, or reserve the
-/// guard for a new confirmation. This closes the race between checking `in_progress` and marking
-/// the system termination pending.
+/// Atomically attach AppKit to a visible confirmation or reserve the guard for a new one.
 #[cfg(target_os = "macos")]
 fn begin_or_attach_termination(requires_confirmation: bool) -> TerminationConfirmation {
     let mut state = lock_quit_confirmation_state();
@@ -1482,23 +1396,13 @@ fn take_pending_termination_reply() -> bool {
     std::mem::take(&mut state.termination_reply_pending)
 }
 
-/// Asks the renderer for the closing overlay. Reaping the backend takes up to ~18s on
-/// Windows, which is the only platform that asks for it: `stop_spawned_backend` spends up
-/// to 2 liveness requests and 2 shutdown requests at `LOCAL_HTTP_TIMEOUT` (2s each), then
-/// waits twice for the child to exit (5s each) either side of the CTRL_BREAK. Without this
-/// the window just sits there looking frozen for all of it. See `request_quit`.
+/// Renderer closing overlay. Reaping takes up to ~18s on Windows (probes, shutdown requests,
+/// CTRL_BREAK waits), during which the window would look frozen.
 const APP_CLOSING_EVENT: &str = "app-closing";
 
-/// Takes that overlay back down, for the quits that never reach the exit.
 const APP_CLOSING_CANCELLED_EVENT: &str = "app-closing-cancelled";
 
-/// Raises the overlay, and retracts it again unless `keep` is called. A guard rather than
-/// paired emits so that every way out of the reap takes it back down, early returns and
-/// unwinds alike, because the app is still there afterwards and an overlay left up would
-/// cover it with no way back. Nothing under `cleanup_child_processes` panics today: its one
-/// `.expect` reads a `ShutdownFlag` managed on the line after the `BackendState` that gates
-/// it, and everything below recovers poisoned locks instead of unwrapping them. So the
-/// unwind arm is cheap insurance against a future reap, not a live case.
+/// A guard rather than paired emits, so early returns and unwinds always retract the overlay.
 struct ClosingOverlay<E: Fn(&str)> {
     emit: E,
     retract: bool,
@@ -1513,7 +1417,6 @@ impl<E: Fn(&str)> ClosingOverlay<E> {
         }
     }
 
-    /// The process is on its way out, so the overlay stays up for the rest of its life.
     fn keep(mut self) {
         self.retract = false;
     }
@@ -1527,28 +1430,8 @@ impl<E: Fn(&str)> Drop for ClosingOverlay<E> {
     }
 }
 
-/// Whether this quit has a window worth covering.
-///
-/// Windows only, for the reason `request_quit` gives. Past that the question is whether
-/// there is anything on screen to explain. The tray's Quit reaches `request_quit` without
-/// going through the main window at all, and an autostart launch passes `--hidden`, whose
-/// window is built `"visible": false` and never shown, so the overlay would paint into a
-/// window nobody can see. Showing the window first was the other option and it is worse: a
-/// window that pops open because you asked the app to go away is a surprise, and there is
-/// no frozen window to explain when none is on screen.
-///
-/// A minimized window does count as visible, and that is the answer we want rather than an
-/// accident: Tauri's `is_visible` is `IsWindowVisible`, which reports the `WS_VISIBLE`
-/// style bit, and minimizing does not clear it. The user can restore part way through the
-/// reap, and the frozen window this exists to explain is exactly what they must not find.
-///
-/// The visibility read is injected rather than taken off an `AppHandle`, which cannot be
-/// built in a test, and it is asked for only on Windows: the getter blocks on a round trip
-/// to the event loop, and nothing off Windows raises an overlay to spend it on.
-///
-/// `None` means there is no main window, which is nothing to cover. A visibility that
-/// cannot be read raises the overlay anyway: an emit into a hidden window costs nothing,
-/// and an unexplained frozen window is the whole failure being fixed.
+/// Windows only. Skips windows nobody can see (tray quit, `--hidden` start); a minimized window
+/// counts as visible. `None` means no main window; an unreadable visibility raises the overlay.
 fn quit_raises_the_overlay(
     windows: bool,
     main_window_visible: impl FnOnce() -> Option<Result<bool, String>>,
@@ -1566,15 +1449,8 @@ fn quit_raises_the_overlay(
     }
 }
 
-/// Confirm, cover the window, reap. Returns whether the caller should now exit.
-///
-/// Split out with its blocking parts injected because the order is the whole point and an
-/// `AppHandle` cannot be built in a test. `cover` comes in the same way rather than off a
-/// `cfg!`, so both platforms stay covered by tests on whichever one is running them.
-///
-/// The overlay goes up after the confirmations, never before: each one can put a "Keep
-/// training?" dialog on screen, and an overlay behind it would announce the opposite of
-/// what it is asking. It still lands before the reap, which is the whole of the wait.
+/// Confirm, cover, reap; returns whether to exit. Blocking parts are injected so the order is
+/// testable. The overlay goes up after the confirm dialogs, never before, and before the reap.
 fn quit_sequence(
     confirm: impl Fn() -> bool,
     cover: impl FnOnce() -> bool,
@@ -1584,12 +1460,7 @@ fn quit_sequence(
     if !confirm() {
         return false;
     }
-    // Asked after the confirmations rather than alongside them: a dialog sits on screen for
-    // as long as the user takes to answer it, and the window state that decides this is the
-    // one the reap is about to block. A declined quit never asks, which also keeps the
-    // blocking visibility read off the path that stays in the app.
-    //
-    // `None` is the whole no-op: nothing raised, so nothing to retract on the way out.
+    // Asked after the confirmations, so a declined quit never does the blocking visibility read.
     let overlay = cover().then(|| ClosingOverlay::raise(emit));
     reap();
     if let Some(overlay) = overlay {
@@ -1598,9 +1469,7 @@ fn quit_sequence(
     true
 }
 
-/// Run the complete upstream confirm-overlay-reap sequence off the caller's thread, then hand its
-/// verdict to `done`. `reserved_guard` lets AppKit atomically attach-or-reserve before spawning;
-/// ordinary menu and tray requests acquire the guard here.
+/// `reserved_guard` lets AppKit atomically attach-or-reserve before spawning.
 fn spawn_quit_confirmation<F>(
     app: &tauri::AppHandle,
     reserved_guard: Option<QuitGuard>,
@@ -1623,8 +1492,7 @@ where
     let spawned = std::thread::Builder::new()
         .name("request-quit".to_string())
         .spawn(move || {
-            // Driven from here rather than the CloseRequested arm so the tray Quit is
-            // covered on the same terms as the close button.
+            // Driven from here so the tray Quit is covered on the same terms as the close button.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 quit_sequence(
                     || {
@@ -1637,11 +1505,8 @@ where
                     },
                     || {
                         quit_raises_the_overlay(
-                            // Windows only. macOS and an enabled Windows/Linux close-to-tray
-                            // preference bypass request_quit; Linux quits and tray quits do not use
-                            // the overlay. The freeze this covers was reported on
-                            // Windows, where stop_backend spends its liveness, shutdown and
-                            // CTRL_BREAK budgets in series.
+                            // Windows only: there stop_backend's serial budgets made the window
+                            // look frozen.
                             cfg!(target_os = "windows"),
                             || {
                                 app.get_window("main")
@@ -1673,9 +1538,7 @@ where
     true
 }
 
-/// Confirm, reap the backend, then ask Tauri to exit. Never exit first: that would orphan the
-/// backend tree. AppHandle::exit then emits ExitRequested and Exit; the latter is an idempotent
-/// cleanup safety net below.
+/// Never exit first: that would orphan the backend tree. Exit's cleanup is an idempotent safety net.
 fn request_quit(app: &tauri::AppHandle) {
     spawn_quit_confirmation(app, None, |app, proceed| {
         if proceed {
@@ -1687,8 +1550,7 @@ fn request_quit(app: &tauri::AppHandle) {
 #[cfg(target_os = "macos")]
 const APP_QUIT_MENU_ID: &str = "app-quit";
 
-/// Replace the predefined native Quit role with our own event, so Cmd+Q enters the same guarded
-/// confirmation path as the tray instead of reaching AppKit termination first.
+/// Replace the native Quit role so Cmd+Q enters the same guarded confirmation path as the tray.
 #[cfg(target_os = "macos")]
 fn setup_quit_menu(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle();
@@ -1751,8 +1613,7 @@ extern "C-unwind" fn application_should_terminate(
     }
 }
 
-/// Deliver the NSTerminateLater verdict. AppKit expects it on the main thread;
-/// if the main loop is already gone, so is the pending termination request.
+/// AppKit expects it on the main thread; if that loop is gone, so is the request.
 #[cfg(target_os = "macos")]
 fn reply_to_termination_request(app: &tauri::AppHandle, proceed: bool) {
     use objc2::runtime::{AnyObject, Bool};
@@ -1767,12 +1628,8 @@ fn reply_to_termination_request(app: &tauri::AppHandle, proceed: bool) {
     }
 }
 
-/// Dock quits, logout and AppleScript quits ask the delegate via
-/// `applicationShouldTerminate:`, which tao leaves unimplemented, so they
-/// terminate without reaching the menu handler above. Add the missing method to
-/// tao's delegate: when a run is active the answer is deferred with
-/// NSTerminateLater until the user confirms, otherwise keep the stock path
-/// (`applicationWillTerminate` -> RunEvent::Exit -> cleanup).
+/// tao leaves `applicationShouldTerminate:` unimplemented, so Dock/logout/AppleScript quits skip
+/// the menu handler. Add it: defer with NSTerminateLater while a run is active.
 #[cfg(target_os = "macos")]
 fn setup_terminate_interception(app: &tauri::App) {
     use objc2::ffi::{class_addMethod, object_getClass};
@@ -1834,11 +1691,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     app.manage(TrayServerToggle(toggle));
 
-    // macOS renders tray images at 18 points. Embed the 36 px scale for crisp Retina output;
-    // template mode lets AppKit choose the correct monochrome color for the current menu bar.
+    // macOS renders tray images at 18 points: embed the 36 px scale; template mode adapts the color.
     #[cfg(target_os = "macos")]
     let tray_icon = tauri::include_image!("./icons/tray-icon@2x.png");
-    // Supplied tray exports are monochrome; retain the existing Windows/Linux color pixels.
     #[cfg(not(target_os = "macos"))]
     let tray_icon = tauri::include_image!("./icons/tray-icon-color.png");
 
@@ -1869,7 +1724,6 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(target_os = "macos")]
     if let Err(error) = macos_tray::install_appearance_observer(&tray) {
-        // The template icon remains visible and adaptive if native observation is unavailable.
         warn!("Could not install the macOS tray appearance observer: {error}");
     }
     #[cfg(not(target_os = "macos"))]
@@ -1878,26 +1732,18 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Root shared by the WebView profile and the version stamp below. dirs::data_local_dir
-// is the call Tauri's PathResolver makes for LocalData/<bid>, and it falls back to the
-// passwd database and the Windows known folder where a raw env read cannot.
+// Same call Tauri's PathResolver uses for LocalData/<bid>, with passwd/known-folder fallbacks.
 fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|d| d.join(bundle_id))
 }
 
-// Clear WebView caches after an update: the in-app update runs setup.sh/setup.ps1 while
-// the old WebView still holds these files, so its clear fails and a relaunch serves the
-// previous frontend. Version-stamped so an ordinary launch does not discard the Windows
-// compiled-JS cache. Cache-only (storage and cookies kept), mirroring setup.sh
-// _clear_webview_caches / setup.ps1. The caller runs after single-instance, so a duplicate
-// launch has exited; the returned lock covers the no-session-bus case, where it has not.
+// Clear WebView caches after an update, which ran setup while the old WebView held them.
+// Version-stamped, cache-only, mirroring setup.sh _clear_webview_caches / setup.ps1.
 #[must_use]
 fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
     let root = webview_profile_root(bundle_id)?;
-    // Claim the profile BEFORE reading the stamp, and keep the lock even when it
-    // matches: a stamped launch holding nothing would let a newer executable started
-    // alongside it delete this instance's live profile. The OS drops the lock if we
-    // crash, so a dead process never blocks a clear.
+    // Claim the profile lock BEFORE reading the stamp and keep it, so a newer executable started
+    // alongside cannot delete this instance's live profile.
     let _ = fs::create_dir_all(&root);
     let lock = fs::File::create(root.join(".webview-cache-lock")).ok()?;
     lock.try_lock().ok()?;
@@ -1916,7 +1762,6 @@ fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
     }
     #[cfg(target_os = "macos")]
     if let Some(caches) = dirs::cache_dir() {
-        // WKWebView keeps every cache-typed store under Library/Caches/<bid>;
         // Library/WebKit/<bid> is user storage and is left alone.
         paths.push(caches.join(bundle_id));
     }
@@ -1927,8 +1772,7 @@ fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
 
     let mut cleared = true;
     for p in &paths {
-        // Absent is normal; anything else is the silent failure that shows up
-        // as a stale frontend, so log it.
+        // Absent is normal; anything else shows up as a stale frontend, so log it.
         if let Err(e) = fs::remove_dir_all(p) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 warn!("could not clear WebView cache {}: {e}", p.display());
@@ -1936,8 +1780,7 @@ fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
             }
         }
     }
-    // Stamping a partial clear (an update can still hold a cache file open)
-    // would make every later launch skip the retry and keep the stale cache.
+    // Do not stamp a partial clear, or later launches skip the retry.
     if cleared {
         let _ = fs::write(&stamp, version);
     }
@@ -1947,9 +1790,8 @@ fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
 // Never dropped: the lock has to outlive the clear (see the function).
 static WEBVIEW_PROFILE_LOCK: std::sync::OnceLock<Option<fs::File>> = std::sync::OnceLock::new();
 
-// Register directly after tauri_plugin_single_instance: setup hooks run in registration
-// order inside Builder::build(), while the config window (and its WebView, which locks
-// these files) is only created later, from App::run().
+// Register directly after tauri_plugin_single_instance: setup hooks run in registration order
+// inside Builder::build(), before the window's WebView locks these files.
 fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("unsloth-webview-cache")
         .setup(|app, _api| {
@@ -1967,8 +1809,7 @@ fn configured_hf_endpoints() -> Vec<String> {
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
         .collect();
-    // An adopted backend may have been started from a shell that set HF_ENDPOINT
-    // while this process was not; /api/health sends the frontend to that mirror.
+    // An adopted backend may have been started with an HF_ENDPOINT this process lacks.
     raw.extend(desktop_backend_owner::recorded_hf_endpoints());
     csp_sources_from(raw)
 }
@@ -2019,8 +1860,7 @@ fn is_loopback_host(authority: &str) -> bool {
     matches!(host.parse::<std::net::IpAddr>(), Ok(ip) if ip.is_loopback())
 }
 
-/// Compress an IPv6 literal: a host-source is matched as a string (CSP3 6.7.2.5)
-/// and the browser sends the compressed form.
+/// A host-source is matched as a string (CSP3 6.7.2.5) and the browser sends the compressed form.
 fn canonical_authority(authority: &str) -> String {
     let (host, port) = match authority.strip_prefix('[') {
         Some(rest) => match rest.split_once(']') {
@@ -2035,8 +1875,7 @@ fn canonical_authority(authority: &str) -> String {
     }
 }
 
-/// Reduce to scheme://host[:port]: a host-source with a path is matched EXACTLY
-/// unless the path ends in a solidus (CSP3 6.7.2.7).
+/// A host-source with a path is matched EXACTLY unless it ends in a slash (CSP3 6.7.2.7).
 fn csp_origin_of(endpoint: &str) -> String {
     match split_scheme(endpoint) {
         Some((scheme, rest)) => {
@@ -2047,8 +1886,7 @@ fn csp_origin_of(endpoint: &str) -> String {
     }
 }
 
-/// Mirrors `utils/hf_endpoint.py::_sanitize`, so the webview policy and
-/// /api/health never disagree about what counts as configured.
+/// Mirrors `utils/hf_endpoint.py::_sanitize`, so the CSP and /api/health agree.
 fn is_usable_csp_source(endpoint: &str) -> bool {
     let (scheme, authority) = match split_scheme(endpoint) {
         Some((scheme, rest)) if scheme == "http" || scheme == "https" => (scheme, rest),
@@ -2087,14 +1925,12 @@ fn is_usable_csp_source(endpoint: &str) -> bool {
     }
 }
 
-/// Append to `connect-src`, skipping sources already listed. Matched on the
-/// directive's first token, so a hostname containing it cannot match.
+/// Matched on the directive's first token, so a hostname containing it cannot match.
 fn append_connect_sources(policy: &mut String, sources: &[String]) -> bool {
     append_sources_to(policy, "connect-src", sources)
 }
 
-/// The same, for any directive. img-src and media-src carry a bare `https:`,
-/// which does not cover a plain-HTTP loopback mirror.
+/// img-src and media-src carry a bare `https:`, which does not cover a plain-HTTP loopback mirror.
 fn append_sources_to(policy: &mut String, directive_name: &str, sources: &[String]) -> bool {
     let mut appended = false;
     let rebuilt: Vec<String> = policy
@@ -2126,9 +1962,7 @@ fn append_sources_to(policy: &mut String, directive_name: &str, sources: &[Strin
     appended
 }
 
-/// tauri.conf.json's static CSP allows only the official Hub hosts. Tauri builds
-/// the header from the Context config on every asset request, so appending here
-/// covers the statically declared window too.
+/// Tauri builds the CSP header from the Context config per request, so this covers the static window.
 fn extend_csp_with_hf_endpoints<R: tauri::Runtime>(context: &mut tauri::Context<R>) {
     let endpoints = configured_hf_endpoints();
     if endpoints.is_empty() {
@@ -2162,13 +1996,10 @@ fn main() {
         }
     }
 
-    // Must precede any Xlib call: GTK3 never calls XInitThreads and this
-    // process drives X from several threads. See x11_threads for the crash.
+    // Must precede any Xlib call; see x11_threads.
     x11_threads::init_x11_threads();
 
-    // WebKitGTK's hardware dmabuf path breaks on the proprietary NVIDIA driver on
-    // either display server, and on an AppImage that cannot load GLES. Select a
-    // compatible fallback before any GTK/WebKit object can be initialized.
+    // Pick a WebKitGTK rendering fallback before any GTK/WebKit object is initialized.
     #[cfg(target_os = "linux")]
     let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
@@ -2349,7 +2180,6 @@ fn main() {
             }) {
                 warn!("Legacy staged update cleanup deferred: {error}");
             }
-            // Recover legacy desktop installs before the first preflight.
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
                 warn!("Desktop backend ownership id unavailable: {error}");
             }
@@ -2390,8 +2220,7 @@ fn main() {
                     _ => {}
                 }
             }
-            // Record real drops here, in Rust, so the renderer can only register paths the
-            // OS actually handed to the native intake commands.
+            // Record real drops in Rust, so the renderer can only register paths the OS handed over.
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 window
                     .state::<native_intents::NativeIntakeState>()
@@ -2403,7 +2232,6 @@ fn main() {
                 let close_to_tray = window.state::<CloseToTrayState>().0.load(Ordering::SeqCst);
                 match main_window_close_action(close_to_tray) {
                     MainWindowCloseAction::Hide => {
-                        // The tray's Open action and a second app launch restore the window.
                         let _ = window.hide();
                         browser_webview::window_changed(window.app_handle(), None);
                     }
@@ -2420,13 +2248,8 @@ fn main() {
                 ..
             } => show_main_window(app),
             tauri::RunEvent::Exit => {
-                // Safety net for framework-driven exits. When another path already owns
-                // cleanup, this blocks the main event-loop thread until that path is done.
-                // Worst case is roughly 15s on Unix, waiting on the graceful-then-force
-                // stop of the installer (5s), the updater (5s) and the backend (5s), and
-                // roughly 18s on Windows, where those first two graceful waits are
-                // `#[cfg(unix)]` and go straight to the force kill, but the backend spends
-                // its liveness, shutdown and CTRL_BREAK budgets in series instead.
+                // Safety net for framework-driven exits; blocks the event loop until another cleanup path
+                // finishes (about 15s worst case on Unix, 18s on Windows).
                 #[cfg(target_os = "macos")]
                 macos_tray::remove_appearance_observer();
 
@@ -2449,8 +2272,7 @@ mod tests {
         let mut file = RotatingLogFile::open(log_path.clone(), rotated_path.clone(), 8).unwrap();
         file.write_all(b"aaaaaaaaaa").unwrap();
         file.flush().unwrap();
-        // Still the first generation: the threshold is checked before a write, so the
-        // line that crosses it is written whole rather than split across two files.
+        // The threshold is checked before a write, so the crossing line is written whole.
         assert!(!rotated_path.exists());
 
         file.write_all(b"bbbb").unwrap();
@@ -2458,7 +2280,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&rotated_path).unwrap(), "aaaaaaaaaa");
         assert_eq!(fs::read_to_string(&log_path).unwrap(), "bbbb");
 
-        // A second rotation replaces .1 rather than piling up generations.
         file.write_all(b"cccccccccc").unwrap();
         file.write_all(b"dddd").unwrap();
         file.flush().unwrap();
@@ -2638,7 +2459,6 @@ media-src 'self' https:"
         assert_eq!(fs::read_to_string(&log_path).unwrap(), "fresh");
     }
 
-    /// args() panics on a non-Unicode argv[0], so the flag scan has to run over OsStr.
     #[test]
     fn hidden_flag_scan_tolerates_non_unicode_args() {
         use std::ffi::OsString;
@@ -2691,7 +2511,6 @@ media-src 'self' https:"
     fn launch_at_login_preference_round_trips_and_starts_with_no_record() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Not Some(false): an install that has never been told cannot be restored to anything.
         assert_eq!(read_launch_at_login_preference(dir.path()), None);
         write_launch_at_login_preference(dir.path(), true).unwrap();
         assert_eq!(read_launch_at_login_preference(dir.path()), Some(true));
@@ -2710,42 +2529,30 @@ media-src 'self' https:"
 
     #[test]
     fn only_a_deleted_entry_with_a_stored_yes_is_restored() {
-        // The bug this exists for: the value is gone and the user had asked for it.
         assert!(should_restore_autostart_entry(Some(true), false, false));
 
-        // Turned off in Task Manager. The value survives, so re-enabling would overrule them.
         assert!(!should_restore_autostart_entry(Some(true), true, true));
-        // Deleted *and* disabled: still their decision, so it stays gone.
         assert!(!should_restore_autostart_entry(Some(true), false, true));
-        // Nothing to restore: never asked for, or turned off on purpose.
         assert!(!should_restore_autostart_entry(None, false, false));
         assert!(!should_restore_autostart_entry(Some(false), false, false));
-        // Already there. reconcile_autostart_entry repoints it; this decides nothing.
         assert!(!should_restore_autostart_entry(Some(true), true, false));
     }
 
-    /// The state is the first byte, not the trailing timestamp.
     #[test]
     fn startup_approved_bytes_are_read_from_the_state_byte() {
-        // What auto-launch's own enable() writes: a 0x02 lead and eight zero bytes after it.
         assert!(!startup_approved_disabled(&[
             0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
         ]));
-        // Disabled in Task Manager: 0x03, and the last eight bytes hold the timestamp.
         assert!(startup_approved_disabled(&[
             0x03, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01
         ]));
-        // Switched back on: 0x06, and the timestamp stays. Reading the trailing bytes calls
-        // this disabled, which is how a user who toggled the entry twice lost the setting.
         assert!(!startup_approved_disabled(&[
             0x06, 0, 0, 0, 0x1e, 0x38, 0x9f, 0x4c, 0x7d, 0x2a, 0xdb, 0x01
         ]));
-        // No state byte at all is no state Windows recorded, and it starts such an entry.
         assert!(!startup_approved_disabled(&[0x02, 0, 0, 0]));
         assert!(!startup_approved_disabled(&[]));
     }
 
-    /// A re-enabled entry is present and on, so it is adopted and never restored over.
     #[test]
     fn a_re_enabled_entry_is_not_treated_as_deleted() {
         let re_enabled = [
@@ -2781,14 +2588,10 @@ media-src 'self' https:"
     #[cfg(target_os = "linux")]
     const BID: &str = "ai.unsloth.studio";
 
-    // Only XDG_DATA_HOME is swapped, and it is read elsewhere now (a relocated CLI
-    // child pins it), so the swap holds the crate-wide env lock and readers take it
-    // too. HOME is left alone: `dirs::home_dir` is all over this crate.
+    // Only XDG_DATA_HOME is swapped, under the crate-wide env lock; HOME is left alone.
     #[cfg(target_os = "linux")]
     fn with_xdg_data_home<T>(value: &str, f: impl FnOnce() -> T) -> T {
-        // The crate-wide lock, not one of this module's own: the path policy
-        // reads XDG_DATA_HOME while choosing where its tests may write, and an
-        // override running underneath that would change the answer.
+        // The crate-wide lock: the path policy reads XDG_DATA_HOME when choosing test dirs.
         let _guard = crate::native_path_policy::PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -2805,9 +2608,7 @@ media-src 'self' https:"
     #[test]
     #[cfg(target_os = "linux")]
     fn a_relative_xdg_data_home_resolves_like_tauri_does() {
-        // dirs, which resolves the LocalData dir Tauri hands the WebView, drops a
-        // relative XDG_DATA_HOME; following one would leave the real cache in
-        // place and rm -rf under the working directory.
+        // dirs drops a relative XDG_DATA_HOME; following one would rm -rf under the working directory.
         let (got, expected) = with_xdg_data_home("reldata", || {
             (
                 webview_profile_root(BID),
@@ -2820,7 +2621,6 @@ media-src 'self' https:"
             "resolved a deletion target relative to the working directory"
         );
 
-        // An absolute override is still honoured.
         let dir = tempfile::tempdir().unwrap();
         let got = with_xdg_data_home(dir.path().to_str().unwrap(), || webview_profile_root(BID));
         assert_eq!(got, Some(dir.path().join(BID)));
@@ -2833,8 +2633,7 @@ media-src 'self' https:"
         let xdg = dir.path().to_str().unwrap();
         let root = dir.path().join(BID);
         fs::create_dir_all(root.join("CacheStorage")).unwrap();
-        // A plain file where a cache dir belongs fails remove_dir_all with something
-        // other than NotFound, exactly as a locked directory does.
+        // A plain file fails remove_dir_all with something other than NotFound, like a locked dir.
         fs::write(root.join("WebKitCache"), b"still open").unwrap();
 
         let lock = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
@@ -2848,7 +2647,6 @@ media-src 'self' https:"
         );
         drop(lock);
 
-        // The next launch, with the obstruction gone, clears and stamps.
         fs::remove_file(root.join("WebKitCache")).unwrap();
         fs::create_dir_all(root.join("WebKitCache")).unwrap();
         let lock = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
@@ -2868,7 +2666,6 @@ media-src 'self' https:"
         let root = dir.path().join(BID);
         fs::create_dir_all(root.join("WebKitCache")).unwrap();
 
-        // The first launch clears and holds the lock, as main() does.
         let live = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
         assert!(live.is_some(), "the clearing instance must get the lock");
         assert!(
@@ -2876,7 +2673,6 @@ media-src 'self' https:"
             "the first launch did not clear"
         );
 
-        // A second launch past single-instance (no session bus) must leave it alone.
         fs::create_dir_all(root.join("WebKitCache")).unwrap();
         let second = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
         assert!(second.is_none(), "a duplicate launch took the lock");
@@ -2885,11 +2681,8 @@ media-src 'self' https:"
             "deleted a live instance's cache"
         );
 
-        // Exit or crash drops the lock, so the next launch clears.
         drop(live);
 
-        // A launch whose stamp already matches must still TAKE the lock, or a
-        // newer executable started alongside it could delete the live profile.
         fs::create_dir_all(root.join("WebKitCache")).unwrap();
         let stamped = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
         assert!(
@@ -2971,7 +2764,6 @@ media-src 'self' https:"
             assert!(!lock_quit_confirmation_state().in_progress);
         }
 
-        // Cancelling drops the guard, which re-arms the close button.
         {
             let _second = begin_quit().expect("cancelling must re-arm the close button");
         }
@@ -3009,8 +2801,6 @@ media-src 'self' https:"
         );
 
         assert!(quitting);
-        // The reap blocks for up to ~15s, so an overlay emitted after it paints too late
-        // to cover anything.
         assert_eq!(events.into_inner(), ["app-closing", "reap"]);
     }
 
@@ -3056,9 +2846,6 @@ media-src 'self' https:"
         );
     }
 
-    // The visibility read blocks on a round trip to the event loop, and the window state
-    // that decides the overlay is the one the reap will block, not the one from before a
-    // dialog the user sat on for a minute.
     #[test]
     fn a_declined_quit_never_asks_whether_the_window_is_visible() {
         let asked = std::cell::Cell::new(false);
@@ -3122,9 +2909,6 @@ media-src 'self' https:"
         );
     }
 
-    // The tray's Quit reaches request_quit without going through the main window, and an
-    // autostart launch passes --hidden, whose window is built "visible": false and never
-    // shown. An overlay there paints into a window nobody can see.
     #[test]
     fn a_quit_with_the_window_hidden_raises_no_overlay() {
         assert!(
@@ -3133,9 +2917,6 @@ media-src 'self' https:"
         );
     }
 
-    // Not an accident of the API: Tauri's is_visible is IsWindowVisible, which reports the
-    // WS_VISIBLE style bit, and minimizing does not clear it. Restoring part way through
-    // the reap has to find the overlay rather than the freeze it explains.
     #[test]
     fn a_minimized_window_still_gets_the_overlay() {
         assert!(quit_raises_the_overlay(true, || Some(Ok(true))));
@@ -3189,7 +2970,6 @@ media-src 'self' https:"
             "[Desktop Entry]\nExec=/home/n/My Apps/Unsloth.AppImage --hidden\nTerminal=false";
         let hardened = hardened_autostart_entry(entry).expect("guard must be added");
         assert!(hardened.contains("Exec=\"/home/n/My Apps/Unsloth.AppImage\" --hidden\n"));
-        // TryExec is a plain string field, so the path stays unquoted.
         assert!(hardened.ends_with("\nTryExec=/home/n/My Apps/Unsloth.AppImage"));
     }
 
@@ -3197,11 +2977,9 @@ media-src 'self' https:"
     fn autostart_hardening_escapes_exec_reserved_characters() {
         let entry = "[Desktop Entry]\nExec=/opt/a\"b$c/app --hidden";
         let hardened = hardened_autostart_entry(entry).expect("guard must be added");
-        // Doubled: the string escape rule is undone before the quoting rule.
         assert!(hardened.contains(r#"Exec="/opt/a\\"b\\$c/app" --hidden"#));
     }
 
-    /// A single escaping backslash is an invalid escape, so launchers discard the whole Exec.
     #[test]
     fn autostart_hardening_doubles_the_escaping_backslash() {
         let entry = "[Desktop Entry]\nExec=/opt/a b`c$d/app --hidden";
@@ -3234,7 +3012,6 @@ media-src 'self' https:"
         let entry = "[Desktop Entry]\nExec=/home/n/Unsloth%20Studio.AppImage --hidden";
         let hardened = hardened_autostart_entry(entry).expect("guard must be added");
         assert!(hardened.contains("Exec=/home/n/Unsloth%%20Studio.AppImage --hidden\n"));
-        // TryExec is a plain string field, so the raw path stays.
         assert!(hardened.ends_with("\nTryExec=/home/n/Unsloth%20Studio.AppImage"));
     }
 
@@ -3294,8 +3071,7 @@ media-src 'self' https:"
         assert!(hardened.ends_with("\nTryExec=/plain/app"));
     }
 
-    // One element per field of RendererActivity: a narrower tuple is how a kind ships
-    // untested while a test named "each kind" still passes.
+    // One element per field of RendererActivity, so no kind ships untested.
     fn renderer_activity(state: &RendererActivityState) -> (bool, bool, bool) {
         let activity = state
             .lock()
@@ -3337,11 +3113,9 @@ media-src 'self' https:"
         apply_renderer_activity(&state, "unsaved_transcript", true);
         assert_eq!(renderer_activity(&state), (true, true, true));
 
-        // Downloads finishing must not clear an update that is still installing.
         apply_renderer_activity(&state, "downloads", false);
         assert_eq!(renderer_activity(&state), (false, true, true));
 
-        // Nor must a saved transcript clear either of the other two.
         apply_renderer_activity(&state, "unsaved_transcript", false);
         assert_eq!(renderer_activity(&state), (false, true, false));
     }
@@ -3351,7 +3125,6 @@ media-src 'self' https:"
         let state = new_renderer_activity_state();
         apply_renderer_activity(&state, "shell_update", true);
 
-        // A renderer/Rust mismatch must never flip a flag it did not name.
         apply_renderer_activity(&state, "training", true);
         apply_renderer_activity(&state, "", false);
         apply_renderer_activity(&state, "Downloads", true);
@@ -3359,8 +3132,6 @@ media-src 'self' https:"
         assert_eq!(renderer_activity(&state), (false, true, false));
     }
 
-    /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts
-    /// on, plus the one the tray reports progress for.
     #[test]
     fn the_tray_toggle_names_the_action_a_click_would_take() {
         assert_eq!(tray_toggle_label("running"), ("Stop Server", true));
@@ -3369,9 +3140,7 @@ media-src 'self' https:"
         assert_eq!(tray_toggle_label("starting"), ("Starting\u{2026}", false));
     }
 
-    /// Every remaining BackendStatus: the listener acts on none of them, so the item is
-    /// greyed rather than offering a click that would be a silent no-op. Keep this list in
-    /// step with the union in use-tauri-backend.ts.
+    /// Keep this list in step with the BackendStatus union in use-tauri-backend.ts.
     #[test]
     fn a_status_the_tray_cannot_act_on_greys_the_toggle() {
         for status in [
@@ -3391,9 +3160,7 @@ media-src 'self' https:"
         }
     }
 
-    /// The status is whatever string the webview sent, so a mismatched bundle can pass
-    /// something that is not a status at all. Match the whole string: a prefix or a case
-    /// fold would let "run" read as an offer to stop a server that is not running.
+    /// Match the whole string: a prefix or case fold would let "run" offer to stop a stopped server.
     #[test]
     fn an_unrecognised_status_greys_the_toggle_rather_than_guessing() {
         for status in ["", " ", "Running", "RUNNING", "running ", "run", "{}"] {

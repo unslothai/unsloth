@@ -351,7 +351,6 @@ export const ptBR = {
       clearDataFailed: "Não foi possível limpar os dados de sites. Tente novamente.",
     },
   },
-  // English fallback until this experimental feature is translated.
   managedEngines: en.managedEngines,
   sandboxSetup: {
     levelTitle: "O sandbox do sistema não está disponível",
@@ -442,7 +441,6 @@ export const ptBR = {
     queueingOnHint: "Mensagens novas esperam a vez.",
     queueingHintShared: "A fila é mantida.",
   },
-  // The chat header's "…" menu.
   chatMenu: {
     more: "Opções do chat",
     copy: "Copiar",
@@ -503,7 +501,6 @@ export const ptBR = {
     shutdown: "Desligar",
   },
   shell: {
-    // The Help submenu of the account menu, and the desktop app's Help menu.
     helpMenu: {
       documentation: "Documentação",
       keyboardShortcuts: "Atalhos de teclado",
@@ -572,11 +569,8 @@ export const ptBR = {
       export: "Exportar",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",
-      // Shown under an empty project folder in the sidebar.
       noChats: "Nenhum chat",
-      // Shown in the Projects section when every project is pinned, so it has no rows.
       allProjectsPinned: "Todos os projetos fixados",
-      // Same, when some of them are filed in custom sections instead.
       allProjectsFiled: "Todos os projetos estão fixados ou em seções",
       noProjects: "Nenhum projeto",
       showMore: "Mostrar mais",
@@ -677,11 +671,9 @@ export const ptBR = {
       organizeChats: "Organizar conversas",
       organizeProjects: "Organizar projetos",
       sortPinnedChats: "Ordenar conversas fixadas",
-      // Header of the menu's section-visibility toggles.
       show: "Mostrar",
       newSection: "Nova seção",
     },
-    // User-made sidebar sections that group chats and projects.
     sections: {
       createTitle: "Nova seção",
       createDescription: "Agrupe conversas e projetos como quiser",
@@ -692,16 +684,13 @@ export const ptBR = {
       edit: "Editar",
       remove: "Remover seção",
       markAllRead: "Marcar tudo como lido",
-      // The row menu's one submenu for projects and sections, and its headings.
       moveTo: "Mover para",
       section: "Seção",
       sectionsHeading: "Seções",
       removeFromProject: "Remover do projeto",
       newSection: "Nova seção",
       removeFromSection: "Remover da seção",
-      // Names the project or section the row leaves; the two above are for when it is not one.
       removeFrom: "Remover de {name}",
-      // Shown in a section with nothing filed in it yet.
       empty: "Arraste conversas ou projetos para cá",
       sectionOptions: "Opções da seção",
       newChatInSection: "Novo chat em {name}",
@@ -2094,7 +2083,6 @@ export const ptBR = {
           updateChecksDisabled:
             "As verificações de atualização estão desativadas (UNSLOTH_DISABLE_UPDATE_CHECK=1), então os backends disponíveis não são consultados.",
         },
-        // Not rendered: extra terms the settings search matches these rows on.
         llamaBackendKeywords:
           "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
       },
@@ -2115,7 +2103,6 @@ export const ptBR = {
         reloadRequired: "Recarregue o modelo para aplicar as novas opções de memória.",
         loadError: "Falha ao carregar as configurações de memória do modelo",
         saveError: "Falha ao salvar as configurações de memória do modelo",
-        // Not rendered: extra terms the settings search matches these rows on.
         modelMemoryKeywords:
           "mlock memlock ulimit vram gpu memoria ram residente fixar travar manter carregado descarregar ocioso mmap no-mmap load-mode paginacao swap",
       },
@@ -2243,8 +2230,6 @@ export const ptBR = {
       docs: "Documentação",
       agentDocs: "Abrir a documentação de configuração do {agent}",
       copyGeneratedCommand: "Copiar comando gerado",
-      // English is the baseline until translated: the three-part sentence is assembled around an
-      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -3715,7 +3700,6 @@ export const ptBR = {
       all: "Tudo",
       chats: "Chats",
     },
-    // The Chats tab: conversations and projects, kept apart from every file tab.
     chats: {
       sections: {
         chats: "Chats",

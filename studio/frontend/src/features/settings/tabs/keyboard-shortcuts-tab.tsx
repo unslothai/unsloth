@@ -52,7 +52,6 @@ import {
   useKeyboardShortcutsStore,
 } from "../stores/keyboard-shortcuts-store";
 
-/** The ⇧⌘O key cap. Plain text when the slot carries no chord. */
 function Chord({
   label,
   tone,
@@ -60,14 +59,12 @@ function Chord({
 }: {
   label: string;
   tone: "assigned" | "unassigned" | "recording";
-  /** Why the browser may swallow this chord. Hover only, so the caps stay a
-   *  clean column. */
+  /** Hover only, so the caps stay a clean column. */
   note?: string;
 }) {
   const cap = (
     <span
       className={cn(
-        // Width hugs the chord, so ⌘, and ⇧⌘O share a left edge.
         "inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium tabular-nums",
         tone === "assigned" && "bg-muted text-foreground",
         tone === "unassigned" && "text-muted-foreground",
@@ -89,7 +86,6 @@ function Chord({
   );
 }
 
-/** Borderless pencil / trash / undo. */
 function RowIconButton({
   icon,
   label,
@@ -121,7 +117,6 @@ function RowIconButton({
   );
 }
 
-/** Which row and which of its two chords the recorder is listening for. */
 interface RecordingTarget {
   id: ShortcutId;
   slot: ShortcutSlot;
@@ -137,9 +132,7 @@ export function KeyboardShortcutsTab() {
 
   const [query, setQuery] = useState("");
   const [recording, setRecording] = useState<RecordingTarget | null>(null);
-  // Shown under the row being recorded when the pressed chord is rejected.
   const [recordingError, setRecordingError] = useState<string | null>(null);
-  // Search the list by pressing a chord instead of typing its name.
   const [byKeystroke, setByKeystroke] = useState(false);
   const [keystroke, setKeystroke] = useState<ShortcutBinding | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -147,16 +140,12 @@ export function KeyboardShortcutsTab() {
   const mac = isMacPlatform();
   const conflicts = useMemo(() => findConflicts(overrides), [overrides]);
 
-  // Capture phase, so the chord being recorded reaches this listener before the
-  // shortcut it is replacing fires and before Radix's Escape-to-close.
+  // Capture phase: reach the chord before the shortcut it replaces and Radix's Escape-to-close.
   useEffect(() => {
     if (!recording) return;
     const def = SHORTCUT_DEFS.find((entry) => entry.id === recording.id);
     const onKeyDown = (event: KeyboardEvent) => {
-      // Tab held bare is never an acceptable binding, so it is still what it was: the way out. Left
-      // swallowed with the rest, a row that records bare keys had no keyboard exit at all, since
-      // Escape is a chord there and Enter or Space on the focused pencil records instead of
-      // pressing it. Not prevented, so focus moves on as it would have.
+      // Bare Tab is never bindable, so let it move focus; otherwise bare-key rows had no keyboard exit.
       if (
         event.code === "Tab" &&
         !event.metaKey &&
@@ -169,9 +158,7 @@ export function KeyboardShortcutsTab() {
       }
       event.preventDefault();
       event.stopPropagation();
-      // Every keydown is swallowed above, so bare Escape is the only way out of recording. The
-      // exception is a row that takes bare keys: Escape is the chord it ships, so recording it has
-      // to be possible, and the pencil cancels there instead.
+      // Bare Escape exits recording, except on rows that take bare keys, where the pencil cancels.
       if (
         event.code === "Escape" &&
         !event.metaKey &&
@@ -185,7 +172,6 @@ export function KeyboardShortcutsTab() {
         return;
       }
       const binding = bindingFromEvent(event);
-      // Modifier held on its own: the user is still assembling the chord.
       if (!binding) return;
       if (!isAcceptableBinding(binding, def?.allowBareKey)) {
         setRecordingError(t("settings.keyboardShortcuts.needsModifier"));
@@ -200,30 +186,21 @@ export function KeyboardShortcutsTab() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [recording, setBinding, t]);
 
-  // Capture phase, as the recorder is: the chord has to arrive before the shortcut
-  // it names fires, and before Radix's Escape closes the dialog. The recorder owns
-  // the keyboard while it runs, so this stands down for it.
+  // Capture phase, like the recorder, which owns the keyboard while it runs.
   useEffect(() => {
     if (!byKeystroke || recording) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      // Only while the box has focus: the rest of the tab keeps its own keys.
       if (document.activeElement !== searchRef.current) return;
-      // Read the key through the binding, not event.code, so the fallback for an
-      // engine that reports no code covers Tab and Escape here too.
+      // Through the binding so the no-code fallback covers Tab and Escape.
       const binding = bindingFromEvent(event);
-      // Modifier on its own: the chord is still being assembled.
       if (!binding) return;
       const bare = !binding.mod && !binding.ctrl && !binding.alt;
-      // Tab still moves focus: a mode that swallowed it would trap the keyboard here.
+      // Tab still moves focus, or the keyboard would be trapped here.
       if (binding.code === "Tab" && bare) return;
       event.preventDefault();
       event.stopPropagation();
-      // Escape backs out a step at a time: the chord first, then the mode. It is the one
-      // shipped default the box cannot take as a query (declineToolRequest): the recorder
-      // can free Escape because it swallows keys for a single chord, while this mode
-      // persists, so freeing it here would leave a focused box eating the dialog's own
-      // dismiss for as long as the mode is on. That row is found by name instead, where
-      // the query also matches the "Esc" cap. Shift+Escape is unaffected and searchable.
+      // Escape backs out the chord, then the mode; this persistent mode cannot take it as a query or it
+      // would eat the dialog's dismiss. Shift+Escape is searchable.
       if (binding.code === "Escape" && bare && !binding.shift) {
         if (keystroke) setKeystroke(null);
         else setByKeystroke(false);
@@ -237,7 +214,7 @@ export function KeyboardShortcutsTab() {
   }, [byKeystroke, recording, keystroke]);
 
   const toggleByKeystroke = () => {
-    // The two searches filter the same list, so leaving one arms the other empty.
+    // Both searches filter the same list, so switching clears the other.
     setByKeystroke((on) => !on);
     setQuery("");
     setKeystroke(null);
@@ -246,7 +223,6 @@ export function KeyboardShortcutsTab() {
 
   const matches = useMemo(() => {
     if (byKeystroke) {
-      // Nothing pressed yet: the whole list, not an empty one.
       if (!keystroke) return null;
       return new Set(
         SHORTCUT_DEFS.filter((def) =>
@@ -273,10 +249,8 @@ export function KeyboardShortcutsTab() {
     );
   }, [query, t, overrides, mac, byKeystroke, keystroke]);
 
-  // One list, in registry order, so the daily rows sit above the fold.
   const visible = SHORTCUT_DEFS.filter(
-    // A web-only row on the desktop build would bind a chord whose handler
-    // returns, so it is left out rather than shown as a key that does nothing.
+    // Web-only rows would bind dead keys on desktop.
     (def) => (!matches || matches.has(def.id)) && !(isTauri && def.webOnly),
   );
 
@@ -289,8 +263,6 @@ export function KeyboardShortcutsTab() {
     );
   };
 
-  /** One chord line: cap and pencil left, trash right. A row with an
-   *  alternate stacks two. */
   const renderSlot = (def: ShortcutDef, slot: ShortcutSlot): ReactNode => {
     const value = resolveBinding(overrides, def.id, slot);
     const parsed = parseBinding(value);
@@ -300,7 +272,6 @@ export function KeyboardShortcutsTab() {
         ? "settings.keyboardShortcuts.primarySlot"
         : "settings.keyboardShortcuts.alternateSlot",
     );
-    // The warning rides the cap's tooltip, not a third line of description.
     const reserved =
       !isTauri && !isRecording && isBrowserReservedBinding(value);
 
@@ -351,15 +322,14 @@ export function KeyboardShortcutsTab() {
   const renderRow = (def: ShortcutDef) => {
     const isRecording = recording?.id === def.id;
     const conflicted = conflicts.has(def.id) && !isRecording;
-    // Say which side of a clash this row is on, since only the owner runs.
+    // Only the owner of a clash runs.
     const shadowed =
       conflicted &&
       SHORTCUT_SLOTS.every((slot) => {
         const value = resolveBinding(overrides, def.id, slot);
         return !value || shortcutOwningBinding(overrides, value) !== def.id;
       });
-    // Anything this action ships an alternate for keeps its line, cleared or not: hiding a cleared
-    // slot would take its restore control with it, and Reset all is not a way back from one edit.
+    // Rows with a shipped alternate keep that line even when cleared, so its restore control stays.
     const hasAlternate =
       defaultBindingFor(def, "alternate", mac) !== null ||
       resolveBinding(overrides, def.id, "alternate") !== null ||
@@ -428,8 +398,7 @@ export function KeyboardShortcutsTab() {
         />
         <Input
           ref={searchRef}
-          // Chord mode shows the press, not text: the field is read-only there and
-          // the capture listener above is what fills it.
+          // Read-only in chord mode; the capture listener fills it.
           value={
             byKeystroke
               ? keystroke
@@ -492,8 +461,6 @@ export function KeyboardShortcutsTab() {
           {t("settings.keyboardShortcuts.noResults")}
         </p>
       ) : (
-        // No frame: the dividers alone separate the rows, and they line up
-        // with the heading and the search box above.
         <div className="divide-y divide-border/60">{visible.map(renderRow)}</div>
       )}
 

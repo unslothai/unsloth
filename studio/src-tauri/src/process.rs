@@ -120,8 +120,8 @@ pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Res
     for mut cmd in open::commands(target.as_ref()) {
         scrub_appimage_launcher_env(&mut cmd);
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        // The same double fork plus setsid the `open` crate uses, so the
-        // launcher outlives us; waiting reaps the intermediate child.
+        // Same double fork + setsid as the `open` crate, so the launcher outlives us; waiting
+        // reaps the intermediate child.
         unsafe {
             use std::os::unix::process::CommandExt;
             cmd.pre_exec(|| {
@@ -220,8 +220,6 @@ mod appimage_environment_tests {
         let output = cmd.output().expect("run isolated child");
         let env = String::from_utf8(output.stdout).unwrap();
         assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64:/private/runtime"));
-        // The bundled xdg-utils must not shadow the host copies for a child
-        // that reaches the desktop, but they stay available as a fallback.
         assert!(env.contains("PATH=/usr/bin:/bin:/tmp/.mount_Unsloth/usr/bin"));
         assert!(!env.contains(appimage_isolated_path().to_string_lossy().as_ref()));
         assert!(!env.contains("PYTHONHOME="));
@@ -252,7 +250,6 @@ mod appimage_environment_tests {
             .map(|key| (key, std::env::var_os(key)));
         std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
         std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
-        // The AppRun cleared it so the host copies could not outrank the bundle.
         std::env::remove_var("LD_LIBRARY_PATH");
         std::env::set_var(
             APPIMAGE_HOST_LIBRARY_PATH,
@@ -321,7 +318,6 @@ mod appimage_environment_tests {
         scrub_appimage_launcher_env(&mut cmd);
         let output = cmd.output().expect("run host launcher");
         let env = String::from_utf8(output.stdout).unwrap();
-        // The host's own GLib binaries must win, and the bundled tools stay last.
         assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64"));
         assert!(env.contains("PATH=/usr/bin:/bin:/tmp/.mount_Unsloth/usr/bin"));
         assert!(!env.contains("FONTCONFIG_FILE="));
@@ -679,11 +675,8 @@ fn process_image_path(process_id: u32) -> Option<std::path::PathBuf> {
     )))
 }
 
-/// Reject an update when a process image runs from the target venv or the exact
-/// supported Unsloth shim.
-///
-/// Callers must hold the runtime launch mutex across the whole mutation: this
-/// scan finds older consumers, and the gate blocks new launches after it.
+/// Reject an update while a process runs from the target venv or shim. Callers must hold the
+/// runtime launch mutex across the mutation: this scan finds existing users, the gate blocks new ones.
 pub(crate) fn ensure_managed_environment_is_idle(
     managed_binary: &std::path::Path,
 ) -> Result<(), String> {
@@ -876,10 +869,7 @@ mod studio_runtime_launch_guard_tests {
         with_named_studio_runtime_launch_guard(&name, || Ok(())).unwrap();
     }
 
-    // Since issue #8490 the long-lived Unsloth image is Scripts\python.exe, not
-    // Scripts\unsloth.exe. ensure_managed_environment_is_idle matches by venv
-    // root, so both must still register as "the environment is in use" -- a
-    // miss here would let an update mutate a venv somebody is running.
+    // The long-lived image is Scripts\python.exe, not unsloth.exe; both must count as in use.
     #[test]
     fn idle_scan_still_covers_a_python_hosted_studio() {
         let venv = std::env::temp_dir().join(format!(
@@ -906,7 +896,6 @@ mod studio_runtime_launch_guard_tests {
             );
         }
 
-        // A sibling directory sharing the root's prefix must still be outside.
         let sibling = venv.with_file_name(format!(
             "{}-other",
             venv.file_name().unwrap().to_string_lossy()
@@ -1073,10 +1062,8 @@ pub struct BackendProcess {
     pub generation: u64,
     pub diagnostics_session: Option<BackendLog>,
     pub adopted_watchdog_generation: Option<u64>,
-    /// Set by the start watchdog, under this mutex, once it has committed to
-    /// emitting server-start-timeout for the current generation. Port
-    /// validation refuses to claim afterwards, so the window never receives
-    /// server-port behind an error it has no handler to clear.
+    /// Set by the start watchdog, under this mutex, once it commits to server-start-timeout; port
+    /// validation then refuses to claim.
     pub start_timed_out: bool,
 }
 
@@ -1168,9 +1155,7 @@ pub(crate) fn owned_backend_snapshot(
     Ok(snapshot)
 }
 
-/// Whether the handle that names *port* still refers to a process that EXISTS: a handle
-/// outlives its process, and another process can bind the freed port.
-/// Anything this cannot read leaves the handle trusted, so a running backend is never declared dead.
+/// Whether the handle naming *port* refers to a process that still exists; unreadable state trusts it.
 pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) -> bool {
     let mut proc = match state.lock() {
         Ok(guard) => guard,
@@ -1189,11 +1174,7 @@ pub(crate) fn owned_backend_on_port_is_running(state: &BackendState, port: u16) 
     }
 }
 
-/// Whether anything of ours COULD be on *port*, which is the question ABSENCE needs.
-///
-/// A handle we spawned names no port until a probe validates one, and for that whole window
-/// `owned_backend_on_port_is_running` calls our own starting backend somebody else's: right
-/// for presence, wrong here, since a refusal about a port we are about to bind proves nothing.
+/// Whether anything of ours could bind *port*: a spawned handle names no port until validated.
 pub(crate) fn owned_backend_could_bind_port(state: &BackendState, port: u16) -> bool {
     let mut proc = match state.lock() {
         Ok(guard) => guard,
@@ -1221,8 +1202,7 @@ pub(crate) fn owned_backend_could_bind_port(state: &BackendState, port: u16) -> 
     }
 }
 
-/// Whether *pid* still exists: false only when the pid is PROVABLY gone. A zombie has exited
-/// but is unreaped, which `kill(pid, 0)` alone cannot see.
+/// False only when *pid* is provably gone, zombies included (kill(pid, 0) cannot see those).
 pub(crate) fn backend_pid_is_running(pid: u32) -> bool {
     crate::desktop_backend_owner::pid_is_not_dead(pid)
         && !crate::process_identity::is_zombie(pid)
@@ -1288,18 +1268,8 @@ pub(crate) fn clear_adopted_backend_if_current(
     true
 }
 
-/// Drop a spawned backend handle whose child has provably exited, so a launch can spawn.
-///
-/// The counterpart of `clear_adopted_backend_if_current` for the arm this app owns. A
-/// `Spawned` handle with no validated port is normally a healthy cold start still
-/// importing torch, so a probe that does not verify is on its own no reason to clear
-/// anything: this fires only on an exit status the child has actually reported. Without
-/// it, a child that died without its stdout ever reaching EOF, which is the one case the
-/// crash detector in `read_output_stream` cannot see, leaves `has_owned_backend` true for
-/// the life of the app: every launch then answers `Backend is already running.` and every
-/// preflight answers `desktop_owned_backend_starting`.
-///
-/// Unlike the adopted case, this app wrote the owner file, so it is removed here too.
+/// Drop a spawned handle whose child provably exited (e.g. died without stdout EOF), so a launch
+/// can spawn. Removes the owner file too.
 pub(crate) fn clear_spawned_backend_if_exited(
     state: &BackendState,
     generation: u64,
@@ -1317,9 +1287,7 @@ pub(crate) fn clear_spawned_backend_if_exited(
         .as_mut()
         .and_then(OwnedBackendHandle::spawned_child_mut)
     {
-        // One look, not the thirty of `exit_status_after_stdout_closed`. This runs on the
-        // preflight a window mount drives, so it must not block it for three seconds, and
-        // a child merely slow to be reaped is answered by the next preflight instead.
+        // One try_wait, not a polling loop: this runs on preflight and must not block.
         Some(child) => match child.try_wait() {
             Ok(Some(status)) => status.to_string(),
             Ok(None) => return false,
@@ -1328,7 +1296,6 @@ pub(crate) fn clear_spawned_backend_if_exited(
                 return false;
             }
         },
-        // Adopted, or nothing owned at all. Neither belongs to this function.
         None => return false,
     };
 
@@ -1401,47 +1368,23 @@ pub(crate) fn trim_line_endings(bytes: &[u8]) -> &[u8] {
     &bytes[..end]
 }
 
-/// Longest single line we will hand to `tauri.log`. Matches the phase log's own cap, which
-/// already trimmed these; without it the same line was capped on one sink and not the other.
+/// Longest line handed to `tauri.log`; matches the phase log's cap.
 pub(crate) const MAX_BACKEND_LOG_LINE_BYTES: usize = 16 * 1024;
 
-/// Keep only the last frame of a carriage-return progress redraw.
-///
-/// We read to `\n`, so a tqdm or pip bar arrives as every frame it ever drew concatenated
-/// into one line, across three sinks: one "Loading weights" bar measured 5086 bytes. Only
-/// the final frame carries information. Text with no interior `\r` is returned untouched,
-/// and a bar whose last frame is empty keeps the last non-empty one rather than a blank line.
-///
-/// `_TeeStream._last_frame` in studio/backend/run.py applies this same rule to this same
-/// input for the session log, so the two sinks stay interchangeable for a reader.
+/// Keep only the last non-empty frame of a `\r` progress redraw.
+/// Same rule as `_TeeStream._last_frame` in studio/backend/run.py.
 pub(crate) fn collapse_progress_frames(text: &str) -> &str {
     if !text.contains('\r') {
         return text;
     }
     text.rsplit('\r')
         .find(|frame| !frame.trim().is_empty())
-        // All frames blank, so the line is blank. Return a frame, not the whole text, which
-        // still holds the `\r` we were asked to collapse away.
+        // Return a frame, not the whole text, which still holds the `\r`.
         .unwrap_or_else(|| text.rsplit('\r').next().unwrap_or(""))
 }
 
-/// True when the line is one of the backend's own structured access-log records **and it
-/// reports success**.
-///
-/// These already reach the phase log (stream-tagged and stamped) and the backend's own
-/// session log, so a third copy in `tauri.log` was pure duplication: 4056 of 5308 lines on
-/// an idle 4h session, pushing real failures out of the 5 MiB window inside a day.
-///
-/// The 2xx check is the point. The backend's heartbeat suppressor exempts non-2xx so a
-/// failing poll logs every time, and `tauri.log` is where a watchdog going red gets read.
-/// A record with no `status_code` we cannot vouch for, so it keeps INFO too.
-///
-/// For the records this *does* match, "debug" means dropped, not demoted: `setup_logging`
-/// in main.rs builds every logger at `LevelFilter::Info` with no `RUST_LOG` to raise it,
-/// so `log::max_level()` is `Info` -- including under backend `--verbose`, which emits
-/// *more* of them. Deliberate: `append_phase_line` below runs before this decision, and
-/// both that log and the session log are already offered by the support report and by
-/// Settings > Logs. Nothing is lost; it moves one source over in the picker.
+/// True for the backend's own 2xx access-log records, already in the phase and session logs.
+/// Non-2xx and unparseable records stay at INFO so failures reach tauri.log.
 fn is_backend_access_log_line(text: &str) -> bool {
     let trimmed = text.trim_start();
     if !trimmed.starts_with('{') {
@@ -1459,12 +1402,11 @@ fn is_backend_access_log_line(text: &str) -> bool {
     )
 }
 
-/// Windows `CREATE_NO_WINDOW` flag — suppresses console windows for child processes.
+/// Windows `CREATE_NO_WINDOW` flag: suppresses console windows for children.
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-/// Force-kill a Windows process tree via hidden `taskkill /T /F`, falling
-/// back to `child.kill()` if taskkill itself fails.  Reaps the child afterward.
+/// Force-kill a process tree via hidden `taskkill /T /F`, falling back to `child.kill()`; reaps after.
 #[cfg(windows)]
 pub(crate) fn force_kill_process_tree(
     pid: u32,
@@ -1499,18 +1441,8 @@ pub(crate) fn force_kill_process_tree(
     info!("{} process tree force stopped", label);
 }
 
-/// Whether a Windows venv's site-packages still holds something the CLI trampoline
-/// could import.
-///
-/// The dist-info is accepted alongside the package directory, and for the same reason
-/// `_managed_cli_site_packages_layout` in unsloth_cli/commands/studio.py accepts it: a
-/// PEP 660 editable install of the checkout leaves a .pth and a `unsloth-*.dist-info`
-/// here and no `unsloth_cli/` at all. Ranking that below an empty new layout would send
-/// every capability probe at the interpreter with nothing to import.
-///
-/// It cannot prove the package imports, and does not try to. This runs on the launch
-/// path, so it stays filesystem-only; the two Python-side probes that DO run an import
-/// are the ones allowed to spawn an interpreter.
+/// Whether site-packages holds something the trampoline could import (package dir, or dist-info for
+/// editable installs). Filesystem-only, since this runs on the launch path.
 #[cfg(windows)]
 fn windows_site_packages_carries_the_cli(site_packages: &std::path::Path) -> bool {
     if site_packages.join("unsloth_cli").exists() {
@@ -1526,36 +1458,17 @@ fn windows_site_packages_carries_the_cli(site_packages: &std::path::Path) -> boo
     })
 }
 
-/// Returns the path to the unsloth binary inside the managed venv, if it exists.
-/// Checks the new layout (~/.unsloth/studio/unsloth_studio/) first,
-/// then falls back to the old layout (~/.unsloth/studio/.venv/) for compat.
+/// Managed venv unsloth binary: new layout (unsloth_studio/) first, then legacy .venv/.
 pub(crate) fn find_unsloth_binary_in_studio_dir(
     studio: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
-    // New layout (upstream scripts >= March 2026)
     let new_base = studio.join("unsloth_studio");
-    // Old layout (bundled scripts, older upstream)
     let old_base = studio.join(".venv");
 
     let bases = [new_base, old_base];
 
-    // Three passes rather than one, because a migration interrupted by an open
-    // handle can leave HALF of either layout behind (install.ps1 says so where it
-    // renames the tree), and layout order alone then picks the half that cannot
-    // run. Preference is by usefulness first, layout second:
-    //
-    //   1. a launcher with the interpreter beside it -- a complete environment;
-    //   2. Windows only, an interpreter with no launcher -- quarantine takes the
-    //      unsigned stub and leaves a working install, and nothing executes the
-    //      stub any more, so its absence no longer means "not installed". Within
-    //      this pass, a layout that still holds the CLI package outranks one
-    //      that holds only an interpreter, whichever layout it is;
-    //   3. a launcher with no interpreter -- useless to every caller here, but it
-    //      is what this function answered before, and its error message names the
-    //      missing interpreter, which is more use than "not installed".
-    //
-    // The returned path is the canonical handle whether or not the file exists:
-    // every Windows caller reaches the CLI through its parent directory.
+    // Three passes, since an interrupted migration can leave half of either layout:
+    // 1) launcher+interpreter, 2) (Windows) interpreter only, package-holding first, 3) launcher only.
     for base in &bases {
         #[cfg(unix)]
         let bin = base.join("bin").join("unsloth");
@@ -1572,15 +1485,7 @@ pub(crate) fn find_unsloth_binary_in_studio_dir(
         }
     }
 
-    // Pass 2 twice over, package first. When an interrupted migration leaves an
-    // interpreter in BOTH layouts, layout order alone would hand back the new
-    // one even if its site-packages is empty and the old one still carries the
-    // package the trampoline imports, and every capability probe would then
-    // report an install that cannot start. A directory test, not an import
-    // probe: this is called on the launch path and from the capability checks,
-    // so it must stay a stat rather than an interpreter spawn. It cannot prove
-    // the package is importable, only that one candidate has something to
-    // import and the other has nothing, which is the whole difference here.
+    // Package-holding interpreter first; a stat, not an import probe, since this runs on the launch path.
     #[cfg(windows)]
     for base in &bases {
         if base.join("Scripts").join("python.exe").exists()
@@ -1615,46 +1520,16 @@ pub fn find_unsloth_binary() -> Option<std::path::PathBuf> {
     find_unsloth_binary_in_studio_dir(&studio)
 }
 
-/// The Windows console script is a generated, unsigned PE wrapper. Application
-/// Control (AppLocker, WDAC, Smart App Control) denies it while the managed
-/// python.exe beside it - a copy of the signed CPython binary - still runs, so
-/// every managed CLI invocation goes through the interpreter instead.
-///
-/// The leading sys.path edit is what `-I` used to buy, without the rest of it.
-/// `python -c` puts the working directory on sys.path[0] and the console script
-/// never does, so a stray unsloth_cli beside the caller would shadow the managed
-/// package; stripping that one entry closes it and leaves alone everything the
-/// console script honours. `-I` implies `-E`, which discarded PYTHONPATH,
-/// PYTHONWARNINGS, PYTHONHASHSEED, PYTHONPROFILEIMPORTTIME and user
-/// site-packages, an observable difference on machines with no policy at all.
-///
-/// The safe_path guard is why the comprehension is not simply `x not in (...)`.
-/// Under -P or PYTHONSAFEPATH there is no implicit `-c` entry to remove, so
-/// whatever sits at sys.path[0] is an explicit PYTHONPATH entry the console
-/// script would have honoured; a PYTHONPATH that starts at the working
-/// directory was measured selecting a different package before and after.
-/// getattr, not sys.flags.safe_path: the attribute is 3.11+ and this repo
-/// supports 3.9.
-///
-/// -X utf8 is the one deliberate divergence from the console script, and it
-/// predates this work: the shipped updater already spelled it this way, and
-/// mangled setup output on a non-UTF-8 console code page is what it exists to
-/// prevent (see tests/python/test_windows_setup_output_encoding.py). Under an
-/// explicit PYTHONUTF8=0 the child therefore runs in UTF-8 mode where the stub
-/// would not have.
-///
-/// sys.argv[0] is assigned before the import because unsloth_cli decides at
-/// import time whether it is the console script, which gates the Windows UTF-8
-/// stream reconfigure and the -np<N> argv rewrite. It also sets Typer's
-/// prog_name to "unsloth"; the stub prints "unsloth.exe", so usage text reads
-/// slightly cleaner here rather than matching byte for byte.
+/// Run the CLI via python.exe: Application Control blocks the unsigned unsloth.exe wrapper.
+/// No -I (it implies -E); instead drop the implicit cwd sys.path[0], except under safe_path
+/// (3.11+, hence getattr).
+/// -X utf8 deliberately diverges from the console script. sys.argv[0] is set before the import:
+/// unsloth_cli checks it at import time.
 #[cfg(windows)]
 pub(crate) const WINDOWS_CLI_ENTRYPOINT: &str =
     "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())";
 
-/// The program and argument vector that run the managed CLI without executing
-/// `bin` itself. On non-Windows platforms `bin` is a plain script with a
-/// shebang and stays the program.
+/// Program and argv that run the managed CLI without executing `bin` (POSIX keeps `bin`).
 #[derive(Debug)]
 pub(crate) struct ManagedCliInvocation {
     pub program: std::path::PathBuf,
@@ -1662,9 +1537,7 @@ pub(crate) struct ManagedCliInvocation {
 }
 
 impl ManagedCliInvocation {
-    /// The single place an invocation becomes a process. Callers that need the
-    /// resolved program before spawning, to log what they are about to start,
-    /// resolve first and come back through here rather than rebuilding argv.
+    /// The single place an invocation becomes a process.
     pub(crate) fn to_command(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args);
@@ -1672,9 +1545,7 @@ impl ManagedCliInvocation {
     }
 }
 
-/// Resolve how to run `bin <args>` for the managed install. Fails closed on
-/// Windows when the interpreter is missing rather than falling back to the
-/// stub, which is exactly what a policy-blocked machine cannot run.
+/// Fails closed on Windows without the interpreter rather than falling back to the blocked stub.
 pub(crate) fn resolve_managed_cli_invocation(
     bin: &std::path::Path,
     args: &[&str],
@@ -1682,13 +1553,8 @@ pub(crate) fn resolve_managed_cli_invocation(
     resolve_managed_cli_invocation_with(bin, args, Isolation::Inherit)
 }
 
-/// Whether a managed invocation runs isolated from the ambient Python environment.
-///
-/// Everything the user could equally have typed themselves inherits, because the
-/// console script does and the swap has to be invisible. The desktop updater does
-/// not: it shipped with `-I` before any of this, nobody types it, and it rewrites
-/// the very environment it runs in, so a `pip install --user unsloth_cli` deciding
-/// which package gets updated is a real hazard rather than a parity question.
+/// Only the updater runs isolated (-I): it rewrites the environment it runs in. Everything else
+/// inherits the ambient Python env like the console script.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Isolation {
     Inherit,
@@ -1712,12 +1578,8 @@ pub(crate) fn resolve_managed_cli_invocation_with(
                 python.display()
             ));
         }
-        // No -I, for the reason on WINDOWS_CLI_ENTRYPOINT. -X utf8 stays, so this
-        // process writes UTF-8 into read_lossy_lines whatever the locale, and a
-        // caller's PYTHONIOENCODING overrides it exactly as it overrides the
-        // console script's.
-        // -X utf8 before -I: -I implies -E, which would discard PYTHONUTF8, and the
-        // flag form survives it.
+        // No -I (see WINDOWS_CLI_ENTRYPOINT). -X utf8 goes before -I: -I implies -E, which drops
+        // PYTHONUTF8.
         let mut argv: Vec<std::ffi::OsString> = match isolation {
             Isolation::Inherit => vec!["-X", "utf8", "-c", WINDOWS_CLI_ENTRYPOINT],
             Isolation::Isolated => vec!["-X", "utf8", "-I", "-c", WINDOWS_CLI_ENTRYPOINT],
@@ -1734,8 +1596,6 @@ pub(crate) fn resolve_managed_cli_invocation_with(
 
     #[cfg(not(windows))]
     {
-        // Isolation is a Windows-only concept: POSIX executes the console script
-        // itself, so there is no interpreter command line to isolate.
         let _ = isolation;
         Ok(ManagedCliInvocation {
             program: bin.to_path_buf(),
@@ -1758,10 +1618,7 @@ pub(crate) fn build_managed_cli_command_with(
     isolation: Isolation,
 ) -> Result<Command, String> {
     let cmd = resolve_managed_cli_invocation_with(bin, args, isolation)?.to_command();
-    // PYTHONHOME and PYTHONPATH are deliberately left alone. Removing them was
-    // belt and braces under -I, which dropped them anyway. Without -I it would
-    // bite: the console script honours both, so scrubbing them here would make
-    // the swap observable.
+    // PYTHONHOME/PYTHONPATH deliberately kept: the console script honours both.
     Ok(cmd)
 }
 
@@ -1784,9 +1641,7 @@ pub(crate) fn home_dir_available() -> Result<(), String> {
     usable_home_dir(dirs::home_dir(), &windows_roots(), true).map(|_| ())
 }
 
-/// The profile a managed install may live under, or why it cannot. One policy for
-/// both callers: a home reported available but then rejected by the resolver sends
-/// a SYSTEM account to an install flow that cannot start.
+/// One policy for both callers, so a SYSTEM account is never sent to an install it cannot start.
 fn usable_home_dir(
     home: Option<std::path::PathBuf>,
     windirs: &[std::path::PathBuf],
@@ -1803,10 +1658,7 @@ fn usable_home_dir(
         ));
     }
 
-    // The installer is the one caller that may build the profile as it goes, the
-    // way it did before it shared this resolver. For everything else a home that
-    // is not there yet is an unmounted roaming profile, and creating it would
-    // leave an empty folder shadowing the real one when it arrives.
+    // Only the installer may create the profile; elsewhere a missing home is an unmounted roaming profile.
     if require_existing && !home.is_dir() {
         return Err(format!(
             "Home directory {} is not reachable",
@@ -1816,13 +1668,10 @@ fn usable_home_dir(
     Ok(home)
 }
 
-/// Marker the desktop sets on every CLI child it owns. The Python CLI reads it to
-/// tell a desktop-managed launch from a user typing the same command in a shell.
+/// Set on every desktop-owned CLI child; the Python CLI reads it.
 pub(crate) const DESKTOP_MANAGED_ENV: &str = "UNSLOTH_DESKTOP_MANAGED";
 
-/// Windows registers "run at login" as an HKCU Run value, which carries no working
-/// directory, so the app starts in C:\Windows\system32 and every child inherits it.
-/// The CLI refuses to run there, so pick the directory explicitly.
+/// Login start runs from C:\Windows\system32, which the CLI refuses, so pick the directory explicitly.
 pub(crate) fn managed_cli_working_dir_from(
     home: Option<std::path::PathBuf>,
     windirs: &[std::path::PathBuf],
@@ -1830,10 +1679,7 @@ pub(crate) fn managed_cli_working_dir_from(
     working_dir_under(home, windirs, true)
 }
 
-/// The same directory for the installer, which may create the profile it runs
-/// under: install.ps1 and install.sh detect a SYSTEM profile themselves, and
-/// before they shared this resolver a home that did not exist yet was simply
-/// created along with ~/.unsloth.
+/// Installer variant: may create the profile it runs under.
 pub(crate) fn install_working_dir(
     home: Option<std::path::PathBuf>,
 ) -> Result<std::path::PathBuf, String> {
@@ -1847,7 +1693,6 @@ fn working_dir_under(
 ) -> Result<std::path::PathBuf, String> {
     let home = usable_home_dir(home, windirs, require_existing_home)?;
 
-    // Where the installer already runs, so ~/.unsloth stays the one working root.
     let work_dir = home.join(".unsloth");
     if !work_dir.exists() {
         std::fs::create_dir_all(&work_dir)
@@ -1880,10 +1725,7 @@ fn is_inside_windows_dir(path: &std::path::Path, windirs: &[std::path::PathBuf])
     })
 }
 
-/// Directory a desktop-spawned `unsloth` CLI child should run from: the inherited
-/// one, unless unusable (on Windows, a system folder), so cwd-relative defaults
-/// keep resolving where they did and only the login start moves. Resolved per call
-/// so a late-mounting profile recovers, and never falls back to a temp dir.
+/// The inherited cwd unless unusable (a system folder on Windows). Resolved per call; never a temp dir.
 pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     let windirs = windows_roots();
     let appdir = std::env::var_os("APPDIR").map(std::path::PathBuf::from);
@@ -1895,11 +1737,8 @@ pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     managed_cli_working_dir_from(dirs::home_dir(), &windirs)
 }
 
-/// The directories the CLI guard refuses to run from, and only those. The rest of
-/// the Windows tree still disqualifies a *home*, but a child already running from
-/// C:\Windows\Temp keeps doing so: the guard allowed that before this change.
-///
-/// Managed children must not inherit the AppImage's read-only `$APPDIR/usr` directory.
+/// Only the directories the CLI guard refuses (C:\Windows\Temp stays allowed), plus the AppImage's
+/// read-only `$APPDIR/usr`.
 fn is_unusable_cwd(
     path: &std::path::Path,
     windirs: &[std::path::PathBuf],
@@ -1915,9 +1754,7 @@ fn is_unusable_cwd(
     })
 }
 
-/// Every real Windows directory, empty off Windows. Candidates are checked, not
-/// trusted: a settable variable could aim the check somewhere harmless, and a
-/// WINDIR aimed at the profile would reject it. So a root must hold System32.
+/// Windows roots, checked to hold System32 since WINDIR is settable. Empty off Windows.
 fn windows_roots() -> Vec<std::path::PathBuf> {
     if !cfg!(windows) {
         return Vec::new();
@@ -1959,10 +1796,8 @@ fn windows_roots_from(
     roots
 }
 
-/// Path overrides a relative value makes cwd-dependent, so moving the child
-/// without rewriting them would point them somewhere else. Search lists such as
-/// PATH are absent: they are not single paths. Mirrors `_RELATIVE_PATH_ENV` in
-/// unsloth_cli/_system_dir_guard.py, held identical by a parity test.
+/// Single-path overrides that a relative value makes cwd-dependent.
+/// Must stay identical to `_RELATIVE_PATH_ENV` in unsloth_cli/_system_dir_guard.py (parity test).
 pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
@@ -2000,8 +1835,7 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "UNSLOTH_DG_SHIM",
     "UNSLOTH_COMPILE_LOCATION",
     "TORCHINDUCTOR_CACHE_DIR",
-    // storage_roots.py fills these only when blank, so a relative value the user set is kept as
-    // written and would name a different folder after the move.
+    // Filled only when blank, so a relative user value is kept as written.
     "TORCH_EXTENSIONS_DIR",
     "TORCH_HOME",
     "TRITON_HOME",
@@ -2020,14 +1854,9 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "HF_XET_CACHE",
     "HF_DATASETS_CACHE",
     "HF_ASSETS_CACHE",
-    // transformers appends this to sys.path, so a relative value would import a
-    // different generated module after the move.
+    // transformers appends this to sys.path.
     "HF_MODULES_CACHE",
-    // huggingface_hub resolves the credential file from here; a relative value
-    // would follow the child and silently lose access to gated repos.
     "HF_TOKEN_PATH",
-    // uv reads this as written and Unsloth treats a non-blank value as
-    // authoritative, so an update would install from a different cache.
     "UV_CACHE_DIR",
     "TRANSFORMERS_CACHE",
     "SENTENCE_TRANSFORMERS_HOME",
@@ -2040,25 +1869,14 @@ pub(crate) const RELATIVE_PATH_ENV: &[&str] = &[
     "CUDA_ROOT",
 ];
 
-/// The same, for values holding several separated directories: one relative
-/// entry changes what the whole list allows or searches. PYTHONPATH is here
-/// because a relative entry in it is resolved at import time, so a moved child
-/// would let whatever sits in the new directory shadow a managed import. PATH is
-/// deliberately absent: it is mostly other people's absolute entries, and
-/// refusing a launch over one unresolvable entry there would cost more than it
-/// protects.
+/// Path lists: one relative entry changes the whole list. PATH is deliberately absent.
 pub(crate) const PATH_LIST_ENV: &[&str] = &[
     "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH",
     "CUDA_RUNTIME_DLL_DIR",
     "PYTHONPATH",
 ];
 
-/// Whether a value names one directory whatever the process does next.
-///
-/// Windows rules on every platform: a Windows value is what reaches this code,
-/// and hard-coding them keeps the check testable from Linux CI. Matches
-/// `_is_fully_qualified` in the CLI guard, "C:sub" and "\\cache" included, both
-/// of which name a directory only in combination with process state.
+/// Windows rules on every platform; matches `_is_fully_qualified` in the CLI guard.
 fn is_fully_qualified(value: &str) -> bool {
     let lowered = value.to_lowercase();
     if lowered.starts_with("\\\\?\\unc\\") {
@@ -2072,16 +1890,12 @@ fn is_fully_qualified(value: &str) -> bool {
     if value.starts_with("\\\\") || value.starts_with("//") {
         return true;
     }
-    // Spelled out rather than deferred to Path::is_absolute, so the answer is
-    // the same on the Linux runner that tests it as on the Windows machine that
-    // runs it, and the same as _is_fully_qualified in the CLI guard.
+    // Spelled out (not Path::is_absolute) so Linux CI gives the Windows answer.
     matches!(value.as_bytes(), [drive, b':', sep, ..]
         if drive.is_ascii_alphabetic() && (*sep == b'\\' || *sep == b'/'))
 }
 
-/// `$NAME` and `${NAME}` against the process environment, as posixpath.expandvars
-/// reads them: an unset name and a `$` that starts no name are left exactly as
-/// written, and `%NAME%` is an ordinary filename character off Windows.
+/// posixpath.expandvars semantics: unset names and stray `$` are left as written.
 fn expand_posix_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
     let bytes = value.as_bytes();
     let mut out = String::with_capacity(value.len());
@@ -2124,20 +1938,11 @@ fn expand_posix_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> S
     out
 }
 
-/// Whether the value names the same place from any working directory.
-///
-/// Windows rules on Windows, the native ones off it. The lost-directory
-/// fallback below is the one branch a Linux or macOS process reaches, and what
-/// it reads there is a POSIX environment: `/var/cache/unsloth` is no more
-/// cwd-dependent than `C:\cache`, and judging it by the Windows rules refused
-/// every managed spawn over a setting that was never relative. A Windows-shaped
-/// value stays Windows-judged, so "/cache" is still the root of whichever drive
-/// the process is on.
+/// Windows rules on Windows, POSIX off it; a Windows-shaped value stays Windows-judged.
 fn is_cwd_independent(value: &str, windows: bool) -> bool {
     if windows {
         is_fully_qualified(value)
     } else {
-        // The whole of absoluteness off Windows.
         value.starts_with('/')
     }
 }
@@ -2166,13 +1971,8 @@ fn needs_os_resolution(value: &str) -> bool {
 /// MLX_HOSTFILE holds either a filename or the host list itself, as JSON.
 const INLINE_JSON_ENV: &[&str] = &["MLX_HOSTFILE", "MLX_IBV_DEVICES"];
 
-/// Names whose readers disagree about %VAR%: huggingface_hub expands HF_HOME
-/// (and the XDG_CACHE_HOME it defaults from), HF_HUB_CACHE and HF_ASSETS_CACHE,
-/// and Unsloth expands SENTENCE_TRANSFORMERS_HOME, but Unsloth's own
-/// hf_cache_settings does not, so it reads %LOCALAPPDATA%\hf as a relative
-/// folder. Expanding before deciding settles it: both readers then see one
-/// absolute path. Scoped to these names because a directory really called
-/// "%data%" is legal and every other name is read as one.
+/// Names whose readers disagree about %VAR% (huggingface_hub expands, hf_cache_settings does not);
+/// expanding first makes both see one path. Scoped since "%data%" is a legal folder name.
 const EXPANDED_ENV: &[&str] = &[
     "HF_HOME",
     "HF_TOKEN_PATH",
@@ -2187,14 +1987,7 @@ const EXPANDED_ENV: &[&str] = &[
 /// mode; anchoring one would turn it into a real allowlisted directory.
 const TOGGLE_ENV: &[&str] = &["UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH"];
 
-/// %NAME%, $NAME and ${NAME} against the process environment.
-///
-/// Mirrors ntpath.expandvars, which is what the CLI guard uses, down to its
-/// pattern: `'[^']*'?|%(%|[^%]*%?)|\$(\$|[-\w]+|\{[^}]*\}?)`. The details matter
-/// because the two layers have to name the same folder: a single-quoted run is
-/// copied through unexpanded, `%%` and `$$` stand for one character, a `$` name
-/// may contain a hyphen, and anything unterminated is left exactly as written,
-/// as is a name this machine does not set.
+/// Mirrors ntpath.expandvars, pattern included: `'[^']*'?|%(%|[^%]*%?)|\$(\$|[-\w]+|\{[^}]*\}?)`.
 fn expand_windows_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
     let bytes = value.as_bytes();
     let mut out = String::with_capacity(value.len());
@@ -2204,8 +1997,7 @@ fn expand_windows_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) ->
         // always a character boundary.
         match bytes[index] {
             b'\'' => {
-                // A quoted run is copied through, terminator included when it
-                // has one, so a reference inside it is not expanded.
+                // A quoted run is copied through unexpanded.
                 let rest = &value[index + 1..];
                 let end = rest
                     .find('\'')
@@ -2285,20 +2077,8 @@ fn expand_windows_vars(value: &str, lookup: &impl Fn(&str) -> Option<String>) ->
     out
 }
 
-/// Whether the working directory is what resolves this variable's value.
-///
-/// The twin of `_names_a_path` in `unsloth_cli/_system_dir_guard.py`. Each
-/// exemption is scoped to the variables whose reader proves it, because the
-/// syntax is only special there: a directory really called "[llama]" is legal on
-/// Windows, and UNSLOTH_LLAMA_CPP_PATH is read as one.
-/// `value` expanded once, or None if one pass does not settle it.
-///
-/// One pass is what every reader does, so one pass is what this does. The result
-/// is only usable if expanding it again would change nothing, because the reader
-/// expands whatever gets written back: a nested %LOCALAPPDATA% that itself holds
-/// %USERPROFILE%, an escaped %%NAME%%, or a self-reference would be expanded a
-/// second time and read as a folder with another drive in the middle of it. The
-/// twin of `_expand_settled` in the CLI guard.
+/// `value` expanded once, or None if a second pass would still change it (nested, escaped, self-ref).
+/// The twin of `_expand_settled` in the CLI guard.
 fn expand_settled(
     value: &str,
     lookup: &impl Fn(&str) -> Option<String>,
@@ -2330,14 +2110,8 @@ fn names_a_path(name: &str, value: &str) -> bool {
     true
 }
 
-/// Names every managed spawn removes before starting the child: Tauri uses the
-/// legacy Unsloth root whatever the environment says. Resolving one can only
-/// invent a failure for a value the child is never going to see.
-///
-/// UNSLOTH_HOME moves the databases, assets and caches exactly as
-/// UNSLOTH_STUDIO_HOME does, plus the managed llama.cpp, node and whisper.cpp
-/// dirs. UNSLOTH_PORTABLE names no root but portable_mode() reads it on its own,
-/// repointing the Hugging Face and torch caches away from the shared user ones.
+/// Removed before every managed spawn: Tauri uses the legacy Unsloth root regardless.
+/// UNSLOTH_HOME and UNSLOTH_PORTABLE also move roots and caches.
 pub(crate) const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &[
     "UNSLOTH_HOME",
     "UNSLOTH_STUDIO_HOME",
@@ -2345,17 +2119,10 @@ pub(crate) const MANAGED_CHILD_SCRUBBED_ENV: &[&str] = &[
     "UNSLOTH_PORTABLE",
 ];
 
-/// Read only by the update and installer path (install_python_stack.py), so a
-/// stale value must not be able to fail a probe, a backend start or an auth
-/// provision that would never have looked at it.
+/// Only read by the update/installer path, so a stale value must not fail other spawns.
 const UPDATE_ONLY_ENV: &[&str] = &["STUDIO_LOCAL_REPO"];
 
-/// `~` and `~name`, resolved the way ntpath.expanduser resolves them.
-///
-/// Written out rather than skipped, because only some readers of these names
-/// expand it themselves: llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to
-/// Path(), so a moved child would look for a folder called "~" beside its new
-/// working directory.
+/// `~`/`~name` as ntpath.expanduser resolves them; written out since llama_cpp.py does not expand.
 fn expand_windows_user(
     value: &str,
     home: &std::path::Path,
@@ -2372,11 +2139,8 @@ fn expand_windows_user(
     let base = if name.is_empty() {
         home.into_owned()
     } else {
-        // ~someone-else is the sibling of this profile, but only where ntpath
-        // agrees: it declines to guess unless this profile is named after the
-        // current user, since C:\Users\alice.DOMAIN is not alice's sibling.
-        // Split on the string, not with Path::parent: these are Windows paths
-        // whichever platform the code is running on.
+        // ntpath only guesses a sibling when this profile is named after the current user. Split on the
+        // string: these are Windows paths on any platform.
         let cut = match home.rfind(['\\', '/']) {
             Some(cut) => cut,
             None => return value.to_string(),
@@ -2391,20 +2155,8 @@ fn expand_windows_user(
     format!("{}{}", base, rest)
 }
 
-/// `~`, `~/rest` and `~name/rest` off Windows, the way posixpath.expanduser reads
-/// them, which is what the CLI this pins for reads them with.
-///
-/// The named form is the one that used to get away: `expand_windows_user` leaves
-/// `~alice` alone off Windows, so it fell through to the anchoring below and the
-/// child was handed `<cwd>/~alice/llama.cpp`, while the fingerprint in
-/// preflight::managed resolved the same value through getpwnam_r and watched
-/// Alice's tree. The two halves of one launch then graded different trees, so
-/// quarantining a file from the tree actually in use left the cached verdict
-/// standing. Same lookup here as there, so they cannot disagree.
-///
-/// An unknown name is left exactly as it arrived, which is also what
-/// expanduser does, and it is then anchored like any other relative value; both
-/// halves agree on that too.
+/// `~`, `~/rest`, `~name/rest` off Windows via getpwnam_r, the lookup preflight::managed uses,
+/// so child pinning and the fingerprint agree. Unknown names are left as is.
 fn expand_posix_user(value: &str, home: Option<&std::path::Path>) -> String {
     if !value.starts_with('~') {
         return value.to_string();
@@ -2412,7 +2164,6 @@ fn expand_posix_user(value: &str, home: Option<&std::path::Path>) -> String {
     let end = value[1..].find('/').map_or(value.len(), |offset| offset + 1);
     let (name, rest) = (&value[1..end], &value[end..]);
     if name.is_empty() {
-        // Bare `~`, which HOME answers.
         return match home {
             Some(home) => format!("{}{}", home.to_string_lossy(), rest),
             None => value.to_string(),
@@ -2424,9 +2175,7 @@ fn expand_posix_user(value: &str, home: Option<&std::path::Path>) -> String {
     }
 }
 
-/// Windows rules on Windows, the native ones off it, the same split every other
-/// reader in this function makes. Reading a POSIX value the Windows way is what
-/// left `~alice` unresolved.
+/// Windows rules on Windows, POSIX off it.
 fn expand_user(
     value: &str,
     home: Option<&std::path::Path>,
@@ -2452,27 +2201,18 @@ fn relative_override_pins_from(
     skipped: &[&str],
     windows: bool,
 ) -> Result<Vec<(&'static str, std::path::PathBuf)>, String> {
-    // Written out, so the reader that expands %VAR% and the reader that does not
-    // land in the same folder. Only for the names that have both.
+    // Written out so readers that do and do not expand %VAR% land in the same folder.
     let username = lookup("USERNAME");
-    // ntpath.expanduser answers USERPROFILE, and the CLI guard uses it, so the
-    // tilde has to resolve to the same folder here. dirs::home_dir() reads the
-    // known folder instead, which a portable or overridden environment moves.
+    // USERPROFILE, matching ntpath.expanduser; dirs::home_dir() reads the known folder.
     let tilde_home = lookup("USERPROFILE")
         .map(std::path::PathBuf::from)
         .or_else(|| home.map(|home| home.to_path_buf()));
     let home = tilde_home.as_deref();
-    // One pass does not settle every value. What the reader sees is one pass: if
-    // that names a folder on its own the value is safe to leave alone, and if it
-    // does not, the folder it names depends on where the process is standing, so
-    // the move has to be refused rather than taken with the value following it.
+    // Readers expand once; if that does not settle the value the move is refused.
     let expanded = |name: &str, value: &str| -> Result<Option<String>, String> {
         if !EXPANDED_ENV.contains(&name) {
             return Ok(Some(value.to_string()));
         }
-        // Windows rules on Windows, the native ones off it: a POSIX reader leaves
-        // %HOME% as an ordinary name and expands $HOME instead, so reading this
-        // the Windows way would call a relative value absolute.
         match expand_settled(value, &lookup, windows) {
             Some(settled) => Ok(Some(settled)),
             None => {
@@ -2490,9 +2230,7 @@ fn relative_override_pins_from(
         }
     };
     let Some(cwd) = cwd else {
-        // The directory being left is unknown, so nothing can be anchored to it.
-        // Moving anyway would quietly retarget every relative value at the new
-        // directory, so this is only survivable with nothing left to preserve.
+        // Lost cwd: nothing can be anchored, so this only survives with no relative values.
         for name in RELATIVE_PATH_ENV.iter().chain(PATH_LIST_ENV) {
             if skipped.contains(name) {
                 continue;
@@ -2517,10 +2255,7 @@ fn relative_override_pins_from(
                     }
                     continue;
                 }
-                // Judged the same way the moving path judges it, or a setting
-                // that decides nothing here (an expanded %LOCALAPPDATA%, inline
-                // JSON, a 0/1 toggle) would be read as relative and refuse
-                // every spawn over a value no directory ever decided.
+                // Judged like the moving path, or expanded/JSON/toggle values would refuse every spawn.
                 let entry = expand_user(entry, home, username.as_deref(), windows);
                 let Some(entry) = expanded(name, &entry)? else {
                     continue;
@@ -2543,10 +2278,7 @@ fn relative_override_pins_from(
     if cwd == work_dir {
         return Ok(Vec::new());
     }
-    // A value the OS declines to resolve is refused rather than dropped: moving
-    // the child with that override still relative would retarget it silently,
-    // which is what the pinning exists to prevent. The CLI guard refuses the
-    // same case.
+    // A value the OS cannot resolve refuses the move rather than silently retargeting (as the CLI guard).
     let anchor = |name: &str, value: &str| -> Result<std::path::PathBuf, String> {
         if needs_os_resolution(value) {
             // "D:cache" is drive D's own current directory and "\\cache" the
@@ -2564,8 +2296,7 @@ fn relative_override_pins_from(
         }
         let Some(value) = lookup(name) else { continue };
         let original = value.trim().to_string();
-        // The tilde first and the variables second, the order the CLI guard uses,
-        // so a value that names a folder through both reaches the same one.
+        // Tilde first, then variables: the CLI guard's order.
         let value = expand_user(&original, home, username.as_deref(), windows);
         let Some(value) = expanded(name, &value)? else {
             continue;
@@ -2573,13 +2304,8 @@ fn relative_override_pins_from(
         if value.is_empty() {
             continue;
         }
-        // Windows rules on Windows, the native ones off it, exactly as the
-        // lost-directory branch reads them: /opt/vendor is no more cwd-dependent
-        // there than C:\\cache is here.
         if is_cwd_independent(&value, windows) {
-            // Already names one folder. Still worth writing back if expanding is
-            // what made it name one: the reader that does not expand cannot see
-            // that on its own.
+            // Written back if expansion is what made it absolute, for readers that do not expand.
             if value != original {
                 pins.push((*name, std::path::PathBuf::from(value)));
             }
@@ -2613,9 +2339,7 @@ fn relative_override_pins_from(
         let mut entries: Vec<String> = Vec::new();
         for entry in raw.split(separator) {
             let original = entry.trim().to_string();
-            // Python never expands `~` in PYTHONPATH, so `~\plugins` is an
-            // ordinary relative folder there, and expanding it would point the
-            // import at a profile folder the interpreter was never reading.
+            // Python never expands `~` in PYTHONPATH.
             let entry = match home {
                 Some(home) if *name != "PYTHONPATH" => {
                     expand_windows_user(&original, home, username.as_deref())
@@ -2626,10 +2350,6 @@ fn relative_override_pins_from(
                 entries.push(original);
                 continue;
             };
-            // PYTHONPATH has two spellings that follow the process rather than
-            // the caller: an empty component means the working directory itself,
-            // and a leading `~` is never expanded there, so Python reads
-            // `~\plugins` as an ordinary relative folder.
             // An empty PYTHONPATH component means the working directory itself.
             if *name == "PYTHONPATH" && entry.is_empty() {
                 entries.push(cwd.to_string_lossy().into_owned());
@@ -2646,10 +2366,7 @@ fn relative_override_pins_from(
             entries.push(anchor(name, &entry)?.to_string_lossy().into_owned());
         }
         let joined = entries.join(&separator.to_string());
-        // 2. A value the OS will not accept is a failure to report here, not one
-        // to discover in CreateProcess: the caller turns this into the same
-        // "path setting" message as an unresolvable one, and a repair that would
-        // hit the same wall is not offered.
+        // Values over the Windows env limit are reported here, not left to fail in CreateProcess.
         if windows && joined.len() >= WINDOWS_ENV_VALUE_LIMIT {
             return Err(format!(
                 "{name} does not fit in an environment variable once each entry names its folder in full"
@@ -2672,26 +2389,16 @@ fn relative_override_pins(
         std::env::current_dir().ok(),
         work_dir,
         |name| std::env::var(name).ok(),
-        // GetFullPathNameW on Windows, which is what knows each drive's own
-        // current directory.
+        // GetFullPathNameW on Windows knows each drive's own cwd.
         |value| std::path::absolute(value).ok(),
-        // preflight::managed's own reader, not dirs::home_dir(): ntpath.expanduser
-        // answers USERPROFILE and dirs reads the known folder, so an overridden
-        // profile pinned the child to one tree while the fingerprint watched another.
+        // preflight::managed's reader, so the child pin and the fingerprint use the same home.
         crate::preflight::managed::tilde_home().as_deref(),
         skipped,
         cfg!(windows),
     )
 }
 
-/// The pins a move needs, or None when the move must not happen.
-///
-/// A directory that cannot be named is one nothing can be anchored to. Staying is
-/// what the child did before this file learned about working directories, and it
-/// keeps every relative setting meaning exactly what it does now; only a
-/// directory we can name is worth moving out of. Refusing the whole spawn instead
-/// would take a probe, a backend, an auth provision or an update down over a
-/// setting the command may never read.
+/// None when the move must not happen: an unnamed cwd means stay put rather than refuse the spawn.
 fn pins_for_move(
     work_dir: &std::path::Path,
     skipped: &[&str],
@@ -2714,11 +2421,7 @@ fn stay_put_on_lost_cwd(
     }
 }
 
-/// What the update child neither receives nor needs. It is the one child that
-/// reads STUDIO_LOCAL_REPO, and the one that wants no PYTHONPATH at all on
-/// Windows, where -I covers only the first interpreter and the update starts
-/// more. Skipping it here rather than removing it afterwards means an
-/// unresolvable entry cannot refuse an update that was never going to read it.
+/// The update child reads STUDIO_LOCAL_REPO and gets no PYTHONPATH on Windows (-I covers one interpreter).
 fn update_child_skipped_env() -> Vec<&'static str> {
     MANAGED_CHILD_SCRUBBED_ENV
         .iter()
@@ -2727,11 +2430,7 @@ fn update_child_skipped_env() -> Vec<&'static str> {
         .collect()
 }
 
-/// Pinned when it can be, but never at the cost of the spawn. The update is the
-/// one child that receives STUDIO_LOCAL_REPO, and a bare `unsloth studio update`
-/// drops it before anything reads it (commands/studio.py), so refusing to start
-/// over a stale drive-relative value would defeat the fallback this exists for.
-/// The twin of `_BEST_EFFORT_ENV` in the CLI guard.
+/// Best effort: a stale value must not block `studio update`. Twin of `_BEST_EFFORT_ENV` in the CLI guard.
 const BEST_EFFORT_ENV: &[&str] = &["STUDIO_LOCAL_REPO"];
 
 /// What an ordinary managed child neither receives nor needs.
@@ -2743,11 +2442,7 @@ fn child_skipped_env() -> Vec<&'static str> {
         .collect()
 }
 
-/// The error a managed spawn would fail with, without spawning anything.
-///
-/// Preflight asks first: a context that cannot be built is not a broken CLI, and
-/// reporting it as one starts an automatic repair that needs the same context
-/// and fails the same way.
+/// Preflight asks first: an unbuildable context is not a broken CLI and must not trigger repair.
 pub(crate) fn managed_cli_context_error() -> Option<ManagedContextError> {
     let work_dir = match managed_cli_working_dir() {
         Ok(work_dir) => work_dir,
@@ -2758,9 +2453,7 @@ pub(crate) fn managed_cli_context_error() -> Option<ManagedContextError> {
         .map(ManagedContextError::PathSetting)
 }
 
-/// Why a managed spawn cannot be configured. The two are told apart because the
-/// fixes are: a profile that has to come back, and a path setting the user wrote
-/// that the OS cannot resolve.
+/// Why a managed spawn cannot be configured: unreachable profile vs unresolvable path setting.
 #[derive(Debug, Clone)]
 pub(crate) enum ManagedContextError {
     WorkingDirectory(String),
@@ -2775,27 +2468,16 @@ impl std::fmt::Display for ManagedContextError {
     }
 }
 
-/// Whether the child has to be told where to run.
-///
-/// It does not when that is already where the parent is: reopening the inherited
-/// directory by name can fail (an ancestor turned unreadable after launch) where
-/// simply inheriting the open handle would have worked, so the no-move case is
-/// left exactly as it was before this file learned about working directories.
+/// No when cwd already matches: reopening by name can fail where inheriting the handle works.
 fn needs_explicit_cwd(work_dir: &std::path::Path) -> bool {
     std::env::current_dir()
         .map(|cwd| cwd != work_dir)
         .unwrap_or(true)
 }
 
-/// Pin the working directory and mark the child as desktop-managed. Env
-/// scrubbing, creation flags and the ownership handshake stay with the caller.
+/// Pin the working directory and mark the child desktop-managed; env scrubbing stays with the caller.
 /// For the update, which is the one child that reads STUDIO_LOCAL_REPO.
 pub(crate) fn apply_managed_cli_context(cmd: &mut Command) -> Result<(), String> {
-    // The update is the one child that reads STUDIO_LOCAL_REPO, and the one that
-    // wants no PYTHONPATH at all on Windows: -I covers only the first
-    // interpreter, and the update starts more. Skipping it here rather than
-    // removing it afterwards means an unresolvable entry cannot refuse an update
-    // that was never going to read it.
     apply_managed_cli_context_inner(cmd, &managed_cli_working_dir()?, &update_child_skipped_env())
 }
 
@@ -2819,8 +2501,7 @@ fn apply_managed_cli_context_inner(
             cmd.current_dir(work_dir);
         }
     }
-    // Removed here as well as at the call sites, so the skip above is a fact
-    // about the child rather than an assumption about every caller.
+    // Removed here too, so the skip holds whatever the caller does.
     for name in skipped {
         cmd.env_remove(name);
     }
@@ -2906,8 +2587,7 @@ mod tests {
         );
     }
 
-    // issue #8490: Application Control denies the generated unsloth.exe. Every
-    // managed invocation must reach the CLI through the interpreter beside it.
+    // Application Control denies unsloth.exe; every invocation must go through the interpreter.
     #[cfg(windows)]
     fn managed_venv(test_name: &str) -> (PathBuf, PathBuf, PathBuf) {
         let dir = temp_studio_dir(test_name);
@@ -2918,9 +2598,7 @@ mod tests {
         (dir, python, bin)
     }
 
-    // Quarantine takes the unsigned stub and leaves the environment intact. The
-    // finder gates the backend, the updater and the install-status probe, so a None
-    // here reports "not installed" for an Unsloth that still runs.
+    // Quarantine removes the unsigned stub but the environment still runs.
     #[cfg(windows)]
     #[test]
     fn a_quarantined_stub_is_still_a_managed_install() {
@@ -2928,7 +2606,6 @@ mod tests {
         let scripts = studio.join("unsloth_studio").join("Scripts");
         fs::create_dir_all(&scripts).unwrap();
 
-        // No interpreter yet: there is genuinely nothing to run.
         assert_eq!(find_unsloth_binary_in_studio_dir(&studio), None);
 
         fs::write(scripts.join("python.exe"), "").unwrap();
@@ -2938,7 +2615,6 @@ mod tests {
             "a stub-less environment with an interpreter is still an install"
         );
 
-        // And the handle it hands back drives the interpreter as usual.
         let invocation =
             resolve_managed_cli_invocation(&scripts.join("unsloth.exe"), &["studio"]).unwrap();
         assert_eq!(invocation.program, scripts.join("python.exe"));
@@ -2946,9 +2622,6 @@ mod tests {
         fs::remove_dir_all(studio).unwrap();
     }
 
-    // An interrupted migration leaves a half-built new environment beside a legacy
-    // one that still works. A launcher anywhere outranks a bare interpreter, or the
-    // desktop would drive the broken half and report an install it cannot start.
     #[cfg(windows)]
     #[test]
     fn a_legacy_launcher_outranks_a_stubless_new_environment() {
@@ -2967,7 +2640,6 @@ mod tests {
             "a working legacy install must win over a partial new one"
         );
 
-        // Once the new layout has its own launcher, layout order takes over again.
         fs::write(new_scripts.join("unsloth.exe"), "").unwrap();
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
@@ -2977,10 +2649,6 @@ mod tests {
         fs::remove_dir_all(studio).unwrap();
     }
 
-    // The other half of the same interruption: the new layout kept the launcher and
-    // the legacy one kept the interpreter. Returning the new launcher there fails
-    // later with "Managed Python interpreter not found beside Unsloth" while a
-    // usable environment sits in the other base.
     #[cfg(windows)]
     #[test]
     fn a_complete_legacy_environment_beats_a_launcher_with_no_interpreter() {
@@ -2999,8 +2667,6 @@ mod tests {
             "a complete environment must win over a launcher that cannot start"
         );
 
-        // With nothing usable anywhere, still answer what this function always
-        // answered: the caller's error then names the missing interpreter.
         fs::remove_file(old_scripts.join("python.exe")).unwrap();
         fs::remove_file(old_scripts.join("unsloth.exe")).unwrap();
         assert_eq!(
@@ -3011,11 +2677,6 @@ mod tests {
         fs::remove_dir_all(studio).unwrap();
     }
 
-    // Both halves of an interrupted migration kept an interpreter and neither kept
-    // a launcher, so pass 1 cannot decide and layout order alone would hand back
-    // the new base whether or not anything is installed in it. The base that still
-    // holds the package the trampoline imports has to win, in either direction, or
-    // every capability probe drives an interpreter with nothing to run.
     #[cfg(windows)]
     #[test]
     fn an_interpreter_that_still_has_the_package_outranks_one_that_does_not() {
@@ -3027,14 +2688,12 @@ mod tests {
             fs::write(base.join("Scripts").join("python.exe"), "").unwrap();
         }
 
-        // Neither carries the package: layout order decides, exactly as before.
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
             Some(new_base.join("Scripts").join("unsloth.exe")),
             "with nothing to choose between them the new layout still wins"
         );
 
-        // The legacy base has the package and the new one does not.
         fs::create_dir_all(old_base.join("Lib").join("site-packages").join("unsloth_cli")).unwrap();
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
@@ -3042,7 +2701,6 @@ mod tests {
             "the only base with a package to import must win"
         );
 
-        // Once the new base has it too, layout order takes over again.
         fs::create_dir_all(new_base.join("Lib").join("site-packages").join("unsloth_cli")).unwrap();
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
@@ -3050,7 +2708,6 @@ mod tests {
             "package on both sides is not a reason to prefer the legacy layout"
         );
 
-        // A complete environment anywhere still outranks this whole pass.
         fs::write(old_base.join("Scripts").join("unsloth.exe"), "").unwrap();
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
@@ -3060,10 +2717,7 @@ mod tests {
         fs::remove_dir_all(studio).unwrap();
     }
 
-    // An editable install of the checkout leaves a .pth and a dist-info in
-    // site-packages and no unsloth_cli/ directory at all, so a package-directory test
-    // alone would rank a working legacy venv below an empty new one. The Python side
-    // accepts the dist-info for this exact shape; this side has to agree.
+    // Editable installs leave a .pth and dist-info but no unsloth_cli/ directory.
     #[cfg(windows)]
     #[test]
     fn an_editable_install_counts_as_carrying_the_package() {
@@ -3086,8 +2740,6 @@ mod tests {
             "an editable install has a package to import and must outrank an empty venv"
         );
 
-        // Unrelated metadata is not this package. A dist-info for something else must
-        // not make an empty venv look installed.
         fs::create_dir_all(
             new_base
                 .join("Lib")
@@ -3123,7 +2775,6 @@ mod tests {
                 OsString::from("utf8"),
                 OsString::from("-c"),
                 OsString::from(WINDOWS_CLI_ENTRYPOINT),
-                // Caller arguments follow the script, in order.
                 OsString::from("studio"),
                 OsString::from("--api-only"),
                 OsString::from("-p"),
@@ -3136,9 +2787,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn managed_invocation_does_not_isolate_the_interpreter() {
-        // Measured on a machine with no policy: PYTHONPROFILEIMPORTTIME=1 gave
-        // ~24 KB of stderr from the console script and nothing from a -I
-        // trampoline, and PYTHONPATH stopped shadowing.
         let (dir, _python, bin) = managed_venv("managed-cli-no-isolation");
         let invocation = resolve_managed_cli_invocation(&bin, &["-h"]).unwrap();
 
@@ -3154,9 +2802,7 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    // The exception, and the only one: the updater rewrites the environment it
-    // runs in, so it stays isolated exactly as it shipped. Asserted here as well
-    // as in update.rs so the two halves of the rule are stated together.
+    // The updater stays isolated; asserted here and in update.rs.
     #[cfg(windows)]
     #[test]
     fn only_the_isolated_flavour_carries_the_isolation_flag() {
@@ -3169,15 +2815,11 @@ mod tests {
 
         assert!(!inherit.args.iter().any(|arg| arg == "-I"), "{:?}", inherit.args);
         assert!(isolated.args.iter().any(|arg| arg == "-I"), "{:?}", isolated.args);
-        // -X utf8 comes first either way: -I implies -E, which would drop
-        // PYTHONUTF8, and the flag form survives it.
         assert_eq!(isolated.args[0], std::ffi::OsString::from("-X"));
         assert_eq!(isolated.args[1], std::ffi::OsString::from("utf8"));
         assert_eq!(isolated.args[2], std::ffi::OsString::from("-I"));
-        // Same program, same trailing arguments; only the flag differs.
         assert_eq!(inherit.program, isolated.program);
         assert_eq!(inherit.args.last(), isolated.args.last());
-        // And the default entry point is the inheriting one.
         assert_eq!(
             resolve_managed_cli_invocation(&bin, &["studio"]).unwrap().args,
             inherit.args
@@ -3188,16 +2830,12 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn managed_trampoline_assigns_argv0_before_importing_the_cli() {
-        // The order is the whole point: unsloth_cli decides at import time
-        // whether it is the console script, which gates the UTF-8 stream
-        // reconfigure, the -np<N> rewrite and Typer's prog_name.
+        // unsloth_cli checks sys.argv[0] at import time, so it must be set first.
         let strip = WINDOWS_CLI_ENTRYPOINT.find("sys.path[:1]");
         let assignment = WINDOWS_CLI_ENTRYPOINT.find("sys.argv[0] = 'unsloth'");
         let import = WINDOWS_CLI_ENTRYPOINT.find("from unsloth_cli import app");
         assert!(strip.is_some() && assignment.is_some() && import.is_some());
         assert!(assignment < import, "{WINDOWS_CLI_ENTRYPOINT}");
-        // The cwd must leave sys.path before the import too, or the entry it
-        // guards against is still live for that one import.
         assert!(strip < import, "{WINDOWS_CLI_ENTRYPOINT}");
     }
 
@@ -3206,8 +2844,6 @@ mod tests {
     fn managed_commands_leave_the_python_environment_alone() {
         use std::ffi::OsStr;
 
-        // Harmless under -I, which discarded them anyway; without it, a change
-        // the console script does not make.
         let (dir, _python, bin) = managed_venv("managed-cli-env");
         let cmd = build_managed_cli_command(&bin, &["-h"]).unwrap();
         for name in ["PYTHONHOME", "PYTHONPATH"] {
@@ -3216,7 +2852,6 @@ mod tests {
                 "{name} must be inherited, not overridden"
             );
         }
-        // The async flavour must not drift from the blocking one.
         let tokio_cmd = build_managed_cli_command_tokio(&bin, &["-h"]).unwrap();
         let std_cmd = tokio_cmd.as_std();
         for name in ["PYTHONHOME", "PYTHONPATH"] {
@@ -3232,15 +2867,11 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn managed_invocation_fails_closed_without_the_interpreter() {
-        // Falling back to the stub is exactly what a policy-blocked machine
-        // cannot run, so a missing interpreter is an error, not a downgrade.
         let bin = temp_studio_dir("managed-cli-no-python").join("unsloth.exe");
         let error = resolve_managed_cli_invocation(&bin, &["-h"]).unwrap_err();
         assert!(error.contains("python.exe"), "{error}");
     }
 
-    // Parity guard: the change is Windows-only. macOS and Linux keep execing
-    // the console script with the caller's arguments and nothing else.
     #[cfg(not(windows))]
     #[test]
     fn posix_managed_invocation_still_execs_the_console_script() {
@@ -3267,8 +2898,6 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn posix_managed_invocation_needs_no_interpreter_beside_the_script() {
-        // The Windows arm fails closed on a missing python.exe; the POSIX arm
-        // must not acquire that failure mode for a path that never had it.
         let bin = std::path::Path::new("/definitely/not/here/bin/unsloth");
         assert!(resolve_managed_cli_invocation(bin, &["-h"]).is_ok());
     }
@@ -3299,13 +2928,7 @@ mod tests {
         (port, tx, handle)
     }
 
-    // ── #9756: a spawned handle whose child has exited must not block the next launch ──
-    //
-    // The crash detector in `read_output_stream` clears the handle when the child's
-    // stdout reaches EOF, and `stop_backend_inner` clears it on a deliberate stop. A
-    // child that dies without either happening leaves the handle behind, and from then
-    // on `has_owned_backend` refuses every launch with "Backend is already running."
-    // while preflight reports `desktop_owned_backend_starting`.
+    // A spawned handle whose child exited without stdout EOF must not block the next launch.
 
     #[cfg(unix)]
     const ALREADY_EXITED: [&str; 3] = ["/bin/sh", "-c", "exit 3"];
@@ -3316,8 +2939,7 @@ mod tests {
     #[cfg(windows)]
     const STILL_RUNNING: [&str; 3] = ["cmd", "/C", "ping -n 31 127.0.0.1"];
 
-    // Shaped like the real spawn in `start_backend`: a process group on Unix, a bare
-    // Child on Windows, where the app-wide job object already covers the tree.
+    // Shaped like start_backend's spawn: a process group on Unix, a bare Child on Windows.
     fn spawn_test_child(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
         let mut cmd = Command::new(args[0]);
         cmd.args(&args[1..])
@@ -3335,8 +2957,6 @@ mod tests {
         }
     }
 
-    // Reaped before the handle is built, so the test is about the clear and not about
-    // racing the kernel; `exit_status_after_stdout_closed_tests` already covers the race.
     fn spawn_and_reap() -> Box<dyn ChildWrapper + Send> {
         let mut child = spawn_test_child(&ALREADY_EXITED);
         for _ in 0..100 {
@@ -3376,9 +2996,7 @@ mod tests {
 
     #[test]
     fn a_live_spawned_backend_is_left_alone() {
-        // The regression guard that matters more than the fix: a handle with no
-        // validated port is usually a cold start still importing torch, and clearing it
-        // would abandon a backend that is about to come up.
+        // A handle with no validated port is usually a cold start; it must not be cleared.
         let state = state_with_spawned(spawn_test_child(&STILL_RUNNING), 5);
         assert!(!clear_spawned_backend_if_exited(&state, 5, "test"));
         {
@@ -3397,7 +3015,6 @@ mod tests {
 
     #[test]
     fn a_dead_spawned_backend_from_an_older_generation_is_left_alone() {
-        // A launch that has already moved on owns the handle now.
         let state = state_with_spawned(spawn_and_reap(), 5);
         assert!(!clear_spawned_backend_if_exited(&state, 4, "test"));
         assert!(state.lock().unwrap().has_owned_backend());
@@ -3405,8 +3022,6 @@ mod tests {
 
     #[test]
     fn an_adopted_backend_is_not_this_functions_business() {
-        // clear_adopted_backend_if_current owns that arm, and it probes liveness a
-        // different way: an adopted handle carries no child to try_wait on.
         let state = new_backend_state();
         let owner = crate::desktop_backend_owner::test_owner_state(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -3460,20 +3075,15 @@ mod tests {
     }
 }
 
-/// Find the unsloth binary, preferring the dev repo if available.
-/// In dev mode (debug builds), checks for a local .venv in the repo first.
-/// Falls back to find_unsloth_binary() which checks ~/.unsloth/studio/unsloth_studio/
-/// (new layout) then ~/.unsloth/studio/.venv/ (old layout).
+/// Find the unsloth binary; debug builds prefer the repo's local .venv.
 pub(crate) fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
-    // In dev mode, check for local repo venv first
     #[cfg(debug_assertions)]
     {
-        // CARGO_MANIFEST_DIR is set at compile time to studio/src-tauri/
-        // Repo root is 2 levels up: studio/src-tauri -> studio -> repo_root
+        // CARGO_MANIFEST_DIR is studio/src-tauri; the repo root is two levels up.
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let repo_root = std::path::Path::new(manifest_dir)
-            .parent() // studio/
-            .and_then(|p| p.parent()); // repo_root/
+            .parent()
+            .and_then(|p| p.parent());
 
         if let Some(root) = repo_root {
             #[cfg(unix)]
@@ -3517,17 +3127,14 @@ pub fn start_backend(
 ) -> Result<u64, String> {
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
-    // A backend started while the job is disarmed is the orphan this guards
-    // against. The UI gate is per update action, and a webview remount starts
-    // one on its own, so the check belongs on the path that actually spawns.
+    // Checked on the spawn path: a webview remount can start a backend while the job is disarmed.
     #[cfg(windows)]
     if !crate::windows_job::kill_on_close_armed().unwrap_or(false) {
         crate::windows_job::resume_after_update_installer().map_err(|error| {
             format!("Refusing to start the backend with crash cleanup disarmed: {error}")
         })?;
-        // The same pair the UI's resume does: the pre-exit hook has already run
-        // its cleanup, and leaving that guard set means the next attempt's hook
-        // suspends kill-on-close without stopping this backend first.
+        // Reset like the UI's resume, or the next pre-exit hook suspends kill-on-close without
+        // stopping this backend.
         crate::reset_termination_cleanup();
     }
 
@@ -3545,8 +3152,6 @@ pub fn start_backend(
         }
     };
 
-    // A precondition like resolve_backend_binary above, so it runs before any
-    // ownership or job state is touched.
     let work_dir = match managed_cli_working_dir() {
         Ok(work_dir) => work_dir,
         Err(error) => {
@@ -3566,8 +3171,7 @@ pub fn start_backend(
     };
 
     let args = backend_args(port);
-    // Built before ownership is claimed: a missing managed interpreter must not
-    // leave a pending owner behind for a backend that was never spawned.
+    // Before claiming ownership, so a missing interpreter leaves no pending owner.
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let invocation = match resolve_managed_cli_invocation(&bin, &arg_refs) {
         Ok(invocation) => invocation,
@@ -3582,11 +3186,7 @@ pub fn start_backend(
             return Err(msg);
         }
     };
-    // The program actually spawned, not the console script it resolved from. This
-    // line is what a user attaches to an issue, and naming the stub would point
-    // every Application Control report at a binary we never start.
-    // Same shape as before, so a support log reads the same on every platform; only
-    // the program differs, and only where the interpreter is what actually starts.
+    // Log the program actually spawned (python.exe on Windows), not the stub, for support reports.
     let start_line = format!(
         "Starting backend: {:?} {}",
         invocation.program,
@@ -3615,8 +3215,7 @@ pub fn start_backend(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     if let Err(error) = apply_managed_cli_context_at(&mut cmd, &work_dir) {
-        // The drive holding an override can go between the preflight check and
-        // this call, and a panic in the spawn path takes the desktop with it.
+        // The override's drive can vanish after preflight; a panic here takes the desktop down.
         let msg = format!("Failed to prepare the Unsloth backend command: {}", error);
         diagnostics::record_backend_start_failure(
             diagnostics_state,
@@ -3643,27 +3242,20 @@ pub fn start_backend(
     #[cfg(target_os = "linux")]
     scrub_appimage_python_env(&mut cmd);
 
-    // Tauri uses the legacy root whatever the environment says; scrub so the
-    // spawned Python backend can't diverge. Off the shared list, so a name added
-    // there cannot be honoured by the backend and missed here.
-    // UNSLOTH_LLAMA_CPP_PATH is a pre-existing user-controlled override; keep it.
+    // Scrub via the shared list so the backend cannot diverge from Tauri's legacy root.
+    // UNSLOTH_LLAMA_CPP_PATH is a user override; keep it.
     for name in MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
     }
 
-    // read_output_stream decodes as UTF-8; without these, Python encodes its
-    // redirected streams with the locale code page and non-ASCII lands as U+FFFD.
-    // The backend gets UTF-8 from -X utf8 in its argv; these reach it too now
-    // that -I is gone, and carry on down to whatever it spawns.
+    // read_output_stream decodes UTF-8; without these Python uses the locale code page.
     #[cfg(windows)]
     {
         cmd.env("PYTHONUTF8", "1");
         cmd.env("PYTHONIOENCODING", "utf-8");
     }
 
-    // Reset state, spawn, and store the child while holding the backend mutex.
-    // This keeps the no-child check atomic: a concurrent start/stop cannot slip
-    // into the old window between generation reset and child storage.
+    // Reset, spawn and store under one lock so a concurrent start/stop cannot interleave.
     let (generation, backend_log, stdout, stderr) = {
         let mut proc = state.lock().map_err(|e| e.to_string())?;
         if proc.has_owned_backend() {
@@ -3683,9 +3275,8 @@ pub fn start_backend(
 
         let backend_log = diagnostics::begin_backend_session(diagnostics_state, port, generation);
 
-        // On Windows, launch the backend directly with hidden-window flags.
-        // The app process is assigned to a KILL_ON_JOB_CLOSE job in main.rs, so
-        // children inherit crash-safe cleanup without the buggy per-child JobObject wrapper.
+        // The app is in a KILL_ON_JOB_CLOSE job (main.rs), so children are cleaned up without a
+        // per-child job.
         #[cfg(windows)]
         let mut child: Box<dyn ChildWrapper + Send> = {
             use std::os::windows::process::CommandExt;
@@ -3735,8 +3326,7 @@ pub fn start_backend(
         ) {
             Ok(owner) => owner,
             Err(error) => {
-                // No handle owns this live child yet, so stop it before returning.
-                // The backend mutex stays held until cleanup finishes.
+                // No handle owns this live child yet, so stop it before returning (mutex still held).
                 if let Err(stop_error) = stop_spawned_backend(child, None, None, backend_pid) {
                     warn!(
                         "Could not stop the unclaimed backend (pid {}): {}",
@@ -3770,9 +3360,7 @@ pub fn start_backend(
 
     info!("{}", start_line);
     diagnostics::append_phase_line(&backend_log.handle, "meta", &start_line);
-    // One deadline for this start, shared with the watchdog below. Port
-    // validation must not outlive it: the watchdog's server-start-timeout puts
-    // the window in an error state that a later server-port does not clear.
+    // Shared with the watchdog: port validation must not outlive server-start-timeout.
     let start_deadline = std::time::Instant::now() + BACKEND_START_DEADLINE;
     start_watchdog(app, state, shutdown, generation, &backend_log);
 
@@ -3897,14 +3485,7 @@ async fn generic_backend_health_ok(port: u16) -> bool {
     live && service
 }
 
-/// Backoff between port-verification probes, doubling from min to max.
-///
-/// A probe is not free: it costs a liveness request plus a desktop-login
-/// request, each up to LOCAL_HTTP_TIMEOUT, against a backend that is by
-/// definition busy. Polling at a fixed short interval would add load to the
-/// slow start it is waiting on. Starting small still wins the common race,
-/// where the backend is a few hundred ms from ready, while the cap keeps a
-/// long torch import down to a handful of probes rather than dozens.
+/// Doubling backoff: each probe costs two requests against a busy backend.
 const PORT_VALIDATION_RETRY_MIN: Duration = Duration::from_millis(250);
 const PORT_VALIDATION_RETRY_MAX: Duration = Duration::from_secs(5);
 
@@ -3935,20 +3516,12 @@ async fn validate_candidate_port(
         }
     };
 
-    // The backend announces its port once. That line arrives while it is still
-    // importing torch, so a single probe races a backend that cannot answer
-    // inside LOCAL_HTTP_TIMEOUT yet: on a cold CPU-only machine /api/liveness
-    // has been seen taking 2.1 s against a 2 s budget. Discarding the only
-    // announcement left the window waiting out the start deadline on the port
-    // the backend had already reported it could not bind. Keep probing until
-    // the backend answers or that deadline, shared with the watchdog, passes.
+    // The port is announced once, possibly before the backend can answer, so retry until the deadline.
     let mut delay = PORT_VALIDATION_RETRY_MIN;
     let mut attempts = 0u32;
     let mut verified_late = false;
     let valid = loop {
-        // Before the probe, not just after a failed one: the announcement
-        // itself can arrive past the deadline on a very slow start, and the
-        // watchdog does not kill the backend when it times out.
+        // Checked before the probe too: the announcement itself can arrive late.
         if std::time::Instant::now() >= deadline {
             break false;
         }
@@ -3965,9 +3538,7 @@ async fn validate_candidate_port(
             generic_backend_health_ok(port).await
         };
         if ok {
-            // A probe that started in time can still finish late. Emitting
-            // server-port after the watchdog's server-start-timeout strands the
-            // window in an error state it has no handler to leave.
+            // A late success must not emit server-port after server-start-timeout.
             if std::time::Instant::now() < deadline {
                 break true;
             }
@@ -3980,9 +3551,7 @@ async fn validate_candidate_port(
         }
         tokio::time::sleep(delay.min(remaining)).await;
         delay = (delay * 2).min(PORT_VALIDATION_RETRY_MAX);
-        // Stop once this generation is gone or another path claimed the port,
-        // so a restarted backend does not keep an old probe alive. Bound the
-        // guard to this statement: the future must stay Send across the await.
+        // Guard scoped to this statement so the future stays Send across the await.
         let still_current = match state.lock() {
             Ok(proc) => proc.generation == generation && proc.port.is_none(),
             Err(_) => false,
@@ -4020,8 +3589,7 @@ async fn validate_candidate_port(
                 return;
             }
         };
-        // start_timed_out is the watchdog's claim, taken under this same lock,
-        // so exactly one of the two outcomes reaches the window.
+        // start_timed_out is claimed under this lock, so exactly one outcome reaches the window.
         if proc.generation != generation || proc.port.is_some() || proc.start_timed_out {
             false
         } else if matches!(proc.owned, Some(OwnedBackendHandle::Spawned { .. })) {
@@ -4050,25 +3618,11 @@ async fn validate_candidate_port(
     }
 }
 
-/// How long a backend may take to become reachable before the window stops waiting.
-///
-/// A healthy managed backend imports torch and serves /api/health in roughly 12 s on a
-/// CI runner. This is deliberately an order of magnitude looser: the deadline exists to
-/// end an unbounded wait, not to police slow machines, and a false "failed to start" on
-/// a cold laptop would be worse than the bug it fixes.
+/// Deliberately loose (~12s typical): ends an unbounded wait without failing slow machines.
 const BACKEND_START_DEADLINE: Duration = Duration::from_secs(300);
 
-/// Report an unresponsive backend early, with its own output.
-///
-/// A backend that hangs (alive, silent, never binds its port) is not unreported today:
-/// `commands.rs`'s health watchdog kills it and emits `server-crashed` once three
-/// 15 s probes fail past `BACKEND_STARTUP_GRACE_PERIOD`, so at roughly t+330 s. What
-/// that path cannot do is say why: `server-crashed` carries no payload, so the user
-/// gets "Server stopped unexpectedly" and nothing to act on.
-///
-/// This fires ~30 s earlier, carries the backend's last log lines, and deliberately
-/// does NOT kill it, leaving the kill policy with the watchdog that has the health
-/// evidence to justify it.
+/// Report a backend that never becomes reachable, with its last log lines, without killing it;
+/// the health watchdog owns the kill decision.
 fn start_watchdog(
     app: &AppHandle,
     state: &BackendState,
@@ -4089,13 +3643,10 @@ fn start_watchdog(
             }
             match state.lock() {
                 Ok(proc) => {
-                    // A newer start superseded this one, or the backend is gone: either
-                    // way this watchdog is watching something that no longer exists.
                     if proc.generation != generation || !proc.has_owned_backend() {
                         return;
                     }
-                    // The port is only recorded after validation, so this is
-                    // "reachable", not merely "printed a number".
+                    // The port is recorded only after validation, so this means reachable.
                     if proc.port.is_some() {
                         return;
                     }
@@ -4109,17 +3660,12 @@ fn start_watchdog(
 
         let (still_ours, tail) = match state.lock() {
             Ok(mut proc) => {
-                // Same three conditions as the loop. Dropping has_owned_backend here
-                // would let a crash in the last second be overwritten by a message
-                // claiming the backend is still running.
+                // Same three conditions as the loop, or a late crash could be overwritten.
                 if proc.generation != generation || proc.port.is_some() || !proc.has_owned_backend()
                 {
                     (false, String::new())
                 } else {
-                    // Claim the outcome while still holding the lock. Deciding
-                    // here and emitting after the unlock would otherwise let a
-                    // port validation that succeeded in between emit
-                    // server-port on top of this timeout.
+                    // Claim under the lock so a concurrent port validation cannot also emit.
                     proc.start_timed_out = true;
                     let skip = proc.logs.len().saturating_sub(20);
                     let tail: Vec<String> = proc.logs.iter().skip(skip).cloned().collect();
@@ -4150,9 +3696,7 @@ fn start_watchdog(
     });
 }
 
-/// Read lines from a child process stream (stdout or stderr).
-/// For stdout, parse TAURI_PORT=(\d+) candidates for async validation.
-/// When stdout closes and the stop was not intentional, emit server-crashed.
+/// Read a child stream; stdout parses TAURI_PORT candidates and emits server-crashed on unexpected close.
 fn read_output_stream<R: std::io::Read>(
     stream: R,
     app: &AppHandle,
@@ -4166,8 +3710,6 @@ fn read_output_stream<R: std::io::Read>(
     let mut reader = std::io::BufReader::new(stream);
     let port_re = Regex::new(r"TAURI_PORT=(\d+)").unwrap();
     let mut buf = Vec::new();
-    // Did we leave the loop because the child closed the stream, or for a reason of our
-    // own? That decides whether dropping the read end here is safe. See below.
     let mut saw_eof = false;
 
     loop {
@@ -4201,9 +3743,8 @@ fn read_output_stream<R: std::io::Read>(
                     None
                 };
 
-                // Buffer the log line only for the current backend generation.
-                // Old reader threads can briefly outlive a stop/start cycle;
-                // they must not overwrite the new backend's port or logs.
+                // Old reader threads can outlive a restart; only the current generation may record
+                // port or logs.
                 let mut candidate_port = None;
                 let current_generation = if let Ok(mut proc) = state.lock() {
                     if proc.generation != generation {
@@ -4243,8 +3784,6 @@ fn read_output_stream<R: std::io::Read>(
                     });
                 }
 
-                // Keeping the successful access records out leaves tauri.log for the startup
-                // banner, hardware lines, stderr, tracebacks and failed requests.
                 if is_backend_access_log_line(&text) {
                     debug!("[backend] {}", log_line);
                 } else if log_line.len() > MAX_BACKEND_LOG_LINE_BYTES {
@@ -4270,18 +3809,8 @@ fn read_output_stream<R: std::io::Read>(
         }
     }
 
-    // Every other way out of that loop (a generation mismatch, a poisoned mutex, a read
-    // error) leaves the child ALIVE while this function is about to drop the read end.
-    // That closes the pipe underneath it, and the backend's next write takes EPIPE and
-    // dies. Seen under strace on a failing run: three good writes, then
-    //     write(1, "Session log: ...", 88) = -1 EPIPE
-    //     --- SIGPIPE ---  exit_group(1)
-    // with that same line reaching the session log on disk a moment later. The server
-    // had everything it needed and stopped only because we stopped listening.
-    //
-    // So never hand a live child a reader-less pipe: if we are giving up on parsing,
-    // keep draining to EOF. Discarding costs one blocked thread; closing costs the
-    // backend.
+    // Leaving early must not drop the read end of a live child: its next write gets EPIPE and it dies.
+    // Keep draining to EOF.
     if !saw_eof {
         warn!(
             "Backend {} reader stopped parsing without eof (generation {}); draining so \
@@ -4295,8 +3824,7 @@ fn read_output_stream<R: std::io::Read>(
             match reader.read(&mut sink) {
                 Ok(0) => break,
                 Ok(_) => continue,
-                // read_until retries this internally; a raw read does not, and giving
-                // up on EINTR would drop the read end and re-create the EPIPE above.
+                // Raw reads do not retry EINTR; giving up would drop the read end (EPIPE above).
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
@@ -4360,27 +3888,13 @@ fn read_output_stream<R: std::io::Read>(
     }
 }
 
-/// Exit status of a child whose stdout just closed, or None if it really is still alive.
-///
-/// A single non-blocking `try_wait()` at the instant stdout EOFs is a race: the pipe
-/// closes when the process drops its handles, observably before the process object
-/// signals, so a backend that HAS died reports `Ok(None)`.
-///
-/// Losing that race was not cosmetic. `exited` stayed false, the owner metadata was
-/// never cleared, `proc.port` kept pointing at a dead server and no `server-crashed`
-/// was emitted, so the window sat on the startup screen with nothing reported. Seen on
-/// Windows CI, which logged "process is still running" for a PID that was already gone.
-///
-/// Returning None still means "genuinely alive", which matters because Unsloth may close
-/// its own stdout once logging moves to the session log, so stdout EOF alone must not
-/// be read as death. Same poll shape as `wait_for_child_exit` below.
+/// Exit status of a child whose stdout closed, or None if still alive. Polls briefly since EOF can
+/// precede exit visibility; stdout EOF alone is not death (the backend may close stdout).
 fn exit_status_after_stdout_closed(child: &mut Box<dyn ChildWrapper + Send>) -> Option<String> {
     for attempt in 0..30 {
         match child.try_wait() {
             Ok(Some(status)) => return Some(status.to_string()),
             Ok(None) => {
-                // Cheap first look before paying for any sleep: a clean shutdown has
-                // usually reaped by the time we get here.
                 if attempt > 0 {
                     std::thread::sleep(Duration::from_millis(100));
                 }
@@ -4728,8 +4242,7 @@ mod backend_log_line_tests {
 
     #[test]
     fn an_all_blank_line_never_keeps_its_carriage_returns() {
-        // The log handle appends the platform terminator itself, so a `\r` that survives
-        // here lands as "\r\r\n" in the file on Windows.
+        // The log handle appends its own terminator, so a surviving `\r` becomes "\r\r\n" on Windows.
         for line in ["\r", "\r\r\r", "   \r   "] {
             assert!(
                 !collapse_progress_frames(line).contains('\r'),
@@ -4740,9 +4253,6 @@ mod backend_log_line_tests {
 
     #[test]
     fn a_crlf_line_keeps_its_payload() {
-        // read_output_stream trims the terminator before collapsing, so a CRLF's `\r` is
-        // never read as a redraw ending in an empty frame. Every line a Windows child
-        // relays arrives in this shape.
         let raw = b"Hardware detected: NVIDIA GeForce RTX 4090\r\n";
         let trimmed = String::from_utf8_lossy(trim_line_endings(raw)).into_owned();
         assert_eq!(
@@ -4769,8 +4279,6 @@ mod backend_log_line_tests {
 
     #[test]
     fn a_marker_line_survives_the_collapse() {
-        // read_output_stream runs the TAURI_PORT regex against the collapsed text, so a
-        // marker that shares its line with a redraw must still be the frame we keep.
         for raw in [
             &b"TAURI_PORT=8888\n"[..],
             &b"TAURI_PORT=8888\r\n"[..],
@@ -4788,7 +4296,6 @@ mod backend_log_line_tests {
         while end > 0 && !line.is_char_boundary(end) {
             end -= 1;
         }
-        // Slicing at `end` must not panic and must stay under the cap.
         assert!(end <= MAX_BACKEND_LOG_LINE_BYTES);
         assert_eq!(line[..end].len(), end);
     }
@@ -4805,15 +4312,12 @@ mod backend_log_line_tests {
 
     #[test]
     fn failed_access_records_keep_their_info_line() {
-        // A watchdog probe going red is the case tauri.log exists for; the backend logs
-        // every one of these (the heartbeat suppressor is 2xx-only) and so must we.
         assert!(!is_backend_access_log_line(
             r#"{"event": "request_completed", "path": "/api/liveness", "status_code": 503}"#
         ));
         assert!(!is_backend_access_log_line(
             r#"{"event": "request_completed", "path": "/api/train/start", "status_code": 401}"#
         ));
-        // No status at all: not a record we can vouch for.
         assert!(!is_backend_access_log_line(
             r#"{"event": "request_completed", "path": "/api/liveness"}"#
         ));
@@ -4825,22 +4329,14 @@ mod backend_log_line_tests {
             r#"{"level": "info", "event": "engine_stats", "gen_tok_s": 64.9}"#
         ));
         assert!(!is_backend_access_log_line("TAURI_PORT=8888"));
-        // Mentioning the event name in free text must not silence the line.
         assert!(!is_backend_access_log_line("saw request_completed in the trace"));
-        // Truncated JSON is not a record we can vouch for, so it keeps its INFO line.
         assert!(!is_backend_access_log_line(
             r#"{"event": "request_completed", "status_code": 200"#
         ));
     }
 }
 
-/// The same corpus the backend checks itself against.
-///
-/// Two implementations of "a successful access record", in two languages and two
-/// processes: the backend decides whether to emit the line at all, and the shell decides
-/// whether to mirror it into `tauri.log`. They can drift, and the CRLF handling in the
-/// progress-frame collapsers already did drift once. Reading one file from both sides
-/// turns a change to the rule on either side red on the other.
+/// Shared corpus with the backend so both implementations of the rule cannot drift.
 #[cfg(test)]
 mod shared_access_log_fixture_tests {
     use super::*;
@@ -4866,8 +4362,6 @@ mod shared_access_log_fixture_tests {
             let keep = case["keep"]
                 .as_bool()
                 .unwrap_or_else(|| panic!("case {name:?} has no boolean `keep`"));
-            // keep=false means the line IS a successful access record, which is exactly
-            // when the filter returns true and the line drops to debug.
             assert_eq!(
                 is_backend_access_log_line(line),
                 !keep,
@@ -4878,9 +4372,6 @@ mod shared_access_log_fixture_tests {
     }
 }
 
-// A login-started desktop on Windows inherits C:\Windows\system32 (issue #8510),
-// and so did every CLI child, where the Python CLI refuses to run. These pin the
-// replacement directory and that each command carries it.
 #[cfg(test)]
 mod managed_cli_working_dir_tests {
     use super::*;
@@ -4932,8 +4423,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_home_inside_the_windows_directory_is_not_reported_as_available() {
-        // Reporting it available sends a SYSTEM account to an install flow that
-        // the working directory resolver then refuses to start.
         let windirs = [PathBuf::from("C:\\Windows")];
         let home = PathBuf::from("C:\\Windows\\System32\\config\\systemprofile");
         let error = usable_home_dir(Some(home), &windirs, true).unwrap_err();
@@ -4956,19 +4445,14 @@ mod managed_cli_working_dir_tests {
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let env = |name: &str| match name {
             "HF_HOME" => Some("cache".to_string()),
-            // A name the child keeps: the two Unsloth roots are removed for
-            // every managed spawn, so they are never pinned.
             "UNSLOTH_COMPILE_LOCATION" => Some("  studio  ".to_string()),
             "OLLAMA_MODELS" => Some("D:\\models".to_string()),
             "HF_HUB_CACHE" => Some("C:\\hub".to_string()),
             "XDG_CACHE_HOME" => Some("   ".to_string()),
             "LLAMA_SERVER_PATH" => Some("\\srv\\llama-server".to_string()),
-            // Relative to drive D's own current directory, not to the cwd.
             "HF_DATASETS_CACHE" => Some("D:datasets".to_string()),
             _ => None,
         };
-        // What GetFullPathNameW would answer: drive D's own current directory,
-        // and the current drive for a root-relative value.
         let absolute = |value: &str| match value {
             "D:datasets" => Some(PathBuf::from("D:\\work\\datasets")),
             "\\srv\\llama-server" => Some(PathBuf::from("C:\\srv\\llama-server")),
@@ -4980,8 +4464,6 @@ mod managed_cli_working_dir_tests {
         assert_eq!(
             pins,
             vec![
-                // Root-relative: the drive is the current one, which the move
-                // can change, so the OS resolves it before that happens.
                 (
                     "LLAMA_SERVER_PATH",
                     PathBuf::from("C:\\srv\\llama-server")
@@ -4996,26 +4478,17 @@ mod managed_cli_working_dir_tests {
             "only values that name no directory on their own are rewritten"
         );
 
-        // An unresolvable drive-relative value refuses the whole move rather
-        // than being dropped: a child moved with that override still relative
-        // would read and write somewhere else than the caller named.
         assert!(relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true).is_err());
 
-        // Staying put is the common case: nothing is rewritten, so a desktop
-        // started from a project folder keeps every override as it was.
         assert!(
             relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true)
                 .unwrap()
                 .is_empty()
         );
-        // The directory being left is unknown, so a relative override cannot be
-        // anchored to it and the move is refused rather than retargeting it.
         assert!(relative_override_pins_from(None, &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true).is_err());
-        // With nothing relative left to preserve, an unknown directory is fine.
         let absolute_only = |name: &str| match name {
             "HF_HOME" => Some("D:\\cache".to_string()),
             "HF_HUB_CACHE" => Some("C:\\hub".to_string()),
-            // Removed for every managed child, so never in the way.
             "UNSLOTH_STUDIO_HOME" => Some("studio".to_string()),
             _ => None,
         };
@@ -5028,9 +4501,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_profile_that_is_not_there_yet_stops_a_managed_child_but_not_the_installer() {
-        // The installer built the profile as it went before it shared this
-        // resolver; a managed child that created one would leave an empty folder
-        // shadowing the roaming profile when it finally arrives.
         let missing = scratch("absent-profile").join("someone");
         let error = managed_cli_working_dir_from(Some(missing.clone()), &[]).unwrap_err();
         assert!(error.contains("not reachable"), "unexpected error: {error}");
@@ -5044,15 +4514,12 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn the_update_child_skips_the_value_the_windows_update_drops_anyway() {
-        // build_update_command removes PYTHONPATH on Windows, so pinning it there
-        // could only refuse an update over a value the child never receives.
         let skipped = update_child_skipped_env();
         assert_eq!(
             skipped.contains(&"PYTHONPATH"),
             cfg!(windows),
             "PYTHONPATH is skipped exactly where the update drops it"
         );
-        // STUDIO_LOCAL_REPO stays: the update is the one child that reads it.
         assert!(!skipped.contains(&"STUDIO_LOCAL_REPO"));
         assert!(child_skipped_env().contains(&"STUDIO_LOCAL_REPO"));
     }
@@ -5060,16 +4527,7 @@ mod managed_cli_working_dir_tests {
     #[cfg(unix)]
     #[test]
     fn a_named_user_override_is_pinned_where_the_fingerprint_watches() {
-        // Codex 3962298677, P2. The two halves of one launch resolved ~name
-        // differently: preflight::managed::llama_runtime_override_from reads it out
-        // of the password database, while this path read it with the Windows rule,
-        // which leaves it alone off Windows, so it was anchored under the directory
-        // being left. The child then graded <cwd>/~root/llama.cpp while the cache
-        // fingerprinted root's own tree, and quarantine under the tree actually in
-        // use never invalidated a Ready verdict.
-        //
-        // root is the one account every unix box has, which makes this checkable
-        // anywhere, and it is the account preflight::managed's own test uses.
+        // root exists on every unix box and matches preflight::managed's own test.
         let cwd = PathBuf::from("/mnt/work/session");
         let work_dir = PathBuf::from("/home/me/.unsloth");
         let pins = relative_override_pins_from(
@@ -5094,7 +4552,6 @@ mod managed_cli_working_dir_tests {
             "a named-user override was anchored under the directory being left: {}",
             pinned.display()
         );
-        // The same answer the fingerprint side reaches, through the same lookup.
         let watched = crate::preflight::managed::named_user_home(
             "~root/llama.cpp",
             Some(std::path::Path::new("/home/me")),
@@ -5106,9 +4563,6 @@ mod managed_cli_working_dir_tests {
     #[cfg(unix)]
     #[test]
     fn an_unknown_named_user_is_left_alone_and_anchored_by_both_halves() {
-        // expanduser leaves a name it cannot resolve exactly as it arrived, so both
-        // halves fall through to anchoring it, and they still agree. Guessing here
-        // instead would invent a path neither the child nor the cache would use.
         let cwd = PathBuf::from("/mnt/work/session");
         let value = "~no-such-account-anywhere/llama.cpp";
         let pins = relative_override_pins_from(
@@ -5130,12 +4584,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn the_child_and_the_fingerprint_expand_a_bare_tilde_to_one_home() {
-        // Codex 3973890105, P2, right about the disagreement and wrong about where it
-        // was: this caller passed dirs::home_dir(), not USERPROFILE, so the POSIX side
-        // already agreed. Windows was the odd one: ntpath.expanduser answers USERPROFILE
-        // and dirs reads the known folder, so an overridden profile pinned the child to
-        // one tree while preflight::managed fingerprinted another, and quarantine in the
-        // tree in use never invalidated a cached healthy result. One reader now.
         let home = crate::preflight::managed::tilde_home();
         let pinned = expand_user("~/llama.cpp", home.as_deref(), None, cfg!(windows));
         let watched = crate::preflight::managed::llama_runtime_override_from(
@@ -5153,8 +4601,6 @@ mod managed_cli_working_dir_tests {
     #[cfg(unix)]
     #[test]
     fn a_bare_tilde_override_still_reaches_home_off_windows() {
-        // The form that already worked has to keep working: this used to go through
-        // expand_windows_user, whose empty-name arm answers home on any platform.
         let pins = relative_override_pins_from(
             Some(PathBuf::from("/mnt/work/session")),
             std::path::Path::new("/home/me/.unsloth"),
@@ -5173,9 +4619,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_posix_list_is_split_and_joined_with_its_own_separator() {
-        // The lost-directory branch already reads POSIX rules; the moving path
-        // has to as well, or "plugins:vendor" is one entry and both import roots
-        // leave with it.
         let cwd = PathBuf::from("/mnt/work/session");
         let work_dir = PathBuf::from("/home/me/.unsloth");
         let pins = relative_override_pins_from(
@@ -5199,8 +4642,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_scalar_that_would_not_fit_is_reported_too() {
-        // Anchoring a value that was already near the limit can cross it, and
-        // CreateProcess is too late to say which setting did.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let long = "x".repeat(WINDOWS_ENV_VALUE_LIMIT);
         let error = relative_override_pins_from(
@@ -5218,9 +4659,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_posix_reader_expands_its_own_spelling_and_no_other() {
-        // posixpath.expandvars reads $NAME and ${NAME}; %NAME% is an ordinary
-        // filename there, so reading it the Windows way would call a relative
-        // value absolute and let the child move out from under it.
         let lookup = |name: &str| match name {
             "HOME" => Some("/home/me".to_string()),
             _ => None,
@@ -5233,9 +4671,6 @@ mod managed_cli_working_dir_tests {
         assert_eq!(expand_posix_vars("cost: $5", &lookup), "cost: $5");
         assert_eq!(expand_posix_vars("plain/path", &lookup), "plain/path");
 
-        // And the lost-directory branch reads it that way: %HOME%/hf depends on
-        // where the process is standing, so the move is refused rather than
-        // taken with the value following it.
         let error = relative_override_pins_from(
             None,
             std::path::Path::new("/home/me/.unsloth"),
@@ -5251,7 +4686,6 @@ mod managed_cli_working_dir_tests {
         )
         .unwrap_err();
         assert!(error.contains("HF_HOME"), "{error}");
-        // The POSIX spelling of the same setting names one folder, so it passes.
         assert_eq!(
             relative_override_pins_from(
                 None,
@@ -5273,9 +4707,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_list_that_would_not_fit_is_reported_rather_than_spawned() {
-        // Windows refuses the variable, and CreateProcess is too late to say
-        // which setting did it: the caller turns this into the same message as
-        // an unresolvable one, and offers no repair that would hit the same wall.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let long = std::iter::repeat("entry")
@@ -5297,8 +4728,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn the_tilde_follows_the_profile_the_cli_guard_reads() {
-        // ntpath.expanduser answers USERPROFILE, so a portable or overridden
-        // environment must not send the two layers to different folders.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let pins = relative_override_pins_from(
@@ -5310,8 +4739,6 @@ mod managed_cli_working_dir_tests {
                 _ => None,
             },
             |value: &str| panic!("unexpected value needing the OS: {value}"),
-            // What dirs::home_dir() would answer, which is not where the tilde
-            // points once USERPROFILE says otherwise.
             Some(std::path::Path::new("C:\\Users\\me")),
             MANAGED_CHILD_SCRUBBED_ENV,
             true,
@@ -5328,12 +4755,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn the_pin_decision_is_a_table_with_no_other_outcomes() {
-        // Every combination of the three things the pinning looks at, so "nothing
-        // happens unless the directory is one the CLI refuses" is a table rather
-        // than a claim. The child either stays with nothing rewritten, moves with
-        // every relative setting anchored to the directory it left, or the caller
-        // is told exactly which setting could not be preserved. There is no
-        // fourth outcome.
         let home = std::path::Path::new("C:\\Users\\me");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let cwds = [
@@ -5387,7 +4808,6 @@ mod managed_cli_working_dir_tests {
                 ("elsewhere", "relative", "anchored to the directory being left"),
                 ("elsewhere", "absolute", "nothing rewritten"),
                 ("elsewhere", "toggle", "nothing rewritten"),
-                // Staying put rewrites nothing whatever the environment holds.
                 ("already-there", "clean", "nothing rewritten"),
                 ("already-there", "relative", "nothing rewritten"),
                 ("already-there", "absolute", "nothing rewritten"),
@@ -5396,8 +4816,6 @@ mod managed_cli_working_dir_tests {
                 ("system", "relative", "anchored to the directory being left"),
                 ("system", "absolute", "nothing rewritten"),
                 ("system", "toggle", "nothing rewritten"),
-                // Nothing can be anchored to a directory with no name, so a
-                // relative setting is reported and the caller stays put.
                 ("unknown", "clean", "nothing rewritten"),
                 ("unknown", "relative", "reported as unpreservable"),
                 ("unknown", "absolute", "nothing rewritten"),
@@ -5408,10 +4826,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_directory_that_cannot_be_named_leaves_the_child_where_it_is() {
-        // Nothing can be anchored to a directory this process cannot name, so the
-        // child stays in it rather than the spawn failing over a setting the
-        // command may never read. What it must not do is move and take the
-        // setting with it.
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let relative = |name: &str| match name {
             "DG_VISUAL_BIN" => Some("visual".to_string()),
@@ -5431,9 +4845,6 @@ mod managed_cli_working_dir_tests {
             .is_err(),
             "the pins still report what a move would lose"
         );
-        // And the spawn path turns that report into staying put, without
-        // moving this process to prove it: an unpinnable environment plus a
-        // directory that cannot be named means the child stays where it is.
         let unpinnable: Result<Vec<(&'static str, PathBuf)>, String> =
             Err("DG_VISUAL_BIN is relative and the directory it was written against is gone"
                 .to_string());
@@ -5443,9 +4854,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn an_expansion_that_stays_relative_refuses_the_move() {
-        // The reader expands once. When that still holds a reference the folder
-        // depends on where the process is standing, so the move is refused; when
-        // it already names a drive the value is left exactly as written.
         fn pins(
             lookup: impl Fn(&str) -> Option<String>,
         ) -> Result<Vec<(&'static str, PathBuf)>, String> {
@@ -5465,7 +4873,6 @@ mod managed_cli_working_dir_tests {
                 "unexpected error: {error}"
             );
         };
-        // Nested: one pass leaves the reference NESTED itself holds.
         refused(
             pins(|name: &str| match name {
                 "USERPROFILE" => Some("C:\\Users\\me".to_string()),
@@ -5475,7 +4882,6 @@ mod managed_cli_working_dir_tests {
             })
             .unwrap_err(),
         );
-        // Escaped: one pass turns %% into the reference it was protecting.
         refused(
             pins(|name: &str| match name {
                 "USERPROFILE" => Some("C:\\Users\\me".to_string()),
@@ -5484,13 +4890,10 @@ mod managed_cli_working_dir_tests {
             })
             .unwrap_err(),
         );
-        // Self-referencing: no number of passes settles it.
         refused(
             pins(|name: &str| (name == "HF_HOME").then(|| "%HF_HOME%\\cache".to_string()))
                 .unwrap_err(),
         );
-        // Already names a drive after one pass, so it means the same folder from
-        // anywhere and nothing is rewritten.
         assert_eq!(
             pins(|name: &str| (name == "HF_ASSETS_CACHE")
                 .then(|| "C:\\cache\\%UNSET%\\assets".to_string()))
@@ -5501,9 +4904,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn the_model_paths_llama_server_reads_for_itself_are_pinned() {
-        // llama-server resolves these against its own working directory, so a
-        // relative one has to move with the child. The URL spelling names no
-        // local file.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let env = |name: &str| match name {
@@ -5537,9 +4937,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_lost_directory_still_reads_a_setting_that_never_depended_on_it() {
-        // %LOCALAPPDATA%\hf, inline JSON and a toggle are the same three shapes
-        // the moving path exempts. Judging them raw here refused every managed
-        // spawn over values no directory ever decided.
         let work_dir = std::path::PathBuf::from("C:\\Users\\me\\.unsloth");
         let env = |name: &str| match name {
             "LOCALAPPDATA" => Some("C:\\Users\\me\\AppData\\Local".to_string()),
@@ -5562,7 +4959,6 @@ mod managed_cli_working_dir_tests {
             .unwrap()
             .is_empty()
         );
-        // A genuinely relative folder in the same list is still refused.
         let with_relative = |name: &str| match name {
             "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH" => Some("1;models".to_string()),
             _ => None,
@@ -5583,8 +4979,7 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn the_pinned_override_list_matches_the_cli_guard() {
-        // A name in one list and not the other means the same install places
-        // state in two folders, depending on which layer moved the child.
+        // Must stay in sync with the CLI guard's list.
         let guard = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../unsloth_cli/_system_dir_guard.py");
         let source = fs::read_to_string(&guard).unwrap();
@@ -5630,8 +5025,6 @@ mod managed_cli_working_dir_tests {
         fs::remove_dir_all(&base).ok();
     }
 
-    // The SYSTEM account's profile is C:\Windows\System32\config\systemprofile, so
-    // trusting the home API here would hand the child the folder it just rejected.
     #[test]
     fn a_home_inside_the_windows_directory_is_rejected() {
         let windir = PathBuf::from("C:\\Windows");
@@ -5652,8 +5045,6 @@ mod managed_cli_working_dir_tests {
         }
     }
 
-    // The separator keeps the match on a path boundary, so a profile that merely
-    // starts with the same letters as the Windows directory is not rejected.
     #[test]
     fn a_home_that_merely_shares_a_prefix_with_the_windows_directory_is_allowed() {
         let error = managed_cli_working_dir_from(
@@ -5667,7 +5058,6 @@ mod managed_cli_working_dir_tests {
         );
     }
 
-    // A WINDIR of "C:\" would otherwise swallow the whole drive.
     #[test]
     fn a_drive_root_windows_directory_does_not_reject_every_home() {
         let error = managed_cli_working_dir_from(
@@ -5694,8 +5084,6 @@ mod managed_cli_working_dir_tests {
         );
     }
 
-    // \\?\C:\Windows\... is the same folder spelled the long way; the Python
-    // guard strips the prefix too.
     #[test]
     fn an_extended_length_path_does_not_hide_the_windows_directory() {
         let error = managed_cli_working_dir_from(
@@ -5711,9 +5099,6 @@ mod managed_cli_working_dir_tests {
         );
     }
 
-    // The pin exists to replace an unusable directory, not to relocate every
-    // launch: a desktop started from a project folder keeps resolving ./models
-    // and other cwd-relative defaults there, on every platform.
     #[test]
     fn a_usable_inherited_directory_is_kept() {
         assert_eq!(
@@ -5739,8 +5124,6 @@ mod managed_cli_working_dir_tests {
         ));
     }
 
-    // A WINDIR aimed at the user's profile would otherwise make this reject that
-    // profile, so the backend would never start anywhere on that machine.
     #[test]
     fn a_candidate_that_holds_no_system32_is_not_a_windows_directory() {
         let roots = windows_roots_from(
@@ -5781,8 +5164,7 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_configured_command_carries_the_directory_and_the_marker() {
-        // relative_override_pins reads the ambient environment, which another
-        // test may be swapping, so this takes the crate-wide env lock.
+        // Takes the crate-wide env lock: other tests may swap the environment.
         let _env = crate::native_path_policy::PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -5814,7 +5196,6 @@ mod managed_cli_working_dir_tests {
                 "{usable} must be kept"
             );
         }
-        // A native package sets no APPDIR, so nothing changes for it.
         assert!(!is_unusable_cwd(
             std::path::Path::new("/tmp/.mount_Unsloth1a2b3c/usr"),
             &[],
@@ -5837,8 +5218,6 @@ mod managed_cli_working_dir_tests {
             );
         }
         for usable in [
-            // The guard has always allowed these, so a child that was running
-            // from one keeps running from it.
             "C:\\Windows\\Temp\\project",
             "C:\\Windows",
             "C:\\Windows2\\System32",
@@ -5853,8 +5232,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn an_extended_unc_path_compares_the_same_in_either_case() {
-        // The object manager accepts \\?\unc\, so a profile spelled that way
-        // must not be read as a relative name.
         assert_eq!(
             normalize_windows_path(std::path::Path::new("\\\\?\\UNC\\server\\profiles\\me")),
             normalize_windows_path(std::path::Path::new("\\\\?\\unc\\server\\profiles\\me"))
@@ -5865,8 +5242,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_lost_directory_is_judged_entry_by_entry() {
-        // "C:\\vendor;plugins" starts with a drive and still carries something
-        // the directory that is gone decided.
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let home = Some(std::path::Path::new("C:\\Users\\me"));
         let mixed = |name: &str| match name {
@@ -5883,7 +5258,6 @@ mod managed_cli_working_dir_tests {
             true
         )
         .is_err());
-        // Every entry qualified: nothing is left depending on it.
         let qualified = |name: &str| match name {
             "PYTHONPATH" => Some("C:\\vendor;D:\\plugins".to_string()),
             _ => None,
@@ -5903,10 +5277,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_lost_directory_reads_a_posix_environment_by_posix_rules() {
-        // Off Windows the same fallback runs, and what it reads there is a POSIX
-        // environment. Judging /var/cache/unsloth by the Windows rules called it
-        // relative and failed preflight and every managed spawn over a setting
-        // that was never relative.
         let work_dir = PathBuf::from("/home/me/.unsloth");
         let home = Some(std::path::Path::new("/home/me"));
         let posix = |name: &str| match name {
@@ -5926,7 +5296,6 @@ mod managed_cli_working_dir_tests {
             .unwrap()
             .is_empty()
         );
-        // Something genuinely relative is still refused.
         let relative = |name: &str| match name {
             "XDG_CACHE_HOME" => Some("cache".to_string()),
             _ => None,
@@ -5941,8 +5310,6 @@ mod managed_cli_working_dir_tests {
             false
         )
         .is_err());
-        // A POSIX list is separated by ':', so a relative entry behind an
-        // absolute one is still caught.
         let mixed = |name: &str| match name {
             "PYTHONPATH" => Some("/opt/vendor:plugins".to_string()),
             _ => None,
@@ -5957,8 +5324,6 @@ mod managed_cli_working_dir_tests {
             false
         )
         .is_err());
-        // And on Windows the same value stays Windows-judged: "/var/cache" is
-        // the root of whichever drive the process is on.
         assert!(relative_override_pins_from(
             None,
             &PathBuf::from("C:\\Users\\me\\.unsloth"),
@@ -5973,8 +5338,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn only_the_update_child_carries_the_local_checkout() {
-        // STUDIO_LOCAL_REPO is read by the update and installer path alone, so a
-        // stale one must not fail a probe or a backend start that ignores it.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let home = Some(std::path::Path::new("C:\\Users\\me"));
@@ -6022,16 +5385,11 @@ mod managed_cli_working_dir_tests {
             expand_windows_user("~/llama.cpp", home, me),
             "C:\\Users\\me/llama.cpp"
         );
-        // ~name is the sibling profile, as ntpath resolves it.
         assert_eq!(expand_windows_user("~other\\x", home, me), "C:\\Users\\other\\x");
-        // ~me is this profile whatever the folder is called.
         let domain = std::path::Path::new("C:\\Users\\me.DOMAIN");
         assert_eq!(expand_windows_user("~me\\x", domain, me), "C:\\Users\\me.DOMAIN\\x");
-        // And ntpath declines to guess a sibling when this profile is not named
-        // after the current user, so neither does this.
         assert_eq!(expand_windows_user("~other\\x", domain, me), "~other\\x");
         assert_eq!(expand_windows_user("~other\\x", home, None), "~other\\x");
-        // Nothing else is touched.
         for value in ["cache", "C:\\cache", "a~b"] {
             assert_eq!(expand_windows_user(value, home, me), value);
         }
@@ -6041,14 +5399,11 @@ mod managed_cli_working_dir_tests {
     fn every_spelling_expandvars_takes_is_expanded_here_too() {
         let lookup = |name: &str| match name {
             "LOCALAPPDATA" => Some("C:\\Users\\me\\AppData\\Local".to_string()),
-            // ntpath counts the hyphen as part of a $ name, so this one has to
-            // win over a lookup of "CACHE".
             "CACHE-ROOT" => Some("C:\\right".to_string()),
             "CACHE" => Some("C:\\wrong".to_string()),
             "TWO WORDS" => Some("C:\\spaced".to_string()),
             _ => None,
         };
-        // The three forms os.path.expandvars takes on a Windows path.
         for value in [
             "%LOCALAPPDATA%\\hf",
             "$LOCALAPPDATA\\hf",
@@ -6061,18 +5416,14 @@ mod managed_cli_working_dir_tests {
             );
         }
         assert_eq!(expand_windows_vars("$CACHE-ROOT\\hf", &lookup), "C:\\right\\hf");
-        // A percent name may hold spaces; a dollar name stops at the dot.
         assert_eq!(expand_windows_vars("%TWO WORDS%\\x", &lookup), "C:\\spaced\\x");
         assert_eq!(expand_windows_vars("$CACHE.d", &lookup), "C:\\wrong.d");
-        // Doubled markers stand for one character.
         assert_eq!(expand_windows_vars("100%%", &lookup), "100%");
         assert_eq!(expand_windows_vars("$$HOME", &lookup), "$HOME");
-        // A quoted run is copied through, so what is inside it is not expanded.
         assert_eq!(
             expand_windows_vars("'%LOCALAPPDATA%'\\hf", &lookup),
             "'%LOCALAPPDATA%'\\hf"
         );
-        // Unset names, unterminated references and a lone marker stay as written.
         for value in [
             "%NOT_SET%\\hub",
             "$NOT_SET\\hub",
@@ -6081,8 +5432,6 @@ mod managed_cli_working_dir_tests {
             "a$b",
             "$",
             "50% off",
-            // Non-ASCII, which \w under re.ASCII does not match: the byte walk
-            // must step over it whole rather than split the character.
             "caché\\modèles",
         ] {
             assert_eq!(
@@ -6095,8 +5444,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn the_pythonpath_spellings_that_follow_the_process_are_anchored() {
-        // An empty component is the working directory, and `~` is never expanded
-        // in PYTHONPATH, so Python reads it as an ordinary relative folder.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let pins = relative_override_pins_from(
@@ -6112,12 +5459,9 @@ mod managed_cli_working_dir_tests {
             true,
         )
         .unwrap();
-        // `~\plugins` is anchored as the literal relative folder Python reads,
-        // not turned into the profile the interpreter was never looking at.
         let expected = format!(
             "{};{};C:\\shared\\lib",
             cwd.to_string_lossy(),
-            // join, like the anchoring does, so the separator is the host's.
             cwd.join("~\\plugins").to_string_lossy()
         );
         assert_eq!(pins, vec![("PYTHONPATH", PathBuf::from(expected))]);
@@ -6125,8 +5469,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_cache_override_is_expanded_before_it_is_judged() {
-        // One reader expands %LOCALAPPDATA% and one does not, so the value is
-        // written out here and both then see the same folder.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let pins = relative_override_pins_from(
@@ -6135,8 +5477,6 @@ mod managed_cli_working_dir_tests {
             |name| match name {
                 "LOCALAPPDATA" => Some("C:\\Users\\me\\AppData\\Local".to_string()),
                 "HF_HOME" => Some("%LOCALAPPDATA%\\hf".to_string()),
-                // A name this machine does not set stays as written, and is
-                // anchored like any other relative value.
                 "HF_HUB_CACHE" => Some("%NOT_SET%\\hub".to_string()),
                 _ => None,
             },
@@ -6161,8 +5501,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn an_exemption_only_applies_to_the_variable_that_supports_it() {
-        // A directory really called "[llama]" or "%data%" is legal on Windows,
-        // and the readers of these two names take it as exactly that.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let pins = relative_override_pins_from(
@@ -6191,17 +5529,13 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_value_the_working_directory_does_not_resolve_is_left_alone() {
-        // Three readers in the tree treat these as something other than a path,
-        // so anchoring one would change its meaning rather than preserve it.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let pins = relative_override_pins_from(
             Some(cwd),
             &work_dir,
             |name| match name {
-                // MLX_HOSTFILE holds either a filename or the host list itself.
                 "MLX_HOSTFILE" => Some("[{\"ssh\": \"node0\"}]".to_string()),
-                // A bare toggle is ignored on purpose: there is no "allow all".
                 "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH" => Some("1".to_string()),
                 _ => None,
             },
@@ -6233,7 +5567,6 @@ mod managed_cli_working_dir_tests {
             true,
         )
         .unwrap();
-        // `~` is written out: only some readers of these names expand it.
         let expected = format!(
             "{};D:\\shared;C:\\Users\\me\\mine",
             cwd.join("trusted").to_string_lossy()
@@ -6250,8 +5583,7 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn configuring_a_command_twice_changes_nothing() {
-        // relative_override_pins reads the ambient environment, which another
-        // test may be swapping, so this takes the crate-wide env lock.
+        // Takes the crate-wide env lock: other tests may swap the environment.
         let _env = crate::native_path_policy::PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -6284,9 +5616,6 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn pinning_an_already_pinned_value_is_a_no_op() {
-        // The child's environment reaches grandchildren, and the desktop
-        // resolves the directory again on every spawn, so the rewrite has to
-        // land on the same value however many times it runs.
         let cwd = PathBuf::from("C:\\Windows\\System32");
         let work_dir = PathBuf::from("C:\\Users\\me\\.unsloth");
         let absolute = |_: &str| Some(PathBuf::from("D:\\work\\datasets"));
@@ -6321,8 +5650,6 @@ mod managed_cli_working_dir_tests {
                 slot.1 = pinned.to_string_lossy().into_owned();
             }
         }
-        // The separator is whatever this platform's join produces; the point is
-        // that the value stopped moving after the first pass.
         assert_eq!(values[0].1, cwd.join("cache").to_string_lossy());
         assert_eq!(values[1].1, "D:\\work\\datasets");
         assert!(is_fully_qualified(&values[0].1) && is_fully_qualified(&values[1].1));
@@ -6330,16 +5657,13 @@ mod managed_cli_working_dir_tests {
 
     #[test]
     fn a_configured_tokio_command_carries_the_directory_and_the_marker() {
-        // relative_override_pins reads the ambient environment, which another
-        // test may be swapping, so this takes the crate-wide env lock.
+        // Takes the crate-wide env lock: other tests may swap the environment.
         let _env = crate::native_path_policy::PROCESS_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let expected = managed_cli_working_dir().expect("home must resolve");
         let mut tokio_cmd = tokio::process::Command::new("unsloth");
         apply_managed_cli_context_tokio(&mut tokio_cmd).expect("context must apply");
-        // Under test the resolver keeps this process's own directory, and the
-        // child inherits it rather than reopening it by name.
         let configured = tokio_cmd.as_std().get_current_dir();
         match std::env::current_dir() {
             Ok(cwd) if cwd == expected => assert_eq!(configured, None),
@@ -6354,8 +5678,7 @@ mod managed_cli_working_dir_tests {
         );
     }
 
-    // The marker only helps if the Python side reads the same name; a rename on
-    // either side degrades silently to argv matching, which is the fallback path.
+    // The Python side must read the same name; a rename degrades silently to argv matching.
     #[test]
     fn the_marker_name_matches_the_python_guard() {
         let guard = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6368,8 +5691,6 @@ mod managed_cli_working_dir_tests {
         );
     }
 
-    // Configuring a child must not move the desktop process itself: a global chdir
-    // would change relative path resolution for dialogs, the updater and cleanup.
     #[test]
     fn configuring_a_child_leaves_the_parent_directory_alone() {
         let before = std::env::current_dir().unwrap();
@@ -6388,8 +5709,6 @@ mod managed_cli_working_dir_tests {
         );
     }
 
-    // The platform the bug was reported on, on the Windows leg of studio-tauri-smoke:
-    // a child must observe the chosen directory rather than the launcher's.
     #[cfg(windows)]
     #[test]
     fn a_spawned_child_runs_from_the_resolved_directory_on_windows() {
@@ -6408,8 +5727,6 @@ mod managed_cli_working_dir_tests {
         fs::remove_dir_all(&expected).ok();
     }
 
-    // The end of the chain the bug actually broke: the child must observe the chosen
-    // directory, including through the unix process-group wrapper used by start_backend.
     #[cfg(unix)]
     #[test]
     fn a_spawned_child_runs_from_the_resolved_directory() {
@@ -6432,11 +5749,7 @@ mod managed_cli_working_dir_tests {
     }
 }
 
-// The race this pins is not visible from the type system, so it uses real processes
-// rather than a mock: a child's stdout pipe can EOF a moment before the kernel reports
-// the exit, and a single non-blocking try_wait() at that instant returns Ok(None). The
-// old code read that as "still running", never emitted server-crashed, and left the
-// window waiting on a backend that was already gone.
+// Real processes: stdout can EOF before the exit is visible to try_wait.
 #[cfg(test)]
 #[cfg(unix)]
 mod exit_status_after_stdout_closed_tests {
@@ -6460,9 +5773,6 @@ mod exit_status_after_stdout_closed_tests {
         assert!(status.contains('3'), "expected the real exit code in {status:?}");
     }
 
-    // The half of the contract a naive "retry until you get something" would break: a
-    // backend may legitimately close its own stdout after moving logging to its session
-    // log, and calling that a crash would kill a healthy backend.
     #[test]
     fn a_child_that_is_still_running_is_not_reported_as_dead() {
         let mut child = spawn(&["/bin/sh", "-c", "exec sleep 30"]);
@@ -6474,8 +5784,6 @@ mod exit_status_after_stdout_closed_tests {
         );
     }
 
-    // The regression itself: exit and observation race, so the check has to survive the
-    // child dying at an arbitrary point rather than only before or only after.
     #[test]
     fn wins_the_race_against_a_child_exiting_mid_check() {
         for delay_ms in [0, 5, 25, 120, 400] {
@@ -6582,8 +5890,6 @@ mod owned_backend_liveness_tests {
         assert!(!owned_backend_could_bind_port(&state, 8765));
     }
 
-    /// While a handle has no port yet, presence reads every port as "not ours". Absence must
-    /// not agree, or a refusal during our own start becomes proof of death.
     #[test]
     fn a_child_that_has_not_reported_a_port_could_still_bind_the_one_asked_about() {
         let state = new_backend_state();
@@ -6644,11 +5950,9 @@ mod owned_backend_liveness_tests {
         }
     }
 
-    // The adopted half, where there is no child handle to wait on.
     #[test]
     fn an_adopted_pid_that_is_gone_is_not_running() {
         assert!(backend_pid_is_running(std::process::id()));
-        // A real process run to completion, so this pid is PROVABLY gone; an unreadable pid stays trusted by design.
         let mut child = spawn_owned(&DEAD_CHILD);
         let pid = child.id();
         let _ = child.wait();

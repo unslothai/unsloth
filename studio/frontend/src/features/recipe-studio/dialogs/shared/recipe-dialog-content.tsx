@@ -6,8 +6,7 @@ import type { ComponentProps, ReactElement } from "react";
 import { DialogContent } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
-/** A recipe dialog over the canvas. The overlay is clear, so the shadow is its edge: Firefox's
- *  .scroll-rounded clip would cut it, so an inner viewport scrolls instead of the shadowed box. */
+/** Firefox's .scroll-rounded clip would cut the edge shadow, so an inner viewport scrolls. */
 export function RecipeDialogContent({
   className,
   viewportClassName,

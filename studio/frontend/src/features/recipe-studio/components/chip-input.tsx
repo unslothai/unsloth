@@ -45,9 +45,7 @@ export function ChipInput({
     if (!element) {
       return;
     }
-    // min-h-9 follows the UI font size, so a one-line field is 27px at the
-    // 12px setting and 46px at 20px. A fixed cutoff calls the tall one wrapped
-    // before a single chip has moved.
+    // min-h-9 scales with the UI font size, so a fixed height cutoff would misreport wrapping.
     const syncWrapped = () => {
       setIsWrapped(element.clientHeight > 44 * uiSpaceScale);
     };

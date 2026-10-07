@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Custom sidebar sections: user-named lists that hold chats and project folders. The store keeps
-// them, the drop planner files rows in and out of them, and the sidebar draws them between Pinned
-// and Projects with the same header menu every other list carries.
-
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
@@ -61,9 +57,6 @@ function resetStore() {
   });
 }
 
-// ---------------------------------------------------------------------------------------------
-// Store
-
 test("a new sidebar has no custom sections and hides nothing", () => {
   const fresh = useSidebarOrganizationStore.getInitialState();
   assert.deepEqual(fresh.customSections, []);
@@ -114,7 +107,6 @@ test("rows file into a section, move between sections, and come back out", () =>
   store.setChatsSection(["c1"], null);
   state = useSidebarOrganizationStore.getState();
   assert.deepEqual({ ...state.sectionByChatId }, { c2: b });
-  // Filing into a section that does not exist is refused rather than stranding the row.
   store.setChatsSection(["c3"], "missing");
   assert.equal(useSidebarOrganizationStore.getState().sectionByChatId.c3, undefined);
 });
@@ -179,16 +171,13 @@ test("a section moves by dragging alone, and new sections open among the user's 
   };
   const P = PINNED_SECTION_KEY;
   const J = PROJECTS_SECTION_KEY;
-  // Newest first, between Pinned and Projects.
   assert.deepEqual(order(), [P, a, b, c, J]);
   store.moveSection(c, P, "top");
   assert.deepEqual(order(), [c, P, a, b, J]);
-  // The list every menu reads follows the drawn order.
   assert.deepEqual(
     useSidebarOrganizationStore.getState().customSections.map((section) => section.id),
     [c, a, b],
   );
-  // No step-by-step move is left: the header drag is the one way to reorder.
   assert.equal("moveCustomSection" in useSidebarOrganizationStore.getState(), false);
   assert.doesNotMatch(APP_SIDEBAR, /\bmoveSectionUp\b|\bmoveSectionDown\b|\bmoveCustomSection\b/);
 });
@@ -199,7 +188,6 @@ test("no sidebar list sorts by priority", () => {
     APP_SIDEBAR,
     /\}> = \[\n  \{ value: "updated", key: "shell\.organize\.lastUpdated" \},\n  \{ value: "manual", key: "shell\.organize\.manualOrder" \},\n\];/,
   );
-  // A saved Priority falls back to each list's default.
   const merged = mergePersistedOrganization(
     {
       pinnedSort: "priority",
@@ -224,16 +212,13 @@ test("a dragged section lands on the edge it was dropped against", () => {
     return resolveSectionOrder(state.sectionOrder, state.customSections);
   };
   assert.deepEqual(order(), [P, s, J]);
-  // Projects above Pinned, then Pinned under everything.
   store.moveSection(J, P, "top");
   assert.deepEqual(order(), [J, P, s]);
   store.moveSection(P, s, "bottom");
   assert.deepEqual(order(), [J, s, P]);
-  // A drop that changes nothing leaves the state alone.
   const before = useSidebarOrganizationStore.getState();
   store.moveSection(s, P, "top");
   assert.equal(useSidebarOrganizationStore.getState(), before);
-  // A new section still opens among the user's own; a deleted one leaves the order.
   const t2 = store.createCustomSection("T")!;
   assert.deepEqual(order(), [J, t2, s, P]);
   store.deleteCustomSection(s);
@@ -245,7 +230,6 @@ test("a saved order is read over the sections that exist now", () => {
     { id: "a", name: "A", sort: "manual" as const },
     { id: "b", name: "B", sort: "manual" as const },
   ];
-  // Unknown keys and repeats go; missing ones take their default place.
   assert.deepEqual(resolveSectionOrder(["b", "gone", PROJECTS_SECTION_KEY, "b"], sections), [
     PINNED_SECTION_KEY,
     "b",
@@ -253,7 +237,6 @@ test("a saved order is read over the sections that exist now", () => {
     PROJECTS_SECTION_KEY,
   ]);
   assert.deepEqual(resolveSectionOrder([], []), [PINNED_SECTION_KEY, PROJECTS_SECTION_KEY]);
-  // Recents has no place in it: it is always last.
   assert.ok(!resolveSectionOrder(["recents"], sections).includes("recents"));
   const merged = mergePersistedOrganization(
     { customSections: sections, sectionOrder: [PROJECTS_SECTION_KEY, "a", 7, "zzz"] },
@@ -274,7 +257,6 @@ test("Show toggles hide Projects and custom sections independently, never Pinned
   assert.deepEqual(useSidebarOrganizationStore.getState().hiddenSections, [
     PROJECTS_SECTION_KEY,
   ]);
-  // Pinned always shows: a "hide Pinned" saved by an earlier build is dropped on load.
   const merged = mergePersistedOrganization(
     { hiddenSections: ["pinned", PROJECTS_SECTION_KEY] },
     useSidebarOrganizationStore.getState(),
@@ -305,9 +287,7 @@ test("a saved payload keeps only well-formed sections and assignments to them", 
   ]);
   assert.deepEqual({ ...merged.sectionByChatId }, { c1: "s1" });
   assert.deepEqual({ ...merged.sectionByProjectId }, { p1: "s3" });
-  // Pinned always shows, so an old "hide Pinned" is dropped with the rest.
   assert.deepEqual(merged.hiddenSections, ["s3"]);
-  // Reset-all already clears the key everything above lives under.
   assert.equal(SIDEBAR_ORGANIZATION_STORAGE_KEY, "unsloth_sidebar_organization");
 });
 
@@ -322,9 +302,6 @@ test("a section's scope cannot be mistaken for a built-in list", () => {
     assert.equal(customSectionIdOf(scope), null, scope);
   }
 });
-
-// ---------------------------------------------------------------------------------------------
-// Drop planner
 
 // Section S holds folder "lab" and chat s1; chat p1 is pinned; r1 and r2 are Recents rows;
 // folder "home" is under Projects with chat c3.
@@ -529,7 +506,6 @@ test("reordering Pinned keeps a pinned row's section for when it is unpinned", (
 });
 
 test("a section's row dragged into Pinned keeps its section for when it is unpinned", () => {
-  // As a pin from the row's menu does: Pinned draws it, and unpinning sends it back to S.
   const chatPlan = plannedDrop(
     planSidebarDrop(chat("s1", SCOPE, SCOPE), chatRow("pinned", PINNED_ORDER_SCOPE, "p1"), "bottom", context()),
   );
@@ -547,7 +523,6 @@ test("a section's row dragged into Pinned keeps its section for when it is unpin
   assert.equal(folderPlan.action.kind, "pin");
   assert.equal(folderPlan.effects.pinProject, "lab");
   assert.equal(folderPlan.effects.fileInSection, undefined);
-  // Into a pinned folder is a move into that project, which the section would hide: it leaves.
   const intoFolder = plannedDrop(
     planSidebarDrop(
       chat("s1", SCOPE, SCOPE),
@@ -560,9 +535,6 @@ test("a section's row dragged into Pinned keeps its section for when it is unpin
   assert.deepEqual(intoFolder.effects.fileInSection, { kind: "chat", id: "s1", sectionId: null });
 });
 
-// ---------------------------------------------------------------------------------------------
-// Sidebar wiring
-
 test("each list header's menu carries only what that list is about, as in ChatGPT", () => {
   const menu = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf("function renderSidebarHeaderMenu("),
@@ -574,35 +546,27 @@ test("each list header's menu carries only what that list is about, as in ChatGP
   const projects = branch('} else if (options.kind === "projects")', '} else if (options.kind === "recents")');
   const recents = branch('} else if (options.kind === "recents")', '} else if (options.kind === "section")');
   const section = branch('} else if (options.kind === "section")', "return (\n      <NonModalDropdownMenu");
-  // Pinned sorts its pins straight in the menu: no submenus, no Show, no New section.
   assert.match(pinned, /value=\{pinnedSort\}/);
   assert.doesNotMatch(pinned, /organizeSubmenu|renderSortSubmenu|setSectionHidden|mode: "create"/);
-  // Projects groups the sidebar and sorts its chats; the section toggles live on Recents alone.
   assert.match(projects, /\{organizeSubmenu\}/);
   assert.match(projects, /shell\.organize\.sortChatsBy/);
   assert.doesNotMatch(projects, /sortProjectsBy/);
-  // Every header menu is the chat row menu's size, submenus included.
   assert.match(menu, /className=\{cn\("unsloth-plus-menu sidebar-row-menu sidebar-menu"/);
-  // It opens out to the right of the "...", not squeezed back inside the sidebar.
   assert.match(menu, /<NonModalDropdownMenu\n\s*side="bottom"\n\s*align="start"/);
   assert.doesNotMatch(menu, /className="unsloth-plus-menu w-/);
   assert.match(menu, /icon=\{PanelLeftIcon\}/);
   assert.match(APP_SIDEBAR, /value: "project", key: "shell\.organize\.byProject", icon: Folder01Icon/);
   assert.match(APP_SIDEBAR, /value: "list", key: "shell\.organize\.inOneList", icon: LeftToRightListBulletIcon/);
   assert.doesNotMatch(projects, /setSectionHidden|mode: "create"/);
-  // Recents: organize, sort, then Show (Projects and custom sections only) and New section.
   assert.match(recents, /\{organizeSubmenu\}[\s\S]*shell\.organize\.sortChatsBy/);
   assert.match(recents, /t\("shell\.organize\.show"\)/);
   assert.match(recents, /setSectionHidden\(PROJECTS_SECTION_KEY, !on\)/);
   assert.match(recents, /setSectionHidden\(candidate\.id, !on\)/);
   assert.match(recents, /setSectionDialog\(\{ mode: "create" \}\)/);
-  // Pinned always shows, so it has no toggle.
   assert.doesNotMatch(APP_SIDEBAR, /setSectionHidden\(PINNED_SECTION_KEY/);
-  // A custom section's menu manages that section only.
   assert.match(section, /mode: "rename", section/);
   assert.match(section, /removeCustomSection\(section\)/);
   assert.doesNotMatch(section, /organizeSubmenu|setSectionHidden|mode: "create"/);
-  // The four headers each say which menu they are.
   for (const kind of ["pinned", "projects", "recents", "section"]) {
     assert.match(APP_SIDEBAR, new RegExp(`renderSidebarHeaderMenu\\(\\{\\n[^}]*kind: "${kind}",`));
   }
@@ -643,39 +607,31 @@ test("a section's header starts a chat that is filed there on its first send", (
   );
   assert.match(section, /onClick=\{\(\) => openNewChatInSection\(section\.id\)\}/);
   assert.match(section, /icon=\{PencilEdit02Icon\}/);
-  // Marked only once the new chat is on screen, so the chat being left is never filed.
   assert.match(
     APP_SIDEBAR,
     /navigate\(\{ to: "\/chat", search: \{ new: nonce \} \}\)\.then\(\(\) =>\n\s*setPendingNewChatSection\(\{ sectionId, nonce \}\),/,
   );
-  // Filed when the store gains an id while the address still names that new chat; leaving it
-  // first drops the mark.
   const effect = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("if (!pendingNewChatSection) return;"));
   assert.match(effect, /const fresh = isChatRoute && !search\.thread && !search\.project;/);
   assert.match(
     effect,
     /if \(fresh && search\.new === nonce && !search\.compare\) \{\n\s*if \(storeThreadId\) \{\n\s*setChatsSection\(\[storeThreadId\], sectionId\);\n\s*setPendingNewChatSection\(null\);/,
   );
-  // Turned into a compare chat before its first send, the compare chat takes the mark; a compare
-  // chat already listed is one opened instead, which lets it go.
   assert.match(
     effect,
     /fresh &&\n\s*!search\.new &&\n\s*search\.compare &&\n\s*!allChatItems\.some\(\(item\) => item\.id === search\.compare\)/,
   );
   assert.match(effect, /setPendingNewChatSection\(newCompare \? \{ sectionId, nonce, compare: newCompare \} : null\);/);
-  // Leaving the compare chat lets it go; its pair, listed under the address's id, joins.
   assert.match(effect, /if \(!\(fresh && !search\.new && search\.compare === compare\)\) \{\n\s*setPendingNewChatSection\(null\);/);
   assert.match(
     effect,
     /allChatItems\.some\(\(item\) => item\.type === "compare" && item\.id === compare\)\) \{\n\s*setChatsSection\(\[compare\], sectionId\);/,
   );
-  // Not saved: a reload must not file some later chat.
   const store = useSidebarOrganizationStore.getInitialState();
   assert.equal(store.pendingNewChatSection, null);
 });
 
 test("sections above Recents drag by their headers, and Recents stays last", async () => {
-  // Drawn in the saved order; Recents is drawn after them and is no key of it.
   assert.match(
     APP_SIDEBAR,
     /\{orderedSectionKeys\.map\(\(key\) => \(\n\s*<Fragment key=\{key\}>\{renderOrderedSection\(key\)\}<\/Fragment>/,
@@ -686,7 +642,7 @@ test("sections above Recents drag by their headers, and Recents stays last", asy
     /useSectionDrag\(\{\n\s*onDrop: \(key, landing\) => moveSection\(key, landing\.target, landing\.edge\),/,
   );
   const drag = await readSrcAsync("features/chat/hooks/use-section-drag.ts");
-  // Only from the header, never from its buttons, and not by touch, which scrolls.
+  // Not by touch, which scrolls.
   assert.match(drag, /event\.pointerType === "touch"/);
   assert.match(drag, /const HEADER_SELECTOR = '\[data-sidebar="group-label"\]';/);
   assert.match(drag, /if \(pressed\.closest\(HEADER_ACTION_SELECTOR\)\) return;/);
@@ -698,7 +654,6 @@ test("sections above Recents drag by their headers, and Recents stays last", asy
 
 test("the sidebar and account menus share one flat surface and type; other menus keep theirs", async () => {
   const css = await readSrcAsync("index.css");
-  // The shared menu surface, which the composer's menus use, is left as it was.
   assert.match(css, /\.dark \.unsloth-plus-menu\[data-slot\] \{\n\s*background-color: var\(--card\);/);
   assert.match(
     css,
@@ -714,14 +669,12 @@ test("the sidebar and account menus share one flat surface and type; other menus
       `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 6\\.5%\\);\\n\\s*color: #fff;`,
     ),
   );
-  // The system face at 14px, scaled, on sidebar rows and account rows alike.
   assert.match(css, new RegExp(`${tagged} \\{\\n\\s*font-family: ui-sans-serif,`));
   assert.match(
     css,
     /\.unsloth-plus-menu\.sidebar-row-menu\.sidebar-menu :is\([\s\S]*?\) \{\n\s*@apply py-2 text-ui-14;/,
   );
   assert.match(css, /\.app-user-menu\.sidebar-menu :is\([\s\S]*?\) \{\n\s*@apply text-ui-14;\n\s*font-weight: 400;/);
-  // Every sidebar menu is marked, the account menu and its Help submenu included.
   assert.equal((APP_SIDEBAR.match(/"unsloth-plus-menu sidebar-row-menu sidebar-menu/g) ?? []).length, 12);
   assert.match(APP_SIDEBAR, /className="app-user-menu sidebar-menu menu-soft-surface-up/);
 });
@@ -739,7 +692,6 @@ test("a custom section's menu edits it, acts on its chats, and removes it", () =
     "shell.sections.remove",
   ]);
   assert.equal((menu.match(/<DropdownMenuSeparator \/>/g) ?? []).length, 2);
-  // Only the section's own chats, and each action is off when it has nothing to do.
   assert.match(menu, /row\.kind === "chat" \? \[row\.item\] : \[\]/);
   assert.match(menu, /disabled=\{!threadIds\.some\(\(id\) => unreadThreadIds\.has\(id\)\)\}/);
   assert.match(menu, /onSelect=\{\(\) => clearThreadsUnread\(threadIds\)\}/);
@@ -750,26 +702,21 @@ test("a custom section's menu edits it, acts on its chats, and removes it", () =
 
 test("a section drag draws itself, so the sidebar re-renders only on the drop", async () => {
   const drag = await readSrcAsync("features/chat/hooks/use-section-drag.ts");
-  // No React state in the hook: the lifted copy, the line and the dimming are DOM, redrawn per frame.
   assert.doesNotMatch(drag, /useState|setState/);
   assert.match(drag, /block\.setAttribute\(SECTION_DRAGGING_ATTR, ""\);/);
-  // Drawn in the drag layer, never straight onto the body: taking a body child out while another
-  // follows it restyled the whole page on the drop.
+  // Drawn in the drag layer: removing a body child mid-drag restyled the whole page.
   assert.match(drag, /dragLayer\(\)\.append\(ghost, line\);/);
   assert.doesNotMatch(drag, /document\.body\.append/);
-  // Lifted where the header is, so a frame before the first transform never shows it at the top.
   assert.match(drag, /ghostTop = textRect\.top - 6;\n\s*Object\.assign\(ghost\.style, \{\n\s*top: `\$\{ghostTop\}px`,/);
   assert.match(drag, /translate3d\(0, \$\{Math\.round\(top - ghostTop\)\}px, 0\)/);
   assert.match(drag, /line\.style\.top = `\$\{y - 0\.75\}px`|top: `\$\{y - 0\.75\}px`/);
-  // The drag is marked on the sidebar, not the body, whose every change restyles the page.
+  // Marked on the sidebar, not the body, whose every change restyles the page.
   assert.match(drag, /markDragging\(sidebarOf\(list\), true\);/);
   assert.match(drag, /markDragging\(null, false\);/);
   assert.doesNotMatch(APP_SIDEBAR, /sectionDrag\b|setSectionDrag/);
-  // As the row drag: pointer capture, edge scroll from the frame loop, and a gesture per pointer.
   assert.match(drag, /document\.body\.setPointerCapture\(pointerId\);/);
   assert.match(drag, /frame = requestAnimationFrame\(onFrame\);\n\s*edgeScroll\(\);\n\s*place\(\);/);
   assert.match(drag, /if \(moved\.pointerId !== pointerId \|\| escaped\) return;/);
-  // Escape puts it down but keeps listening, so the release still cannot fold the section.
   assert.match(drag, /escaped = true;\n\s*putDown\(\);/);
   const css = await readSrcAsync("index.css");
   assert.match(css, /\[data-sidebar-section\]\[data-section-dragging\] \{\n\s*opacity: 0\.4;/);
@@ -789,7 +736,6 @@ test("a carried section lands against the nearest gap, and only a real move draw
   assert.deepEqual(sectionLandingAt(blocks, 480), { target: "projects", edge: "bottom" });
   assert.equal(sectionLandingAt([], 10), null);
   const drawn = ["pinned", "b", "a", "projects"];
-  // Above its own neighbour below is where it already is; anywhere else moves it.
   assert.equal(landingMoves(drawn, "b", { target: "a", edge: "top" }), false);
   assert.equal(landingMoves(drawn, "b", { target: "pinned", edge: "bottom" }), false);
   assert.equal(landingMoves(drawn, "b", { target: "pinned", edge: "top" }), true);
@@ -797,7 +743,7 @@ test("a carried section lands against the nearest gap, and only a real move draw
 });
 
 test("sidebar and account submenus open clear of their menu, first rows level", () => {
-  // Radix measures sideOffset from the trigger row, which sits inside the menu's padding.
+  // Radix measures sideOffset from the trigger row, inside the menu's padding.
   assert.match(
     APP_SIDEBAR,
     /sideOffset: Math\.round\(SIDEBAR_MENU_PAD_X \* uiSpaceScale \+ SUBMENU_GAP_PX\),\n\s*alignOffset: -Math\.round\(SIDEBAR_MENU_PAD_Y \* uiSpaceScale \+ MENU_ROW_MARGIN_PX\),/,
@@ -805,7 +751,6 @@ test("sidebar and account submenus open clear of their menu, first rows level", 
   assert.match(APP_SIDEBAR, /sideOffset: ACCOUNT_MENU_PAD_X \+ SUBMENU_GAP_PX,/);
   assert.equal((APP_SIDEBAR.match(/\{\.\.\.sidebarSubmenuOffsets\}/g) ?? []).length, 4);
   assert.equal((APP_SIDEBAR.match(/\{\.\.\.accountSubmenuOffsets\}/g) ?? []).length, 1);
-  // No sidebar submenu keeps a hand-set offset that would overlap its menu.
   assert.doesNotMatch(APP_SIDEBAR, /SubContent[^>]*sideOffset=\{[0-9]+\}[^>]*sidebar-menu/);
 });
 
@@ -815,7 +760,6 @@ test("sidebar and account menus read white on a lighter surface in dark mode", a
     css,
     /\.dark \.app-user-menu\.sidebar-menu :is\([\s\S]*?\):is\(:focus, \[data-state="open"\]\) \{\n\s*background-color: rgb\(255 255 255 \/ calc\(0\.1 \* var\(--contrast-wash-gain, 1\)\)\);\n\s*color: #fff;/,
   );
-  // Tick rows hover as the rows beside them, and their tick sits as far in as the text.
   assert.match(css, /\[data-slot="dropdown-menu-radio-item-indicator"\]\n\s*\) \{\n\s*@apply right-2\.5;/);
 });
 
@@ -834,10 +778,7 @@ test("the section name dialog keeps its mode while it closes", async () => {
   assert.match(dialog, /mode=\{shown\.mode\}\n\s*initialName=\{shown\.initialName\}/);
 });
 
-// Review follow-ups: a payload can name a section after a built-in, and an older one can carry a
-// project sort that no control can change any more.
-// Row ids are any string. On a plain object an unfiled "constructor" or "toString" reads as filed
-// in what it inherits, and the row drops out of Recents and its folder without landing anywhere.
+// Row ids are arbitrary; on a plain object "constructor" would read as filed.
 test("a row id named like an object built-in is unfiled until it is filed", () => {
   resetStore();
   const ids = ["constructor", "toString", "hasOwnProperty", "__proto__"];
@@ -854,7 +795,6 @@ test("a row id named like an object built-in is unfiled until it is filed", () =
   assert.deepEqual(Object.keys(views()[0]).sort(), [...ids].sort());
   store.setChatsSection(ids, null);
   for (const id of ids) assert.equal(views()[0][id], undefined);
-  // Filings of these ids survive a reload, and an unfiled one reads as unfiled after one too.
   const merged = mergePersistedOrganization(
     JSON.parse(
       '{"customSections":[{"id":"s","name":"S","sort":"manual"}],"sectionByChatId":{"__proto__":"s","toString":"s"},"sectionByProjectId":{}}',
@@ -865,17 +805,12 @@ test("a row id named like an object built-in is unfiled until it is filed", () =
   assert.equal(merged.sectionByChatId.toString, "s" as unknown);
   assert.equal(merged.sectionByChatId.constructor, undefined);
   assert.equal(merged.sectionByProjectId.hasOwnProperty, undefined);
-  // Deleting the section drops them all.
   store.deleteCustomSection(a);
   for (const map of views()) for (const id of ids) assert.equal(map[id], undefined);
   resetStore();
 });
 
-// A project picked from a chat's "Move to" is where the chat is meant to show, as a drop on the
-// folder is, so a section it is filed in lets it go once the move lands.
-// A chat dropped into a folder stays on screen in its section until the move lands, so it can be
-// dropped again meanwhile. Any later drop of it, a reorder where it still is included, is the
-// newer intent, and the earlier drop's filing, slot and pin stand down.
+// A later drop of a chat supersedes the earlier drop's pending move.
 test("a later drop of a chat supersedes its earlier drop's pending move", () => {
   const commit = APP_SIDEBAR.slice(
     APP_SIDEBAR.indexOf("function commitDrop("),
@@ -886,21 +821,16 @@ test("a later drop of a chat supersedes its earlier drop's pending move", () => 
     commit,
     /const pendingMove = dragged\.kind === "chat" \? chatMovesRef\.current\.get\(dragged\.id\) : undefined;\n\s*if \(pendingMove && !effects\.moveChat\) \{\n\s*chatMovesRef\.current\.set\(dragged\.id, \{\n\s*generation: pendingMove\.generation \+ 1,\n\s*chain: pendingMove\.chain,/,
   );
-  // Read before any drop that does not wait for a move commits, so it counts from the first.
   assert.ok(commit.indexOf("const pendingMove") < commit.indexOf("if (!move) {"));
-  // The earlier move checks its generation before it files, slots or unpins.
   assert.match(commit, /if \(!moved \|\| moves\.get\(item\.id\)\?\.generation !== generation\) return;/);
 });
 
 test("a chat moved into a project from its menu leaves its section, as a drop does", () => {
   const fn = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("async function moveChatToProjectFromMenu("));
   assert.match(fn, /if \(!\(await moveChatToProject\(item, projectId\)\) \|\| filedSince\) return;/);
-  // Not when it was filed again while the move was in flight: that is the newer intent.
   assert.match(fn, /filedSince \|\|= now\.sectionByChatId\[item\.id\] !== before\.sectionByChatId\[item\.id\];/);
-  // Only where a folder draws it: not pinned, and not all in one list.
   assert.match(fn, /now\.organizeBy === "project" &&\n\s*!usePinnedChatsStore\.getState\(\)\.pinnedIds\.includes\(item\.id\)\n\s*\) \{\n\s*setChatsSection\(\[item\.id\], null\);/);
   assert.match(fn, /\} finally \{\n\s*stopWatching\(\);/);
-  // Both ways in from the menu: an existing project, and a new one.
   assert.match(APP_SIDEBAR, /onSelect=\{\(\) => void moveChatToProjectFromMenu\(item, project\.id\)\}/);
   assert.match(APP_SIDEBAR, /await moveChatToProjectFromMenu\(moveTarget, project\.id\);/);
   assert.doesNotMatch(APP_SIDEBAR, /onSelect=\{\(\) => void moveChatToProject\(item, project\.id\)\}/);
@@ -920,7 +850,6 @@ test("a saved section keyed like Pinned or Projects is dropped, and so are its r
     useSidebarOrganizationStore.getInitialState(),
   );
   assert.deepEqual(merged.customSections.map((section) => section.id), ["real"]);
-  // The rows filed in them come back to their normal lists.
   assert.deepEqual({ ...merged.sectionByChatId }, { c2: "real" });
   assert.deepEqual({ ...merged.sectionByProjectId }, {});
 });
@@ -944,14 +873,12 @@ test("a chat filed from its menu while its drop into a folder is in flight keeps
 });
 
 test("custom sections re-measure the bottom fade when they change the list's height", () => {
-  // They draw inside the scroller, whose sections the fade observer watches.
   assert.match(APP_SIDEBAR, /for \(const section of el\.children\) observer\.observe\(section\);/);
 });
 
 test("Alt + arrow on a section's header moves it, as it moves a row", async () => {
   const hook = await readSrcAsync("features/chat/hooks/use-section-drag.ts");
   assert.match(hook, /export function sectionKeyLanding\(/);
-  // The header only: its "+" and "..." keep their keys, and a row's own Alt + arrow is the row's.
   assert.match(hook, /const header = pressed\.closest\(HEADER_SELECTOR\);/);
   assert.match(hook, /if \(pressed\.closest\(HEADER_ACTION_SELECTOR\)\) return null;/);
   assert.match(hook, /return neighbour \? \{ target: neighbour, edge: up \? "top" : "bottom" \} : null;/);
@@ -962,7 +889,6 @@ test("Alt + arrow on a section's header moves it, as it moves a row", async () =
 });
 
 test("a pinned row can be filed back into the section it kept while pinned", () => {
-  // Pinned draws it, so its retained section is not where it is; filing there unpins it.
   assert.match(APP_SIDEBAR, /current: pinnedIdSet\.has\(item\.id\) \? null : sectionByChatId\[item\.id\] \?\? null,/);
   assert.match(
     APP_SIDEBAR,
@@ -1020,18 +946,15 @@ test("signing in as another account drops the previous account's sections", asyn
   });
   assert.equal(changed, true);
   assert.equal(localStorage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY), null);
-  // And the page reloads, so the store in memory goes with it.
   assert.equal(reloadedTo, "/chat");
 });
 
 test("a row's section menu offers Remove from section only when it is in one", async () => {
-  // Shown greyed out on a row in no section, it read as a label ("No section"), not an action.
   assert.match(
     APP_SIDEBAR,
     /\{config\.anyFiled && \(\n\s*<P\.Item onSelect=\{\(\) => fileSectionTarget\(target, null\)\}>/,
   );
   assert.doesNotMatch(APP_SIDEBAR, /disabled=\{!config\.anyFiled\}/);
-  // A pinned row is drawn in Pinned, so it has nothing to remove.
   assert.match(APP_SIDEBAR, /anyFiled: !pinnedIdSet\.has\(item\.id\) && Boolean\(sectionByChatId\[item\.id\]\),/);
   assert.match(
     APP_SIDEBAR,

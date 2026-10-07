@@ -3,9 +3,7 @@
 
 import { useSyncExternalStore } from "react";
 
-// Whether an update banner may appear, per component. On by default; only an
-// explicit "false" (Settings -> General -> Notifications) disables it. A switch
-// each: the two components ship on their own schedules.
+// On by default; only an explicit "false" disables. One switch per component.
 const LLAMA_STORAGE_KEY = "unsloth_show_llama_update_banner";
 const WHISPER_STORAGE_KEY = "unsloth_show_whisper_update_banner";
 
@@ -33,11 +31,8 @@ function writePref(key: string, show: boolean): void {
   for (const listener of listeners) listener();
 }
 
-// One listener set for both keys: a subscriber re-reads its own getter, so a
-// notification it did not need costs it a comparison.
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  // Sync toggles made in another tab.
   const onStorage = (event: StorageEvent) => {
     if (event.key === LLAMA_STORAGE_KEY || event.key === WHISPER_STORAGE_KEY) {
       listener();

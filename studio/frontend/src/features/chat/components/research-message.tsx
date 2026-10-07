@@ -79,7 +79,6 @@ export function ResearchMessage(): ReactElement | null {
     );
   }
 
-  // A failed run's report opens with its own notice, so nothing here repeats it.
   if ((run.status === "completed" || run.status === "failed") && run.report) {
     const failed = run.status === "failed";
     const sources: SourceData[] = run.sources.map((source) => ({
@@ -138,7 +137,6 @@ export function ResearchMessage(): ReactElement | null {
   const failed = run.status === "failed";
   const cancelled = run.status === "cancelled";
   const needsApproval = run.status === "awaiting_approval";
-  // Name the current model call, so the long silent phases read as work rather than a stall.
   const liveDetail =
     runningResearchActivityTitle(session?.activities) ??
     run.plan?.title ??

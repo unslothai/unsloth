@@ -30,8 +30,7 @@ export function isRtfAttachmentName(filename: string): boolean {
   return filename.toLowerCase().endsWith(RTF_ATTACHMENT_EXTENSIONS);
 }
 
-// Matched by extension only: their MIME types are missing or shared with unrelated files.
-// Keep in sync with TOOL_ONLY_ATTACHMENT_EXTS in native_path_policy.rs.
+// Matched by extension only. Keep in sync with TOOL_ONLY_ATTACHMENT_EXTS in native_path_policy.rs.
 export const TOOL_ONLY_ATTACHMENT_EXTENSIONS = [
   ".parquet,.feather,.arrow,.orc,.dta,.sas7bdat,.xpt,.mat,.npy,.npz,.safetensors",
   ".sqlite,.sqlite3,.db,.gpkg,.mbtiles,.duckdb",

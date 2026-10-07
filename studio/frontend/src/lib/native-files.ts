@@ -32,7 +32,6 @@ export interface NativeImportedTextFile {
   content: string;
 }
 
-/** Handle for a native chat import read in bounded ranges. */
 export interface NativeChatImport {
   name: string;
   size: number;
@@ -83,7 +82,6 @@ async function fetchDownload(url: string): Promise<Response> {
   return response;
 }
 
-/** Save through a native chooser in Tauri and retain normal downloads on web. */
 export async function downloadFile(
   content: string | Blob | Uint8Array,
   filename: string,
@@ -167,11 +165,7 @@ export async function urlToBlob(url: string): Promise<Blob> {
   return (await fetchDownload(url)).blob();
 }
 
-/**
- * Save a local backend URL without holding it in memory. `downloadUrl` buffers the body
- * to cross the IPC boundary, which is the wrong shape for a gallery clip: here the
- * chooser opens first and Rust streams to the chosen path. The browser keeps its anchor.
- */
+/** Opens the chooser first and Rust streams to the path, avoiding buffering across IPC. */
 export async function downloadUrlStreaming(
   url: string,
   filename: string,
@@ -190,7 +184,6 @@ export async function downloadUrlStreaming(
   }
 }
 
-/** Resolve media before crossing the native save boundary. */
 export async function downloadUrl(
   url: string,
   filename: string,
@@ -213,7 +206,6 @@ export async function downloadUrl(
   );
 }
 
-/** Open the bounded native chat-import picker. Cancellation returns null. */
 export async function pickNativeChatImport(): Promise<NativeChatImport | null> {
   if (!isTauri) {
     return null;

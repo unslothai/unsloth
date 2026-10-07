@@ -26,9 +26,8 @@ pub(crate) fn is_supported_install() -> bool {
         && fs::metadata(INSTALLED_BINARY)
             .is_ok_and(|metadata| metadata.uid() == 0 && metadata.mode() & 0o022 == 0)
         && Path::new("/usr/bin/pkexec").is_file()
-        // bundle_type() is baked into the binary, so a .deb unpacked onto a non-apt distro by
-        // hand or by alien still reports Deb: without this the app offers an update that dies
-        // on the first dpkg-query. install.rs checks apt-get before elevating for the same reason.
+        // A .deb unpacked onto a non-apt distro still reports Deb (bundle_type() is baked in),
+        // so the update would die in dpkg-query. install.rs checks apt-get before elevating too.
         && Path::new("/usr/bin/apt-get").is_file()
 }
 
@@ -77,7 +76,7 @@ pub(crate) fn run_installer() -> Option<Result<(), String>> {
         return None;
     }
     Some((|| {
-        // this entry point must run before logging, shell discovery, or gui initialization.
+        // This entry point must run before logging, shell discovery, or GUI initialization.
         if unsafe { libc::geteuid() } != 0 {
             return Err("Debian updates require system administrator authentication.".into());
         }
@@ -99,9 +98,8 @@ pub(crate) fn run_installer() -> Option<Result<(), String>> {
 
 fn install_verified_package(bytes: Vec<u8>, signature: &str, version: &str) -> Result<(), String> {
     crate::desktop_updater::verify_bundle_signature(&bytes, signature)?;
-    // Stated, not inherited: tempfile creates directories 0777 masked by the umask, and pkexec
-    // passes the calling session's umask through untouched. At umask 000 another local user can
-    // unlink the verified package and put their own there before apt reads it back.
+    // Explicit mode: pkexec passes the caller's umask through, and at umask 000 another user could
+    // swap the verified package before apt reads it.
     let directory = tempfile::Builder::new()
         .prefix("unsloth-update-")
         .permissions(fs::Permissions::from_mode(0o700))
@@ -114,7 +112,7 @@ fn install_verified_package(bytes: Vec<u8>, signature: &str, version: &str) -> R
     let (debian_version_override, installed_version) = validate_package(&package, version)?;
     let mut command = system_command("/usr/bin/apt-get");
     if debian_version_override {
-        // tauri writes raw semver, so debian sorts a stable release below its own prerelease.
+        // tauri writes raw semver, so Debian sorts a stable release below its own prerelease.
         command.arg("--allow-downgrades");
     }
     // apt holds its frontend lock when this hook checks the previously validated version.
@@ -249,7 +247,7 @@ fn validate_package(package: &Path, expected_version: &str) -> Result<(bool, Str
 }
 
 fn installed_version_guard(installed_version: &str) -> String {
-    // the version has passed semver parsing, which excludes shell metacharacters.
+    // The version passed semver parsing, which excludes shell metacharacters.
     format!(
         "test \"$(/usr/bin/dpkg-query --show --showformat='${{Version}}' unsloth)\" = '{installed_version}' || \
          {{ echo 'Installed Unsloth changed during the update. Retry the update.' >&2; exit 1; }}"

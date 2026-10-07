@@ -14,7 +14,7 @@ use url::{Host, Position, Url};
 
 const MAX_HEAD: usize = 16 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(30);
-// One address's share of it, so a dead first answer leaves time for the next.
+// Per-address share, so a dead first answer leaves time for the next.
 const ADDRESS_TIMEOUT: Duration = Duration::from_secs(10);
 
 static ADDRESS: OnceLock<Result<SocketAddr, String>> = OnceLock::new();
@@ -74,7 +74,6 @@ fn parse(head: &str) -> Option<Request> {
     if url.scheme() != "http" {
         return None;
     }
-    // One request per connection, without the proxy's own headers.
     let mut forward = format!("{method} {} {version}\r\n", &url[Position::BeforePath..]);
     for line in lines.filter(|line| !line.is_empty()) {
         let name = line
@@ -99,8 +98,7 @@ fn parse(head: &str) -> Option<Request> {
     })
 }
 
-/// Connect to a public address of `host`, refusing it if any answer is private. One deadline covers
-/// the lookup and every address, so a host with many dead answers can't hold a task for long.
+/// Refuses the host if any answer is private. One deadline covers lookup and every address.
 async fn connect(host: &str, port: u16) -> Result<TcpStream, Refusal> {
     tokio::time::timeout(TIMEOUT, connect_within(host, port))
         .await

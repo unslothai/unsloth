@@ -4,11 +4,9 @@
 import { authFetch } from "@/features/auth";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 
-/** GB, to two decimals. Lives in the import-free module beside the fit rules so the node test
- *  runner can reach it; re-exported here because every caller already imports this file. */
+/** Lives in the import-free memory-fit module so the node test runner can reach it. */
 export { formatMemoryGb } from "../model-config/memory-fit";
 
-/** Why no breakdown came back. The panel maps these to its own copy. */
 export type MemoryEstimateReason =
   | "not_gguf"
   | "not_downloaded"
@@ -19,53 +17,37 @@ export interface MemoryEstimate {
   available: boolean;
   reason: MemoryEstimateReason | null;
   weightsBytes: number;
-  /** KV cache at the priced context and slot count. Meaningless unless `kvEstimable`. */
+  /** Meaningless unless `kvEstimable`. */
   kvBytes: number;
-  /** Host RAM checkpoints included in `kvBytes`, capped at `kvBytes`. */
   kvCheckpointBytes: number;
-  /** Compute / graph buffers, flat plus the context-linear growth. */
   computeBytes: number;
-  /** A separate drafter's own cache and rollback state, on top of its file. */
   drafterRuntimeBytes: number;
-  /** The share of the above that lands on the GPU. A figure rather than a flag: under MTP the
-   *  target-side verification state follows the TARGET cache and the draft cache follows the
-   *  drafter, so the two halves can be placed differently. */
+  /** Under MTP the target and draft halves can be placed differently. */
   drafterRuntimeGpuBytes: number;
-  /** The vision encoder's buffers, about 0.4x the projector file on top of it. */
+  /** About 0.4x the projector file on top of it. */
   projectorRuntimeBytes: number;
-  /** A charged drafter whose cache could not be sized: `--spec-draft-hf` names a repository, so
-   *  its header is not on this disk. The total is a floor. */
+  /** `--spec-draft-hf` names a remote repo, so its cache is unsized; the total is a floor. */
   drafterKvUnsized: boolean;
-  /** A pass-through adapter file that could not be sized, so the total is a floor. */
+  /** The total is a floor. */
   adaptersUnsized: boolean;
-  /** Weights + KV + compute, wherever they land (VRAM, host RAM, or one unified pool). */
   totalBytes: number;
-  /** The share of `totalBytes` that lands on the GPU under the requested offload. */
   gpuBytes: number;
-  /** False when the GGUF header lacks the attention dims needed to size the cache. The numbers
-   *  above are then a lower bound, not an estimate: at a long context the cache dominates. */
+  /** False when the GGUF header lacks attention dims; the numbers are then a lower bound. */
   kvEstimable: boolean;
-  /** False under `--no-kv-offload`, which moves the cache to host RAM. */
   kvOnGpu: boolean;
-  /** What was actually priced, after overrides and clamps resolve. */
   nCtx: number;
   contextFitted: number | null;
-  /** False when Auto can shrink the priced context to fit. */
   contextIsPinned: boolean;
-  /** GPU bytes at the loader's context floor; null when pinned. */
   gpuFloorBytes: number | null;
-  /** Whether a load still over the card at the floor moves layers to the CPU. */
   floorCanOffload: boolean;
   cacheTypeKv: string | null;
   nParallel: number;
   layerCount: number | null;
-  /** Layers charged to the GPU; null under automatic placement. */
   gpuLayers: number | null;
   /** `--n-cpu-moe` is set, so the GPU figure ignores it and reads high. */
   moeOffloadUnmodelled: boolean;
 }
 
-/** The load settings that move the estimate. Mirrors the fields /load takes. */
 export interface MemoryEstimateRequest {
   modelPath: string;
   ggufVariant?: string | null;
@@ -177,19 +159,13 @@ function estimateRequestBody(
   });
 }
 
-/** A byte count the row can show, or the fallback. `??` defends against null and undefined,
- *  not against a value: JSON.parse turns `1e999` into Infinity, a field can arrive
- *  stringified, and a negative byte count is not a footprint. All three reach
- *  classifyMemoryFit, where NaN used to come back "fits". Both skew fallbacks are preserved:
- *  an ABSENT key falls through to the caller's fallback, and an explicit 0 is a real answer. */
+/** Guards Infinity, stringified and negative values; absent falls back, explicit 0 is real. */
 function finiteBytes(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value
     : fallback;
 }
 
-/** A count (context, slots, layers) rather than a byte size: same guard, no fallback chain, and
- *  null stays null where null is the "unknown" the row prints. */
 function finiteCount(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.trunc(value)
@@ -202,8 +178,7 @@ function nullableCount(value: unknown): number | null {
     : null;
 }
 
-/** A flag whose ABSENCE is meaningful, so a non-boolean is treated as absent rather than
- *  coerced: `Boolean("false")` is true, and these decide what the row claims. */
+/** Non-booleans count as absent: `Boolean("false")` is true. */
 function flag(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -220,41 +195,33 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
   const kvBytes = finiteBytes(body.kv_bytes, 0);
   return {
     available: flag(body.available, false),
-    // A reason the panel has no copy for is not a reason. An unknown string would reach the copy
-    // map and render nothing at all.
+    // An unknown reason would render nothing.
     reason: ESTIMATE_REASONS.includes(body.reason as MemoryEstimateReason)
       ? (body.reason as MemoryEstimateReason)
       : null,
     weightsBytes: finiteBytes(body.weights_bytes, 0),
     kvBytes,
-    // Default to zero for older backends; clamp to avoid a negative KV cache row.
     kvCheckpointBytes: Math.min(
       kvBytes,
       finiteBytes(body.kv_checkpoint_bytes, 0),
     ),
     computeBytes: finiteBytes(body.compute_bytes, 0),
     drafterRuntimeBytes,
-    // Absent on a backend predating the split: fall back to the whole term, which keeps the old
-    // "all of it is on the GPU" reading rather than inventing a zero that would drop a real
-    // VRAM charge off the row.
+    // Absent on an older backend: charge the whole term to the GPU rather than inventing a zero.
     drafterRuntimeGpuBytes: finiteBytes(
       body.drafter_runtime_gpu_bytes,
       drafterRuntimeBytes,
     ),
     projectorRuntimeBytes: finiteBytes(body.projector_runtime_bytes, 0),
     drafterKvUnsized: flag(body.drafter_kv_unsized, false),
-    // Absent on a backend that predates the adapter term, and false is the right reading there:
-    // it charged no adapters, so it claimed no floor.
     adaptersUnsized: flag(body.adapters_unsized, false),
     totalBytes: finiteBytes(body.total_bytes, 0),
     gpuBytes: finiteBytes(body.gpu_bytes, 0),
-    // Absent on an older backend: treat the KV figure as unverified, the safe direction for the
-    // one number that can dwarf all the others.
+    // Absent on an older backend: treat KV as unverified, the safe direction.
     kvEstimable: flag(body.kv_estimable, false),
     kvOnGpu: flag(body.kv_on_gpu, true),
     nCtx: finiteCount(body.n_ctx, 0),
     contextFitted: nullableCount(body.context_fitted),
-    // Preserve older backends' verdicts when these fields are absent.
     contextIsPinned: flag(body.context_is_pinned, true),
     gpuFloorBytes: nullableCount(body.gpu_floor_bytes),
     floorCanOffload: flag(body.floor_can_offload, false),
@@ -267,24 +234,16 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
   };
 }
 
-/** Statuses that say the ROUTE is not there, as distinct from this request failing. 404 and
- *  405 are a backend predating it (405 because a router owning the path for another method
- *  answers that), 501 one that answers but declines. Everything else -- 401, 422, 500, a
- *  gateway error, a non-JSON body -- is about this request, not the route's existence. */
+/** 404/405/501 mean the route is absent; anything else is about this request. */
 function routeAbsentStatus(status: number): boolean {
   return status === 404 || status === 405 || status === 501;
 }
 
-/** How long a structural miss is trusted before the next qualifying change re-probes. Worth
- *  memoing: this route is POSTed after EVERY settings change, so a new bundle against an old
- *  backend fires one debounced 404 per slider release for the life of the tab. Not permanent,
- *  though: Studio replaces its own backend in place, and a latched miss would keep the row
- *  hidden until reload. A TTL costs one wasted POST per window and needs no restart signal. */
+/** POSTed after every settings change; a TTL avoids a 404 per slider release yet re-probes
+    after Studio replaces its backend in place. */
 const ROUTE_ABSENT_TTL_MS = 5 * 60 * 1000;
 let routeAbsentAt: number | null = null;
 
-/** Forget a recorded miss. For tests, and for any caller that learns the backend changed
- *  underneath it before the window is up. */
 export function resetMemoryEstimateRouteMemo(): void {
   routeAbsentAt = null;
 }
@@ -306,7 +265,6 @@ export async function fetchMemoryEstimate(
         await consumeNativePathToken(payload.nativePathToken, "validate-model")
       ).nativePathLease;
     } catch {
-      // Lease expired / revoked. Nothing was read, so there is no estimate to give.
       return { ...UNAVAILABLE, reason: "unsupported_source" };
     }
   }
@@ -317,8 +275,7 @@ export async function fetchMemoryEstimate(
     body: estimateRequestBody(payload, nativePathLease),
   });
   if (!response.ok) {
-    // Only a structural miss latches. A transient 500 explicitly CLEARS the memo rather than
-    // leaving an older one standing: a backend answering at all is not one missing the route.
+    // Only a structural miss latches; a transient 500 clears the memo.
     routeAbsentAt = routeAbsentStatus(response.status) ? Date.now() : null;
     return UNAVAILABLE;
   }
@@ -327,8 +284,7 @@ export async function fetchMemoryEstimate(
   try {
     body = await response.json();
   } catch {
-    // A 200 that is not JSON: a captive portal, a dev proxy serving its own HTML, or a body cut
-    // short. Nothing was measured, so there is nothing to show.
+    // A non-JSON 200 (captive portal, proxy HTML, truncated body) measured nothing.
     return UNAVAILABLE;
   }
   if (typeof body !== "object" || body === null) {

@@ -38,7 +38,6 @@ export function documentCitationToSource(
   const title = docTitle || source || `Document ${fallbackIdx + 1}`;
   const cited = typeof cit.cited_text === "string" ? cit.cited_text.trim() : "";
   const description = cited.length > 240 ? `${cited.slice(0, 240)}...` : cited;
-  // Position in the id, so distinct citations of one document stay separate footnotes.
   const citationType = typeof cit.type === "string" ? String(cit.type) : "";
   const positionParts = [
     cit.search_result_index,

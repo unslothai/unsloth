@@ -21,10 +21,6 @@ import {
 
 export type { HfSplitEntry } from "./hf-dataset-split-sources";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
 export interface HfSplitsResponse {
   splits: HfSplitEntry[];
   pending: unknown[];
@@ -32,25 +28,17 @@ export interface HfSplitsResponse {
 }
 
 export interface HfDatasetSplitsResult {
-  /** All unique subset names found in the dataset */
   subsets: string[];
-  /** All split names available for the currently selected subset */
   splits: string[];
-  /** Raw split entries from the API */
   entries: HfSplitEntry[];
-  /** Whether the dataset has more than one subset */
   hasMultipleSubsets: boolean;
-  /** Whether the selected subset has more than one split */
   hasMultipleSplits: boolean;
-  /** True while the request is in-flight */
   isLoading: boolean;
-  /** Error message if the fetch failed */
   error: string | null;
   requiresManualEntry: boolean;
 }
 
-// Datasets-server base is independent of the Hub mirror: HF_ENDPOINT does not
-// redirect it, only HF_DATASETS_SERVER (surfaced via /api/health) does.
+// HF_ENDPOINT does not redirect datasets-server; only HF_DATASETS_SERVER (via /api/health) does.
 function getHfSplitsApi(): string {
   return `${getHfDatasetsServerBase()}/splits`;
 }
@@ -160,10 +148,6 @@ const DEFAULT_FETCHERS: DatasetSplitFetchers = {
   hub: fetchHubSplits,
 };
 
-// ---------------------------------------------------------------------------
-// Hook
-// ---------------------------------------------------------------------------
-
 export function useHfDatasetSplits(
   datasetName: string | null,
   selectedSubset: string | null,
@@ -177,8 +161,7 @@ export function useHfDatasetSplits(
   const [entries, setEntries] = useState<HfSplitEntry[]>([]);
   const [isLoading, setIsLoading] = useState(datasetName !== null);
   const [error, setError] = useState<string | null>(null);
-  // In the request identity, or a server arriving later leaves the selector on
-  // the official one, or on the failure it reached there.
+  // In the request identity, so a server arriving later triggers a refetch.
   const hfDatasetsServer = useHfDatasetsServer();
   const hubSource = useHubSource();
   const hfEndpoint = useHfEndpoint();
@@ -259,11 +242,9 @@ export function useHfDatasetSplits(
     return () => controller.abort();
   }, [accessToken, datasetName, localPath, online, preferLocalCache, hfDatasetsServer, hubSource, hfEndpoint]);
 
-  // Derive unique subsets
   const subsets = Array.from(new Set(entries.map((e) => e.config)));
 
-  // Splits for the active subset. With >1 subset and none selected, return no
-  // splits so the UI doesn't auto-pick before a subset is chosen.
+  // With >1 subset and none selected, return no splits so the UI does not auto-pick.
   const activeSubset =
     selectedSubset ?? (subsets.length === 1 ? subsets[0] : null);
   const filteredEntries = activeSubset

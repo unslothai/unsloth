@@ -5,8 +5,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-// use-tauri-backend.ts pulls in React and the Tauri APIs, so the message choice
-// lives in its own module.
 import {
   LLAMA_RUNTIME_REASONS,
   MANAGED_ENVIRONMENT_BUSY,
@@ -32,7 +30,6 @@ test("an unreachable profile is not reported as an outdated install", () => {
       WORKING_DIRECTORY_UNAVAILABLE,
     );
     assert.match(message, UNREACHABLE_PROFILE);
-    // Updating needs the same folder, so it must not be the advice.
     assert.doesNotMatch(message, UPDATE_ADVICE);
   }
 });
@@ -54,8 +51,6 @@ test("the reason string matches the one the Rust side sends", () => {
 });
 
 test("the roaming-profile cause is offered on Windows and withheld elsewhere", () => {
-  // The probe is ungated, so this reason reaches Linux and macOS, where the cause
-  // is an unmounted home or permissions rather than a roaming profile.
   const original = globalThis.navigator;
   const withPlatform = (platform: string) => {
     Object.defineProperty(globalThis, "navigator", {
@@ -69,7 +64,6 @@ test("the roaming-profile cause is offered on Windows and withheld elsewhere", (
     for (const platform of ["Linux x86_64", "MacIntel"]) {
       const message = withPlatform(platform);
       assert.doesNotMatch(message, /roaming profile/);
-      // Symptom and remedy still survive the trim.
       assert.match(message, UNREACHABLE_PROFILE);
       assert.match(message, /Reconnect and try again/);
     }
@@ -84,39 +78,30 @@ test("the roaming-profile cause is offered on Windows and withheld elsewhere", (
 test("a path setting that cannot be resolved is told apart from an unreachable folder", () => {
   const message = preflightStaleMessage("managed_stale", PATH_SETTING_UNRESOLVABLE);
   assert.match(message, /folder settings/);
-  // Not the profile, and not fixable by an update: the value is the fix.
   assert.doesNotMatch(message, /user folder/);
   assert.doesNotMatch(message, /update/);
 });
 
 test("the setting that could not be resolved is named", () => {
-  // "one of Unsloth's folder settings" is not actionable, so the backend appends
-  // the name and the message uses it.
   const named = preflightStaleMessage(
     "managed_stale",
     `${PATH_SETTING_UNRESOLVABLE}:HF_HOME`,
   );
   assert.match(named, /^HF_HOME points somewhere that cannot be resolved/);
   assert.match(named, /full path/);
-  // Without a name it still reads as a sentence, and still is not an update.
   const unnamed = preflightStaleMessage("managed_stale", PATH_SETTING_UNRESOLVABLE);
   assert.match(unnamed, /One of Unsloth's folder settings points/);
   assert.doesNotMatch(unnamed, UPDATE_ADVICE);
 });
 
 test("a quarantined llama.cpp runtime is not reported as an outdated install", () => {
-  // "too old" would send the user to an update that reports they are up to date.
-  // Every reason the health check can produce must reach the new message.
   for (const reason of LLAMA_RUNTIME_REASONS) {
     for (const disposition of ["managed_stale", "owned_stale"]) {
       const message = preflightStaleMessage(disposition, reason);
       assert.match(message, RUNTIME_MISSING_FILES);
       assert.doesNotMatch(message, TOO_OLD);
-      // A reinstall is the fix here, so the update command must survive.
       assert.match(message, UPDATE_ADVICE);
-      // A reinstall into the same quarantine needs an exclusion, not a retry.
       assert.match(message, /quarantined/);
-      // And an exclusion needs a folder, so the advice has to name one.
       assert.match(message, /\.unsloth[\\/]llama\.cpp/);
     }
   }
@@ -138,8 +123,6 @@ test("a failed repair and recurring damage show antivirus advice with the runtim
 });
 
 test("the folder to exclude is spelled the way the platform spells it", () => {
-  // The user pastes this into an antivirus exclusion list, so a POSIX path on
-  // Windows is not advice. Same platform test as the roaming-profile hint.
   const original = globalThis.navigator;
   const withPlatform = (platform: string) => {
     Object.defineProperty(globalThis, "navigator", {
@@ -166,8 +149,6 @@ test("the folder to exclude is spelled the way the platform spells it", () => {
 });
 
 test("a missing navigator does not cost the folder advice", () => {
-  // The hook runs under node in these tests and in any non-browser context the
-  // desktop shell hands it; the POSIX spelling is the fallback, not no advice.
   const original = globalThis.navigator;
   try {
     Object.defineProperty(globalThis, "navigator", {
@@ -187,9 +168,8 @@ test("a missing navigator does not cost the folder advice", () => {
 });
 
 test("the llama runtime reasons match the ones the Python and Rust sides send", () => {
-  // installed_runtime_health() returns the first three; managed.rs substitutes the
-  // fourth when the CLI reports llama_runtime_ok false with an empty reason. A
-  // string that drifts on either side silently falls through to "too old".
+  // installed_runtime_health() returns the first three; managed.rs substitutes the fourth.
+  // Keep both sides in sync or messages fall through to "too old".
   assert.deepEqual(LLAMA_RUNTIME_REASONS, [
     "llama_runtime_dir_missing",
     "llama_runtime_payload_incomplete",
@@ -199,12 +179,10 @@ test("the llama runtime reasons match the ones the Python and Rust sides send", 
 });
 
 test("an unrelated stale reason is still reported as an outdated install", () => {
-  // Only a reason that names the runtime may change the message.
   for (const reason of [
     "backend_outdated",
     "studio_install_incomplete",
     "desktop_backend_ownership_unsupported",
-    // Near misses: the match is on the whole token before the colon.
     "llama_runtime",
     "not_llama_runtime_dir_missing",
     "llama_runtime_dir_missing_extra",
@@ -220,15 +198,11 @@ test("an unrelated stale reason is still reported as an outdated install", () =>
 });
 
 test("a suffix on a llama runtime reason does not change the message", () => {
-  // The split applies to every reason, so a runtime reason that ever gains a
-  // suffix must still match on the token before the colon.
   for (const reason of LLAMA_RUNTIME_REASONS) {
     assert.match(
       preflightStaleMessage("managed_stale", `${reason}:llama-server.exe`),
       RUNTIME_MISSING_FILES,
     );
-    // split(":", 2) drops anything after the second colon, harmless since the
-    // message ignores the suffix.
     assert.match(
       preflightStaleMessage("managed_stale", `${reason}:C:\\quarantine`),
       RUNTIME_MISSING_FILES,
@@ -237,8 +211,6 @@ test("a suffix on a llama runtime reason does not change the message", () => {
 });
 
 test("an absent or empty reason still falls through to the old behaviour", () => {
-  // reason is optional and the CLI defaults it to "", so neither may be mistaken
-  // for a runtime reason.
   for (const reason of [null, "", ":", ":llama_runtime_dir_missing"]) {
     assert.match(
       preflightStaleMessage("managed_stale", reason),
@@ -249,8 +221,6 @@ test("an absent or empty reason still falls through to the old behaviour", () =>
 });
 
 test("the context reasons still win over the runtime reason", () => {
-  // Both are checked first, and both would be made worse by advice to reinstall
-  // the runtime into them.
   const unreachable = preflightStaleMessage(
     "managed_stale",
     WORKING_DIRECTORY_UNAVAILABLE,

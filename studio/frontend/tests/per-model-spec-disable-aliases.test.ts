@@ -15,13 +15,7 @@ const { normalizePerModelConfig } = await import(
 const specOf = (value: string) =>
   normalizePerModelConfig({ speculativeType: value }).speculativeType;
 
-/**
- * A server-side override reaches this canonicalizer with whatever the API caller
- * wrote, and `/settings` stores `speculative_type` without canonicalizing it. The
- * backend reads llama.cpp's own "none", plus "disable" / "disabled", as off. Here
- * null does not mean off, it means follow the global preference, so a spelling that
- * fell through would turn an explicit disable into Auto and hand the load a drafter.
- */
+/** null means follow the global preference, so every disable alias must map to off. */
 test("a stored disable alias is an override, not a fall-through to the global default", () => {
   for (const spelling of [
     "off",
@@ -38,8 +32,6 @@ test("a stored disable alias is an override, not a fall-through to the global de
 });
 
 test("the rest of the mapping still resolves as before", () => {
-  // "auto" and an unknown value are the follow-global sentinel, which is what the
-  // aliases above must not be confused with.
   assert.equal(specOf("auto"), null);
   assert.equal(specOf("default"), null);
   assert.equal(specOf("bogus"), null);

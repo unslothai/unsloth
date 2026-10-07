@@ -19,10 +19,9 @@ async function invokeNative<T>(
 }
 
 export interface NativeDocumentFolderSelection {
-  /** Opaque directory lease. This is deliberately not a filesystem path. */
+  /** Opaque directory lease, deliberately not a filesystem path. */
   token: string;
   displayName: string;
-  /** When the lease was signed to expire. Older shells omit it. */
   expiresAtMs?: number;
 }
 
@@ -94,7 +93,7 @@ export async function openPathToken(token: string): Promise<void> {
   return invokeNative<void>("open_path_token", { token });
 }
 
-// Open a backend-resolved directory in the OS file manager; Tauri validates it is a real directory.
+// Tauri validates that the path is a real directory.
 export async function openModelsDir(path: string): Promise<void> {
   return invokeNative<void>("open_models_dir", { path });
 }

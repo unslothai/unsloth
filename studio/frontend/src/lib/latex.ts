@@ -1,13 +1,8 @@
 // Adapted from LibreChat's latex.ts
 // https://github.com/danny-avila/LibreChat/blob/main/client/src/utils/latex.ts
 //
-// Two jobs, in order:
-//   1. Convert LaTeX bracket delimiters (`\[...\]`, `\(...\)`) into the dollar
-//      forms remark-math understands (`$$...$$`, `$...$`). remark-math only
-//      tokenizes dollar delimiters, so models that emit `\[...\]` / `\(...\)`
-//      would otherwise render as literal text.
-//   2. Escape currency dollar signs so they are not misinterpreted as LaTeX
-//      math delimiters when singleDollarTextMath is enabled.
+// Converts `\[...\]` / `\(...\)` to the dollar forms remark-math tokenizes, then escapes currency
+// dollars so singleDollarTextMath does not read them as math.
 
 import { parseMarkdownIntoBlocks } from "./parse-markdown-blocks.ts";
 import {
@@ -25,21 +20,11 @@ import {
   quoteState,
 } from "./markdown-list-columns.ts";
 
-/**
- * Matches a single $ followed by a number pattern (currency), e.g.:
- *   $5, $1,000, $5.99, $100K, $3.5M
- *
- * Does NOT match:
- *   $$ (display math), \$ (already escaped), $\alpha (LaTeX command)
- */
+/** Currency like $5, $1,000, $5.99, $100K; not $$, \$ or $\alpha. */
 const CURRENCY_REGEX =
   /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
 
-/**
- * Union of two span lists, each ascending by start (overlap within a list is
- * fine, non-ascending input silently drops spans). The sorted, non-overlapping
- * result is the shape `isInRegion`'s binary search needs.
- */
+/** Inputs must each ascend by start, or spans are silently dropped. */
 function mergeRegions(
   left: ReadonlyArray<readonly [number, number]>,
   right: ReadonlyArray<readonly [number, number]>,
@@ -74,7 +59,6 @@ const BLOCK_LINE_RE =
 const LINK_DEFINITION_RE = /^ {0,3}\[(?:[^\[\]\\]|\\.)+\]:/;
 const NON_LINE_ENDING_RE = /[^\r\n]/g;
 
-/** `line` with up to `columns` columns of leading whitespace removed. */
 function stripIndent(line: string, columns: number): string {
   let width = 0;
   let index = 0;
@@ -87,7 +71,6 @@ function stripIndent(line: string, columns: number): string {
   return line.slice(index);
 }
 
-/** Display columns occupied by a Markdown container prefix. */
 function columnWidth(prefix: string): number {
   let width = 0;
   for (const char of prefix) {
@@ -96,10 +79,7 @@ function columnWidth(prefix: string): number {
   return width;
 }
 
-/**
- * Find code regions (fenced, indented, and inline) to skip.
- * Returns a sorted, non-overlapping array of [start, end] index pairs.
- */
+/** `content` with CRLF/CR as LF, plus each normalized index's offset in the original. */
 function normalizedMarkdownOffsets(content: string): {
   text: string;
   offsets: number[];
@@ -124,12 +104,7 @@ function findInlineCodeRegions(
   content: string,
   blockRegions: Array<[number, number]>,
 ): Array<[number, number]> {
-  // Every backtick inside a block region becomes a space in the mask below, so unless one sits
-  // outside a block region the mask cannot contain a backtick, `codeSpans` returns nothing and the
-  // whole rebuild is spent to learn that. Worth checking first because the streaming path calls
-  // this once per frame over a growing prefix, twice per preprocessLaTeX, so the rebuild is O(n)
-  // per frame and O(n^2) over a reply; and a reply carrying one fenced example and no inline code,
-  // where every backtick is inside the fence, is the common shape rather than a corner case.
+  // Skip the O(n) rebuild when no backtick lies outside a block; streaming calls this per frame.
   let spanTickOutsideBlock = false;
   for (
     let index = content.indexOf("`");
@@ -357,43 +332,27 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
   const blocks = mergeRegions(fenced, indented);
   const inline = findInlineCodeRegions(content, blocks);
 
-  // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
-  // the binary search land on the inner span and miss the outer one.
+  // An inline span can contain a fence, which broke the binary search.
   return mergeRegions(blocks, inline);
 }
 
-/**
- * Match an inline link/image `[text](DEST)`, capturing the destination as group 1
- * with the `d` flag so its span is read straight from `match.indices` (the text
- * can contain an escaped `\](`, so a string search for the separator is unsafe).
- * The text disallows unescaped `]`; the destination allows escapes and one level
- * of balanced parens.
- */
+/** Group 1 is the destination, read via the `d` flag since the text may contain `\](`. */
 const LINK_DEST_RE =
   /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
 
-/**
- * Find the destination spans of inline links/images, so a `\(...\)` written with
- * escaped parens inside a URL isn't rewritten as math (which would break the
- * link). Only the destination is returned, not the link text, so math in the
- * visible text still converts. Sorted, non-overlapping (matches are disjoint).
- */
+/** Destinations only, so escaped parens in a URL are not math but link text still converts. */
 function findLinkDestinationRegions(content: string): Array<[number, number]> {
   if (!content.includes("](")) return [];
   const regions: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
   LINK_DEST_RE.lastIndex = 0;
   while ((match = LINK_DEST_RE.exec(content)) !== null) {
-    // `indices` is present (the `d` flag); group 1 spans the destination.
     regions.push(match.indices![1]);
   }
   return regions;
 }
 
-/**
- * Binary search to check if a position falls inside any region. Regions must be
- * sorted by start and non-overlapping.
- */
+/** Regions must be sorted by start and non-overlapping. */
 export function isInRegion(
   position: number,
   regions: Array<[number, number]>,
@@ -414,49 +373,27 @@ export function isInRegion(
   return false;
 }
 
-/** A whitespace-free token that looks purely like currency, e.g. `5`, `1,000`, `5.99`, `100K`, `3.5M`. */
 const CURRENCY_BODY_RE = /^\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?$/;
 
-/** Body characters that almost always indicate real LaTeX. */
 const LATEX_CHAR_RE = /[\\^_{}]/;
 
-/**
- * Operators that strongly suggest math. Omits `^` and `_` since
- * `LATEX_CHAR_RE` short-circuits on those before this regex runs.
- */
+/** Omits `^` and `_`, which LATEX_CHAR_RE handles first. */
 const MATH_OP_RE = /[=+\-<>/*]/;
 
-/**
- * Trailing chars stripped before the currency check: prose punctuation
- * plus `-` and `/` from compact ranges like `$5-$10`; without them the
- * body `5-` or `5/` would slip through the single-token math shortcut.
- */
+/** Includes `-` and `/` from ranges like `$5-$10`. */
 const TRAIL_PUNCT_RE = /[.,;:!?\-/]+$/;
 
-/**
- * A standalone single-letter variable, not part of a longer word, so
- * prose like "5 to attend" isn't misread as math with variable `t`.
- */
+/** So "5 to attend" is not read as variable `t`. */
 const LONE_LETTER_RE = /(?<![a-zA-Z])[a-zA-Z](?![a-zA-Z])/;
 
-/**
- * Numeric or single-letter operands joined by math operators (optional
- * whitespace): `2 + 2`, `100 < 200`, `1,000 - 500`, `x + y`. Recognises
- * numeric-only expressions like `$2 + 2$` without a lone variable token.
- */
 const SIMPLE_MATH_RE =
   /^(?:\d+(?:,\d{3})*(?:\.\d+)?|[a-zA-Z])(?:\s*[=+\-<>/*]\s*(?:\d+(?:,\d{3})*(?:\.\d+)?|[a-zA-Z]))+$/;
 
 /**
- * True if the substring between two `$` delimiters looks like LaTeX
- * rather than prose between two currency tokens.
- *
- * Rule of thumb:
  *   - `$30^\circ$`  -> math (LaTeX chars)
  *   - `$x$`         -> math (single non-currency token)
  *   - `$90 - x$`    -> math (math op + lone variable)
- *   - `$5 to $10`   -> NOT math (multi-token prose, no math op)
- *   - `$5, $10`     -> NOT math (currency-like token + trailing punct)
+ *   - `$5 to $10`   -> NOT math (multi-token prose)
  *   - `$1,000$`     -> NOT math (single currency-like token)
  */
 function looksLikeMathBody(body: string): boolean {
@@ -464,22 +401,14 @@ function looksLikeMathBody(body: string): boolean {
   const trimmed = body.trim().replace(TRAIL_PUNCT_RE, "");
   if (!trimmed) return false;
   if (CURRENCY_BODY_RE.test(trimmed)) return false;
-  // Numeric-only operator forms: `2 + 2`, `100 < 200`, `1,000 - 500`.
-  // Recognised without requiring a lone-variable letter.
   if (SIMPLE_MATH_RE.test(trimmed)) return true;
   if (!/\s/.test(trimmed)) return true;
   if (!MATH_OP_RE.test(trimmed)) return false;
   return LONE_LETTER_RE.test(trimmed);
 }
 
-/**
- * True if the `$` at `offset` opens a balanced inline math span (`$...$`)
- * on the same line. The closer must be unescaped, not part of `$$`, and
- * within 200 chars. The body must look like LaTeX so we don't pair two
- * currency tokens on a line (e.g. "$5 to $10"). Bold-wrapped spans
- * (`**$X$**`, `__$X$__`) are always math: LLMs use that for "bold math"
- * and the heuristic would otherwise reject prose-shaped bodies like "90 - x".
- */
+/** Same line, unescaped, not `$$`, within 200 chars, with a LaTeX-like body. Bold-wrapped spans
+ * are always math, since LLMs use that for bold math. */
 function hasInlineMathCloser(
   content: string,
   offset: number,
@@ -492,16 +421,13 @@ function hasInlineMathCloser(
     if (c === "\n") return false;
     if (c !== "$") continue;
     if (content[i - 1] === "\\") continue;
-    // A `$` opening a generated span (from `\(...\)`) is not a currency closer;
-    // pairing with it would swallow the price into math (`$5 + x \(y\)`).
+    // A `$` opening a generated span is not a currency closer.
     if (isInRegion(i, mathRegions)) return false;
     if (content[i + 1] === "$") {
       i++;
       continue;
     }
-    // A `$` followed by a digit is more likely another currency token than
-    // the closer. Keep scanning so prose like `$5 + a $10 add-on` doesn't
-    // pair the two currency markers as a math span.
+    // A `$` before a digit is more likely another price than the closer.
     if (/\d/.test(content[i + 1] ?? "")) {
       continue;
     }
@@ -521,30 +447,14 @@ function hasInlineMathCloser(
   return false;
 }
 
-/**
- * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. The body
- * is capped so repeated incomplete openers stay linear during streaming.
- */
+/** The body is capped so repeated incomplete openers stay linear during streaming. */
 const CONVERT_LATEX_DELIM_RE =
   /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
 
 /**
- * Rewrite `\[...\]` -> block `$$...$$` and `\(...\)` -> inline `$...$` so
- * remark-math can tokenize them. Bodies are trimmed: remark-math won't open an
- * inline span on `$ ` (a `$` followed by whitespace), and display fences must
- * sit on their own line to render as a centered block (not inline math), so
- * `\[...\]` becomes `\n$$\n...\n$$\n`.
- *
- * Spans inside code blocks/spans are left intact (a code sample showing `\(x\)`
- * must not be rewritten).
- *
- * A space is inserted between a converted span and a following `$` so their
- * delimiters can't fuse (`\(a\)\(b\)` -> `$a$$b$` would mis-tokenize into one
- * broken span). A preceding currency (`$5\(x\)`) is instead broken later by the
- * currency escape pass.
- *
- * Returns the rewritten text and the `[start, end)` ranges (in the rewritten
- * string) of every span it produced, so the currency pass can skip them.
+ * Bodies are trimmed (remark-math will not open on `$ `), display fences go on their own lines,
+ * code spans are skipped, and a space separates adjacent `$` so spans cannot fuse. Returns the
+ * produced ranges so the currency pass skips them.
  */
 function convertLatexDelimiters(content: string): {
   text: string;
@@ -558,18 +468,13 @@ function convertLatexDelimiters(content: string): {
   const linkRegions = findLinkDestinationRegions(content);
   const inSkipZone = (pos: number) =>
     isInRegion(pos, codeRegions) || isInRegion(pos, linkRegions);
-  // Pushed in ascending, non-overlapping order (offset only grows), so this
-  // stays valid for isInRegion's binary search without a sort.
+  // Ascending and non-overlapping by construction, so no sort is needed.
   const mathRegions: Array<[number, number]> = [];
-  // Accumulate into an array, not a string: reading the last char off a growing
-  // `+=` accumulator flattens its rope every append (O(n^2) over many spans, on
-  // the per-frame streaming path), so track the tail char and length instead.
+  // An array, not `+=`: reading a growing string's tail flattens its rope each time (O(n^2)).
   const parts: string[] = [];
   let offset = 0;
   let lastChar = "";
   let last = 0;
-  // Append a chunk, separating a trailing `$` from a leading `$` so two spans
-  // can't fuse. Returns where the chunk landed (after any inserted space).
   const append = (chunk: string): number => {
     if (!chunk) return offset;
     if (lastChar === "$" && chunk.startsWith("$")) {
@@ -586,34 +491,25 @@ function convertLatexDelimiters(content: string): {
   CONVERT_LATEX_DELIM_RE.lastIndex = 0;
   while ((match = CONVERT_LATEX_DELIM_RE.exec(content)) !== null) {
     const matchEnd = match.index + match[0].length;
-    // Skip if either delimiter is inside code or a link destination: an opener
-    // outside such a zone must not consume a closer inside one and rewrite
-    // across the boundary. Resume right after this opener (not past the whole
-    // match) so a valid span that this match spanned across (a stray code `\(`
-    // paired with a real closer) is still found on the next pass, not swallowed.
+    // Resume right after this opener, so a real span this match straddled is still found.
     if (inSkipZone(match.index) || inSkipZone(matchEnd - 1)) {
       CONVERT_LATEX_DELIM_RE.lastIndex = match.index + 1;
       continue;
     }
     const isDisplay = match[1] !== undefined;
     const body = (isDisplay ? match[1] : match[2]).trim();
-    // Leave an empty span (`\(\)`) literal; a bare `$$` would open a stray
-    // display block that swallows following text.
+    // A bare `$$` would open a stray display block.
     if (!body) {
       continue;
     }
     append(content.slice(last, match.index));
     let wrapped: string;
     if (isDisplay) {
-      // Keep the opener's leading indentation so a `$$` block inside a list item
-      // stays in the container instead of breaking out at column 0. Only when the
-      // opener is whitespace-prefixed, so inline `text \[x\]` keeps column 0.
+      // Keep a whitespace-prefixed opener's indent so `$$` stays inside a list item.
       const lineStart =
         match.index > 0 ? content.lastIndexOf("\n", match.index - 1) + 1 : 0;
       const prefix = content.slice(lineStart, match.index);
       const indent = /^\s*$/.test(prefix) ? prefix : "";
-      // Indent every body line, not just the first, so multi-line display math
-      // (`\[a\nb\]`) stays wholly inside the container.
       const inner = indent ? body.replace(/\n/g, `\n${indent}`) : body;
       wrapped = `\n${indent}$$\n${indent}${inner}\n${indent}$$\n`;
     } else {
@@ -628,19 +524,10 @@ function convertLatexDelimiters(content: string): {
 }
 
 /**
- * Preprocess a markdown string so LaTeX renders: convert bracket delimiters to
- * dollar forms, then escape currency dollar signs so they are not parsed as
- * math delimiters.
- *
- * - `\[E = mc^2\]` becomes a `$$` display block on its own lines (display math)
- * - `\(\alpha\)` becomes `$\alpha$` (inline math)
- * - `\(x\)` in a code span is untouched
- * - `$5` alone becomes `\$5` (currency, not math)
- * - `$\alpha$` is untouched (real LaTeX)
- * - `$30^\circ$` is untouched (LaTeX whose body starts with a digit)
- * - `**$30^\circ$**` is untouched (LaTeX wrapped in bold)
- * - `$$E = mc^2$$` is untouched (display math)
- * - Currency inside code blocks/spans is untouched
+ * - `\[E = mc^2\]` becomes a `$$` display block on its own lines
+ * - `\(\alpha\)` becomes `$\alpha$`; inside a code span it is untouched
+ * - `$5` alone becomes `\$5`
+ * - `$\alpha$`, `$30^\circ$`, `**$30^\circ$**` and `$$...$$` are untouched
  */
 export function preprocessLaTeX(content: string): string {
   const { text, mathRegions } = convertLatexDelimiters(content);
@@ -653,8 +540,7 @@ export function preprocessLaTeX(content: string): string {
     if (isInRegion(offset, codeRegions)) {
       return match;
     }
-    // Skip the spans we just created from `\(...\)` so a numeric body like
-    // `$5$` isn't re-escaped back to literal `\$5$`.
+    // Skip spans created from `\(...\)` so `$5$` is not re-escaped.
     if (isInRegion(offset, mathRegions)) {
       return match;
     }

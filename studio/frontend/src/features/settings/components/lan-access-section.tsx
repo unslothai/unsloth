@@ -291,7 +291,7 @@ export function LanAccessSection() {
           if (mutationEpoch.current !== epoch) {
             return;
           }
-          // a stop from a LAN address kills this page's own origin, so stop polling
+          // a stop from a LAN address kills this page's own origin
           if (selfStopDisconnectExpected.current) {
             setPollEnabled(false);
             return;
@@ -325,7 +325,6 @@ export function LanAccessSection() {
       if (operation === "port") {
         setPortError("Could not save the LAN port.");
       }
-      // polling resumes below and reconciles the visible state
     } finally {
       setBusy(null);
       pollSuppressed.current = false;
@@ -424,8 +423,7 @@ export function LanAccessSection() {
           <SettingsRow
             label="Port"
             description="Automatic tries 8888, then 8889–8908. Custom uses only the selected port. Stop LAN access before changing it."
-            // Always mounted, even when empty: a live region has to exist before its
-            // text changes for the change to be announced.
+            // Always mounted: a live region must exist before its text changes to be announced.
             below={
               <span
                 id={portErrorId}

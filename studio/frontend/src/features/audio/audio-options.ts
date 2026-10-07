@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Per-model generation options a GGUF audio model declares in its embedded spec. The backend
-// reports the schema as `audio_options` on the loaded-model status and takes the chosen values
-// back as `audio_options` on a speech or music request, validating them again. Values the user
-// set are kept per model id in this browser. Free of app imports so the node test runner can
-// load it directly.
+// Per-model options a GGUF audio model declares (`audio_options`); the backend re-validates.
+// Free of app imports so the node test runner can load it.
 
 export type AudioOptionType = "bool" | "int" | "float" | "string" | "enum";
 export type AudioOptionValue = boolean | number | string;
@@ -47,7 +44,6 @@ export function parseAudioOptions(raw: unknown): AudioOptionSpec[] {
     const values = Array.isArray(item.values)
       ? item.values.filter((value): value is string => typeof value === "string")
       : null;
-    // An enum without choices has nothing to offer.
     if (type === "enum" && !values?.length) continue;
     seen.add(name);
     const spec: AudioOptionSpec = {
@@ -91,7 +87,6 @@ export function coerceAudioOptionValue(
   }
 }
 
-/** What a control shows: the stored value, else the declared default, else a neutral blank. */
 export function audioOptionDisplayValue(
   spec: AudioOptionSpec,
   values: AudioOptionValues,
@@ -101,8 +96,7 @@ export function audioOptionDisplayValue(
   return spec.default ?? undefined;
 }
 
-/** The values to send: only ones the user set and the schema still accepts. Everything else is
- *  left to the model's own defaults on the server. */
+/** Only user-set values the schema still accepts; the rest use server defaults. */
 export function audioOptionsForRequest(
   specs: readonly AudioOptionSpec[],
   values: AudioOptionValues,
@@ -169,7 +163,6 @@ export function audioVoiceLabel(voice: string, family?: string | null): string {
   return /^[a-z0-9]+(?:[_-][a-z0-9]+)*$/.test(voice) ? titleWords(voice) : voice;
 }
 
-/** A slider step for a float range: about a hundred steps, on a round number. */
 export function audioOptionFloatStep(min: number, max: number): number {
   const span = max - min;
   if (!(span > 0)) return 0.01;
@@ -198,8 +191,7 @@ function readAll(): StoredAudioOptions {
   }
 }
 
-/** The values saved for one model, unvalidated: the schema can change between loads, so
- *  callers read them through the helpers above. */
+/** Unvalidated saved values; the schema can change, so read via the helpers above. */
 export function readAudioOptionValues(modelId: string | null | undefined): AudioOptionValues {
   if (!modelId?.trim()) return {};
   const entry = readAll()[storageKey(modelId)];
@@ -213,7 +205,6 @@ export function readAudioOptionValues(modelId: string | null | undefined): Audio
   return values;
 }
 
-/** Remember one model's values; an empty set forgets the model. */
 export function saveAudioOptionValues(
   modelId: string | null | undefined,
   values: AudioOptionValues,

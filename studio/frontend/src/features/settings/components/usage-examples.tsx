@@ -114,7 +114,6 @@ const JAVASCRIPT_TYPES = new Set<ExampleType>([
 ]);
 
 const PROMPT = "What is Unsloth?";
-// web_search + python + terminal are the reliable built-in tools.
 const TOOLS = ["web_search", "python", "terminal"];
 const ADV = {
   temperature: 0.7,
@@ -141,8 +140,8 @@ const DOC_LINKS = [
   { label: "Mistral Vibe", href: "https://github.com/mistralai/mistral-vibe" },
 ];
 
-// Fallback until the backend's installed-CLI check resolves. Mirrors CODING_AGENTS in
-// studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS (see ../api/coding-agents.ts).
+// Fallback until detection resolves. Mirrors CODING_AGENTS in studio/backend/utils/coding_agents.py
+// minus HIDDEN_AGENTS.
 const DEFAULT_AGENTS = [
   "claude",
   "codex",
@@ -152,9 +151,6 @@ const DEFAULT_AGENTS = [
   "dsh",
   "vibe",
 ];
-// The agent selection resets to this whenever an auto-pick is no longer
-// trustworthy (leaving loopback, or the only compatible detected agent
-// stops being compatible) rather than lingering on a stale choice.
 const DEFAULT_AGENT = "claude";
 const AGENT_LABELS: Record<string, string> = {
   claude: "Claude Code",
@@ -183,8 +179,7 @@ function bodyExtraLines(variant: Variant, indent: string): string[] {
   if (variant !== "plain") {
     lines.push(`${indent}"enable_tools": true,`);
     lines.push(`${indent}"enabled_tools": [${toolsJson}],`);
-    // The gate only asks over the X-Unsloth-Events frames these snippets deliberately do not take,
-    // so say the tools run unprompted rather than hand out a request the server refuses.
+    // The permission gate only asks over X-Unsloth-Events frames these snippets do not take.
     lines.push(`${indent}"permission_mode": "off",`);
   }
   return lines;
@@ -316,8 +311,7 @@ function javascriptSnippet(
     options.push(`  max_tokens: ${ADV.max_tokens},`);
   }
 
-  // The JS SDK forwards unknown options into the request body, so these go at the
-  // top level (the Python SDK needs them under extra_body instead).
+  // The JS SDK forwards unknown options into the body (Python needs extra_body).
   if (variant === "advanced") {
     options.push(`  top_k: ${ADV.top_k},`);
     options.push(`  min_p: ${ADV.min_p},`);
@@ -353,7 +347,6 @@ for await (const chunk of response) {
 }`;
 }
 
-// every variant but "plain" asks for the server-side tools, so it needs its own key
 function buildSnippets(
   base: string,
   key: string,
@@ -376,13 +369,12 @@ function buildSnippets(
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
-// the openai sdks require some api_key, so name one rather than leave it blank
+// the openai sdks require some api_key
 const KEYLESS_KEY_PLACEHOLDER = "not-needed";
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
-// Slow retry while /v1 has nothing to name: a download or load moves no store state.
+// A download or load moves no store state, so keep retrying.
 const CATALOG_RETRY_MS = 15000;
-// Slower beat once something is servable: an idle unload frees a model without
-// touching the store, so residency is never settled for good.
+// An idle unload frees a model without touching the store.
 const CATALOG_IDLE_MS = 60000;
 
 function readUseTunnelPref(): boolean {
@@ -403,7 +395,7 @@ function writeUseTunnelPref(value: boolean): void {
   }
 }
 
-// A checkpoint can be an on-disk load path, which /v1 never advertises. Mirrors _looks_like_path.
+// Mirrors _looks_like_path; /v1 never advertises an on-disk load path.
 function looksLikePath(id: string): boolean {
   return (
     id.startsWith("/") ||
@@ -415,29 +407,24 @@ function looksLikePath(id: string): boolean {
   );
 }
 
-// The model the examples name: always an id /v1 resolves against, null when there is none.
 function useExampleModelName(keylessOnly: boolean): string | null {
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  // null until /v1/models answers: "not asked yet" must not read as "holds nothing".
+  // null until /v1/models answers: "not asked" must not read as "holds nothing".
   const [catalog, setCatalog] = useState<OpenAIModel[] | null>(null);
-  // A downloaded but unloaded model is only runnable when switching is on.
   const [autoSwitch, setAutoSwitch] = useState(false);
   const usableCheckpoint =
     !!checkpoint &&
     !checkpoint.startsWith("external::") &&
     !looksLikePath(checkpoint);
 
-  // Always: a stored checkpoint can stop being servable without the store changing.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | null = null;
 
     const update = () => {
-      // null on failure, never [] or false: a transient error is no evidence that the
-      // server holds nothing, and those negatives blanked every example while the
-      // model was still servable. Keep the last answer and retry.
+      // null on failure: a transient error is no evidence the server holds nothing.
       void Promise.all([
         listOpenAIModels().catch(() => null),
         loadOpenAIAutoSwitchSettings()
@@ -450,7 +437,6 @@ function useExampleModelName(keylessOnly: boolean): string | null {
           if (settings !== null) {
             setAutoSwitch(settings);
           }
-          // Resident only slows the polling; it never stops it.
           // biome-ignore lint/complexity/useOptionalChain: keep the explicit failed-refresh branch
           return models !== null && models.some((m) => m.loaded);
         })
@@ -471,7 +457,6 @@ function useExampleModelName(keylessOnly: boolean): string | null {
   }, [checkpoint, ggufVariant]);
 
   return useMemo(() => {
-    // Name something held here, with its quant to pin the file on disk.
     const fromCatalog = (): string | null => {
       const pick =
         catalog?.find((m) => m.loaded) ??
@@ -483,10 +468,7 @@ function useExampleModelName(keylessOnly: boolean): string | null {
         ? `${pick.id}:${pick.quant}`
         : pick.id;
     };
-    // The store keeps a checkpoint across an idle unload and across the model being
-    // deleted, so it only names a runnable model while the catalog still lists it:
-    // resident, or downloaded with switching able to reload it. A null catalog means
-    // /v1/models has not answered, which is not evidence against it.
+    // The store keeps a checkpoint across unload and delete, so require the catalog to list it.
     const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
     const backed =
       (!keylessOnly && catalog === null) ||
@@ -495,9 +477,7 @@ function useExampleModelName(keylessOnly: boolean): string | null {
       if (checkpoint.includes(":")) {
         return checkpoint;
       }
-      // Pin the quant the catalog advertises, not the stored one: membership proves the
-      // repo, and the saved quant can name a file deleted while another quant remains.
-      // Fall back to the store only before /v1/models answers.
+      // Pin the catalog's quant: the saved one may name a deleted file.
       const quant = catalog === null ? ggufVariant : entry?.quant;
       return quant ? `${checkpoint}:${quant}` : checkpoint;
     }
@@ -512,8 +492,7 @@ function useExampleModelName(keylessOnly: boolean): string | null {
   ]);
 }
 
-// Backend PATH detection is only safe in the desktop app, where the UI owns
-// the local backend. A browser loopback URL may be an SSH/local port forward.
+// Only safe in the desktop app; a browser loopback URL may be a port forward.
 function canUseLocalAgentDetection(base: string): boolean {
   if (!isTauri) return false;
   try {
@@ -566,9 +545,7 @@ export function UsageExamples({
   keylessExposure = null,
 }: {
   apiKey?: string | null;
-  /** which routes keyless api access serves, so a placeholder is only used where it works */
   keylessScope?: KeylessApiAccessScope;
-  /** whether a keyless caller may drive the server-side tool loop */
   keylessTools?: boolean;
   /** public tunnels and Colab never accept the dummy bearer */
   keylessExposure?: KeylessApiAccessExposure | null;
@@ -583,7 +560,6 @@ export function UsageExamples({
   const setStoredAgent = useSettingsPanelPrefsStore(
     (s) => s.setApiExampleAgent,
   );
-  // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
   const [lang, setLang] = useState<ExampleType>(
     storedPrefs.apiExampleLang &&
@@ -611,10 +587,8 @@ export function UsageExamples({
   const [detectedAgents, setDetectedAgents] = useState<string[]>([]);
   // set on answer, so a restored agent never validates against the defaults.
   const [agentsLoaded, setAgentsLoaded] = useState(false);
-  // True once the user has picked an agent themselves; guards the detection
-  // effect below from clobbering that choice if it resolves afterward.
+  // Guards the detection effect from clobbering a pick the user made first.
   const agentPickedByUserRef = useRef(storedPrefs.apiExampleAgent != null);
-  // isGguf at the moment of a hand-made pick, null if there has been none this session.
   // A manual pick is kept only until the model's GGUF-ness changes under it.
   const clickedUnderGgufRef = useRef<boolean | null>(null);
   const [useTunnel, setUseTunnel] = useState<boolean>(readUseTunnelPref);
@@ -622,16 +596,14 @@ export function UsageExamples({
   const base =
     useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
   const localAgentDetection = canUseLocalAgentDetection(base);
-  // isServedByLlamaCpp owns which store fields count; a context length is not among them,
-  // since MLX reports one too.
+  // A context length does not imply llama.cpp, since MLX reports one too.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
   );
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
-  // null when these fields do not describe the model the snippet names: before status
-  // lands they all read like a non-GGUF model, and under an external selection
-  // use-chat-model-runtime stops updating them while the snippet still follows /v1/models.
+  // null when these fields do not describe the model the snippet names (before status, or under an
+  // external selection).
   const activeCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const storeIsGguf: boolean | null =
     !activeCheckpoint || isExternalModelId(activeCheckpoint)
@@ -643,20 +615,18 @@ export function UsageExamples({
           checkpoint: activeCheckpoint,
         });
 
-  // Only the chat and hub pages mount useChatModelRuntime, and local checkpoints are not
-  // persisted, so off those routes the store never answers and the server has to. Tags the
-  // answer below, so a switch made here invalidates it. JSON because each part can be a
-  // path or a repo id, leaving no separator safe to assume absent.
+  // Off the chat and hub pages the store never answers, so the server must; JSON because each part
+  // can be a path or a repo id.
   const storeModelKey = JSON.stringify([
     activeCheckpoint,
     activeGgufVariant,
     activeNativePathToken,
   ]);
-  // Above the derivation below, which checks the verdict against the model named here.
+  // Above the derivation that checks the verdict against this model.
   const keylessBase =
     !(useTunnel && cloudflareUrl) &&
     keylessBaseEligible(base, keylessScope, keylessExposure);
-  // Only the inference scope keeps a keyless caller on the loaded model; full can switch.
+  // Only the inference scope pins a keyless caller to the loaded model; full can switch.
   const model = useExampleModelName(
     keylessBase && !apiKey && keylessScope === "inference",
   );
@@ -666,8 +636,7 @@ export function UsageExamples({
     resident: string | null;
     isGguf: boolean | null;
   } | null>(null);
-  // useChatModelRuntime re-reads status on mount, on model-list changes and on focus,
-  // never on a timer, so only this poll notices a swap made while the tab stays focused.
+  // useChatModelRuntime never polls, so only this notices a swap while the tab stays focused.
   useEffect(() => {
     let cancelled = false;
     let timeoutId: number | null = null;
@@ -676,8 +645,7 @@ export function UsageExamples({
       void getInferenceStatus()
         .then((status) => {
           if (cancelled) return false;
-          // Two silences, both unknown, as the CLI gate reads them: a server that does
-          // not report the field, and is_gguf's False default with no model named.
+          // Both unknown, as the CLI gate reads them: no field, or is_gguf False with no model.
           const resident =
             status.active_model ?? status.model_identifier ?? null;
           const answer = statusGgufVerdict(resident, status.is_gguf);
@@ -704,9 +672,8 @@ export function UsageExamples({
     };
   }, [storeModelKey]);
 
-  // status reports active_model_name raw while /v1/models publishes public_model_id(...),
-  // so collapse it the same way or a path-loaded model never matches and the verdict is
-  // dropped for good. A stale key means the switch was made here, and the store is fresher.
+  // status reports active_model_name raw while /v1/models uses public_model_id(), so collapse it
+  // the same way or a path-loaded model never matches.
   const isGguf: boolean | null = compatibilityFromSources(
     storeIsGguf,
     statusAnswer !== null && statusAnswer.key === storeModelKey
@@ -725,19 +692,14 @@ export function UsageExamples({
     void fetchDeviceType({ force: true });
   }, []);
 
-  // Fetching is the only job of this effect: populate availableAgents/ detectedAgents (or clear
-  // them). Which agent gets auto-picked from that list is derived separately below, so it can react
-  // to the loaded model changing too, not just a fresh fetch.
+  // Fetch only; the auto-pick is derived below so it also reacts to model changes.
   useEffect(() => {
-    // Browser loopback URLs can be SSH/local forwards, so only the desktop app
-    // may use backend PATH checks to mark or auto-pick local agents.
+    // Browser loopback URLs can be port forwards, so only the desktop app uses PATH checks.
     if (!localAgentDetection) {
       setDetectedAgents([]);
-      // A previously auto-picked agent was only ever verified against the Unsloth backend's PATH,
-      // which is meaningless now that this panel no longer targets a loopback base -- don't leave
-      // it selected, but never touch a choice the user made by hand.
+      // An auto-pick was only verified against the backend PATH; never touch a manual pick.
       if (!agentPickedByUserRef.current) {
-        // The effect below corrects this; isGguf read here would be a stale closure.
+        // The effect below corrects this; isGguf here would be a stale closure.
         setAgent(DEFAULT_AGENT);
       }
       return;
@@ -761,7 +723,7 @@ export function UsageExamples({
     };
   }, [localAgentDetection]);
 
-  // Drop a restored preference this build no longer offers, or that cannot run the model.
+  // Drop a restored preference this build no longer offers or that cannot run the model.
   useEffect(() => {
     if (!agentPickedByUserRef.current) return;
     if (isGguf === null) return;
@@ -774,7 +736,7 @@ export function UsageExamples({
       return;
     }
     const reset = fallbackAgent(isGguf, availableAgents);
-    if (reset === null) return; // nothing offered runs; moving would not help
+    if (reset === null) return;
     agentPickedByUserRef.current = false;
     setStoredAgent(null);
     setAgent(reset);
@@ -787,8 +749,7 @@ export function UsageExamples({
     setStoredAgent,
   ]);
 
-  // The guard is "detection has not answered", not "the list is empty": empty is a valid
-  // answer, and acting on an unresolved list flips the command between paints.
+  // Gate on detection having answered: an empty list is a valid answer.
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
     if (isGguf === null) return;
@@ -811,23 +772,21 @@ export function UsageExamples({
     localAgentDetection,
   ]);
 
-  // The approved SDK dummy is printed only for a transport the backend can admit.
+  // The SDK dummy key is printed only for a transport the backend can admit.
   const key =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
-  // a keyless caller gets no tools until the admin grants them, so this names a real key
+  // a keyless caller gets no tools until the admin grants them
   const toolsKey =
     apiKey ||
     (keylessBase && keylessTools ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
-  // agent tools are client-side schemas sent through the admitted inference routes.
   const agentKey =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
-  // Null model: nothing is servable, so there is no snippet worth copying.
   const snippets = useMemo(
     () => (model ? buildSnippets(base, key, toolsKey, model, os) : null),
     [base, key, toolsKey, model, os],
   );
-  // Agent command must target the server the panel shows, not the :8888 default.
+  // Target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
     () => buildAgentCommand(base, agentKey, os, agent),
     [base, agentKey, os, agent],

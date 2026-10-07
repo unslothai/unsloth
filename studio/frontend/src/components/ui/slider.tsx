@@ -19,14 +19,7 @@ function getThumbInBoundsOffset(width: number, percent: number) {
 }
 
 type SliderProps = React.ComponentProps<typeof SliderPrimitive.Root> & {
-  /**
-   * What a screen reader should say instead of the bare number.
-   *
-   * Radix does not synthesise `aria-valuetext`, so a slider whose positions mean
-   * something other than their value announces the value and nothing else. The
-   * context slider's leftmost position means Auto, which without this reads as
-   * "0" -- a context length no model has.
-   */
+  /** Radix does not synthesise `aria-valuetext`; e.g. the context slider's leftmost means Auto. */
   thumbValueText?: (value: number, index: number) => string;
 };
 
@@ -59,9 +52,7 @@ function Slider({
   );
   const isSingleThumbHorizontal =
     values.length === 1 && orientation === "horizontal";
-  // The thumb follows the UI font size, and .panel-slider resizes it outright,
-  // so the fill measures it rather than assuming 16px. offsetWidth ignores the
-  // hover/press transforms.
+  // The thumb scales with the UI font, so the fill measures it; offsetWidth ignores transforms.
   const thumbRef = React.useRef<HTMLSpanElement | null>(null);
   const [thumbWidth, setThumbWidth] = React.useState(THUMB_SIZE_PX);
   React.useLayoutEffect(() => {
@@ -137,10 +128,7 @@ function Slider({
           data-slot="slider-thumb"
           key={index}
           ref={index === 0 ? thumbRef : undefined}
-          // The thumb is the element carrying role="slider", so the name and the spoken value
-          // belong here. Everything else spreads onto Root, which is a plain div: an aria-label
-          // passed to this component reached that div and left the actual control unnamed, and
-          // Radix only fills in a label of its own for multi-thumb ranges.
+          // The thumb carries role="slider", so the name and spoken value belong here, not on Root.
           aria-label={props["aria-label"]}
           aria-labelledby={props["aria-labelledby"]}
           aria-valuetext={thumbValueText?.(values[index] ?? min, index)}

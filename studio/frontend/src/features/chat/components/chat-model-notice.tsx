@@ -18,14 +18,10 @@ import {
   createChatModelHistoryReader,
 } from "./chat-model-notice-switch";
 
-/** reads the saved chat's starting model and waits for queued initialization. */
 export function useChatCreatedModel(
   threadId: string | undefined,
 ): ChatModelSwitchTarget | null {
-  // Keyed by the chat it was read for, not a bare value. Clearing it in the effect is a frame late:
-  // the effect is passive, so the first render for the incoming chat has already committed with
-  // the outgoing chat's model, painting the wrong notice. Answering only for a matching key makes
-  // that render impossible rather than brief.
+  // Keyed by chat: clearing in a passive effect is a frame late and paints the old chat's model.
   const [read, setRead] = useState<{
     threadId: string;
     model: ChatModelSwitchTarget | null;
@@ -53,19 +49,14 @@ export function useChatCreatedModel(
 }
 
 type ChatModelNoticeProps = {
-  /** The saved chat on screen, or undefined for an unsent New Chat. */
   threadId: string | undefined;
-  /** The model the composer will actually send to. */
   checkpoint: string;
   activeGgufVariant: string | null;
-  /** Every model that can be selected right now, by id. */
   selectableModelIds: ReadonlySet<string>;
   onSwitch: (target: ChatModelSwitchTarget) => void;
 };
 
-/** Offers to put a chat back on the model it was started on. Deliberately an offer and not an
- *  automatic switch: for a local model that would evict whatever is resident and spend a
- *  multi-gigabyte load on opening a chat. */
+/** An offer, not an automatic switch: switching a local model evicts the resident and reloads. */
 export function ChatModelNotice({
   threadId,
   checkpoint,
@@ -78,8 +69,7 @@ export function ChatModelNotice({
   if (chatModelIsResident(createdModel, checkpoint, activeGgufVariant)) {
     return null;
   }
-  // A model that has since been deleted, or a connection that is gone: the switch could not be
-  // honoured, and saying so on every open is just noise. A gone snapshot loads its repo's live row.
+  // Unselectable models are not offered; a gone snapshot loads its repo's live row.
   const selectableId = chatModelSelectableId(
     createdModel.modelId,
     selectableModelIds,
@@ -92,10 +82,7 @@ export function ChatModelNotice({
     externalModelLabel(createdModel.modelId) ??
     modelDisplayName(createdModel.modelId);
   return (
-    // Positioned, not in flow. The chat header is `absolute ... z-40` with an opaque `bg-background`,
-    // so an in-flow sibling starts at y=0 UNDER it and the bar is invisible bar the scrollbar gutter
-    // the header leaves uncovered. Offset by the same header height the drop overlay
-    // and the header fade use, above the fade (z-20) and below the header (z-40).
+    // Positioned: the header is absolute z-40 and opaque, so in flow this would sit under it.
     <div
       data-chat-model-notice=""
       data-side-panel-inset=""

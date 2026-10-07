@@ -4,16 +4,8 @@
 export type InventoryRefreshDecision = "reuse" | "join" | "refresh";
 export const INVENTORY_FRESHNESS_WINDOW_MS = 30_000;
 
-/** Whether a `Date.now()` stamp is still inside `maxAgeMs`.
- *
- * A NEGATIVE age counts as stale, not fresh. These stamps come from `Date.now()`, which
- * tracks the system clock and can step backwards (an NTP correction of more than ~125ms
- * jumps rather than slews, and a VM resume or a user editing the clock does the same); only
- * `performance.now()` is monotonic. Without the guard a stamp from the future reads as
- * "younger than the window", so every caller reuses and the inventory stays frozen for the
- * length of the skew -- including `refreshIfOlderThan(0)`, which callers use to mean
- * "refresh unconditionally".
- */
+/** Whether a `Date.now()` stamp is inside `maxAgeMs`. Negative age is stale: the wall clock can
+ * step backwards, which would otherwise freeze the inventory. */
 export function isInventoryStampFresh(
   stamp: number | null,
   now: number,
@@ -26,19 +18,8 @@ export function isInventoryStampFresh(
   return age >= 0 && age < Math.max(0, maxAgeMs);
 }
 
-/** The `revalidatedAt` a completed scan should leave behind.
- *
- * The stamp means one thing only: "an empty inventory has been seen TWICE, so the emptiness
- * is confirmed". `useHubInventory` skips its second look while the stamp is fresh, so it has
- * to track both ends of that claim.
- *
- * - rows came back, so the inventory is not empty: clear it. Keeping it would let a later
- *   FIRST empty scan land inside the window and read as already confirmed.
- * - a forced scan over an inventory already observed empty: this is the second look, stamp
- *   it. Stamping every force instead lets a manual refresh that happens to return empty
- *   record itself as its own confirmation.
- * - anything else: carry the stamp for the same key, and drop it when the key changes.
- */
+/** `revalidatedAt` means an empty inventory was seen twice. Clear on rows, stamp only a forced
+ * rescan of an already-empty inventory, otherwise carry it for the same key. */
 export function nextRevalidationStamp({
   force,
   requestKey,

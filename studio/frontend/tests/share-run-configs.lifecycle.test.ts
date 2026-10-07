@@ -309,7 +309,6 @@ for (const chatSearch of [
       handoff(),
     ]);
     assert.equal(app.inbox.getSnapshot()?.draftKey, key);
-    // A failed navigation clears only its own import.
     const superseded = chatSearch !== null;
     if (superseded) app.inbox.submit({ id: "second", value: { config: {} } });
     app.navigationResult.reject(new Error("navigation failed"));
@@ -416,7 +415,6 @@ for (const failure of [false, true]) {
   }
 }
 
-// An edit to the resolved draft cancels the import in every phase; edits to another quant do not.
 for (const phase of [
   "parsing",
   "resolving",
@@ -526,8 +524,6 @@ function sessionHarness({
   };
 }
 
-// A pre-login link waits in memory through sign-in; a live session's import
-// ends with one notice. Neither replays after a reload or account purge.
 for (const [desktop, before, after] of [
   [true, false, false],
   [false, false, false],
@@ -586,8 +582,6 @@ for (const [desktop, before, after] of [
 }
 
 const argsQuery = "llamaExtraArgs=%5B%22--threads%22%2C%224%22%5D";
-// Valid and invalid startup fragments are consumed so dismissal, reload or
-// router re-decoding cannot replay them.
 for (const [url, cleaned, valid, decode] of [
   ["?run=1&keep=value#run?v=1&nParallel=3", "?keep=value", true, false],
   ["?keep=value#run?v=1&unknown=true", "?keep=value", false, false],
@@ -639,8 +633,6 @@ test("desktop startup ignores web fragments and still accepts native links", asy
   );
 });
 
-// A parser still loading when the session or a newer link moves on must not
-// restore its link; edits made while it loads carry into model resolution.
 const newerRun = "unsloth://run?v=1&model=owner/newer&nParallel=4";
 const newerHub = "unsloth://open_from_hf?model=owner/newer";
 for (const [name, native, signIn, during, model] of [

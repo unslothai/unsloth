@@ -12,7 +12,7 @@ import type {
 
 export const HOST_PREP_POLL_MS = 2000;
 
-// The one step wxc-host-prep undoes on every restart; missing alone, the PC was prepared before.
+// wxc-host-prep undoes this step on every restart; missing alone, the PC was prepared before.
 const REPEATING_STEP = "prepare-null-device";
 
 const BACKEND_LABELS: Record<string, string> = {
@@ -51,7 +51,6 @@ export type HostPrepStatus =
   | "unknown";
 
 export type WindowsView = {
-  // MXC cannot run on this Windows at all: one note instead of the controls.
   unsupported: RuntimeUnsupported | null;
   runtimeMissing: boolean;
   showInstallRuntime: boolean;
@@ -111,7 +110,7 @@ export function windowsView(
   };
 }
 
-/** A section below already says why and what to do: the Python and Terminal rows keep only their badge. */
+/** A section below already explains; the Python and Terminal rows keep only their badge. */
 export function toolRowsQuiet(
   setupRowShown: boolean,
   windows: WindowsView | null,
@@ -145,7 +144,7 @@ export function shouldPollJob(job: HostPrepJob | null): boolean {
   return job?.state === "running";
 }
 
-// A read that returns after this tab started a newer job must not replace it.
+// A read returning after a newer job started must not replace it.
 type JobStamp = Pick<HostPrepJob, "id" | "startedAt">;
 
 export function isOlderJob(
@@ -156,7 +155,7 @@ export function isOlderJob(
   return (loaded.startedAt ?? 0) <= (current.startedAt ?? 0);
 }
 
-// Only a failure shows the helper's output; the last few lines are the ones that name the cause.
+// Only failures show output; the last lines name the cause.
 export function jobOutputLines(job: HostPrepJob | null, max = 6): string[] {
   if (!job || job.state !== "failed") return [];
   return job.outputTail.filter((line) => line.trim() !== "").slice(-max);

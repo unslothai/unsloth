@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Regenerates src/features/chat/model-catalog-snapshot.ts from https://models.dev/api.json.
-// Usage: npm run catalog:refresh
+// Regenerates src/features/chat/model-catalog-snapshot.ts from models.dev. Usage: npm run catalog:refresh
 
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -47,7 +46,6 @@ function trimModel(model) {
   if (options.some((option) => option?.type === "toggle")) entry.toggle = true;
   const input = model.modalities?.input;
   if (Array.isArray(input) && input.length > 0) entry.input = input;
-  // Total context window. limit.input is the prompt share, limit.output the completion cap.
   const context = model.limit?.context;
   if (typeof context === "number" && context > 0) entry.context = context;
   return entry;

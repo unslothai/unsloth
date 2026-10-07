@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Containers llama-server can decode. It shells out to ffmpeg, so this is
- * what ffmpeg reads, not what the webview can play. Extensions ride along
- * because MIME is unreliable for mkv and some mov files. */
+/** llama-server decodes via ffmpeg. Extensions included because MIME is unreliable for mkv/mov. */
 export const VIDEO_ACCEPT =
   "video/mp4,video/x-m4v,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,video/mpeg,video/x-ms-wmv,video/x-flv,video/3gpp,video/ogg,video/mp2t,.mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv,.m2ts";
 
-// Matches _MAX_VIDEO_B64_CHARS in the backend, so the composer does not accept
-// a clip the route refuses. The native reader's cap is a higher backstop.
+// Matches _MAX_VIDEO_B64_CHARS in the backend so the composer does not accept a refused clip.
 const MAX_VIDEO_SIZE_MB = 64;
 export const MAX_VIDEO_SIZE = MAX_VIDEO_SIZE_MB * 1024 * 1024;
 export const MAX_VIDEO_SIZE_LABEL = `${MAX_VIDEO_SIZE_MB}MB`;
@@ -19,9 +16,7 @@ export function getVideoSizeError(size: number): string | null {
     : null;
 }
 
-// Mirrors the extension table in native_intents.rs, which the parity test keeps
-// in step: a clip that arrives through the desktop reader and one picked in the
-// browser must reach the route as the same mime type.
+// Mirrors the extension table in native_intents.rs (parity-tested).
 const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
   ".mp4": "video/mp4",
   ".m4v": "video/x-m4v",
@@ -41,16 +36,7 @@ const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
 const VIDEO_EXTENSIONS = Object.keys(VIDEO_MIME_BY_EXTENSION);
 const VIDEO_MIME_RE = /^video\//i;
 
-/** The mime type to send a picked clip under.
- *
- * The accept list carries extensions as well as mime types because the browser's
- * answer is unreliable for mkv and some mov files, so a file the picker took on
- * its extension can arrive as "" or as application/octet-stream. Both are then
- * carried into the attachment, and the request builder only recognises a file
- * part whose mimeType matches ^video/, so the clip is dropped and the model
- * answers as though it were never attached. Trust the extension whenever the
- * browser did not say video.
- */
+/** The request builder drops non-^video/ parts, so trust the extension if the type is not video. */
 export function videoMimeForFile(file: File): string {
   if (VIDEO_MIME_RE.test(file.type)) return file.type;
   const name = file.name.toLowerCase();
@@ -60,14 +46,11 @@ export function videoMimeForFile(file: File): string {
   return "video/mp4";
 }
 
-/** Whether a picked file is a video. mkv and some mov files arrive with an
- * empty MIME type, hence the extension fallback. */
 export function isVideoFile(file: { name: string; type: string }): boolean {
   if (VIDEO_MIME_RE.test(file.type)) {
     return true;
   }
-  // The extension fallback below claims .3gp, which a recording shares with a
-  // clip. Something that read the tracks has already said which this is.
+  // The extension fallback claims .3gp, which recordings share; a track read has already decided.
   if (/^audio\//i.test(file.type)) {
     return false;
   }
@@ -75,8 +58,7 @@ export function isVideoFile(file: { name: string; type: string }): boolean {
   return VIDEO_EXTENSIONS.some((ext) => name.endsWith(ext));
 }
 
-/** Payloads of every box of the given type at this level. Mirrors
- *  `bmff_box_payloads` in native_path_policy.rs. */
+/** Mirrors `bmff_box_payloads` in native_path_policy.rs. */
 function bmffBoxPayloads(data: Uint8Array, wanted: string): Uint8Array[] {
   const payloads: Uint8Array[] = [];
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -92,10 +74,8 @@ function bmffBoxPayloads(data: Uint8Array, wanted: string): Uint8Array[] {
     let headerSize = 8;
     let boxSize = size32;
     if (size32 === 0) {
-      // Runs to the end of this level.
       boxSize = data.length - offset;
     } else if (size32 === 1) {
-      // A 64-bit size follows the type.
       if (data.length - offset < 16) break;
       const size64 = view.getBigUint64(offset + 8);
       if (size64 > BigInt(Number.MAX_SAFE_INTEGER)) break;
@@ -113,7 +93,6 @@ function bmffBoxPayloads(data: Uint8Array, wanted: string): Uint8Array[] {
 
 type BmffTracks = { audio: boolean; video: boolean };
 
-/** The handler types a moov box's tracks declare. */
 function tracksInMoov(moov: Uint8Array, found: BmffTracks): void {
   for (const trak of bmffBoxPayloads(moov, "trak")) {
     for (const mdia of bmffBoxPayloads(trak, "mdia")) {
@@ -132,8 +111,7 @@ function tracksInMoov(moov: Uint8Array, found: BmffTracks): void {
   }
 }
 
-/** Whether a 3GP container has audio tracks and no video tracks. Mirrors
- *  `is_audio_only_3gp` in native_path_policy.rs. */
+/** Mirrors `is_audio_only_3gp` in native_path_policy.rs. */
 export function isAudioOnly3gpBytes(raw: Uint8Array): boolean {
   const found: BmffTracks = { audio: false, video: false };
   for (const moov of bmffBoxPayloads(raw, "moov")) {
@@ -142,22 +120,12 @@ export function isAudioOnly3gpBytes(raw: Uint8Array): boolean {
   return found.audio && !found.video;
 }
 
-// A track table runs to kilobytes; anything this large is not one, and reading
-// it would be the memory problem the box walk exists to avoid.
+// A track table is kilobytes; larger is not one, and reading it defeats the box walk.
 const MAX_MOOV_BYTES = 8 * 1024 * 1024;
-// A container holds a handful of these: ftyp, moov, mdat, and maybe free or mfra. A file that
-// reports thousands is malformed, and walking it would be one slice per box.
+// Real containers have a handful of top-level boxes; thousands means malformed.
 const MAX_TOP_LEVEL_BOXES = 64;
 
-/**
- * Which track kinds a container declares, without holding it.
- *
- * The tracks live in `moov`, and the samples in `mdat` beside it, so reading the
- * file to reach a handler retains the whole clip: a 64 MB one costs 64 MB, and a
- * dropped batch costs that per file at once. This walks the top-level boxes
- * through slices and reads only `moov`, which is the same walk `bmffBoxPayloads`
- * does, one level up.
- */
+/** Reads only `moov` via slices, so classifying never holds the whole clip in memory. */
 async function read3gpTracks(file: File): Promise<BmffTracks> {
   const found: BmffTracks = { audio: false, video: false };
   let offset = 0;
@@ -202,23 +170,7 @@ async function read3gpTracks(file: File): Promise<BmffTracks> {
   return found;
 }
 
-/**
- * Whether a file's own tracks have to be read before it can be classified.
- * Cheap and synchronous, so a surface can keep its existing path for everything
- * else.
- *
- * The extension alone, and nothing about the MIME type or the size.
- *
- * Not the type, because it comes from the same ambiguous extension: a platform
- * that reports audio/3gpp for a recording reports it for a clip as well, and
- * trusting that sent the clip down the audio path.
- *
- * Not the size, because the one condition here sat at the composer's video cap
- * while the video reference surface accepts a larger file, so a recording in
- * between skipped inspection entirely. A ceiling that has to track every
- * surface's limit will fall behind one of them, and the walk below is bounded
- * by box count and by the size of the track table rather than by the file.
- */
+/** Extension only: MIME comes from the same ambiguous extension and a size cap drifts per surface. */
 export function needsAttachmentTrackInspection(file: File): boolean {
   return /\.(3gp|m?ts)$/i.test(file.name);
 }
@@ -233,17 +185,7 @@ export function isMpegTransportStreamBytes(head: Uint8Array): boolean {
   );
 }
 
-/**
- * The file an attachment surface should classify, with an audio-only 3GP
- * restamped as audio and a .ts or .mts file as a transport stream or text.
- *
- * A voice recording and a clip share the .3gp extension, and the browser
- * answers "" or video/3gpp for both, so the name alone sends the recording to
- * whichever surface claims video: rejected outright on an audio model, and fed
- * to ffmpeg as frames on a video one. The native readers already read the BMFF
- * handlers and stamp audio/3gpp, so do the same before an adapter is picked.
- * Everything else is returned untouched, so this costs one predicate per file.
- */
+/** Recordings and clips share .3gp, so read BMFF handlers and restamp as native readers do. */
 export async function classifiedAttachmentFile(file: File): Promise<File> {
   if (!needsAttachmentTrackInspection(file)) {
     return file;
@@ -269,12 +211,9 @@ export async function classifiedAttachmentFile(file: File): Promise<File> {
   try {
     tracks = await read3gpTracks(file);
   } catch {
-    // An unreadable file is left as it came; the surface reports the read.
     return file;
   }
-  // Both directions, because the browser's answer comes from the same ambiguous extension: a
-  // platform that maps .3gp to audio/3gpp says so for a clip too, and the audio adapter is matched
-  // before the video one. Tracks it cannot read decide nothing, so the file is left as it came.
+  // Both directions: a platform mapping .3gp to audio/3gpp says so for clips too.
   const corrected = tracks.video
     ? "video/3gpp"
     : tracks.audio
@@ -289,8 +228,7 @@ export async function classifiedAttachmentFile(file: File): Promise<File> {
   });
 }
 
-/** The same restamping across a picked or dropped batch, one file at a time so
- *  a drop of several never has more than one container's boxes in hand. */
+/** One file at a time so a multi-file drop never holds more than one container's boxes. */
 export async function classifiedAttachmentFiles(
   files: FileList | readonly File[],
 ): Promise<File[]> {

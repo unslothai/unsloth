@@ -22,8 +22,7 @@ export const buttonVariants = cva(
           "bg-secondary text-secondary-foreground hover:bg-secondary/80 aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
         ghost:
           "hover:bg-muted hover:text-foreground dark:hover:bg-muted/50 aria-expanded:bg-muted aria-expanded:text-foreground",
-        // Neutral grey at rest, unlike `secondary`, whose token carries a hue in some
-        // themes. The quiet half of a pair of full-window screen actions.
+        // Neutral grey at rest, unlike `secondary`, whose token carries a hue in some themes.
         muted: "bg-muted text-foreground hover:bg-muted/80",
         destructive:
           "bg-destructive/10 hover:bg-destructive/20 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/20 text-destructive focus-visible:border-destructive/40 dark:hover:bg-destructive/30",
@@ -39,9 +38,7 @@ export const buttonVariants = cva(
         "icon-xs": "size-6 [&_svg:not([class*='size-'])]:size-3",
         "icon-sm": "size-8",
         "icon-lg": "size-10",
-        // Full-window screen actions (startup, update): taller than `lg`, and squared
-        // off rather than pill-shaped, so they read as page-level rather than in-line.
-        // Height is left to the padding, so the label sets it.
+        // Full-window screen actions: taller than `lg`, squared off, height set by padding.
         hero: "h-auto rounded-lg px-5 py-2.5",
       },
     },

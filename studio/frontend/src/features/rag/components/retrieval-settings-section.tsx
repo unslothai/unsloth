@@ -74,7 +74,6 @@ function SliderRow({
   );
 }
 
-// Retrieval settings; the source itself is picked from the composer dropdown.
 export function RetrievalSettingsSection() {
   const ragMode = useChatRuntimeStore((s) => s.ragMode);
   const setRagMode = useChatRuntimeStore((s) => s.setRagMode);

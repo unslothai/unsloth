@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The reference picker used to read ANY file the MIME check let through straight to a base64 data
- * URL. The backend caps the base64 STRING (96 MiB for a reference video, 32 MiB for its
- * soundtrack), so the raw file limits are three quarters of those, and a data URL costs about
- * 2.33x the file in renderer memory before the 422 can arrive. H3 reference clips are 2 to 15
- * seconds by spec, so a 15 second 4K phone clip clears the cap routinely.
- */
+/** The backend caps the base64 STRING (96 MiB video, 32 MiB soundtrack), so the raw file
+ * limits are below three quarters of those. */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -18,7 +13,6 @@ import {
   referenceFileRejection,
 } from "../src/features/video/reference-budget.ts";
 
-/** A File stub: readReferenceFile only ever reads .type, .size and hands the object on. */
 function fileStub(type: string, size: number): File {
   return { type, size, name: "clip.mp4" } as unknown as File;
 }
@@ -47,20 +41,15 @@ function withFileReaderSpy<T>(run: (constructed: () => number) => T): T {
 }
 
 test("a file at the cap still encodes to a data URL the backend accepts", () => {
-  // models/inference.py bounds the STRING, not the file: 96 MiB for the video field and 32 MiB
-  // for the soundtrack. FileReader emits `data:<mime>;base64,` plus 4 characters per 3 bytes, so
-  // a raw cap of exactly three quarters encodes to exactly the limit and the prefix puts it over.
-  // The picker accepted such a file and request validation then rejected it.
+  // A raw cap of exactly 3/4 encodes to exactly the limit, and the data-URL prefix tips it over.
   const caps = { video: 96 * 1024 * 1024, audio: 32 * 1024 * 1024 } as const;
   for (const kind of ["video", "audio"] as const) {
     const raw = MAX_REFERENCE_BYTES[kind];
-    // One of the longer MIME strings the OS can report, not the friendly mp4 case.
     const prefix = `data:${kind}/x-matroska;base64,`.length;
     assert.ok(
       Math.ceil(raw / 3) * 4 + prefix <= caps[kind],
       `${kind}: ${Math.ceil(raw / 3) * 4 + prefix} exceeds ${caps[kind]}`,
     );
-    // Three quarters exactly would have failed that, so this is the assertion that moved.
     assert.ok(Math.ceil((caps[kind] * 3) / 4 / 3) * 4 + prefix > caps[kind]);
   }
 });
@@ -81,14 +70,11 @@ test("an oversized reference is refused before a FileReader ever exists", () => 
     });
 
     assert.equal(constructed(), 0, "the file must not be read into memory at all");
-    // Length rather than deepEqual against []: node's deepEqual is an assertion
-    // signature, so comparing to an empty literal narrows loaded to never[] and
-    // the audio push below stops typechecking.
+    // deepEqual against [] narrows loaded to never[] and breaks the push below.
     assert.equal(loaded.length, 0);
     assert.equal(errors.length, 1);
     assert.match(errors[0], /too large \(limit 72 MB\)/);
 
-    // The soundtrack slot carries its own, smaller cap.
     errors.length = 0;
     readReferenceFile("audio", fileStub("audio/wav", MAX_REFERENCE_BYTES.audio + 1), {
       onLoaded: (dataUrl) => loaded.push(dataUrl),

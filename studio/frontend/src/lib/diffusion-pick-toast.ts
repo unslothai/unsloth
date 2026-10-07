@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One toast per Hub pick, from planning through download to model loading.
+// One toast per Hub pick, from planning through download to loading.
 
 import { toast } from "@/lib/toast";
 
@@ -12,7 +12,6 @@ export interface PickToastProgress {
   totalBytes: number;
 }
 
-/** Progress tagged with the plan ID returned by `stage()`. */
 export interface StagedPlanProgress extends PickToastProgress {
   plan: number;
 }
@@ -23,17 +22,12 @@ export interface PickToastOptions {
 }
 
 export interface PickToast {
-  /** Replace the current toast with a new pick. */
   show: () => string;
-  /** Dismiss only if `id` still owns the toast. */
   dismiss: (id: string | undefined) => void;
-  /** Dismiss the current pick toast. */
   dismissAll: () => void;
-  /** Bind download progress to `plan`; other phases clear that binding. */
   setPhase: (id: string | undefined, phase: PickToastPhase, plan?: number) => void;
-  /** Update progress only for the bound download plan. */
   progress: (progress: StagedPlanProgress | null) => void;
-  /** Transfer ownership to the load; return undefined if the toast is gone. */
+  /** undefined if the toast is gone. */
   take: (id: string | undefined) => string | undefined;
 }
 
@@ -89,7 +83,6 @@ export function createPickToast({ describe, classNames }: PickToastOptions): Pic
       render();
     },
     progress: (progress) => {
-      // Ignore progress from unrelated download-only plans.
       if (!progress || live?.phase !== "downloading" || live.plan !== progress.plan) return;
       if (
         live.progress?.downloadedBytes === progress.downloadedBytes &&

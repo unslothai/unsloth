@@ -6,8 +6,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// Asserted against the source like the other chat-adapter tests: importing the
-// module would drag in the stores and the toast layer for one catch block.
+// Read as source: importing would drag in the stores and the toast layer.
 const source = readSrc("features/chat/api/chat-adapter.ts");
 
 // Hoisted: biome's useTopLevelRegex flags a literal recompiled per call.
@@ -16,10 +15,6 @@ const TOAST_BRANCH =
 const FROM_THE_ERROR = /description:\s*\n?\s*msg \|\|/;
 const THE_ERROR_CLASS = /class GenerationLengthError/;
 const CAP_REMEDY = /Increase Max Tokens or disable thinking/;
-// Retargeted. The old wording claimed Max Tokens was "already unlimited", which is
-// only true for one of the two cases that reach this branch: a finite cap the prompt
-// left no room for lands here too, and telling that user their cap is unlimited
-// contradicts the number in their own Settings.
 const WINDOW_REMEDY = /cannot create room the window does not have/;
 const NO_UNLIMITED_CLAIM = /already unlimited/;
 const WINDOW_SETTING = /Length in Model settings/;
@@ -28,19 +23,12 @@ const HIDDEN_WINDOW_REMEDY =
 const BOTH_REMEDIES = /Max Tokens or its context window before answering/;
 
 test("the toast repeats the advice the error chose, not the Max Tokens advice", () => {
-  // GenerationLengthError already decides between the Max Tokens and the Context
-  // Length remedy, from the cap and the prompt size. The toast hardcoded the Max
-  // Tokens wording, which overrode that decision in the one place the user reads:
-  // on a prompt that left no room, it sent them to raise a setting already at its
-  // maximum, while the message body two lines away said the opposite.
   const branch = TOAST_BRANCH.exec(source);
   assert.ok(branch, "the GenerationLengthError toast branch moved");
   assert.match(branch[0], FROM_THE_ERROR);
 });
 
 test("the two remedies really are different text, so passing it through matters", () => {
-  // Read rather than imported, as tests/padded-response.test.ts reads it: importing
-  // chat-api pulls in the asset graph for two string literals.
   const chatApi = readSrc("features/chat/api/chat-api.ts");
 
   assert.match(chatApi, THE_ERROR_CLASS);
@@ -48,7 +36,6 @@ test("the two remedies really are different text, so passing it through matters"
   assert.match(chatApi, WINDOW_REMEDY);
   assert.match(chatApi, WINDOW_SETTING);
   assert.doesNotMatch(chatApi, NO_UNLIMITED_CLAIM);
-  // External windows need different advice.
   assert.match(chatApi, HIDDEN_WINDOW_REMEDY);
   assert.match(chatApi, BOTH_REMEDIES);
 });

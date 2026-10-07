@@ -35,17 +35,14 @@ test("Speak eject unloads the live main model and cancels stale auto-load", () =
 });
 
 test("Speak eject asks about running chats before tearing anything down", () => {
-  // Unforced, the backend refused with a 409 the page could only print as a toast.
   assert.match(
     source,
     /const activeModel = status\?\.active_model;[\s\S]*confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*\)/,
   );
-  // Declining leaves the page as it was: the staged download dies only past the check.
   assert.match(
     source,
     /if \(!stopDecision\.proceed\) \{\s*setBusy\(null\);\s*return;\s*\}\s*\n\s*\/\/ An old managed completion[\s\S]*invalidatePendingStagedTts\(\);/,
   );
-  // Queues would otherwise start a fresh run on the model this eject removes.
   assert.match(
     source,
     /cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*await unloadModel/,
@@ -57,12 +54,10 @@ test("a Speak load asks the same question and forces from the answer", () => {
     source,
     /const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
   );
-  // The slot is claimed before the await, so a routed pick arriving mid-dialog queues.
   assert.match(
     source,
     /if \(ttsLoadInFlight\.current \|\| busyRef\.current === "generating"\) \{\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*isGguf,\s*\};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
   );
-  // Declining releases the slot and drops the queued pick, which would else re-ask.
   assert.match(
     source,
     /if \(!stopDecision\.proceed\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;[\s\S]*?pendingRoutedTtsPick\.current = null;\s*return;\s*\}/,
@@ -74,10 +69,7 @@ test("a Speak load asks the same question and forces from the answer", () => {
 });
 
 test("a Speak load stops local queues only once /load is going out", () => {
-  // loadModel prepares the stored HF token first and returns without sending when the
-  // token is invalid and the user picks replace or dismisses the warning. Cancelling
-  // before that call discarded accepted sends and queued prompts for a swap that never
-  // happened, leaving the old model resident and the work gone.
+  // loadModel can return without sending (invalid HF token), so cancelling before it loses work.
   assert.match(
     source,
     /onRequestStart: \(\) => \{\s*pending\.requestStarted = true;[\s\S]{0,700}?cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*\},/,
@@ -89,19 +81,14 @@ test("a Speak load stops local queues only once /load is going out", () => {
 });
 
 test("a model swap holds Chat's lifecycle gate across the question", () => {
-  // Without the gate a queue can materialize while the dialog is open, so it is missing
-  // from the snapshot the answer was given for: the eject's blanket queue stop then hits
-  // work nobody confirmed stopping, and a load started in that window 409s again.
   assert.match(
     source,
     /ttsLoadInFlight\.current = true;[\s\S]{0,400}?const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);\s*if \(lifecycleLease === null\) \{[\s\S]*?return;\s*\}[\s\S]{0,200}?const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
   );
-  // Released before the queued replay, which needs the gate for its own attempt.
   assert.match(
     source,
     /if \(activeRef\.current\) await refreshStatus\(\);\s*ttsLoadInFlight\.current = false;[\s\S]{0,120}?releaseLifecycle\(\);[\s\S]*?replayQueuedTtsPick\(\);/,
   );
-  // Eject takes it before it goes busy, so it is held across its own question too.
   assert.match(
     source,
     /const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);[\s\S]{0,300}?setBusy\("unloading"\);[\s\S]{0,400}?confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",/,
@@ -113,13 +100,10 @@ test("a model swap holds Chat's lifecycle gate across the question", () => {
 });
 
 test("a load confirmed after Audio is hidden is deferred, not sent", () => {
-  // pendingTtsLoad is still null while the dialog is open, so the deactivation effect has
-  // nothing to abort. Sending anyway let a hidden page replace the visible page's model.
   assert.match(
     source,
     /if \(!activeRef\.current\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;\s*pendingRoutedTtsPick\.current = \{\s*repoId,\s*ggufFilename,\s*loadId,\s*audioType,\s*remoteCodeApproval,\s*isGguf,\s*\};\s*return;\s*\}/,
   );
-  // The activation effect replays exactly that queue, so the pick is not lost.
   assert.match(
     source,
     /if \(!active\) \{[\s\S]*?\n    \}\s*\n\s*\/\/[\s\S]*?replayQueuedTtsPick\(\);/,
@@ -131,8 +115,6 @@ test("Transcribe eject only unloads a sidecar owned by the current selection", (
     source,
     /const handleEject[\s\S]*?if \(mode === "transcribe"\)/,
   );
-  // One release path, shared with the Generate-mode transition, so both stay owned.
-  // The selection is forgotten only after the unload lands, so a 500 leaves Eject usable.
   assert.match(
     source,
     /const releaseTranscribeSelection = useCallback\([\s\S]*await unloadSttModel\(sttEngineForRepoId\(selected\), claim\);\s*forget\(\);\s*await refreshSttStatus\(\)/,
@@ -156,11 +138,7 @@ test("Transcribe eject only unloads a sidecar owned by the current selection", (
 });
 
 test("leaving Transcribe releases the sidecar it loaded", () => {
-  // Holding it through Generate doubled VRAM for the whole keep-alive window (PR 7984 report).
-  // Anchored inside transitionMode: an unanchored [\s\S]* matched handleEject instead, so
-  // deleting the release from the mode switch still passed.
-  // The release is now captured rather than fire-and-forget, so a following TTS load can
-  // wait behind the teardown instead of allocating alongside it.
+  // Anchored inside transitionMode: an unanchored [\s\S]* matched handleEject instead.
   assert.match(
     source,
     /setMode\(nextMode\);[\s\S]*?if \(mode === "transcribe"\) \{[\s\S]*?const release = releaseTranscribeSelection\(\)\.then\(/,
@@ -168,8 +146,6 @@ test("leaving Transcribe releases the sidecar it loaded", () => {
   assert.match(source, /pendingTranscribeRelease\.current = release;/);
   assert.match(
     source,
-    // The release resolves to whether the sidecar is gone. A failure must not hand off to
-    // a speech load on top of a still-resident dictation model.
     /const releaseInFlight = pendingTranscribeRelease\.current;[\s\S]*?if \(releaseInFlight && !\(await releaseInFlight\)\) \{\s*setMode\("transcribe"\);\s*return;/,
   );
 });
@@ -203,8 +179,6 @@ test("a dictation model this page did not load survives a mode switch", () => {
 });
 
 test("the eject unload names the model this page claimed", () => {
-  // `owned` is decided locally, so another surface can switch the same engine before the
-  // request lands; an unscoped unload then tore down a model this page never owned.
   assert.match(
     source,
     /await unloadSttModel\(sttEngineForRepoId\(selected\), claim\);/,

@@ -374,7 +374,6 @@ test("a native drop into a knowledge base chat offers to add the files to that k
   assert.deepEqual(app.errors, []);
   assert.equal(kbDialog(app.tree)!.props.open, false);
 
-  // Names the file and the knowledge base, and stays while the dropped paths are readable.
   assert.equal(app.toasts.length, 1);
   const [{ title, data }] = app.toasts;
   assert.equal(title, 'Add "report.docx" to "Product docs"?');
@@ -428,9 +427,7 @@ test("the knowledge base chip opens that knowledge base without uploading anythi
 });
 
 test("an open dialog keeps its place when deleting the active knowledge base moves the source", () => {
-  // React keeps an instance only at the same type and position. Deleting the active KB
-  // inside the dialog switches the chat to its own files, and a dialog that moved in the
-  // tree would remount, replaying its animation and dropping its state.
+  // React keeps an instance only at the same type and position; moving the dialog would remount it.
   const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
   app.render();
   const chip = (app.tree.props.children as StubElement[]).find(

@@ -57,7 +57,6 @@ export const AttachmentViewer: FC<{
   saveAs?: { name: string; contentType: string };
   flush?: boolean;
   extra?: ReactNode;
-  /** The Library's own actions on the attachment, for one it lists. */
   libraryActions?: Omit<MediaViewerActions, "primary" | "onDownload">;
   variant?: "card" | "lightbox";
   gallery?: MediaViewerGallery;

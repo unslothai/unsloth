@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The notice quotes numbers back at the user, so a partial or hostile payload must
-// produce nothing at all rather than something reading "undefined GB".
+// A partial or hostile payload must produce nothing rather than "undefined GB".
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -32,7 +31,6 @@ test("a complete payload parses", () => {
 });
 
 test("absent advice is not an error", () => {
-  // Missing on nearly every load, and the caller passes it through unconditionally.
   for (const empty of [null, undefined, "", 0, false]) {
     assert.equal(parseCarveoutAdvice(empty), null);
   }
@@ -60,7 +58,6 @@ test("non-finite numbers are rejected", () => {
 });
 
 test("a missing or blank message is rejected", () => {
-  // The backend owns the wording; without it there is nothing to render.
   assert.equal(parseCarveoutAdvice({ ...GOOD, message: undefined }), null);
   assert.equal(parseCarveoutAdvice({ ...GOOD, message: "   " }), null);
   assert.equal(parseCarveoutAdvice({ ...GOOD, message: 42 }), null);

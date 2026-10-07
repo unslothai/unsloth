@@ -185,12 +185,10 @@ test("a routed audio-to-audio pick opens Separate", () => {
 
 test("a chat picker handoff opens its page before the load, not only after it succeeds", () => {
   const handoff = readSrc("features/audio/hooks/use-audio-handoff.ts");
-  // The workflow is part of the dedupe key, so the same model sent for another page is handled again.
   assert.match(
     handoff,
     /const key = `\$\{wanted\}\|[^`]*\|\$\{routeSearch\.workflow \?\? ""\}`;/,
   );
-  // Switch, then mark handled, then load: a refused switch leaves the handoff in the URL to retry.
   assert.match(
     handoff,
     /if \(busyRef\.current !== null\) return;[\s\S]*?if \(\s*isAudioWorkflowId\(routedWorkflow\) &&\s*!transitionWorkflow\(routedWorkflow\)\s*\) \{\s*return;\s*\}\s*handledRouteModel\.current = key;\s*handleModelSelect\(wanted,/,
@@ -208,7 +206,6 @@ test("a model deep link without a workflow opens the page its task names before 
     "music",
   );
   assert.equal(audioWorkflowForPick({ id: "some/model" }), null);
-  // Without a task, a music audio type still names Music.
   assert.equal(
     audioWorkflowForPick({ id: "some/model", audioType: "minimax_music3" }),
     "music",

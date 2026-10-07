@@ -16,7 +16,6 @@ export const phaseColors: Record<TrainingPhase, string> = {
   configuring: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
   training:
     "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
-  // Busy, not done: amber like the other working states, never completed green.
   finalizing:
     "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300",
   completed:

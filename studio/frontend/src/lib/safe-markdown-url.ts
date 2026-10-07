@@ -15,8 +15,7 @@ export const safeMarkdownUrl: UrlTransform = (url, key, node) => {
     return defaultUrlTransform(url, key, node);
   }
 
-  // Browsers discard ASCII controls while parsing URLs, so strip them before
-  // rejecting remote schemes and protocol-relative image locations.
+  // Browsers discard ASCII controls while parsing URLs, so strip them before scheme checks.
   const normalized = stripAsciiControls(url).trim();
   const lower = normalized.toLowerCase();
 

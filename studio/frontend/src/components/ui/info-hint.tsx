@@ -11,8 +11,6 @@ import {
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-/** Small "i" affordance that reveals a styled tooltip on hover/focus. The
- *  standard inline help control across the settings UI. */
 export function InfoHint({ children }: { children: ReactNode }) {
   return (
     <Tooltip>

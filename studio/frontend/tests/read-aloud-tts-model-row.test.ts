@@ -27,8 +27,7 @@ test("the row lands on the TTS selector, not the mode Audio was left in", () => 
     source,
     /to: "\/audio",\s*search: \{ task: "text-to-speech" \},/,
   );
-  // Audio ignored a task without a model, so the intent needs handling at the other end:
-  // the task names the page, through the same busy gate as ?workflow=.
+  // Audio ignored a task without a model, so the task names the page via the busy gate.
   assert.match(
     audioSource,
     /const routedWorkflow = audioRouteIntent\(routeSearch\);\s*if \(routedWorkflow === null\) return;/,
@@ -49,7 +48,6 @@ test("custom TTS explains the strict voice default", () => {
 });
 
 test("a studio preview shows the generate wait instead of an idle button", () => {
-  // Stop during the generate wait read as idle, and extra clicks orphaned requests.
   assert.match(
     source,
     /markPreviewing\(true\);\s*setPreparingPreview\(true\);\s*try \{\s*const generate =[\s\S]*?const url = await generate\(/,

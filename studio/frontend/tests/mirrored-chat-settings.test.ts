@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chat toggles used to live only in localStorage, so a second browser or a
-// remote session started from defaults. They now round-trip through
-// /api/chat/settings, and the backend payload is extra="forbid" with literal
-// and range constraints: one out-of-contract field 400s the whole save. These
-// pin what the client is allowed to send and what it accepts back.
+// The backend payload is extra="forbid", so one out-of-contract field 400s the save.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -114,8 +110,7 @@ test("non-string domains are stripped from the research policy", () => {
   );
 });
 
-// Storage predating the three-way control holds the old booleans. Backfilling one
-// raw would send a value the backend rejects, so the preference never carries.
+// Legacy storage holds old booleans the backend rejects, so they must be migrated.
 test("a legacy RAG auto-inject boolean is migrated before it is sent", () => {
   assert.equal(normalizeStoredRagAutoInject("false"), "off");
   assert.equal(normalizeStoredRagAutoInject("true"), "auto");
@@ -125,8 +120,7 @@ test("a legacy RAG auto-inject boolean is migrated before it is sent", () => {
   assert.equal(normalizeStoredRagAutoInject("nonsense"), "auto");
 });
 
-// The legacy localStorage import runs only against a record with nothing in it,
-// so a server record holding just the mirrored toggles must not read as empty.
+// The legacy import only runs on an empty record, so mirrored toggles must not read as empty.
 test("a record holding only mirrored settings is not empty", () => {
   assert.equal(hasNoMirroredSettings({}), true);
   assert.equal(hasNoMirroredSettings({ autoTitle: true }), true);
@@ -134,8 +128,6 @@ test("a record holding only mirrored settings is not empty", () => {
   assert.equal(hasNoMirroredSettings({ toolsEnabled: false }), false);
 });
 
-// Pinned here rather than through the UI: only the first browser to hydrate resolves the level
-// from storage, so the mapping can be exercised exactly once per installation.
 test("a legacy confirm toggle maps onto the permission level", () => {
   assert.equal(normalizeStoredPermissionMode(null, true), "ask");
   assert.equal(normalizeStoredPermissionMode(null, false), "off");

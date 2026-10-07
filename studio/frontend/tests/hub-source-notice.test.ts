@@ -6,8 +6,7 @@ import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 
-// The claim both saves ModelScope and grants the notice, so anything but an explicit grant
-// shows nothing: a notice on a failed claim would announce a switch that was never saved.
+// Only an explicit grant shows the notice: a failed claim never saved the switch.
 register("./store-stub-resolver.mjs", import.meta.url);
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 const { claimHubSourceNotice } = await import(

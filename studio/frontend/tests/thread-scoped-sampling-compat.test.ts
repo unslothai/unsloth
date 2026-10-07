@@ -1,17 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Rows written by an Unsloth without per-chat sampling, rows written by one that has more of
-// it than this build, and the values at the edges of what the sanitizer accepts. Every chat
-// in an existing installation is the first case: the snapshot is re-read through
-// sanitizeThreadScopedSettings on every open, and anything it drops is a setting the user
-// watched themselves choose.
-//
-// The falsy set is the one to watch: temperature 0, minP 0, topP 0, topK -1 and an empty
-// prompt are deliberate choices and all falsy or negative, so a `||` where a `??` belongs,
-// or an `if (value)` guard, silently reverts them. ?? only defers for null and undefined,
-// which is why the store's fallbacks have to use it:
-// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/Nullish_coalescing
+// Snapshots are re-sanitised on every open. Falsy values (temperature 0, topK -1, empty
+// prompt) are deliberate, so fallbacks must use ?? not || or truthiness guards.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -62,7 +53,6 @@ const INSTALLATION = {
   systemVariables: "scope=installation",
 };
 
-/** A row exactly as an Unsloth from before per-chat sampling would have left it. */
 const LEGACY_ROW = {
   reasoningEnabled: false,
   reasoningEffort: "low",
@@ -84,7 +74,6 @@ const LEGACY_ROW = {
 
 let scenario = 0;
 
-/** A store, its two sinks, and the pairing sequence the provider drives. */
 async function world(rows: Record<string, Record<string, unknown>> = {}) {
   scenario += 1;
   settingsHttp.settings = { inferenceParams: { ...INSTALLATION } };
@@ -125,10 +114,7 @@ async function world(rows: Record<string, Record<string, unknown>> = {}) {
   };
 }
 
-// Wait out the debounced write each case asserts on. The wait is on the store's own
-// outstanding timers and on the module loader, not on a round count: three rounds passed on
-// a dev box's node 24 and failed on the node 22 CI pins, and every count picked since has
-// been a guess that fails silently in one direction. See tests/helpers/mock-timer-drain.ts.
+// Drain the store's own timers, not a fixed round count; see tests/helpers/mock-timer-drain.ts.
 async function settle(
   mod: { awaitStartedThreadScopedSettingsWrites: () => Promise<void> },
   tick: (ms: number) => void,
@@ -156,10 +142,6 @@ function assertUsable(sampling: Record<string, unknown>, where: string): void {
   }
 }
 
-// ---------------------------------------------------------------------------
-// C1 -- a row from before any of this existed
-// ---------------------------------------------------------------------------
-
 test("C1: a legacy row opens on the installation sampling, and nothing is zeroed", async (t) => {
   enableCountedTimers(t);
   const w = await world({ L: { ...LEGACY_ROW } });
@@ -169,21 +151,15 @@ test("C1: a legacy row opens on the installation sampling, and nothing is zeroed
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
   assertUsable(w.sampling(), "legacy open");
-  // the installation's values, since the row says nothing about sampling
   assert.deepEqual(w.sampling(), INSTALLATION);
-  // and everything the row DID say is applied
   assert.equal(w.store().ragTopK, 7);
   assert.equal(w.store().permissionMode, "off");
   assert.equal(w.store().reasoningEnabled, false);
   assert.equal(w.store().toolsEnabled, true);
-  // the row is left as it was: a chat that already has a snapshot is not re-pinned,
-  // so an old Unsloth reading it back still finds only the keys it knows.
   assert.deepEqual(threadRows.rows.get("L"), LEGACY_ROW);
 });
 
-// The behaviour a live review item asks about, reported as observed, not as desired: a
-// legacy chat stored no sampling, so it follows the installation defaults and a model load
-// moves those. Nothing chosen is lost, but the second visit shows different numbers.
+// Records observed behaviour: a legacy chat follows installation defaults a load moves.
 test("C1b: a legacy chat follows the installation defaults, which a model load moves", async (t) => {
   enableCountedTimers(t);
   const w = await world({ L: { ...LEGACY_ROW } });
@@ -193,7 +169,6 @@ test("C1b: a legacy chat follows the installation defaults, which a model load m
   const onFirstVisit = w.sampling();
   assert.equal(onFirstVisit.temperature, INSTALLATION.temperature);
 
-  // a different model loads, publishing its own recommendation
   w.store().setParams(
     {
       ...w.store().params,
@@ -204,7 +179,6 @@ test("C1b: a legacy chat follows the installation defaults, which a model load m
     { fromModelDefaults: true },
   );
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
-  // the chat pinned nothing, so it takes the model's values, as it did before this
   assert.equal(w.store().params.temperature, 0.31);
 
   w.open("Z");
@@ -212,11 +186,8 @@ test("C1b: a legacy chat follows the installation defaults, which a model load m
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   const onSecondVisit = w.sampling();
   assertUsable(onSecondVisit, "legacy reopen");
-  // OBSERVED: the reopened legacy chat shows the model's sampling. It stored none, so the
-  // fallback is the installation default, and the load moved that.
   assert.equal(onSecondVisit.temperature, 0.31);
   assert.notEqual(onSecondVisit.temperature, onFirstVisit.temperature);
-  // and it is still not carrying any sampling of its own
   assert.deepEqual(threadRows.rows.get("L"), LEGACY_ROW);
 });
 
@@ -228,19 +199,16 @@ test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just t
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  // The write for a chat that already had a snapshot is a full replacement built from the
-  // store, so all seven other keys are pinned too and the chat stops drifting.
+  // The write is a full replacement from the store, so all keys get pinned.
   const row = threadRows.rows.get("L") as Record<string, unknown>;
   assert.equal(row.temperature, 1.37);
   for (const key of SAMPLING_KEYS) {
     assert.notEqual(row[key], undefined, `${key} was not pinned`);
   }
-  // the legacy keys survive the replacement
   assert.equal(row.ragTopK, 7);
   assert.equal(row.permissionMode, "off");
   assert.deepEqual(row.ragSource, { type: "kb", kbId: "notes" });
 
-  // and a model load no longer moves it
   w.store().setParams(
     {
       ...w.store().params,
@@ -253,10 +221,6 @@ test("C1c: a legacy chat that the user then edits pins the WHOLE set, not just t
   assert.equal(w.store().params.temperature, 1.37);
 });
 
-// ---------------------------------------------------------------------------
-// C2 -- nothing at all
-// ---------------------------------------------------------------------------
-
 test("C2: an empty, null or absent snapshot opens on the installation settings", async (t) => {
   enableCountedTimers(t);
   for (const snapshot of [null, {}, undefined]) {
@@ -267,8 +231,6 @@ test("C2: an empty, null or absent snapshot opens on the installation settings",
     const where = `snapshot ${JSON.stringify(snapshot ?? null)}`;
     assertUsable(w.sampling(), where);
     assert.deepEqual(w.sampling(), INSTALLATION, where);
-    // a chat with nothing stored pins what it opened on, so later default changes
-    // cannot rewrite what it runs with
     const row = threadRows.rows.get("E") as Record<string, unknown>;
     for (const key of SAMPLING_KEYS) {
       assert.equal(
@@ -284,7 +246,6 @@ test("C2b: hasThreadScopedSettings tells an empty snapshot from a falsy one", ()
   assert.equal(hasThreadScopedSettings(null), false);
   assert.equal(hasThreadScopedSettings(undefined), false);
   assert.equal(hasThreadScopedSettings({}), false);
-  // every one of these IS a snapshot, however falsy the value
   assert.equal(hasThreadScopedSettings({ temperature: 0 }), true);
   assert.equal(hasThreadScopedSettings({ topP: 0 }), true);
   assert.equal(hasThreadScopedSettings({ minP: 0 }), true);
@@ -293,15 +254,10 @@ test("C2b: hasThreadScopedSettings tells an empty snapshot from a falsy one", ()
   assert.equal(hasThreadScopedSettings({ systemVariables: "" }), true);
 });
 
-// ---------------------------------------------------------------------------
-// C3 -- a row from an Unsloth newer or stranger than this one
-// ---------------------------------------------------------------------------
-
 test("C3: unknown future keys are dropped, and the known ones still arrive", () => {
   const settings = sanitizeThreadScopedSettings({
     temperature: 0.42,
     systemPrompt: "kept",
-    // whatever a later build decides to store per chat
     samplerOrder: ["min_p", "temperature"],
     dryMultiplier: 0.8,
     xtcThreshold: 0.1,
@@ -363,8 +319,7 @@ test("C3c: the sanitizer never throws, whatever it is handed", () => {
     try {
       settings = sanitizeThreadScopedSettings(value) as Record<string, unknown>;
     } catch (error) {
-      // A throwing getter is the only case allowed to propagate, and only because a
-      // row is JSON: it cannot carry one. Everything else must be handled.
+      // A throwing getter may propagate only because a JSON row cannot carry one.
       assert.ok(
         value !== null &&
           typeof value === "object" &&
@@ -405,9 +360,7 @@ test("C3d: a NaN or Infinity in a row cannot reach the store", async (t) => {
   assert.deepEqual(w.sampling(), INSTALLATION);
 });
 
-// A model recommendation the sanitizer refuses. Nothing ships one today (Llasa's top_p:
-// 1.2 was brought back to 1.0), but the load path applies a recommendation to the live
-// params unclamped, so a custom model_defaults yaml still reaches this.
+// The load path applies recommendations unclamped, so a custom yaml can exceed the range.
 test("C3e: an out-of-range recommendation never reaches a chat that pinned that key", async (t) => {
   enableCountedTimers(t);
   const w = await world();
@@ -422,8 +375,6 @@ test("C3e: an out-of-range recommendation never reaches a chat that pinned that 
   w.store().setParams({ ...w.store().params, temperature: 1.37 });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  // A pinned every key when it opened, so it keeps its own in-range value. Pinning on open
-  // is what makes this safe: an unpinned chat has nothing to put back.
   assert.equal(w.store().params.topP, INSTALLATION.topP);
   const row = threadRows.rows.get("A") as Record<string, unknown>;
   assert.equal(row.topP, INSTALLATION.topP);
@@ -442,19 +393,16 @@ test("C3f: an out-of-range recommendation taken with no chat open cannot be pinn
   const w = await world();
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  // no chat open, so nothing puts an in-range value back
   w.store().setParams(
     { ...w.store().params, topP: 1.2, checkpoint: "unsloth/Llasa-3B" },
     { fromModelDefaults: true },
   );
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
-  // OBSERVED: the live params run it, and it reaches the installation settings, which
-  // have no such bound. Only the per-chat row does.
+  // OBSERVED: installation settings have no such bound; only the per-chat row does.
   assert.equal(w.store().params.topP, 1.2);
   assert.match(JSON.stringify(settingsHttp.puts), /"topP":1\.2/);
 
-  // a chat opened on it pins what it can, omitting topP rather than sending a body the
-  // PATCH would refuse whole, which would cost the chat all seven other keys
+  // Omit topP rather than send a body the PATCH would refuse whole.
   w.open("A");
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   const row = threadRows.rows.get("A") as Record<string, unknown>;
@@ -462,14 +410,9 @@ test("C3f: an out-of-range recommendation taken with no chat open cannot be pinn
   assert.equal(row.temperature, INSTALLATION.temperature);
   assert.equal(row.systemPrompt, INSTALLATION.systemPrompt);
 
-  // so the chat keeps running on 1.2, and on reopen has no stored value for it
   assertUsable(w.sampling(), "out-of-range recommendation, no chat open");
   assert.equal(w.store().params.topP, 1.2);
 });
-
-// ---------------------------------------------------------------------------
-// C4 -- the falsy and negative edges
-// ---------------------------------------------------------------------------
 
 const FALSY_EDGE = {
   temperature: 0,
@@ -484,10 +427,8 @@ const FALSY_EDGE = {
 
 test("C4: the sanitizer keeps every falsy and negative value", () => {
   assert.deepEqual(sanitizeThreadScopedSettings(FALSY_EDGE), FALSY_EDGE);
-  // topK 0 is inside the range too, and distinct from -1
   assert.deepEqual(sanitizeThreadScopedSettings({ topK: 0 }), { topK: 0 });
   assert.deepEqual(sanitizeThreadScopedSettings({ topK: -1 }), { topK: -1 });
-  // and each on its own, so a partial row cannot lose one
   for (const [key, value] of Object.entries(FALSY_EDGE)) {
     assert.deepEqual(
       sanitizeThreadScopedSettings({ [key]: value }),
@@ -507,20 +448,16 @@ test("C4b: a falsy edit round-trips capture -> persist -> restore", async (t) =>
     w.store().setParams({ ...w.store().params, ...edge });
     await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-    // captured onto the chat, whole
     const row = threadRows.rows.get("A") as Record<string, unknown>;
     for (const [key, value] of Object.entries(edge)) {
       assert.equal(row[key], value, `topK ${topK}: ${key} was not stored`);
     }
-    // and not onto the installation
     assert.deepEqual(settingsHttp.puts, [], `topK ${topK}: an edit leaked`);
 
-    // another chat opens on the installation values, untouched by any of it
     w.open("B");
     await settle(w.mod, (ms) => t.mock.timers.tick(ms));
     assert.deepEqual(w.sampling(), INSTALLATION, `topK ${topK}: B inherited A`);
 
-    // and A gets all of it back
     w.open("A");
     await settle(w.mod, (ms) => t.mock.timers.tick(ms));
     assert.deepEqual(
@@ -539,7 +476,6 @@ test("C4c: a falsy pinned value survives a model load and a model switch", async
   w.store().setParams({ ...w.store().params, ...FALSY_EDGE });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
 
-  // a load with a full, non-falsy recommendation
   w.store().setParams(
     {
       ...w.store().params,
@@ -556,7 +492,6 @@ test("C4c: a falsy pinned value survives a model load and a model switch", async
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.deepEqual(w.sampling(), FALSY_EDGE, "the load overwrote a falsy pin");
 
-  // and an external switch, which has no load after it to put anything back
   w.store().setCheckpoint("external::anthropic::claude-opus-5", null);
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.deepEqual(
@@ -565,7 +500,6 @@ test("C4c: a falsy pinned value survives a model load and a model switch", async
     "the switch overwrote a falsy pin",
   );
 
-  // none of it reached the model's memory either
   const byModel = JSON.stringify(w.store().paramsByModel);
   assert.doesNotMatch(byModel, /"topK":-1/);
 });
@@ -574,7 +508,6 @@ test("C4d: an empty system prompt is a choice, not an absent one", async (t) => 
   enableCountedTimers(t);
   const w = await world();
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
-  // A is given a prompt, B is deliberately cleared
   w.open("A");
   w.store().setParams({ ...w.store().params, systemPrompt: "A's prompt" });
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
@@ -598,16 +531,11 @@ test("C4d: an empty system prompt is a choice, not an absent one", async (t) => 
   );
 });
 
-// ---------------------------------------------------------------------------
-// C5 -- a prompt far larger than anything a slider produces
-// ---------------------------------------------------------------------------
-
 test("C5: a one-megabyte system prompt is neither truncated nor fatal", async (t) => {
   enableCountedTimers(t);
   const huge = "x".repeat(1024 * 1024);
   assert.equal(huge.length, 1_048_576);
 
-  // through the sanitizer untouched
   assert.equal(
     sanitizeThreadScopedSettings({ systemPrompt: huge }).systemPrompt,
     huge,
@@ -623,15 +551,12 @@ test("C5: a one-megabyte system prompt is neither truncated nor fatal", async (t
   assert.equal((row.systemPrompt as string).length, huge.length);
   assert.equal(row.systemPrompt, huge);
 
-  // and back again after a visit elsewhere
   w.open("B");
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal(w.store().params.systemPrompt, INSTALLATION.systemPrompt);
   w.open("A");
   await settle(w.mod, (ms) => t.mock.timers.tick(ms));
   assert.equal((w.store().params.systemPrompt as string).length, huge.length);
-  // and it stayed the chat's: a megabyte in the installation payload would be sent
-  // on every settings write for the rest of the session
   assert.doesNotMatch(
     JSON.stringify(settingsHttp.puts).slice(0, 200_000),
     /xxxxxxxxxx/,

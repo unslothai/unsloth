@@ -49,8 +49,7 @@ export function ApiKeysTab() {
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.165, 0.84, 0.44, 1] as const };
 
-  // ../api/api-keys.ts throws generic English errors; use the translated
-  // message so zh-CN users don't see English strings bleed through.
+  // api-keys.ts throws generic English errors; show the translated message.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -184,12 +183,10 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
-      {/* Installation-wide controls: owner-only routes. */}
       {isOwner ? (
         <>
           <KeylessApiAccessSection onSettingsChange={setKeyless} />
 
-          {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
           <RemoteAccessSection />
 
           <LanAccessSection />

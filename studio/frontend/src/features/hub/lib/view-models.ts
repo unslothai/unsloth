@@ -190,7 +190,7 @@ export function toHfModelResult(raw: unknown): HfModelResult | null {
   };
 }
 
-// Must cover every row field buildDiscoverRows reads, or the memoised Discover grid goes stale.
+// Must cover every row field buildDiscoverRows reads, or the memoised grid goes stale.
 export function discoveryInventorySignature(
   cachedRows: readonly CachedInventoryRow[],
   localRows: readonly LocalInventoryRow[],

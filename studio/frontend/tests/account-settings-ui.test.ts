@@ -43,9 +43,7 @@ function translate(key: string, values: Record<string, string> = {}) {
   );
 }
 type TabOptions = {
-  /** Hold the post-mutation account refresh open, the way a slow backend does. */
   stallRefresh?: boolean;
-  /** Replace the fixture rows, for the cases the default two cannot express. */
   accounts?: Record<string, unknown>[];
 };
 function tab(
@@ -154,9 +152,7 @@ function tab(
     "../api/accounts": {
       fetchAccounts: async () => {
         calls.push("list");
-        // The first call is the initial load and always resolves; a stalled run
-        // holds every refresh AFTER it, which is the window in which a one-time
-        // setup code is on screen while `perform` is still busy.
+        // The first call is the initial load; a stall holds only later refreshes.
         if (options.stallRefresh && calls.filter((c) => c === "list").length > 1) {
           await new Promise<void>((resolve) => {
             releaseRefresh = resolve;
@@ -308,7 +304,6 @@ test("desktop password control reaches managed accounts and the owner copy names
     new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
     "utf8",
   );
-  // Web keeps the row for everyone; on desktop only the owner is served by Remote access.
   assert.match(general, /\{isTauri && isOwner \? null : \(/);
   const remote = readFileSync(
     new URL(
@@ -393,10 +388,8 @@ test("accounts show creation dates and username search ignores case and surround
 });
 
 test("a one-time setup code can always be dismissed, even while its refresh is still in flight", async () => {
-  // `perform` stays busy through the account refresh that follows the mutation,
-  // and the code is already on screen by then. Gating dismissal on busy left the
-  // plaintext credential with no exit at all on a slow backend: Done disabled,
-  // Escape swallowed by the same guard, and the dialog has no close button.
+  // `perform` stays busy through the post-mutation refresh while the code is shown, so dismissal
+  // must not be gated on busy.
   const ui = tab(true, null, { stallRefresh: true });
   let tree = await ui.initialize();
   await click(tree, "Create account");
@@ -424,7 +417,6 @@ test("a one-time setup code can always be dismissed, even while its refresh is s
   await tick();
   assert.doesNotMatch(content(ui.render()), /one-time-secret/);
 
-  // Escape and the overlay route through the same handler, so they must work too.
   const ui2 = tab(true, null, { stallRefresh: true });
   let tree2 = await ui2.initialize();
   await click(tree2, "Create account");
@@ -449,10 +441,7 @@ test("a one-time setup code can always be dismissed, even while its refresh is s
 });
 
 test("an account the API reports without a creation date shows a dash, not the epoch", async () => {
-  // created_at is added as a NULLABLE column on upgrade and the backfill skips
-  // rows that already carry an account_id, so the API can answer with null.
-  // `new Date(null)` is the epoch rather than an invalid date, so a bare NaN
-  // check prints a confident "Jan 1, 1970" for an account nobody created then.
+  // created_at can be null after upgrade, and `new Date(null)` is the epoch, not invalid.
   const ui = tab(true, null, {
     accounts: [
       {

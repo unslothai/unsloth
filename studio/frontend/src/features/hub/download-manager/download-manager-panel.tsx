@@ -79,18 +79,13 @@ function canUseDownloadManager(pathname: string): boolean {
   return hasAuthToken() && !mustChangePassword();
 }
 
-/** The repo as a row names it. A package folder of the shared GGUF audio repo is known by its
- *  folder name, as the Hub and the pickers show it; every other id reads as itself. */
 function repoLabel(repoId: string): string {
   return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
 }
 
 function variantSuffix(job: ManagedDownload): string {
   if (job.variant?.startsWith("@")) {
-    // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
-    // can be a curated single .safetensors and companion repos carry .safetensors too, so the
-    // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
-    // which would otherwise change label mid-download after a restart.
+    // Trust the staging page's tag; the extension guess remains for jobs persisted before it.
     const isModelFile =
       job.checkpoint ??
       job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
@@ -242,10 +237,7 @@ export function DownloadManagerPanel({
   return (
     <div
       className={cn(
-        // Standalone: anchor bottom-right. In a shared stack (positioned=false)
-        // flow as a right-aligned row so overlays stack instead of overlapping.
-        // min-h-0 there: a flex item's min-height defaults to auto, so the capped
-        // stack would squeeze the update card instead of this list.
+        // min-h-0: a flex item's min-height defaults to auto, so the capped stack would squeeze the card.
         "pointer-events-none",
         positioned ? "fixed bottom-4 right-4 z-50" : "flex min-h-0 justify-end",
       )}

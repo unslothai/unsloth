@@ -25,7 +25,6 @@ import {
 } from "./api/skills-api";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 
-/** Composer pill for the enabled skills, shown once any is on. Toggles them in place. */
 export function SkillsComposerButton({
   side = "bottom",
 }: {
@@ -37,7 +36,6 @@ export function SkillsComposerButton({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
 
-  // Runnable skills only: shadowed or invalid ones stay in Manage skills.
   const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
   const enabledCount = usable.filter((skill) => skill.enabled).length;
 
@@ -61,7 +59,6 @@ export function SkillsComposerButton({
 
   return (
     <>
-      {/* Stays while open, so turning off the last skill does not close it. */}
       {enabledCount > 0 || menuOpen ? (
         <DropdownMenu
           open={menuOpen}
@@ -105,7 +102,6 @@ export function SkillsComposerButton({
                 <DropdownMenuItem
                   key={`${skill.source}:${skill.name}`}
                   disabled={pending.has(skill.name)}
-                  // Stays open to toggle several.
                   onSelect={(event) => {
                     event.preventDefault();
                     void toggle(skill.name, !skill.enabled);

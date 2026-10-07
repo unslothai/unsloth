@@ -24,7 +24,6 @@ type Scheduled = {
   clearedTimers: number[];
 };
 
-/** Run `body` with the frame and timer schedulers replaced by recording stubs. */
 function withStubbedScheduling(body: (scheduled: Scheduled) => void): void {
   const globals = globalThis as unknown as {
     requestAnimationFrame: (cb: () => void) => number;
@@ -59,7 +58,6 @@ function withStubbedScheduling(body: (scheduled: Scheduled) => void): void {
   }
 }
 
-/** A stream feeding one gate, recording what each publish would carry. */
 function streamThrough(canPublish: (length: number) => boolean) {
   let cumulative = "";
   const published: string[] = [];
@@ -74,7 +72,6 @@ function streamThrough(canPublish: (length: number) => boolean) {
     get cumulative() {
       return cumulative;
     },
-    /** What a stop right now would discard, since only published text survives. */
     get held() {
       return cumulative.length - (published.at(-1)?.length ?? 0);
     },
@@ -101,7 +98,6 @@ test("a burst between frames collapses into one update", () => {
     const stream = streamThrough(createStreamPublishGate());
 
     ["a", "b", "c", "d", "e", "f"].forEach((chunk, index) => {
-      // A frame lands before the fourth chunk.
       if (index === 3) {
         frames.shift()?.();
       }
@@ -109,7 +105,6 @@ test("a burst between frames collapses into one update", () => {
     });
 
     assert.deepEqual(stream.published, ["a", "abcd"]);
-    // Skipped chunks remain accumulated for the next publish.
     assert.equal(stream.cumulative, "abcdef");
   });
 });
@@ -128,7 +123,6 @@ test("a quiet tail waits for another chunk or the caller's final update", () => 
       "reopening alone cannot publish the quiet tail",
     );
 
-    // The next chunk carries everything withheld.
     stream.feed("d");
     assert.deepEqual(stream.published, ["a", "abcd"]);
   });
@@ -189,14 +183,12 @@ test("a frame arriving after the timer already reopened grants nothing extra", (
 
     timers[0]?.run();
     assert.equal(canPublish(2), true);
-    // The frame from the first cycle is late; it must not open the second one.
     frames[0]?.();
     assert.equal(canPublish(3), false);
   });
 });
 
 test("a closed gate publishes rather than hold more than the cap", () => {
-  // No frame and no timer ever fires here, so only the cap can publish again.
   withStubbedScheduling(() => {
     const stream = streamThrough(createStreamPublishGate());
 
@@ -234,7 +226,6 @@ test("a painting window publishes on frames, never on the cap", () => {
   withStubbedScheduling(({ frames }) => {
     const stream = streamThrough(createStreamPublishGate());
 
-    // Two chunks well under the cap per frame is what a painting window looks like.
     for (let frame = 0; frame < 20; frame += 1) {
       stream.feed("x".repeat(30));
       stream.feed("x".repeat(30));
@@ -247,7 +238,6 @@ test("a painting window publishes on frames, never on the cap", () => {
 
 const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
-/** Drop comments, so a commented-out gate cannot satisfy a search. */
 function withoutComments(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -257,24 +247,18 @@ function withoutComments(source: string): string {
       if (at === -1) {
         return line;
       }
-      // Keep a line whose "//" sits inside a string literal, as in "https://".
       const quotes = line.slice(0, at).match(/["'`]/g)?.length ?? 0;
       return quotes % 2 === 1 ? line : line.slice(0, at);
     })
     .join("\n");
 }
 
-/** The adapter between two anchors, without its comments. */
 function regionOf(from: string, to: string, maxChars = 75_000): string {
   const start = ADAPTER.indexOf(from);
   assert.notEqual(start, -1, `"${from}" is gone; this test needs rewriting`);
   const end = ADAPTER.indexOf(to, start);
   assert.notEqual(end, -1, `"${to}" is gone; this test needs rewriting`);
-  // Without this, editing the end anchor's line (even adding a space) silently
-  // slides the region to the next match hundreds of lines away, and the
-  // ordering assertions below go on passing against the wrong slice. A ceiling
-  // on drift, not a budget: raise it when the loop legitimately grows, after
-  // checking the anchors still land where they should.
+  // Bounds anchor drift: an edited end anchor would otherwise slide the region to a later match.
   assert.ok(
     end - start < maxChars,
     `the region from "${from}" to "${to}" is ${end - start} chars; ` +
@@ -289,15 +273,7 @@ test("the gate paces the publish, not the bookkeeping before it", () => {
     "} catch (streamError) {",
   );
 
-  // The whole shape of this change. Everything that interprets the stream --
-  // the content rebuild and the reasoning tracker -- runs on EVERY arrival, and
-  // only the yield to assistant-ui is coalesced. Pacing the interpretation too
-  // is what dragged reasoning timing, split tags, server summaries and replay
-  // metadata into a change that is about paint cost.
-  // The append goes through `appendCumulative`, which is what keeps the
-  // delta-fed think tracker, placeholder watch and incremental parse in step
-  // with the reply. What this test cares about is unchanged: it happens in the
-  // loop, on every arrival, before the rebuild reads it.
+  // Only the yield to assistant-ui is coalesced; stream interpretation runs on every arrival.
   const append = loop.indexOf("appendCumulative(delta)");
   const rebuild = loop.indexOf(
     "const assistantContent = liveAssistantContent()",
@@ -334,11 +310,6 @@ test("the gate paces the publish, not the bookkeeping before it", () => {
 });
 
 test("pacing cannot change a reasoning duration", () => {
-  // The property the placement buys, stated directly: run the loop's
-  // interpretation over a set of arrivals, publish on every one, then publish
-  // on only the last, and require identical durations. Under the old placement
-  // each of these cases measured differently depending on which arrivals the
-  // gate let through, and each one cost a review round.
   const hasUnclosed = (text: string) =>
     text.lastIndexOf("<think>") > text.lastIndexOf("</think>");
 
@@ -354,7 +325,6 @@ test("pacing cannot change a reasoning duration", () => {
     arrivals.forEach(([at, delta], index) => {
       clock = at;
       cumulative += delta;
-      // Everything here is what the loop does before it consults the gate.
       const content = parseAssistantContent(cumulative);
       const groups = countReasoningGroups(content);
       if (groups > tracker.groupCount) {
@@ -418,9 +388,6 @@ test("pacing cannot change a reasoning duration", () => {
 test("no gate timestamp is threaded through the reasoning tracker", () => {
   const source = withoutComments(ADAPTER);
 
-  // The tracker sees every arrival, so it never has to be told when something
-  // it missed happened. These are the names the deferred-parse design needed;
-  // if any comes back, the coalescing has leaked into the bookkeeping again.
   for (const leaked of [
     "gateHeldSince",
     "gateReasoningEndedAt",
@@ -433,7 +400,6 @@ test("no gate timestamp is threaded through the reasoning tracker", () => {
     );
   }
 
-  // And the tracker's own API stays free of the back-dating arguments.
   assert.ok(
     source.includes("reasoningDurationTracker.finishGroup()"),
     "finishGroup is being given a timestamp again",
@@ -459,9 +425,6 @@ test("the live tool-argument preview shares the gate", () => {
   const preview = regionOf(
     'if (toolEvent.type === "tool_args") {',
     "\n                closeReasoningContent();",
-    // This branch is short. Bounding it keeps a whitespace edit to the end
-    // anchor's line from sliding the region hundreds of lines down and leaving
-    // the ordering assertions below to pass against the wrong slice.
     6_000,
   );
 
@@ -470,8 +433,7 @@ test("the live tool-argument preview shares the gate", () => {
   const rebuild = preview.indexOf("content: liveAssistantContent()");
   assert.ok(rebuild > gate, "the gate must precede the message rebuild");
 
-  // Argument deltas never reach cumulativeText, so without this the cap can
-  // never fire on a turn that is only streaming a tool call's arguments.
+  // Argument deltas never reach cumulativeText, so without this the cap never fires on them.
   const count = preview.indexOf("streamedChars += fragment.length;");
   assert.ok(
     count !== -1 && count < gate,
@@ -482,8 +444,6 @@ test("the live tool-argument preview shares the gate", () => {
 test("the gate is fed a counter that only grows", () => {
   const source = withoutComments(ADAPTER);
 
-  // cumulativeText shrinks when the ${...} strip fires, which would let a closed
-  // gate hold the removed length on top of the cap before publishing again.
   assert.equal(
     source.indexOf("canPublish(cumulativeText"),
     -1,
@@ -504,21 +464,15 @@ test("streaming tool-call argument deltas are paced like the text path", () => {
     "} catch (streamError) {",
   );
 
-  // Both branches of the OpenAI delta.tool_calls accumulator feed the counter,
-  // so a turn that only streams a call's arguments is still capped.
   const count = loop.indexOf(
     "streamedChars +=\n                    argsFragment.length",
   );
   assert.notEqual(count, -1, "tool-call argument deltas are not counted");
 
-  // Tolerant of extra forcing conditions (replay state), intolerant of the
-  // gate call going away.
   const gate = loop.search(/addedToolCall \|\|[\s\S]{0,80}?canPublish\(streamedChars\)/);
   assert.notEqual(gate, -1, "the tool-call delta publish is not gated");
   assert.ok(gate > count, "the fragment must be counted before the gate");
 
-  // A fragment that introduces a call must never be coalesced away: that part
-  // is state an aborted turn would otherwise lose.
   assert.ok(
     loop.includes("addedToolCall = true;"),
     "a newly created tool call no longer forces a publish",
@@ -531,8 +485,6 @@ test("the gate is fed every arrival, not only the tool-call ones", () => {
     "} catch (streamError) {",
   );
 
-  // Without this the cap can never bind on a plain-text reply, which silently
-  // restores the unbounded stop loss the cap exists to prevent.
   assert.ok(
     loop.includes("streamedChars += reasoning.length + delta.length;"),
     "text and reasoning arrivals are not counted toward the cap",
@@ -544,9 +496,6 @@ test("a cap-forced publish resets the baseline for the next one", () => {
     const canPublish = createStreamPublishGate();
     assert.equal(canPublish(0), true, "the first chunk publishes");
 
-    // No frame and no timer ever fire, so only the cap can publish. Each cycle
-    // must measure from the last publish; if the baseline only moved while the
-    // gate was open, the second cycle would publish on every single chunk.
     for (let cycle = 1; cycle <= 4; cycle += 1) {
       const at = cycle * MAX_HELD_CHARS;
       assert.equal(canPublish(at - 1), false, `cycle ${cycle} held below cap`);
@@ -561,10 +510,6 @@ test("the backend tool events publish ungated", () => {
     "} catch (streamError) {",
   );
 
-  // tool_start / tool_end carry the card's state -- name, result, approval,
-  // provenance -- not a preview of it, and they are rare. Pacing them would
-  // let a Stop persist a card that never got its result. Only the per-delta
-  // argument preview above them is paced.
   const preview = loop.indexOf('if (toolEvent.type === "tool_args") {');
   const events = loop.indexOf("const toolProvenance = parseToolProvenance(");
   assert.ok(preview !== -1 && events > preview, "the tool-event branch moved");
@@ -573,7 +518,6 @@ test("the backend tool events publish ungated", () => {
   const previewGate = between.indexOf("if (canPublish(streamedChars)) {");
   assert.notEqual(previewGate, -1, "the argument preview is not paced");
 
-  // Exactly one gate call between the preview and the events: the preview's.
   const gates = between.match(/canPublish\(/g) ?? [];
   assert.equal(
     gates.length,
@@ -581,7 +525,6 @@ test("the backend tool events publish ungated", () => {
     "a state-bearing tool event is being paced along with the preview",
   );
 
-  // And none after them either, up to the publish they share.
   const publish = loop.indexOf("yield {", events);
   const after = loop.slice(events, publish);
   assert.ok(
@@ -596,8 +539,7 @@ test("a state-bearing provider delta is never held by the gate", () => {
     "} catch (streamError) {",
   );
 
-  // A thought signature or reasoning ledger reaches the message only through a
-  // yield, so holding one behind the gate loses it outright on Stop.
+  // Replay state reaches the message only through a yield, so gating it loses it on Stop.
   assert.ok(
     loop.includes("let replayStateChanged = false;"),
     "replay state changes are not tracked",
@@ -612,10 +554,7 @@ test("a content-free replay delta still reaches the message", () => {
     "} catch (streamError) {",
   );
 
-  // Gemini 3 ships a fragment whose only payload is a thoughtSignature, and the
-  // Codex client puts its reasoning ledger on a text-free terminal delta. The
-  // empty-content skip runs before the gate, so forcing a publish at the gate
-  // alone never sees either of them.
+  // Signature-only and text-free terminal deltas hit the empty-content skip before the gate.
   const replaySkip = loop.indexOf(
     "if (replayStateChanged && !delta && !reasoning) {",
   );
@@ -630,31 +569,20 @@ test("a content-free replay delta still reaches the message", () => {
 test("a per-call thought signature forces a publish", () => {
   const source = withoutComments(ADAPTER);
 
-  // Gemini carries the signature on the tool call itself, not only at message
-  // level, and the next turn is rejected outright without it. Updating an
-  // EXISTING call adds no part, so addedToolCall is false and the message-level
-  // latch never sees it; a Stop while the gate holds it persists a turn that
-  // cannot be replayed.
+  // Gemini rejects the next turn without the per-call signature, and updating an existing call
+  // sets no addedToolCall.
   const update = source.indexOf("const prevExtra =");
   assert.notEqual(update, -1, "the existing-call update path is gone");
-  // Wide enough for the parking branch that now sits between the anchor and
-  // the latch: the ambiguous metadata of a repeated name waits rather than
-  // landing on the closed call.
   const window = source.slice(update, update + 1400);
   assert.ok(
     window.includes("replayStateChanged = true"),
     "a changed per-call extra_content does not force a publish",
   );
-  // Read off `incomingExtra`, which merges what the delta carried into what
-  // the card already held rather than replacing it: a signature announced with
-  // the name and metadata arriving with the arguments are different fields of
-  // one call, and dropping either gets the replayed turn rejected.
   assert.ok(
     window.includes("incomingExtra !== undefined"),
     "the latch fires on calls that carry no extra_content at all",
   );
 
-  // And the latch has to be honoured where the tool-call publish is decided.
   const decide = source.indexOf("addedToolCall ||", update);
   assert.ok(
     decide !== -1 &&
@@ -669,11 +597,6 @@ test("a chunk with nothing new to show does not spend a gate cycle", () => {
     "} catch (streamError) {",
   );
 
-  // Two shapes, one guard. The reply can be empty, and the ${...} strip can
-  // return a nonempty reply to exactly its previous length -- the Mistral case.
-  // Either way the publish would be identical to the last one, and asking the
-  // gate would spend the open cycle on it and hold the next real token until a
-  // frame, the timer or the cap.
   const emptied = loop.indexOf("assistantContent.length === 0");
   const unchanged = loop.indexOf(
     "cumulativeText.length === textLenBeforeChunk",
@@ -686,8 +609,6 @@ test("a chunk with nothing new to show does not spend a gate cycle", () => {
     "the skip must come before the gate is asked",
   );
 
-  // Skipping must never swallow a publish that carries replay state. The latch
-  // guards the condition, so look back from it rather than forward.
   const start = loop.lastIndexOf("if (", Math.min(emptied, unchanged));
   const skip = loop.slice(start, gate);
   assert.ok(
@@ -701,9 +622,7 @@ test("a scheduler that calls back synchronously does not throw", () => {
     requestAnimationFrame: (cb: () => void) => number;
   };
   const real = globals.requestAnimationFrame;
-  // No browser does this, but a polyfill or a test double can, and reopen runs
-  // before the handles it cancels would have been assigned. Throwing here would
-  // escape the stream loop and surface as a failed generation.
+  // Polyfills or test doubles may call back synchronously; throwing would fail the generation.
   globals.requestAnimationFrame = (cb) => {
     cb();
     return 1;

@@ -79,9 +79,7 @@ type RecipeStudioState = {
   nextId: number;
   nextY: number;
   fitViewTick: number;
-  // Upload-uid directories whose owning block dropped them; server-side deletion is deferred until
-  // a save no longer references them, so a reload before autosave cannot leave a saved recipe
-  // pointing at deleted files.
+  // Deletion is deferred until a save stops referencing the uid, so a reload cannot orphan files.
   pendingUploadCleanups: string[];
   queueUploadCleanup: (uid: string) => void;
   setSheetOpen: (open: boolean) => void;
@@ -279,9 +277,7 @@ function isModelSemanticEdge(
   );
 }
 
-// Upload uid of a seed block whose server-side directory becomes orphaned
-// when the block drops it. Only uid directories qualify (single owner);
-// legacy node-id directories can be shared by other recipes.
+// Only uid directories qualify; legacy node-id directories can be shared by other recipes.
 function seedUploadCleanupUid(config: NodeConfig | undefined): string | null {
   if (!config || config.kind !== "seed") {
     return null;
@@ -416,8 +412,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
   addSeedNode: (type, position, openDialog = true) => {
     const current = get();
     if (!current.executionLocked) {
-      // The reset below clears the block's upload uid and file list; queue
-      // its server-side directory for deletion after the next save.
       const uid = seedUploadCleanupUid(
         Object.values(current.configs).find((config) => config.kind === "seed"),
       );
@@ -452,7 +446,6 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         hf_split: "",
         hf_path: "",
         hf_token: "",
-        // Blank so buildSeedConfig resolves the endpoint at build time.
         hf_endpoint: "",
         local_file_name: "",
         unstructured_upload_uid:
@@ -744,8 +737,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
       dialogOpen: false,
       sheetView: "root",
       fitViewTick: state.fitViewTick + 1,
-      // Queued cleanups belong to the previous recipe; draining them after
-      // a save of this one could delete files its saved payload still uses.
+      // These belong to the previous recipe; draining after this save could delete files it uses.
       pendingUploadCleanups: [],
     })),
   setAuxNodePosition: (id, position) =>
@@ -804,9 +796,7 @@ export const useRecipeStudioStore = create<RecipeStudioState>((set, get) => ({
         configs = applyRenameToConfigs(configs, oldName, newName);
       }
 
-      // When a provider toggles local/external, keep linked model_config nodes
-      // in sync. applyRenameToConfigs above already propagated any name change,
-      // so providerName here is the post-rename value.
+      // applyRenameToConfigs already ran, so providerName is the post-rename value.
       if (current.kind === "model_provider" && next.kind === "model_provider") {
         const prevIsLocal = current.is_local === true;
         const nextIsLocal = next.is_local === true;

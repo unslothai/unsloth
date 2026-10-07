@@ -27,15 +27,10 @@ import {
 } from "../stores/voice-settings-store";
 import { SttDownloadTrackers } from "./stt-download-trackers";
 
-/**
- * Shows a dictation model download in the shared download panel, and loads the
- * model once it lands. The STT sidecars own the transfer, so progress is
- * polled from their status rather than driven by the hub poll loop.
- */
+/** The STT sidecars own the transfer, so progress is polled from their status. */
 
 const POLL_MS = 750;
-// A download reports nothing for a moment while the worker starts. Without this
-// the first poll would read "not downloading" and call it finished.
+// A starting worker reports nothing at first; without this grace it would read as finished.
 const START_GRACE_MS = 8_000;
 
 const trackers = new SttDownloadTrackers();
@@ -161,8 +156,7 @@ async function poll(
   }
 }
 
-/** Whether a download is already mirrored, so a poller can adopt one that
- * started before this page load without duplicating the row. */
+/** Lets a poller adopt a download started before this page load. */
 export function isTrackingSttDownload(
   model: SttModel,
   engine?: SttEngine,
@@ -170,10 +164,7 @@ export function isTrackingSttDownload(
   return trackers.has(trackerKey(model, engine ?? sttEngineFor(model)));
 }
 
-/**
- * Mirror an already-started download of `model` into the panel. Any other
- * model's download keeps its own row: switching models does not stop it.
- */
+/** Other models' downloads keep their rows: switching models does not stop them. */
 export function trackSttDownload(
   model: SttModel,
   options: {
@@ -186,8 +177,7 @@ export function trackSttDownload(
 ): void {
   const resolvedEngine = options.engine ?? sttEngineFor(model);
   const key = trackerKey(model, resolvedEngine);
-  // Starting/adopting the same transfer from another surface must not reset
-  // its visible progress or replace its poller/completion policy.
+  // Adopting the same transfer must not reset its progress or replace its poller.
   if (trackers.has(key)) {
     if (options.warmSelectedVoiceModelOnComplete !== false)
       warmSelectedVoiceModelOnComplete.set(key, true);
@@ -213,8 +203,7 @@ export function trackSttDownload(
           translate("settings.voice.dictation.sttCancelDownloadFailed"),
           { description: error instanceof Error ? error.message : undefined },
         );
-        // The row is already showing "cancelling" and progress updates never
-        // reset state, so put it back or it stays there for the whole transfer.
+        // The row already shows "cancelling" and progress never resets state, so restore it.
         throw error;
       }
     },

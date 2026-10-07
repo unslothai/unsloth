@@ -12,8 +12,6 @@ import { ColorPickerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 
-/* ------------------------- HSV ↔ hex conversions ------------------------- */
-
 type Hsv = { h: number; s: number; v: number };
 
 function hexToHsv(hex: string): Hsv {
@@ -61,19 +59,12 @@ function isLightColor(hex: string): boolean {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.62;
 }
 
-/* ------------------------------- Component ------------------------------- */
-
 type EyeDropperResult = { sRGBHex: string };
 type EyeDropperConstructor = new () => {
   open: () => Promise<EyeDropperResult>;
 };
 
-/**
- * In-app color picker in a Popover: saturation/value area, hue slider, hex
- * field, and (where supported) a screen eyedropper. Replaces the native
- * <input type="color"> so no OS-level color panel is left dangling when the
- * user clicks away; the popover dismisses like any other popup.
- */
+/** Replaces <input type="color"> so no OS color panel is left dangling on click-away. */
 export function ColorPickerSwatch({
   value,
   onChange,
@@ -89,8 +80,7 @@ export function ColorPickerSwatch({
   const [hexDraft, setHexDraft] = useState(value);
   const areaRef = useRef<HTMLDivElement>(null);
 
-  // Re-seed the picker from the outside value each time it opens (the value
-  // may have changed via reset, palette switch, or remote sync).
+  // Re-seed on open; the value may have changed via reset, palette switch or sync.
   useEffect(() => {
     if (open) {
       setHsv(hexToHsv(value));
@@ -195,8 +185,6 @@ export function ColorPickerSwatch({
               if (e.buttons === 1) moveFromPointer(e);
             }}
             onKeyDown={(e) => {
-              // Arrow keys move the saturation (x) / value (y) selection so the
-              // area is operable without a pointer; Shift takes coarser steps.
               const step = e.shiftKey ? 0.1 : 0.01;
               let next: Hsv | null = null;
               if (e.key === "ArrowLeft")

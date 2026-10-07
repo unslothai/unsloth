@@ -254,10 +254,7 @@ test("a served models.dev catalog outranks the bundled snapshot and feeds the na
 });
 
 test("a served bucket overrides its own models without hiding the rest of the bundled one", async () => {
-  // The browser cache survives an app upgrade and the backend serves an expired disk copy
-  // while offline, so a bucket written by an older release can omit models the newer
-  // bundled snapshot knows. Replacing the namespace wholesale dropped their controls.
-  // DeepSeek, not Ollama: the Ollama branch has a by-name fallback that hides the defect.
+  // A stale browser cache can omit models; DeepSeek avoids Ollama's by-name fallback.
   const { setModelsDevCatalog } = await import("../src/features/chat/model-catalog.ts");
   const bundled = getExternalReasoningCapabilities("deepseek", "deepseek-v4-pro");
   assert.deepEqual([...bundled.reasoningEffortLevels], ["none", "high", "max"]);

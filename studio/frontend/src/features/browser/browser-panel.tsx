@@ -437,8 +437,7 @@ function TabRenameInput({ tab, title }: { tab: BrowserTab; title: string }) {
 const TAB_DRAG_THRESHOLD_PX = 5;
 const TAB_SHIFT_TRANSITION = "transform 160ms cubic-bezier(0.2, 0, 0, 1)";
 
-/** Which way the tab at `position` slides while the one from `slot` is held over `target`: the
- *  tabs it has passed move one place toward where it came from. */
+/** Shift for the tab at `position` while the tab from `slot` is held over `target`. */
 function tabShift(position: number, slot: number, target: number): -1 | 0 | 1 {
   if (slot < target && position > slot && position <= target) return -1;
   if (target < slot && position >= target && position < slot) return 1;
@@ -820,8 +819,7 @@ function AddressBar({
   );
 }
 
-/** Whether `tab` shows its page as fetched: over https, Studio's fetch checks the certificate and
- *  host name, so a page that loaded had a valid one. A native view checks it itself. */
+/** Over https Studio's fetch checks the certificate, so a page that loaded had a valid one. */
 function pageVerified(tab: BrowserTab | undefined): boolean {
   if (!tab) return false;
   const entry = currentEntry(tab);
@@ -832,7 +830,6 @@ function pageVerified(tab: BrowserTab | undefined): boolean {
 
 const LEARN_MORE_URL = "https://support.mozilla.org/kb/how-do-i-tell-if-my-connection-is-secure";
 
-/** The shield at the bar's start: the site panel (connection, Security view, data, settings); a magnifier when there is no site. */
 function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | undefined }) {
   const t = useT();
   const [clearOpen, setClearOpen] = useState(false);

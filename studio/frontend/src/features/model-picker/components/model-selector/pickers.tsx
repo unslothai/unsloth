@@ -293,7 +293,7 @@ function isUnslothRepoId(repoId: string): boolean {
   return repoId.toLowerCase().startsWith("unsloth/");
 }
 
-/** Official publisher namespaces used only for visual On Device grouping. */
+/** Official publisher namespaces, used only for visual On Device grouping. */
 function isUnslothPublisherRepoId(repoId: string): boolean {
   return isUnslothOwner(splitRepoLabel(repoId).owner);
 }
@@ -508,11 +508,9 @@ function ListLabel({
 }
 
 function formatBytes(bytes: number, unitSeparator = ""): string {
-  // Guard non-positive / non-finite sizes so we never render "NaN undefined".
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  // Decimal (base-1000) units to match Hugging Face's reported sizes; the GPU-fit math stays
-  // base-1024. Divide iteratively, not via Math.log, which is off at exact powers of 1000 and could
-  // run off the end of units.
+  // Decimal units to match Hugging Face sizes (GPU-fit math stays base-1024); Math.log is off at
+  // exact powers of 1000.
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
   let value = bytes;
@@ -524,19 +522,16 @@ function formatBytes(bytes: number, unitSeparator = ""): string {
   return `${value.toFixed(value < 10 ? 1 : 0)}${unitSeparator}${units[i]}`;
 }
 
-// Most distinguishing first, since only the first MAX_CAPABILITY_BADGES are drawn: what a
-// model GENERATES separates it from the list, reasoning very little.
+// Most distinguishing first, since only the first MAX_CAPABILITY_BADGES are drawn.
 const CAPABILITY_BADGES: {
   key: keyof ModelCapabilities;
   title: string;
-  /** Glyph colour, one per capability like the vision badge's indigo, so the kinds tell apart at a glance. */
   tone: string;
   Glyph: (props: { className: string }) => ReactNode;
 }[] = [
   {
     key: "videoGen",
     title: "Generates video",
-    // Warm, at the vision indigo's lightness and chroma: amber-300 outshone every other tag.
     tone: "text-[oklch(0.5_0.1_55)] dark:text-[oklch(0.78_0.09_60)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.8} {...props} />
@@ -545,7 +540,6 @@ const CAPABILITY_BADGES: {
   {
     key: "imageGen",
     title: "Generates images",
-    // Pink, as the Hub tags diffusion models.
     tone: "text-pink-700 dark:text-pink-300",
     Glyph: (props) => (
       <HugeiconsIcon icon={Image03Icon} strokeWidth={1.8} {...props} />
@@ -553,11 +547,8 @@ const CAPABILITY_BADGES: {
   },
   {
     key: "audio",
-    // Direction-neutral, unlike the two above: `audio` covers ASR and classification as well as
-    // synthesis, so a Whisper row would claim to generate what it consumes.
+    // Direction-neutral: `audio` covers ASR as well as synthesis.
     title: "Audio",
-    // Teal, not the Hub's rose, which is too close to the image pink at this size; held to the
-    // vision indigo's lightness and chroma, as sky-300 read brighter than the tags beside it.
     tone: "text-[oklch(0.5_0.08_190)] dark:text-[oklch(0.78_0.08_190)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
@@ -565,17 +556,15 @@ const CAPABILITY_BADGES: {
   },
 ];
 
-/** Which capability glyphs are worth drawing in the current picker; null draws them all. A
- *  media picker has already filtered to one kind, so its own kind is not information (Audio
- *  on Video is the exception). Context, not a prop, since it comes from the picker. */
+/** Capability glyphs worth drawing in this picker; null draws all. A media picker's own kind
+ *  is not information. */
 const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | null>(
   null,
 );
 
-// The row reserves a fixed slot for these (META_COLUMN.badge), so the cap is what keeps every column after it lined up.
+// The row reserves a fixed slot (META_COLUMN.badge), so the cap keeps later columns aligned.
 const MAX_CAPABILITY_BADGES = 3;
 
-/** The glyphs this row actually draws, so the caller can size the slot and skip an empty one. */
 function visibleCapabilityBadges(
   caps: ModelCapabilities,
   scope: readonly (keyof ModelCapabilities)[] | null,
@@ -590,7 +579,6 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   return (
     <>
       {visibleCapabilityBadges(caps, scope).map(({ key, title, tone, Glyph }) => (
-        // The vision badge's pill (same height and px-1.5), so every glyph tag in the row is one width.
         <span
           key={key}
           title={title}
@@ -607,7 +595,6 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   );
 }
 
-/** "This model reads images", from the GGUF metadata (On Device rows). */
 function VisionBadge() {
   return (
     <Tooltip delayDuration={0}>
@@ -628,16 +615,13 @@ function VisionBadge() {
 
 function ParamChip({ label }: { label: string }) {
   return (
-    // h-[calc(18px*var(--ui-space-scale,1))], the height every other chip in the row band pins (quant, vision, the disk mark, the
-    // Loaded tag). py-px sized this one by its line box instead, the one height here that scales with
-    // --ui-font-scale, so the row only looked level at the scale where the two happened to cross.
+    // Fixed height like every other chip in the row; py-px scaled with --ui-font-scale instead.
     <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-border px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
       {label}
     </span>
   );
 }
 
-// Format colours: gguf blue, mlx amber, safetensors/checkpoint pink, adapter, npu cyan.
 const FORMAT_TONE_DOT: Record<FormatTone, string> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
@@ -646,13 +630,11 @@ const FORMAT_TONE_DOT: Record<FormatTone, string> = {
   npu: "bg-format-npu",
 };
 
-/** Format as a coloured dot ahead of the name, named on hover: a word like "Safetensors" is
- *  wide enough to shove the rest of the row around. */
+/** Format as a coloured dot, named on hover, since a word would shove the row around. */
 function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild={true}>
-        {/* Hit area, so hovering the dot is not a pixel hunt. */}
         <span
           aria-label={label}
           className="flex size-[calc(14px*var(--ui-space-scale,1))] shrink-0 items-center justify-center"
@@ -670,8 +652,7 @@ function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
   );
 }
 
-/** "Already on disk", shown on Hub rows that are also downloaded: their own download arrow
- *  reads as "click to fetch" on the one row that needs no fetching. */
+/** "Already on disk" for Hub rows, whose download arrow would read as "click to fetch". */
 function DownloadedBadge() {
   return (
     <Tooltip delayDuration={0}>
@@ -693,10 +674,8 @@ function DownloadedBadge() {
   );
 }
 
-/** A cancelled or interrupted download: some bytes on disk, not enough to load. The Hub marks
- *  these with the same warning dot, and the row it sits on selects with isDownloaded: false so
- *  the click opens the download instead of handing incomplete weights to the runtime. Same box
- *  as DownloadedBadge, since the two are alternatives -- a row is complete or it is not. */
+/** An incomplete download; the row selects with isDownloaded: false so the click resumes the
+ *  download instead of loading incomplete weights. */
 function PartialBadge({ resumable }: { resumable?: boolean }) {
   return (
     <Tooltip delayDuration={0}>
@@ -729,39 +708,34 @@ interface FitVerdict {
 const AMBER = "!text-yellow-600 dark:!text-yellow-400";
 const ORANGE = "!text-orange-600 dark:!text-orange-300";
 
-/** Over the VRAM Budget, still smaller than the card. Not conditional: `_vram_usable_mib`
- *  gives `free - reserve`, which on an idle card IS the budget this tier passed, so
- *  `_select_gpus` hands it to --fit every time. Raising the budget is the lever. */
+/** Over the VRAM Budget but under the card: `_select_gpus` hands it to --fit every time. */
 const MIGHT_FIT: FitVerdict = {
   label: "Over budget",
   tone: AMBER,
   hint: "Larger than your VRAM Budget allows, so part of it offloads even on an idle GPU. It is still smaller than the card, so raising the budget can keep it resident.",
 };
-/** Past the card. Every GGUF over budget lands here however far over, since llama-server never
- *  refuses one on size: `_select_gpus` returns `(None, use_fit=True)` and --fit offloads. */
+/** Past the card; llama-server never refuses a GGUF on size, --fit offloads. */
 const OFFLOADS: FitVerdict = {
   label: "Does not fit",
   tone: ORANGE,
   hint: "Model may not fit but still works with offloading. Expect slower inference.",
 };
-/** checkVramFit's 75-100% band, the ONLY source of `tight` here: a torch estimate that still
- *  fits on the card entirely, with no --fit, so it neither spills nor offloads. */
+/** checkVramFit's 75-100% band, the only source of `tight`: fits on the card with no --fit. */
 const DEVICE_TIGHT: FitVerdict = {
   label: "Tight fit",
   tone: AMBER,
   hint: "Uses nearly all your VRAM, with little headroom for anything else.",
 };
-/** A torch load, which has no --fit to fall back on: the pipeline goes wholly on the device. */
+/** A torch load has no --fit: the pipeline goes wholly on the device. */
 const WONT_FIT: FitVerdict = {
   label: "Does not fit",
   tone: ORANGE,
-  // "memory", not "VRAM": this also carries a diffusion refusal on a shared pool, where the two are the same bytes.
+  // "memory", not "VRAM": this also covers diffusion refusals on a shared pool.
   hint: "Needs more memory than this device has. This model will not load.",
 };
 
-/** What each fit verdict marks and says, keyed by the Hub's classes so one question has one
- *  vocabulary. `tight` and `exceeds` are the training estimator's words and reach here only
- *  from a torch pipeline or the QLoRA estimate, which have no --fit and never offload. */
+/** Fit verdict marks keyed by the Hub's classes; `tight`/`exceeds` come only from torch or
+ *  QLoRA estimates, which never offload. */
 const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
   fits: null,
   marginal: MIGHT_FIT,
@@ -776,11 +750,8 @@ const VRAM_VERDICT: Record<GgufFitClass | VramFitStatus, FitVerdict | null> = {
   exceeds: WONT_FIT,
 };
 
-/** Whether a diffusion `oom` is a REFUSAL rather than an offload. On discrete VRAM an oversized
- *  pipeline still streams from host RAM; on a shared pool the loader refuses up front, since
- *  the MPS high-watermark is disabled and the OS kills the process with no exception.
- *  `hostPooled` is the LOAD DEVICE's answer and folds unified_memory in, since hardware.py
- *  sets shared_memory only on Windows while diffusion_memory.py still refuses on Linux APUs. */
+/** On a shared pool a diffusion `oom` is a refusal (MPS high-watermark disabled, OS kills the
+ *  process). `hostPooled` folds in unified_memory since shared_memory is set only on Windows. */
 function diffusionRefuses(
   fit: GgufFitClass,
   diffusionLoad: boolean,
@@ -789,15 +760,12 @@ function diffusionRefuses(
   return fit === "oom" && diffusionLoad && hostPooled;
 }
 
-/** The RAM a DIFFUSION verdict may add to the GPU budget. Zero on a host pool: offload there
- *  moves bytes inside one pool and frees nothing. llama.cpp differs, since a GGUF really
- *  does spill into host RAM the GPU window does not cover. */
+/** Zero on a host pool, where offload frees nothing. llama.cpp differs: GGUFs spill to host RAM. */
 function mediaRamBudgetGb(systemRamGb: number, hostPooled: boolean): number {
   return hostPooled ? 0 : systemRamGb;
 }
 
-/** The verdicts that read as over budget, which is what dims a row. `marginal` does not: it is
- *  a full GPU load with little room to spare. */
+/** `marginal` is not over budget: it is a full GPU load with little room to spare. */
 function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
   return (
     status === "partial" ||
@@ -807,7 +775,6 @@ function isOverBudget(status?: GgufFitClass | VramFitStatus | null): boolean {
   );
 }
 
-/** VRAM verdict: an info mark that names itself on hover, rather than a shouted pill. */
 function VramBadge({
   status,
   /** Model rows hold the mark in the layout and paint it on hover; variant rows always show it. */
@@ -821,8 +788,6 @@ function VramBadge({
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild={true}>
-        {/* The mark sits inside the row/variant button, so a tap meant to read the explanation would
-            otherwise select the model or start its download. */}
         {/* biome-ignore lint/a11y/useKeyWithClickEvents: the handler suppresses the enclosing
             button, it does not add an interaction of its own */}
         <span
@@ -885,8 +850,7 @@ export function formatFootprintBytes(bytes: number): string {
       : formatBytes(bytes, " ");
 }
 
-/** Keep the row's size treatment consistent with every other model; diffusion GGUFs get one
- *  small explanation affordance, since their checkpoint is only part of what is kept on disk. */
+/** Diffusion GGUFs get an explanation, since the checkpoint is only part of what is kept on disk. */
 export function GgufDownloadFootprint({
   checkpointBytes,
   companionBytes,
@@ -904,7 +868,6 @@ export function GgufDownloadFootprint({
       <span>
         <SizeText value={totalLabel} />
       </span>
-      {/* Align the icon with the digits. */}
       <span
         data-model-download-footprint-help={true}
         aria-hidden={true}
@@ -916,7 +879,6 @@ export function GgufDownloadFootprint({
   );
 }
 
-/** The checkpoint-versus-assets breakdown behind that aggregate. */
 export function GgufDownloadFootprintExplanation({
   checkpointBytes,
   companionBytes,
@@ -965,9 +927,6 @@ function isRuntimeLoadedModel(
     : !hasActiveGgufVariant;
 }
 
-// Shared row columns, so meta lines up down the list. Widths are em of the slot's own text, so
-// they follow the UI font scale; min-w-min holds a width open rather than clamping.
-/** A GPU inventory in the shape the catalog's fit rules take. */
 function artifactBudget(gpu: {
   memoryTotalGb: number;
   systemRamAvailableGb: number;
@@ -985,41 +944,31 @@ function artifactBudget(gpu: {
   };
 }
 
+// Shared row columns; widths are em of the slot's text so they follow the UI font scale.
 const META_COLUMN = {
-  // Hugs its chip, capped at "UD-Q4_K_XL" (longer quants clip). Leftmost, so its slack goes to the name.
+  // Capped at "UD-Q4_K_XL" (longer quants clip).
   quant: "min-[560px]:max-w-[7.2em]",
-  // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand the
-  // slot and shift every column after it. This slot holds capability glyphs and the vision badge
-  // (both 26px pills) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
+  // Each width is the widest set its scope draws; wider makes min-w-min shift later columns.
   badge: "min-w-min min-[560px]:w-[calc(26px*var(--ui-space-scale,1))]",
   // One glyph plus the disk mark (26 + 4 + 14).
   badgeMid: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
-  // On Device: the vision badge only (26px). Its partial mark sits with the name, as Loaded does.
   badgeDevice: "min-w-min min-[560px]:w-[calc(26px*var(--ui-space-scale,1))]",
-  // Hub draws the disk mark and no vision badge (26+4+14). A second glyph grows it via min-w-min.
+  // Hub: the disk mark beside a glyph (26 + 4 + 14).
   badgeWide: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
-  // The fit mark (Hub rows), one 18px glyph.
   vram: "min-w-min min-[560px]:w-[calc(18px*var(--ui-space-scale,1))]",
-  // Device rows reserve the slot rather than hug the chip. This is the last variable column, so
-  // hugging it let each row's meta cluster set its own width and left the quant column ragged. 4.4em
-  // is the widest these lists draw at text-ui-10 ("235B" 38.4px, "0.35B" 40.9px), so nothing routine
-  // trips min-w-min. Hub keeps its own width for "2779.5B".
+  // Device rows reserve the slot so the quant column stays aligned; 4.4em fits "0.35B" at text-ui-10.
   param: "min-w-min min-[560px]:w-[4.4em]",
   paramWide: "min-w-min min-[560px]:w-[5.2em]",
-  // formatBytes writes no space ("536MB"), so the widest this holds is 29.5px, not the ~40px a spaced "536 MB" needs.
+  // formatBytes writes no space ("536MB"), so 3.2em suffices.
   size: "min-w-min min-[560px]:w-[3.2em]",
-  // The format dot that leads the row; the name lives in its tooltip.
   format: "min-[560px]:w-[calc(14px*var(--ui-space-scale,1))]",
 } as const;
 
-// On Device spacing between the name, quant, modality and parameter marks: never under 6px.
 const DEVICE_META_GAP = "gap-[max(6px,calc(6px*var(--ui-space-scale,1)))]";
 
 const downloadedRowButtonClassName =
   "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
-// Not focus-within: the dots menu returns focus to its trigger on close, so the row stayed lit
-// after the pointer left. A row carrying a memory bar is two lines tall and the shell paints
-// the background, so the radius relaxes with it or the row renders as a stadium.
+// Not focus-within: the dots menu returns focus on close, leaving the row lit.
 const downloadedRowShellClassName = (
   selected: boolean,
   hasMemoryBar = false,
@@ -1030,12 +979,11 @@ const downloadedRowShellClassName = (
     selected && "bg-sidebar-accent",
   );
 
-// One gutter for every row, gear or no gear, so the columns never shift by a button; the
-// buttons show on hover or while their menu is open.
+// One gutter for every row so columns never shift by a button.
 const ROW_ACTIONS_CLASS =
   "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
 
-// Drop line for a pinned-row drag. A border snaps to whole pixels, so every row matches.
+// A border snaps to whole pixels, so every row matches.
 const PINNED_DROP_CUE_BASE =
   "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
 const PINNED_DROP_CUE: Record<PinnedDropEdge, string> = {
@@ -1043,18 +991,13 @@ const PINNED_DROP_CUE: Record<PinnedDropEdge, string> = {
   bottom: `${PINNED_DROP_CUE_BASE} before:bottom-0`,
 };
 
-// Partial rows keep their buttons on screen. Everywhere else the gutter hides until hover because
-// the row itself is the action, but a partial cannot be loaded at all: the menu IS its only
-// affordance, and hiding it reads as the stalled download having no controls.
+// Partial rows cannot load, so the menu is their only affordance and stays visible.
 const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 
-// Same box and glyph size as ModelLoadSettingsAction, so a heading's buttons sit in the same
-// column and hover the same size as the ones on the rows under it.
+// Same box as ModelLoadSettingsAction, so heading and row buttons align.
 const HEADING_ACTION_CLASS =
   "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
-/** A Connected group label. Wider than the On Device section labels, since nothing divides these
- *  groups but the gap, and foldable the same way. */
 function ConnectedGroupHeading({
   icon,
   label,
@@ -1067,22 +1010,16 @@ function ConnectedGroupHeading({
   label: string;
   collapsed: boolean;
   onToggle: () => void;
-  /** Open this group's connection. A connection belongs to the whole group, not to one row. */
   onConfigure?: () => void;
   configureLabel?: string;
 }) {
   return (
-    // pt-3 and gap-1.5, the values ListLabel uses for the On Device sections, so the first
-    // heading sits at the same height on both tabs and its label at the same offset from its
-    // icon. pt-5 started this list 8px lower than that one.
+    // Matches ListLabel's pt-3 and gap-1.5 so headings align across tabs.
     <div className="group/heading flex items-center justify-between gap-1 px-2.5 pb-1 pt-3">
       <span className="flex min-w-0 items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
         {icon}
         <span className="min-w-0 truncate">{label}</span>
       </span>
-      {/* -mr-2 takes the heading's own px-2.5 down to the rows' mr-0.5, and the buttons carry the
-          row gutter's box and overlap, so the chevron lands in the column each row's dots menu
-          does rather than 8px inside it. */}
       <div className="-mr-2 flex shrink-0 items-center -space-x-0.5">
         {onConfigure ? (
           <Tooltip delayDuration={0}>
@@ -1091,8 +1028,6 @@ function ConnectedGroupHeading({
                 type="button"
                 onClick={onConfigure}
                 aria-label={configureLabel ?? "Connection settings"}
-                // Hidden until the heading is hovered, like a row's own gear. The chevron beside
-                // it stays: folding is what the heading is for.
                 className={cn(
                   HEADING_ACTION_CLASS,
                   "opacity-0 group-hover/heading:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
@@ -1162,12 +1097,10 @@ function ModelRow({
   onClick: () => void;
   vramStatus?: GgufFitClass | VramFitStatus | null;
   vramEst?: number;
-  /** Memory allowance used to judge this curated row's fit. */
   vramBudget?: CuratedBudget;
   gpuGb?: number;
   tooltipText?: ReactNode;
-  /** Hugging Face address for online/Hub rows, surfaced on hover the way local rows show an
-   *  on-disk path. Omit to show no address line. */
+  /** Hugging Face address shown on hover for Hub rows. */
   hubUrl?: string;
   optionProps?: ModelRowOptionProps;
   onArrowDownIntoChildren?: () => boolean;
@@ -1175,27 +1108,19 @@ function ModelRow({
   capabilities?: ModelCapabilities;
   /** Hide the "owner/" prefix (e.g. Recommended, where all are unsloth). */
   hideOwner?: boolean;
-  /** Mark a row already on disk (shown in Recommended instead of being hidden). */
   downloaded?: boolean;
-  /** Mark a row whose snapshot is incomplete. Mutually exclusive with `downloaded`: the bytes
-   *  are there or they are not, and the caller routes the click to the download either way. */
+  /** Incomplete snapshot; mutually exclusive with `downloaded`. */
   partial?: boolean;
-  /** Whether that partial continues byte for byte. Undefined reads as "no", which is what keeps
-   *  the mark from promising a resume the transport cannot deliver. */
+  /** Whether the partial can resume; undefined reads as no so the mark never promises a resume. */
   partialResumable?: boolean;
-  /** Show a Vision badge on the name (On Device, read from GGUF metadata). */
   showVision?: boolean;
-  /** Grey chip beside the name, for rows that load one specific quant. */
   quantChip?: string | null;
-  /** Chips for what used to sit in brackets after the name: the artifact format, and a
-   *  resolution when variants differ only by it. */
+  /** Chips for the artifact format and, when variants differ only by it, resolution. */
   tags?: string[];
   /** Column layout (see META_COLUMN): "device" reserves the quant chip, "hub" the download and VRAM badges. */
   alignMeta?: "device" | "hub";
-  /** Hold the size column open. Hub rows pass this on the MLX and Safetensors filters, where a
-   *  repo is one download with one size. */
+  /** Hold the size column open (MLX and Safetensors filters, one download per repo). */
   showSize?: boolean;
-  /** Identifies the on-disk model whose VRAM split the row should chart; omit for rows that are not downloaded. */
   memory?: ModelMemorySource;
   className?: string;
 }) {
@@ -1205,8 +1130,7 @@ function ModelRow({
   const vramTooltipText =
     showVramTooltip && vramStatus
       ? exceeds
-        // "memory", not "VRAM": a GGUF at `partial` splits across VRAM and RAM and the figure
-        // is weights plus activations plus KV, so "Needs ~47GB VRAM" contradicted the verdict.
+        // "memory", not "VRAM": a `partial` GGUF splits across VRAM and RAM.
         ? vramBudget
           ? curatedBudgetText(vramEst, gpuGb, vramBudget)
           : `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
@@ -1216,20 +1140,16 @@ function ModelRow({
       : null;
 
   const { owner, name } = splitRepoLabel(label);
-  // Drop our own owner: the list is nearly all unsloth/, so it is noise, and other owners still
-  // showing is what tells the two apart.
+  // Hide our own owner: the list is nearly all unsloth/.
   const showOwner = !!owner && !hideOwner && !isUnslothOwner(owner);
   const parsed = parseMetaTokens(meta);
-  // Param chip from meta, else derived from the name so GGUF rows show it too.
   const paramLabel = parsed.param ?? extractParamLabel(name) ?? null;
-  // Use the passed-in capabilities (tag-aware) or infer from the repo name.
   const caps = capabilities ?? detectCapabilities({ id: label });
   const capabilityScope = useContext(CapabilityScope);
   const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
   const showCaps = capabilityBadges.length > 0;
   const aligned = alignMeta !== undefined;
-  // Reserve only what this picker's scope can draw: Images and Audio draw no glyph and Video
-  // draws one, so holding the chat row's slot open there is dead space.
+  // Reserve only what this picker's scope can draw.
   const badgeColumn =
     capabilityScope === null || capabilityScope.length > 1
       ? alignMeta === "device"
@@ -1238,7 +1158,6 @@ function ModelRow({
       : capabilityScope.length === 1
         ? META_COLUMN.badgeMid
         : META_COLUMN.badge;
-  // One dot per row: a second format shares the first's colour anyway, so it rides along in the tooltip.
   const formatDot = parsed.formats[0]
     ? {
         tone: parsed.formats[0].tone,
@@ -1247,15 +1166,14 @@ function ModelRow({
     : null;
   const leading = formatDot ? <FormatTag {...formatDot} /> : null;
 
-  // Only the selected row charts itself: a meter under every row turns a list you scan into a wall of charts.
+  // Only the selected row charts memory, so the list stays scannable.
   const memorySegments = useModelMemory(selected ? memory : undefined, gpuGb);
   const showMemoryBar = memorySegments.status !== "unknown";
 
-  // Tooltip opens from the name or keyboard focus only, not the whole row.
   const nameRef = useRef<HTMLSpanElement>(null);
   const nameHoverTimer = useRef<number | undefined>(undefined);
   const [tooltipOpen, setTooltipOpen] = useState(false);
-  // Touch has no hover, so a tap on the name opens it and a tap elsewhere closes it.
+  // Touch has no hover: a tap on the name opens it and a tap elsewhere closes it.
   const [tappedOpen, setTappedOpen] = useState(false);
   useEffect(() => () => window.clearTimeout(nameHoverTimer.current), []);
   useEffect(() => {
@@ -1285,7 +1203,6 @@ function ModelRow({
     setTappedOpen(false);
     setTooltipOpen(false);
   };
-  // Keyboard focus opened it, so the pointer leaving the name does not close it.
   const onNamePointerLeave = (event: React.PointerEvent) => {
     if (event.pointerType === "touch") return;
     if (nameRef.current?.closest("button")?.matches(":focus-visible")) {
@@ -1295,13 +1212,12 @@ function ModelRow({
     onNameLeave();
   };
   // Read at pointerdown: the trigger closes an open tooltip before the click lands.
-  // Null without pointer events, where nothing closes it first.
   const openAtTap = useRef<boolean | null>(null);
   const onNameDown = (event: React.PointerEvent) => {
     if (event.pointerType === "touch") openAtTap.current = tooltipOpen;
   };
   const hasTooltip = Boolean(vramTooltipText || tooltipText || hubUrl || formatDot);
-  // Like hover on iOS: the first tap shows the details, the next one picks the row.
+  // Like hover on iOS: the first tap shows the details, the next picks the row.
   const onNameClick = (event: React.MouseEvent) => {
     const wasOpen = openAtTap.current ?? tooltipOpen;
     openAtTap.current = null;
@@ -1342,29 +1258,23 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        // pl-[calc(5.5px*var(--ui-space-scale,1))]: the dot is centred in a 14px hover target, so 5.5 + (14 - 5) / 2 lands it on
-        // 10px, level with the section labels at px-2.5.
+        // 5.5px puts the dot (centred in a 14px target) at 10px, level with section labels.
         "group/row flex w-full flex-col items-stretch py-1.5 pl-[calc(5.5px*var(--ui-space-scale,1))] pr-2 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         showMemoryBar ? "rounded-2xl" : "rounded-full",
         selected && "bg-sidebar-accent",
         className,
       )}
     >
-      {/* Separates the name group from the meta cluster. */}
       <span
         className={cn(
           "flex w-full items-center",
           alignMeta === "device" ? DEVICE_META_GAP : "gap-1",
-          // Over budget reads as a dimmed row, which scans; hover restores it. The selected row keeps full weight.
           exceeds &&
             !selected &&
             "opacity-60 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
         )}
       >
         <span className="flex min-w-0 flex-1 items-baseline">
-          {/* Fixed slot, so names start on one line with or without a dot. */}
-          {/* Aligned lists hold the slot open either way, so names start on one line; an
-              unaligned row only takes the space when it has something for it. */}
           {aligned || leading ? (
             <span
               className={cn(
@@ -1392,8 +1302,6 @@ function ModelRow({
               {name}
             </span>
           </span>
-          {/* Here it eats name width instead of moving the meta columns. self-center: on the
-              baseline the empty dot sat the tag low. */}
           {alignMeta === "device" && partial ? (
             <span className="ml-[max(6px,calc(6px*var(--ui-space-scale,1)))] flex shrink-0 items-center self-center">
               <PartialBadge resumable={partialResumable} />
@@ -1426,15 +1334,9 @@ function ModelRow({
             alignMeta === "device" ? DEVICE_META_GAP : aligned ? "gap-1" : "gap-1.5",
           )}
         >
-          {/* The quant chip sits in the meta cluster, not at the end of the name, so one
-              items-center rule lines it up with the vision mark, the parameter chip, the size and
-              the row's buttons. Inside the name group it was centred against THAT box instead --
-              a baseline box sized by the name's own line height -- so it only agreed with the rest
-              of the row for as long as the two boxes happened to share a centre. */}
           {alignMeta === "device" && quantChip ? (
             <span
               className={cn(
-                // Ends against the fixed badge column, so chips align whatever their length.
                 "flex shrink-0 items-center justify-end text-ui-9",
                 META_COLUMN.quant,
               )}
@@ -1442,13 +1344,9 @@ function ModelRow({
               <QuantChip label={quantChip} />
             </span>
           ) : null}
-          {/* Capabilities, vision and the Hub lists' "on disk" mark share one
-              column; two of them widen the slot rather than overlap. */}
           {aligned ? (
             <span
               className={cn(
-                // Right, not centre: slack belongs to the name. On Device it leads, so the eye sits
-                // the cluster gap from the quant chip.
                 "flex shrink-0 items-center gap-1 text-ui-10",
                 alignMeta === "device" ? "justify-start" : "justify-end",
                 badgeColumn,
@@ -1492,8 +1390,6 @@ function ModelRow({
           {aligned ? (
             <span
               className={cn(
-                // Device leads the chip so every chip starts at one x, the cluster gap after the modality
-                // slot. Hub trails it.
                 "flex shrink-0 items-center text-ui-10",
                 alignMeta === "hub"
                   ? cn("justify-end", META_COLUMN.paramWide)
@@ -1510,7 +1406,7 @@ function ModelRow({
               {text}
             </span>
           ))}
-          {/* GGUF repos hold several quants of different sizes, so their rows report one only once expanded. */}
+          {/* GGUF repos hold several quants, so their size shows only once expanded. */}
           {alignMeta === "device" || showSize ? (
             <span
               className={cn(
@@ -1535,14 +1431,13 @@ function ModelRow({
     </button>
   );
 
-  // Optional Hugging Face address line for online/Hub rows, rendered under whichever tooltip shows.
   const hubUrlLine = hubUrl ? (
     <span className="block mt-1 text-ui-10 text-muted-foreground break-all">
       {hubUrl}
     </span>
   ) : null;
 
-  // The dot names its format on hover only, which keyboard focus never reaches, so the row tooltip carries it too.
+  // Keyboard focus never reaches the dot's hover, so the row tooltip carries the format too.
   const formatLine = formatDot ? (
     <span className="block text-ui-10 mt-1">{formatDot.label}</span>
   ) : null;
@@ -1577,10 +1472,6 @@ function ModelRow({
     return (
       <Tooltip open={tooltipOpen} onOpenChange={onTooltipOpenChange}>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        {/* Right, not left: this panel is docked to the model button at the window's left edge,
-            so a row's own left edge is ~30px in and a tooltip opening that way ran off screen.
-            Narrower with it, and breaking on words rather than anywhere: max-w-xs let a long
-            connection name stretch the box to 320px, most of it slack beside the model id. */}
         <TooltipContent
           side="right"
           className="tooltip-compact max-w-[calc(15rem*var(--ui-space-scale,1))] break-words"
@@ -1614,8 +1505,7 @@ function isValidGgufVariant(variant: unknown): variant is GgufVariantDetail {
       (typeof candidate.pending_drafter_size_bytes === "number" &&
         Number.isFinite(candidate.pending_drafter_size_bytes) &&
         candidate.pending_drafter_size_bytes >= 0)) &&
-    // Carried through so each row can look up its own dependency group's footprint. Absent on an
-    // older backend, which groups the repo as one, so it must never reject the row.
+    // Absent on an older backend, which groups the repo as one, so it must never reject the row.
     (candidate.dependency_key === undefined ||
       candidate.dependency_key === null ||
       typeof candidate.dependency_key === "string")
@@ -1658,10 +1548,8 @@ function normalizeGgufVariantsResponse(
       contextLength >= 0
         ? contextLength
         : null,
-    // The backend's own verdict, which resolves existence-first: a marker-less relative name that
-    // exists on disk is a local model. A server predating the field leaves the prefix test.
+    // The backend's verdict resolves existence-first; an older server leaves the prefix test.
     resolvedLocally: res?.resolved_locally === true,
-    // The server proves dependencies from Hub metadata or a complete local download plan.
     dependenciesResolved: res?.dependencies_resolved === true,
   };
 }
@@ -1675,8 +1563,7 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
     : variant.size_bytes;
 }
 
-/** The one quant a repo holds, plus the vision flag read with it. The collapsed row never
- *  mounts the expander, so this is its only source. */
+/** The collapsed row never mounts the expander, so this is its only quant source. */
 interface SoleDownloadedQuant {
   variant: GgufVariantDetail;
   hasVision: boolean | undefined;
@@ -1725,13 +1612,11 @@ const EMPTY_SOLE_QUANT_ENTRIES: ReadonlyMap<
   string,
   SoleQuantEntry<SoleDownloadedQuant>
 > = new Map();
-// Reads run a few at a time so a large cache does not fire one request per repo. A worker
-// pool, not fixed batches: one slow repo holds up only itself.
+// A worker pool, not fixed batches, so one slow repo holds up only itself.
 const SOLE_QUANT_WORKERS = 6;
 
-/** On Device repos holding exactly one quant on disk, keyed by repo id: with "Show all
- *  quantizations" off those collapse into one pinned-style row. Kept per repo, so one
- *  repo's download or delete leaves the others alone. */
+/** On Device repos with exactly one quant on disk, which collapse into one row when
+ *  "Show all quantizations" is off. Kept per repo. */
 function useSoleDownloadedQuants(
   repos: readonly CachedGgufRepo[],
   { enabled, hfToken }: { enabled: boolean; hfToken?: string },
@@ -1740,7 +1625,6 @@ function useSoleDownloadedQuants(
   pending: ReadonlySet<string>;
 } {
   const repoIds = useMemo(() => repos.map((repo) => repo.repo_id), [repos]);
-  // A download or delete invalidates one repo, so watch each repo's version.
   const variantsVersion = useGgufVariantsCacheVersions(repoIds);
   const targets = useMemo(() => {
     const versions = variantsVersion.split(",");
@@ -1765,8 +1649,7 @@ function useSoleDownloadedQuants(
     [targets, entries, enabled],
   );
 
-  // A change outside this tab moves the row's bytes without touching this instance's variants
-  // cache, so drop that repo's cached listing.
+  // A change outside this tab moves the row's bytes without touching this cache, so drop it.
   const fingerprintsRef = useRef(new Map<string, string>());
   useEffect(() => {
     for (const repoId of takeDriftedRepos(targets, fingerprintsRef.current)) {
@@ -1774,14 +1657,12 @@ function useSoleDownloadedQuants(
     }
   }, [targets]);
 
-  // Reads outlive a render, so they run outside it; the token is read at call time, so a change
-  // to it does not strand the reader.
+  // Read at call time so a token change does not strand the reader.
   const hfTokenRef = useRef(hfToken);
   hfTokenRef.current = hfToken;
   const mountedRef = useRef(true);
   useEffect(() => {
-    // Set on setup, not just cleared on teardown: StrictMode replays effects, and a ref left false
-    // would discard every later read.
+    // Set on setup too: StrictMode replays effects.
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
@@ -1804,7 +1685,7 @@ function useSoleDownloadedQuants(
           return next;
         });
         if (!quant) return;
-        // The disk verdict shows at once; a later Hub answer may still send the row back to its expander.
+        // A later Hub answer may still send the row back to its expander.
         void hubProbeLimitRef.current(() =>
           soleQuantNeedsExpander(
             target,
@@ -1859,31 +1740,26 @@ function GgufVariantExpander({
   repoId: string;
   loadedQuants?: readonly string[];
   pipelineTag?: string | null;
-  /** True on Images / Video, where a GGUF is placed by the diffusion backend rather than
-   *  llama-server, so the llama.cpp budget does not apply. Audio is task-scoped but not this. */
+  /** Images / Video: the diffusion backend places GGUFs, so the llama.cpp budget does not apply. */
   diffusionLoad?: boolean;
-  /** The LOAD DEVICE's memory is a window into host RAM (Apple Silicon, a ROCm APU). Only a
-   *  diffusion load reads it: see `diffusionRefuses`. */
+  /** The load device's memory is a window into host RAM (Apple Silicon, ROCm APU). */
   hostPooledMemory?: boolean;
   /** How many GPUs gpuGb is the sum of, for the loader's per-card VRAM reserve. */
   gpuCount?: number;
   /** Snapshot the cached listing pinned this repo to, if any. */
   loadId?: string | null;
-  /** Cache directory this downloaded row represents, if any. */
   cachePath?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   gpuGb?: number;
   systemRamGb?: number;
   budgetKnown?: boolean;
-  /** HF token threaded into the variant fetch so private/gated repos resolve their GGUF variants. */
   hfToken?: string;
   parentOptionKey?: string;
   onNavigatePastStart?: () => void;
   onNavigatePastEnd?: () => void;
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   sourceOverride?: ModelSelectorChangeMeta["source"];
-  /** Update/delete actions for cached variant rows; omitted by browse-only expanders. */
   variantActions?: {
     onUpdate?: (quant: string, expectedBytes: number) => Promise<void> | void;
     updateTitle?: string;
@@ -1898,10 +1774,8 @@ function GgufVariantExpander({
   };
   /** On Device rows honor the All quantizations setting; browse lists always show every quant. */
   onDevice?: boolean;
-  /** Only managed cached-Hub rows can surface quant pins in the Pinned section; local-path
-   *  expanders leave this false. */
+  /** Only managed cached-Hub rows can pin quants; local-path expanders leave this false. */
   allowPin?: boolean;
-  /** Report GGUF vision support up so the parent row can badge it. */
   onHasVision?: (hasVision: boolean) => void;
 }) {
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
@@ -1923,13 +1797,11 @@ function GgufVariantExpander({
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
-  // Native max context (GGUF metadata); only set once a variant is downloaded.
   const [nativeContext, setNativeContext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  // Whether the LISTING resolved this identifier off disk. Not derivable from loadId/cachePath,
-  // which a downloaded hub model also carries.
+  // Not derivable from loadId/cachePath, which a downloaded hub model also carries.
   const [resolvedLocally, setResolvedLocally] = useState(false);
   const localSource = loadId || cachePath || null;
   const showAllQuantizations = useChatRuntimeStore(
@@ -1938,15 +1810,13 @@ function GgufVariantExpander({
 
   useEffect(() => {
     let canceled = false;
-    // Collapsing the row drops the request: a stalled one holds a per-host connection, and enough
-    // of them stall download and load too.
+    // Abort on collapse: a stalled request holds a per-host connection and starves downloads.
     const controller = new AbortController();
     queueMicrotask(() => {
       if (canceled) return;
       setLoading(true);
       setError(null);
-      // Belongs to the identifier being listed: carrying it over would apply the previous row's
-      // locality to this one's footprint arithmetic.
+      // Reset so the previous row's locality is not applied to this one.
       setResolvedLocally(false);
     });
 
@@ -2004,21 +1874,16 @@ function GgufVariantExpander({
     };
   }, [repoId, localSource, refreshKey, hfToken, pipelineTag, onDevice]);
 
-  // Covers Unix absolute, Windows drive, UNC, relative and tilde paths.
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
     repoId,
   );
-  // Repo-level true only proves that some mmproj exists; the loader may reject
-  // it for this quant/model family. Absence is authoritative text-only
-  // evidence, while presence remains unknown until load.
+  // Repo-level mmproj presence is not proof for this quant; only absence is authoritative.
   const variantVisionHint = hasVision === false ? false : undefined;
-  // The prefix test cannot see a marker-less relative directory like "models/my-image-model",
-  // so whether the checkpoint is on disk is asked of the listing, not of the spelling.
+  // The prefix test misses marker-less relative dirs, so ask the listing.
   const checkpointIsLocal = isLocalPath || resolvedLocally;
 
   const handleVariantClick = useCallback(
-    // `filename` is required: the diffusion pages gate their GGUF branch on meta.ggufFilename, so
-    // a quant label alone made every Images/Video GGUF pick a dead click.
+    // `filename` is required: the diffusion pages gate their GGUF branch on meta.ggufFilename.
     (
       quant: string,
       filename: string,
@@ -2056,15 +1921,13 @@ function GgufVariantExpander({
     ],
   );
 
-  // The user's saved VRAM Budget, which is what the loader admits against; the picker used to
-  // ignore it, so moving the slider changed the Hub's verdicts only.
+  // The saved VRAM Budget, which is what the loader admits against.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const anyBudgetGb = (gpuGb ?? 0) > 0 || (systemRamGb ?? 0) > 0;
 
   const getGgufFit = useCallback(
     (sizeBytes: number): GgufFitClass => {
-      // Permissive only when no budget was measured: a known zero Vulkan budget means every
-      // non-empty variant is OOM, which classifyGgufFit cannot tell from "not probed yet".
+      // A known zero budget (e.g. Vulkan) means OOM, distinct from not probed yet.
       if (!anyBudgetGb) return budgetKnown ? "oom" : "fits";
       if (diffusionLoad) {
         return classifyMediaGgufFit(
@@ -2092,11 +1955,7 @@ function GgufVariantExpander({
     ],
   );
 
-  // One verdict per variant, so the badge, the ordering and the star cannot
-  // disagree. Judged on the download footprint, which covers the companion
-  // GGUFs the loader charges for: a vision projector, or a drafter `auto`
-  // promotes to. On the bare checkpoint a vision quant could sort and badge as
-  // fitting while the recommendation had already ruled it OOM.
+  // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
       getGgufFit(ggufVariantFitSizeBytes(variant)),
@@ -2112,8 +1971,6 @@ function GgufVariantExpander({
     [variantGroups, defaultVariant],
   );
 
-  // Each workflow gets its own recommendation: the repo default (UD-Q4_K_XL, else Q4_K_M, else
-  // Q4_K_S) wherever the device loads it, else the largest smaller quant that loads.
   const effectiveRecommendedByGroup = useMemo(() => {
     const recommended = new Map<string, string>();
     for (const group of variantGroups) {
@@ -2122,7 +1979,6 @@ function GgufVariantExpander({
         if (preferred) recommended.set(group.key, preferred.quant);
         continue;
       }
-      // Null when the group carries no sizes at all, so there is nothing to measure.
       const pick =
         recommendedQuantForDevice(group.variants, getGgufFit, preferred) ??
         preferred;
@@ -2130,9 +1986,7 @@ function GgufVariantExpander({
     }
     return recommended;
   }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
-  // `effectiveRecommendedByGroup` is keyed by PRESENTATION group ("quantizations", "text-frames",
-  // "reference-media") while the footprint pass buckets by the backend's dependency_key
-  // ("flux.2-klein:<digest>"), so that pass asks through the variant itself.
+  // Keyed by presentation group while footprints bucket by dependency_key, so ask via the variant.
   const recommendedQuantForVariant = useMemo(() => {
     const byVariant = new Map<GgufVariantDetail, string>();
     for (const group of variantGroups) {
@@ -2159,12 +2013,11 @@ function GgufVariantExpander({
         const bTier = tierOf(b);
         if (aTier !== bTier) return aTier - bTier;
 
-        // Within the same tier, the workflow's recommendation goes first.
         const aIsRec = a.quant === recommended;
         const bIsRec = b.quant === recommended;
         if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
 
-        // fits: largest first (best quality that fits); tight/OOM: smallest first (closest to fitting).
+        // fits: largest first; tight/OOM: smallest first (closest to fitting).
         const fitsInGpu = aTier === 0 || aTier === 2;
         return fitsInGpu
           ? b.size_bytes - a.size_bytes
@@ -2173,7 +2026,6 @@ function GgufVariantExpander({
     });
   }, [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit]);
 
-  // On Device only: with All quantizations off, list quants already on disk, torn ones included.
   const displayVariants = useMemo(() => {
     if (!sortedVariants) return sortedVariants;
     return visibleGgufVariants(sortedVariants, {
@@ -2190,21 +2042,17 @@ function GgufVariantExpander({
     [displayVariants],
   );
 
-  // A diffusion GGUF is not self-contained: the loader also needs a text encoder, VAE, tokenizer
-  // and configs, and that companion set is NOT repository-wide (one repo can hold GGUFs of
-  // different families). Both are folded into the backend's dependency_key, so grouping by it
-  // keeps a non-representative row from advertising a GB-wrong total.
+  // A diffusion GGUF's companion set is per family, not repo-wide; group by dependency_key so totals are right.
   const footprintVariants = useMemo(() => {
     const byKey = new Map<string, GgufVariantDetail>();
     for (const variant of displayVariants ?? []) {
-      // An unkeyed repo (older backend, or no family resolved) collapses to one group, the previous repo-wide behavior.
+      // An unkeyed repo (older backend) collapses to one group.
       const key = variant.dependency_key ?? "";
       const current = byKey.get(key);
       if (current === undefined) {
         byKey.set(key, variant);
         continue;
       }
-      // The recommended quant represents its own group when it has one, else the group's first row.
       // Asked per variant, since two families in one repo can share quant names.
       const recommended = recommendedQuantForVariant.get(variant);
       if (
@@ -2223,8 +2071,7 @@ function GgufVariantExpander({
   useEffect(() => {
     let cancelled = false;
     setCompanionBytesByKey(new Map());
-    // A local path is resolved too: only the CHECKPOINT is on disk, and its remote base is the
-    // larger half, so suppressing the request understated a local row by many gigabytes.
+    // Local paths are resolved too: the remote base is the larger half.
     if (!resolveDownloadFootprint) {
       return () => {
         cancelled = true;
@@ -2234,7 +2081,6 @@ function GgufVariantExpander({
       const dependencyKey = footprintVariant.dependency_key ?? "";
       const expectedBytes = ggufVariantExpectedBytes(footprintVariant);
       void resolveDownloadFootprint(repoId, {
-        // Same source the row itself reports, so the plan describes the pick that would run.
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         ggufVariant: footprintVariant.quant,
@@ -2245,9 +2091,7 @@ function GgufVariantExpander({
       })
         .then((footprint) => {
           if (cancelled || !footprint) return;
-          // A checkpoint already on disk is not part of required_bytes, so nothing may be subtracted for it:
-          // subtracting drove the total to zero and hid a multi-GB companion set. Only a hub pick carries
-          // its checkpoint inside the total; expectedBytes stands in when the planner could not size it.
+          // A checkpoint on disk is not in required_bytes, so subtract nothing for it.
           const checkpoint = checkpointIsLocal
             ? 0
             : footprint.checkpointBytes > 0
@@ -2255,8 +2099,7 @@ function GgufVariantExpander({
               : expectedBytes;
           const companion = footprint.requiredBytes - checkpoint;
           if (Number.isFinite(companion) && companion > 0) {
-            // A fresh Map per resolution: React compares state by identity and the groups resolve
-            // independently, so a mutation would drop the rows whose request landed first.
+            // A fresh Map per resolution, since groups resolve independently and React compares by identity.
             setCompanionBytesByKey((previous) => {
               const next = new Map(previous);
               next.set(dependencyKey, companion);
@@ -2265,8 +2108,7 @@ function GgufVariantExpander({
           }
         })
         .catch(() => {
-          // The checkpoint size stays useful when an older backend or a Hub failure cannot provide the
-          // companion footprint.
+          // Keep the checkpoint size when the companion footprint is unavailable.
         });
     }
     return () => {
@@ -2337,8 +2179,6 @@ function GgufVariantExpander({
       }
       className="pl-4 border-l-2 border-accent/50 ml-3 my-1"
     >
-      {/* On Device shows the model name above, so the Quantizations heading is redundant; its Vision
-          badge is relayed to the name instead. */}
       {!onDevice && !displayVariantGroups.some((group) => group.title) && (
         <div className="px-2 py-1 flex items-center gap-1.5">
           <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
@@ -2376,8 +2216,7 @@ function GgufVariantExpander({
         );
         const showGroupHeading =
           group?.title != null && group.variants[0]?.filename === v.filename;
-        // Its own group's pick. Matching on the quant alone works only because an H3 key is unique per
-        // file, which is the backend's rule.
+        // Matching on quant alone works only because an H3 key is unique per file.
         const isRecommended =
           group != null &&
           effectiveRecommendedByGroup.get(group.key) === v.quant;
@@ -2385,7 +2224,7 @@ function GgufVariantExpander({
         const oom = fit === "oom";
         const expectedBytes = ggufVariantExpectedBytes(v);
         const variantContext = ggufVariantContextLength(v, nativeContext);
-        // This row's own dependency group, never the listing's: see the footprintVariants comment above.
+        // This row's own dependency group, never the listing's.
         const companionBytes =
           companionBytesByKey.get(v.dependency_key ?? "") ?? null;
         // A folder has no download to resume; a quant short a shard has no files to load.
@@ -2484,7 +2323,7 @@ function GgufVariantExpander({
             </div>
           ) : null,
           <div key={v.filename} className="flex items-center">
-            {/* The explanation rides the row button; nested button triggers are not accessible. */}
+            {/* Nested button triggers are not accessible. */}
             {companionBytes === null ? (
               rowButton
             ) : (
@@ -2593,8 +2432,6 @@ function GgufVariantExpander({
                             } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
                               togglePinnedQuant(repoId, v.quant);
                             }
-                            // Re-fetch this expander's variants so the deleted quant stops showing as
-                            // downloaded while other cached quants remain.
                             setRefreshKey((key) => key + 1);
                           },
                         }
@@ -2619,7 +2456,7 @@ function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
 }
 
 
-// True when a repo's inferred task is within the picker's task filter; unknown task (null) passes only with no filter.
+// Unknown task (null) passes only with no filter.
 function taskMatchesFilter(
   repoTask: string | null | undefined,
   filter: HfTaskFilter,
@@ -2629,27 +2466,21 @@ function taskMatchesFilter(
   return repoTask != null && (wanted as readonly string[]).includes(repoTask);
 }
 
-// Image-generation pipeline tasks: owned by the Images page, never chat-loadable. The backend
-// reports "text-to-image" for diffusion-arch GGUFs.
+// Owned by the Images page, never chat-loadable.
 export const IMAGE_GEN_TASKS = [
   "text-to-image",
   "image-to-image",
   "image-text-to-image",
 ] as const;
 
-// Video-generation pipeline tasks: owned by the Video page, never chat-loadable. The backend
-// reports "text-to-video" for video-diffusion GGUFs; HF gives the LTX-2 family the image-to-video
-// pipeline_tag, and image-text-to-video is MiniMax-H3's. Without them the Video picker misses such
-// a model and chat loads it as a language model.
+// Owned by the Video page; includes image-to-video (LTX-2) and image-text-to-video (MiniMax-H3).
 export const VIDEO_GEN_TASKS = [
   "text-to-video",
   "image-to-video",
   "image-text-to-video",
 ] as const;
 
-/** The tasks whose GGUFs are placed by the DIFFUSION backend, the only reason a picker scores
- *  against `classifyMediaGgufFit`. Audio is task-scoped but excluded: its GGUFs go to
- *  llama.cpp or the whisper sidecars, so scoring them at 70% hid runnable models. */
+/** Tasks whose GGUFs the diffusion backend places; Audio GGUFs go to llama.cpp or whisper. */
 const DIFFUSION_TASKS: ReadonlySet<string> = new Set([
   ...IMAGE_GEN_TASKS,
   ...VIDEO_GEN_TASKS,
@@ -2664,18 +2495,15 @@ export const AUDIO_GEN_TASKS = [
   "audio-to-audio",
 ] as const;
 
-// Diffusion GGUF archs the Images backend cannot assemble yet. The backend tags them with this
-// task so both pickers leave them out; they would 400 on load.
+// Diffusion GGUF archs the Images backend cannot assemble yet; they would 400 on load.
 const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
 
-// Generation tasks the Images / Video / Audio pages own. Not chat-loadable, so an on-device pick routes to its page.
 const MEDIA_PAGE_TASKS: readonly string[] = [
   ...IMAGE_GEN_TASKS,
   ...VIDEO_GEN_TASKS,
   ...AUDIO_GEN_TASKS,
 ];
 
-/** The page that runs this task, or null when chat should handle the pick. */
 function mediaPageForTask(
   task: string | null | undefined,
 ): "images" | "video" | "audio" | null {
@@ -2685,12 +2513,10 @@ function mediaPageForTask(
   return "images";
 }
 
-// Editing/inpaint checkpoints are tagged image-to-image but need an input image the
-// text-to-image backend rejects, so they are hidden by id (mirrors _EDIT_KEYWORDS). The
-// task itself must stay, since FLUX.2-klein carries it too.
+// Editing checkpoints need an input image, so hide them by id (mirrors _EDIT_KEYWORDS); keep
+// the task since FLUX.2-klein carries it too.
 const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "layered"] as const;
-// Editing families the backend now SUPPORTS: not hidden despite the edit keyword. Mirrors the
-// backend's qwen-image-edit, flux.1-kontext and qwen-image-layered families.
+// Mirrors the backend's supported edit families.
 const SUPPORTED_EDIT_KEYWORDS = [
   "qwen-image-edit",
   "kontext",
@@ -2698,8 +2524,7 @@ const SUPPORTED_EDIT_KEYWORDS = [
   "qwen_image_layered",
   "qwenimagelayered",
 ] as const;
-// Match a keyword as a whole path/name segment, not a raw substring, so "edit" does not hide
-// ".../edited/...". Keywords are [a-z-] literals, so no escaping. Mirrors _token_in_needle.
+// Whole segment match, not substring. Mirrors _token_in_needle.
 function idHasSegment(id: string, keyword: string): boolean {
   return new RegExp(`(?:^|[-_./\\\\])${keyword}(?:$|[-_./\\\\])`).test(id);
 }
@@ -2710,8 +2535,6 @@ function isImageEditModel(repoId: string | null | undefined): boolean {
   return IMAGE_EDIT_KEYWORDS.some((kw) => idHasSegment(id, kw));
 }
 
-// Gate an on-device model by the picker's task scope: with a filter keep only matching,
-// non-editing tasks; with none drop image-generation models.
 function passesTaskGate(
   repoTask: string | null | undefined,
   repoId: string | null | undefined,
@@ -2737,12 +2560,10 @@ function passesTaskGate(
       !isImageEditModel(repoId)
     ) || localModel?.opaque === true;
   }
-  // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to its page
-  // on click; only the never-loadable tag is hidden.
+  // Unfiltered (chat): diffusion models stay listed and route to their page.
   return repoTask !== UNSUPPORTED_DIFFUSION_TASK;
 }
 
-// Module-level caches so re-mounting the popover shows results instantly.
 let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
 let _lmStudioCache: LocalModelInfo[] = [];
@@ -2750,10 +2571,7 @@ let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
 let _scanFoldersCache: ScanFolderInfo[] = [];
 
-/** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or custom-folder model)
- * is known. Reads the module caches, which persist across popover mounts, so the selector can
- * default to the On Device tab. Partials do not count: a machine whose only cached row is a
- * cancelled download has nothing to load. */
+/** True when any loadable on-device model is known (partials do not count). */
 export function hasDownloadedModels(): boolean {
   return (
     _cachedGgufCache.some((c) => !c.partial) ||
@@ -2764,7 +2582,6 @@ export function hasDownloadedModels(): boolean {
   );
 }
 
-/** Sort LM Studio models with unsloth publisher first. */
 function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
   return [...models].sort((a, b) => {
     const aUnsloth = (a.model_id ?? "").startsWith("unsloth/") ? 0 : 1;
@@ -2784,7 +2601,6 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 }
 
 
-// Recommended section sort: plain HF sort keys.
 type RecommendedSortKey = "trendingScore" | "lastModified";
 
 const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
@@ -2792,7 +2608,6 @@ const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
   { value: "lastModified", label: "Recent" },
 ];
 
-// Sort for the On Device lists: "recent" = last loaded, "downloaded" = file download date.
 type LocalSortKey = "recent" | "downloaded" | "size" | "name";
 
 const LOCAL_SORT_OPTIONS: HubOption<LocalSortKey>[] = [
@@ -2802,7 +2617,6 @@ const LOCAL_SORT_OPTIONS: HubOption<LocalSortKey>[] = [
   { value: "downloaded", label: "Downloaded" },
 ];
 
-// Format filter dropdown for the Unsloth listing; the plain labels are reused in the empty-state copy.
 const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
   all: "All",
   gguf: "GGUF",
@@ -2811,7 +2625,6 @@ const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
   npu: "NPU",
 };
 
-// Dot colors match the row format tags: gguf blue, mlx amber, safetensors pink, npu cyan.
 const FORMAT_FILTER_DOTS: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
@@ -2841,8 +2654,6 @@ const FORMAT_FILTER_OPTIONS_WITHOUT_NPU = FORMAT_FILTER_OPTIONS.filter(
   (option) => option.value !== "npu",
 );
 
-// Connected has no size, download date or load history, so it sorts by what a hosted catalogue
-// does offer: the connection, or the name.
 type ConnectedSortKey = "provider" | "name";
 
 const CONNECTED_SORT_OPTIONS: HubOption<ConnectedSortKey>[] = [
@@ -2850,11 +2661,7 @@ const CONNECTED_SORT_OPTIONS: HubOption<ConnectedSortKey>[] = [
   { value: "name", label: "Name" },
 ];
 
-// Modality filter for Connected, mirroring the On Device format filter. The keys are the marks a
-// connected row can draw, so a filter cannot ask for a badge the list has no way to show.
-// No Audio: connectedModelMarks never marks a connected model as taking audio, since the
-// attachment adapter refuses it under an external selection, so the option could only ever
-// return an empty list.
+// No Audio: connected models never take audio attachments.
 type ConnectedModalityFilter = "all" | "vision" | "imageGen";
 
 const CONNECTED_MODALITY_LABELS: Record<ConnectedModalityFilter, string> = {
@@ -2867,7 +2674,6 @@ const CONNECTED_MODALITY_OPTIONS: HubOption<ConnectedModalityFilter>[] = (
   Object.keys(CONNECTED_MODALITY_LABELS) as ConnectedModalityFilter[]
 ).map((value) => ({ value, label: CONNECTED_MODALITY_LABELS[value] }));
 
-/** Sort cached repos: by last-loaded, download date, size desc, or name. */
 function sortCachedRepos<
   T extends { repo_id: string; size_bytes: number; last_modified?: number },
 >(rows: T[], key: LocalSortKey, loadTimes: ModelLoadTimes): T[] {
@@ -2887,7 +2693,7 @@ function sortCachedRepos<
   });
 }
 
-/** Sort local-provider models. They carry no size, so "size" falls back to name. */
+/** They carry no size, so "size" falls back to name. */
 function sortLocalModels(
   rows: LocalModelInfo[],
   key: LocalSortKey,
@@ -2903,11 +2709,10 @@ function sortLocalModels(
       return d !== 0 ? -d : byDate(a, b);
     }
     if (key === "downloaded") return byDate(a, b);
-    return name(a).localeCompare(name(b)); // "size" (no size) and "name"
+    return name(a).localeCompare(name(b));
   });
 }
 
-/** GGUF detection for a local model by backend format hint, name, or file path. */
 function localModelIsGguf(m: LocalModelInfo): boolean {
   return (
     m.model_format === "gguf" ||
@@ -2920,8 +2725,7 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
 function localPathTooltip(
   name: string,
   path: string,
-  // Which checkpoint, since the path cannot say: an H3 repo holds its keyframe and reference
-  // partitions in one directory.
+  // An H3 repo holds both partitions in one directory, so the path cannot say which.
   detail?: string,
 ): ReactNode {
   return (
@@ -2958,20 +2762,16 @@ function localDirectGgufMeta(
   return localModelMeta(true, pipelineTag);
 }
 
-/** Hugging Face address for an online/Hub row, or undefined when the repo id is missing so the
- *  row shows no empty address line. */
 function hubRepoUrl(id: string | null | undefined): string | undefined {
   const trimmed = id?.trim();
   return trimmed ? `huggingface.co/${trimmed}` : undefined;
 }
 
-/** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so callers gate
- *  visibility on the host being a Mac. */
+/** MLX runs on Mac only, so callers gate visibility on the host. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
   return isMlxId(m.id) || isMlxId(m.display_name) || isMlxId(m.model_id ?? "");
 }
 
-/** Whether a local model matches the format toggle (GGUF detected by name/path). */
 function localModelMatchesFormat(
   m: LocalModelInfo,
   filter: FormatFilter,
@@ -3017,21 +2817,17 @@ export function HubModelPicker({
   rowFilter,
 }: {
   models: ModelOption[];
-  /** Task-runtime downloads using a cache layout the shared Hub inventory cannot represent (for
-   *  example the two-file STT sidecars). */
+  /** Task-runtime downloads whose cache layout the shared Hub inventory cannot represent. */
   additionalOnDeviceModels?: ModelOption[];
   loadedModelIdOverride?: string;
-  /** Fine-tuned models, shown as a section in the On Device view. */
   loraModels?: LoraModelOption[];
-  /** Connected provider models, shown in the Connected section. */
   externalModels?: ExternalModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
-  /** Open one connection's own settings, for the gear on a Connected row: a model reached over
-   *  the wire has no local run settings, so what is configurable lives on its connection. */
+  /** Opens the connection's settings for a Connected row's gear. */
   onConfigureConnection?: (providerId: string) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -3043,10 +2839,8 @@ export function HubModelPicker({
   onEjectAll?: () => void;
   /** Restrict results to a pipeline task; undefined = all tasks (the chat default). */
   task?: HfTaskFilter;
-  /** Curated catalog for a task-scoped picker: one canonical row per model, formats as the second level. */
   catalog?: CatalogGroup[];
-  /** Also surface community models carrying `task`'s pipeline tags, below the unsloth rows.
-   *  Opt-in, since the runtime has to load an arbitrary publisher's checkpoint: true of audio. */
+  /** Also surface community models for `task`; opt-in for runtimes that load any publisher. */
   communityModelPolicy?: CommunityModelPolicy;
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   npu?: NpuPickerSource;
@@ -3054,18 +2848,14 @@ export function HubModelPicker({
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
-  // The saved VRAM Budget, threaded into every fit call here. Passing it to the quant rows alone
-  // left the parent rows and the "Fits on device" filter on the 0.97 default.
+  // Threaded into every fit call, not only the quant rows.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
-  // Whether THIS picker's rows load through the diffusion backend. Not `Boolean(task)`: Audio is
-  // task-scoped but runs its GGUFs under llama.cpp / whisper.
+  // Not `Boolean(task)`: Audio is task-scoped but runs GGUFs under llama.cpp / whisper.
   const diffusionLoad = useMemo(() => {
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
-  // What the backend actually holds, not the dropdown highlight: an image or video load evicts
-  // the chat model and leaves the pick untouched, so rows kept a "Loaded" badge with nothing
-  // resident. Same predicate as the header tick.
+  // What the backend holds, not the highlight: an image or video load evicts the chat model.
   const selectedCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
@@ -3078,11 +2868,8 @@ export function HubModelPicker({
     ? selectedCheckpoint
     : undefined;
   const loadedModelId = loadedModelIdOverride ?? chatLoadedModelId;
-  // Loaded GGUF quant of the active model; marks the matching pinned row.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
-  // Fade the list's top edge once scrolled, and its bottom edge while more rows sit below the fold.
   const [listScrolled, setListScrolled] = useState(false);
   const [listMoreBelow, setListMoreBelow] = useState(false);
   const hfToken = useHfTokenStore((s) => s.token);
@@ -3114,12 +2901,10 @@ export function HubModelPicker({
     () => new Set(loadedRows.map((m) => m.id.toLowerCase())),
     [loadedRows],
   );
-  // Shared Hub search stack so the picker and Hub run one implementation. Scoped to unsloth like the old listing.
   const online = useOnlineStatus();
   const { phase: hubPhase } = useHubAvailability();
   // Sanitize to anonymous on a malformed token, matching the Hub page.
   const accessToken = hfApiToken(hfToken);
-  // Recommended section: a live unsloth listing sorted by the dropdown, the same sort that drives search results.
   const [recommendedSort, setRecommendedSort] =
     useState<RecommendedSortKey>("trendingScore");
   const {
@@ -3138,8 +2923,7 @@ export function HubModelPicker({
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
     accessToken,
-    // Only Recommended renders Hub results, so keep the Hub hooks idle on other tabs and preserve
-    // offline-local behavior.
+    // Keep Hub hooks idle off the Recommended tab to preserve offline-local behavior.
     enabled: online && section === "recommended",
   });
   const recommendedSearch = useHubModelSearch("", {
@@ -3152,9 +2936,7 @@ export function HubModelPicker({
     enabled: online && section === "recommended",
   });
 
-  // Two hooks for the same reason the unsloth pair exists: browse must not refetch per
-  // keystroke, search must not be pinned to the empty query. pinUnslothFirst is off, since
-  // the unsloth rows already sit above.
+  // Browse must not refetch per keystroke and search must not be pinned to the empty query.
   const communityDiscoveryEnabled =
     shouldDiscoverCommunityModels(communityModelPolicy) &&
     Boolean(task) &&
@@ -3182,8 +2964,7 @@ export function HubModelPicker({
     enabled: communityRecommendedEnabled && debouncedQuery.trim().length === 0,
   });
 
-  // Lowercased repo ids confirmed GGUF by the store or HF search. Absence means "no hint", so
-  // hasGgufSuffix is the fallback rather than conflating unknown with known-not-GGUF.
+  // Absence means no hint, so hasGgufSuffix is the fallback.
   const modelGgufIds = useMemo(() => {
     const ids = new Set<string>();
     for (const model of models) {
@@ -3191,7 +2972,7 @@ export function HubModelPicker({
     }
     return ids;
   }, [models]);
-  // Both listings contribute GGUF hints so a tag-only GGUF still expands variants instead of loading as a checkpoint.
+  // So a tag-only GGUF still expands variants instead of loading as a checkpoint.
   const resultGgufIds = useMemo(() => {
     const ids = new Set<string>();
     for (const result of [
@@ -3218,25 +2999,19 @@ export function HubModelPicker({
   );
 
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
-  // GGUF vision support per repo, reported by the expander once it has read the metadata, so On
-  // Device rows can badge the name.
   const [visionByRepo, setVisionByRepo] = useState<Record<string, boolean>>({});
   const reportVision = useCallback((repoId: string, hasVision: boolean) => {
     setVisionByRepo((prev) =>
       prev[repoId] === hasVision ? prev : { ...prev, [repoId]: hasVision },
     );
   }, []);
-  // When on, On Device GGUF repos show their quantizations without a click.
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
-  // Off: On Device lists only downloaded quants, so a repo holding one collapses into a single row.
   const showAllQuantizations = useChatRuntimeStore(
     (s) => s.showAllQuantizations,
   );
-  // Shared with the Hub page: list only models sized within the device budget.
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
-  // Repos the user clicked to collapse while expand-by-default is on, and the ones clicked back
-  // open. In memory only, so both reset on reload.
+  // In memory only, so both reset on reload.
   const [collapsedGgufState, setCollapsedGgufState] = useState<{
     expandQuantizations: boolean;
     value: Set<string>;
@@ -3255,11 +3030,8 @@ export function HubModelPicker({
       expandQuantizations ? !collapsedGguf.has(id) : expandedGguf === id,
     [expandQuantizations, collapsedGguf, expandedGguf],
   );
-  // Toggle a repo's quantizations: flip the collapse set when expand-by-default is on, else
-  // drive the single-open expandedGguf state.
   const toggleGgufExpanded = useCallback(
-    // `showing` is what the row actually renders, which is not the collapse set alone: a row held
-    // back by its sole-quant probe shows nothing, and a click should open it.
+    // A row held back by its sole-quant probe shows nothing, so a click should open it.
     (id: string, showing = isGgufExpanded(id)) => {
       if (!expandQuantizations) {
         setExpandedGguf((prev) => (prev === id ? null : id));
@@ -3291,11 +3063,10 @@ export function HubModelPicker({
   const [fineTunedCollapsed, setFineTunedCollapsed] = useState(false);
   const [lmStudioCollapsed, setLmStudioCollapsed] = useState(false);
   const [localDirCollapsed, setLocalDirCollapsed] = useState(false);
-  // The Fine-tuned section header; the train icon on the Unsloth header scrolls here.
   const fineTunedSectionRef = useRef<HTMLDivElement>(null);
   const scrollToFineTuned = useCallback(() => {
     setFineTunedCollapsed(false);
-    // Two frames so the expand renders before the section is scrolled to the top.
+    // Two frames so the expand renders before scrolling.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         fineTunedSectionRef.current?.scrollIntoView({
@@ -3305,7 +3076,6 @@ export function HubModelPicker({
       });
     });
   }, []);
-  // The Other models header; the directions icon on the Unsloth header scrolls here.
   const otherModelsSectionRef = useRef<HTMLDivElement>(null);
   const scrollToOtherModels = useCallback(() => {
     setOtherModelsCollapsed(false);
@@ -3318,7 +3088,6 @@ export function HubModelPicker({
       });
     });
   }, []);
-  // The Custom Folders header; the folder icon scrolls here instead of opening the browse popup.
   const customFolderSectionRef = useRef<HTMLDivElement>(null);
   const scrollToCustomFolders = useCallback(() => {
     setCustomFoldersCollapsed(false);
@@ -3332,8 +3101,7 @@ export function HubModelPicker({
     });
   }, []);
 
-  // `models` is already narrowed to this Audio mode and platform, so use only exact artifacts
-  // from that contract for the downloaded-task and hidden-sidecar exceptions.
+  // `models` is already narrowed to this Audio mode and platform.
   const activeCatalogArtifactIds = useMemo(
     () =>
       new Set(
@@ -3443,14 +3211,13 @@ export function HubModelPicker({
 
   const handleAddFolder = useCallback(
     async (overridePath?: string) => {
-      // An explicit path lets the folder browser submit in the same tick it calls `setFolderInput`;
-      // reading `folderInput` would race the update.
+      // An explicit path avoids racing the `setFolderInput` update.
       const raw = overridePath !== undefined ? overridePath : folderInput;
       const trimmed = raw.trim();
       if (!trimmed || folderLoading) return;
       setFolderError(null);
       setFolderLoading(true);
-      // From the folder browser's "Use this folder": the typed-input panel is closed, so surface failures via toast.
+      // The typed-input panel is closed here, so surface failures via toast.
       const fromBrowser = overridePath !== undefined;
       try {
         const created = await addScanFolder(trimmed);
@@ -3490,7 +3257,6 @@ export function HubModelPicker({
     async (id: number) => {
       try {
         await removeScanFolder(id);
-        // Optimistic: drop it immediately.
         const next = _scanFoldersCache.filter((f) => f.id !== id);
         _scanFoldersCache = next;
         setScanFolders(next);
@@ -3509,8 +3275,7 @@ export function HubModelPicker({
     void pickerInventory.refreshInventory();
   }, [pickerInventory.refreshInventory]);
 
-  // Updates run as managed downloads, not a blocking call; the worker pulls only changed blobs,
-  // so the cached copy stays usable.
+  // Managed downloads pull only changed blobs, so the cached copy stays usable.
   const startManagedUpdate = useCallback(
     (repoId: string, variant: string, expectedBytes: number) => {
       return downloadManager
@@ -3524,8 +3289,7 @@ export function HubModelPicker({
           if (outcome === "conflict") {
             setUpdateConflictKey(jobKeyOf("model", repoId, variant));
           } else if (outcome === "busy") {
-            // A sibling variant/snapshot for this repo is already downloading, so this update did not
-            // start; say so instead of leaving the cached copy stale.
+            // A sibling download blocks this update; say so instead of leaving the copy stale.
             toast.info("A download for this model is already in progress", {
               description: "Try updating again once it finishes.",
             });
@@ -3557,9 +3321,8 @@ export function HubModelPicker({
     void refreshInventoryIfOlderThan(INVENTORY_FRESHNESS_WINDOW_MS);
   }, [refreshInventoryIfOlderThan]);
 
-  // Hide downloaded models from the recommended list, case-insensitively since the HF cache
-  // lowercases repo ids. Complete downloads only: this set answers "can this id load right now", so
-  // admitting a partial would send a torn snapshot straight to the loader.
+  // Case-insensitive (the HF cache lowercases ids); complete downloads only, since this set means
+  // "can load now".
   const downloadedSet = useMemo(
     () =>
       new Set(
@@ -3569,8 +3332,7 @@ export function HubModelPicker({
       ),
     [cachedGguf, cachedModels],
   );
-  // Ids for the same files: the row, its unsloth mirror and the vendor repo the mirror copies.
-  // A copy cached under one loads for the others, so rows match all of them.
+  // The row, its unsloth mirror and the vendor repo share files, so match all of them.
   const aliasesOf = useCallback(
     (id: string): string[] => {
       const artifact = catalog && artifactForRepoId(id, catalog)?.artifact;
@@ -3586,7 +3348,6 @@ export function HubModelPicker({
       aliasesOf(id).some((alias) => modelIdsMatchForPicker(value, alias)),
     [value, aliasesOf],
   );
-  // The id on disk for a row: itself, else a cached alias.
   const cachedIdFor = useCallback(
     (id: string): string | null =>
       aliasesOf(id).find((alias) => downloadedSet.has(alias.toLowerCase())) ??
@@ -3594,10 +3355,8 @@ export function HubModelPicker({
     [aliasesOf, downloadedSet],
   );
 
-  // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
-  // or as absent. Same split, and the same helper, the Hub page uses. One repo id can hold both a
-  // complete GGUF copy and a torn safetensors one, since the cache keys by repo AND format, so an
-  // id with any complete row is left out: it loads, and the mark would contradict that.
+  // Torn snapshots, so Hub rows can mark partials. An id with any complete row (another format) is
+  // left out, since it loads.
   const partialSet = useMemo(
     () =>
       partialSetFromRows([...cachedGguf, ...cachedModels], (c) => c.repo_id),
@@ -3610,8 +3369,7 @@ export function HubModelPicker({
     [cachedIdFor, partialSet],
   );
 
-  // Which of those continue byte for byte, so a Hub row's mark promises what the On Device row's
-  // does. An id partialSet dropped never draws the mark, so a spare entry here costs nothing.
+  // An id partialSet dropped never draws the mark, so spare entries are harmless.
   const partialResumableSet = useMemo(
     () =>
       new Set(
@@ -3628,11 +3386,9 @@ export function HubModelPicker({
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
 
-  // Drop models Unsloth cannot run for chat. A task-scoped picker wants exactly the tasks the
-  // chat classifier calls unsupported, so it gates on the task.
+  // A task-scoped picker wants exactly the tasks the chat classifier calls unsupported.
   const isChatSupported = useCallback(
     (r: HfModelResult) => {
-      // Image/Video tab (task set): only task-matching, non-editing results.
       if (task)
         return (
           taskMatchesFilter(r.pipelineTag, task) && !isImageEditModel(r.id)
@@ -3699,16 +3455,14 @@ export function HubModelPicker({
           allowedHiddenModelIdMatches(taskCatalogSeedIds, id),
       )
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
-      // Task-scoped pages load single-file GGUF only; chat-only keeps runnable formats. A curated
-      // artifact stays listed whatever its format, since loadSpecFor knows how to load each.
+      // Task pages load single-file GGUF only; curated artifacts stay listed in any format.
       .filter((id) =>
         task
           ? isKnownGgufRepo(id) ||
             Boolean(catalog && artifactForRepoId(id, catalog))
           : !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
       )
-      // Member repos would collapse into the canonical group row, but nothing renders those rows yet
-      // and a task-scoped picker's `models` is exactly group members, so hiding them emptied it.
+      // Hiding member repos emptied task-scoped pickers, whose `models` are exactly group members.
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     const gguf: string[] = [];
     const hub: string[] = [];
@@ -3731,18 +3485,15 @@ export function HubModelPicker({
 
   const showHfSection = debouncedQuery.trim().length > 0;
 
-  // Independent sort for each local section's inline dropdown.
   const [downloadedSort, setDownloadedSort] = useState<LocalSortKey>("recent");
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
-  // Format filter toggle for the Unsloth listing.
   const [chosenFormatFilter, setFormatFilter] = useState<FormatFilter>("all");
   const npuCatalog = useNpuCatalog(npu);
   const formatFilter: FormatFilter =
     chosenFormatFilter === "npu" && !npuCatalog ? "all" : chosenFormatFilter;
   const [npuOnDeviceCollapsed, setNpuOnDeviceCollapsed] = useState(false);
   const [npuBrowseCollapsed, setNpuBrowseCollapsed] = useState(true);
-  // What this picker's task filter has already established about every row it can show; chat
-  // passes none and keeps the full set.
+  // Chat passes no task filter and keeps the full set.
   const capabilityScope = useMemo<readonly (keyof ModelCapabilities)[] | null>(() => {
     const tasks: readonly string[] = task
       ? typeof task === "string"
@@ -3750,18 +3501,16 @@ export function HubModelPicker({
         : task
       : [];
     if (tasks.length === 0) return null;
-    // Video keeps audio: a soundtrack is the one thing that separates two video models here.
+    // Video keeps audio: a soundtrack separates two video models.
     if (VIDEO_GEN_TASKS.some((t) => tasks.includes(t))) return ["audio"];
     if (IMAGE_GEN_TASKS.some((t) => tasks.includes(t))) return [];
     if (AUDIO_GEN_TASKS.some((t) => tasks.includes(t))) return [];
     return null;
   }, [task]);
 
-  // MLX and Safetensors repos are one download, so a row can name its size.
   const hubRowsShowSize =
     formatFilter === "mlx" || formatFilter === "safetensors";
 
-  // A curated row's name and its chips; ids outside the catalog have neither and show the raw repo id.
   const curatedRow = useCallback(
     (id: string) =>
       (catalog && curatedRowLabelFor(id, catalog, hostClass, denseQuantSchemes)) ?? {
@@ -3771,11 +3520,11 @@ export function HubModelPicker({
     [catalog, hostClass, denseQuantSchemes],
   );
 
-  /** Whether this host can run a curated id at all, as opposed to whether it has room for it. Browse rows only. */
+  /** Whether the host can run a curated id at all, not whether it has room. Browse rows only. */
   const curatedOfferable = useCallback(
     (id: string) => {
       if (!catalog) return true;
-      // Downloaded weights keep their row: hiding what is already on disk reads as Unsloth having lost the model.
+      // Downloaded weights keep their row.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
       return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
@@ -3783,8 +3532,7 @@ export function HubModelPicker({
     [catalog, downloadedSet, hostClass],
   );
 
-  // Paint curated rows before any request, so a task-scoped picker whose models are already in
-  // memory does not sit on a spinner.
+  // Paint curated rows before any request so task pickers do not sit on a spinner.
   const catalogSeedRows = useMemo<HfModelResult[]>(() => {
     if (!task) return [];
     return dedupe(models.map((model) => model.id))
@@ -3803,17 +3551,13 @@ export function HubModelPicker({
         downloads: 0,
         likes: 0,
         isGguf: isKnownGgufRepo(id),
-        // Size from the catalog, not an id "<n>B" guess: the guess is missing for most curated ids
-        // and wrong for others (Wan2.2-TI2V-5B is 30 GB, not 2).
+        // Size from the catalog, not an id "<n>B" guess (Wan2.2-TI2V-5B is 30 GB).
         curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
-        // Same reason the size is curated: a seed the listing does not return has no other source for its param chip.
         totalParams: catalog ? curatedTotalParamsFor(id, catalog) : undefined,
       }));
   }, [catalog, models, formatFilter, isKnownGgufRepo, task, curatedOfferable]);
 
-  /** The catalog's own fit verdict for a curated artifact, or undefined where it has none. Every
-   *  list that judges a row against the device goes through this, so a badge and its filters
-   *  cannot disagree. */
+  /** Every list judging a row against the device goes through this, so badges and filters agree. */
   const catalogFit = useCallback(
     (id: string, budget: DeviceBudget) =>
       catalog ? curatedArtifactFit(id, catalog, budget) : undefined,
@@ -3825,8 +3569,7 @@ export function HubModelPicker({
     [],
   );
 
-  /** Pipeline tag is the Hub's only signal, since the real test is the checkpoint's tokenizer and
-   *  that needs the download first. Exports in another serialization are dropped by name. */
+  /** Pipeline tag is the Hub's only signal before download; other serializations dropped by name. */
   const isLoadableCommunityRepo = useCallback(
     (id: string) =>
       !/(^|[-_/.])(onnx|openvino|tflite|coreml)([-_./]|$)/i.test(id),
@@ -3838,8 +3581,7 @@ export function HubModelPicker({
     [catalogSeedRows],
   );
 
-  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "Fits on device"
-  // tick also drops models too big for the device. Downloaded models stay visible.
+  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac.
   const hubRowAllowed = (r: HfModelResult) =>
     !rowFilter || rowFilter({ id: r.id, task: r.pipelineTag });
   const recommendedRows = useMemo(() => {
@@ -3864,12 +3606,10 @@ export function HubModelPicker({
     const keep = (r: HfModelResult) =>
       keepCommon(r) &&
       curatedOfferable(r.id) &&
-      // Task pages load single-file GGUF, plus curated artifacts in any format.
       (!task ||
         r.isGguf ||
         Boolean(catalog && artifactForRepoId(r.id, catalog)));
-    // A community row has no catalog artifact by definition, so the curated clause above would
-    // drop every third-party safetensors checkpoint.
+    // Community rows have no catalog artifact, so the curated clause would drop them all.
     const keepCommunity = (r: HfModelResult) =>
       keepCommon(r) && isTaskRuntimeSupported(r);
     // Members are not filtered here (see recommendedIds): that dropped them from Hub search too.
@@ -3879,18 +3619,14 @@ export function HubModelPicker({
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
     const pipelineBudget = artifactBudget(rowGpu);
     const fits = (r: HfModelResult) =>
-      // Downloaded models show regardless of fit.
       cachedIdFor(r.id) !== null ||
-      // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
-      // hfModelFitsDevice counts RAM toward a load that never leaves the card.
+      // The catalog's verdict where it has one: hfModelFitsDevice counts RAM a card-only load never uses.
       (catalogFit(r.id, pipelineBudget)?.fits ??
         hfModelFitsDevice(r, diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu, {
           budgetFraction,
-          // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
-          // rule IS the budget those rows had before the classifiers were merged.
+          // Not `&& r.isGguf`: on a task page safetensors rows use the same backend budget.
           mediaLoad: diffusionLoad,
           hostPooledMemory: gpu.loadDeviceSharesHostMemory,
-          // The scoped inventory's own count, so it always describes rowInferenceGpu's capacity.
           gpuCount: rowInferenceGpu.deviceCount,
         }));
     const unslothRows = orderRecommendedRows({
@@ -3899,7 +3635,6 @@ export function HubModelPicker({
       keep,
       deviceFiltered,
       fits,
-      // Curated families follow the dropdown's sort, not catalog order.
       familyOf: catalog
         ? (id) => groupForRepoId(id, catalog)?.canonicalId.toLowerCase()
         : undefined,
@@ -3908,8 +3643,7 @@ export function HubModelPicker({
         .map((g) => g.canonicalId.toLowerCase()),
     });
     if (!communityRecommendedEnabled) return unslothRows;
-    // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues
-    // into the wider Hub. Same keep/fits gates.
+    // Community rows append below everything unsloth publishes, with the same gates.
     const above = new Set(unslothRows.map((r) => r.id.toLowerCase()));
     // A vendor repo whose unsloth mirror is listed above is the same files.
     for (const r of unslothRows) {
@@ -3947,22 +3681,18 @@ export function HubModelPicker({
     isLoadableCommunityRepo,
   ]);
 
-  // Per-row meta and VRAM badge from the recommended listing's own metadata, with the curated
-  // seeds behind it: a listing row wins, and a curated row it never returns keeps its chip.
+  // Listing metadata wins; curated seeds fill rows the listing never returns.
   const recommendedMeta = useMemo(() => {
     const map = new Map<
       string,
       {
         meta: string | null;
-        /** GGUF rows carry the classifier's own verdict; curated torch rows carry "exceeds". */
         status: GgufFitClass | VramFitStatus | null;
         est: number;
         budget?: CuratedBudget;
       }
     >();
-    /** Size-based verdict for a row whose real footprint we know, against the budget that row
-     *  actually loads into. Returns the verdict, not a boolean: a boolean collapsed `marginal`
-     *  and `partial` into "no badge", so a repo needing offload rendered as a clean fit. */
+    /** Returns the verdict, not a boolean, so `marginal`/`partial` still badge. */
     const ggufRowFit = (
       sizeBytes: number | undefined,
       budget: typeof inferenceGpu,
@@ -3971,10 +3701,9 @@ export function HubModelPicker({
         budget.memoryTotalGb > 0 || budget.systemRamAvailableGb > 0;
       if (!budget.budgetKnown && !anyBudget) return null;
       if (sizeBytes == null) return null;
-      // Probed and genuinely zero (a Vulkan device reporting nothing) means nothing fits.
+      // Probed and genuinely zero (e.g. Vulkan reporting nothing) means nothing fits.
       if (!anyBudget) return "oom";
-      // Images / Video place this GGUF through the diffusion backend, so it takes the same rule its
-      // quant rows take; different budgets let a row read as fitting while its children read oom.
+      // Same diffusion rule as its quant rows, so parent and children agree.
       const fit = diffusionLoad
         ? classifyMediaGgufFit(
             sizeBytes,
@@ -3995,17 +3724,14 @@ export function HubModelPicker({
         ? "exceeds"
         : fit;
     };
-    // A curated pipeline loads through torch and a task load puts the whole thing on ONE device,
-    // so it is judged there. inferenceGpu is the GGUF backend's inventory, a different install.
+    // A task load puts the whole pipeline on one device; inferenceGpu is the GGUF backend's inventory.
     const rowGpu = loadScopedGpu(gpu, Boolean(task));
     const pipelineBudget = artifactBudget(rowGpu);
-    // The inventory of the runtime that PLACES the row, not of its file format: on a Vulkan chat
-    // build inferenceGpu can see a card torch cannot, so the media rule scored against capacity
-    // the diffusion loader never gets.
+    // Use the inventory of the runtime that places the row: Vulkan may see cards torch cannot.
     const rowInferenceGpu = diffusionLoad
       ? rowGpu
       : loadScopedGpu(inferenceGpu, Boolean(task));
-    // Community rows come from their own listing; without them folded in here they render with no size or VRAM chip.
+    // Fold in community rows, or they render with no size or VRAM chip.
     for (const r of [
       ...recommendedSearch.results,
       ...catalogSeedRows,
@@ -4013,8 +3739,6 @@ export function HubModelPicker({
     ]) {
       if (map.has(r.id)) continue;
       const isG = isKnownGgufRepo(r.id);
-      // GGUF param count comes from the repo name or the GGUF metadata, so even repos with no "<n>B"
-      // token show a param chip.
       const ggufParams = r.totalParams ?? paramsFromId(r.id);
       const meta = isG
         ? [
@@ -4028,28 +3752,22 @@ export function HubModelPicker({
             r.totalParams
               ? formatCompact(r.totalParams)
               : extractParamLabel(r.id),
-            // MLX and safetensors get a format pill like GGUF.
             isMlxId(r.id) ? "MLX" : "Safetensors",
             r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
           ]
             .filter(Boolean)
             .join(" · ") || null;
       if (isG) {
-        // GGUF fit is size-based: flag OOM when even the smallest quant we can size exceeds the
-        // budget. Repos we cannot size show no badge.
+        // Repos we cannot size show no badge.
         const params = ggufParams;
         const sizeBytes =
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
         map.set(r.id, {
           meta,
-          // The classifier's own verdict, so a GGUF row never borrows the torch-only "exceeds", scoped
-          // to the device the load LANDS on: unscoped, a downloaded media parent read as safe while
-          // every variant inside it read as oom.
+          // The classifier's own verdict, scoped to the device the load lands on.
           status: ggufRowFit(sizeBytes, rowInferenceGpu),
-          // The figure the verdict was reached with, not the raw file size: classifyGgufFit scores
-          // weights plus activations and KV, so a 20 GiB quant needing 24 GiB read "tight fit" beside
-          // "~20GB VRAM". The media rule scores the raw size and keeps it.
+          // Show the figure the verdict used (weights + activations + KV); the media rule uses raw size.
           est: sizeBytes
             ? Math.round(
                 diffusionLoad
@@ -4060,7 +3778,6 @@ export function HubModelPicker({
         });
         continue;
       }
-      // Use the catalog's fit estimate for both the verdict and badge, not the LLM estimator.
       const curatedFit = catalogFit(r.id, pipelineBudget);
       if (curatedFit !== undefined) {
         map.set(r.id, {
@@ -4093,7 +3810,7 @@ export function HubModelPicker({
     inferenceGpu,
   ]);
 
-  // Hub pipeline tag per repo id, handed to the page on pick so a task page can classify an uncurated repo.
+  // Handed to the page on pick so a task page can classify an uncurated repo.
   const pipelineTagById = useMemo(() => {
     const map = new Map<string, string>();
     for (const r of [
@@ -4112,8 +3829,7 @@ export function HubModelPicker({
     communityBrowse.results,
   ]);
 
-  // The rest of the Hub evidence the Audio page judges a community row on, keyed the same way so
-  // a chat pick is routed on what the page would have listed it on.
+  // Same Hub evidence the Audio page judges rows on, so chat routing matches its listing.
   const hubEvidenceById = useMemo(() => {
     const map = new Map<
       string,
@@ -4138,8 +3854,7 @@ export function HubModelPicker({
         libraryName: r.libraryName,
       });
     }
-    // Downloaded rows too: the backend tags a cached Whisper checkpoint as ASR even when its repo
-    // name says nothing, and without those tags the same row was judged on its id alone.
+    // The backend tags cached Whisper checkpoints as ASR even when the name says nothing.
     for (const c of cachedModels) {
       const existing = map.get(c.repo_id);
       if (existing) {
@@ -4180,8 +3895,7 @@ export function HubModelPicker({
     cachedGguf,
   ]);
 
-  // Tag-accurate capabilities keyed by repo id, pooled from both HF listings then the catalog
-  // for curated ids neither returned. Listings first: real tags outrank curated data.
+  // Listings first: real tags outrank curated data.
   const capsById = useMemo(() => {
     const map = new Map<string, ModelCapabilities>();
     for (const r of [
@@ -4205,8 +3919,7 @@ export function HubModelPicker({
         const curated = curatedCapabilitiesFor(row.id, catalog);
         if (!curated) continue;
         const detected = map.get(row.id);
-        // Merged, not skipped when the listing already answered: a curated entry states what the model
-        // does (H3's audio track, which no repo tag mentions), and first-wins dropped that.
+        // Merged, not first-wins: curated entries state things no tag mentions (H3's audio).
         map.set(
           row.id,
           detected
@@ -4231,9 +3944,7 @@ export function HubModelPicker({
     catalogSeedRows,
   ]);
 
-  // Ordered by the On Device dropdown (Recent / Size / Name / Downloaded). The gate keeps a
-  // supported diffusion GGUF listed here so picking one routes to Images or Video; only the
-  // never-loadable tag is dropped.
+  // Supported diffusion GGUFs stay listed so a pick routes to Images or Video.
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(
@@ -4246,16 +3957,14 @@ export function HubModelPicker({
               catalog,
               activeCatalogArtifactIds,
             ) &&
-            // A speech GGUF no backend here can decode (CSM) would otherwise be listed as a chat model and
-            // fail only in llama-server. Non-audio rows always pass.
+            // A CSM speech GGUF would otherwise list as chat and fail only in llama-server.
             audioPickIsRoutable({
               id: c.repo_id,
               task: c.task,
               audioType: c.audio_type,
               isGguf: true,
               isCurated: artifactForRepoId(c.repo_id, AUDIO_CATALOG) !== null,
-              // The task and codec both came from GGUF classification; codec provenance separates runnable
-              // Orpheus from unsupported CSM.
+              // Codec provenance separates runnable Orpheus from unsupported CSM.
               taskFromGgufArch: true,
             }) &&
             (!rowFilter ||
@@ -4279,17 +3988,12 @@ export function HubModelPicker({
       rowFilter,
     ],
   );
-  // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos; the Images
-  // picker keeps only unsloth-hosted ones this backend can load.
   const sortedCachedModels = useMemo(
     () =>
       sortCachedRepos(
         cachedModels.filter(
           (c) =>
-            // Partial snapshots are listed, not loaded. Dropping them here hid a cancelled
-            // multi-GB download from the only list that could delete it; the row instead carries
-            // a partial mark and selects with isDownloaded: false, so the click opens the
-            // download rather than erroring or triggering a silent re-fetch.
+            // Partial snapshots are listed (so they can be deleted) but select with isDownloaded: false.
             passesTaskGate(
               c.task,
               c.repo_id,
@@ -4298,10 +4002,8 @@ export function HubModelPicker({
               activeCatalogArtifactIds,
               c,
             ) &&
-            // Diffusion pickers: unsloth repos plus any repo the backend can LOAD. Gate on a curated
-            // ARTIFACT, not a group-key match: a base sibling matches by key but dead-ends at the trust
-            // gate. An unsloth repo must also be a full pipeline, since from_pretrained fails on a
-            // single-file checkpoint repo.
+            // Gate on a curated artifact, not a group-key match (base siblings fail the trust gate); unsloth
+            // repos must be full pipelines, since from_pretrained fails on single-file repos.
             (!task ||
               (isUnslothRepoId(c.repo_id) && !c.single_file) ||
               ((c.task === "automatic-speech-recognition" ||
@@ -4354,25 +4056,20 @@ export function HubModelPicker({
       rowFilter,
     ],
   );
-  // Task-scoped loads put the whole pipeline on ONE device, so quant fit uses the device the
-  // load lands on (the lowest visible ordinal), not the multi-GPU sum: sizing against the
-  // bigger card OOMs the smaller one. Chat keeps the sum.
+  // Task loads land on one device (lowest visible ordinal), so size against it; chat keeps the sum.
   const expanderGpuGbFrom = (info: typeof inferenceGpu) =>
     info.available
       ? loadScopedGpu(info, Boolean(task)).memoryTotalGb
       : undefined;
-  // Images / Video place through torch even where llama.cpp is a Vulkan build, so their budget
-  // comes from the torch inventory.
+  // Images / Video place through torch even on a Vulkan llama.cpp build.
   const expanderBudgetGpu = diffusionLoad ? gpu : inferenceGpu;
   const expanderGpuGb = expanderGpuGbFrom(expanderBudgetGpu);
   const expanderSystemGpuGb = expanderGpuGbFrom(gpu);
-  // From the SAME scoping decision as the capacity above: loadScopedGpu narrows the count to 1,
-  // so the per-card reserve is never charged host-wide against one card.
+  // Same scoping as the capacity, so the per-card reserve is not charged host-wide.
   const expanderScopedGpu = loadScopedGpu(expanderBudgetGpu, Boolean(task));
   const expanderGpuCount = expanderScopedGpu.deviceCount;
   const expanderRamGb = expanderScopedGpu.systemRamAvailableGb;
 
-  // Each local section's search is scoped to its own models (matched by name).
   const localQuery = normalizeForSearch(debouncedQuery.trim());
   const matchesLocalQuery = (m: LocalModelInfo) =>
     !localQuery ||
@@ -4385,20 +4082,17 @@ export function HubModelPicker({
         lmStudioModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            // The same speech gate the cached GGUF rows get: a CSM file found locally is just as
-            // undecodable, and routing it to Audio evicts the chat model before the row is refused.
+            // A local CSM file is just as undecodable; routing it to Audio evicts the chat model first.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
               audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // Task and codec came from the filesystem classifier, so a renamed CSM file cannot borrow an
-              // Orpheus-looking path.
+              // From the filesystem classifier, so a renamed CSM file cannot pass as Orpheus.
               taskFromGgufArch: true,
             }) &&
-            // The backend tags every local model with its task for exactly this: on the Images/Video pages
-            // a chat GGUF must not be offered.
+            // On Images/Video a chat GGUF must not be offered.
             passesTaskGate(
               m.task,
               m.model_id ?? m.id,
@@ -4409,8 +4103,7 @@ export function HubModelPicker({
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m) &&
-            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
-            // and LM Studio rows too, not just the cached Hub rows above.
+            // A task page's row filter applies to local and LM Studio rows too.
             (!rowFilter ||
               rowFilter({
                 id: m.model_id ?? m.id,
@@ -4435,25 +4128,21 @@ export function HubModelPicker({
       rowFilter,
     ],
   );
-  // Local ./models entries. Chat-only Unsloth runs GGUF anywhere and MLX on Mac, so raw
-  // checkpoints there are hidden; a task-scoped picker is exempt, since the image backend
-  // loads local pipelines.
+  // Chat-only hides raw checkpoints; task pickers are exempt since the image backend loads local pipelines.
   const sortedLocalDir = useMemo(
     () =>
       sortLocalModels(
         localDirModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            // The same speech gate the cached GGUF rows get: a CSM file found locally is just as
-            // undecodable, and routing it to Audio evicts the chat model first.
+            // Same speech gate as cached GGUF rows.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
               audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // Task and codec came from the filesystem classifier, so a renamed CSM file cannot borrow an
-              // Orpheus-looking path.
+              // Filesystem classifier task, so a renamed CSM file cannot pass as Orpheus.
               taskFromGgufArch: true,
             }) &&
             passesTaskGate(
@@ -4470,8 +4159,6 @@ export function HubModelPicker({
               (isMac && localModelIsMlx(m))) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m) &&
-            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
-            // and LM Studio rows too, not just the cached Hub rows above.
             (!rowFilter ||
               rowFilter({
                 id: m.model_id ?? m.id,
@@ -4504,16 +4191,13 @@ export function HubModelPicker({
         customFolderModels.filter(
           (m) =>
             filesystemRowsSupportedForTask(task, m.task) &&
-            // The same speech gate the cached GGUF rows get: a CSM file found locally is just as
-            // undecodable, and routing it to Audio evicts the chat model first.
+            // Same speech gate as cached GGUF rows.
             audioPickIsRoutable({
               id: m.model_id ?? m.id,
               task: m.task,
               audioType: m.audio_type,
               isGguf: localModelIsGguf(m),
               isCurated: artifactForRepoId(m.model_id ?? m.id, AUDIO_CATALOG) !== null,
-              // Task and codec came from the filesystem classifier, so a renamed CSM file cannot borrow an
-              // Orpheus-looking path.
               taskFromGgufArch: true,
             }) &&
             passesTaskGate(
@@ -4526,8 +4210,6 @@ export function HubModelPicker({
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m) &&
-            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
-            // and LM Studio rows too, not just the cached Hub rows above.
             (!rowFilter ||
               rowFilter({
                 id: m.model_id ?? m.id,
@@ -4553,8 +4235,7 @@ export function HubModelPicker({
     ],
   );
 
-  // Chat cannot load a diffusion model but the Images/Video pages can, so a pick routes to the
-  // page that runs it rather than 400ing. Task-scoped pickers select normally.
+  // Chat cannot load diffusion models, so the pick routes to the page that runs it.
   const navigateToPage = useNavigate();
   const diffusionTaskById = useMemo(() => {
     const byId = new Map<string, string>();
@@ -4573,8 +4254,7 @@ export function HubModelPicker({
     };
     for (const c of cachedGguf) put(c.repo_id, c.task);
     for (const c of cachedModels) put(c.repo_id, c.task);
-    // Both ids: a local row's click passes m.id (a filesystem path) while m.model_id is its
-    // HF-style name, so keying on one alone makes the lookup miss.
+    // Key on both: m.id is a path while m.model_id is its HF-style name.
     const putLocal = (m: LocalModelInfo) => {
       const exactAudioArtifact = m.model_id
         ? artifactForRepoId(m.model_id, AUDIO_CATALOG)
@@ -4617,7 +4297,7 @@ export function HubModelPicker({
             ...(hubEvidenceById.get(id) ?? {}),
           })
         ) {
-          // Loading it here would evict the chat model for a repo neither surface can run.
+          // Loading here would evict the chat model for a repo neither surface can run.
           toast.error(
             `${id} is not an audio model Unsloth can run yet. The Audio page lists the families it supports.`,
             { duration: 7000 },
@@ -4641,15 +4321,12 @@ export function HubModelPicker({
     [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp],
   );
 
-  // Fine-tuned models for the On Device section: flat, query-filtered, newest first.
   const fineTunedRows = useMemo(() => {
     const needle = normalizeForSearch(debouncedQuery.trim());
     return loraModels
       .filter(
         (m) =>
-          // A CSM export in a GGUF container loads nowhere: llama.cpp has no decoder and the Audio page
-          // does not list speech GGUFs. audioType comes off the checkpoint, so a renamed path is
-          // still caught.
+          // A CSM GGUF export loads nowhere; audioType comes off the checkpoint, so renames are caught.
           !localAudioRowIsUndecodableGguf({
             audioType: m.audioType,
             exportType: m.exportType,
@@ -4674,15 +4351,12 @@ export function HubModelPicker({
       });
   }, [loraModels, debouncedQuery]);
 
-  // While searching, filter Downloaded by the query instead of hiding it, so a downloaded model
-  // the user is searching for stays visible.
   const visibleCachedGguf = useMemo(() => {
     if (!showHfSection)
       return sortedCachedGguf.filter((c) =>
         matchesFormatFilter(c.repo_id, true, formatFilter),
       );
     const q = normalizeForSearch(debouncedQuery.trim());
-    // Keep the format filter active while searching so the dropdown stays consistent with the no-query branch.
     return sortedCachedGguf.filter(
       (c) =>
         matchesFormatFilter(c.repo_id, true, formatFilter) &&
@@ -4702,8 +4376,7 @@ export function HubModelPicker({
     );
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
 
-  // Non-GGUF cached rows are hidden in chat-only mode, so the empty-state logic must use this or the
-  // picker can go blank. A task-scoped picker is exempt: the image backend loads local pipelines.
+  // Empty-state logic must use this or the picker can go blank.
   const visibleCachedModelRows = chatOnly && !task ? [] : visibleCachedModels;
 
   const visibleAdditionalOnDeviceModels = useMemo(() => {
@@ -4782,15 +4455,13 @@ export function HubModelPicker({
     hfToken: hfToken || undefined,
   });
 
-  // Pinned entries surface in their own section above the Unsloth heading: GGUF quants pin
-  // individually with their repo still listed below, non-GGUF repos pin whole.
+  // GGUF quants pin individually (repo still listed below); non-GGUF repos pin whole.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
 
-  // Connected pins keep their own list: an `external::` id carries the "::" the On Device store
-  // reads as its repo/quant separator, so a pin filed there returns as a phantom quant row.
+  // Separate store: `external::` ids contain the "::" the On Device store uses as a separator.
   const pinnedConnectedIds = usePinnedConnectedModelsStore((s) => s.pinned);
   const togglePinnedConnected = usePinnedConnectedModelsStore(
     (s) => s.togglePinnedConnected,
@@ -4799,8 +4470,7 @@ export function HubModelPicker({
     () => new Set(pinnedConnectedIds),
     [pinnedConnectedIds],
   );
-  // Connections behind those models, read for the base URL a capability check needs: a Gemini
-  // connection pointed at an OpenAI-compatible proxy returns no inline images.
+  // Base URL matters: a Gemini connection behind an OpenAI-compatible proxy returns no inline images.
   const externalProviders = useExternalProvidersStore((s) => s.providers);
   const externalBaseUrlById = useMemo(
     () =>
@@ -4816,8 +4486,7 @@ export function HubModelPicker({
       ),
     [externalProviders],
   );
-  // A connection's own output cap, which lowers the model's documented one. The bounds the
-  // per-model editor offers have to be the ones every request is clamped to.
+  // The per-model editor must offer the bounds every request is clamped to.
   const externalMaxOutputById = useMemo(
     () =>
       new Map(
@@ -4828,8 +4497,7 @@ export function HubModelPicker({
       ),
     [externalProviders],
   );
-  // A self-hosted OpenAI-compatible endpoint publishes no reasoning signal, so a vLLM connection
-  // carries the answer itself. It is the only place that answer lives.
+  // Self-hosted endpoints publish no reasoning signal, so the connection flag is the only source.
   const externalReasoningFlagById = useMemo(
     () =>
       new Map(
@@ -4861,7 +4529,6 @@ export function HubModelPicker({
     useState<ConnectedSortKey>("provider");
   const [connectedModality, setConnectedModality] =
     useState<ConnectedModalityFilter>("all");
-  // Provider ids the user folded away, and whether the Pinned group is folded.
   const [collapsedConnectedGroups, setCollapsedConnectedGroups] = useState<
     ReadonlySet<string>
   >(() => new Set());
@@ -4874,7 +4541,6 @@ export function HubModelPicker({
       return next;
     });
   }, []);
-  // The row whose Model info is open.
   const [infoModel, setInfoModel] = useState<{
     model: ExternalModelOption;
     providerModelId: string;
@@ -4893,8 +4559,7 @@ export function HubModelPicker({
     connectionMaxOutputTokens: number | null;
   } | null>(null);
 
-  // The shared helper, not navigator.clipboard: that is undefined in the desktop shell and over
-  // plain HTTP on a LAN address, where reading .writeText off it throws before any catch runs.
+  // Not navigator.clipboard: undefined in the desktop shell and over plain HTTP.
   const copyConnectedModelId = useCallback(async (providerModelId: string) => {
     if (await copyToClipboard(providerModelId)) {
       toast.success(`Copied ${providerModelId}`);
@@ -4903,11 +4568,9 @@ export function HubModelPicker({
     }
   }, []);
 
-  // Candidate pins whose repo still exists in the cache; per-quant validation below is needed
-  // because deleting one variant can leave a sibling cached.
+  // Per-quant validation is needed because deleting one variant can leave a sibling cached.
   const pinnedQuantCandidates = useMemo(() => {
-    // The existence check ignores the text query so a pinned quant stays findable by quant name;
-    // querying visibleCachedGguf would drop the repo first.
+    // Ignore the text query so a pinned quant stays findable by quant name.
     const cached = new Set(
       sortedCachedGguf
         .filter((c) => matchesFormatFilter(c.repo_id, true, formatFilter))
@@ -4978,8 +4641,7 @@ export function HubModelPicker({
             ),
           };
         } catch {
-          // If the backend cannot verify a quant, hiding the direct-load row is safer than claiming a
-          // missing file is downloaded.
+          // Hide unverifiable quants rather than claim a missing file is downloaded.
           return { repoId, hasVision: undefined, downloaded: [], sizes: [] };
         }
       }),
@@ -5012,7 +4674,6 @@ export function HubModelPicker({
     [pinnedQuantValidation],
   );
 
-  // Verified downloaded quants, in pin order and filtered by repo id or quant.
   const pinnedQuants = useMemo(() => {
     const q = normalizeForSearch(debouncedQuery.trim());
     return pinnedQuantCandidates.filter(
@@ -5029,7 +4690,6 @@ export function HubModelPicker({
     [visibleCachedModelRows, pinnedSet],
   );
 
-  // Pinned fine-tunes leave the Fine-tuned section; both hide under a task filter.
   const pinnedFineTunedRows = useMemo(
     () => (task ? [] : fineTunedRows.filter((m) => pinnedSet.has(pinKey(m.id)))),
     [task, fineTunedRows, pinnedSet],
@@ -5065,8 +4725,7 @@ export function HubModelPicker({
     return rows;
   }, [pinnedIds, pinnedQuants, pinnedCachedModelRows, pinnedFineTunedRows]);
 
-  // A repo whose only quant is pinned moves its sole-quant row into Pinned instead of showing
-  // twice. Multi-quant repos stay, since their row picks the other quants.
+  // A sole quant that is pinned moves to Pinned instead of showing twice.
   const pinnedSoleQuantRows = useMemo(() => {
     const rows = new Map<
       string,
@@ -5086,8 +4745,7 @@ export function HubModelPicker({
     [pinnedSoleQuantRows],
   );
 
-  // Split downloaded models so non-Unsloth repos get their own "Other models" section above Fine-tuned.
-  // Kept-loaded models first: a stable partition, so the splits below keep that order.
+  // Kept-loaded models first, via a stable partition.
   const [keptFirstCachedGguf, keptFirstCachedModelRows] = useMemo(() => {
     const first = <T extends { repo_id: string }>(rows: T[]): T[] =>
       loadedIdSet.size === 0
@@ -5135,8 +4793,6 @@ export function HubModelPicker({
     [keptFirstCachedModelRows, pinnedSet],
   );
 
-  // Param counts come straight off the unsloth listings the picker already loaded, so the VRAM
-  // badges need no extra fetch.
   const recommendedParamCountById = useMemo(() => {
     const map = new Map<string, number>();
     for (const r of [...results, ...recommendedSearch.results]) {
@@ -5145,7 +4801,7 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
-  // Shared by both search lists so a curated id one drops cannot return via the other as a raw Hub row.
+  // Shared so a curated id one list drops cannot return via the other.
   const searchRowFits = useCallback(
     (row: {
       id: string;
@@ -5157,8 +4813,7 @@ export function HubModelPicker({
       searchRowFitsDevice(
         {
           ...row,
-          // Curated params last, same rule as the curated size: a listing total wins, but a repo no
-          // listing returns must still be sizable or `requireKnown` hides it from search.
+          // A repo no listing returns must still be sizable or `requireKnown` hides it.
           totalParams:
             row.totalParams ??
             recommendedParamCountById.get(row.id) ??
@@ -5172,8 +4827,7 @@ export function HubModelPicker({
           gpu,
           inferenceGpu,
           taskScoped: Boolean(task),
-          // Separate from taskScoped: that picks the single-device budget for every task page, this
-          // picks the diffusion RULE, which only Images and Video use.
+          // taskScoped picks the single-device budget; this picks the diffusion rule (Images and Video only).
           diffusionLoad,
           budgetFraction,
           hostPooledMemory: gpu.loadDeviceSharesHostMemory,
@@ -5196,18 +4850,15 @@ export function HubModelPicker({
     if (!showHfSection) return [];
     const q = normalizeForSearch(debouncedQuery.trim());
     return (
-      // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
-      // list still paints, so without them a curated pick vanishes from search once on disk.
+      // Seeds included, or a curated pick vanishes from search once downloaded.
       searchableRecommendedIds(catalogSeedIds, recommendedIds)
-        // A mirror row also answers to its vendor id.
         .filter((id) =>
           aliasesOf(id).some((alias) => normalizeForSearch(alias).includes(q)),
         )
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
         )
-        // Curated defaults obey the fit toggle like the live HF rows, else large defaults resurface in
-        // search with the filter on.
+        // Curated defaults obey the fit toggle too.
         .filter(
           (id) =>
             !fitOnDeviceOnly ||
@@ -5228,7 +4879,7 @@ export function HubModelPicker({
     searchRowFits,
   ]);
 
-  // Aliases included, so a vendor hit whose mirror row is listed is not shown twice.
+  // Aliases included so a vendor hit is not shown twice.
   const recommendedSet = useMemo(
     () =>
       new Set(
@@ -5237,7 +4888,6 @@ export function HubModelPicker({
     [filteredRecommendedIds, aliasesOf],
   );
 
-  // One pipeline for both listings, so community rows clear the same gates; `owned` is the only difference.
   const searchIdsFrom = useCallback(
     (rows: readonly HfModelResult[], owned: (id: string) => boolean) =>
       rows
@@ -5253,12 +4903,9 @@ export function HubModelPicker({
         .map((result) => result.id)
         .filter((id) => !isHiddenModelId(id))
         .filter(owned)
-        // Search reaches the live Hub, so without this a query re-lands the exact curated row the seed
-        // and Recommended filters just dropped, clickable and still refused at load.
+        // Otherwise search re-lands curated rows the host would refuse at load.
         .filter(curatedOfferable)
         .filter((id) => !recommendedSet.has(id.toLowerCase()))
-        // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors on Mac, matching the
-        // empty Recommended view.
         .filter(
           (id) =>
             !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
@@ -5284,12 +4931,10 @@ export function HubModelPicker({
   );
 
   const hfIds = useMemo(() => {
-    // Only the Unsloth tab searches the HF listing.
     if (!showHfSection || section !== "recommended") return [];
     return searchIdsFrom(results, isUnslothOwned);
   }, [results, showHfSection, section, searchIdsFrom, isUnslothOwned]);
 
-  // Community search hits, listed after the unsloth ones and deduped against them.
   const communitySearchIds = useMemo(() => {
     if (!communityDiscoveryEnabled || !showHfSection) return [];
     const above = new Set(hfIds.map((id) => id.toLowerCase()));
@@ -5316,14 +4961,13 @@ export function HubModelPicker({
     isTaskRuntimeSupported,
   ]);
 
-  /** Unsloth first, then community: one list so rows, keyboard order and the empty state cannot drift apart. */
+  /** One list so rows, keyboard order and the empty state cannot drift apart. */
   const searchRowIds = useMemo(
     () => [...hfIds, ...communitySearchIds],
     [hfIds, communitySearchIds],
   );
 
-  // Query- and modality-matching connected models, pinned ones kept separate. A pin moves a row
-  // into the Pinned group rather than copying it, as the On Device sections do.
+  // A pin moves a row into the Pinned group rather than copying it.
   const connectedMatches = useMemo(() => {
     const needle = normalizeForSearch(debouncedQuery.trim());
     return externalModels.filter((model) => {
@@ -5346,9 +4990,7 @@ export function HubModelPicker({
         ? marks.vision
         : marks.capabilities[connectedModality];
     });
-    // The marks read module state a provider sync writes after first paint, so the version is
-    // the only dep that can report the memo stale. exhaustive-deps cannot see through
-    // connectedModelMarks to that read, so it calls the dep unnecessary.
+    // The marks read module state a provider sync writes later; the version is the only staleness dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     externalModels,
@@ -5359,7 +5001,7 @@ export function HubModelPicker({
     catalogVersion,
   ]);
 
-  // Pin order, always: the sort below orders the catalogue, and a hand-arranged list is not it.
+  // Pin order, always: the hand-arranged list is not sorted.
   const pinnedConnectedRows = useMemo(() => {
     const rank = makePinRank(pinnedConnectedIds);
     return connectedMatches
@@ -5367,8 +5009,7 @@ export function HubModelPicker({
       .sort((a, b) => rank(a.id) - rank(b.id));
   }, [connectedMatches, pinnedConnectedIds, pinnedConnectedSet]);
 
-  // Drag to reorder both Pinned groups. Drops go through the stores' drag session so they
-  // persist once.
+  // Drops go through the stores' drag session so they persist once.
   const pinnedDrag = usePinnedRowDrag({
     scope: "on-device",
     order: () => pinnedRows.map((row) => row.key),
@@ -5425,8 +5066,7 @@ export function HubModelPicker({
       }))
       .sort((a, b) => a.providerName.localeCompare(b.providerName));
     if (connectedSort !== "name") return groups;
-    // Sorting by name across connections is a different list, not a reordered one: the headings
-    // would each hold a row or two and stop meaning anything. So one unlabelled group.
+    // Name sort across connections is one unlabelled group.
     return [
       {
         providerId: "__all__",
@@ -5443,7 +5083,7 @@ export function HubModelPicker({
       makeModelOptionKey("loaded", m.checkpoint ?? m.id),
     );
 
-    // The tab lists nothing else, so these are the whole roving order, in drawn order.
+    // The tab lists nothing else, so these are the whole roving order.
     if (section === "connected") {
       if (!pinnedConnectedCollapsed) {
         keys.push(
@@ -5463,8 +5103,7 @@ export function HubModelPicker({
       return keys;
     }
 
-    // Pinned rows sit above the Unsloth heading on the On Device tab. They render before the
-    // cache scan settles, so their keys do not wait for it either.
+    // Pinned rows render before the cache scan settles, so their keys do not wait for it.
     if (section === "downloaded" && !pinnedCollapsed && pinnedRows.length > 0) {
       keys.push(
         ...pinnedRows.map((row) =>
@@ -5479,7 +5118,6 @@ export function HubModelPicker({
       );
     }
 
-    // Downloaded (Unsloth) rows (query-filtered) on the On Device tab only.
     if (
       section === "downloaded" &&
       (cachedReady || unslothAdditionalOnDeviceModels.length > 0) &&
@@ -5505,7 +5143,6 @@ export function HubModelPicker({
       );
     }
 
-    // Unsloth-tab search keys (curated matches + HF unsloth results).
     if (showHfSection && section === "recommended") {
       keys.push(
         ...filteredRecommendedIds.map((id) =>
@@ -5518,7 +5155,6 @@ export function HubModelPicker({
       return keys;
     }
 
-    // Other (non-Unsloth) downloaded rows sit just above Fine-tuned.
     if (
       section === "downloaded" &&
       (cachedReady || otherAdditionalOnDeviceModels.length > 0) &&
@@ -5544,14 +5180,12 @@ export function HubModelPicker({
       );
     }
 
-    // Fine-tuned models sit below downloaded, above custom folders.
     if (section === "downloaded" && !fineTunedCollapsed) {
       keys.push(
         ...unpinnedFineTunedRows.map((m) => makeModelOptionKey("lora", m.id)),
       );
     }
 
-    // Custom folders sit right below the downloaded models on On Device.
     if (section === "downloaded" && !customFoldersCollapsed) {
       keys.push(
         ...sortedCustomFolderModels.map((model) =>
@@ -5680,15 +5314,11 @@ export function HubModelPicker({
     >();
     const pipelineBudget = artifactBudget(loadScopedGpu(gpu, Boolean(task)));
     for (const id of filteredRecommendedIds) {
-      // GGUF fit is size-based and badged elsewhere; skip the qlora estimate.
       if (isKnownGgufRepo(id)) continue;
       const totalParams = recommendedParamCountById.get(id) ?? paramsFromId(id);
-      // Same verdict the unfiltered list gives this row: searching for a model must not change what
-      // it says about the device.
+      // Searching must not change a row's device verdict.
       const curatedFit = catalogFit(id, pipelineBudget);
       if (catalog && curatedFit !== undefined) {
-        // The catalog is the only source of a count for a curated repo the listing never returns and
-        // whose id spells no "<n>B".
         const params = totalParams ?? curatedTotalParamsFor(id, catalog);
         map.set(id, {
           est: curatedFit.sizeGb ? Math.round(curatedFit.sizeGb) : 0,
@@ -5766,9 +5396,7 @@ export function HubModelPicker({
     return () => observer.disconnect();
   }, [scrollRef, updateListFades]);
 
-  // Sentinel and IntersectionObserver for recommended infinite scroll. Re-running per loaded
-  // page re-attaches the observer so a heavily filtered list keeps paging; fetchMore no-ops
-  // while a page is in flight.
+  // Re-attach per loaded page so a heavily filtered list keeps paging; fetchMore no-ops in flight.
   const [recommendedSentinel, setRecommendedSentinel] =
     useState<HTMLDivElement | null>(null);
   const recommendedSentinelRef = useCallback((node: HTMLDivElement | null) => {
@@ -5815,13 +5443,12 @@ export function HubModelPicker({
     scrollRef,
   ]);
 
-  /** Handle clicking a model row: GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
     (id: string) => {
       if (isKnownGgufRepo(id)) {
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
-        // Cached repos load now (a cached vendor copy stands in for its mirror); others download.
+        // A cached vendor copy stands in for its mirror.
         const cached = cachedIdFor(id);
         onSelect(cached ?? id, {
           source: "hub",
@@ -5834,8 +5461,6 @@ export function HubModelPicker({
     [onSelect, isKnownGgufRepo, cachedIdFor, pipelineTagById],
   );
 
-  // On Device owns the downloaded and custom-folder models; the Unsloth tab searches the HF
-  // listing. Both filter locally by the query.
   const showDownloaded = section === "downloaded";
   const showCustom = section === "downloaded";
   const showRecommendedSection = !showHfSection && section === "recommended";
@@ -5857,18 +5482,16 @@ export function HubModelPicker({
     npuOnDeviceRows.length === 0 &&
     sortedLmStudio.length === 0 &&
     sortedLocalDir.length === 0 &&
-    // Fine-tuned models are on-device too: do not show the empty state above a non-empty Fine-tuned section.
+    // Do not show the empty state above a non-empty Fine-tuned section.
     unpinnedFineTunedRows.length === 0;
 
-  // Sort dropdown inline right of the section toggle; options depend on the tab and stay visible
-  // while searching. Fixed width matches the Search Hub button.
+  // Fixed width matches the Search Hub button.
   const sortTriggerClassName =
     "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
-  // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
+  // Keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
-  // Device-fit toggle inside the sort menu. The whole row is the button: a Checkbox renders as a
-  // <button> and label-click forwarding is unreliable, so the Checkbox is presentational.
+  // The whole row is the button: label-click forwarding to a Checkbox <button> is unreliable.
   const fitOnDeviceFooter = (
     <Tooltip>
       <TooltipTrigger asChild={true}>
@@ -5879,8 +5502,6 @@ export function HubModelPicker({
           onClick={() => setFitOnDeviceOnly(!fitOnDeviceOnly)}
           className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
-          {/* --input is a hairline tuned for the page; on the menu surface this
-              14px control needs an outline you can actually find. */}
           <Checkbox
             checked={fitOnDeviceOnly}
             tabIndex={-1}
@@ -5906,7 +5527,7 @@ export function HubModelPicker({
       <span className="truncate">{label}</span>
     </span>
   );
-  // On Device rows are already on disk, so the device-fit filter only applies to the Unsloth listing.
+  // On Device rows are already on disk, so the fit filter only applies to the Unsloth listing.
   const sectionSortDropdown =
     section === "recommended" ? (
       <HubOptionMenu
@@ -5957,9 +5578,8 @@ export function HubModelPicker({
   const severalLoaded = loadedModels.length > 1;
   const ejectsAll = Boolean(onEjectAll) && severalLoaded;
   const ejectsKept = Boolean(onEject) && severalLoaded;
-  // The Connected layout uses a wider box, so it drops the search inset to keep Search Hub on the last dropdown's edge.
+  // The wider Connected box drops the search inset to keep Search Hub aligned.
   const hasConnected = externalModels.length > 0;
-  // The Other models section and its shortcut only show with non-Unsloth downloads.
   const hasOtherModels =
     otherCachedGguf.length > 0 ||
     otherCachedModelRows.length > 0 ||
@@ -5968,7 +5588,7 @@ export function HubModelPicker({
   const renderHubModelRow = (id: string, row: ReactNode) => {
     if (!onConfigure) return row;
     if (isKnownGgufRepo(id)) {
-      // Same slot, left empty: GGUF repos configure per quant, and their badges must line up with the rest.
+      // Empty slot: GGUF repos configure per quant, and badges must line up.
       return (
         <div className={downloadedRowShellClassName(isValueRow(id))}>
           <div className="min-w-0 flex-1">{row}</div>
@@ -5997,7 +5617,6 @@ export function HubModelPicker({
     );
   };
 
-  // A draggable Pinned row: faded while carried, lined where it would land.
   const renderPinnedDragRow = (
     drag: ReturnType<typeof usePinnedRowDrag>,
     key: string,
@@ -6035,8 +5654,7 @@ export function HubModelPicker({
       : undefined;
 
   const renderLoadedRow = (entry: (typeof loadedModels)[number]) => {
-    // Select, eject and key by the checkpoint: a local model is labelled by name but loaded by
-    // path, and two files can share a name.
+    // Key by checkpoint: local models load by path and two files can share a name.
     const checkpoint = entry.checkpoint ?? entry.id;
     const optionKey = makeModelOptionKey("loaded", checkpoint);
     const isSelected = modelIdsMatchForPicker(value, checkpoint);
@@ -6100,19 +5718,16 @@ export function HubModelPicker({
     );
   };
 
-  // One connected model, through ModelRow like every On Device row, so the badges and the hover
-  // gutter are the same components rather than a second set that drifts.
+  // Through ModelRow so badges and hover gutter do not drift from On Device rows.
   const renderConnectedModelRow = (
     model: ExternalModelOption,
-    // No heading above this row to name its connection: the pinned group, and the flat list the
-    // name sort produces. Two connections can serve one model id, so the row has to say.
+    // Two connections can serve one model id, so a headless row must name its connection.
     headless = false,
   ) => {
     const optionKey = makeModelOptionKey("connected", model.id);
     const isSelected = value === model.id;
     const isPinned = pinnedConnectedSet.has(model.id);
-    // What the provider calls the model: `model.name` is a display label OpenRouter rewrites and
-    // `model.id` is the picker's `external::` address, and no capability lookup keys on either.
+    // `model.name` is rewritten by OpenRouter and `model.id` is the `external::` address.
     const providerModelId =
       parseExternalModelId(model.id)?.modelId ?? model.name;
     const baseUrl = externalBaseUrlById.get(model.providerId) ?? null;
@@ -6125,18 +5740,13 @@ export function HubModelPicker({
     return (
       <div
         key={model.id}
-        // ml-4 plus the pl-3.5 below is 30px, where a heading's label starts: px-2.5 + a
-        // size-3.5 icon + gap-1.5. The split between them is the pill's own inset, so widening
-        // it takes the pill's left edge leftward rather than moving the name off that label.
-        // The reserved leading slot used to put 23.5px of empty pill in front of every name.
+        // ml-4 + pl-3.5 = 30px, where a heading's label starts.
         className={cn(downloadedRowShellClassName(isSelected), "ml-4")}
       >
         <div className="min-w-0 flex-1">
           <ModelRow
             label={model.name}
-            // The provider's own id, the way a local row hovers its path: a label can be
-            // rewritten, and one connection can offer two models that shorten to the same words.
-            // With no heading above, the connection's name goes here too.
+            // The provider's own id, since labels can be rewritten or collide.
             tooltipText={
               headless ? (
                 <>
@@ -6157,8 +5767,6 @@ export function HubModelPicker({
               onSelect(model.id, { source: "external", isLora: false })
             }
             vramStatus={null}
-            // The name's own inset, since nothing precedes it in the row now: the leading slot a
-            // local row gives its format dot is gone with the logo that briefly filled it.
             className={cn(downloadedRowButtonClassName, "pl-3.5")}
           />
         </div>
@@ -6229,12 +5837,10 @@ export function HubModelPicker({
     );
   };
 
-  // A pinned quant: repo name with the quant as a grey chip, loaded in one click.
   const renderPinnedQuantRow = (entry: { repoId: string; quant: string }) => {
-    // Its repo's own sole-quant row, with that row's load target and selection state.
     const soleRow = pinnedSoleQuantRows.get(pinKey(entry.repoId, entry.quant));
     if (soleRow) return renderSoleQuantGgufRow(soleRow.repo, soleRow.sole);
-    // The copy the validation listing resolved this quant in, so the delete removes that one.
+    // So the delete removes the copy the validation listing resolved.
     const pinnedCopyPath = downloadedPinnedQuantPaths.get(
       pinKey(entry.repoId, entry.quant),
     );
@@ -6248,13 +5854,11 @@ export function HubModelPicker({
       modelIdsMatchForPicker(loadedModelId, entry.repoId) &&
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
       ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
-    // A validated false is authoritative: this repo's variants carry no mmproj.
-    // Anything else stays unknown rather than warning from a stale cache row.
+    // A validated false is authoritative; anything else stays unknown.
     const pinnedVisionHint =
       pinnedQuantValidation.visionByRepo.get(entry.repoId) === false
         ? false
         : undefined;
-    // Same size and vision mark as this quant's row below.
     const sizeBytes = pinnedQuantValidation.sizes.get(
       pinKey(entry.repoId, entry.quant),
     );
@@ -6266,7 +5870,6 @@ export function HubModelPicker({
         key={optionKey}
         className={downloadedRowShellClassName(isSelected, true)}
       >
-        {/* Through ModelRow, so a pinned quant lands in the same columns as the rows below it. */}
         <div className="min-w-0 flex-1">
           <ModelRow
             label={entry.repoId}
@@ -6278,9 +5881,7 @@ export function HubModelPicker({
             }
             quantChip={ggufQuantChipLabel(entry.quant)}
             showVision={hasVision}
-            // Same runtime gate the sole-quant row applies: a pinned quant can belong to an image, video
-            // or audio task, which load through the media planner, so the KV estimator would measure
-            // the wrong runtime and fall back to the file size.
+            // Media-task quants load through the media planner, so the KV estimator would measure the wrong runtime.
             memory={
               mediaPageForTask(
                 diffusionTaskById.get(entry.repoId.toLowerCase()),
@@ -6299,8 +5900,7 @@ export function HubModelPicker({
                 isLora: false,
                 ggufVariant: entry.quant,
                 isDownloaded: true,
-                // The row loads one quant, so it is a GGUF pick like the expander's; without this the pages
-                // asked for a pipeline, which a GGUF repo rejects. No filename: the pin stores a label.
+                // A GGUF pick; without it pages request a pipeline. No filename: the pin stores a label.
                 isGguf: true,
                 isVision: pinnedVisionHint,
                 pipelineTag:
@@ -6340,8 +5940,7 @@ export function HubModelPicker({
             }}
             del={{
               title: "Delete cached model?",
-              // Same preview the Hub On Device row asks for, so a companion base an installed image model
-              // still needs shows the reason and a disabled Delete.
+              // Shows why a still-needed companion base disables Delete.
               impact: {
                 repoId: entry.repoId,
                 variant: entry.quant,
@@ -6379,15 +5978,13 @@ export function HubModelPicker({
     );
   };
 
-  // One quant on disk with "All quantizations" off: the expander would list just that
-  // quant, so the row carries it as a chip and loads it in one click.
+  // One quant on disk with "All quantizations" off: the row carries it as a chip.
   const renderSoleQuantGgufRow = (
     c: (typeof visibleCachedGguf)[number],
     sole: SoleDownloadedQuant,
   ) => {
     const variant = sole.variant;
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
-    // The row names one quant, so the repo running a different one is not it.
     const rowState = soleQuantRowState({
       pickerValue: value,
       repoId: c.repo_id,
@@ -6398,26 +5995,20 @@ export function HubModelPicker({
     const isSelected = rowState.selected;
     const expectedBytes = ggufVariantExpectedBytes(variant);
     const isPinned = pinnedSet.has(pinKey(c.repo_id, variant.quant));
-    // A repo only flags partial once no quant is clean, so a sole-quant row should never BE one.
-    // Carried anyway: if that ever stops holding, the row states what is on disk instead of
-    // handing a torn file to the loader.
+    // Should never be partial, but if it is, state what is on disk rather than load a torn file.
     const isPartial = c.partial === true;
     const isDownloaded = variant.downloaded === true && !isPartial;
     const selectMeta: ModelSelectorChangeMeta = {
       source: "hub",
       isLora: false,
-      // Only for a complete snapshot, as the variant select already does. A loadId names a
-      // revision on disk, and the Audio route carries no isDownloaded field, so a forwarded
-      // one is read there as proof the weights are present.
+      // Only for complete snapshots: the Audio route reads a loadId as proof the weights are present.
       loadId: isDownloaded ? c.load_id : undefined,
       ggufVariant: variant.quant,
       ggufFilename: variant.filename,
       isDownloaded,
       expectedBytes,
       isGguf: true,
-      // readSoleQuant already read the repo's mmproj verdict, and this collapsed row is
-      // the only place it can reach the chat warning: forward it conservatively, as the
-      // expander does, so a known text-only sole quant still warns.
+      // Forward the mmproj verdict conservatively so a known text-only quant still warns.
       isVision: sole.hasVision === false ? false : undefined,
       pipelineTag: c.task ?? null,
     };
@@ -6437,11 +6028,7 @@ export function HubModelPicker({
             meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
             quantChip={ggufQuantChipLabel(variant.quant)}
             partial={isPartial}
-            // No verdict to pass, so the mark takes its cautious wording: /api/models/gguf-variants carries no
-            // partial_resumable, and a sole-quant row is never partial anyway. Only for models the llama.cpp
-            // path loads: Images and Video keep diffusion GGUFs listed, and those run on the diffusion planner
-            // with different runtime buffers on a single torch device, so the KV estimator falls back to the
-            // file size and draws a confident number about the wrong runtime.
+            // Only for llama.cpp loads: diffusion GGUFs run on a different planner and the estimate would be wrong.
             memory={
               mediaPageForTask(c.task)
                 ? undefined
@@ -6526,21 +6113,19 @@ export function HubModelPicker({
     );
   };
 
-  // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
     const isSelected = value === c.repo_id;
     const soleQuant = soleQuants.quants.get(c.repo_id);
     if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
     const loadedQuants = loadedQuantsFor(c.repo_id);
-    // Auto-expansion waits for the probe: expanding every row first would mount an expander, and
-    // its remote listing, for repos about to collapse.
+    // Auto-expansion waits for the probe, or every row mounts an expander and a remote listing.
     const expanderOpen = shouldMountVariantExpander({
       expanded: isGgufExpanded(c.repo_id),
       autoExpand: expandQuantizations && !reopenedGguf.has(c.repo_id),
       soleQuantsPending: soleQuants.pending.has(c.repo_id),
     });
-    // No quant of this repo is clean, so nothing inside the expander can carry the row's actions.
+    // No clean quant, so nothing in the expander can carry the row's actions.
     const isPartialRepo = c.partial === true;
     return (
       <div key={c.repo_id}>
@@ -6576,11 +6161,6 @@ export function HubModelPicker({
               className={downloadedRowButtonClassName}
             />
           </div>
-          {/* A complete repo keeps its actions on the quant rows inside the expander -- delete
-              targets one quant, not the repo -- so this row only reserves the gutter, to keep the
-              tags lined up. A partial repo has no complete quant to carry them: expanding it just
-              to reach a menu is a step with nothing at the end of it, and before this the torn
-              bytes could be seen but never removed. */}
           {isPartialRepo ? (
             <span className={ROW_ACTIONS_PINNED_CLASS}>
               <ModelRowMenu
@@ -6589,9 +6169,7 @@ export function HubModelPicker({
                 del={{
                   title: "Delete cached model?",
                   impact: { repoId: c.repo_id },
-                  // Repo-wide, like every other repo-level delete: no variant is passed, and
-                  // one repo id can also hold a complete copy in another format. Saying
-                  // "the partial download" would name a smaller scope than the one that runs.
+                  // Repo-wide delete, which may include a complete copy in another format.
                   description: (
                     <>
                       This will remove{" "}
@@ -6675,9 +6253,7 @@ export function HubModelPicker({
   ) => {
     const optionKey = makeModelOptionKey("downloaded-model", c.repo_id);
     const isSelected = value === c.repo_id;
-    // Some bytes on disk, not enough to load. Claiming it is downloaded skips straight to a load
-    // that fails on the missing shards, so the pick reports what is actually there and the
-    // download flow picks it up from the same place the Hub would.
+    // A partial pick must not claim downloaded, or the load fails on missing shards.
     const isPartial = c.partial === true;
     return (
       <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
@@ -6706,9 +6282,7 @@ export function HubModelPicker({
               onSelect(c.repo_id, {
                 source: "hub",
                 isLora: false,
-                // Dropped on a torn snapshot: the Audio route has no isDownloaded field and
-                // reads a forwarded loadId as proof the weights are there, so a TTS pick
-                // routed with one skips the download it needs.
+                // The Audio route reads a forwarded loadId as proof the weights are there.
                 loadId: isPartial ? undefined : c.load_id,
                 isDownloaded: !isPartial,
                 pipelineTag: c.task ?? null,
@@ -6730,9 +6304,7 @@ export function HubModelPicker({
                 onConfigure(c.repo_id, {
                   source: "hub",
                   isLora: false,
-                  // Run spreads this meta straight back into a select, so it carries the
-                  // row's rule: no load identity for a snapshot that is not all there.
-                  // The config page keys its settings off the repo id, not this field.
+                  // No load identity for an incomplete snapshot.
                   loadId: isPartial ? undefined : c.load_id,
                   isDownloaded: !isPartial,
                   isGguf: false,
@@ -6774,8 +6346,7 @@ export function HubModelPicker({
                   hfToken || undefined,
                   c.cache_path || undefined,
                 );
-                // Repo-wide, so the quant pins go too: one id can hold a GGUF copy as well,
-                // and this delete takes that with it.
+                // Repo-wide, so quant pins go too.
                 unpinRepo(c.repo_id);
               },
               onDeleted: refreshCachedLists,
@@ -6790,7 +6361,7 @@ export function HubModelPicker({
     const optionKey = makeModelOptionKey("additional-on-device", model.id);
     const isSelected = value === model.id;
     const pipelineTag = typeof task === "string" ? task : (task?.[0] ?? null);
-    // A checkpoint trained here is identified by its directory, not a repo id, so show the name and drop the Hub link.
+    // A locally trained checkpoint is identified by its directory, so drop the Hub link.
     const isLocalPath = /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(model.id);
     return (
       <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
@@ -6893,7 +6464,6 @@ export function HubModelPicker({
         className={onDevice ? downloadedRowButtonClassName : undefined}
       />
     );
-    // Downloads do not load the model, so show settings only after download.
     const settings =
       onConfigure && model.downloaded && !downloading ? (
         <ModelLoadSettingsAction
@@ -6941,7 +6511,6 @@ export function HubModelPicker({
   return (
     <CapabilityScope.Provider value={capabilityScope}>
       <div className="relative space-y-2">
-        {/* A small right inset shortens the search bar so Search Hub lands on the last dropdown's right edge. */}
         <div
           className={cn(
             "flex items-center gap-2 pb-1",
@@ -6989,8 +6558,6 @@ export function HubModelPicker({
           ) : null}
         </div>
 
-        {/* Keep the left-packed controls on one line while they fit, then wrap whole groups before
-            their intrinsic widths cross the picker edge. */}
         <div
           className={cn(
             "flex flex-wrap items-center gap-2",
@@ -7048,11 +6615,7 @@ export function HubModelPicker({
           ref={scrollRef}
           onScroll={(e) => updateListFades(e.currentTarget)}
           className={cn(
-            // The list sits within the menu padding so gaps match; scroll-py and the side padding keep
-            // the focus ring off the overflow clip edges during keyboard nav. The panel is padded 16px
-            // on the left but 8px on the right (16px with external providers), so the scroller can run
-            // near the edge for its scrollbar; its right inset (index.css) makes up the difference, and
-            // a row's hover pill sits 18px from both edges.
+            // Padding keeps the focus ring off the clip edges; the right inset lives in index.css.
             "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 pl-0.5",
             listScrolled && "is-scrolled",
             listMoreBelow && "is-bottom-faded",
@@ -7061,10 +6624,8 @@ export function HubModelPicker({
         >
           <div
             className={cn(
-              // Keep row actions clear of overlay scrollbars, overflowing or not.
+              // Keep row actions clear of overlay scrollbars.
               "model-list-gutter",
-              // On Device pulls the heading block tight to the controls; Recommended keeps more top room
-              // above its first row.
               showDownloaded ? "pt-0" : "pt-[calc(4px*var(--ui-space-scale,1))]",
               onEject ? "pb-[calc(60px*var(--ui-space-scale,1))]" : "pb-4",
             )}
@@ -7084,7 +6645,6 @@ export function HubModelPicker({
                 </div>
               ) : (
                 <>
-                  {/* Above the first provider, on the same heading with a pin for the logo. */}
                   {pinnedConnectedRows.length > 0 ? (
                     <div>
                       <ConnectedGroupHeading
@@ -7109,8 +6669,6 @@ export function HubModelPicker({
                     </div>
                   ) : null}
                   {connectedGroups.map((group) => {
-                    // The name sort collapses every connection into one unlabelled group, which
-                    // has no heading to fold.
                     const headed = group.providerName.length > 0;
                     const collapsed =
                       headed && collapsedConnectedGroups.has(group.providerId);
@@ -7150,7 +6708,6 @@ export function HubModelPicker({
               )
             ) : (
               <>
-                {/* First-load spinner only when nothing cached is shown yet. */}
                 {showDownloaded &&
                 !cachedReady &&
                 !showHfSection &&
@@ -7163,8 +6720,6 @@ export function HubModelPicker({
                   </div>
                 ) : null}
 
-                {/* Empty On Device: a search miss versus nothing downloaded yet. Hidden when custom folders
-                    below still have matches. */}
                 {showDownloaded &&
                 cachedReady &&
                 downloadedEmpty &&
@@ -7178,8 +6733,6 @@ export function HubModelPicker({
                   </div>
                 ) : null}
 
-                {/* Pinned quants and models sit above the Unsloth heading, filtered by the query like the
-                    sections below. */}
                 {showDownloaded && pinnedRows.length > 0 ? (
                   <>
                     <ListLabel
@@ -7221,7 +6774,6 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {/* Downloaded (Unsloth) stays visible (filtered) while searching. */}
                 {showDownloaded &&
                 (unslothCachedGguf.length > 0 ||
                   unslothCachedModelRows.length > 0 ||
@@ -7303,7 +6855,6 @@ export function HubModelPicker({
                         </>
                       }
                     >
-                      {/* Rows drop the unsloth/ prefix; the heading carries it for the group. */}
                       Unsloth
                     </ListLabel>
                     {!downloadedCollapsed &&
@@ -7317,7 +6868,6 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {/* Other models: non-Unsloth downloads, shown only when such models exist. */}
                 {showDownloaded && hasOtherModels ? (
                   <div ref={otherModelsSectionRef}>
                     <ListLabel
@@ -7361,8 +6911,6 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {/* Fine-tuned models: always shown on On Device so the train shortcut has a target. Hidden
-                    under a task filter. */}
                 {section === "downloaded" && !task ? (
                   <>
                     <div
@@ -7491,7 +7039,6 @@ export function HubModelPicker({
                       </div>
                     </div>
 
-                    {/* Folder paths */}
                     {!customFoldersCollapsed &&
                       scanFolders.map((f) => {
                         const problem = scanFolderStatusCopy(f.status);
@@ -7535,7 +7082,6 @@ export function HubModelPicker({
                         );
                       })}
 
-                    {/* Recommended folders */}
                     {!customFoldersCollapsed &&
                       (() => {
                         const registered = new Set(
@@ -7566,7 +7112,6 @@ export function HubModelPicker({
                         );
                       })()}
 
-                    {/* Add folder input */}
                     {!customFoldersCollapsed && showFolderInput && (
                       <div className="px-2.5 pb-1 pt-0.5">
                         <div className="flex items-center gap-1">
@@ -7637,22 +7182,19 @@ export function HubModelPicker({
                       onSelect={(picked) => {
                         setFolderInput(picked);
                         setFolderError(null);
-                        // Pass the path explicitly: `folderInput` state has not flushed when "Use this folder" submits.
+                        // Pass the path explicitly: `folderInput` state has not flushed yet.
                         void handleAddFolder(picked);
                       }}
                     />
 
-                    {/* Models from custom folders */}
                     {!customFoldersCollapsed &&
                       sortedCustomFolderModels.map((m) => {
                         const isGgufFile = m.path
                           .toLowerCase()
                           .endsWith(".gguf");
-                        // Honor the backend model_format hint (suffixless GGUF folders) as well as name/path, so the
-                        // row classifies and loads through the same GGUF path as the filter.
+                        // Honor the backend model_format hint (suffixless GGUF folders).
                         const isGguf = localModelIsGguf(m);
-                        // Single .gguf files load directly; GGUF repos and directories expand to pick a variant. An
-                        // Ollama manifest reference names one blob, so it is direct too.
+                        // An Ollama manifest names one blob, so it loads directly.
                         const isDirectGguf =
                           isGgufFile || m.source === "ollama";
                         const optionKey = makeModelOptionKey(
@@ -7675,7 +7217,7 @@ export function HubModelPicker({
                                     loadedModelId,
                                     activeGgufVariant,
                                     m.id,
-                                    // Direct loads set no active variant, so requiring one never reads as loaded.
+                                    // Direct loads set no active variant.
                                     isDirectGguf
                                       ? "ignore"
                                       : isGguf
@@ -7714,7 +7256,6 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
-                                  // The downloaded rows' inset, so columns line up across sections.
                                   className="pr-1"
                                 />
                               </div>
@@ -7799,8 +7340,7 @@ export function HubModelPicker({
                         const isGgufFile = m.path
                           .toLowerCase()
                           .endsWith(".gguf");
-                        // LM Studio dirs are GGUF but rarely carry a -GGUF suffix, so use the shared helper for row,
-                        // filter and load path to agree.
+                        // LM Studio dirs rarely carry a -GGUF suffix, so use the shared helper.
                         const isGguf = localModelIsGguf(m);
                         const optionKey = makeModelOptionKey("lm-studio", m.id);
                         return (
@@ -7857,7 +7397,6 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
-                                  // The downloaded rows' inset, so columns line up across sections.
                                   className="pr-1"
                                 />
                               </div>
@@ -7930,8 +7469,7 @@ export function HubModelPicker({
                     </ListLabel>
                     {!localDirCollapsed &&
                       sortedLocalDir.map((m) => {
-                        // A loose ./models/*.gguf loads directly; a GGUF repo dir expands. The variant scanner returns
-                        // nothing for a config-less loose file, so expanding it would dead-end.
+                        // The variant scanner returns nothing for a config-less loose file, so expanding would dead-end.
                         const isGgufFile = m.path
                           .toLowerCase()
                           .endsWith(".gguf");
@@ -7987,7 +7525,6 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
-                                  // The downloaded rows' inset, so columns line up across sections.
                                   className="pr-1"
                                 />
                               </div>
@@ -8076,7 +7613,6 @@ export function HubModelPicker({
 
                 {showRecommendedSection && formatFilter !== "npu" ? (
                   <>
-                    {/* Below the NPU group, the curated list needs its own heading. */}
                     {showNpuBrowse ? (
                       <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
                     ) : null}
@@ -8202,7 +7738,6 @@ export function HubModelPicker({
                     {recommendedHasMore && (
                       <>
                         <div ref={recommendedSentinelRef} className="h-px" />
-                        {/* Only while a page is in flight; on hasMore it sat under a usable list. */}
                         {recommendedIsLoadingMore ? (
                           <div className="flex items-center justify-center py-2">
                             <Spinner className="size-3.5 text-muted-foreground" />
@@ -8529,8 +8064,6 @@ export function HubModelPicker({
   );
 }
 
-/** Fine-tuned model rows for the On Device tab's section; plugs into that section's roving list
- *  and shared GGUF-expand state. */
 function FineTunedRows({
   adapters,
   value,
@@ -8601,9 +8134,7 @@ function FineTunedRows({
         );
         const isLocalGgufDir = localGgufKind === "variants";
         const isLocalDirectGguf = localGgufKind === "direct";
-        // A checkpoint that fine-tunes a TTS/STT model has to reach the Audio page, since
-        // chat/completions cannot serve it. onSelect routes on the pipeline tag, so carry the
-        // detected codec as one.
+        // Fine-tuned TTS/STT checkpoints must reach the Audio page, so carry the codec as a pipeline tag.
         const selectionMeta: ModelSelectorChangeMeta = {
           source: isLocal ? "local" : isExported ? "exported" : "lora",
           isLora,
@@ -8640,7 +8171,7 @@ function FineTunedRows({
           <div key={adapter.id}>
             <div
               className={downloadedRowShellClassName(value === adapter.id)}
-              // The pill a Pinned drag lifts, not this wrapper (use-pinned-row-drag.ts).
+              // The pill a Pinned drag lifts (use-pinned-row-drag.ts).
               data-pinned-row-face=""
             >
               <div className="min-w-0 flex-1">
@@ -8792,7 +8323,6 @@ function FineTunedRows({
                           ggufVariant: quant,
                         });
                         if (pinnedKeys.includes(pinKey(adapter.id))) {
-                          // If the rescan fails, drop the pin rather than leave it pointing at a gone file.
                           await repinExportedGguf(adapter.id).catch(() => unpinRepo(adapter.id));
                         }
                         onModelsChange?.({

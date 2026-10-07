@@ -19,29 +19,18 @@ interface TransformersUpgradeDialogStore {
   upgrade: TransformersUpgradeInfo | null;
   phase: TransformersUpgradePhase;
   errorMessage: string | null;
-  /** Model ships custom code; without a PyPI install the load may fall back to trust_remote_code. */
   trustRemoteCodeFallback: boolean;
-  /** The caller already confirmed the model swap's "stop N chats" prompt, so the install
-   *  may stop them too; without it the install 409s and Retry can never succeed. */
+  /** Without the user's "stop N chats" answer the install 409s and Retry can never succeed. */
   forceCancelActive: boolean;
-  /** True once this consent's install completed. The install unloads the previous
-   *  model before swapping, so the caller must treat it as already unloaded; the
-   *  custom-code fallback resolves true without installing and leaves it loaded. */
+  /** The install unloads the previous model; the custom-code fallback leaves it loaded. */
   installRan: boolean;
-  /** Completed installs this session. The sidecar it provisions is a persistent overlay
-   *  that changes every later answer about every model, what is left to install and
-   *  whether a run still loads 4-bit, so anything caching those answers keys on this and
-   *  re-asks once it moves. Survives `resolve`, unlike the per-consent flags. */
+  /** Completed installs this session. The sidecar overlay changes every later answer, so caches
+   * key on this. Survives `resolve`. */
   sidecarGeneration: number;
-  /** True when the server unloaded the active chat model during this consent,
-   *  including a swap that failed AFTER the unload: callers must then treat
-   *  their previous model as gone and roll back on any later cancel. */
+  /** Includes a swap that failed after the unload: callers must roll back on a later cancel. */
   serverUnloadedChat: boolean;
-  /** Read-and-clear serverUnloadedChat: each waiter consumes the signal once,
-   *  so a superseding consent can neither erase it before the old waiter reads
-   *  it nor leak it into an unrelated later load. */
+  /** Read-and-clear so each waiter consumes the signal exactly once. */
   consumeServerUnloadedChat: () => boolean;
-  /** Open the dialog for a paused load; resolves true on install success or custom-code fallback. */
   requestConsent: (
     modelName: string,
     upgrade: TransformersUpgradeInfo,
@@ -50,7 +39,6 @@ interface TransformersUpgradeDialogStore {
       forceCancelActive?: boolean;
     },
   ) => Promise<boolean>;
-  /** Accept/Retry: run the install; on success resolve(true) and close. */
   install: () => Promise<void>;
   resolve: (installed: boolean) => void;
 }
@@ -96,14 +84,11 @@ export const useTransformersUpgradeDialogStore =
       let result: Awaited<ReturnType<typeof installLatestTransformers>>;
       try {
         result = await installLatestTransformers(version, forceCancelActive);
-        // Latch the server-side unload IMMEDIATELY, before any resolver-identity
-        // guard: even a superseded consent's install may have unloaded the chat
-        // model, and the signal must survive for whichever load consumes it next.
+        // Latch before the resolver-identity guard: a superseded install may still have unloaded chat.
         if (result.model_unloaded) {
           set({ serverUnloadedChat: true });
         }
       } catch (error) {
-        // Ignore the failure if a newer request superseded this consent.
         if (pendingResolver === requestResolver) {
           set({
             phase: "error",
@@ -117,10 +102,7 @@ export const useTransformersUpgradeDialogStore =
       }
       if (pendingResolver === requestResolver) {
         if (result.success) {
-          // serverUnloadedChat was latched above (and is never reset here): a
-          // retry after a failed-after-unload attempt reports false because the
-          // model is already gone, and a superseded install may have set it too.
-          // The overlay is live from here on, for this tab and every model in it.
+          // serverUnloadedChat is never reset here: a retry after unload reports false.
           set({
             installRan: true,
             sidecarGeneration: get().sidecarGeneration + 1,
@@ -128,9 +110,8 @@ export const useTransformersUpgradeDialogStore =
           get().resolve(true);
           return;
         }
-        // Structured failure: the swap failed but may have already unloaded the chat model; record
-        // that so a later cancel still rolls the caller back. A version mismatch also carries the
-        // superseding release, so Retry re-requests a version that can actually succeed.
+        // The swap may have unloaded chat before failing; a version mismatch also names a release Retry
+        // can use.
         const { upgrade } = get();
         set({
           phase: "error",

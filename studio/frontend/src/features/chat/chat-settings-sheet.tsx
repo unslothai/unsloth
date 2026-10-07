@@ -181,13 +181,11 @@ export function ParamSlider({
   info?: ReactNode;
   valueSize?: number;
   disabled?: boolean;
-  /** Label, track and value on one row, for narrow settings columns. */
   inline?: boolean;
 }) {
   if (inline) {
     return (
       <div className="flex items-center gap-3">
-        {/* A floor rather than a fixed width, so a longer label is never clipped. */}
         <div className="flex min-w-[calc(104px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5">
           <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
             {label}
@@ -300,13 +298,9 @@ function CollapsibleSection({
   first = false,
 }: {
   label: string;
-  /** When set, the label becomes an external link instead of part of the toggle. The chevron
-   *  still toggles, so link and button are siblings rather than an <a> inside a <button>. */
+  /** Makes the label an external link; link and chevron are siblings, not <a> in <button>. */
   labelHref?: string;
-  /** Optional control rendered before the chevron. The label and chevron become sibling toggles
-   *  so the action is not a button nested in a button. */
   headerAction?: ReactNode;
-  /** When set, clicking the label runs this instead of toggling collapse. */
   onLabelClick?: () => void;
   children?: ReactNode;
   defaultOpen?: boolean;
@@ -393,7 +387,6 @@ function CollapsibleSection({
           </span>
         </button>
       )}
-      {/* Same gap below the last control as the header leaves above the first. */}
       {open && <div className="pb-5">{children}</div>}
     </div>
   );
@@ -409,19 +402,12 @@ interface ChatSettingsPanelProps {
   ) => void;
   modelConfig?: ReactNode;
   isExternalModel?: boolean;
-  /** Sampling-param capabilities for the active external provider, or `null` for local models
-   *  (every knob rendered). Drives per-param sampling visibility. */
   providerCapabilities?: ProviderCapabilities | null;
   activeExternalProvider?: ExternalProviderConfig | null;
   onExternalProviderChange?: (provider: ExternalProviderConfig) => void;
-  /** Backend provider type for the active external model, or `null` for local models. Drives the
-   *  per-provider Max Tokens floor in the slider. */
   externalProviderType?: string | null;
 }
 
-/** Copy for the amber "running without speculative decoding" notice. Mirrors
- *  InferenceStatusResponse.spec_fallback_reason. Out of the JSX so the three dimensions
- *  read as a table rather than a five-level nested ternary, and so each string is testable. */
 function specFallbackMessage({
   reason,
   drafter,
@@ -437,22 +423,15 @@ function specFallbackMessage({
     case "mla_mtp_disabled":
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
     case "mtp_partial_offload":
-      // Not the default copy: this build does support MTP, so telling the user to update llama.cpp
-      // would name the wrong cause. Says what the placement IS rather than that the model could
-      // not fit, since a Manual layer count is a placement the user picked and more layers is the
-      // useful remedy. Describes the placement MTP WOULD need, not the one that runs: the partial
-      // verdict is priced with MTP's rollback reserve still in it.
+      // Not the default copy: this build supports MTP, and a Manual layer count is the user's choice.
       return "With MTP on, part of this model would have to run on the CPU, where MTP's extra state costs more than the drafting wins back, so Auto turned it off for this load. Give the GPU room for every layer to get it back, or choose MTP in Settings to force it.";
     case "drafter_no_vram":
-      // Not "without speculative decoding": the backend puts zero-VRAM ngram-mod in the drafter's
-      // place where the build has it, so only the drafter is off.
+      // Only the drafter is off: the backend substitutes zero-VRAM ngram-mod where available.
       return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
     case "drafter_unloadable":
-      // The file IS beside the model; it just cannot be opened as a draft. So no "place
-      // the sidecar" and no "check your network": both name a remedy that changes
-      // nothing, and the backend stands the refetch down for exactly this case.
+      // The file is present but unloadable as a draft, so neither placement nor network is the remedy.
       return "This model's MTP drafter file cannot be loaded as a draft model, so it is running without MTP. The sidecar beside the model is a head-only file that llama.cpp cannot open on its own. Replace it with a self-contained mtp-*.gguf, then reload the model.";
     case "drafter_not_found":
       if (drafter === "DSpark") {
@@ -497,8 +476,7 @@ export function ChatSettingsPanel({
     setWidth: setSettingsWidth,
     resetWidth: resetSettingsWidth,
   } = useChatSettingsWidth();
-  // Local models show every knob; providerCapabilities is only consulted when isExternalModel.
-  // Unknown providers fall back to the OpenAI-compat shape, so these flags never undercount.
+  // Unknown providers use the OpenAI-compat shape, so these flags never undercount.
   const showTemperature =
     !isExternalModel || Boolean(providerCapabilities?.temperature);
   const showTopP = !isExternalModel || Boolean(providerCapabilities?.topP);
@@ -509,7 +487,6 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.repetitionPenalty);
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
-  // Overlay as a sheet below lg so the thread keeps its width.
   const isCompact = useIsCompact();
   const uiSpaceScale = useUiSpaceScale();
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
@@ -540,9 +517,7 @@ export function ChatSettingsPanel({
   const activeModel = useChatRuntimeStore(
     (s) => s.models.find((m) => m.id === currentCheckpoint) ?? null,
   );
-  // Same call the request body makes, on the same summary, so the panel cannot offer a seed the
-  // body drops. An external selection carries an `external::` id no local entry matches, so
-  // the summary answers that case without a separate guard.
+  // Same call the request body makes, so the panel cannot offer a seed the body drops.
   const showSeed = modelReadsSamplingSeed(activeModel);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
@@ -553,10 +528,8 @@ export function ChatSettingsPanel({
     platformDeviceType,
     platformChatOnlyReason,
   );
-  // activeModelIsLocal is the backend's own classification and covers native picks. Two things
-  // must not decide it: activeNativePathToken, which status reconciliation keeps across a
-  // switch to a remote GGUF, and a bare .gguf suffix, since the backend reads a one-slash
-  // org/name.gguf as a repository id, not a file.
+  // The backend's own classification: the native token survives a switch to a remote GGUF, and
+  // org/name.gguf is a repo id, not a file.
   const isLocalGguf =
     isGguf && (activeModelIsLocal || isLocalModelPath(currentCheckpoint ?? ""));
   const maxContextLength = useChatRuntimeStore(
@@ -572,7 +545,6 @@ export function ChatSettingsPanel({
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
-  // subscribe to the same requested values that preset capture snapshots.
   const reasoningBudget = useChatRuntimeStore((s) =>
     s.reasoningBudget === s.loadedReasoningBudget
       ? (s.loadedReasoningBudgetRequested ?? s.reasoningBudget)
@@ -592,12 +564,9 @@ export function ChatSettingsPanel({
   const loadedSpeculativeType = useChatRuntimeStore(
     (s) => s.loadedSpeculativeType,
   );
-  // The loaded model's own kind, not the pending control: the notice explains a
-  // fallback that already happened, so a staged edit (or a preset applied without
-  // a reload) must not re-label it and point at the wrong file.
+  // The loaded kind, not the pending control: the notice explains a fallback that already happened.
   const speculativeDrafterLabel: "MTP" | "DSpark" | "DFlash" | "ngram-mod" =
-    // The LOADED mode, per the comment above. Before the drafter kind, not after:
-    // ngram-mod opens none, so spec_drafter_kind still holds the MTP resolution's.
+    // Before the drafter kind: ngram-mod opens none, so spec_drafter_kind still holds MTP's.
     loadedSpeculativeType === "ngram"
       ? "ngram-mod"
       : (specDrafterKind ?? speculativeType) === "dspark"
@@ -641,8 +610,7 @@ export function ChatSettingsPanel({
       speculativeType === "mtp+ngram" ||
       speculativeType === "dspark" ||
       speculativeType === "dflash" ||
-      // ngram-mod runs no drafter, so only the binary stand-down reaches it. Without
-      // this the panel shows ngram selected, no speculation running, and no reason.
+      // ngram-mod runs no drafter, so only the binary stand-down reaches it.
       speculativeType === "ngram");
   const showContextVramWarning =
     !isExternalModel &&
@@ -668,17 +636,11 @@ export function ChatSettingsPanel({
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
   const [systemVariablesDraft, setSystemVariablesDraft] = useState("");
   const [systemVariablesOpen, setSystemVariablesOpen] = useState(false);
-  // Raw keystrokes while the Seed box is being typed into, null once committed. Clamping
-  // straight into params would rewrite the box mid-entry, so the commit waits for blur.
+  // Raw draft until blur: clamping mid-entry would rewrite the box.
   const [seedDraft, setSeedDraft] = useState<string | null>(null);
-  // What blur would commit, available before it runs. Clicking Save blurs the box during
-  // mousedown, but React has not re-rendered by the time onClick fires, so a handler reading
-  // `params` still sees the seed from before the entry. NumericValueInput bridges the same gap
-  // with its imperative commit().
+  // Save's mousedown blurs before React re-renders, so onClick needs this pre-blur commit value.
   const committedSeed = useMemo<number | null>(() => {
     if (seedDraft === null) return params.seed ?? null;
-    // Measured after the padding: a zero-padded seed is short enough to keep, and truncating
-    // instead of clamping would rewrite it.
     const digits = seedDraft.replace(/^0+(?=\d)/, "");
     if (digits === "") return null;
     return digits.length > 10
@@ -692,25 +654,21 @@ export function ChatSettingsPanel({
         : { ...params, seed: committedSeed },
     [committedSeed, params],
   );
-  // Removing a focused element fires no blur, so a draft the user walked away from would keep
-  // reporting through committedSeed with the field gone.
+  // Removing a focused element fires no blur, so drop the draft here.
   useEffect(() => {
     setSeedDraft(null);
   }, [currentCheckpoint, showSeed]);
-  // When the prompt overflows the inline box, clicking opens the popup editor.
   const systemPromptBoxRef = useRef<HTMLTextAreaElement>(null);
   const [systemPromptOverflows, setSystemPromptOverflows] = useState(false);
   const promptObserverRef = useRef<ResizeObserver | null>(null);
   const measurePromptRef = useRef<() => void>(() => {});
-  // The section unmounts its textarea when collapsed, so observe through a callback ref: a
-  // stored observer would cling to the detached node and the remounted one is never measured.
+  // Callback ref: the textarea remounts when the section reopens.
   const attachPromptBox = useCallback((node: HTMLTextAreaElement | null) => {
     systemPromptBoxRef.current = node;
     promptObserverRef.current?.disconnect();
     promptObserverRef.current = null;
     if (!node || typeof ResizeObserver === "undefined") return;
-    // Resizing rewraps the prompt, and a drag changes the width through a custom property
-    // without re-rendering, so watch the box itself.
+    // A drag resizes via a custom property without re-rendering.
     const observer = new ResizeObserver(() => measurePromptRef.current());
     observer.observe(node);
     promptObserverRef.current = observer;
@@ -883,9 +841,6 @@ export function ChatSettingsPanel({
 
   const setSeed = set("seed");
 
-  // Lower a live Max Tokens that no longer fits the connection's cap.
-  // `resolveExternalMaxTokensClamp` documents why an unresolved provider must not be read as
-  // the 32,768 fallback.
   useEffect(() => {
     const clampedMaxTokens = resolveExternalMaxTokensClamp({
       settingsHydrated,
@@ -919,8 +874,7 @@ export function ChatSettingsPanel({
     preset: Preset,
   ): InferenceParams {
     const nextParams = applyPresetForProvider(params, preset, isVllm ? "vllm" : null);
-    // Same reason the effect waits for a provider: without one `maxTokensMax` is the fallback, so
-    // applying a preset here would lower the value for good.
+    // Without a provider maxTokensMax is the fallback, so applying here would lower it for good.
     if (!isExternalModel || activeExternalProvider == null) return nextParams;
     return {
       ...nextParams,
@@ -1095,7 +1049,6 @@ export function ChatSettingsPanel({
 
   useEffect(() => () => promptObserverRef.current?.disconnect(), []);
 
-  // Settings dissolve at whichever edge they run past, as on Images and Video.
   const {
     attach: attachSettingsScroll,
     onScroll: onSettingsScroll,
@@ -1105,8 +1058,7 @@ export function ChatSettingsPanel({
   const settingsContent = (
     <>
       <div className="hint-on-hover flex h-full min-h-0 flex-col">
-      {/* Header is outside the scroll area so the scrollbar never shifts the close button.
-          Reuse the chat header metrics so the toggle stays put when the panel opens. */}
+      {/* Header outside the scroll area so the scrollbar never shifts the close button. */}
       <div className="flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start gap-2 bg-panel-surface pl-[calc(18px*var(--ui-space-scale,1))] pr-[calc(18px*var(--ui-space-scale,1))] pt-[var(--studio-chat-header-padding-top,11px)]">
         {isCompact ? (
           <span className="flex h-[var(--studio-chat-control-height,34px)] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
@@ -1119,7 +1071,6 @@ export function ChatSettingsPanel({
             </span>
             <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
-                {/* Centred in the control row, as the header's open button is, so the toggle doesn't jump. */}
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
@@ -1309,7 +1260,6 @@ export function ChatSettingsPanel({
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            {/* Each pill is as wide as its label, not half the panel. */}
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 type="button"
@@ -1481,7 +1431,6 @@ export function ChatSettingsPanel({
             </Tooltip>
           }
         >
-          {/* Rounded wrapper clips overflowing text and the scrollbar. */}
           <div
             className={cn(
               "panel-text-surface h-20 w-full overflow-hidden corner-squircle",
@@ -1493,8 +1442,6 @@ export function ChatSettingsPanel({
               value={currentSystemPrompt}
               onChange={(e) => set("systemPrompt")(e.target.value)}
               onMouseDown={(e) => {
-                // Overflowing prompt: click opens the popup editor instead. While focused, clicks still move
-                // the caret normally.
                 if (
                   systemPromptOverflows &&
                   document.activeElement !== e.currentTarget
@@ -1654,8 +1601,6 @@ export function ChatSettingsPanel({
                     are batched and that moves the result.
                   </InfoHint>
                 </div>
-                {/* A plain field, sized like the model rows': the input group
-                    it used to sit in is 36px and full width. */}
                 <input
                   id="inference-seed"
                   // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
@@ -1806,8 +1751,7 @@ export function ChatSettingsPanel({
                 )}
               </div>
             ) : null}
-            {/* Squircle on the wrapper: Chrome leaves a scroll area's own
-                corners square. */}
+            {/* Squircle on the wrapper: Chrome leaves a scroll area's own corners square. */}
             <div className="corner-squircle overflow-hidden rounded-xl">
               <Textarea
                 value={systemPromptDraft}
@@ -2088,7 +2032,6 @@ function BypassPermissionsToggle() {
           disables confirmations and the code sandbox.
         </InfoHint>
       </div>
-      {/* Full width, styled like the panel selects/preset input. */}
       <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
       {permissionMode === "full" ? (
         <span className="text-ui-11 text-muted-foreground">

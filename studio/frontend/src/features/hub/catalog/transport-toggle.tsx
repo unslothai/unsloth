@@ -35,8 +35,7 @@ const OPTIONS: { value: "auto" | "http" | "xet"; label: string; hint: string }[]
 export function TransportToggle() {
   const [mode, setMode] = useTransportMode();
   const { capabilities, isLoading } = useDownloadTransportCapabilities();
-  // Two questions. Xet cannot be CHOSEN until we know it runs here; the fallback may only fire
-  // once we know it does NOT, or a loading tab shows HTTP for a stored Xet that was fine.
+  // Xet cannot be chosen until known available; fallback fires only once known unavailable.
   const xetKnownUnavailable = capabilities?.xet.available === false;
   const xetUnavailable = isLoading || xetKnownUnavailable;
   const autoResolvesTo = capabilities?.auto_resolves_to ?? "xet";
@@ -44,8 +43,7 @@ export function TransportToggle() {
 
   useEffect(() => {
     if (mode === "xet" && xetKnownUnavailable) {
-      // Reflected, never stored: a fallback stored here would outrank the install setting and
-      // survive hf_xet being installed later.
+      // Not persisted: a stored fallback would outrank the install setting and outlive hf_xet installs.
       setMode("http", { persist: false });
     }
   }, [mode, setMode, xetKnownUnavailable]);
@@ -62,7 +60,6 @@ export function TransportToggle() {
         if (disabled && capabilities?.xet.reason) {
           hint = capabilities.xet.reason;
         } else if (opt.value === "auto") {
-          // Say what Auto is doing right now and why, so "Auto" is never an opaque choice.
           const label = autoResolvesTo === "http" ? "HTTP" : "Xet";
           hint = autoReason
             ? `${opt.hint} Currently: ${label} (${autoReason}).`

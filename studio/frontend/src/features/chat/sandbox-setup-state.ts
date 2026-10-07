@@ -74,7 +74,6 @@ export function sandboxSetupView({
     showConsent,
     installDisabled: running || (showConsent && !consent),
     command,
-    // Windows commands name this install's paths: owner only.
     showOwnerOnly:
       install === null &&
       (command !== "" ||

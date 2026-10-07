@@ -18,7 +18,6 @@ import { QUANT_OPTIONS } from "../constants";
 interface QuantPickerProps {
   value: string[];
   onChange: (v: string[]) => void;
-  /** quant value -> "~X GB"; blank/missing when the model size is unknown. */
   sizes?: Record<string, string>;
 }
 

@@ -6,7 +6,6 @@ import test from "node:test";
 import type { VideoGenerationDefaults } from "../src/features/video/api.ts";
 import { matchedCanvas } from "../src/features/video/keyframe-canvas.ts";
 
-// What /video/status reports for MiniMax-H3: the released checkpoint's canvas rule.
 const h3: VideoGenerationDefaults = {
   steps: 30,
   guidance: 1,
@@ -22,7 +21,7 @@ const h3: VideoGenerationDefaults = {
 };
 
 test("previews the same canvas the backend derives from a keyframe", () => {
-  // The pairs the backend's own test pins, so a divergence in either direction is caught.
+  // The pairs the backend's own test pins.
   assert.deepEqual(matchedCanvas(1920, 1080, h3), [1344, 768]);
   assert.deepEqual(matchedCanvas(1080, 1920, h3), [768, 1344]);
   assert.deepEqual(matchedCanvas(1000, 1000, h3), [768, 768]);
@@ -34,11 +33,10 @@ test("reads the ratio only, so the source's own scale never matters", () => {
 });
 
 test("previews nothing where the backend would refuse or has no rule", () => {
-  // Outside the trained 1:4 - 4:1 band the backend raises, so offering a size would be a lie.
+  // Outside the trained 1:4 - 4:1 band the backend raises.
   assert.equal(matchedCanvas(2000, 400, h3), null);
   assert.equal(matchedCanvas(400, 2000, h3), null);
   assert.equal(matchedCanvas(0, 100, h3), null);
-  // A family that declares no canvas rule takes no keyframes either.
   assert.equal(
     matchedCanvas(1920, 1080, { ...h3, canvas_short_edge: null, canvas_max_pixels: null }),
     null,

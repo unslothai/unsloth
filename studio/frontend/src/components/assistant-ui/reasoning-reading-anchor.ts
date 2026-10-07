@@ -14,7 +14,6 @@ function textNodes(root: Element): Text[] {
   return nodes;
 }
 
-/** Locate a text range without changing the user's native selection. */
 export function reasoningTextRange(
   root: Element,
   text: string,
@@ -44,7 +43,6 @@ export function reasoningTextRange(
   return null;
 }
 
-/** Capture the first visible character, including when its block starts above the viewport. */
 export function captureReasoningAnchor(
   root: Element,
   viewport: Element,
@@ -74,8 +72,7 @@ export function captureReasoningAnchor(
         low = middle + 1;
       else high = middle;
     }
-    // Stay inside this text node so formatting and fragment boundaries cannot
-    // make the anchor needle depend on synthesized layout whitespace.
+    // Stay inside this text node so the needle never depends on synthesized layout whitespace.
     const text = node.data.slice(low, Math.min(node.length, low + 32));
     range.setStart(node, low);
     range.setEnd(node, low + text.length);

@@ -2,14 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Whether a base URL is one the keyless usage example may be printed for.
- *
- * Mirror of `keyless_api_access.keyless_authority_address_allowed`: loopback always,
- * private LAN under `inference`, nothing else. If the panel says yes where admission says
- * no, it renders a copy-paste `Bearer not-needed` command that answers 401.
- *
- * Its own module, free of the component's react/shiki graph, so a unit test can pin the
- * table instead of scraping the source.
+ * Mirror of `keyless_api_access.keyless_authority_address_allowed`: loopback always, private LAN
+ * under `inference`, nothing else. A mismatch prints a `Bearer not-needed` command that gets 401.
  */
 
 import type {
@@ -21,9 +15,7 @@ import { isLoopbackHost, normalizeHost } from "./agent-command.ts";
 // Same networks as the backend's _PRIVATE_LAN_NETWORKS.
 export function isPrivateLanHost(hostname: string): boolean {
   const host = normalizeHost(hostname).toLowerCase();
-  // No IPv4-mapped unwrapping: admission refuses that form precisely because the browser
-  // will not unwrap it, so a helper that does answers the wrong question. That is how the
-  // panel came to advertise a mapped literal.
+  // No IPv4-mapped unwrapping: admission refuses that form because browsers do not unwrap it.
   const ipv4 = host.split(".").map(Number);
   if (
     ipv4.length === 4 &&
@@ -47,11 +39,9 @@ function isIpLiteralHost(host: string): boolean {
   ) {
     return true;
   }
-  // normalizeHost has already stripped the URL brackets from an IPv6 authority
   return host.includes(":") && /^[0-9a-f:.]+$/i.test(host);
 }
 
-// 0.0.0.0 and every all-zero IPv6 spelling.
 function isUnspecifiedHost(host: string): boolean {
   return host === "0.0.0.0" || (host.includes(":") && /^[0:]+$/.test(host));
 }
@@ -61,11 +51,7 @@ function isIpv4MappedHost(host: string): boolean {
   return host.startsWith("::ffff:") || /^(?:0{1,4}:){5}ffff:/i.test(host);
 }
 
-/**
- * Syntax is not the question: `[::ffff:192.168.1.24]`, `[::]` and `8.8.8.8` are all well
- * formed literals admission refuses. Checking only that a base LOOKS like an address is what
- * left the panel advertising `Bearer not-needed` for each of them.
- */
+/** Well-formed literals like `[::ffff:192.168.1.24]`, `[::]` and `8.8.8.8` are still refused. */
 export function isKeylessAllowedAuthority(hostname: string): boolean {
   const host = normalizeHost(hostname).toLowerCase();
   if (!isIpLiteralHost(host)) return false;
@@ -85,8 +71,7 @@ export function keylessBaseEligible(
     const host = normalizeHost(new URL(base).hostname);
     if (isLoopbackHost(host)) return true;
     if (!isKeylessAllowedAuthority(host)) return false;
-    // `exposure` is computed from the RESOLVED address, so it must never widen a base the
-    // authority rule rejected; on its own it said nothing about how the caller spelled it.
+    // `exposure` comes from the resolved address, so it must never widen a rejected base.
     return scope === "inference";
   } catch {
     return false;

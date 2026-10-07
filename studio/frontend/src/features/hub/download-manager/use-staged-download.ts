@@ -13,7 +13,6 @@ import {
 } from "./download-manager-types";
 import { useRepoDownload } from "./use-repo-download";
 
-/** Total progress for the plan ID returned by `stage()`. */
 export interface StagedDownloadProgress {
   downloadedBytes: number;
   totalBytes: number;
@@ -26,8 +25,7 @@ export interface StagedDownloadEntry {
   bytes: number;
   ggufFilename?: string | null;
   checkpoint?: boolean;
-  /** A GGUF quant fetched as the standard variant download, as Chat does: the backend's variant
-   *  plan brings its companion files, and the row reads "<repo> · <quant>". `files` is unused. */
+  /** GGUF quant fetched as the standard variant download; the plan brings companions. `files` unused. */
   ggufVariant?: string | null;
 }
 
@@ -37,7 +35,7 @@ function entryKey(entry: StagedDownloadEntry): string {
     : `${entry.repoId}|${[...entry.files].sort().join(",")}`;
 }
 
-/** Runs a multi-repo download plan through the shared download manager, then calls `onReady` once every entry is on disk. Staging here rather than inside the load is what puts image and video downloads in the same panel, with the same progress, cancel, resume, disk preflight and manifest verification. */
+/** Runs a multi-repo plan through the shared download manager, then calls `onReady`. */
 export function useStagedDownload({
   scopeId,
   onReady,
@@ -45,15 +43,14 @@ export function useStagedDownload({
 }: {
   scopeId: string;
   onReady: () => void;
-  /** Clears the consumer's pending auto-load when the plan ends without every entry on disk: leaving it behind lets a later completion load a model nobody asked for. */
+  /** Clears a pending auto-load when the plan ends incomplete, so a later completion cannot load it. */
   onCancelled?: () => void;
 }) {
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
-  // Keep the original total as completed entries leave the queue.
   const [staged, setStaged] = useState({ bytes: 0, plan: 0 });
   const current = queue?.[0] ?? null;
 
-  // Every other entry is scoped, including a GGUF checkpoint: the Hub's snapshot ignore list drops *.gguf, so a plain snapshot job would finish having fetched everything EXCEPT the weights.
+  // Every other entry is scoped: the Hub snapshot ignore list drops *.gguf.
   const activeVariant = current
     ? (current.ggufVariant ?? scopedVariant(scopeId))
     : null;
@@ -66,10 +63,9 @@ export function useStagedDownload({
     });
   }, []);
 
-  // Keyed by entry AND staging generation: every scoped pick in a repo shares the "@scope" variant, so restaging would let the first job's completion pass for the new pick.
+  // Keyed by entry and generation: scoped picks share the "@scope" variant.
   const inFlight = useRef<{ key: string; generation: number } | null>(null);
   const generation = useRef(0);
-  // Only the first entry in each plan may reserve a Xet notice.
   const noticedGeneration = useRef<number | null>(null);
   const isOurs = (variant: string | null | undefined) =>
     (variant ?? null) === activeVariant &&
@@ -82,7 +78,7 @@ export function useStagedDownload({
     kind: DOWNLOAD_KIND.MODEL,
     repoId: current?.repoId ?? "__staged_download_idle__",
     activeVariant,
-    // The listener subscription is per REPO and each callback carries its variant, so drop the ones that are not this entry: a sibling's completion would advance the queue.
+    // Listeners are per repo; ignore other variants or a sibling's completion advances the queue.
     onComplete: (variant) => {
       if (!isOurs(variant)) return;
       inFlight.current = null;
@@ -110,7 +106,7 @@ export function useStagedDownload({
     if (!current) return;
     let active = true;
     const started = { key: entryKey(current), generation: generation.current };
-    // Register ownership before the start request: the panel can expose the job before this await resumes, and a very fast cancel in that window must still belong to this plan.
+    // Register ownership before the start request so an immediate cancel belongs to this plan.
     inFlight.current = started;
     const laterEntry = noticedGeneration.current === generation.current;
     noticedGeneration.current = generation.current;
@@ -139,7 +135,7 @@ export function useStagedDownload({
       if (!active) return;
       if (outcome === "started") return;
       if (inFlight.current === started) inFlight.current = null;
-      // A start that never got off the ground will never complete, so clear the queue instead of leaving the head in place where the effect never re-runs. The pick dies with it.
+      // A failed start never completes, so clear the queue instead of stalling the head.
       if (outcome === "error") {
         toast.error("Could not start the download", {
           description: "Check the connection, then select the model again.",

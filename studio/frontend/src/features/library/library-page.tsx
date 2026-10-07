@@ -233,18 +233,16 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const fileInput = useRef<HTMLInputElement>(null);
 
   const loaded = status === "ready";
-  // "auto" tabs count as shown until the listing lands, so a start tab is not swapped mid-load.
+  // "auto" tabs count as shown until the listing lands, so the start tab is not swapped mid-load.
   const tabVisible = (entry: LibraryTab) => {
     const visibility = settings.tabs[entry] ?? "always";
     if (visibility === "hidden" || (entry === "models" && !settings.showFineTunes)) return false;
     return visibility === "always" || !loaded || items.some(KIND_TABS[entry] ?? (() => true));
   };
-  // Read once: changing Open on in settings must not move a Library that is already open.
   const [preferred] = useState(() =>
     settings.startTab === "last" ? settings.lastTab : settings.startTab,
   );
-  // No files or folders: open on Chats, since every file tab is empty. Decided once on load so
-  // the tab does not jump when a file lands later. Starred chats keep a Favorites start.
+  // Decided once on load so the tab does not jump when a file lands later.
   const [emptyOnLoad, setEmptyOnLoad] = useState<boolean | null>(null);
   if (emptyOnLoad === null && loaded) setEmptyOnLoad(items.length === 0 && folders.length === 0);
   const hasStarredChats = useChatFavoritesStore(
@@ -272,7 +270,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     [navigate],
   );
 
-  // "Default order" falls back to the sort in Library settings.
   const gridSortValue = (search.sort ? SORT_STATES[search.sort].key : "default") as LibrarySortChoice;
   const gridSort = {
     value: gridSortValue,
@@ -281,7 +278,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     desc: sort.desc,
     onDirectionChange: (desc: boolean) =>
       desc !== sort.desc && go({ ...search, sort: sortParam({ key: sort.key, desc }) }, true),
-    // Reselecting the checked key keeps its direction, which list view may have flipped.
     onChange: (choice: LibrarySortChoice) =>
       choice !== gridSortValue &&
       go(
@@ -320,7 +316,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   const favoriteChats = useFavoriteChatMatches(query, tab === "favorites" && !folderId);
 
   const kindFilter = folderId ? undefined : KIND_TABS[tab];
-  // Folders have no filter menu, so tab filters do not apply inside them.
   const filterMode = folderId || tab === "folders" ? "none" : kindFilter ? "source" : "all";
   const filters = filterMode === "none" ? EMPTY_FILTERS : chosenFilters;
   const workflowOptions = useMemo(
@@ -366,8 +361,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       .sort(compareBySort(sort.key === "size" ? { key: "name", desc: false } : sort));
   }, [folders, folderId, tab, needle, filters, sort]);
 
-  // A search, filter or Content setting that hides a selected entry deselects it, so bulk actions
-  // only ever act on what is on screen and clearing the filter never brings a selection back.
+  // Hidden entries are deselected so bulk actions only act on what is on screen.
   const visibleKeys = useMemo(
     () =>
       new Set([
@@ -519,7 +513,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     uploadBatch({ files }, files.length, files[0]?.name ?? "");
 
   async function uploadNativeDrops(intents: NativeIntent[]) {
-    // The grants are the signed-in account's: one who signs in meanwhile must not upload them.
+    // The grants belong to the signed-in account; another who signs in must not upload them.
     const sessionEpoch = getAuthSessionEpoch();
     try {
       const leases = await Promise.all(
@@ -701,7 +695,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
       ))}
     </nav>
   ) : (
-    // truncate clips at the padding box, which the y overhangs; the margins give the padding back.
+    // truncate clips at the padding box, which the y overhangs; the margins give it back.
     <h1 className="-my-[0.15em] min-w-0 truncate py-[0.15em] pr-[0.08em] text-[calc(1.6875rem*var(--ui-font-scale,1))] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground">
       {t("shell.navigation.library")}
     </h1>
@@ -951,7 +945,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
     onChange: (next: string) => go({ show: next as LibraryTab }),
   };
 
-  // Chats use their own view and data; the file listing, filters and selection never apply.
   if (tab === "chats" && !folderId) {
     return <ChatsLibrary search={search} title={title} tabs={headerTabs} />;
   }

@@ -35,10 +35,6 @@ interface StartupScreenProps {
 
 const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
 function Logo() {
   return (
     <div className="flex items-center justify-center gap-3">
@@ -57,10 +53,6 @@ function Logo() {
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Per-status renderers
-// ---------------------------------------------------------------------------
 
 function CheckingContent() {
   return (
@@ -323,10 +315,6 @@ function ErrorContent({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Main component
-// ---------------------------------------------------------------------------
-
 export function StartupScreen({
   status,
   logs,
@@ -429,22 +417,13 @@ function StartupSurface({ children }: { children: ReactNode }) {
 }
 
 /**
- * Shown from the moment a quit is requested until the process is gone. Separate from
- * StartupScreen because a quit can come from the running app, where no backend status
- * applies, and unanimated because it has to be on screen for the very next paint.
- *
- * A layer over the app rather than a replacement for it: a declined quit has to hand the
- * user back the tree they had, in-flight generations and unsaved drafts included. The
- * z-index clears the titlebar, the download stack and the floating panels above it:
- * it is Z_LAYER.STARTUP_SCREEN, which lib/z-layers puts over both.
+ * Shown from quit request until exit. An overlay, not a replacement, so a declined quit returns
+ * the live tree; Z_LAYER.STARTUP_SCREEN clears the titlebar and floating panels.
  */
 export function ClosingScreen() {
   return (
-    // pointer-events-auto, not the inherited default: Radix parks pointer-events:none on
-    // <body> while any modal layer is open, and a quit raised from the window controls,
-    // the tray or Alt+F4 never closes that layer. Inheriting it would make the overlay
-    // click-through onto the dialog it is hiding, so clicks meant for a screen that says
-    // the app is closing would land on buttons the user can no longer see.
+    // pointer-events-auto: Radix parks pointer-events:none on <body> while a modal is open, which
+    // would make this overlay click-through onto the hidden dialog.
     <div
       data-blocking-screen=""
       className="pointer-events-auto fixed inset-0 z-[9999]"

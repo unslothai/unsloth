@@ -49,8 +49,7 @@ export function ModelConfigDialog({
   const skipHealthCheckId = `${config.id}-skip-health-check`;
   const providerAnchorRef = useRef<HTMLDivElement>(null);
   const providerInputRef = useRef(config.provider);
-  // Sync providerInputRef in an effect (not during render) to satisfy the
-  // react-hooks/refs rule and keep the combobox blur path stable.
+  // In an effect, not during render, to satisfy react-hooks/refs.
   useEffect(() => {
     providerInputRef.current = config.provider;
   }, [config.provider]);
@@ -61,8 +60,6 @@ export function ModelConfigDialog({
     onUpdate({ [key]: value } as Partial<ModelConfig>);
   };
 
-  // Apply provider selection while clearing model identifiers that only make
-  // sense for the previous provider locality.
   const applyProviderChange = (selectedProvider: string) => {
     const nextIsLocal = localProviderNames.has(selectedProvider);
     if (isLinkedToLocal !== nextIsLocal) {

@@ -77,7 +77,6 @@ import {
 import { EXPIRY_GRACE_MS } from "./staged-source";
 import { uploadItemFromIntent, useRagDocuments } from "./use-rag-documents";
 
-// Refetched after any KB mutation so a rename shows at once.
 function useKnowledgeBaseName(kbId: string | null): string | null {
   // Keyed by id: a drop during a switch must not name one KB and add to another.
   const [known, setKnown] = useState<{ kbId: string; name: string | null } | null>(
@@ -108,7 +107,6 @@ function useKnowledgeBaseName(kbId: string | null): string | null {
   return known !== null && known.kbId === kbId ? known.name : null;
 }
 
-// Shown when retrieval comes from a KB, so the source isn't invisible.
 function KnowledgeBaseSourceChip({
   name,
   onOpen,
@@ -141,19 +139,16 @@ function KnowledgeBaseSourceChip({
 }
 
 /**
-* Confirm a thread is stored before documents are indexed against it. An id reaches this
-* component before its row write lands, from a cached initialize() or from activeThreadId, and
-* upload_thread_document does not check the thread itself. A transport failure is not proof the
-* row is missing, so only a definitive miss blocks the upload.
-*/
+ * The thread id can arrive before its row write lands, and upload_thread_document does not
+ * check the thread; only a definitive miss blocks the upload.
+ */
 async function requireStoredThread(threadId: string): Promise<void> {
   if (isThreadIncognito(threadId)) return;
   let stored: Awaited<ReturnType<typeof ensureStoredChatThread>>;
   try {
     stored = await ensureStoredChatThread(threadId);
   } catch (error) {
-    // A backend tombstone is an answer, not an indeterminate transport failure: indexing
-    // against it would leave documents under a thread that can never come back.
+    // A tombstone is an answer: indexing against it would orphan the documents.
     if (error instanceof ChatThreadDeletedError) {
       throw error;
     }
@@ -164,8 +159,7 @@ async function requireStoredThread(threadId: string): Promise<void> {
   }
 }
 
-/** Read-only listing of the project's sources, shown when the Docs pill is off:
- * they still reach the model, so they must not be invisible. */
+/** Shown when the Docs pill is off: project sources still reach the model. */
 function InheritedProjectSources({
   documents,
 }: {
@@ -180,8 +174,6 @@ function InheritedProjectSources({
         <HugeiconsIcon icon={FolderAttachmentIcon} strokeWidth={2} className="size-3.5" />
         <span>Project sources</span>
       </span>
-      {/* Same cap as the editable list: a linked folder can carry hundreds of
-          sources, and an uncapped row would swallow the chat viewport. */}
       <div className="flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto">
         {documents.map((doc) => (
           <DocumentStatusChip
@@ -196,42 +188,33 @@ function InheritedProjectSources({
   );
 }
 
-/** The project the displayed chat belongs to, read from the chat's own row: the
- * global activeProjectId still names the project being left during a navigation.
- * `undefined` while unresolved, which holds the attach controls rather than
- * reading as "not in a project". */
 /** Reads of the chat's own row before the scope is left unresolved. */
 const PROJECT_LOOKUP_RETRIES = 3;
 
+/** Read from the chat's own row: activeProjectId still names the old project mid-navigation.
+ * `undefined` while unresolved. */
 function useThreadProjectId(
   threadId: string | null,
 ): string | null | undefined {
   const activeProjectId = useChatRuntimeStore((s) => s.activeProjectId);
   const [resolved, setResolved] = useState<{
     threadId: string;
-    // The activeProjectId this answer was produced for. A change means the chat
-    // may have moved, so the old answer stops counting until the re-read lands.
     trigger: string | null;
     projectId: string | null;
   } | null>(null);
 
-  // activeProjectId is a trigger, not the answer: moving the open chat updates
-  // its row and this value without changing the thread id.
   useEffect(() => {
     if (!threadId || isThreadIncognito(threadId)) {
       return;
     }
     let cancelled = false;
     void (async () => {
-      // A failed read is not proof of no project, and recording one would file
-      // the next attachment into the chat. Retry, then leave it unresolved:
-      // nothing re-runs this until the chat or the open project changes.
+      // A failed read is not proof of no project; retry, then leave it unresolved.
       for (let attempt = 0; attempt < PROJECT_LOOKUP_RETRIES; attempt += 1) {
         try {
           const thread = await getStoredChatThread(threadId);
           if (cancelled) return;
-          // No row yet: initialize() does not await the write, so the composer's
-          // project is the answer that row is about to record.
+          // No row yet: initialize() does not await the write, so use the composer's project.
           const projectId = thread ? (thread.projectId ?? null) : activeProjectId;
           setResolved({ threadId, trigger: activeProjectId, projectId });
           return;
@@ -247,8 +230,6 @@ function useThreadProjectId(
     };
   }, [threadId, activeProjectId]);
 
-  // A chat with no id yet is the one being composed, so it belongs to whatever
-  // project the composer is in.
   if (!threadId) {
     return activeProjectId;
   }
@@ -260,8 +241,6 @@ function useThreadProjectId(
     : undefined;
 }
 
-/** The composer's attach control. Wording and glyph follow the active target, so
- * a project chat says up front where the file is going. */
 function AttachFilesButton({
   disabled,
   compact,
@@ -269,7 +248,6 @@ function AttachFilesButton({
   onClick,
 }: {
   disabled: boolean;
-  /** Icon-only once documents are attached, to leave the chips room. */
   compact: boolean;
   sharesWithProject: boolean;
   onClick: () => void;
@@ -281,7 +259,6 @@ function AttachFilesButton({
       disabled={disabled}
       className={cn(
         "composer-pill-btn shrink-0 -translate-y-px !text-foreground/80",
-        // Square button so the rounded-full hover reads as a circle.
         compact && "size-8 justify-center px-0",
       )}
       aria-label={
@@ -428,10 +405,8 @@ export function ThreadDocumentsBar({
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // A fresh chat has no thread id until the first message; materialize one on demand
-  // so docs can attach (append() in runtime-provider reuses it). Track it locally:
-  // pushing to global activeThreadId would, in a project, remount this bar mid-upload
-  // (ProjectLanding's pendingNewThreadId branch) and drop the just-attached chips.
+  // Track the materialized id locally: setting activeThreadId in a project remounts this bar
+  // mid-upload (ProjectLanding's pendingNewThreadId branch) and drops the new chips.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
   const initPromiseRef = useRef<Promise<string> | null>(null);
@@ -443,8 +418,7 @@ export function ThreadDocumentsBar({
     if (!threadId) {
       return;
     }
-    // A plain send creates the chat too, without ensureThreadId. Hand the
-    // earlier choice to the chat that just got an id, or the next one inherits it.
+    // A plain send creates the chat too; hand it the earlier choice, or the next chat inherits it.
     if (!hadThreadId) {
       useChatRuntimeStore.getState().adoptPendingProjectAttachmentTarget(threadId);
     }
@@ -453,28 +427,21 @@ export function ThreadDocumentsBar({
     initPromiseRef.current = null;
   }, [threadId]);
 
-  // An abandoned composer leaves its choice under the pending key, where the next new chat would
-  // claim it. Adoption removes the key, so this drops only what nobody claimed.
+  // Adoption removes the pending key, so this drops only a choice nobody claimed.
   useEffect(
     () => () =>
       useChatRuntimeStore.getState().clearPendingProjectAttachmentTarget(),
     [],
   );
 
-  // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope,
-  // but a KB preference left over while the pill is off does not.
+  // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope.
   const threadProjectId = useThreadProjectId(effectiveThreadId);
-  // Attaching before the row has been read would file the file by guess.
   const projectUnresolved = threadProjectId === undefined;
-  // A host where the vector extension cannot load answers 503 to every project
-  // source request, so do not open a scope it can only fail.
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const projectId =
     (ragEnabled && ragSource.type === "kb") || ragUnavailable
       ? null
       : (threadProjectId ?? null);
-  // This chat's own choice if it made one, otherwise the saved default. Keeps a
-  // pick in one chat from redirecting every other chat in the project.
   const projectAttachmentTarget =
     projectAttachmentTargetByThread[
       effectiveThreadId ?? PENDING_CHAT_ATTACHMENT_KEY
@@ -503,9 +470,7 @@ export function ThreadDocumentsBar({
     lister,
   );
 
-  // The project's shared sources, listed alongside this chat's own so a file added
-  // from another chat is visible rather than silently in effect. Retrieval already
-  // combines both scopes (core/rag/tool.py).
+  // Retrieval already combines both scopes (core/rag/tool.py).
   const projectLister = useCallback(
     () => (projectId ? listProjectDocuments(projectId) : Promise.resolve([])),
     [projectId],
@@ -522,13 +487,8 @@ export function ThreadDocumentsBar({
     projectLister,
   );
 
-  // Tell the composer whether any doc is still indexing, so it can hold a queued send until
-  // retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope is null, so both lists are
-  // empty and this reads false. From the hooks, not the rows: work started in the Sources panel is
-  // in flight before either instance has a row for it, and a job already running on a reopened
-  // project arrives with the first list, so hold until that lands. Both scopes hold on their first
-  // list, for the same reason: reopening a chat whose own attachment was still indexing lists
-  // nothing until it lands either.
+  // Lets the composer hold a queued send until retrieval covers indexing docs
+  // (Composer.enqueueSend); both scopes hold until their first list lands.
   const hasIndexing =
     threadIndexing || threadListLoading || projectIndexing || projectListLoading;
   useEffect(() => {
@@ -536,13 +496,10 @@ export function ThreadDocumentsBar({
   }, [hasIndexing, onIndexingChange]);
   useEffect(() => () => onIndexingChange?.(false), [onIndexingChange]);
 
-  // Materialize the thread id on first use; ref-deduped so a double-click can't
-  // start two threads. A thread switch gets separate work even if the prior request is pending.
+  // Ref-deduped so a double-click cannot start two threads.
   const ensureThreadId = useCallback((): Promise<string> => {
-    // A new chat already has a local id before initialize() creates its stored row.
-    // Only initialize when that id belongs to the current uninitialized item. During
-    // navigation the saved target reaches this bar before switchToThread replaces the
-    // outgoing item; initializing then would create and attach to the wrong chat.
+    // Only initialize when the id belongs to the current uninitialized item; mid-navigation that
+    // would create and attach to the wrong chat.
     const currentItem = aui.threadListItem().getState();
     if (
       effectiveThreadId &&
@@ -558,8 +515,7 @@ export function ThreadDocumentsBar({
     }
     const clearGeneration = chatHistoryClearBoundary.capture();
     const generation = ++initGenerationRef.current;
-    // Taken before the await: this composer can be abandoned while it runs, and
-    // the choice under the shared key would then be the next composer's.
+    // Taken before the await: this composer can be abandoned while it runs.
     const claim = readPendingAttachmentTargetClaim();
     const pending = aui
       .threadListItem()
@@ -569,11 +525,11 @@ export function ThreadDocumentsBar({
         useChatRuntimeStore
           .getState()
           .adoptPendingProjectAttachmentTarget(remoteId, claim);
-        // a clear that landed while the row write was in flight is deleting this thread
+        // A clear that landed while the row write was in flight is deleting this thread.
         if (chatHistoryClearBoundary.capture() !== clearGeneration) {
           throw new Error("Chat history was cleared");
         }
-        // an older request can still finish after the component moved to another thread
+        // An older request can still finish after the component moved to another thread.
         if (initGenerationRef.current === generation) {
           setMaterializedId(remoteId);
         }
@@ -589,21 +545,17 @@ export function ThreadDocumentsBar({
     return pending;
   }, [aui, effectiveThreadId]);
 
-  // One entry point for the picker and desktop drops: project files go straight
-  // there, per-chat files materialize the thread first. The probe caches for 30s,
-  // so invalidate both sides or a send mid-index reads a stale "no sources".
+  // The sources probe caches for 30s, so invalidate both sides.
   const attach = useCallback(
     (items: Parameters<typeof upload>[0]) => {
       if (sharesWithProject && projectId) {
         invalidateProjectSources(projectId);
-        // Explicit scope: a desktop drop enables RAG and attaches in the same
-        // tick, so the hook's own scope is still null on this render.
+        // Explicit scope: a desktop drop enables RAG and attaches in the same tick.
         void uploadToProject(items, { type: "project", projectId }).finally(() =>
           announceProjectSourcesUpdated(projectId),
         );
         return;
       }
-      // Filter duplicates before initializing the chat.
       void upload(items, async () => ({
         type: "thread",
         threadId: await ensureThreadId(),
@@ -612,8 +564,7 @@ export function ThreadDocumentsBar({
     [ensureThreadId, projectId, sharesWithProject, upload, uploadToProject],
   );
 
-  // Desktop drops land in the native-intent store because the drop listener lives on
-  // the chat page; only the chat that received the OS drop may drain its batch.
+  // Only the chat that received the OS drop may drain its batch.
   const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
   const [kbDialogFocus, setKbDialogFocus] = useState<KnowledgeBaseFocus | null>(
     null,
@@ -641,7 +592,6 @@ export function ThreadDocumentsBar({
     if (!hasPendingAttachments || !nativeAttachmentTargetKey) {
       return;
     }
-    // Hold the batch rather than draining it before the chat's project scope is known.
     if (projectUnresolved) {
       return;
     }
@@ -650,8 +600,6 @@ export function ThreadDocumentsBar({
     if (intents.length === 0) {
       return;
     }
-    // A KB-scoped chat uploads through the KB dialog, so a thread upload here would
-    // index into something this bar never shows.
     if (ragEnabled && ragSource.type === "kb") {
       const kbId = ragSource.kbId;
       const files =
@@ -661,7 +609,6 @@ export function ThreadDocumentsBar({
       const target = activeKbName
         ? `"${activeKbName}"`
         : "this chat's knowledge base";
-      // Nothing else holds these files: keep the offer while their path tokens are readable.
       const expiresAt = Math.min(...intents.map((intent) => intent.path.expiresAtMs));
       const offer = toast(`Add ${files} to ${target}?`, {
         description:
@@ -681,7 +628,6 @@ export function ThreadDocumentsBar({
       kbDropOffersRef.current.add(offer);
       return;
     }
-    // A stale KB preference is inactive while RAG is off; use thread retrieval.
     if (!ragEnabled) {
       setRagSource({ type: "thread" });
       setRagEnabled(true);
@@ -701,8 +647,6 @@ export function ThreadDocumentsBar({
 
   const chipScrollRef = useRef<HTMLDivElement>(null);
   const [chipsOverflow, setChipsOverflow] = useState(false);
-  // Removing a project source here deletes it for every chat, beside a chat chip
-  // whose X is undoable. Confirm, as the Sources tab and Settings do.
   const [removingShared, setRemovingShared] = useState<RagDocument | null>(null);
   const updateChipFade = useCallback(() => {
     const el = chipScrollRef.current;
@@ -713,15 +657,13 @@ export function ThreadDocumentsBar({
     updateChipFade();
   }, [documents, updateChipFade]);
 
-  // Open the picker synchronously to keep the click's user activation. Do NOT
-  // materialize here: setActiveThreadId while the native dialog is open can remount
-  // the composer and orphan this <input>. Materialize in onChange instead.
+  // Open the picker synchronously to keep user activation; materializing here can remount the
+  // composer and orphan this <input>.
   const handleAddDocs = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
 
-  // Every branch, always the first fragment child: an "Add" must open after the source
-  // moves, and deleting the active KB in it must not remount it.
+  // Always the first fragment child so it is never remounted across branches.
   const kbDialog = (
     <KnowledgeBaseDialog
       open={kbDialogFocus !== null}
@@ -739,7 +681,6 @@ export function ThreadDocumentsBar({
     />
   );
 
-  // A KB source uploads via the KB dialog, not here; show which KB is active.
   if (ragEnabled && ragSource.type === "kb") {
     const kbId = ragSource.kbId;
     return (
@@ -753,9 +694,7 @@ export function ThreadDocumentsBar({
       </>
     );
   }
-  // Project sources retrieve whether the Docs pill is on or not (chat-adapter's projectRagEnabled),
-  // so list them either way rather than letting the model answer from files the user cannot see.
-  // The attach controls stay behind the pill: with it off, thread scope is inert.
+  // Project sources retrieve whether or not the Docs pill is on (chat-adapter's projectRagEnabled).
   if (!ragEnabled) {
     return (
       <>
@@ -767,7 +706,6 @@ export function ThreadDocumentsBar({
     );
   }
 
-  // Attaching before the chat's project is known would file the file by guess.
   const busy = uploading || projectUploading || projectUnresolved;
   const chipCount = documents.length + projectDocuments.length;
 
@@ -807,7 +745,6 @@ export function ThreadDocumentsBar({
             attach(files);
           }}
         />
-        {/* Cap height so a large set scrolls; fade the cut-off row. */}
         <div
           ref={chipScrollRef}
           onScroll={updateChipFade}
@@ -816,7 +753,6 @@ export function ThreadDocumentsBar({
             chipsOverflow && "rag-docs-bottom-fade",
           )}
         >
-          {/* Project sources first: inherited context, and it outlives this chat. */}
           {projectDocuments.map((doc) => (
             <DocumentStatusChip
               key={`project:${doc.id}`}

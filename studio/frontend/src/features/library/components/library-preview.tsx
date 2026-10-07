@@ -121,11 +121,7 @@ interface LoadedText {
   error?: string;
 }
 
-/**
- * The item's text, or null while it first loads. A newer version of the same item keeps showing
- * the last one until it arrives (`loadedKey` says which is on screen), so an editor is never
- * swapped for a spinner, and never loses focus, when its own save bumps the version.
- */
+/** A newer version keeps showing the old text until it loads, so a save never swaps in a spinner. */
 function useItemText(item: LibraryItem | null, enabled: boolean) {
   const key = item ? itemVersion(item) : "";
   const [state, setState] = useState<LoadedText | null>(null);
@@ -142,7 +138,7 @@ function useItemText(item: LibraryItem | null, enabled: boolean) {
     return () => {
       cancelled = true;
     };
-    // `key` carries the item's identity and version; the object itself changes on every refresh.
+    // `key` carries the item's identity and version; the object changes on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, enabled]);
   const current = item && state?.itemId === item.id ? state : null;
@@ -220,7 +216,6 @@ function TextPrefix({ text, className }: { text: string; className?: string }) {
   );
 }
 
-/** What shows when a file cannot be previewed here, by type or because it failed to load. */
 function NoPreview({
   item,
   message,
@@ -461,7 +456,6 @@ function PreviewBody({
           </Zoomed>
         );
       }
-      // A note the editor would write back wrongly says why it cannot be edited.
       if (isEditable(item) && readOnlyReason) {
         return (
           <Zoomed scale={pageScale}>
@@ -520,12 +514,9 @@ export function LibraryPreview({
   const itemText = useItemText(item, view === "text" || view === "web" || view === "markdown");
   const version = item && itemVersion(item);
   // Tagged with its item, so a draft never follows the preview to another file.
-  // `savedAt` marks text already written: the item version it was saved over, shown until the
-  // refreshed item's text has loaded, so the editor never falls back to the old text.
   const [edit, setEdit] = useState<{ itemId: string; text: string; savedAt?: number } | null>(
     null,
   );
-  // The same draft, readable after an await: a save must not return while typing moved past it.
   const latestEdit = useRef(edit);
   const lastSaved = useRef<{ itemId: string; text: string } | null>(null);
   const current = item && edit?.itemId === item.id ? edit : null;
@@ -598,8 +589,7 @@ export function LibraryPreview({
     if (await save()) action();
   }
 
-  // Closing a note saves it, so an edit is never lost to a stray Escape. A save that fails asks
-  // what to do instead, so the preview can always be closed.
+  // Closing saves; a failed save asks instead, so the preview can always be closed.
   async function handleOpenChange(open: boolean) {
     if (!open) {
       const error = await trySave();
@@ -611,8 +601,7 @@ export function LibraryPreview({
     onOpenChange(open);
   }
 
-  // Back, or any link, closes the preview without handleOpenChange: save first, as closing does.
-  // Refs, not `unsaved`: a discard or a save just made has not rendered yet when it navigates.
+  // Navigation bypasses handleOpenChange, so save here; refs because state may not have rendered.
   useBlocker({
     shouldBlockFn: async () => {
       const latest = latestEdit.current;
@@ -754,7 +743,6 @@ export function LibraryPreview({
           onDownloadRun={() => onDownloadRun(run)}
         />
       )}
-      {/* Portalled, so it sits over the preview whatever the body is. */}
       <UnsavedChangesDialog
         error={closeError}
         onRetry={() => {

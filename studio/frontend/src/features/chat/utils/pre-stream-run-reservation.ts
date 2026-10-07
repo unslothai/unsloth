@@ -142,7 +142,6 @@ export function cancelPreStreamRunReservations(
 ): number {
   let cancelled = 0;
   for (const token of new Set(tokens)) {
-    // Model unload and app-wide stop actions remain local-model-only.
     if (
       reservations.get(token)?.usesLocalModel &&
       cancelPreStreamReservation(token)
@@ -152,7 +151,6 @@ export function cancelPreStreamRunReservations(
   return cancelled;
 }
 
-/** A composer steering gesture may cancel its own local or external response. */
 export function cancelPreStreamRunForThreadIds(
   threadIds: readonly string[],
 ): boolean {

@@ -135,8 +135,7 @@ function headersToObject(
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-// A non-HTTP address is a local stdio command. Case-insensitive to match the backend's is_stdio(),
-// so all layers split http-vs-command identically.
+// Case-insensitive to match the backend's is_stdio().
 function isHttpAddress(value: string): boolean {
   const trimmed = value.trim().toLowerCase();
   return trimmed.startsWith("http://") || trimmed.startsWith("https://");
@@ -209,8 +208,7 @@ function isValidAddress(value: string): boolean {
       return false;
     }
   }
-  // The backend owns stdio parsing and validation. In particular, the browser must not split an
-  // executable or duplicate platform-specific quoting rules.
+  // The backend owns stdio parsing; never split executables or quoting in the browser.
   return true;
 }
 

@@ -11,9 +11,7 @@ import {
   parseExtraArgs,
 } from "../src/features/model-picker/model-config/llama-extra-args.ts";
 
-// The wire format is one argv token per entry, so this split decides what the child
-// process actually receives. A token boundary in the wrong place turns one flag's
-// value into another flag.
+// Each entry is one argv token for the child process.
 
 test("a plain command splits on whitespace", () => {
   assert.deepEqual(parseExtraArgs("--top-k 20 --seed 42").tokens, [
@@ -41,8 +39,6 @@ test("newlines separate, so one flag per line reads as one command", () => {
 });
 
 test("a quoted value keeps its spaces in one token", () => {
-  // The reason quoting exists here at all: a chat template or a grammar is one
-  // argv entry containing spaces.
   assert.deepEqual(parseExtraArgs(`--chat-template "a b c"`).tokens, [
     "--chat-template",
     "a b c",
@@ -59,15 +55,13 @@ test("quotes can open mid-token and more than once", () => {
 });
 
 test("an empty quoted string is still a token", () => {
-  // --grammar '' is a real thing to pass; dropping it would silently change the
-  // command rather than fail.
+  // Empty --grammar '' is meaningful and must not be dropped.
   assert.deepEqual(parseExtraArgs(`--grammar ''`).tokens, ["--grammar", ""]);
 });
 
 test("an unterminated quote is reported, not swallowed", () => {
   const parsed = parseExtraArgs(`--chat-template "a b`);
   assert.equal(parsed.unterminatedQuote, '"');
-  // The tokens so far are still returned, so the row can show what it did read.
   assert.deepEqual(parsed.tokens, ["--chat-template", "a b"]);
   assert.equal(parseExtraArgs("--top-k 20").unterminatedQuote, null);
 });
@@ -81,8 +75,7 @@ test("a backslash escapes the next character outside quotes", () => {
 });
 
 test("single quotes take everything literally", () => {
-  // What makes a regex-bearing grammar survive: inside single quotes a backslash
-  // is a backslash, as in a shell.
+  // Inside single quotes a backslash is literal, so regex grammars survive.
   assert.deepEqual(parseExtraArgs(`--grammar 'root ::= [\\d]+'`).tokens, [
     "--grammar",
     "root ::= [\\d]+",
@@ -91,53 +84,37 @@ test("single quotes take everything literally", () => {
 
 test("double quotes escape only what a shell escapes", () => {
   assert.deepEqual(parseExtraArgs(`"a\\"b"`).tokens, ['a"b']);
-  // A backslash before an ordinary character stays, so a Windows path survives.
   assert.deepEqual(parseExtraArgs(`"C:\\Users\\model"`).tokens, [
     "C:\\Users\\model",
   ]);
 });
 
 test("a trailing backslash-newline continues the line", () => {
-  // POSIX 2.2.1: an unquoted backslash before a newline is a line continuation and
-  // both characters go. This is the one place the split deliberately differs from
-  // Python's shlex, which is a lexer with no continuation rule and leaves a literal
-  // newline inside the token. The box is multi-line and people paste wrapped
-  // commands into it, so the shell reading is the one that matches the intent.
+  // Deliberately differs from shlex: backslash-newline is a POSIX line continuation.
   assert.deepEqual(parseExtraArgs("--top-k \\\n20").tokens, ["--top-k", "20"]);
-  // Inside single quotes it is literal, as in a shell.
   assert.deepEqual(parseExtraArgs("--x 'a\\\nb'").tokens, ["--x", "a\\\nb"]);
-  // The shape a wrapped command actually has when it is pasted: every line after
-  // the first is indented. The continuation contributes nothing, so that indentation
-  // is ordinary whitespace between tokens. Treating it as the start of one produced
-  // an empty token, which llama-server reads as a positional model path.
+  // An empty token here would be read by llama-server as a positional model path.
   assert.deepEqual(parseExtraArgs("--foo value \\\n  --bar other").tokens, [
     "--foo",
     "value",
     "--bar",
     "other",
   ]);
-  // And it still joins what it is between: no space either side means one token.
   assert.deepEqual(parseExtraArgs("--x=a\\\nb").tokens, ["--x=ab"]);
 });
 
 test("a trailing lone backslash is kept, not treated as an error", () => {
-  // The other deliberate difference from shlex, which raises here. A text field is
-  // half-typed most of the time, so refusing the whole box mid-keystroke is worse
-  // than carrying the character.
+  // Deliberately differs from shlex (which raises): the box is often half-typed.
   assert.deepEqual(parseExtraArgs("--x \\").tokens, ["--x", "\\"]);
   assert.equal(parseExtraArgs("--x \\").unterminatedQuote, null);
 });
 
 test("an unquoted Windows path loses its separators, as in a shell", () => {
-  // Not a bug to fix in the splitter: an unquoted backslash escapes the next
-  // character in every POSIX shell, and changing that would break every escape the
-  // hint tells people to use. It IS a trap on Windows, which is why the row's hint
-  // names backslashes and not just spaces.
+  // POSIX escaping is intended; the hint warns Windows users about backslashes.
   assert.deepEqual(
     parseExtraArgs("--chat-template-file C:\\a\\b.jinja").tokens,
     ["--chat-template-file", "C:ab.jinja"],
   );
-  // Quoted, it survives whole, and that is what the hint asks for.
   assert.deepEqual(
     parseExtraArgs('--chat-template-file "C:\\a\\b.jinja"').tokens,
     ["--chat-template-file", "C:\\a\\b.jinja"],
@@ -149,16 +126,13 @@ test("an unquoted Windows path loses its separators, as in a shell", () => {
 });
 
 test("shell metacharacters are literal, because nothing here runs a shell", () => {
-  // The child is spawned from a list, so pretending otherwise would invent a
-  // meaning the backend does not implement.
+  // The child is spawned from a list, so shell metacharacters have no meaning.
   assert.deepEqual(parseExtraArgs("--x a;b|c>d").tokens, ["--x", "a;b|c>d"]);
   assert.deepEqual(parseExtraArgs("--x $HOME").tokens, ["--x", "$HOME"]);
   assert.deepEqual(parseExtraArgs("--x *.gguf").tokens, ["--x", "*.gguf"]);
 });
 
-// --- round-tripping ---------------------------------------------------------
-// The stored value is a token list, so the box is re-rendered from tokens every
-// time the panel reopens. Anything that does not round-trip accumulates escaping.
+// Stored as tokens and re-rendered on open, so anything not round-tripping accumulates escaping.
 
 const ROUND_TRIP: string[][] = [
   ["--top-k", "20"],
@@ -181,16 +155,13 @@ for (const tokens of ROUND_TRIP) {
 }
 
 test("formatting leaves ordinary tokens unquoted", () => {
-  // Or the box would fill with quotes the user never typed.
   assert.equal(formatExtraArgs(["--top-k", "20"]), "--top-k 20");
   assert.equal(formatExtraArgs([]), "");
   assert.equal(formatExtraArgs(null), "");
   assert.equal(formatExtraArgs(undefined), "");
 });
 
-// --- flag names -------------------------------------------------------------
-// Mirrors _flag_name in llama_server_args.py. Where these disagree, the UI accepts
-// an argument the load then refuses, or warns about one that would have worked.
+// Mirrors _flag_name in llama_server_args.py.
 
 test("a flag name is peeled from its value", () => {
   assert.equal(extraArgFlagName("--top-k"), "--top-k");
@@ -232,7 +203,6 @@ test("flags are collected in order without duplicates", () => {
 });
 
 test("the token cap mirrors the backend", () => {
-  // The backend refuses past this, so the editor has to warn at the same number
-  // rather than let the load fail.
+  // Must match the backend's limit.
   assert.equal(EXTRA_ARGS_MAX_TOKENS, 256);
 });

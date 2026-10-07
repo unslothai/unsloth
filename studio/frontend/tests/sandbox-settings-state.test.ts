@@ -145,7 +145,6 @@ test("the prepare button shows only when something is missing or unknown", () =>
       .showPrepareButton,
     false,
   );
-  // A running job keeps its button, disabled, even once the status says prepared.
   const running = windowsView(windows(), job(), false);
   assert.equal(running.showPrepareButton, true);
   assert.equal(running.prepareDisabled, true);
@@ -246,7 +245,6 @@ test("a missing runtime offers the install unless this Windows cannot run MXC", 
     assert.equal(view.unsupported, reason);
     assert.equal(view.showInstallRuntime, false);
   }
-  // Installed on a build that cannot run it: the note still replaces the controls.
   assert.equal(
     windowsView(windows({ runtimeUnsupported: "build" }), null, false)
       .unsupported,
@@ -266,6 +264,5 @@ test("the tool rows keep only their badge while a section below has the answer",
     true,
   );
   assert.equal(toolRowsQuiet(false, view({ runtimeUnsupported: "build" })), true);
-  // Prepared, yet a tool still fails: its own reason is the only clue left.
   assert.equal(toolRowsQuiet(false, view({})), false);
 });

@@ -46,7 +46,6 @@ test("an undefined parentId is treated as absent, not as a root", () => {
 });
 
 test("a leading run of stored nulls is legacy, so storage order stands in", () => {
-  // Server rows always carry the key; with no recorded parent yet, these nulls chain.
   assert.deepEqual(
     resolveAll([
       { id: "old-1", parentId: null },
@@ -94,7 +93,6 @@ test("a mixed thread keeps its legacy chain instead of dropping it", () => {
 });
 
 test("a server-backed legacy thread survives its first parent-linked turn", () => {
-  // Rooting these explicit legacy nulls dropped every turn before the first linked one.
   const serverBacked = [
     { id: "old-u1", parentId: null, createdAt: 1, role: "user" },
     { id: "old-a1", parentId: null, createdAt: 2, role: "assistant" },
@@ -163,11 +161,11 @@ function generate(r: () => number): Row[] {
     if (i === 0) {
       parentId = null;
     } else if (roll < 0.15) {
-      parentId = null; // a second root
+      parentId = null;
     } else if (roll < 0.3) {
-      parentId = undefined; // pre-parentId record
+      parentId = undefined;
     } else if (roll < 0.4) {
-      parentId = `ghost-${i}`; // dangling reference
+      parentId = `ghost-${i}`;
     } else {
       parentId = rows[Math.floor(r() * rows.length)].id;
     }
@@ -184,7 +182,6 @@ function generate(r: () => number): Row[] {
   return rows;
 }
 
-// The previous rule, `parentId ?? previous`, kept verbatim as the reference.
 function orderByPreviousRule(rows: Row[]): string[] {
   const sorted = [...rows].sort(
     (a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0),
@@ -210,7 +207,6 @@ function orderByPreviousRule(rows: Row[]): string[] {
 }
 
 test("threads with no explicit null parent are completely unaffected", () => {
-  // Only a stored null changes meaning; everything else must order as before.
   const r = rng(7);
   for (let c = 0; c < 300; c++) {
     const rows = generate(r).filter((m) => m.parentId !== null);

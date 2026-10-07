@@ -44,9 +44,7 @@ import {
 } from "../stores/export-runtime-store";
 
 function useElapsedSeconds(startedAt: number | null, running: boolean): number {
-  // `now` is only advanced by the interval (never set synchronously in the
-  // effect body), so the elapsed value is derived during render. When `running`
-  // flips false the interval stops and `now` freezes, holding the final time.
+  // `now` only advances in the interval, so it freezes at the final time when running stops.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!running || startedAt == null) return;
@@ -85,9 +83,7 @@ const PHASE_LABELS: Record<string, string> = {
   canceled: "Canceled",
 };
 
-// Shown in the terminal before the first worker line arrives (it can lag a few
-// seconds behind, especially over a tunnel). Reflects the phase so the panel
-// never looks stuck while the progress bar is already advancing.
+// The first worker line can lag seconds over a tunnel, so show the phase meanwhile.
 function waitingMessage(phase: string, stage: string | null): string {
   if (stage) return stage;
   if (phase === "loading") return "Loading model into the export worker...";
@@ -115,9 +111,7 @@ export interface ExportRunPanelProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
-  /** Kick off the export (the page assembles params and calls the store). */
   onStart: () => void;
-  /** Collapse the panel; only offered before a run or after a terminal one. */
   onClose: () => void;
 }
 
@@ -171,9 +165,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     run.phase === "error" ||
     run.phase === "canceled";
   const showConfig = run.phase === "idle";
-  // Gate the log area on the active run's method (from the store) as well as the
-  // local form selection, so it stays visible after navigating away and back
-  // (the form `exportMethod` resets on remount, but the run does not).
+  // Use the run's method too: the form's exportMethod resets on remount, the run does not.
   const panelMethod = run.summary?.method ?? exportMethod;
   const showLogPanel =
     isExporting ||
@@ -241,7 +233,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         )}
       </div>
 
-      {/* Destination configuration (only before a run starts) */}
       {showConfig && (
         <>
           <div className="flex gap-2">
@@ -395,7 +386,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         </>
       )}
 
-      {/* Result banners */}
       {run.phase === "success" && (
         <div className="flex items-start gap-2 rounded-lg bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">
           <HugeiconsIcon
@@ -409,7 +399,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 : "Export finished successfully."}
             </span>
             {(() => {
-              // List every folder written; a multi-format merged run created one per format.
               const paths = run.result?.outputPaths ?? [];
               const items =
                 paths.length > 0
@@ -463,7 +452,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         </div>
       )}
 
-      {/* Summary */}
       <div className="rounded-xl bg-muted/50 p-3 text-xs text-muted-foreground flex flex-col gap-1">
         <div className="flex justify-between">
           <span>Base Model</span>
@@ -501,7 +489,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         )}
       </div>
 
-      {/* Progress */}
       {showProgress && (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
@@ -547,7 +534,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
         </div>
       )}
 
-      {/* Live export output */}
       {showLogPanel && (isExporting || run.logLines.length > 0) && (
         <div className="flex flex-col gap-1.5 pt-1">
               <div className="flex items-center justify-between">
@@ -600,7 +586,6 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             </div>
         )}
 
-      {/* Footer actions */}
       <div className="flex justify-end gap-2">
         {showConfig && (
           <>

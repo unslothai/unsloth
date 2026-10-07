@@ -75,7 +75,6 @@ type MarkdownNode = {
   children?: MarkdownNode[];
 };
 
-/** Used once at the short-to-windowed transition, not on streaming updates. */
 export function findReasoningAnchor(
   fragments: readonly ReasoningFragment[],
   text: string,
@@ -124,9 +123,8 @@ export function resolveReasoningAnchor(
   return { ...anchor, index: -1 };
 }
 
-// Context is render-only: copy/export always use the original document. A long
-// paragraph can cross a bold/code span; a quoted or nested fence can cross many
-// fragments. Reopen only the construct at the split, never an unrelated block.
+// Context is render-only: copy/export use the original document. Reopen only the construct
+// at the split, never an unrelated block.
 function continuationPrefix(
   text: string,
   nodes: readonly MarkdownNode[],
@@ -253,7 +251,6 @@ function fenceAt(source: string, start: number): Fence | null {
   return { marker: match[2], scan: newline + 1, bodyStart: newline + 1 };
 }
 
-/** Returns the end of a complete closing line. Only newly appended lines are scanned. */
 function fenceEnd(source: string, fence: Fence): number | null {
   fence.closeStart = undefined;
   for (let from = fence.scan; from < source.length; ) {
@@ -293,9 +290,8 @@ export function reasoningFragmentEnd(
   return Math.max(start + 1, end);
 }
 
-// Parse a bounded unfinished tail, retaining complete blocks. In particular, an open
-// fence bypasses Markdown parsing after its opener: appending a token to a 250K fence
-// must not ask a Markdown parser to read those 250K characters again.
+// Parse only a bounded unfinished tail; an open fence bypasses Markdown parsing after its opener
+// so appending to a huge fence does not reparse it.
 class DocumentIndex {
   source = "";
   blocks: Block[] = [];
@@ -324,7 +320,6 @@ class DocumentIndex {
       this.definitionsRevision += 1;
       this.generation += 1;
     }
-    // Only the unfinished tail can change a previously seen definition.
     const previousDefinitions = new Map(this.definitions);
     for (const [key, definition] of this.definitions) {
       if (definition.start >= this.offset) this.definitions.delete(key);
@@ -436,8 +431,7 @@ class DocumentIndex {
         continue;
       }
       if (end < source.length) {
-        // A single enormous paragraph/list/line still has to remain bounded. Prefer a
-        // complete line, then whitespace, and keep the continuation visually adjacent.
+        // A single enormous block must stay bounded: prefer a line break, then whitespace.
         let cut = tail.lastIndexOf("\n");
         if (cut < tail.length / 2) cut = tail.lastIndexOf(" ");
         if (cut < tail.length / 2) cut = tail.length;
@@ -510,7 +504,6 @@ function fragmentsOf(
   ];
 }
 
-/** Stored Markdown documents never share fence or paragraph state. */
 export class ReasoningTranscriptIndex {
   private documents: DocumentIndex[] = [];
   private fragments = new WeakMap<
@@ -529,8 +522,6 @@ export class ReasoningTranscriptIndex {
       const index = (this.documents[document] ??= new DocumentIndex());
       index.update(source);
       return index.blocks.flatMap((block) => {
-        // Preview-capable fences retain the established renderer and its settings.
-        // Ordinary code keeps the same incremental renderer and scroll geometry.
         if (
           block.fence &&
           (block.text.length > REASONING_FRAGMENT_CHARACTERS ||
@@ -577,8 +568,7 @@ export class ReasoningTranscriptIndex {
                 row.renderText = [...used].join("\n\n") + "\n\n" + rendered;
             }
           }
-          // New definitions only invalidate consumers; ordinary prose and code keep
-          // their memoized row identity even when a distant reference is completed.
+          // New definitions only invalidate consumers; other rows keep their memoized identity.
           if (cached?.text === block.text) {
             for (let i = 0; i < rows.length; i += 1) {
               if (rows[i].renderText === cached.rows[i]?.renderText)

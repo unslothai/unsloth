@@ -27,9 +27,7 @@ export type LocalPromptQueueStopPlan = {
   retainedItemIndexes: number[];
 };
 
-/** Preserve external-provider work when the singleton local model changes. Only local items depend
- *  on the outgoing model. A dispatched local item must be cancelled, but external follow-ups
- *  remain valid and can resume once the thread runtime becomes idle. */
+/** Only local items depend on the outgoing model; external follow-ups stay valid. */
 export function planLocalPromptQueueStop(
   items: readonly PromptQueueModelStopItem[],
   runIndex: number,
@@ -60,7 +58,6 @@ export function shouldAbortPendingQueueForModelBoundary({
   capturedGeneration: number;
   usesLocalModel: boolean;
 }): boolean {
-  // Preparation can still clear queues at the final model-switch boundary.
   return (
     usesLocalModel &&
     (!chatModelLifecycleGate.canQueue() ||

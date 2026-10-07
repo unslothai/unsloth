@@ -65,8 +65,6 @@ test("macOS desktop headers overlay the native titlebar", () => {
 });
 
 test("a route that merely starts with a workspace name keeps the corner inset", () => {
-  // The header routes are matched exactly, so a longer path that happens to share the
-  // prefix must not inherit their clearance and drop 40px down a page with no header.
   for (const pathname of ["/chatty", "/images-old", "/videos", "/chatgpt"]) {
     assert.deepEqual(getToastOffsets(pathname, false, false), {
       default: { top: 12, right: 12 },
@@ -76,9 +74,7 @@ test("a route that merely starts with a workspace name keeps the corner inset", 
 });
 
 test("an unrecognised pathname falls back to the corner inset", () => {
-  // The 404 shell paints no page header. This also covers a trailing-slash URL: the
-  // router does not normalise it, so "/images/" rests as its own pathname and misses
-  // the route, which is why it wants the no-header placement rather than the media one.
+  // The router does not normalise a trailing slash, so "/images/" misses the route.
   for (const pathname of ["/unknown", "/images/", "/video/", ""]) {
     assert.deepEqual(getToastOffsets(pathname, false, false), {
       default: { top: 12, right: 12 },
@@ -88,8 +84,6 @@ test("an unrecognised pathname falls back to the corner inset", () => {
 });
 
 test("a custom titlebar is ignored off the desktop app", () => {
-  // shouldUseCustomWindowTitlebar() cannot return true while isTauri is false, but the
-  // signature allows the pair, and there is no titlebar to clear in a browser.
   for (const pathname of ["/chat", "/studio"]) {
     assert.deepEqual(
       getToastOffsets(pathname, false, true),
@@ -109,8 +103,7 @@ test("offsets are pure, so a caller cannot poison the next lookup", () => {
 });
 
 test("the header offset follows the UI font size, the titlebar does not", () => {
-  // The page header is 48px * the scale, so a fixed 52px top lands inside it
-  // at the 20px setting. The titlebar band is fixed and keeps its 34px.
+  // The page header is 48px * scale, so a fixed 52px top lands inside it at the 20px setting.
   assert.deepEqual(getToastOffsets("/chat", false, false, 20 / 15), {
     default: { top: 69, right: 12 },
     mobile: { top: 69, right: 16 },
@@ -196,7 +189,6 @@ test("the inset is dropped when the chat column cannot hold a corner card", () =
 });
 
 test("a larger UI scale needs a wider chat column before the inset applies", () => {
-  // 1100 - 320 = 780 holds a 448px card at scale 1 but not a 1.8x one (850px).
   const plain = fakeInsetDom(1100, 320);
   watchChatSettingsInset(plain.root, plain.panel, 320, 1, plain.Observer);
   assert.equal(plain.vars.get("--studio-chat-settings-inset"), "320px");
@@ -207,7 +199,6 @@ test("a larger UI scale needs a wider chat column before the inset applies", () 
 });
 
 test("a smaller UI scale still leaves room for the fixed-width download panel", () => {
-  // 1024 - 280 sidebar = 744 row; 744 - 340 = 404 < 400 + 44, though 448 * 0.8 + 44 = 402.4 fits.
   const dom = fakeInsetDom(744, 340);
   watchChatSettingsInset(dom.root, dom.panel, 340, 0.8, dom.Observer);
   assert.equal(dom.vars.has("--studio-chat-settings-inset"), false);

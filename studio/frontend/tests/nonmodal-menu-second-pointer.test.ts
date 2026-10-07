@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pin the multi-pointer ordering and release grace period with a deterministic fake DOM.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -24,7 +22,6 @@ interface FakeEvent {
 
 class FakeNode {}
 
-/** Minimal `closest` implementation for the guard's menu check. */
 class FakeElement extends FakeNode {
   inMenu: boolean;
   inert = false;
@@ -121,7 +118,6 @@ class FakeDocument {
     if (at >= 0) list.splice(at, 1);
   }
 
-  /** Dispatch capture then bubble listeners. */
   dispatchEvent(event: FakeEvent): void {
     event.stopped = false;
     event.prevented = false;
@@ -141,7 +137,6 @@ class FakeDocument {
   }
 }
 
-/** Deterministic timer clock. */
 class FakeWindow {
   private next = 1;
   private readonly timers = new Map<number, { at: number; fn: () => void }>();
@@ -217,7 +212,6 @@ const up = (pointerId: number, pointerType: string): void => {
   fakeDocument.dispatchEvent({ type: "pointerup", pointerId, pointerType });
 };
 
-/** Dispatch a target click and report whether it reached bubble listeners. */
 function clickReachedTheControl(target: unknown): boolean {
   let delivered = false;
   const watch = (event: FakeEvent): void => {
@@ -232,7 +226,6 @@ function clickReachedTheControl(target: unknown): boolean {
   return delivered;
 }
 
-/** Install a guard for one isolated test. */
 function withOpenMenu(
   body: () => void,
   triggerRef?: { current: FakeHTMLElement | null },
@@ -253,12 +246,9 @@ function withOpenMenu(
 
 test("a second pointer's release does not retire the gesture that armed the guard", () => {
   withOpenMenu(() => {
-    // A finger holds a control outside the menu; touch dismissal is deferred to its click.
     down(11, "touch", OUTSIDE);
-    // A mouse presses and releases inside the still-open menu.
     down(22, "mouse", INSIDE_MENU);
     up(22, "mouse");
-    // Advance beyond CLICK_GRACE_MS while the finger remains down.
     fakeWindow.advance(900);
     assert.equal(
       clickReachedTheControl(OUTSIDE),
@@ -286,10 +276,6 @@ test("a second pointer's cancel does not retire it either", () => {
     );
   });
 });
-
-// ---------------------------------------------------------------------------
-// and the other direction, which is just as broken and looks identical from outside
-// ---------------------------------------------------------------------------
 
 test("the armed pointer's OWN release still starts the bound", () => {
   withOpenMenu(() => {
@@ -359,7 +345,6 @@ test("a swallowed outside press restores focus to its captured trigger", () => {
       );
       assert.deepEqual(trigger.focusOptions, { preventScroll: true });
 
-      // Space only activates a button that retained focus from the swallowed press.
       if (fakeDocument.activeElement === outsideButton) {
         fakeDocument.dispatchEvent({
           type: "click",
@@ -416,7 +401,6 @@ test("a new gesture supersedes an armed no-click gesture after menu cleanup", ()
   try {
     down(11, "mouse", OUTSIDE);
     up(11, "mouse");
-    // The first gesture produced no click, but the swallower remains armed during grace.
     remove();
 
     down(12, "mouse", OUTSIDE);
@@ -456,7 +440,6 @@ test("a drag-retargeted click releases the control focused by the guarded press"
     fakeDocument.activeElement = INSIDE_MENU;
 
     down(11, "mouse", icon);
-    // Pointerdown's default action runs after the capture listener and focuses the button.
     fakeDocument.activeElement = button;
     up(11, "mouse");
 

@@ -27,7 +27,6 @@ type ResidentState = Pick<
   | "mmprojFallbackReason"
 >;
 
-/** Editable controls can already describe the next load. */
 export function selectResidentEstimateSettings(state: ResidentState) {
   if (
     state.modelLoading ||
@@ -65,8 +64,7 @@ export function selectResidentEstimateSettings(state: ResidentState) {
   };
 }
 
-/** Copy only source identity from the pending request. `mlx`: the resident is an MLX load,
- *  which reads its window from maxSeqLength and its cache width from mlxKvQuant, not nCtx. */
+/** `mlx`: reads its window from maxSeqLength and cache width from mlxKvQuant, not nCtx. */
 export function resolveResidentEstimateRequest(
   source: MemoryEstimateRequest | null,
   settings: ReturnType<typeof selectResidentEstimateSettings>,
@@ -86,7 +84,6 @@ export function resolveResidentEstimateRequest(
     ggufVariant: source.ggufVariant,
     hfToken: source.hfToken,
     nativePathToken: source.nativePathToken,
-    // An MLX load records none of the llama.cpp settings the selector requires.
     ...(settings ?? {}),
     nCtx: Math.floor(context),
     ...(mlx

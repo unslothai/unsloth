@@ -13,7 +13,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import type { MouseEvent } from "react";
 import { useCopyFeedback } from "../hooks/use-copy-feedback";
 
-/** Copies the on-disk path straight to the clipboard, no dialog. */
 export function PathInfoButton({
   path,
   className,

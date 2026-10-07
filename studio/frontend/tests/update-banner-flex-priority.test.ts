@@ -1,16 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The overlay rail is height-capped by stackGeometry, and on the chat routes
-// the composer publishes a box that makes the cap small. Nothing in the rail
-// was shrink-0, so the cap came out of the update card and its release notes
-// were painted over its own row of buttons.
-//
-// The rule pinned here: the notes are the only part of a card allowed to give
-// up height, and they clip while doing it; the card floors at its buttons; the
-// rail scrolls if that still does not fit.
-//
-// Read from the source: the node suite has no DOM to compute styles in.
+// Only the notes may give up height (clipping); the card floors at its buttons; the rail scrolls.
+// Read from source: the node suite has no DOM.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -28,7 +20,6 @@ const NOTES = readSrc("components/update/release-notes-panel.tsx");
 const PROVIDER = readSrc("app/provider.tsx");
 const STORE = readSrc("features/settings/stores/monitor-frame-store.ts");
 
-/** The class string opened by `anchor`, up to its closing quote. */
 function classes(source: string, anchor: string): string {
   const at = source.indexOf(anchor);
   if (at === -1) {
@@ -58,20 +49,13 @@ for (const [name, source] of CARDS) {
       /\bshrink-0\b/,
       "the buttons shrink, so the notes are painted over them",
     );
-    // Wrapping is how a narrow card copes; it is not compression.
     assert.match(footer, /\bflex-wrap\b/, "the buttons must still wrap");
   });
 
   test(`the ${name} card stops shrinking at its buttons`, () => {
     const stacked = classes(source, "pointer-events-auto flex ");
-    // The floor is the header and the action row, and the two cards reach it
-    // two different ways. The desktop card still writes it out against
-    // --ui-font-scale. The browser card stopped naming a height at all: a
-    // constant is calibrated at one type size, and #11458 made the spacing
-    // inside the card follow the setting too, so at 20px the written floor
-    // came to 209px while the content needed about 301 and the action row was
-    // cut. Its surface declares neither min-h-0 nor overflow-hidden, so its
-    // automatic minimum size is its own content and cannot go stale.
+    // The browser card names no height floor: a constant goes stale as spacing scales with font size,
+    // so its automatic minimum (no min-h-0, no overflow-hidden) is used instead.
     assert.ok(
       !/\bmin-h-0\b/.test(stacked),
       "min-h-0 lets the rail squeeze the card to nothing",
@@ -108,7 +92,6 @@ for (const [name, source] of CARDS) {
 }
 
 test("a card with no notes panel does not shrink at all", () => {
-  // Only a rendered notes panel gives the card content it may shrink.
   for (const [name, source] of CARDS) {
     const stacked = classes(source, "pointer-events-auto flex ");
     assert.match(stacked, /\bshrink-0\b/, `the ${name} card can be squeezed`);
@@ -130,12 +113,10 @@ test("a card with no notes panel does not shrink at all", () => {
       `the ${name} card cannot give up its notes' height once it has them`,
     );
   }
-  // Keep the selector and its target coupled.
   assert.match(NOTES, /data-slot="update-release-notes"/);
 });
 
 test("a floored card paints all the height its slot reserves", () => {
-  // Short notes content must not leave an unpainted gap inside the floor.
   for (const [name, source] of [...CARDS, ["llama.cpp", LLAMA] as const]) {
     assert.match(
       classes(source, "relative flex max-h-[calc(100dvh_-_2rem"),
@@ -146,9 +127,8 @@ test("a floored card paints all the height its slot reserves", () => {
 });
 
 test("the desktop failure card can scroll to its own diagnostics", () => {
-  // The card is capped at the viewport and clips, and the rail cannot scroll
-  // to what that cap hides, so the clipboard fallback needs its own scroller
-  // or the report the reader is told to copy is the part that disappears.
+  // The rail cannot scroll to what the card's viewport cap hides, so the clipboard fallback needs
+  // its own scroller.
   const region = classes(TAURI, "hover-scrollbar min-h-0 flex-1 ");
   assert.match(region, /\boverflow-y-auto\b/, "the report cannot be scrolled");
   assert.match(region, /\boverscroll-contain\b/);
@@ -159,17 +139,12 @@ test("the desktop failure card can scroll to its own diagnostics", () => {
 });
 
 test("the two update cards do not drift apart", () => {
-  // One is the desktop card and one the browser card, but they are the same
-  // card, so a fix applied to one and not the other is the bug coming back.
-  // The headers are the same string; the roots share everything except the
-  // floor, which the desktop card varies for its failure state.
+  // Desktop and browser cards are the same card; a fix applied to only one is the bug returning.
   assert.equal(
     classes(TAURI, "flex min-w-0 "),
     classes(WEB, "flex min-w-0 "),
     "the headers differ between the desktop and browser cards",
   );
-  // Both floors are dropped before comparing, the plain one and the narrow
-  // variant: the two cards measure differently and are meant to differ here.
   const root = (source: string) =>
     classes(source, "pointer-events-auto flex ")
       .split(" ")
@@ -180,7 +155,6 @@ test("the two update cards do not drift apart", () => {
     root(WEB),
     "the rail-facing roots differ between the desktop and browser cards",
   );
-  // The action rows justify differently, so compare only what this fix pins.
   for (const rule of ["shrink-0", "flex-wrap"]) {
     assert.ok(
       classes(TAURI, "mt-4 flex ").includes(rule) &&
@@ -191,12 +165,10 @@ test("the two update cards do not drift apart", () => {
 });
 
 test("the llama.cpp card takes the desktop updater's floor only with its changelog open", () => {
-  // A collapsed changelog leaves nothing for the floor to protect.
   const slot = LLAMA.slice(
     LLAMA.indexOf("pointer-events-auto flex "),
     LLAMA.indexOf('data-testid="llama-update-banner"'),
   );
-  // The constants match the desktop card, though their gates differ.
   for (const floor of [
     "min-h-[calc(117px+93px*var(--ui-font-scale,1))]",
     "min-h-[calc(24px+224px*var(--ui-font-scale,1))]",
@@ -209,14 +181,12 @@ test("the llama.cpp card takes the desktop updater's floor only with its changel
     /changelogPanelOpen\s*\n?\s*\?\s*"min-h-\[calc\(117px/,
     "the floor is back on every state of the card, including the collapsed one",
   );
-  // The floor and panel share the same predicate.
   assert.match(LLAMA, /\{changelogPanelOpen &&/);
   assert.match(
     slot,
     /"shrink-0"/,
     "with no notes to give up, the card must hold its height and let the rail scroll",
   );
-  // Only the conditional branch may carry a floor.
   assert.doesNotMatch(classes(LLAMA, "pointer-events-auto flex "), /min-h-/);
   assert.doesNotMatch(slot, /\bmin-h-0\b/);
   assert.ok(LLAMA.includes("max-w-[calc(448px*var(--ui-space-scale,1))]"));
@@ -263,9 +233,7 @@ test("the notes panel clips whatever height it gives up", () => {
     /\boverflow-hidden\b/,
     "the panel shrinks but its content still paints past the panel",
   );
-  // The panel root is the clipper. The surface inside it keeps its intrinsic
-  // height: a scroll container there collapses the expanded notes to nothing,
-  // because their scroller is a flex-basis-0 child of it.
+  // A scroll container on the inner surface collapses the notes, whose scroller is flex-basis-0.
   assert.ok(
     !/overflow-hidden[^"]*rounded-\[14px\]/.test(NOTES_LAYOUT),
     "the inner surface clips, which empties the expanded notes",
@@ -273,8 +241,6 @@ test("the notes panel clips whatever height it gives up", () => {
 });
 
 test("the collapsed notes summary scrolls, like the expanded notes", () => {
-  // The expanded notes already scrolled; the collapsed bullet list did not,
-  // and the collapsed list is what the reported screenshot was showing.
   const summary = classes(NOTES, "hover-scrollbar min-h-0 flex-1 space-y-1");
   assert.match(summary, /\boverflow-y-auto\b/);
   assert.match(summary, /\boverscroll-contain\b/);
@@ -283,7 +249,6 @@ test("the collapsed notes summary scrolls, like the expanded notes", () => {
   assert.match(expanded, /\boverscroll-contain\b/);
 });
 
-/** The two rails' class strings, anchored on the corner they are pinned to. */
 const RAIL_ANCHOR = '"pointer-events-none fixed bottom-0 right-0 ';
 
 function rails(): string[] {
@@ -295,16 +260,13 @@ function rails(): string[] {
 test("the rail scrolls rather than spilling its cards", () => {
   for (const rail of rails()) {
     const rules = rail.slice(0, rail.indexOf('"'));
-    // A cap without a scroller drops the overflow below the bottom of the
-    // screen: at a large type size the two banner floors exceed the cap on
-    // their own, and the cards under it cannot be reached.
+    // A cap without a scroller drops overflow off-screen at large type sizes.
     assert.match(
       rules,
       /\boverflow-y-auto\b/,
       "a capped rail spills its cards",
     );
-    // The scroller clips at its padding box, so the shadows' room is reserved
-    // there: in px from the constants below, never a rem utility.
+    // The scroller clips at its padding box, so shadow room is reserved in px, never rem.
     assert.doesNotMatch(
       rules,
       /(^|\s)-?[mp][xlr]-/,
@@ -313,7 +275,6 @@ test("the rail scrolls rather than spilling its cards", () => {
   }
 });
 
-/** A card's dark-mode shadow, in px: `0 <y> <blur> <spread>`. */
 function darkShadow(source: string): {
   y: number;
   blur: number;
@@ -326,27 +287,22 @@ function darkShadow(source: string): {
   return { y: Number(seen[1]), blur: Number(seen[2]), spread: Number(seen[3]) };
 }
 
-/** A `const NAME = <n>;` in the provider. */
 function gutter(name: string): number {
   const seen = PROVIDER.match(new RegExp(`const ${name} = (\\d+);`));
   assert.ok(seen, `${name} is gone from the provider`);
   return Number(seen[1]);
 }
 
-// The bug: in dark mode a card's halo ended on a hard line to its left. That
-// shadow reaches 22px, past the 12px the rail reserved, so the clip cut the
-// fade mid-gradient. Only the top and left show it; the rest is the screen edge.
+// The dark-mode shadow reaches 22px; a smaller reserved gutter clips the fade mid-gradient.
 test("the rail reserves enough room for the darkest card shadow", () => {
   for (const [name, source] of [...CARDS, ["llama", LLAMA]] as const) {
     const { y, blur, spread } = darkShadow(source);
-    // Chromium paints the blur out to about its radius past the spread rect, so
-    // this is the halo's reach. The spread is negative, pulling it back in.
+    // Chromium paints the blur about its radius past the spread rect; negative spread pulls it in.
     const reach = blur + spread;
     assert.ok(
       gutter("STACK_SHADOW_GUTTER_LEFT") >= reach,
       `the ${name} card's halo is cut off on the left`,
     );
-    // The offset carries the halo down, so less of it is left above the card.
     assert.ok(
       gutter("STACK_SHADOW_GUTTER_TOP") >= reach - y,
       `the ${name} card's halo is cut off above it`,
@@ -354,23 +310,17 @@ test("the rail reserves enough room for the darkest card shadow", () => {
   }
 });
 
-// Reserved, not taken: the cards keep their band and the padding hangs below
-// it. The rail sits on the floor and the bottom gutter carries the cards back
-// up to 16px, so the cap grows by both gutters to pay for them.
+// The cap grows by both gutters so the reserved padding costs the cards no room.
 test("the rail's block gutter costs the cards no room", () => {
   for (const rail of rails()) {
     const rules = rail.slice(0, rail.indexOf('"'));
     const style = rail.slice(rail.indexOf("style={{"), rail.indexOf("}}"));
-    // 2rem for the cards' own band, less the 24px of gutter the rail adds
-    // around them, so the cards keep exactly the band they had. The desktop
-    // rail also stops below the window chrome.
     assert.match(
       rules,
       /max-h-\[(?:calc\()?100dvh(?:_-_\d+px\)|-var\(--studio-window-chrome-top,0px\)\))?\]/,
       "the rail lost the cap that pays for its gutters",
     );
-    // From the constants, not pb-4/pt-2: those are rem, so at any root size but
-    // 16px the cards would drift off the corner.
+    // From the constants, not rem utilities, or cards drift off the corner at other root sizes.
     assert.match(
       style,
       /paddingTop: STACK_SHADOW_GUTTER_TOP/,
@@ -381,8 +331,7 @@ test("the rail's block gutter costs the cards no room", () => {
       /paddingBottom: STACK_SHADOW_GUTTER_BOTTOM/,
       "the bottom gutter can drift from the cap that pays for it",
     );
-    // Asymmetric: a gutter on the left, where a cut halo shows, and the cards'
-    // own inset on the right, where the clip is the screen edge.
+    // Asymmetric: a left gutter where a cut halo shows; the right edge is the screen.
     assert.match(
       style,
       /paddingLeft: STACK_SHADOW_GUTTER_LEFT/,
@@ -393,16 +342,12 @@ test("the rail's block gutter costs the cards no room", () => {
       /paddingRight: STACK_CARD_INSET_RIGHT/,
       "the cards' right inset is back on a rem utility, or gone",
     );
-    // Every surface offsets its shadow downwards, so flush against the clip
-    // edge the bottom card loses all of it. A zero gutter is that bug again.
+    // Shadows offset downward, so a zero bottom gutter clips the bottom card's shadow.
     assert.doesNotMatch(rules, /\bp[byt]-/, "a rem gutter is back on the rail");
   }
-  // The gutter drops the rail's box to the floor and it reaches the right edge,
-  // so it spans the window's resize grips, which are under it on Tailwind's scale.
-  // All eight: a narrow window spans the rail across the north and west targets too.
+  // The rail box spans the window resize grips, which sit under it on Tailwind's z-scale.
   const TITLEBAR = readSrc("components/tauri/window-titlebar.tsx");
-  // A z-index on the toolbar would read as protection and give none: it sits inside a
-  // positioned, numbered header, which is a stacking context.
+  // A z-index on the toolbar gives no protection: its header is a stacking context.
   const toolbar = TITLEBAR.slice(
     TITLEBAR.lastIndexOf(
       "<div",
@@ -442,25 +387,17 @@ test("the rail's block gutter costs the cards no room", () => {
   }
 });
 
-// The rail was placed from JS for a while, lifting clear of the boxes the
-// composer and the floating panels publish. Every input to that placement
-// changes on its own, so the rail drifted to the middle and the top of the
-// window. Anchored in CSS again; the floors above absorb a short window.
+// JS placement drifted because every input changes independently; keep it anchored in CSS.
 test("the rail is anchored to its corner, not placed from JS", () => {
   for (const rail of rails()) {
     const branch = rail.slice(0, rail.indexOf("style={{"));
-    // Click-through in every state. It used to take pointer input while it
-    // scrolled, which needed the JS that also placed it. The fold is reached by
-    // wheeling over a card, whose nearest scrollable ancestor is the rail, or
-    // by focus, which scrolls it into view.
+    // Click-through in every state; the fold is reached by wheel over a card or by focus.
     assert.doesNotMatch(
       branch,
       /pointer-events-auto/,
       "the rail takes pointer input again, which the placement paid for",
     );
   }
-  // The offset and the cap are the two things the placement used to own, so
-  // they are the two that must stay out of the render.
   for (const banned of [
     "useStackGeometry",
     "stackGeometry",
@@ -474,8 +411,6 @@ test("the rail is anchored to its corner, not placed from JS", () => {
       `the rail is placed from JS again (${banned})`,
     );
   }
-  // And the arithmetic it was placed by does not come back to the store, which
-  // is now only a register of where the draggable panels are.
   for (const banned of [
     "stackBottomInset",
     "stackMaxHeight",

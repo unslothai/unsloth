@@ -11,8 +11,7 @@ import ts from "typescript";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import { openingTag } from "./helpers/tsx-ast.ts";
 
-// Both modules come from the shipped source with only their edges cut, so the
-// constant under test is the one the app ships rather than one spelled here.
+// Load the shipped modules so the constant under test is the one the app ships.
 const { OWNER_USERNAME } = loadWithStubs<{ OWNER_USERNAME: string }>(
   new URL("../src/features/auth/account-session.ts", import.meta.url),
   {
@@ -40,8 +39,6 @@ const { loginDisplayName } = loadWithStubs<{
 });
 
 test("the reserved owner id is the only subject whose spelling is mapped", () => {
-  // Read from the shipped export, not a copy: a test pinned to its own literal
-  // cannot notice the constant it is about drifting.
   assert.equal(loginDisplayName(OWNER_USERNAME), "Unsloth");
   for (const chosen of ["alice", "bob", "unsloth2", "Unsloth", "UNSLOTH", " unsloth "]) {
     assert.equal(loginDisplayName(chosen), chosen);
@@ -69,7 +66,6 @@ test("the personalization panel spells its login fallback the way the sidebar do
     ts.ScriptKind.TSX,
   );
 
-  // Both fallbacks route through the shared mapper rather than the raw subject.
   const previewName = findInitializer(file, "previewName");
   assert.ok(previewName, "previewName is no longer declared; update this test");
   assert.match(previewName, /loginName/);
@@ -89,11 +85,9 @@ test("the personalization panel spells its login fallback the way the sidebar do
     );
   }
 
-  // The draft the user is typing still outranks any fallback.
   assert.match(previewName, /draftName\.trim\(\)\s*\|\|/);
 });
 
-/** The initializer text of `const <name> = ...`, or null when it is gone. */
 function findInitializer(file: ts.SourceFile, name: string): string | null {
   let found: string | null = null;
   const visit = (node: ts.Node): void => {
@@ -111,7 +105,6 @@ function findInitializer(file: ts.SourceFile, name: string): string | null {
   return found;
 }
 
-/** Every `<x <name>={...}>` expression in the file, as source text. */
 function jsxAttributeTexts(file: ts.SourceFile, name: string): string[] {
   const texts: string[] = [];
   const visit = (node: ts.Node): void => {

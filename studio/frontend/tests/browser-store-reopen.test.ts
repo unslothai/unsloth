@@ -27,13 +27,11 @@ test("reopening a rewritten file shows its new bytes; an unchanged one keeps its
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.notEqual(shown(), first);
   assert.equal(await browserFile(shown() ?? "")?.text(), "version 2");
-  // Two quick reopens: the last one wins.
   open("version 3");
   open("version 4");
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(await browserFile(shown() ?? "")?.text(), "version 4");
   assert.equal(useBrowserStore.getState().tabs.length, 1);
-  // Closing another tab while a reopen is queued keeps the queued bytes.
   store.openFile({ blob: new Blob(["other"]), name: "b.txt", key: "sandbox/b.txt" });
   open("version 5");
   store.closeTab(useBrowserStore.getState().tabs[1]?.id ?? "");
@@ -161,7 +159,6 @@ test("a form result pushed out of the cache still asks before posting again", ()
     assert.ok(tab);
     cachePage(currentEntry(tab), { kind: "html", url: `https://example.com/${i}`, base: `https://example.com/${i}`, refresh: null, html: "x" });
   }
-  // What the page view checks: no cached copy, already sent, so it asks rather than resending.
   assert.equal(cachedPage(entry), undefined);
   assert.equal(sentPosts.has(entry), true);
 });

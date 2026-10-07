@@ -79,8 +79,7 @@ export function hashArtifactCode(code: string): string {
 export function createArtifactId(input: ChatArtifactInput): string {
   const threadSegment = input.threadId || "no-thread";
   const messageSegment = input.sourceMessageId || "transient";
-  // Backend tool call IDs (call_0, call_1, ...) reset per request, so the message ID is needed to
-  // scope them to a specific turn.
+  // Backend call ids reset per request, so the message id scopes them to a turn.
   const parts = [input.source, threadSegment, messageSegment];
 
   if (input.source === "tool" && input.sourceToolCallId) {

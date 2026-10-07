@@ -206,7 +206,6 @@ test("IndexTTS2 emotion from text and from audio", () => {
     ),
     EMOTION_AUDIO_MISSING,
   );
-  // A replacement still uploading, a failed one, or an expired clip blocks the run.
   for (const status of [
     { phase: "uploading" as const, name: "y", progress: 0.5 },
     { phase: "error" as const, message: "Upload failed." },
@@ -248,7 +247,6 @@ test("Qwen3 Timbre only sends x_vector_only_mode and drops the transcript requir
     panelError: null,
   });
   assert.equal(blocked, null);
-  // A failed replacement hides the kept clip, so it blocks until dismissed.
   const failed = cloneBlocker({
     reference: { kind: "input", id: "i", name: "a.wav", durationS: 4 },
     referenceBusy: false,
@@ -359,7 +357,6 @@ test("a saved voice deleted on Clone holds Speak's Generate", () => {
     speakVoiceLogic.validate?.(saved, { text: "hi" }, ctx({ savedVoiceIds }));
   assert.equal(check(["v2"]), SAVED_VOICE_DELETED);
   assert.equal(check(["v1", "v2"]), null);
-  // Not loaded yet, or the list failed: nothing to compare against.
   assert.equal(check(null), null);
 });
 

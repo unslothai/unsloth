@@ -100,7 +100,6 @@ function useHighlightedItemScroll(root: HTMLElement | null) {
   }, [root]);
 }
 
-// Mounted inside the results list; reports whether Enter would pick a row rather than send.
 function MentionEnterSignal({
   onChange,
   active,
@@ -116,7 +115,6 @@ function MentionEnterSignal({
   return null;
 }
 
-// Mounted under the popover; reports whether it is open, which is when it takes Escape.
 function MentionOpenSignal({
   onChange,
 }: {

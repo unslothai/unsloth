@@ -74,7 +74,6 @@ export function ModelProviderDialog({
         onChange={(value) => onUpdate({ name: value })}
       />
 
-      {/* Model source toggle */}
       <div className="grid gap-1.5">
         <p className="text-sm font-semibold text-foreground">Model source</p>
         <div className="grid grid-cols-2 gap-2">

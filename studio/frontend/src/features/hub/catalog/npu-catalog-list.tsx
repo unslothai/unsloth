@@ -17,7 +17,6 @@ import { toast } from "@/lib/toast";
 import { useState } from "react";
 import { DeleteConfirmDialog } from "./download-card";
 
-/** The Hub's NPU format: Lemonade's FastFlowLM catalog, the same models the chat picker lists. */
 export function NpuCatalogList({
   source,
   query,

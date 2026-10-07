@@ -57,8 +57,7 @@ export function DownloadSection({
   onRun?: (selection: HubModelRunSelection) => void;
   runPending?: boolean;
   onChange?: () => void;
-  /** False for diffusion / audio / video GGUFs, which do not load through
-   *  llama.cpp and so have nothing the KV estimator can say about them. */
+  /** False for diffusion/audio/video GGUFs, which do not load through llama.cpp. */
   showMemoryBar?: boolean;
   mediaPage?: MediaStudioPage;
   assetRuntime?: AssetRuntime;

@@ -45,8 +45,8 @@ export function audioRowMatchesWorkflow(
   if (catalogModel?.workflows) {
     return catalogModel.workflows.includes(workflow);
   }
-  // Hub search rows carry no backend workflows before download: name the families by repo.
-  // Convert first: chatterbox and vevo2 are in the clone-only hint too.
+  // Hub rows carry no backend workflows before download. Convert first: chatterbox and vevo2 also
+  // match the clone-only hint.
   if (isCloneAndConvertFamilyId(row.id)) {
     return workflow === "clone" || workflow === "convert";
   }

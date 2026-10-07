@@ -320,10 +320,7 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
 
   return (
     <span
-      // Out of find-in-page's reach: this is a hover affordance, transparent and unclickable until
-      // the message is hovered, so a match here would be counted and walked to under a highlight
-      // nobody can see. The index leaves opacity alone otherwise, so a message still fading in
-      // stays findable.
+      // Hidden from find-in-page: this hover affordance is invisible until the message is hovered.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className={cn(
         "aui-response-model-badge pointer-events-none relative inline-flex min-h-5 max-w-full cursor-text select-text items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 after:absolute after:inset-x-0 after:top-full after:h-1 after:content-[''] hover:opacity-100 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100",
@@ -360,7 +357,6 @@ export const MessageResponseDetailsSheet: FC<{
     (promptTokens != null && completionTokens != null
       ? promptTokens + completionTokens
       : undefined);
-  // Same gate as the timing tooltip: a one-token prompt or a missing rate has no speed to show.
   const promptRate = asNumber(serverTimings?.prompt_per_second);
   const promptSpeed =
     (asNumber(serverTimings?.prompt_n) ?? 0) > 1 && (promptRate ?? 0) > 0

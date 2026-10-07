@@ -5,29 +5,25 @@ import { authFetch, hasAuthToken } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// The newest release's notes. The version is carried only so a response the
-// popup has moved on from can be dropped.
+// The version is carried only so a stale response can be dropped.
 export interface ReleaseNotes {
   version: string;
   markdown: string | null;
-  // Release title, e.g. "Meta Muse Glimmer".
   heading: string | null;
-  // Release tag, e.g. "v0.1.60-beta".
   tag: string | null;
-  // The release page, preferred over the generic changelog for the link out.
+  // Preferred over the generic changelog for the link out.
   htmlUrl: string | null;
   matched: boolean;
   truncated: boolean;
   source: string | null;
   releaseNotesUrl: string | null;
-  // Set when the lookup itself failed, as opposed to a release with no notes.
+  // Set when the lookup failed, as opposed to a release with no notes.
   error: string | null;
 }
 
 export type ReleaseNotesState = "idle" | "loading" | "ready" | "error";
 
-// Desktop auto-auth installs its token after first paint, so a startup popup can
-// ask before one exists. Wait briefly rather than fail.
+// Desktop auto-auth installs its token after first paint, so wait briefly.
 const AUTH_POLL_MS = 250;
 const AUTH_POLL_LIMIT = 40;
 
@@ -49,7 +45,6 @@ function toReleaseNotes(value: unknown, version: string): ReleaseNotes | null {
   }
   const payload = value as ApiObject;
   const notesVersion = stringOrNull(payload, "version");
-  // A response for another version is not usable here.
   if (notesVersion !== version) {
     return null;
   }
@@ -88,9 +83,7 @@ export function useReleaseNotes({
 }: UseReleaseNotesOptions) {
   const [state, setState] = useState<ReleaseNotesState>("idle");
   const [notes, setNotes] = useState<ReleaseNotes | null>(null);
-  // Version the current state belongs to; a change invalidates it.
   const requestedVersionRef = useRef<string | null>(null);
-  // Identifies one request, so an earlier response cannot overwrite a later one.
   const requestIdRef = useRef(0);
 
   const load = useCallback((target: string, refresh = false) => {
@@ -101,7 +94,6 @@ export function useReleaseNotes({
     setNotes(null);
     fetchReleaseNotes(target, refresh)
       .then((next) => {
-        // A newer request owns the state now.
         if (requestIdRef.current !== requestId) {
           return;
         }
@@ -131,7 +123,6 @@ export function useReleaseNotes({
       attempts += 1;
       if (hasAuthToken() || attempts >= AUTH_POLL_LIMIT) {
         window.clearInterval(timer);
-        // Out of patience: load anyway so the panel settles on retry.
         load(version);
       }
     }, AUTH_POLL_MS);
@@ -146,7 +137,7 @@ export function useReleaseNotes({
     }
   }, [version, load]);
 
-  // Never hand back another version's notes: state lags `version` by a render.
+  // State lags `version` by a render.
   const matchesVersion = notes !== null && notes.version === version;
   return {
     state: notes !== null && !matchesVersion ? "loading" : state,

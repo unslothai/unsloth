@@ -61,10 +61,8 @@ const UNSUPPORTED_LIBRARY_TAGS: ReadonlySet<string> = new Set([
   "flux",
   "controlnet",
   "lora-diffusers",
-  // ComfyUI-style single-file repos, including the VAE / text-encoder mirrors that carry no
-  // denoiser at all. Checked AFTER the pipeline tag, so a real single-file checkpoint keeps its
-  // Images/Video routing; only a taskless one (which is what a companion mirror is) lands here,
-  // where it would otherwise read as a chat model and be offered by the chat picker.
+  // Checked AFTER the pipeline tag: only taskless single-file mirrors land here, else they would
+  // read as chat models.
   "diffusion-single-file",
 ]);
 
@@ -125,11 +123,11 @@ export type UnslothSupportStatus = "supported" | "unsupported";
 export interface UnslothSupport {
   status: UnslothSupportStatus;
   reason: string | null;
-  /** Set when Unsloth runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. */
+  /** Set when the Images/Video page runs this model; status stays "unsupported" for chat pickers. */
   supportedIn?: "images" | "video";
 }
 
-// Generation tasks the Images / Video pages handle. Mirrors IMAGE_GEN_TASKS and the video picker's tasks; image-to-video is included for LTX-2.3.
+// Mirrors IMAGE_GEN_TASKS and the video picker's tasks.
 const IMAGE_PAGE_TASKS: ReadonlySet<string> = new Set([
   "text-to-image",
   "image-to-image",
@@ -141,7 +139,6 @@ const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
   "image-text-to-video",
 ]);
 
-/** Which Unsloth page runs this pipeline task, if any. */
 export function studioPageForTask(
   pipelineTag?: string | null,
 ): "images" | "video" | undefined {
@@ -171,10 +168,7 @@ function repoLeaf(modelId: string): string {
   return parts.at(-1) ?? modelId;
 }
 
-// A hub repo's format tags describe every artifact it ships, and native checkpoints
-// routinely coexist with optional ONNX/OpenVINO/TF Lite/Core ML exports
-// (openai-community/gpt2 carries both pytorch and tflite). Those export tags alone must not
-// hide the repo, while quantization, runtime formats and export-only repos stay rejected.
+// Export-format tags alone must not hide a repo: native checkpoints often ship ONNX/TFLite exports too.
 const EXPORT_FORMAT_TAGS: ReadonlySet<string> = new Set([
   "onnx",
   "openvino",
@@ -198,8 +192,7 @@ function detectUnsupportedFormatKey(
     if (alias && excludedFormats.has(alias)) return alias;
   }
   if (modelId) {
-    // Owner implies format even when local metadata lacks tags; mirrors the
-    // backend's _looks_like_mlx_repo heuristic.
+    // Mirrors the backend's _looks_like_mlx_repo heuristic.
     if (excludedFormats.has("mlx") && modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
     const name = repoLeaf(modelId);
     for (const { key, pattern } of FORMAT_NAME_PATTERNS) {
@@ -232,8 +225,7 @@ export function classifyUnslothSupport({
   const formatTags = excludedFormatTagsForDevice(deviceType);
   const normalizedQuant = normalizeQuantMethod(quantMethod);
 
-  // GGUF runs through llama.cpp regardless of the base model's quant config, so
-  // the HF quant_method must not disqualify a GGUF repo.
+  // GGUF runs through llama.cpp, so the HF quant_method must not disqualify it.
   const isGguf =
     lowerTags.has("gguf") ||
     library === "gguf" ||
@@ -252,7 +244,6 @@ export function classifyUnslothSupport({
     return {
       status: "unsupported",
       reason: `Pipeline task: ${pipeline}.`,
-      // Not chat-loadable, but the Images/Video pages run it, so the UI must not present it as unsupported.
       supportedIn: studioPageForTask(pipeline),
     };
   }

@@ -31,10 +31,7 @@ const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "custom",
 ]);
 
-/** A row the picker lists. Partial snapshots stay: like the Hub, the picker shows them so they can
- *  be seen and deleted, and carries `partial` through so a click opens the download instead of
- *  claiming the weights are there. A live download is still dropped -- bytes are moving and the
- *  Downloads panel owns that row until they stop. */
+/** Partial snapshots stay (click opens the download); live downloads belong to the Downloads panel. */
 function isListableCachedRow(row: CachedInventoryRow): boolean {
   return !row.liveDownload;
 }
@@ -42,15 +39,14 @@ function isListableCachedRow(row: CachedInventoryRow): boolean {
 function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
   return {
     repo_id: row.repoId,
-    // Listed by repo id, loaded by the pinned id: dropping it sends the picker back down the ref.
+    // Listed by repo id, loaded by the pinned id.
     load_id: row.loadId,
     size_bytes: row.bytes,
     cache_path: row.cachePath ?? "",
     last_modified: epochMillisecondsToSeconds(row.lastModified),
     has_vision: row.capabilities.supportsVision,
-    // Listed but not loadable: the row renders a partial mark and its click opens the download.
     partial: row.partial,
-    // What that mark is allowed to promise: a restart-only partial must not be called a resume.
+    // A restart-only partial must not be called a resume.
     partial_resumable: row.partialResumable,
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
@@ -62,21 +58,18 @@ function toCachedModelRepo(row: CachedInventoryRow, opaqueKind?: FamilyOverrideA
   return {
     repo_id: row.repoId,
     load_id: row.loadId,
-    // Delete targets the copy the row describes; without it the request hits the active cache.
+    // Without it the delete hits the active cache.
     cache_path: row.cachePath,
     size_bytes: row.bytes,
     opaque: taskOpaqueArtifactSupportsFamilyOverride(row.task, row.artifact, opaqueKind),
     last_modified: epochMillisecondsToSeconds(row.lastModified),
-    // Listed but not loadable: the row renders a partial mark and its click opens the download.
     partial: row.partial,
-    // What that mark is allowed to promise: a restart-only partial must not be called a resume.
     partial_resumable: row.partialResumable,
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
     tags: row.tags,
     library_name: row.libraryName,
-    // Carried through: the diffusion picker drops single-file checkpoint repos, since loading one as
-    // a pipeline fails after the handoff, and undefined reads as "full pipeline".
+    // Single-file checkpoints fail as pipelines; undefined would read as "full pipeline".
     single_file: row.singleFile ?? false,
   };
 }
@@ -108,9 +101,7 @@ export interface ChatPickerInventory {
 export function useChatPickerInventory(
   options: {
     enabled?: boolean;
-    /** Exact task-page artifacts that may bypass chat's hidden-model list. */
     allowedHiddenModelIds?: ReadonlySet<string>;
-    /** Include task-opaque pipeline roots; the picker still applies the family gate. */
     opaqueKind?: FamilyOverrideArtifactKind;
   } = {},
 ): ChatPickerInventory {
@@ -143,9 +134,7 @@ export function useChatPickerInventory(
           (row) =>
             row.modelFormat !== "gguf" &&
             isListableCachedRow(row) &&
-            // An sd.cpp companion mirror holds a VAE / text encoders and no denoiser. It has no
-            // task, and a task of null is what every unclassified CHAT repo carries, so without
-            // this it lands in the chat On Device list as a load that cannot succeed.
+            // An sd.cpp companion mirror has no denoiser and no task, so it would look like an unclassified chat repo.
             !row.companion &&
             (!isHiddenModelId(row.repoId) ||
               allowedHiddenModelIdMatches(
@@ -162,11 +151,8 @@ export function useChatPickerInventory(
         .filter(
           (row) =>
             PICKER_LOCAL_SOURCES.has(row.source) &&
-            // Skip non-chat rows (a folder with only config.json classifies "unknown"); selecting one would
-            // load a weightless path. toLocalModelInfo drops capabilities, so this is the only place the
-            // guard can live. A row the backend classified as a generation task is exempt: canChat is about
-            // the chat loader, and dropping it here hid every on-device diffusion model from the pickers
-            // that CAN load it.
+            // Skip non-chat rows (a weightless path), except generation-task rows the diffusion pickers can load.
+            // toLocalModelInfo drops capabilities, so this is the only place for the guard.
             (row.capabilities.canChat ||
               studioPageForTask(row.task) !== undefined ||
               taskOpaqueArtifactSupportsFamilyOverride(row.task, row.artifact, options.opaqueKind)) &&

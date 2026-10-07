@@ -28,7 +28,6 @@ const DESCENDANT_VIEWPORT_BACKDROP_PATTERN =
 const TOUR_VIEWPORT_BACKDROP_PATTERN =
   /data-slot="dialog-overlay"[\s\S]*?data-viewport-backdrop=\{true\}/;
 
-/** Every component under src, so a new dialog cannot slip past. */
 const COMPONENTS = readdirSync(join(import.meta.dirname, "../src"), {
   recursive: true,
   encoding: "utf8",
@@ -87,8 +86,7 @@ test("below-titlebar decoration is not trapped in the titlebar stacking context"
   assert.doesNotMatch(header, TOP_FULL_PATTERN);
 });
 
-// A top-* class at a call site makes twMerge drop the base's chrome-aware centre, so a plain
-// top-1/2 centres on the whole window and the titlebar covers the dialog's top.
+// A top-* class at a call site makes twMerge drop the base's chrome-aware centre.
 test("dialogs that set their own top still centre below the window chrome", () => {
   let checked = 0;
   for (const file of COMPONENTS) {

@@ -51,10 +51,8 @@ export function hasIncompatibleTrainingModalities(
 ): boolean {
   return (
     (!config.isVisionModel && config.isDatasetImage === true) ||
-    // audioCapabilityUnknown means the repo's tokenizer_config.json was unreadable
-    // (gated, offline, upstream error), not that the model lacks audio. Blocking there
-    // reports a token problem as a capability one; let the run start and fail on the
-    // real download error, which is what a gated text model already does.
+    // Unknown means tokenizer_config.json was unreadable (gated, offline), not that audio is
+    // missing; let the run fail on the real download error.
     (!config.audioCapabilityUnknown &&
       !config.isAudioModel &&
       config.isDatasetAudio === true)

@@ -48,7 +48,6 @@ export interface MediaViewerActions {
   onToggleFavorite?: () => void;
   onAddToProject?: (projectId: string) => Promise<{ already: boolean }>;
   onDelete?: () => void;
-  /** Delete's label when it only takes the file out of something, e.g. an unsent message. */
   deleteLabel?: string;
   copy?: { label: string; onClick: () => void };
 }
@@ -121,7 +120,6 @@ export function ScaleMenu({
               {percent(scale, locale)}
             </DropdownMenuRadioItem>
           ))}
-          {/* Fit, the one a preview opens at, sits apart below the fixed sizes, as ChatGPT has it. */}
           {fitScale !== undefined && (
             <>
               <DropdownMenuSeparator />
@@ -199,7 +197,6 @@ export function MediaViewer({
   onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
   flush?: boolean;
   redactFromReload?: boolean;
-  /** "lightbox": the picture alone over the blurred page, its controls floating above it. */
   variant?: "card" | "lightbox";
   gallery?: MediaViewerGallery;
   itemKey?: string;

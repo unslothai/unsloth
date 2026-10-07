@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Split out of use-api-monitor.ts so the arithmetic runs under `node --test`: the hook
-// imports through the "@/" alias, which node cannot resolve.
+// Split out so it runs under `node --test`, which cannot resolve the "@/" alias.
 
 import type { ApiMonitorEntry } from "../chat/types/api";
 
@@ -12,14 +11,10 @@ export interface MonitorStats {
   completed: number;
   errors: number;
   cancelled: number;
-  /** Mean duration over finished requests, or null when none have finished. */
   avgDurationMs: number | null;
-  /** Slowest finished request, for spotting a pathological call. */
   maxDurationMs: number | null;
   totalTokens: number;
-  /** Share of finished requests that failed, 0-1. Null when nothing finished. */
   errorRate: number | null;
-  /** Mean completion tokens per second over requests that reported both. */
   tokensPerSecond: number | null;
 }
 
@@ -61,8 +56,7 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
   let requests = 0;
 
   for (const entry of entries) {
-    // A load, unload or download is not an HTTP call: it reads as "running" throughout, so
-    // counting it invents an in-flight request. The backend leaves these out of active_count.
+    // Lifecycle rows are not HTTP calls; the backend leaves them out of active_count too.
     if (entry.kind === "lifecycle") {
       continue;
     }
@@ -84,8 +78,7 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
       maxDurationMs =
         maxDurationMs == null ? duration : Math.max(maxDurationMs, duration);
       const generated = completionTokens(entry);
-      // Rate the decode window: duration_ms carries queue wait and prefill,
-      // which read a 50 tok/s model as 5. Untimed requests are skipped.
+      // Rate the decode window: duration_ms includes queue wait and prefill.
       const decodeMs = entry.decode_ms;
       if (decodeMs != null && decodeMs > 0 && generated != null && generated > 0) {
         generatedTokens += generated;

@@ -60,8 +60,8 @@ export async function showRunResult({
   AudioGallery,
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
 >): Promise<void> {
-  // An edit whose output was not saved returns only its source clip: play the inline audio.
-  // Other runs name their clips by role (variation, edit, a stem): the first one is the result.
+  // An unsaved edit returns only its source clip, so play the inline audio; otherwise the first
+  // named clip is the result.
   const clip =
     response.clips.find((item) => item.role === "output") ??
     (workflow === "edit" ? undefined : response.clips[0]);
@@ -280,7 +280,6 @@ export function useCloneGeneration({
       {
         label: "Add it again",
         onClick: () => {
-          // Like Remove: the expired clip's transcript goes with it.
           useAudioCloneStore.getState().adoptReference(null);
           referenceHandle.current?.browse();
         },

@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The auto-load cascade preflights every candidate with a POST to /validate, and a candidate the
-// preflight refuses (trust-remote-code, security review, a transformers upgrade) returns before
-// loadAttempts is incremented. So MAX_AUTO_LOAD_ATTEMPTS bounds /load only: on a device whose cached
-// repos are all refused the sweep walked the whole inventory, one /validate per repo, and never hit
-// a cap. A REJECTED preflight is the same runaway wearing a different hat -- the sweep deliberately
-// keeps going after a transport failure, so a dead backend also never reaches loadAttempts.
-//
-// The budget therefore counts the preflights that DEAD-END, refusal and rejection alike, and pays
-// nothing for one that passes: a passing preflight spends a load attempt on the very next statement,
-// which MAX_AUTO_LOAD_ATTEMPTS already bounds. Charging those too is what truncated the happy path.
-//
-// These drive the cascade's own loop conditions, lifted from the shipped source the way
-// tests/auto-load-target-key.test.ts lifts normalizeTarget, so a guard that stops naming the
-// validate budget goes red here.
+// Rejected /validate preflights never reach loadAttempts, so a separate budget counts dead-end
+// preflights (refusals and rejections), not passing ones. Loop conditions are lifted from source.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -32,7 +20,6 @@ const source = readFileSync(
 const VALIDATE_CAP_RE = /const (MAX_AUTO_VALIDATE_[A-Z_]+) = (\d+);/;
 const LOAD_CAP_RE = /const MAX_AUTO_LOAD_ATTEMPTS = (\d+);/;
 
-/** The text inside the parentheses that open at or after `from`. */
 function parenthesized(from: number, what: string): string {
   const open = source.indexOf("(", from);
   assert.ok(open >= 0, `no condition found for ${what}`);
@@ -50,7 +37,6 @@ function parenthesized(from: number, what: string): string {
   throw new Error(`unbalanced condition for ${what}`);
 }
 
-/** The body of the block whose `{` opens at or after `from`. */
 function braced(from: number, what: string): string {
   const open = source.indexOf("{", from);
   assert.ok(open >= 0, `no block found for ${what}`);
@@ -68,10 +54,7 @@ function braced(from: number, what: string): string {
   throw new Error(`unbalanced block for ${what}`);
 }
 
-/**
- * The body of the function declared at `from`. Not simply the next `{`: a return type annotation
- * (`Promise<{ ... }>`) opens one first, and only the body's is preceded by `)` or `>`.
- */
+/** Function body at `from`; skips a `{` opened by a return type annotation like Promise<{...}>. */
 function functionBody(from: number, what: string): string {
   for (
     let i = source.indexOf("{", from);
@@ -90,9 +73,7 @@ const loadCapMatch = LOAD_CAP_RE.exec(source);
 assert.ok(loadCapMatch, "MAX_AUTO_LOAD_ATTEMPTS is no longer defined");
 const MAX_AUTO_LOAD_ATTEMPTS = Number(loadCapMatch[1]);
 
-// A missing cap is not a broken test: it is the defect, and the replay below reports it as the
-// unbounded sweep it is rather than as a failed lift. The NAME is read out of the source too, so
-// renaming the budget does not quietly disarm these.
+// A missing cap is the defect, reported as an unbounded sweep; the cap name is read from source too.
 const validateCapMatch = VALIDATE_CAP_RE.exec(source);
 const VALIDATE_CAP_NAME =
   validateCapMatch?.[1] ?? "MAX_AUTO_VALIDATE_UNDEFINED";
@@ -104,7 +85,6 @@ const cascadeStart = source.indexOf("async function autoLoadSmallestModel(");
 assert.ok(cascadeStart >= 0, "autoLoadSmallestModel is no longer defined");
 const cascadeBody = functionBody(cascadeStart, "autoLoadSmallestModel");
 
-// The counter is whatever the shipped loop conditions compare to the cap.
 const counterMatch = new RegExp(
   `(\\w+)\\s*(?:>=|<)\\s*${VALIDATE_CAP_NAME}`,
 ).exec(source);
@@ -116,7 +96,6 @@ type CascadeState = {
   validateFailures: number;
 };
 
-/** Compile one lifted loop condition into a predicate over the counters it reads. */
 function predicate(condition: string): (state: CascadeState) => boolean {
   const compiled = new Function(
     "MAX_AUTO_LOAD_ATTEMPTS",
@@ -138,7 +117,6 @@ function predicate(condition: string): (state: CascadeState) => boolean {
 
 const sourceLoopStart = source.indexOf("for (const source of sources) {");
 assert.ok(sourceLoopStart >= 0, "the cascade's source loop is no longer there");
-// The `if (...) break;` that opens the body, not the `for` header itself.
 const stopSweep = predicate(
   parenthesized(
     source.indexOf("if (", sourceLoopStart),
@@ -152,43 +130,32 @@ const keepTryingCandidates = predicate(
   ),
 );
 
-/** What the backend does with one candidate's preflight, and what /load then does. */
 type Outcome =
   | "refuse" // requires_trust_remote_code / security review / transformers upgrade
   | "reject" // validateModel threw: dead backend, transport failure
-  | "load-fails" // preflight passed, /load then failed
-  | "loads"; // preflight passed, /load succeeded
+  | "load-fails"
+  | "loads";
 
 type CascadeResult = {
   validates: number;
   loads: number;
   loaded: boolean;
-  /** The refusal/rejection counter as the shipped guards would see it. */
   validateFailures: number;
 };
 
-/** Why one source's inner candidate loop ended. */
 type SweepStatus = "next-source" | "aborted" | "loaded";
 
-/** A cascade's running /validate count, and the candidate at which the user aborts. */
 type ValidateBudget = { validates: number; abortAt: number };
 
-/**
- * One source's quants, in the order resolveAutoLoadCandidate hands them back: each is skipped once
- * tried, so the loop walks them and then resolves null. A refusal and a rejection both dead-end
- * without spending a load attempt; a passing preflight spends one immediately.
- */
 function sweepSource(
   quants: readonly Outcome[],
   state: CascadeState,
   budget: ValidateBudget,
 ): SweepStatus {
   let next = 0;
-  // `next === quants.length` is resolveAutoLoadCandidate returning null for this source.
   while (keepTryingCandidates(state) && next < quants.length) {
     const outcome = quants[next];
     next += 1;
-    // throwIfAborted runs before the POST, so the aborted candidate sends nothing.
     if (budget.validates >= budget.abortAt) {
       return "aborted";
     }
@@ -205,10 +172,6 @@ function sweepSource(
   return "next-source";
 }
 
-/**
- * Replay the cascade over an inventory of sources -- cached GGUF repos, cached model repos and
- * local rows -- driving the shipped loop conditions with the counters they read.
- */
 function runCascade(
   inventory: readonly (readonly Outcome[])[],
   options?: { cancelAfterValidates?: number },
@@ -244,8 +207,6 @@ function runCascade(
 const repeat = (outcome: Outcome, n: number): Outcome[][] =>
   Array.from({ length: n }, () => [outcome]);
 
-// The cap the shipped code carried before the budget counted only dead ends. A loadable model
-// sitting behind this many refusals is the regression the redesign exists to prevent.
 const OLD_EVERY_VALIDATE_CAP = 8;
 
 test("a cache of refused models cannot POST /validate once per repo", () => {
@@ -266,8 +227,6 @@ test("a cache of refused models cannot POST /validate once per repo", () => {
 });
 
 test("a dead backend cannot POST /validate once per repo either", () => {
-  // The sweep keeps going after a transport failure on purpose, so a rejection that cost nothing
-  // would walk the whole inventory exactly like an uncapped refusal.
   for (const size of [5, 40, 500, 5000]) {
     const cascade = runCascade(repeat("reject", size));
     assert.equal(cascade.loads, 0);
@@ -288,9 +247,6 @@ test("refusals and rejections share one budget", () => {
 });
 
 test("a loadable model behind many refusals still loads", () => {
-  // The regression the refusal-only budget exists to prevent: counting every /validate meant the
-  // 9th cached repo could not be reached once the first 8 were blocked, so a device that auto-loaded
-  // before the cap silently stopped auto-loading after it.
   assert.ok(
     MAX_AUTO_VALIDATE_FAILURES > OLD_EVERY_VALIDATE_CAP,
     `the budget (${MAX_AUTO_VALIDATE_FAILURES}) must clear the old every-validate cap ` +
@@ -329,8 +285,6 @@ test("the budget cuts in one candidate past its last refusal", () => {
 });
 
 test("a passing preflight spends a load attempt, not the failure budget", () => {
-  // Every candidate here passes validate and then fails to load, so only MAX_AUTO_LOAD_ATTEMPTS
-  // can stop the sweep.
   const cascade = runCascade(repeat("load-fails", 500));
   assert.equal(cascade.validateFailures, 0, "a pass costs no failure budget");
   assert.equal(
@@ -342,8 +296,6 @@ test("a passing preflight spends a load attempt, not the failure budget", () => 
 });
 
 test("the two budgets compose rather than share", () => {
-  // Worst case for one cascade: the failure budget in dead ends, then the load budget in loads
-  // that fail. Nothing in between is unbounded.
   const worst = [
     ...repeat("refuse", MAX_AUTO_VALIDATE_FAILURES - 1),
     ...repeat("load-fails", 500),
@@ -356,8 +308,6 @@ test("the two budgets compose rather than share", () => {
 });
 
 test("a repo's other quants each cost a preflight, and are bounded too", () => {
-  // One source, many downloaded quants: each refusal marks that quant tried, so the inner loop
-  // keeps resolving from the same repo. Without the budget this is the runaway in miniature.
   const cascade = runCascade([repeat("refuse", 500).flat()]);
   assert.equal(cascade.validates, MAX_AUTO_VALIDATE_FAILURES);
 });
@@ -371,15 +321,12 @@ test("cancellation stops the sweep before the next POST", () => {
 });
 
 test("the budget is per cascade, not module-global", () => {
-  // A counter beside the cap would leave the session's second auto-load with a spent budget and no
-  // way to ever load anything.
+  // A module-level counter would leave a second auto-load with a spent budget.
   assert.doesNotMatch(source, new RegExp(`^let ${COUNTER_NAME} = 0;$`, "m"));
   assert.ok(
     cascadeBody.includes(`let ${COUNTER_NAME} = 0;`),
     `${COUNTER_NAME} is not declared inside the cascade`,
   );
-  // Two sequential auto-loads in one session: the second replays from zero, so it still reaches a
-  // model behind the full budget.
   const first = runCascade(repeat("refuse", 500));
   assert.equal(first.validates, MAX_AUTO_VALIDATE_FAILURES);
   const second = runCascade([
@@ -397,14 +344,12 @@ test("every dead-ended /validate is counted, and no passing one is", () => {
   assert.ok(post >= 0, "canAutoLoad no longer POSTs /validate");
   const increment = `${COUNTER_NAME} += 1;`;
 
-  // Counting before the POST would charge a passing preflight too, and MAX_AUTO_LOAD_ATTEMPTS
-  // already bounds those: that is what truncated the happy path.
+  // Counting before the POST would also charge passing preflights, truncating the happy path.
   assert.ok(
     !body.slice(0, post).includes(increment),
     "canAutoLoad must not count the preflight before it knows the outcome",
   );
 
-  // Every branch that leaves without spending a load attempt pays: the refusals...
   const refusalExits = body.split("return false;").slice(0, -1);
   assert.ok(
     refusalExits.length >= 2,
@@ -416,7 +361,6 @@ test("every dead-ended /validate is counted, and no passing one is", () => {
       `refusal branch ${index} returns without counting its /validate`,
     );
   }
-  // ...and the rejection, which never reaches loadAttempts, so nothing else bounds it.
   const rethrow = body.indexOf("throw error;", post);
   assert.ok(rethrow > post, "the rejected preflight is no longer rethrown");
   assert.ok(
@@ -425,7 +369,6 @@ test("every dead-ended /validate is counted, and no passing one is", () => {
       "failure, so a dead backend would otherwise POST once per cached repo",
   );
 
-  // Exactly the dead ends: two refusals and one rejection, nothing on the passing path.
   assert.equal(
     body.split(increment).length - 1,
     3,
@@ -434,8 +377,7 @@ test("every dead-ended /validate is counted, and no passing one is", () => {
 });
 
 test("the default-download preflight stays outside the budget", () => {
-  // An all-refused cache must still fall back to the default model, so the last preflight is
-  // deliberately ungated. Its own /load is what MAX_AUTO_LOAD_ATTEMPTS bounds.
+  // The last preflight is deliberately ungated so an all-refused cache still falls back.
   const loopEnd = source.indexOf(
     "// The cap gates the default download too",
     sourceLoopStart,

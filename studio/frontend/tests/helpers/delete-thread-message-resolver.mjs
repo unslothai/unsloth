@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// bundler-resolver's two rules, plus a redirect of the two backend modules to a stub.
-// See delete-thread-message-stub.mjs for why the redirect is needed.
+// bundler-resolver's rules plus a redirect of two backend modules to a stub.
 import { existsSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SRC = fileURLToPath(new URL("../../src/", import.meta.url));
 const STUB = new URL("./delete-thread-message-stub.mjs", import.meta.url).href;
 
-// chat-api reaches the auth flow and the login page; chat-history-storage reaches chat-api.
 const REDIRECTED =
   /(^|\/)(\.\.\/)*(api\/chat-api|utils\/chat-history-storage|chat-history-storage)(\.ts)?$/;
 

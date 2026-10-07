@@ -6,11 +6,8 @@ import test from "node:test";
 
 import { classifyUnslothSupport } from "../src/features/hub/lib/unsloth-support.ts";
 
-// The sd.cpp companion mirrors are published as ComfyUI single-file repos: library
-// "diffusion-single-file", no pipeline tag, and nothing inside but a VAE or a text encoder. The
-// cached-row `companion` flag only reaches rows the machine already downloaded, so the chat
-// picker's Unsloth Hub search is the other way in -- and a taskless repo used to classify as an
-// ordinary chat model there.
+// sd.cpp companion mirrors are taskless "diffusion-single-file" repos holding only a VAE or
+// text encoder; Hub search must not classify them as chat models.
 test("a taskless companion mirror is not offered as a chat model", () => {
   for (const mirror of [
     {
@@ -30,8 +27,7 @@ test("a taskless companion mirror is not offered as a chat model", () => {
 });
 
 test("a real single-file checkpoint keeps its Images routing", () => {
-  // Same library tag, but a pipeline task -- these load on the Images page, so they must stay
-  // routed there rather than becoming a blanket "unsupported".
+  // With a pipeline task these load on the Images page, so they stay routed there.
   const support = classifyUnslothSupport({
     modelId: "unsloth/FLUX.2-klein-9B-GGUF",
     pipelineTag: "image-to-image",
@@ -43,9 +39,7 @@ test("a real single-file checkpoint keeps its Images routing", () => {
 });
 
 test("a chat GGUF that sd.cpp borrows as a text encoder stays supported", () => {
-  // unsloth/Qwen2.5-VL-7B-Instruct-GGUF is in the backend's companion set (Qwen-Image's text
-  // encoder) yet is a perfectly good chat model: filtering the picker on that set would take it
-  // away from a user who downloaded it to chat with.
+  // Some companion-set repos are also good chat models, so do not filter the picker on that set.
   const support = classifyUnslothSupport({
     modelId: "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
     pipelineTag: "image-text-to-text",

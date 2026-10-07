@@ -16,7 +16,6 @@ import { type ReactElement, useMemo, useState } from "react";
 import { useChatActive } from "../runtime-provider";
 import type { ProjectRecord } from "../types";
 
-/** Rows before "View all projects". The list arrives newest first, so these are the recent ones. */
 const RECENT_PROJECT_LIMIT = 6;
 
 export function ProjectSwitcher({
@@ -33,18 +32,15 @@ export function ProjectSwitcher({
   isLoading: boolean;
   onSelectProject: (projectId: string) => void;
   onViewAllProjects: () => void;
-  /** Supplied by the page so the "Open project picker" chord can open it. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }): ReactElement {
-  // A switcher, not the list: the rest are a click away under "View all projects".
   const recentProjects = useMemo(() => {
     const recent = projects.slice(0, RECENT_PROJECT_LIMIT);
     if (!currentProject || recent.some((p) => p.id === currentProject.id)) {
       return recent;
     }
-    // A project's own updatedAt only moves when it is edited, so the open one is often not among
-    // the newest. It keeps its place here: without it the switcher shows no tick at all.
+    // Keep the open project listed: its updatedAt may not be among the newest.
     return [...recent.slice(0, RECENT_PROJECT_LIMIT - 1), currentProject];
   }, [projects, currentProject]);
   const showLoadingRow = isLoading && projects.length === 0;
@@ -77,7 +73,7 @@ export function ProjectSwitcher({
             className="size-icon shrink-0 text-foreground/70"
           />
           <span className="flex min-w-0 flex-1 items-baseline">
-            {/* Block: text-overflow skips flex containers, so the ellipsis never showed. */}
+            {/* Block: text-overflow skips flex containers. */}
             <span className="block min-w-0 max-w-[calc(150px*var(--ui-space-scale,1))] flex-1 truncate font-heading text-ui-16 font-medium leading-tight text-black dark:text-foreground">
               {label}
             </span>
@@ -98,8 +94,6 @@ export function ProjectSwitcher({
         sideOffset={0}
         className="unsloth-plus-menu ring-0 min-w-56 max-w-72 font-heading"
       >
-        {/* Scroll the list here, not the container, so the rounded corners on
-            the scrollbar side are not squared off. */}
         <div className="max-h-72 overflow-y-auto">
         {showLoadingRow ? (
           <DropdownMenuItem disabled={true} className="text-muted-foreground">

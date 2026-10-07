@@ -11,7 +11,6 @@ import {
   newInputImeState,
 } from "../src/features/chat/utils/composer-preferences.ts";
 
-// Runs the shipped callbacks to catch guards placed after preventDefault or side effects.
 function handler(
   file: string,
   inline: boolean | "escape",
@@ -129,7 +128,6 @@ for (const [name, file, inline] of [
       f.key("Enter", isComposing, keyCode);
       assert.deepEqual(f.effects, []);
       assert.equal(f.skipRenameBlurRef.current, false);
-      // Chrome/Firefox order: compositionend follows the composing keydown.
       if (isComposing) f.compose(false);
       f.key("Enter");
       assert.equal(f.effects.filter((effect) => effect === "save").length, 1);
@@ -204,7 +202,6 @@ for (const [name, file] of [
   });
 }
 
-// A lost compositionend (#5546, macOS input-method switch) must not pin later idle Pinyin Enters.
 for (const reset of ["onFocus", "onBlur"] as const) {
   test(`missing compositionend is cleared by ${reset}`, () => {
     const state = newInputImeState();

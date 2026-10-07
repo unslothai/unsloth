@@ -138,13 +138,10 @@ function Row({
   title: string;
   detail: string;
   time: string;
-  /** The page it came from, for the right-click menu; null for a file from chat. */
   url: string | null;
   onOpen?: () => void;
   onRemove: () => void;
-  /** Rows of the right-click menu ahead of Remove, and what to do with focus as it closes. */
   menu?: { rows: ReactNode; onCloseAutoFocus?: (event: Event) => void };
-  /** Something placed over the row, such as the anchor of a popover it opens. */
   anchor?: ReactNode;
 }) {
   const t = useT();
@@ -234,7 +231,6 @@ const RANGE_LABELS = {
   month: { menu: "browser.pages.lastMonth", heading: "browser.pages.lastMonth" },
 } as const;
 
-/** The visit times a range keeps: from `since` up to but not including `until`. */
 function rangeBounds(range: HistoryRange, dates: DateRange | undefined): { since: number; until: number } {
   const today = startOfDay(Date.now());
   if (range === "today") return { since: today, until: Infinity };

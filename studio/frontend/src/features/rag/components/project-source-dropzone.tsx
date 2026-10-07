@@ -53,28 +53,23 @@ function formatSize(bytes: number): string {
   return `${shown} ${units[unit]}`;
 }
 
-// Projects created with staged files, so the landing can open on Sources.
 const projectsWithPendingSources = new Set<string>();
 
 export function markProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.add(projectId);
 }
 
-/** Whether this project was just created with staged sources. Read-only, so it
- * is safe in a render pass that React may replay. */
+/** Read-only, so it is safe in a render pass that React may replay. */
 export function hasProjectSourcesPending(projectId: string): boolean {
   return projectsWithPendingSources.has(projectId);
 }
 
-/** Drop the marker once the landing has committed. */
 export function consumeProjectSourcesPending(projectId: string): void {
   projectsWithPendingSources.delete(projectId);
 }
 
-// Landings mounted now, counted, so a caller can tell whether a marker would still be read.
 const mountedProjectLandings = new Map<string, number>();
 
-/** Call from the landing's mount effect; returns the cleanup. */
 export function noteProjectLandingMounted(projectId: string): () => void {
   mountedProjectLandings.set(projectId, (mountedProjectLandings.get(projectId) ?? 0) + 1);
   return () => {
@@ -97,9 +92,7 @@ export async function uploadStagedSources(
   if (staged.length === 0) return;
   invalidateProjectSources(projectId);
   markProjectSourcesPending(projectId);
-  // Counted as project work for the whole batch: a tab opening the new project
-  // holds no row for a file still uploading, so without this it reports nothing
-  // indexing and lets a send go out ahead of the sources it was created with.
+  // Counted as project work so another tab gates sends on files still uploading.
   noteProjectWork(projectId, 1);
   try {
     await uploadStaged(projectId, staged);
@@ -131,8 +124,7 @@ async function uploadStaged(
               ).nativePathLease,
             };
       const result = await uploadProjectDocument(projectId, source, ocr, caption);
-      // Same bytes under another name: the backend hashes content, so this is
-      // the document already uploaded. Say so rather than imply a new source.
+      // The backend hashes content, so this is a document already uploaded under another name.
       if (documentIds.has(result.documentId)) merged.push(entry.name);
       else documentIds.add(result.documentId);
     } catch (error) {
@@ -151,7 +143,6 @@ async function uploadStaged(
   }
 }
 
-/** Create-project drop area: stages files until the project exists. */
 export function ProjectSourceDropzone({
   staged,
   onChange,
@@ -161,23 +152,19 @@ export function ProjectSourceDropzone({
   staged: StagedSource[];
   onChange: (next: StagedSource[]) => void;
   disabled?: boolean;
-  /** Native drops register asynchronously and reach `onChange` only once they
-   * settle. Create must wait, or it commits without the files just dropped. */
+  /** Native drops settle asynchronously; Create must wait or it commits without them. */
   onPendingChange?: (pending: boolean) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   // Count enter/leave pairs: children fire dragleave on the parent.
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
-  // Registering a native drop is async, so the props captured when it started
-  // are stale by the time it resolves. Merge against these instead.
+  // Native drop registration is async, so merge against these rather than stale props.
   const stagedRef = useRef(staged);
   stagedRef.current = staged;
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
-  // Radix unmounts the dialog content on close, so a cancel takes this
-  // component down before the reset below reaches it. Set on setup, or
-  // StrictMode's replayed cleanup would leave it false forever.
+  // Set on setup, or StrictMode's replayed cleanup would leave it false forever.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -185,10 +172,7 @@ export function ProjectSourceDropzone({
       mounted.current = false;
     };
   }, []);
-  // The dialog can stay mounted across close, so an unmount flag alone cannot
-  // see a cancel. Any array this component did not hand off is an external
-  // reset, and a drop still registering is no longer wanted. Identity, not
-  // length: `reset()` swaps in a fresh array even when it was already empty.
+  // Any array this component did not hand off is an external reset (by identity, not length).
   const generation = useRef(0);
   const handedOff = useRef<StagedSource[] | null>(null);
   useEffect(() => {
@@ -197,10 +181,8 @@ export function ProjectSourceDropzone({
     generation.current += 1;
   }, [staged]);
 
-  /** Hand a list to the owner without reading it back as an external reset. */
   const commit = useCallback((next: StagedSource[]) => {
-    // The ref too, not just on the next render: two drops settling in one tick
-    // would both merge against the old list and the second would lose the first.
+    // Update the ref now: two drops settling in one tick would otherwise lose the first.
     stagedRef.current = next;
     handedOff.current = next;
     onChangeRef.current(next);
@@ -211,14 +193,12 @@ export function ProjectSourceDropzone({
   const pending = useRef(0);
   const addPending = useCallback((delta: number) => {
     pending.current += delta;
-    // A drop from a previous mount must not answer for the live dropzone: its
-    // "done" would re-enable Create while the current drop is still pending.
+    // A drop from a previous mount must not re-enable Create for the live dropzone.
     if (!mounted.current) return;
     onPendingChangeRef.current?.(pending.current > 0);
   }, []);
 
-  // Prune desktop drops whose token TTL has lapsed, so Create never commits a
-  // project against sources the native layer has already pruned.
+  // Prune desktop drops whose token TTL has lapsed.
   useEffect(() => {
     const expiries = staged
       .map(nativeExpiryMs)
@@ -256,8 +236,7 @@ export function ProjectSourceDropzone({
           { description: "Supported types: documents and source code files" },
         );
       }
-      // Name, size and mtime can in principle match for two different files, so
-      // never drop one without saying so.
+      // Name, size and mtime can match for two different files, so never drop one silently.
       if (duplicates.length > 0) {
         toast.info(
           duplicates.length === 1
@@ -287,13 +266,10 @@ export function ProjectSourceDropzone({
         paths,
         nativeFileName,
       );
-      // Per path, so one rejected file does not discard the rest of the drop.
       addPending(1);
       const settled = await Promise.allSettled(
         supported.map(registerNativeAttachmentPath),
       ).finally(() => addPending(-1));
-      // Cleared or closed while registering: let the tokens lapse rather than
-      // refill a draft the next dialog would open on.
       if (!mounted.current || claimed !== generation.current) return;
       const staged = settled.flatMap((result) =>
         result.status === "fulfilled" ? [stagedFromIntent(result.value)] : [],
@@ -309,12 +285,10 @@ export function ProjectSourceDropzone({
     [addSources, addPending],
   );
 
-  // Stay claimed while disabled: unregistering hands the drop to the chat-wide
-  // handler, which would attach it to the chat behind the dialog.
+  // Stay claimed while disabled, or the chat-wide handler attaches the drop to the chat behind.
   const nativeDropRef = useNativeDropTarget({
     onDrop: (paths) => {
-      // Claimed but refusing, so say so: returning quietly made the file
-      // vanish with no border and no message (#9036).
+      // Claimed but refusing, so tell the user instead of making the file vanish.
       if (disabled) {
         toast.error("Sources are still uploading", {
           description: "Wait for them to finish, then drop again.",
@@ -334,12 +308,9 @@ export function ProjectSourceDropzone({
   return (
     <div className="space-y-2.5">
       <p className="text-ui-15 font-medium text-foreground">Sources</p>
-      {/* Panel is the drop target; the inner button owns the click so staged
-          rows can carry their own remove buttons. */}
       <div
         ref={nativeDropRef}
-        // preventDefault runs even while disabled: nothing else on the page cancels a file drop, so
-        // the browser would navigate to the file and kill the uploads in flight.
+        // preventDefault even while disabled, or the browser navigates to the file and kills uploads.
         onDragEnter={(e) => {
           e.preventDefault();
           if (disabled) return;

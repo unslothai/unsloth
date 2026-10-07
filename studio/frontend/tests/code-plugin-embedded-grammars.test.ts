@@ -1,24 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Incremental tokenization has to survive a grammar switching mid-document.
- *
- * `code-plugin.ts` commits completed lines with the shiki `GrammarState` that
- * follows them and resumes from it on the next refresh. Every fixture in
- * `code-plugin-incremental.test.ts` is python, json or typescript, where one
- * grammar covers the whole fence. The interesting case is the one none of them
- * reach: HTML pushing into javascript and css, TSX alternating between JS and
- * JSX, markdown opening a nested fence, a heredoc whose terminator is chosen at
- * runtime. There the saved state is a stack several grammars deep, and a
- * resume that loses a level produces plausible-looking tokens with the wrong
- * scopes rather than an obvious break.
- *
- * The oracle is the same one the sibling file uses: whole-document
- * `codeToTokens` at every prefix. Deliberately self-contained, so these can be
- * read and moved independently of the sibling file's helpers.
- */
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {
@@ -37,12 +19,7 @@ import {
 
 const THEMES: [ThemeInput, ThemeInput] = ["github-light", "github-dark"];
 
-// REFRESH_MS in code-plugin.ts, plus a margin. A fence past
-// MIN_INCREMENTAL_CHARS that is updated twice inside that window is answered
-// from the throttled approximation, which renders the uncommitted tail plain
-// and never reads the grammar state, so a comparison there cannot fail however
-// badly the resume is broken. Measured, not assumed: drop the wait and the
-// first comparison past the threshold takes that path on correct code too.
+// Longer than REFRESH_MS: inside that window the throttled path skips grammar state.
 const settle = (): Promise<unknown> =>
   new Promise((resolve) => setTimeout(resolve, 260));
 
@@ -60,7 +37,6 @@ const referenceHighlighters = new Map<
   ReturnType<typeof createHighlighter>
 >();
 
-/** What shiki returns for the whole string in one call. */
 async function reference(code: string, language: HighlightOptions["language"]) {
   let loading = referenceHighlighters.get(language);
   if (!loading) {
@@ -75,31 +51,15 @@ async function reference(code: string, language: HighlightOptions["language"]) {
   return highlighter.codeToTokens(code, {
     lang: language,
     themes: { light: "github-light", dark: "github-dark" },
-    // The reference must run under the plugin's own tokenizer limits, or shiki's
-    // default wall-clock bail can degrade whichever side of the comparison is
-    // unlucky on a slow runner.
+    // Use the plugin's tokenizer limits so shiki's wall-clock bail cannot skew either side.
     ...TOKENIZE_LIMITS,
   });
 }
 
-/**
- * Stream `source` one prefix at a time and require every settled result to
- * equal whole-document tokenization of that same prefix.
- *
- * `cuts` are extra prefix lengths to test on top of the `step` walk, for the
- * boundaries that matter here: the character before and after a delimiter that
- * pushes or pops a grammar. A step walk alone can stride straight over them.
- *
- * Once the fence is past MIN_INCREMENTAL_CHARS every update has to wait out the
- * refresh interval to be tokenized at all, so `throttledStep` walks that
- * stretch on its own coarser stride. Fixtures below the threshold never reach
- * either and pay nothing.
- */
 async function assertMatchesWholeDocument(
   source: string,
   language: HighlightOptions["language"],
-  // Annotated rather than inferred: `throttledStep` defaults to `step`, and TS
-  // cannot infer a binding that another default in the same pattern reads.
+  // Annotated because TS cannot infer a binding another default in the same pattern reads.
   {
     step = 1,
     throttledStep = step,
@@ -136,7 +96,6 @@ async function assertMatchesWholeDocument(
   }
 }
 
-/** Every index just before and just after each occurrence of `marker`. */
 const cutsAround = (source: string, marker: string): number[] => {
   const out: number[] = [];
   for (let i = source.indexOf(marker); i >= 0; i = source.indexOf(marker, i + 1)) {
@@ -144,8 +103,6 @@ const cutsAround = (source: string, marker: string): number[] => {
   }
   return out;
 };
-
-// ── HTML: the grammar pushes into javascript and css and back ──────────
 
 const HTML = `<!doctype html>
 <html lang="en">
@@ -182,8 +139,6 @@ test("an HTML fence with embedded script and style matches whole-document tokeni
   });
 });
 
-// ── TSX: JSX children and an expression container ──────────────────────
-
 const TSX = `type Props = { items: string[] };
 
 export function List({ items }: Props) {
@@ -214,13 +169,6 @@ test("a TSX fence with JSX children matches whole-document tokenization", async 
   });
 });
 
-// ── Markdown containing a fence: the grammar nests into itself ─────────
-
-// The nested fence is here because it is what users actually paste, but it is
-// NOT what makes this discriminate: shiki's markdown grammar leaves a fenced
-// body uncoloured, so its tail tokenizes the same with or without a resumed
-// state. The multi-line HTML comment is the part that carries state across
-// lines, verified by tokenizing the tail both ways at every line boundary.
 const MARKDOWN = `# Title
 
 Some prose with \`inline code\` and a [link](https://example.com).
@@ -252,22 +200,12 @@ test("a markdown fence with a multi-line comment matches whole-document tokeniza
   });
 });
 
-// ── Markdown whose nested fences open and close again ──────────────────
-
-// Prose that carries no state of its own, here to push the second nested fence
-// past MIN_INCREMENTAL_CHARS.
 const NOTES = Array.from(
   { length: 17 },
   (_, index) => `Paragraph ${index + 1} of the notes, long enough that the
 document clears the incremental threshold before the next fence opens.`,
 ).join("\n\n");
 
-// MARKDOWN above pushes one shallow level and, as its own comment says, leaves
-// its nested fence's body doing no work. This fixture is the opposite: the body
-// and the pop back out of it are the whole point. A `#` line inside a fence is
-// body text and the same line outside one is a heading, so a resume that stays
-// a level too deep, or comes back a level too shallow, colours them the other
-// way round, and the prose after each fence goes with them.
 const MARKDOWN_NESTED = `# Release notes
 
 The block below is markdown, so a fence in its body opens a second one.
@@ -302,22 +240,15 @@ Trailing prose with **bold** and \`inline code\`.
 test("nested markdown fences match whole-document tokenization", async () => {
   await assertMatchesWholeDocument(MARKDOWN_NESTED, "markdown", {
     step: 23,
-    // Every comparison past the threshold waits out a refresh interval, so that
-    // stretch is walked coarsely: 15 of the 119 comparisons are there, and they
-    // are what makes this test take about four seconds.
     throttledStep: 150,
     cuts: [
-      // Both sides of every delimiter run, opening and closing alike.
       ...cutsAround(MARKDOWN_NESTED, "```"),
-      // And after the info string, which is where the nested language is named.
       ...cutsAround(MARKDOWN_NESTED, "```python"),
       ...cutsAround(MARKDOWN_NESTED, "```bash"),
       ...cutsAround(MARKDOWN_NESTED, '"""'),
     ],
   });
 });
-
-// ── Shell heredoc: the terminator is chosen by the document ────────────
 
 const SHELL = `#!/usr/bin/env bash
 set -euo pipefail
@@ -345,8 +276,6 @@ test("a shell heredoc keeps its scope across updates", async () => {
     ],
   });
 });
-
-// ── Nested template literals: interpolation inside interpolation ───────
 
 const TEMPLATE = `const name = "row";
 const value = \`outer

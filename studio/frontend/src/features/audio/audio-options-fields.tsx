@@ -42,7 +42,6 @@ export function AudioOptionFields({
   /** `undefined` clears the option back to the model's default. */
   onChange: (name: string, value: AudioOptionValue | undefined) => void;
   disabled?: boolean;
-  /** The loaded model's runtime family, for readable voice names. */
   family?: string | null;
 }) {
   return (
@@ -132,8 +131,7 @@ export function AudioOptionFields({
               step={spec.type === "int" ? 1 : numeric ? "any" : undefined}
               min={spec.min ?? undefined}
               max={spec.max ?? undefined}
-              // The typed value as typed: clamping mid-entry would turn "1" into a minimum of
-              // 5 before the "0" of "10" arrives. The request clamps instead.
+              // As typed: clamping mid-entry breaks multi-digit input. The request clamps.
               value={
                 values[spec.name] === undefined ? "" : String(values[spec.name])
               }

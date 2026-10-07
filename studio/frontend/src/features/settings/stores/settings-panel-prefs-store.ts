@@ -9,15 +9,13 @@ export type FineTuneAction = "train" | "recipes" | "export";
 
 export const SETTINGS_PANEL_PREFS_STORAGE_KEY = "unsloth_settings_panel_prefs";
 
-// settings dialog picks that renderTab() used to drop on every tab switch.
 export interface SettingsPanelPrefsState {
-  // null model means "follow whichever model the server has resident".
+  // null means "follow whichever model the server has resident".
   agentsAgent: string | null;
   agentsModel: string | null;
   // null means "follow the shell inferred from the client / Studio host".
   agentsOs: ExampleOs | null;
-  // the quant carries the model it was picked for, so remembering a quant alone
-  // never pins a model the tab would otherwise keep following.
+  // The quant carries its model, so remembering a quant never pins a model.
   agentsVariant: string | null;
   agentsVariantModel: string | null;
   setAgentsAgent: (agent: string | null) => void;
@@ -43,9 +41,7 @@ export interface SettingsPanelPrefsState {
 const EXAMPLE_OS_VALUES: ExampleOs[] = ["unix", "windows"];
 const FINE_TUNE_VALUES: FineTuneAction[] = ["train", "recipes", "export"];
 
-// localStorage is untyped at runtime and these reach `.toLowerCase()` and the
-// path checks in agents-tab, so a bad record would take the app down. The
-// default merge also spreads the blob over the actions themselves. Whitelist.
+// Whitelist: localStorage is untyped and a bad record would crash agents-tab path checks.
 function text(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
@@ -75,7 +71,6 @@ function sanitize(
       (EXAMPLE_OS_VALUES as string[]).includes(raw.agentsOs)
         ? (raw.agentsOs as ExampleOs)
         : null,
-    // A quant with no model to scope it to can never be applied.
     agentsVariant: agentsVariantModel ? agentsVariant : null,
     agentsVariantModel: agentsVariant ? agentsVariantModel : null,
     apiExampleLang: text(raw.apiExampleLang),
@@ -102,7 +97,6 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       agentsVariant: null,
       agentsVariantModel: null,
       setAgentsAgent: (agentsAgent) => set({ agentsAgent }),
-      // picking a model carries its quant, and clearing it clears that quant.
       setAgentsModel: (agentsModel, agentsVariant) =>
         set({ agentsModel, agentsVariant, agentsVariantModel: agentsModel }),
       setAgentsOs: (agentsOs) => set({ agentsOs }),
@@ -127,8 +121,7 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       name: SETTINGS_PANEL_PREFS_STORAGE_KEY,
       // Pinned so a later shape change has somewhere to migrate from.
       version: 1,
-      // Older records share these field names, so the sanitiser is enough. A
-      // newer one is dropped: it may reuse the names with different meaning.
+      // Older records share these names, so sanitising suffices; a newer one is dropped.
       migrate: (persisted, version) =>
         (version < 1 ? persisted : {}) as SettingsPanelPrefsState,
       merge: (persisted, current) => sanitize(persisted, current),

@@ -11,7 +11,6 @@ export type ReasoningHighlightRequest = {
   lines: number[];
 };
 
-/** A client sends its complete source once, then only newly appended bytes. */
 export function reasoningHighlightSource(
   previous: string,
   source: ReasoningHighlightRequest["source"],

@@ -56,8 +56,7 @@ function mediaRunEligible(model: SelectedModelView): boolean {
   });
 }
 
-// The backend tags a local non-GGUF diffusers checkpoint text-to-image (_local_model_task),
-// and it does that for every local row whatever its source, so these rows are real.
+// The backend tags every local non-GGUF diffusers checkpoint text-to-image, whatever its source.
 test("a filesystem diffusion row never counts as running on a media page", () => {
   assert.equal(
     mediaRunEligible(mediaModel("text-to-image", "local", "models_dir")),
@@ -79,7 +78,6 @@ test("a filesystem diffusion row never counts as running on a media page", () =>
 });
 
 test("complete Hub-backed diffusion rows stay runnable on their page", () => {
-  // An hf_cache row is a complete Hub snapshot, so it routes like a cached repo.
   assert.equal(
     mediaRunEligible(mediaModel("text-to-image", "local", "hf_cache")),
     true,

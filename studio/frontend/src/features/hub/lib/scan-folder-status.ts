@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Copy for a scan folder the backend could not read.
- *
- * A folder Unsloth is denied looks exactly like an empty one in the model list,
- * so the row has to say which it is and where to fix it.
- */
+/** A denied folder looks like an empty one, so the row must say which and where to fix it. */
 
 export type ScanFolderStatus =
   | "ok"
@@ -20,7 +15,6 @@ export interface ScanFolderStatusCopy {
   hint: string;
 }
 
-/** Rough host detection: only picks which settings screen to name. */
 function hostPlatform(userAgent: string): "mac" | "windows" | "other" {
   if (/Mac|iPhone|iPad/i.test(userAgent)) return "mac";
   if (/Win/i.test(userAgent)) return "windows";

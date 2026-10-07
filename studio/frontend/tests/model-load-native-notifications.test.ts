@@ -1,24 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Chat model loads are foreground work with a toast already reporting every
-// stage, so they notify nothing and never ask for permission. Training runs for
-// hours unwatched, so it keeps both. Permission is module-global and the chat
-// path held the only prime outside training, so these pin the half that
-// survived: training grants itself permission where chat never ran.
+// Chat loads no longer notify, so training must grant itself notification permission.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { register } from "node:module";
 import test from "node:test";
 
-// api-base derives `isTauri` at module evaluation and native-notifications
-// caches the grant in module scope, so the resolver copies a "?bust=N" key down
-// the import chain to force a fresh evaluation per case, and stubs the plugin.
+// Module-scope caches force a fresh import per case via ?bust=N.
 register("./helpers/notification-resolver.mjs", import.meta.url);
 
-// A file:// URL, not a native path: `import()` rejects "D:\..." on Windows, and
-// "?bust=N" only means anything on a URL.
+// file:// URL: import() rejects Windows paths, and ?bust=N needs a URL.
 const MODULE = new URL("../src/lib/native-notifications.ts", import.meta.url).href;
 
 const CHAT_RUNTIME = new URL(
@@ -43,11 +36,8 @@ type StubMode = "ok" | "send-fails" | "module-missing";
 
 type EnvOptions = {
   tauri: boolean;
-  /** What the webview's own Notification API reports, or "absent" if it has none. */
   webview?: WebviewPermission;
-  /** What the Tauri plugin reports when the webview API cannot answer. */
   pluginGranted?: boolean;
-  /** What Notification.requestPermission() resolves to once the user answers. */
   answer?: "granted" | "denied";
   stub?: StubMode;
 };
@@ -69,11 +59,6 @@ function define(name: string, value: unknown) {
   });
 }
 
-/**
- * Stage the globals api-base and native-notifications read, then import a fresh
- * copy of the module. `webviewRequests` counts OS permission prompts, which a
- * chat-only session must never raise.
- */
 async function load(options: EnvOptions) {
   const {
     tauri,
@@ -106,7 +91,6 @@ async function load(options: EnvOptions) {
   generation += 1;
   const control = ((globalThis as Record<string, unknown>).__TAURI_NOTIFICATION_STUB__ ??=
     {}) as Control;
-  // A fresh array per case, so a late send cannot reach an earlier recorder.
   control.sent = [];
   control.granted = pluginGranted;
   control.mode = stub;
@@ -132,7 +116,6 @@ async function load(options: EnvOptions) {
   return { ...mod, control, webviewRequests };
 }
 
-/** The training runtime's two terminal notifications, as it sends them. */
 async function trainingFinished(
   mod: Awaited<ReturnType<typeof load>>,
   jobId = "job-1",
@@ -146,8 +129,6 @@ async function trainingFinished(
     })
     .catch(() => undefined);
 }
-
-// The contract each path now holds.
 
 test("the chat model-load path carries no native-notification dependency", async () => {
   const source = await readFile(CHAT_RUNTIME, "utf8");
@@ -171,8 +152,7 @@ test("the chat model-load path carries no native-notification dependency", async
 test("training keeps its own permission prime, which nothing else provides", async () => {
   for (const entry of TRAINING_ENTRY_POINTS) {
     const source = await readFile(entry, "utf8");
-    // The call, not the import: an unused import would satisfy a bare name
-    // match while leaving training unable to obtain permission.
+    // The call, not the import: an unused import would pass a bare name match.
     assert.match(
       source,
       PRIME_CALL,
@@ -188,13 +168,10 @@ test("training keeps its own permission prime, which nothing else provides", asy
   );
 });
 
-// A chat-only session is silent, prompt included.
-
 test("a desktop session that only loads chat models never asks for permission", async () => {
   for (const webview of ["absent", "default", "granted"] as const) {
     const mod = await load({ tauri: true, webview, pluginGranted: true });
 
-    // A load no longer reaches this module, so nothing here runs.
     assert.equal(
       mod.webviewRequests.count,
       0,
@@ -204,10 +181,7 @@ test("a desktop session that only loads chat models never asks for permission", 
   }
 });
 
-// Training still works on a fresh install, in every webview state.
-
 test("training primes and notifies on a fresh install where chat never ran", async () => {
-  // The webview owns the grant and the user allows it.
   const prompted = await load({
     tauri: true,
     webview: "default",
@@ -221,7 +195,6 @@ test("training primes and notifies on a fresh install where chat never ran", asy
     ["Training finished"],
   );
 
-  // No Notification API in the webview, so the grant comes from the plugin.
   const viaPlugin = await load({
     tauri: true,
     webview: "absent",
@@ -235,7 +208,6 @@ test("training primes and notifies on a fresh install where chat never ran", asy
     "training lost its notification on the plugin permission path",
   );
 
-  // Already granted from an earlier session: no prompt, still delivered.
   const already = await load({ tauri: true, webview: "granted" });
   await already.primeNativeNotificationPermission();
   await trainingFinished(already);
@@ -249,8 +221,7 @@ test("training primes and notifies on a fresh install where chat never ran", asy
 test("a training notification arrives even if the prime is still in flight", async () => {
   const mod = await load({ tauri: true, webview: "default", answer: "granted" });
 
-  // start-fresh-training-run fires the prime without awaiting it, so a run that
-  // ends immediately must wait for the grant rather than race past it.
+  // The prime is fire-and-forget, so a quick run must wait for the grant.
   const priming = mod.primeNativeNotificationPermission().catch(() => undefined);
   const finishing = trainingFinished(mod);
   await Promise.all([priming, finishing]);
@@ -262,8 +233,6 @@ test("a training notification arrives even if the prime is still in flight", asy
   );
 });
 
-// Refusals and failures stay silent instead of breaking the caller.
-
 test("a denied grant sends nothing and does not reject", async () => {
   const mod = await load({ tauri: true, webview: "denied", pluginGranted: true });
   await mod.primeNativeNotificationPermission();
@@ -271,12 +240,7 @@ test("a denied grant sends nothing and does not reject", async () => {
   assert.deepEqual(mod.control.sent, [], "sent a notification after a denial");
 });
 
-// tauri_plugin_notification replaces window.Notification with its own shim, so
-// these are the shim's states, not hypothetical browser ones: Linux and macOS
-// report "granted" with no prompt (desktop request_permission is hardcoded to
-// Granted), Windows reports "denied" because the shim short-circuits its own
-// bootstrap (tauri-apps/plugins-workspace#3512). Either way, moving the prime
-// off the chat path must not change what training does.
+// The plugin shim reports granted on Linux/macOS and denied on Windows (plugins-workspace#3512).
 test("each desktop platform's shim state behaves the same with and without a chat prime", async () => {
   const platforms = [
     { name: "linux/macOS", webview: "granted" as const, expected: ["Training finished"] },
@@ -284,12 +248,10 @@ test("each desktop platform's shim state behaves the same with and without a cha
   ];
 
   for (const platform of platforms) {
-    // A chat-side prime first, as the app behaved before the split.
     const primedByChat = await load({ tauri: true, webview: platform.webview });
     await primedByChat.primeNativeNotificationPermission();
     await trainingFinished(primedByChat);
 
-    // Training on its own, as it behaves now.
     const trainingOnly = await load({ tauri: true, webview: platform.webview });
     await trainingOnly.primeNativeNotificationPermission();
     await trainingFinished(trainingOnly);
@@ -322,8 +284,6 @@ test("a send that throws never reaches the training caller", async () => {
   await assert.doesNotReject(() => trainingFinished(mod));
 });
 
-// Browser and LAN sessions were never in scope and still are not.
-
 test("browser and LAN sessions send nothing and never prompt", async () => {
   for (const webview of ["absent", "default", "granted"] as const) {
     const mod = await load({ tauri: false, webview, pluginGranted: true });
@@ -338,8 +298,6 @@ test("browser and LAN sessions send nothing and never prompt", async () => {
     );
   }
 });
-
-// The dedupe cache and the redaction from #5273 both still hold.
 
 test("a repeated notification key is sent once", async () => {
   const mod = await load({ tauri: true, webview: "granted" });

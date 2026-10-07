@@ -72,7 +72,6 @@ type RailProps = Omit<
   | "claimedOptions"
 >;
 
-/** Selects ②'s last word so typing replaces it. */
 function selectLastWord(field: HTMLTextAreaElement | null) {
   if (!field) return;
   const match = /([\p{L}\p{N}'’-]+)[^\p{L}\p{N}]*$/u.exec(field.value);

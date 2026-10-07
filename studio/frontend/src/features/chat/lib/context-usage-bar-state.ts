@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// its own plain module so the node suite can drive it: the component is JSX the runner cannot import
+// Plain module so the node suite can import it.
 
 export const formatTokenCount = (n: number): string => {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
@@ -13,35 +13,22 @@ export const formatTokenCountFull = (n: number): string => {
 };
 
 export type ContextUsageBarInput = {
-  // null when nothing has been counted yet
   used?: number | null;
-  // null on external providers, whose context window is unknown
   total?: number | null;
   cached?: number;
-  // anthropic-only (billed at the write premium)
   cacheWrites?: number;
   promptTokens?: number;
   completionTokens?: number;
-  // MLX keeps generating past the window instead of stopping there, so it needs the
-  // opposite advice from llama.cpp once a conversation outgrows the limit.
+  // MLX keeps generating past the window, so it needs different advice than llama.cpp.
   isMlx?: boolean;
   contextUnboundedWhenBatched?: boolean;
   parallelSlots?: number | null;
-  /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
   contextBudget?: number | null;
   estimated?: boolean;
 };
 
-/**
- * Which limit warning the tooltip carries, if any.
- *
- * llama.cpp stops generating at the window, so its advice is to raise the limit before
- * hitting it. MLX generates straight past instead, so the same wording would promise a
- * stop that never comes -- and once a conversation is over the window there is something
- * different to say about it. Read from the unclamped ratio: the reported percent caps at
- * 100%, which is exactly the state being reported on.
- */
+/** Limit warning for the tooltip; read from the unclamped ratio since percent caps at 100. */
 export type ContextLimitAdvice =
   | "none"
   | "stops-at-limit"
@@ -62,10 +49,7 @@ function contextLimitAdvice(
   if ((used / total) * 100 <= 85) return "none";
   // Budget wins over contextEnforced: the cache is unbounded but requests are refused.
   if (budget) return "mlx-refuses-past-limit";
-  // A window the backend confirmed does not bound the cache is not a limit at all:
-  // nothing rotates and nothing stops, so neither of the other two is true of it. An
-  // unjudged MLX window says the same thing operationally: the probe could not build a
-  // cache, so none was bounded and it grows exactly as a confirmed false one does.
+  // An unbounded (or unjudged MLX) cache is not a limit: nothing rotates or stops.
   if (
     enforced === false ||
     (isMlx && enforced == null) ||
@@ -79,19 +63,16 @@ function contextLimitAdvice(
 
 export type ContextUsageBarState = {
   face: string;
-  // shown instead of the ring when the header is too narrow for the face; null shows the ring
   compactFace: string | null;
   label: string;
   totalRowName: string;
   totalRowValue: string;
-  // null whenever no ratio can be stated, which also withholds the fill and the 85% warning
   percent: number | null;
-  // whether any per-turn row renders, so the tooltip rule never floats above nothing
   hasUsageDetails: boolean;
   advice: ContextLimitAdvice;
 };
 
-// a counted zero and an uncounted chat differ: an unmeasured prompt must not read as 0% of the window
+// An unmeasured prompt must not read as 0% of the window.
 export function deriveContextUsageBar({
   used,
   total,
@@ -110,7 +91,6 @@ export function deriveContextUsageBar({
   const usedTokens =
     typeof used === "number" && Number.isFinite(used) ? used : null;
 
-  // no per-turn rows and no limit advice: neither is known from a guess
   if (estimated && usedTokens !== null && usedTokens > 0) {
     const approx = `~${formatTokenCount(usedTokens)}`;
     const approxFull = `~${formatTokenCountFull(usedTokens)}`;
@@ -144,7 +124,6 @@ export function deriveContextUsageBar({
     (cacheWrites !== undefined && cacheWrites > 0);
 
   if (limit === null) {
-    // nothing to show: no window to name, and no counted usage to report against one
     if (usedTokens === null) return null;
     if (usedTokens <= 0 && !hasUsageDetails) return null;
     return {

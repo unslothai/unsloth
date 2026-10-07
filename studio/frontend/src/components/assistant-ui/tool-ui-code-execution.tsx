@@ -24,19 +24,9 @@ import { ScrollPane } from "./scroll-pane";
 import { CopyBtn } from "./tool-code-cell";
 
 /**
- * Renders synthetic `_toolEvent` chunks from `_stream_anthropic` for the
- * `code_execution_20250825` tool. The backend collapses Anthropic's two
- * sub-tools into `tool_name: "code_execution"` with `arguments.kind`:
- *
- *   kind=bash:        { command: "<shell command>" }
- *   kind=text_editor: { command: "view"|"create"|"str_replace", path, ... }
- *
- * The `result` payload is preformatted text:
- *   - bash: stdout, then "--- stderr ---" block + return_code if non-zero
- *   - text_editor view:        file contents verbatim
- *   - text_editor create:      "Created <path>" / "Updated <path>"
- *   - text_editor str_replace: unified-diff `lines` joined with "\n"
- *   - error:                   "Error: <error_code>"
+ * Backend collapses Anthropic's code_execution sub-tools into `arguments.kind`: bash
+ * `{ command }` or text_editor `{ command: view|create|str_replace, path, ... }`; `result` is
+ * preformatted text.
  */
 interface CodeExecutionArgs {
   kind?: "bash" | "text_editor";
@@ -131,8 +121,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
     completedLabel = commandLabel ? `Ran \`${commandLabel}\`` : "Ran command";
   }
 
-  // Collapse the card once the model resumes streaming prose after the tool
-  // call (mirrors WebSearchToolUI) so it doesn't crowd the final answer.
+  // Collapse once prose resumes after the call (like WebSearchToolUI).
   const hasText = useAuiState(({ message }) =>
     message.content.some(
       (p) =>
@@ -141,8 +130,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  // Ask permission gates every local tool call, and what is being approved
-  // lives inside the content while Allow/Deny render outside it.
+  // What is being approved lives inside the content, while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 

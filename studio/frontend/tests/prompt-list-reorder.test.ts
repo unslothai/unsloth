@@ -14,8 +14,6 @@ import { readSrcAsync } from "./helpers/kit.ts";
 
 const GAP = 2;
 
-// Lay rows out the way the flex column does, so a reorder can be replayed
-// against the geometry it actually produces.
 function layout(heights: number[]): RowBox[] {
   const rows: RowBox[] = [];
   let top = 0;
@@ -33,7 +31,6 @@ function move<T>(arr: T[], from: number, to: number): T[] {
   return next;
 }
 
-// One drag frame: hit-test, then re-lay-out at the resulting order.
 function step(
   heights: number[],
   from: number,
@@ -58,15 +55,12 @@ test("a pointer past every midpoint targets the last slot", () => {
 
 test("the dragged row's own box does not count towards its target", () => {
   const rows = layout([40, 40, 40]);
-  // Pointer inside row 0, which is also the row being dragged.
   assert.equal(insertionIndex(rows, 0, 20), 0);
-  // The same pointer with row 1 dragged instead: row 0's midpoint is above it.
   assert.equal(insertionIndex(rows, 1, 20), 0);
 });
 
 test("a short row dragged onto a tall one settles instead of oscillating", () => {
-  // The case bottom-edge hit-testing gets wrong: after the swap the tall row is
-  // still under the pointer, which sends the short row straight back.
+  // After the swap the tall row is still under the pointer; bottom-edge hit-testing flips back.
   let heights = [40, 200];
   const pointer = 150;
 
@@ -74,14 +68,12 @@ test("a short row dragged onto a tall one settles instead of oscillating", () =>
   assert.deepEqual(first.order, [1, 0]);
   heights = first.heights;
 
-  // Same pointer, next frame: the dragged row is now at index 1 and stays.
   const second = step(heights, 1, pointer);
   assert.equal(second.to, 1);
   assert.deepEqual(second.order, [0, 1]);
 });
 
 test("dragging back up over the tall row settles too", () => {
-  // Continue from the settled [tall, short] order above.
   let heights = [200, 40];
   const pointer = 90;
 
@@ -99,8 +91,6 @@ test("a drag across uneven rows reaches a fixed point at every pointer height", 
     for (let pointer = -40; pointer <= 640; pointer += 4) {
       const first = step(heights, from, pointer);
       const settledAt = first.to;
-      // Replaying the same pointer against the new layout must not move it
-      // again, or the drag flip-flops for as long as the pointer is held.
       const second = step(first.heights, settledAt, pointer);
       assert.equal(
         second.to,
@@ -116,22 +106,18 @@ test("rows without a measured box are skipped rather than counted", () => {
   assert.equal(insertionIndex([rows[0], undefined, rows[2]], 0, 1000), 1);
 });
 
-// The grip does not capture the pointer, so the move/up/cancel listeners are on
-// `window` and see every pointer on the page.
+// The grip does not capture the pointer, so window listeners see every pointer.
 test("only the pointer that started the drag drives it", () => {
   assert.equal(ownsDrag(3, 3), true);
   assert.equal(ownsDrag(3, 7), false, "a second finger reordered with its own y");
 });
 
-// Ending a drag clears the id, but React unsubscribes the window listeners a
-// commit later. Treating "no active pointer" as a match let a button still held
-// after a window blur keep reordering in that gap.
+// React unsubscribes listeners a commit after the drag ends.
 test("an ended drag owns no pointer at all", () => {
   assert.equal(ownsDrag(null, 3), false, "a blur-ended drag kept reordering");
   assert.equal(ownsDrag(null, 0), false, "pointer id 0 is a real id, not absent");
 });
 
-// Offsets of a flex column of equal rows, keyed the way the component keys them.
 function offsets(height: number): Map<string, number> {
   const map = new Map<string, number>();
   ["i1", "i2", "i3"].forEach((uid, i) => map.set(uid, i * (height + GAP)));
@@ -140,7 +126,6 @@ function offsets(height: number): Map<string, number> {
 
 test("only the rows a reorder moved are animated", () => {
   const before = offsets(100);
-  // i1 and i2 swap; i3 keeps its slot.
   const after = new Map([
     ["i2", 0],
     ["i1", 102],
@@ -156,10 +141,7 @@ test("only the rows a reorder moved are animated", () => {
   );
 });
 
-// The bug this exists for: rows change height with the order untouched, from the
-// preview toggle and from a textarea regrowing on resize. A baseline captured at
-// the old heights describes a layout that is gone, and the next reorder shifts
-// rows that never moved.
+// Rows change height without reordering, so a stale baseline shifts unmoved rows.
 test("a baseline from the wrong heights moves rows that stayed put", () => {
   const stale = offsets(40);
   const after = new Map([
@@ -182,8 +164,6 @@ test("sub-pixel settling is not worth a transform", () => {
   assert.equal(shifts.size, 0);
 });
 
-// flipShifts is only correct if the component hands it a baseline read at the
-// reorder, so keep the capture where it belongs.
 test("the baseline is captured when the reorder is requested", async () => {
   const source = await readSrcAsync("features/chat/prompt-storage/sortable-prompt-items.tsx");
   const captures = source.split("prevOffsets.current = measureOffsets();").length - 1;

@@ -18,7 +18,6 @@ export interface AudioModelContext {
   audioFamily: string | null;
   musicGeneration: boolean;
   cudaMusicGeneration: boolean;
-  /** MiniMax Music 3 and YuE2 need a description beside the lyrics. */
   musicNeedsDescription: boolean;
   audioWorkflows?: readonly string[];
   requiredInputs?: readonly string[];
@@ -26,7 +25,6 @@ export interface AudioModelContext {
   convert?: AudioConvertCaps | null;
   convertMode?: ConvertMode;
   audioMusic?: boolean;
-  /** Ids of the saved voices, once the list has loaded. */
   savedVoiceIds?: readonly string[] | null;
 }
 
@@ -69,12 +67,10 @@ export interface AudioToolPanelProps<V> {
 
 export interface AudioToolPanel<V> {
   id: string;
-  /** Runtime families the panel serves. Ignored when `appliesTo` is given. */
   families: readonly string[];
   workflows: readonly AudioWorkflowId[];
   title: string;
   claims: readonly string[];
-  /** Matches on more than the family, e.g. on audio_type for native runtimes. */
   appliesTo?: (ctx: AudioModelContext) => boolean;
   initial: (specs: AudioOptionSpec[]) => V;
   Component: ComponentType<AudioToolPanelProps<V>>;

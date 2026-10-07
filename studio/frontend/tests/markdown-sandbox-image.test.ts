@@ -15,21 +15,8 @@ import { safeMarkdownUrl } from "../src/lib/safe-markdown-url.ts";
 
 import { readText } from "./helpers/kit.ts";
 
-/*
- * THREE PIECES ONLY WORK TOGETHER, and nothing in the type system joins them:
- *
- *   1. the renderer has to resolve a scheme-less sandbox `src` through `markdownSandboxImageSrc`
- *      before it reaches the DOM (the sanitizer keeps what carries no scheme -- see
- *      `safe-markdown-url.ts` -- but keeping it was never the same as being able to fetch it);
- *   2. the fetch has to carry the Authorization header, which is the only way the route authenticates
- *      a header-auth client (`_authenticate_header_or_query`), and revoke what it created;
- *   3. the extension set has to agree with the backend's `_SANDBOX_MEDIA_TYPES`, which decides
- *      inline-image from attachment in a different language, two directories away.
- *
- * Each is checked against the real source, and where a check is a string search it says what it is
- * defending, so a rename that breaks the join fails here by name rather than by measuring as a
- * change that does nothing.
- */
+/* Renderer src rewrite, authed fetch, and extension list must agree with the backend's
+   _SANDBOX_MEDIA_TYPES; nothing in the type system joins them. */
 
 const MARKDOWN_TEXT = readText("../src/components/assistant-ui/markdown-text.tsx");
 const HOOK = readText("../src/components/assistant-ui/use-sandbox-image.ts");
@@ -80,7 +67,6 @@ test("a fragment cannot override the recorded sandbox session", () => {
 });
 
 test("a scheme-less sandbox src is rewritten before it reaches the DOM, and rendered from a blob:", () => {
-  // PRECONDITION: the renderer still relies on the sanitizer's deny rule rather than repeating it.
   assert.ok(
     MARKDOWN_TEXT.includes("urlTransform={safeMarkdownUrl}"),
     "PRECONDITION: the chat renderer still passes the url transform",
@@ -101,12 +87,10 @@ test("a scheme-less sandbox src is rewritten before it reaches the DOM, and rend
     "and it is fetched rather than rendered raw",
   );
 
-  // ANTI-VACUITY: the rewrite really is what produces the src, and a data: URI really is untouched.
   const imgNode = { tagName: "img" } as Parameters<typeof safeMarkdownUrl>[2];
   const written = "/api/inference/sandbox/__LOCALID_Y3VK67e/plot.png";
   assert.equal(safeMarkdownUrl(written, "src", imgNode), written);
-  // The recorded session wins (it is where the file was WRITTEN); a bare path records nothing and
-  // only then falls back to this chat's scope.
+  // The recorded session (where the file was written) wins over this chat's scope.
   assert.equal(
     markdownSandboxImageSrc(written, { threadId: "t-1", projectId: null }),
     "/api/inference/sandbox/__LOCALID_Y3VK67e/plot.png",
@@ -119,8 +103,7 @@ test("a scheme-less sandbox src is rewritten before it reaches the DOM, and rend
 });
 
 test("the fetch carries the header and gives the object URL back on cleanup", () => {
-  // The route answers on the Authorization header; a bare <img src> gets a 401 and the renderer's
-  // "Image not available" placeholder, which is what this whole file defends.
+  // The route authenticates via header; a bare <img src> gets a 401.
   assert.ok(/authFetch\(url,\s*\{ signal: controller\.signal \}\)/.test(HOOK), "authenticated fetch");
   assert.ok(HOOK.includes("URL.createObjectURL(blob)"), "into an object URL");
   // Two assertions, because a comment sits between the two statements in the hook's cleanup.
@@ -131,8 +114,7 @@ test("the fetch carries the header and gives the object URL back on cleanup", ()
       "for the rest of the session",
   );
 
-  // ONE hook, not two. `tool-ui-python.tsx` was the only place this fetch existed; duplicating it is
-  // how the markdown path ended up without one in the first place.
+  // Single shared hook: duplication is how the markdown path lost it.
   assert.ok(TOOL_UI.includes("useSandboxImage(pythonToolImagePath(sessionId, filename))"));
   assert.equal(
     TOOL_UI.includes("createObjectURL"),
@@ -142,8 +124,6 @@ test("the fetch carries the header and gives the object URL back on cleanup", ()
 });
 
 test("the inline-image set matches what the backend actually serves inline", () => {
-  // Two lists in two languages. The frontend list decides what becomes an <img>; the backend map
-  // decides what the route serves inline at all, and everything else comes back as a download card.
   const served = BACKEND.slice(
     BACKEND.indexOf("_SANDBOX_MEDIA_TYPES = {"),
     BACKEND.indexOf("_SANDBOX_MEDIA_TYPES = {") >= 0
@@ -174,7 +154,6 @@ test("a non-image stays a download card, and a scheme-carrying src is left alone
   assert.equal(sandboxFileForSrc("diagram.svg"), null);
   assert.equal(sandboxFileForSrc("/assets/logo.png"), null);
   assert.equal(sandboxFileForSrc("//img.example.com/x.png"), null);
-  // The sid segment and the `?session=` form both go in the bin: the caller re-derives the session.
   assert.equal(
     sandboxFileForSrc("/api/inference/sandbox/_/loss%20curve%20%231.png?session=session%2Fid"),
     "loss curve #1.png",
@@ -182,10 +161,7 @@ test("a non-image stays a download card, and a scheme-carrying src is left alone
 });
 
 test("the img restatement keeps what the wholesale replacement silently dropped", () => {
-  // Registering `img` replaces Streamdown's renderer WHOLESALE, so some of its lines live here by name.
-  // The LOADED/SIZED gating machinery deliberately does NOT: a sandbox image is hidden until the authed
-  // fetch lands and fetch state already drives visibility, so nothing here needs a decode gate. What IS
-  // kept is what carries no machinery -- string checks, because that renderer is minified.
+  // Registering img replaces Streamdown's renderer wholesale, so some of its checks live here.
   assert.ok(
     MARKDOWN_TEXT.includes('data-streamdown="image"'),
     "the <img> itself carries the attribute (wrapper and fallback had it; img silently did not)",

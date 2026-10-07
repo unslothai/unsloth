@@ -19,8 +19,7 @@ const pickers = readSource(
 );
 
 test("the delete action forwards the redacted cache reference first", () => {
-  // Redaction nulls `cache_path` and answers with `cache_ref`; a delete that reads only the
-  // path sends nothing and the server reselects whichever duplicate ranks first.
+  // Redaction nulls `cache_path` and answers with `cache_ref`.
   const deleteCall = card.text.slice(card.text.indexOf("await deleteCachedModel("));
   const args = deleteCall.slice(0, deleteCall.indexOf(");"));
   const referenceAt = args.indexOf("deleteTargetVariant?.cache_ref");
@@ -44,9 +43,6 @@ test("the variant model declares cache_ref, so the reference survives parsing", 
 });
 
 test("a logical quant delete carries the copy its own row was listed in", () => {
-  // The server re-resolves a quant-level delete that carries no copy, and that resolution
-  // cannot see the scoped companion readiness the online listing ranked duplicates by, so the
-  // row's own cache path is the only thing that keeps the delete on the advertised copy.
   const expanderCall = pickers.text.match(
     /await onDeleteVariant\(v\.quant, v\.cache_ref \?\? v\.cache_path\)/,
   );
@@ -102,9 +98,6 @@ test("the delete preview accepts the copy so it measures that one", () => {
 
 
 test("a redacted listing keeps the copy on the picker rows and their previews", () => {
-  // Redaction nulls `cache_path` and answers with `cache_ref`. A row that reads only the path
-  // sends nothing, and the server then ranks duplicates itself, which cannot see the scoped
-  // readiness the listing ranked them by.
   const chatTypes = readSource("../src/features/chat/types/api.ts");
   const declaration = chatTypes.source.statements.find(
     (node): node is ts.InterfaceDeclaration =>
@@ -119,7 +112,6 @@ test("a redacted listing keeps the copy on the picker rows and their previews", 
     `the chat variant model must declare cache_ref: ${fields.join(", ")}`,
   );
 
-  // The picker rows: expander, sole quant, and the pinned copy the validation listing resolved.
   assert.match(
     pickers.text,
     /await onDeleteVariant\(v\.quant, v\.cache_ref \?\? v\.cache_path\)/,
@@ -148,8 +140,6 @@ test("a redacted listing keeps the copy on the picker rows and their previews", 
 });
 
 test("the disk card previews the copy its delete sends", () => {
-  // The delete already preferred the reference; the preview above it did not, so an API-key
-  // caller was shown another duplicate's reclaimed bytes.
   const preview = card.text.slice(card.text.indexOf("const deleteImpact = useDeleteImpact("));
   const args = preview.slice(0, preview.indexOf(");"));
   assert.match(

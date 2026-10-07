@@ -57,10 +57,6 @@ function Item({
   );
 }
 
-/**
- * The Library's project menu, for the project's home and the Projects page. With onNewChat it
- * opens with it and the folder, as in the Library; the home puts the folder under Export.
- */
 export function ProjectMenuItems({
   project,
   chatCount,
@@ -128,7 +124,6 @@ export function ProjectMenuItems({
         <span>{t(favorite ? "library.menu.removeFromFavorites" : "library.menu.addToFavorites")}</span>
       </DropdownMenuItem>
       <DropdownMenuSeparator />
-      {/* Sections only: projects never nest. */}
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
           <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />

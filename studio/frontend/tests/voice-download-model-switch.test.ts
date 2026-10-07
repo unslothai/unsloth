@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Switching straight from one dictation download to another must restart the
-// estimator, or the new run is priced over the old one's samples: a 5 MB/s
-// download reads as 200 MB/s with 20s left. appendSample cannot save it either,
-// since a resumed model can start above where the last one stopped.
-//
-// Voice settings used to keep its own estimator, reset by watching the model
-// name. That copy is gone: the shared manager owns the only estimator and gets
-// the property structurally, since samples live on the per-job runtime and
-// another model is another job. The second test pins what the reset is worth.
+// Switching dictation downloads must restart the estimator; the shared manager does it
+// structurally since another model is another job.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -28,12 +21,10 @@ const voiceTabSource = readSrc("features/settings/tabs/voice-tab.tsx");
 
 test("each download's samples belong to its own job, not to the tab", () => {
   const pollLoopSource = readSrc("features/hub/download-manager/poll-loop.ts");
-  // Empty per job, so a second model cannot inherit the first one's samples.
   assert.ok(
     /speedSamples:\s*\[\]/.test(pollLoopSource),
     "each job runtime should start with its own empty sample buffer",
   );
-  // And voice settings must not grow a second estimator back.
   const voiceTabSource = readSrc("features/settings/tabs/voice-tab.tsx");
   for (const gone of ["computeTransferStats", "appendSample", "downloadSamplesRef"]) {
     assert.ok(
@@ -43,7 +34,6 @@ test("each download's samples belong to its own job, not to the tab", () => {
   }
 });
 
-// What that guard is worth: the same two downloads, with and without the reset.
 test("a new model's rate is not priced over the previous model's samples", () => {
   const published = (reset: boolean) => {
     const samples: TransferSample[] = [];
@@ -56,10 +46,8 @@ test("a new model's rate is not priced over the previous model's samples", () =>
       const stats = computeTransferStats(samples, total);
       rate = stats.stable ? stats.rateBytesPerSecond : 0;
     };
-    // A fast model finishes 4 GB at 200 MB/s.
     for (let t = 0; t <= 20; t += 1) poll("A", t * 200 * MB, 4_000 * MB, t);
-    // Then a slow one resumes from its own 4 GB partial at 5 MB/s. Its counter
-    // starts at or above where the last one stopped, so nothing regresses.
+    // The resumed counter starts above the last one's end, so nothing regresses to trigger a reset.
     let worst = 0;
     for (let t = 21; t <= 30; t += 1) {
       poll("B", 4_000 * MB + (t - 21) * 5 * MB, 8_000 * MB, t);

@@ -30,7 +30,6 @@ import { useState } from "react";
 import type { FolderSyncJob, LinkedFolderScope } from "../types/rag";
 import { useLinkedFolders } from "./use-linked-folders";
 
-/** Grouped folder card, shared with the create project dialog. */
 export const FOLDER_CARD_CLASS =
   "overflow-hidden rounded-[16px] border border-border bg-background dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))]";
 export const FOLDER_ROW_CLASS =
@@ -64,8 +63,6 @@ export function LinkedFoldersManager({
 }: {
   scope?: LinkedFolderScope;
   compact?: boolean;
-  /** "panel" is the settings-style block with its own heading and Link folder button. "card" is
-   *  the grouped list a dialog shows: one row per folder, an Add folder row at the foot of it. */
   variant?: "panel" | "card";
   onSourcesChanged?: () => void;
 }) {
@@ -75,7 +72,6 @@ export function LinkedFoldersManager({
     name: string;
   } | null>(null);
 
-  /** Whether the folder has a sync in flight, which is what the row reports while it does. */
   function runningJob(folderId: string): FolderSyncJob | undefined {
     const job = manager.jobs[folderId];
     return job?.status === "pending" || job?.status === "running"
@@ -83,8 +79,6 @@ export function LinkedFoldersManager({
       : undefined;
   }
 
-  /** The row's own actions, identical in both layouts: a card row's "×" would have to drop three
-   *  of them, and syncing a folder by hand is the reason most people open this list. */
   function folderMenu(folder: (typeof manager.folders)[number], running: boolean) {
     return (
       <DropdownMenu>
@@ -138,7 +132,6 @@ export function LinkedFoldersManager({
     );
   }
 
-  /** The confirmation the destructive unlink opens. Mounted by whichever layout rendered. */
   const removeIndexConfirm = (
     <AlertDialog
       open={removeIndexFolder !== null}
@@ -172,8 +165,6 @@ export function LinkedFoldersManager({
     </AlertDialog>
   );
 
-  // One grouped card: the folders, then the row that adds another. A dialog has a name field
-  // above it in the same shape, so the two read as one stack rather than a panel inside a panel.
   if (variant === "card") {
     const rowClass = FOLDER_ROW_CLASS;
     return (
@@ -190,8 +181,6 @@ export function LinkedFoldersManager({
               const running = runningJob(folder.id) !== undefined;
               const failed =
                 folder.status === "error" || job?.status === "failed";
-              // A settled row is its name alone, the way a list of folders reads. The detail line
-              // is for the states that need one; what is indexed stays on the row's tooltip.
               const detail = running
                 ? jobSummary(job as FolderSyncJob)
                 : failed
@@ -245,8 +234,7 @@ export function LinkedFoldersManager({
               type="button"
               disabled={!manager.desktopSupported || manager.mutating}
               onClick={() => void manager.link()}
-              // Named for what it does; the title is the tooltip saying why it cannot, which
-              // would otherwise be read out as the row's name.
+              // The title is the tooltip saying why it is disabled, which would otherwise be read as the name.
               aria-label="Add folder"
               title={
                 manager.desktopSupported
@@ -271,8 +259,6 @@ export function LinkedFoldersManager({
             </button>
           ) : null}
         </div>
-        {/* Only where it changes what the row above can do: in the browser build there is no
-            native folder picker, and the rows already linked keep syncing regardless. */}
         {!manager.desktopSupported ? (
           <p className="px-1 text-ui-11 text-muted-foreground">
             Linking a folder needs the managed desktop backend. Folders already

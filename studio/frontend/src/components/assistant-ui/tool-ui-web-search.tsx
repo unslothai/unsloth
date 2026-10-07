@@ -42,9 +42,7 @@ const RE_BLOCK_SEP = /\n---\n/;
 const RE_TITLE = /Title:\s*(.+)/;
 const RE_URL = /URL:\s*(.+)/;
 const RE_SNIPPET = /Snippet:\s*(.+)/s;
-// Mirrors _normalize_url_scheme: a dotted host, optionally followed by a port
-// that may be empty ("example.com:" fetches on the default port) but otherwise
-// has to be in range, so the card names a host only when the backend fetches it.
+// Mirrors _normalize_url_scheme so the card names a host only when the backend fetches it.
 const RE_BARE_HOST =
   /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?::(\d{0,5}))?(?:[/?#]|$)/;
 
@@ -56,10 +54,7 @@ function isBareHostFetchedAsHttps(value: string): boolean {
   return Number(port) >= 1 && Number(port) <= 65535;
 }
 
-/**
- * Reject non-http(s) URLs. Web-search/fetch output is provider-controlled,
- * so hostile `javascript:` / `data:` lines must not reach a Source <a href>.
- */
+/** Provider-controlled output: `javascript:` / `data:` must not reach an <a href>. */
 function isSafeHttpUrl(raw: string): boolean {
   const value = raw.trim();
   if (!value || /[\r\n]/.test(value)) return false;
@@ -100,12 +95,10 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   status,
   toolCallId,
 }) => {
-  // Coerced, like image_queries below: a local model routinely emits a number or an
-  // object here, and .trim() on one crashes the card that was meant to show the call.
+  // Coerced: local models emit numbers or objects here, and .trim() would crash the card.
   const query = toolArgText((args as { query?: unknown })?.query);
   const url = toolArgText((args as { url?: unknown })?.url).trim();
-  // gpt-5.x agentic search: `open_page` carries a url, `find_in_page` a url and a pattern. Older
-  // streams send neither, so a url with a pattern is the same call by shape.
+  // gpt-5.x open_page/find_in_page; older streams omit them, so match a url+pattern by shape.
   const pattern = toolArgText((args as { pattern?: unknown })?.pattern);
   const actionType = toolArgText(
     (args as { action_type?: unknown })?.action_type,
@@ -125,8 +118,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
     !isUrlFetch && !isFindInPage && !query.trim() && imageQueries.length > 0;
   // The header speaks for the result: a call that found nothing must not claim it did.
   const foundImages = isSearchImagesToolResult(result);
-  // new URL() throws on the bare hosts the backend fetches, so mirror that
-  // grammar or the card names no host for exactly the URLs it does fetch.
+  // new URL() throws on the bare hosts the backend fetches, so mirror that grammar.
   const bareUrl = url.startsWith("//") ? url.slice(2) : url;
   const candidateUrl = isBareHostFetchedAsHttps(bareUrl)
     ? `https://${bareUrl}`
@@ -151,7 +143,6 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
   const images = withImages ? result.webImages : [];
   const sources = resultText ? parseSearchResults(resultText) : [];
 
-  // Collapse when LLM starts generating text after the tool call
   const hasText = useAuiState(({ message }) =>
     message.content.some(
       (p) =>
@@ -160,8 +151,7 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
         (p as { text: string }).text.length > 0,
     ),
   );
-  // Ask permission gates every local tool call, and what is being approved
-  // lives inside the content while Allow/Deny render outside it.
+  // What is being approved lives inside the content, while Allow/Deny render outside it.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const [open, setOpen] = useToolActivityOpen(isRunning, hasText);
 
@@ -234,16 +224,13 @@ const WebSearchToolUIImpl: ToolCallMessagePartComponent = ({
           </div>
         ) : (
           <div className="flex flex-col gap-2">
-            {/* The page a url action read. Above the body rather than inside one
-            branch: the terminal citation backfill can replace this card's result
-            with the run's sources, and the card must still name what it opened. */}
+            {/* Above the body: the citation backfill can replace this card's result with the run's sources. */}
             {safeUrl ? (
               <a
                 href={safeUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                // Same as the Source pills below: a bare target="_blank" does
-                // nothing in the Desktop webview, so hand the url to the opener.
+                // A bare target="_blank" does nothing in the Desktop webview; hand the url to the opener.
                 onClick={(e) => {
                   if (openLink(safeUrl)) {
                     e.preventDefault();

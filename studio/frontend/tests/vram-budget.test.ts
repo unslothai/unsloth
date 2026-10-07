@@ -27,8 +27,7 @@ const {
 const VRAM_BUDGET = readSrc("features/settings/api/vram-budget.ts");
 
 test("percent and fraction round-trip exactly across the whole range", () => {
-  // Every stop the slider can land on: a value that does not survive the trip
-  // reads as "changed" and re-saves itself on every remount.
+  // A value that does not survive the round trip reads as changed and re-saves on every remount.
   const steps = Math.round(
     (VRAM_BUDGET_PERCENT_MAX - VRAM_BUDGET_PERCENT_MIN) /
       VRAM_BUDGET_PERCENT_STEP,
@@ -52,8 +51,6 @@ test("a tenth of a percent survives the trip to the backend and back", () => {
 });
 
 test("the default fraction is exactly 0.97, not a float-drifted neighbour", () => {
-  // A drifted 0.9700000000000001 never equals the backend default, so the UI would
-  // show the budget as changed after a drag that ended where it began.
   assert.equal(vramPercentToFraction(VRAM_BUDGET_PERCENT_DEFAULT), 0.97);
   assert.equal(vramFractionToPercent(0.97), VRAM_BUDGET_PERCENT_DEFAULT);
 });
@@ -66,7 +63,6 @@ test("the bounds mirror the backend range", () => {
 });
 
 test("fractionToPercent rounds rather than truncating", () => {
-  // A value set through UNSLOTH_VRAM_FRACTION need not land on the grid.
   assert.equal(vramFractionToPercent(0.8555), 85.6);
   assert.equal(vramFractionToPercent(0.8554), 85.5);
 });
@@ -76,11 +72,8 @@ test("percentToFraction tolerates an off-grid slider value", () => {
   assert.equal(vramPercentToFraction(90.46), 0.905);
 });
 
-// The component cannot be mounted here (no DOM, and renderToStaticMarkup never
-// runs effects), so the unmount contract is asserted against the source, as the
-// chat-adapter tests do. The bug it guards: clearing the timer without sending the
-// pending fraction discarded a drag followed within 400ms by Run, the Advanced
-// toggle or closing the panel, and the server-wide budget lives nowhere else.
+// Source-level (no DOM). Unmount must flush the pending fraction, not just clear the timer:
+// the server-wide budget lives nowhere else.
 const pageSource = readSrc(
   "features/model-picker/components/model-config-page.tsx",
 );
@@ -101,9 +94,7 @@ test("unmount flushes the pending budget save instead of dropping it", () => {
     cleanupStart,
     row.indexOf("\n    [],\n  );", cleanupStart),
   );
-  // Still cancels the timer, so no callback fires against a torn-down view...
   assert.match(cleanup, /clearTimeout\(saveTimer\.current\)/);
-  // ...but the value the user set is sent rather than discarded.
   assert.match(cleanup, /flushVramBudgetSave\(\)/);
   // Fire-and-forget: the component is gone, so no response may reach its state.
   assert.doesNotMatch(cleanup, /\.then\(setSettings\)/);
@@ -114,14 +105,12 @@ test("commit stages the fraction before arming the debounce", () => {
   const commitStart = row.indexOf("const commit = (next: number) => {");
   assert.ok(commitStart >= 0, "commit is gone");
   const commit = row.slice(commitStart);
-  // Staged before the timer, so an unfinished drag still has a value to flush.
   assert.ok(
     commit.indexOf("stageVramBudgetSave(vramPercentToFraction(next))") <
       commit.indexOf("setTimeout("),
     "the fraction must be staged before the debounce is armed",
   );
-  // The debounced save uses the same flush, which clears the staged value as it
-  // sends, so unmount cannot re-send a save that already happened.
+  // The flush clears the staged value as it sends, so unmount cannot re-send it.
   const timer = commit.slice(commit.indexOf("setTimeout("));
   assert.match(timer, /flushVramBudgetSave\(\)/);
   assert.doesNotMatch(timer, /updateVramBudgetSettings\(/);
@@ -131,7 +120,6 @@ test("the staged fraction is held outside the component that unmounts", () => {
   // The row unmounts on Run, so a ref inside it cannot be read by the load.
   assert.match(VRAM_BUDGET, /export function stageVramBudgetSave/);
   assert.match(VRAM_BUDGET, /export function flushVramBudgetSave/);
-  // Cleared as it sends, so two flushes cannot write the same edit twice.
   const flush = VRAM_BUDGET.slice(
     VRAM_BUDGET.indexOf("export function flushVramBudgetSave"),
   );
@@ -140,13 +128,11 @@ test("the staged fraction is held outside the component that unmounts", () => {
       flush.indexOf("updateVramBudgetSettings(fraction)"),
     "the flush must clear the staged value before sending it",
   );
-  // Nothing staged must stay cheap for the caller: null, not a resolved promise.
   assert.match(flush, /fraction === null \? null :/);
 });
 
 test("Run waits for a staged budget save before starting the load", () => {
-  // The control promises the budget applies on the next load, but if Run stages
-  // the load while the PUT is open, that load uses the old fraction.
+  // If Run stages the load while the PUT is open, the load uses the old fraction.
   const handlerStart = pageSource.indexOf("const handleRun = () => {");
   assert.ok(handlerStart >= 0, "handleRun is gone");
   const handler = pageSource.slice(
@@ -159,7 +145,6 @@ test("Run waits for a staged budget save before starting the load", () => {
     flushAt < handler.indexOf("onRun(effectiveLoadConfig"),
     "the flush must come before the load is staged",
   );
-  // A failed save must not swallow the load.
   assert.match(handler, /\.finally\(\(\) => \{/);
 });
 
@@ -179,8 +164,7 @@ test("Run reports a rejected budget flush instead of voiding it", () => {
     pageSource.indexOf("\n  };", handlerStart),
   );
   const flush = handler.slice(handler.indexOf("settleVramBudgetSave()"));
-  // finally alone re-rejects into an unhandled rejection, and the load proceeds
-  // on the old fraction with nothing said.
+  // finally alone re-rejects into an unhandled rejection.
   assert.ok(
     flush.indexOf(".catch(") < flush.indexOf(".finally("),
     "the rejection must be handled before finally starts the load",
@@ -189,8 +173,7 @@ test("Run reports a rejected budget flush instead of voiding it", () => {
 });
 
 test("budget writes are serialised and only the newest publishes", () => {
-  // Two debounced saves can overlap on a slow link; out-of-order responses would
-  // let the older edit win both the row and the stored value.
+  // Overlapping saves could resolve out of order and let the older edit win.
   assert.match(VRAM_BUDGET, /vramBudgetWriteChain/);
   assert.match(VRAM_BUDGET, /vramBudgetWriteGeneration/);
   const update = VRAM_BUDGET.slice(
@@ -200,13 +183,11 @@ test("budget writes are serialised and only the newest publishes", () => {
     update,
     /generation === vramBudgetWriteGeneration\s*\?\s*publishVramBudget/,
   );
-  // A failed save must not strand every later one behind it.
   assert.match(update, /vramBudgetWriteChain = write\.catch/);
 });
 
 test("Run also waits for a save the debounce already sent", () => {
-  // Pause past the 400 ms debounce, then click Load: nothing is staged any more,
-  // but the PUT is still open and the load would use the fraction it replaces.
+  // After the debounce nothing is staged but the PUT may still be open.
   const settle = VRAM_BUDGET.slice(
     VRAM_BUDGET.indexOf("export function settleVramBudgetSave"),
   );
@@ -215,7 +196,6 @@ test("Run also waits for a save the debounce already sent", () => {
     settle,
     /vramBudgetWritesOpen > 0 \? vramBudgetNewestWrite : null/,
   );
-  // The counter has to come back down however the write ends.
   assert.match(
     VRAM_BUDGET,
     /\.finally\(\(\) => \{\s*vramBudgetWritesOpen -= 1;/,
@@ -223,8 +203,7 @@ test("Run also waits for a save the debounce already sent", () => {
 });
 
 test("a read waits behind an open write", () => {
-  // A remount right after a flushed drag can read before the PUT commits and
-  // answer after it, repainting the row with the value the server just replaced.
+  // A remount read can start before the PUT commits and answer after it.
   const read = VRAM_BUDGET.slice(
     VRAM_BUDGET.indexOf("export async function loadVramBudgetSettings"),
   );
@@ -238,11 +217,8 @@ test("a read waits behind an open write", () => {
 
 test("the budget reads as a percentage and steps in tenths", () => {
   const row = vramBudgetRowSource();
-  // Without the suffix, 97 sits between controls measured in layers and tokens
-  // and reads as neither.
   assert.match(row, /displayValue=\{`\$\{percent\}%`\}/);
   assert.match(row, /step=\{VRAM_BUDGET_PERCENT_STEP\}/);
-  // The shared slider defaults to whole steps, so the other callers are untouched.
   const slider = pageSource.slice(
     pageSource.indexOf("function AdvancedGpuSlider"),
   );
@@ -250,9 +226,7 @@ test("the budget reads as a percentage and steps in tenths", () => {
 });
 
 test("a failed save is re-staged, but never over a newer edit", () => {
-  // The flush clears the staged value as it sends, so without putting it back the
-  // control shows a fraction the server never took. It goes back only while it is
-  // still the newest intent.
+  // The flush cleared the staged value, so a failure restores it while it is still the newest intent.
   const update = VRAM_BUDGET.slice(
     VRAM_BUDGET.indexOf("export function updateVramBudgetSettings"),
   );
@@ -265,21 +239,17 @@ test("a failed save is re-staged, but never over a newer edit", () => {
     /generation === vramBudgetWriteGeneration && stagedVramBudgetFraction === null/,
   );
   assert.match(rejection, /stageVramBudgetSave\(fraction\);/);
-  // Still rejects, so the caller can report it.
   assert.match(rejection, /throw error;/);
 });
 
 test("the reload notice is refreshed once a load finishes", () => {
   const row = vramBudgetRowSource().replace(/\s+/g, " ");
-  // reloadRequired describes the running child. In the sidebar editor nothing
-  // remounts this row on a reload, so without a refetch the notice kept asking for
-  // a reload the user had just done.
+  // Nothing remounts this row on a reload in the sidebar editor, so it must refetch.
   assert.match(
     row,
     /const modelLoading = useChatRuntimeStore\(\(s\) => s\.modelLoading\)/,
   );
-  // Falling edge only: a read taken during the load answers about the child being
-  // replaced, and would re-arm the very notice it is meant to clear.
+  // Falling edge only: a read during the load describes the child being replaced.
   assert.match(
     row,
     /const finished = wasModelLoading\.current && !modelLoading; wasModelLoading\.current = modelLoading;/,
@@ -290,8 +260,7 @@ test("the reload notice is refreshed once a load finishes", () => {
 test("Run waits out the budget save without starting two loads", () => {
   const run = pageSource.slice(pageSource.indexOf("const handleRun = () => {"));
   const body = run.slice(0, run.indexOf("\n  return (")).replace(/\s+/g, " ");
-  // The click is answered by a PUT, so the button stays live for a round trip. A
-  // second click would settle the same chain again and call onRun twice.
+  // A second click during the PUT would settle the chain again and call onRun twice.
   assert.match(body, /if \(budgetSettling\) \{ return; \}/);
   assert.match(body, /setBudgetSettling\(true\);/);
   assert.match(body, /setBudgetSettling\(false\); onRun\(/);
@@ -306,17 +275,13 @@ test("a save that fails during Run is dropped, not left to race the load", () =>
   const rejection = run
     .slice(run.indexOf("void stagedBudget"))
     .replace(/\s+/g, " ");
-  // onRun tears the picker down, and that unmount flushes whatever is staged. A
-  // re-staged retry would therefore PUT alongside the load request this click is
-  // sending, and either fraction could size the child.
+  // onRun's teardown flushes staged values, so a re-staged retry would race the load request.
   assert.match(rejection, /dropVramBudgetRetry\(\); toast\.error\(/);
 });
 
 test("only the retry is dropped, never a newer edit staged over it", () => {
   const flat = VRAM_BUDGET.replace(/\s+/g, " ");
-  // Run drops the failed fraction so it cannot race the load, but a drag landing
-  // during that PUT stages a newer one, and dropping that would discard the edit
-  // the user is looking at.
+  // A drag landing during that PUT stages a newer value that must not be dropped.
   assert.match(flat, /stagedVramBudgetSequence \+= 1;/);
   assert.match(
     flat,
@@ -330,10 +295,8 @@ test("only the retry is dropped, never a newer edit staged over it", () => {
 
 test("a post-load read is not answered by one taken before the load finished", () => {
   const flat = VRAM_BUDGET.replace(/\s+/g, " ");
-  // reloadRequired describes the running child, so an in-flight GET answers about
-  // the child being replaced; sharing it republishes the stale notice.
+  // An in-flight GET describes the child being replaced, so a forced read must not share it.
   assert.match(flat, /if \(options\.force\) \{[^}]*inFlightVramBudget = null;/);
-  // The displaced read must not then clear the newer handle on its way out.
   assert.match(
     flat,
     /if \(inFlightVramBudget === read\) \{ inFlightVramBudget = null;/,
@@ -345,9 +308,7 @@ test("a post-load read is not answered by one taken before the load finished", (
 test("the budget closes while Run settles it, instead of racing the load", () => {
   const run = pageSource.slice(pageSource.indexOf("const handleRun = () => {"));
   const body = run.slice(0, run.indexOf("\n  return (")).replace(/\s+/g, " ");
-  // Settling again in a loop only shrinks the window: an edit made during the last
-  // attempt is still staged when onRun tears the picker down and flushes it
-  // alongside the load request. Closing the control closes the window.
+  // Looping the settle only shrinks the race window; locking the control closes it.
   assert.match(
     body,
     /setVramBudgetLocked\(true\); const stagedBudget = settleVramBudgetSave\(\);/,
@@ -356,7 +317,6 @@ test("the budget closes while Run settles it, instead of racing the load", () =>
     body,
     /setVramBudgetLocked\(false\); setBudgetSettling\(false\); onRun\(/,
   );
-  // Nothing staged means nothing to wait for, so the control never closes.
   assert.match(body, /setVramBudgetLocked\(false\); onRun\(/);
   const row = vramBudgetRowSource().replace(/\s+/g, " ");
   assert.match(
@@ -368,8 +328,7 @@ test("the budget closes while Run settles it, instead of racing the load", () =>
 
 test("a stored budget can be cleared back to the inherited one", () => {
   const row = vramBudgetRowSource().replace(/\s+/g, " ");
-  // Stored beats UNSLOTH_VRAM_FRACTION, so without this the first drag masks the
-  // variable for good: dragging back to the same number stores that number.
+  // Stored beats UNSLOTH_VRAM_FRACTION, so a reset is the only way back to the env value.
   assert.match(row, /\{settings\.isStored && \( <button/);
   assert.match(row, /updateVramBudgetSettings\(null\)/);
   // A queued drag would otherwise store back what the reset just cleared.
@@ -380,8 +339,7 @@ test("a stored budget can be cleared back to the inherited one", () => {
 });
 
 test("Reload is reachable when only the server-wide budget changed", () => {
-  // The budget is on no per-model field, so the page stays at its baseline and the
-  // button stayed disabled while the row asked for a reload.
+  // The budget is on no per-model field, so the page baseline never changes.
   assert.match(
     pageSource.replace(/\s+/g, " "),
     /isActiveModel && atBaseline && !rememberChanged && !budgetReloadRequired/,
@@ -393,9 +351,7 @@ test("Reload is reachable when only the server-wide budget changed", () => {
 });
 
 test("a read displaced by a forced one does not publish", () => {
-  // Clearing the handle is not enough: the displaced GET still resolves, and it
-  // describes the child being replaced, so publishing would restore the notice and
-  // the Reload button that the forced read had just cleared.
+  // The displaced GET still resolves for the old child, so it must not publish.
   assert.match(
     VRAM_BUDGET.replace(/\s+/g, " "),
     /if \( inFlightVramBudget !== read \|\|/,
@@ -404,9 +360,7 @@ test("a read displaced by a forced one does not publish", () => {
 
 test("settling before a load hears about the write that failed", () => {
   const flat = VRAM_BUDGET.replace(/\s+/g, " ");
-  // The chain swallows rejections so one failed save cannot strand the ones behind
-  // it, so a Run waiting on the chain was told the save succeeded and never
-  // dropped the retry, which the teardown then flushed against the load.
+  // The chain swallows rejections, so Run must observe the save's own result.
   assert.match(
     flat,
     /vramBudgetWritesOpen > 0 \? vramBudgetNewestWrite : null/,
@@ -419,9 +373,7 @@ test("settling before a load hears about the write that failed", () => {
 
 test("a read does not repaint over a write issued while it was in the air", () => {
   const flat = VRAM_BUDGET.replace(/\s+/g, " ");
-  // Waiting behind the writes open at read time says nothing about a save made
-  // while the GET is in the air; that PUT can publish first and the late GET would
-  // then restore the fraction the server no longer holds.
+  // A PUT made while the GET is in the air can publish first; the generation detects it.
   assert.match(flat, /const generationAtRead = vramBudgetWriteGeneration;/);
   assert.match(
     flat,
@@ -430,9 +382,7 @@ test("a read does not repaint over a write issued while it was in the air", () =
 });
 
 test("Manual with automatic layers still shows the budget", () => {
-  // --fit-target carries the budget into that mode, and the launched fraction is
-  // recorded for it, so hiding the row left a model loaded under an older budget
-  // with neither the notice nor a way to reload.
+  // --fit-target carries the budget into that mode, so the row must stay visible there.
   assert.match(
     pageSource.replace(/\s+/g, " "),
     /\{!isDiffusion && \(!isManual \|\| autoLayers\) && gpuDevices\.length > 0 && \( <VramBudgetRow \/> \)\}/,
@@ -440,14 +390,10 @@ test("Manual with automatic layers still shows the budget", () => {
 });
 
 test("a superseded read is refused, not handed back to the caller", () => {
-  // Holding back the publish is not enough: the row applies the return value with
-  // setSettings, so a read overtaken by a save would put back the isStored and
-  // reloadRequired that save had just changed. Null is already this function's
-  // "no usable answer", which every caller treats as keep what you have.
+  // The row applies the return value, so an overtaken read must return null, not stale settings.
   const flat = VRAM_BUDGET.replace(/\s+/g, " ");
   assert.match(flat, /throw new Error\("superseded"\); \}/);
-  // The binding is optional: one caller inspects the error to tell an absent route from
-  // a failed read, and the contract for everyone else is still null.
+  // One caller inspects the error to tell an absent route from a failed read.
   assert.match(
     flat,
     /try \{ return await inFlightVramBudget; \} catch( \(error\))? \{/,

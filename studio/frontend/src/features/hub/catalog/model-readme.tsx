@@ -450,8 +450,7 @@ export function ModelReadme({
   }, [repoId, kind, hfToken, stateKey, online]);
 
   useEffect(() => {
-    // Plugin assembly is synchronous, so it runs regardless of connectivity: a
-    // body served from the README cache while offline still clears the preparing gate.
+    // Runs offline too: a cached README body must still clear the preparing gate.
     if (!current.body || current.loading || current.error || current.plugins) {
       return;
     }

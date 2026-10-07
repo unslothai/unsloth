@@ -33,7 +33,6 @@ const LEGACY_SNAPSHOT = {
   systemVariables: "",
   fastMode: false,
 };
-/** The global row the legacy snapshot was written beside. */
 const LEGACY_GLOBAL = {
   temperature: 0.6,
   topP: 0.95,
@@ -49,10 +48,7 @@ const BUILTIN_DEFAULT = {
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Stage what the server holds and drop the writes recorded so far. Staged GETs are
- * cleared too unless `keepReads`: a leftover response answers the next hydration.
- */
+/** Staged GETs are cleared unless keepReads: a leftover answers the next hydration. */
 function seedSettings(
   settings: Record<string, unknown>,
   options: { keepReads?: boolean } = {},
@@ -910,8 +906,7 @@ test("migration follows the reasoning mode established by the loaded model", asy
     reasoningEnabled: false,
     settingsHydrated: true,
   }));
-  // An actual load, as the test name says: a status refresh only echoes the
-  // toggle already in the store and must not outrank the persisted one.
+  // A status refresh only echoes the store toggle and must not outrank the persisted one.
   noteLoadedModelReasoningMode(QWEN38, false, true);
 
   const active = useChatRuntimeStore.getState();
@@ -981,11 +976,7 @@ test("routine model-default refreshes skip migration reads without a candidate",
   assert.equal(settingsHttp.gets, 0);
 });
 
-// A transient PUT failure must not wedge the migration permanently. Ordering
-// against an undrained write is deliberately not a guarantee: the confirming
-// GET reads whatever the server actually holds, and the compare-and-set is what
-// keeps a decision made from a stale read from landing. See "a preset modified
-// during hydration is not migrated on a stale read".
+// The compare-and-set, not write ordering, keeps a stale-read decision from landing.
 test("a failed settings write does not strand the migration", async () => {
   await flushPendingChatSettings();
   settingsHttp.getResponses.length = 0;
@@ -1009,9 +1000,7 @@ test("a failed settings write does not strand the migration", async () => {
   useChatRuntimeStore.getState().setActivePresetSource("builtin-default");
   await sleep(50);
 
-  // The 503 leaves the older patch requeued. Reaching the backend merge after
-  // the CAS would restore the legacy row, so the migration has to be the last
-  // write, not merely a write that eventually happens.
+  // The migration must be the last write, or the requeued patch restores the legacy row.
   const putKeys = settingsHttp.puts.map((put) => Object.keys(put).join(","));
   const migrationIndex = putKeys.findIndex((keys) =>
     keys.includes("inferenceParamsByModel"),
@@ -1023,7 +1012,6 @@ test("a failed settings write does not strand the migration", async () => {
   );
   assert.ok(migrationIndex > lastOrdinary, "migrated behind an undrained write");
 
-  // Nor stranded: the requeued write settling rearms it in the same pass.
   settingsHttp.putFailures = [];
   await flushPendingChatSettings();
   const qwen = useChatRuntimeStore.getState();

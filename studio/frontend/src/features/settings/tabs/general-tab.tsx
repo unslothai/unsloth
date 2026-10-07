@@ -86,17 +86,13 @@ import { INTERFACE_SCALE_STORAGE_KEY } from "../stores/interface-scale-store";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
-// Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
-// would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
-// unsloth_auth_must_change_password are excluded).
+// NEVER include auth/session keys here: that would log the user out.
 const PREFS_KEYS: string[] = [
-  // Appearance
   "theme",
   "palette",
   "unsloth_appearance_customization",
   INTERFACE_SCALE_STORAGE_KEY,
   LOCALE_STORAGE_KEY,
-  // UI state
   "sidebar_pinned",
   "sidebar_width",
   "chat_settings_width",
@@ -104,17 +100,13 @@ const PREFS_KEYS: string[] = [
   LIBRARY_SETTINGS_STORAGE_KEY,
   LIBRARY_VIEW_STORAGE_KEY,
   LIBRARY_CHATS_PREFS_STORAGE_KEY,
-  // Grouping, sort and the manual row order.
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
-  // Rebound chords. Without this a reset leaves the user on shortcuts they asked to throw away, and
-  // a chord bound to something unusable has no escape hatch from this button.
+  // Rebound chords, so a bad binding has an escape hatch.
   KEYBOARD_SHORTCUTS_STORAGE_KEY,
-  // Outranks the install-wide setting, so a reset that left it behind would keep ignoring
-  // transport changes made elsewhere.
+  // Outranks the install-wide setting, so it must be cleared too.
   TRANSPORT_MODE_STORAGE_KEY,
-  // Chat runtime prefs
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
@@ -134,33 +126,22 @@ const PREFS_KEYS: string[] = [
   "unsloth_load_settings",
   "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
-  // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",
   "unsloth_chat_show_all_quantizations",
-  // The memory bar's opt-in. Reset All advertises restoring defaults and this feature's default is
-  // off, so leaving the key out left it switched on across a reset that said it had turned
-  // everything back. Spelled out rather than imported as CHAT_SHOW_MEMORY_BAR_KEY, for the same
-  // reason the note above gives: it lives in chat-runtime-store, which is in an import cycle with
-  // this file, so the constant would still be in its temporal dead zone when this module-scope list
-  // is built. A test pins this literal against the store's constant so the two cannot drift apart
-  // silently.
+  // Spelled out, not CHAT_SHOW_MEMORY_BAR_KEY: chat-runtime-store is in an import cycle with this
+  // file. A test pins this literal against the store's constant.
   "unsloth_chat_show_memory_bar",
   "unsloth_models_fit_on_device_only",
-  // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
   "unsloth_chat_system_prompts",
   "unsloth_chat_system_prompts_migrated",
-  // Training UI prefs
   "unsloth_training_config_v1",
   "unsloth_prev_max_steps",
   "unsloth_prev_save_steps",
   ...TRAINING_UI_PREFERENCE_KEYS,
-  // Profile personalization
   "unsloth_user_profile",
-  // Guided tour flags
   "tour:studio:v1",
-  // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_show_whisper_update_banner",
   "unsloth_monitor_overlay",
@@ -168,14 +149,12 @@ const PREFS_KEYS: string[] = [
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
   LOADED_MODELS_PREFERENCE_KEYS.position,
   LOADED_MODELS_PREFERENCE_KEYS.dismissed,
-  // Voice settings
   "unsloth_voice_settings",
-  // Retired keys. The onboarding wizard is gone, but installs that ran it still
-  // carry its flag, so a reset has to clear it or the orphan outlives the app.
+  // Retired keys: installs that ran the old onboarding wizard still carry its flag.
   "unsloth_onboarding_done",
 ];
 
-// Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
+// Set by resetAllPrefs so the unmount commit skips writing back the in-memory draft.
 let resetInProgress = false;
 
 function resetAllPrefs() {
@@ -248,7 +227,7 @@ export function GeneralTab() {
     draftRef.current = draftToken;
   }, [draftToken]);
 
-  // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
+  // Commit on unmount (dialog close / tab switch), skipped during reset.
   useEffect(() => {
     return () => {
       if (resetInProgress) return;
@@ -272,8 +251,7 @@ export function GeneralTab() {
     setHfToken("");
   };
 
-  // Only show the success tick after the authenticated validation endpoint confirms this token:
-  // a saved token alone may still be malformed, expired, or revoked.
+  // Only after the validation endpoint confirms the token: a saved one may be expired or revoked.
   const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
   const tokenValidation = useHfTokenValidation(hfToken ?? "");
@@ -368,7 +346,7 @@ export function GeneralTab() {
     try {
       const settings = await updatePreviewSharing(enabled);
       setPreviewSharing(settings);
-      // Toggling sharing changes whether /api/train/runs returns preview_sig, so refresh the grid.
+      // Sharing toggles whether /api/train/runs returns preview_sig.
       emitTrainingRunsChanged();
     } catch (error) {
       setPreviewSharingError(
@@ -385,7 +363,7 @@ export function GeneralTab() {
     setIsRevokingPreview(true);
     try {
       await rotatePreviewLinks();
-      // The secret rotated, so any preview_sig the history grid holds is stale.
+      // The secret rotated, so held preview_sig values are stale.
       emitTrainingRunsChanged();
       setRevokePreviewOpen(false);
       toast.success(t("settings.general.previewSharing.revoked"));
@@ -485,7 +463,6 @@ export function GeneralTab() {
                 )}
               />
               {tokenValidated ? (
-                // Decorative: pointer-events-none lets clicks reach the input underneath.
                 <span
                   className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
                   role="img"
@@ -628,7 +605,6 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
       {isOwner ? (
         <>
       <SettingsSection

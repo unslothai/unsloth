@@ -6,14 +6,11 @@ import { USER_STOPPED_KEY } from "../hooks/server-stop-intent.ts";
 import { clearNativeBrowsingData } from "./native-browser-clear.ts";
 
 export const BROWSER_ACCOUNT_KEY = "unsloth.browser-account.v1";
-/** Written before a switch publishes new tokens, so peer tabs stop sending requests until the
- * marker lands and they reload. */
+/** Written before a switch publishes new tokens, so peer tabs stop sending until the marker lands. */
 export const BROWSER_ACCOUNT_FENCE_KEY = "unsloth.browser-account.fence.v1";
-/** A peer tab holds the marker for at most this long before reloading on its own. */
 export const ACCOUNT_FENCE_TIMEOUT_MS = 10_000;
 
 let transitionPending = false;
-/** True in a peer tab between another tab's fence and its marker: requests must not go out. */
 export function accountTransitionPending(): boolean {
   return transitionPending;
 }
@@ -39,9 +36,9 @@ export const ACCOUNT_CHROME_KEYS = new Set([
 export const ACCOUNT_CHROME_PREFIXES = [
   "unsloth_web_update_dismissed:",
 ] as const;
-/** Per-tab flags about the browser session, not the account. Never add content. */
+/** Per-tab session flags, not account data. Never add content. */
 export const ACCOUNT_SESSION_CHROME_KEYS = new Set([USER_STOPPED_KEY]);
-/** Purged on an account change. Durable stores are named per account (`accountDatabaseName`). */
+/** Purged on an account change; durable stores are named per account (`accountDatabaseName`). */
 export const ACCOUNT_DATABASES = [
   // Legacy store: its one-shot import would push these threads into the next account.
   "unsloth-chat",
@@ -56,7 +53,7 @@ export type BrowserAccount = { username: string; accountId?: string | null };
 
 const ACCOUNT_ID_MARKER_PREFIX = "account:";
 
-/** Must match what `auth/storage.py` stores: casefolded `[a-z0-9_-]{3,32}`. */
+/** Must match `auth/storage.py`: casefolded `[a-z0-9_-]{3,32}`. */
 export function normalizeAccountUsername(username: string): string {
   return username.trim().toLowerCase();
 }
@@ -71,7 +68,7 @@ export function browserAccountMarker(account: BrowserAccount | string): string {
     : username;
 }
 
-/** The owner keeps the historical name; a managed account gets its own store. */
+/** The owner keeps the historical name. */
 export function accountDatabaseName(
   name: string,
   storage: Pick<Storage, "getItem"> | null = typeof window === "undefined"
@@ -103,7 +100,7 @@ function parseAccountMarker(marker: string): MarkedAccount {
   };
 }
 
-/** May the browser data carry over? The username fallback cannot tell a recreated account apart. */
+/** The username fallback cannot tell a recreated account apart. */
 function isSameAccount(previous: MarkedAccount, next: MarkedAccount): boolean {
   if (previous.accountId && next.accountId)
     return previous.accountId === next.accountId;
@@ -123,7 +120,7 @@ const IMPORTED_FONT_SELECTIONS = [
   "codeFont",
 ] as const;
 
-/** An imported font is uploaded file bytes, not chrome: strip it and any selection naming it. */
+/** An imported font is uploaded file bytes, not chrome. */
 function purgeImportedFonts(storage: Storage): void {
   const raw = storage.getItem(APPEARANCE_KEY);
   if (!raw?.includes("importedFonts")) return;
@@ -134,7 +131,6 @@ function purgeImportedFonts(storage: Storage): void {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    // Unreadable, so worthless to the store, and it still holds font bytes.
     storage.removeItem(APPEARANCE_KEY);
     return;
   }
@@ -184,19 +180,13 @@ function deleteAccountDatabase(
   });
 }
 
-/** The desktop browser panel's cookies live outside this origin's storage. A shell without the
- * panel answers neither command, so only a failed clear fails the switch. */
-
-
-/** Run before publishing new tokens; the marker is published last so other tabs reload only
- * once the new session is ready. */
+/** The marker is published last so other tabs reload only once the new session is ready. */
 export async function transitionBrowserAccount(
   account: BrowserAccount | string,
   postAuthRoute: string,
   commitSession: () => void,
   browser: AccountTransitionBrowser = window,
-  // The browser's own clear: it closes the open pages first and keeps them closed while it runs,
-  // so none writes the previous account's data back.
+  // Closes the open pages first and keeps them closed, so none writes old data back.
   clearSiteData: () => Promise<void> = clearNativeBrowsingData,
 ): Promise<boolean> {
   const marker = browserAccountMarker(account);
@@ -208,7 +198,7 @@ export async function transitionBrowserAccount(
     parseAccountMarker(marker),
   );
   if (changed) {
-    // First, as it can fail: a failure then leaves this account's data in place, not half purged.
+    // First, since it can fail: a failure then leaves this account's data intact.
     await clearSiteData();
     const keys = Array.from({ length: storage.length }, (_, index) =>
       storage.key(index),
@@ -218,7 +208,7 @@ export async function transitionBrowserAccount(
         !key ||
         key === BROWSER_ACCOUNT_KEY ||
         ACCOUNT_CHROME_KEYS.has(key) ||
-        // About this machine's install, not the account signed in to it.
+        // About this machine's install, not the account.
         key === RUNTIME_REPAIR_KEY ||
         ACCOUNT_CHROME_PREFIXES.some((prefix) => key.startsWith(prefix))
       )
@@ -234,8 +224,7 @@ export async function transitionBrowserAccount(
       ),
     );
   }
-  // Fence first: peers see it before the tokens, so nothing of the previous account goes out
-  // under the new credentials while their reload is pending.
+  // Fence before tokens so peers send nothing under the new credentials.
   if (changed) storage.setItem(BROWSER_ACCOUNT_FENCE_KEY, marker);
   commitSession();
   if (storage.getItem(BROWSER_ACCOUNT_KEY) !== marker)
@@ -268,7 +257,7 @@ export function installAccountTransitionListener(
         browser.localStorage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT,
       );
       if (isSameAccount(current, parseAccountMarker(event.newValue))) return;
-      // Stop sending until the marker arrives; a switch that never finishes still reloads.
+      // A switch that never finishes still reloads.
       transitionPending = true;
       if (fenceTimer === null) fenceTimer = setTimeout(reload, ACCOUNT_FENCE_TIMEOUT_MS);
       return;

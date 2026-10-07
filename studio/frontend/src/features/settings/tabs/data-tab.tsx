@@ -116,7 +116,7 @@ import {
   useSettingsPanelPrefsStore,
 } from "../stores/settings-panel-prefs-store";
 
-// display order, and the guard against a persisted action this build dropped.
+// Display order, and the guard against a persisted action this build dropped.
 const FINE_TUNE_ACTIONS: FineTuneAction[] = ["export", "train", "recipes"];
 
 function LibraryDataSection() {
@@ -172,7 +172,6 @@ function LibraryDataSection() {
   );
 }
 
-// Which subpage an "open the archive" request lands on.
 const SUBPAGE_FOR_SHELF = {
   chats: "archived",
   images: "archived-images",
@@ -189,11 +188,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
     (s) => s.consumeArchivedChatsRequest,
   );
   const [confirmOpen, setConfirmOpen] = useState(false);
-  // Preselected from the preference, so the dialog shows what is about to
-  // happen and can still be turned off for this one clear.
+  // Preselected from the preference but can be turned off for this one clear.
   const [deleteFilesOnClear, setDeleteFilesOnClear] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
-  // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
     | "main"
     | "archived"
@@ -209,7 +206,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const [count, setCount] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [archivedExporting, setArchivedExporting] = useState(false);
-  // Gates the archived subpage Export button.
   const { archivedItems } = useChatSidebarItems({
     requireMessages: false,
     enabled: subpage === "archived",
@@ -225,8 +221,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
-  // Chat-only hosts redirect /studio back to /chat, so loading a dataset in the Train tab would
-  // upload it and then strand the user; gate the action the same way the sidebar gates Train.
+  // Chat-only hosts redirect /studio, so a Train-tab load would strand the user.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
@@ -244,9 +239,8 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   // derived, not corrected: a stored "train" returns when chat-only flips off.
   const fineTuneAction =
     chatOnly && restoredAction === "train" ? "export" : restoredAction;
-  // Chat Completions (OpenAI messages) is the only export format we ship.
   const fineTuneFormat: FineTuneFormat = "openai";
-  // Search needs the main-page anchors even when a subpage is already open.
+  // Search needs the main-page anchors even when a subpage is open.
   useEffect(() => {
     const next = searchEntry
       ? "main"
@@ -304,8 +298,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   );
 
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  // Open chat id from the route (single thread or compare pair), mirroring
-  // ArchivedChatsView: compare panes only live in the search params.
+  // Compare panes only live in the search params, as in ArchivedChatsView.
   const openChatId = useRouterState({
     select: (s) => {
       if (!s.location.pathname.startsWith("/chat")) return undefined;
@@ -390,16 +383,13 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const [importing, setImporting] = useState(false);
   const handleImport = async (source: ImportSource) => {
     setImporting(true);
-    // A years-long export is minutes of writes, so the toast counts up rather
-    // than leaving the window looking hung.
     const toastId = toast.loading(
       t("settings.chat.importingChats", { count: 0, percent: 0 }),
     );
     try {
       const { imported, failed } = await importConversationsFromSource(
         source,
-        // This tab has no destination picker, so it chooses nothing and a backup keeps its
-        // own projects. The projects page does pick, and passes null for Recents.
+        // No destination picker here, so a backup keeps its own projects.
         undefined,
         {
           onProgress: ({ imported: done, bytesRead, totalBytes }) => {
@@ -418,7 +408,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         return;
       }
       if (imported === 0) {
-        // Nothing was created, so however the count is phrased this is a failure.
         toast.error(t("settings.chat.importFailed"), {
           id: toastId,
           description: t("settings.chat.importedChatCountPartial", { count: 0, failed }),
@@ -541,7 +530,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const handleOpenInRecipes = async () => {
     setOpeningRecipe(true);
     try {
-      // Recipe Studio and its database are not needed unless this action runs.
       const { createFineTuneRecipeFromChats } = await import(
         "../components/finetune-recipe"
       );
@@ -561,9 +549,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const handleUseInTraining = async () => {
     setLoadingTraining(true);
     try {
-      // Same deferred module as above. The training store and datasets-api it also pulls stay eager
-      // either way, since __root.tsx imports the @/features/training barrel that re-exports both;
-      // Recipe Studio is what actually leaves the startup bundle.
+      // Deferred so Recipe Studio stays out of the startup bundle; the training store is eager anyway.
       const { loadFineTuneDatasetInTrainTab } = await import(
         "../components/finetune-recipe"
       );
@@ -607,8 +593,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       });
       refreshLibraryStorage();
       const clearedCount = result.deletedThreadIds.length;
-      // A sandbox the backend could not remove, asked for or not.
-      // After a clear there is no row left to reach it from.
+      // After a clear there is no row left to reach a kept sandbox from.
       offerToDeleteKeptSandboxes(result.sandboxesKept);
       const hasFailedStore =
         result.backend === "failed" || result.legacy === "failed";
@@ -904,8 +889,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             variant="outline"
             size="sm"
             onClick={() => void handleImportClick()}
-            // A second pick mid-import would interleave two streams into one
-            // history, and on desktop it retires the running import's handle.
+            // A second import would interleave streams and, on desktop, retire the running handle.
             disabled={importing}
           >
             {importing ? (
@@ -1041,7 +1025,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           <div className="flex items-center gap-2">
             <DropdownMenu>
               <DropdownMenuTrigger asChild={true}>
-                {/* Fixed width so switching actions never resizes the row. */}
                 <Button
                   variant="outline"
                   size="sm"
@@ -1201,7 +1184,6 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         ) : null}
       </SettingsSection>
 
-      {/* Embedding model settings are installation-wide (owner-only routes). */}
       {isOwner ? <DocumentsRagSection /> : null}
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>

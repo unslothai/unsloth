@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Configure preview asks the upgrade check once per model and caches the answer,
-// because the hook behind it runs on every render. That cache used to outlive what it
-// describes: consenting to the install provisions a persistent sidecar, and returning to
-// Configure in the same session kept reading the pre-install answer, so the card went on
-// offering a release already installed and promising "QLoRA - 4-bit" for a run the new
-// overlay loads in 16-bit.
+// The cached answer must be invalidated by an install, which provisions a persistent 16-bit sidecar.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,8 +16,6 @@ import type { TransformersUpgradeCheck } from "../src/features/transformers-upgr
 
 const MODEL = "unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit";
 
-// What the check says before the install: a release to offer, and 4-bit still available
-// because the model's own code can load it on the current transformers.
 const BEFORE_INSTALL: TransformersUpgradeCheck = {
   upgrade: {
     // biome-ignore lint/style/useNamingConvention: API schema
@@ -40,8 +33,6 @@ const BEFORE_INSTALL: TransformersUpgradeCheck = {
   installBreaksExactResume: false,
 };
 
-// What it says once the install has landed: nothing left to offer, and the sidecar that
-// now routes this model trains it in 16-bit.
 const AFTER_INSTALL: TransformersUpgradeCheck = {
   upgrade: null,
   requiresTrustRemoteCode: true,
@@ -64,7 +55,6 @@ test("an install retires every answer taken before it", () => {
   writeUpgradeNoticeCache(1, before, BEFORE_INSTALL);
   assert.equal(readUpgradeNoticeCache(1, before), BEFORE_INSTALL);
 
-  // The consent flow installed the sidecar, so the store's generation moved on.
   const after = upgradeNoticeCacheKey(2, MODEL, false, null, "");
   assert.notEqual(after, before);
   assert.equal(
@@ -100,8 +90,7 @@ test("a different copy or token is still a different answer", () => {
     ),
     false,
   );
-  // A known-cached row can have a null path, and the backend still resolves the pin from
-  // the cache roots, so the flag alone is a different question about the same model.
+  // A cached row can have a null path; the backend still resolves the pin from cache roots.
   assert.equal(
     hasUpgradeNoticeCache(3, upgradeNoticeCacheKey(3, MODEL, true, null, "")),
     false,
@@ -110,11 +99,8 @@ test("a different copy or token is still a different answer", () => {
 });
 
 test("a check still in flight across the install cannot rewind the cache", () => {
-  // The pre-install check is a network round trip racing an install that takes a
-  // minute, so it can resolve after the post-install check answered. Its write must be
-  // dropped: rewinding the generation would clear the fresh entry for the stale one, and
-  // with its effect already cleaned up nothing re-asks, so Configure would show no
-  // notice for the rest of the session.
+  // A stale pre-install check can resolve after the post-install one; its write must be dropped
+  // or nothing re-asks and the notice vanishes.
   const stale = upgradeNoticeCacheKey(4, MODEL, false, null, "");
   const fresh = upgradeNoticeCacheKey(5, MODEL, false, null, "");
   writeUpgradeNoticeCache(5, fresh, AFTER_INSTALL);

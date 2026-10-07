@@ -29,7 +29,6 @@ test("folders and unsupported types are rejected", () => {
   assert.equal(isSupportedSourceName("model.gguf"), false);
 });
 
-// Leading dot means the whole name is the "extension"; treat it as no type.
 test("dotfiles are rejected", () => {
   assert.equal(isSupportedSourceName(".md"), false);
   assert.equal(isSupportedSourceName(".gitignore"), false);
@@ -40,8 +39,6 @@ test("only the last extension counts", () => {
   assert.equal(isSupportedSourceName("notes.txt.exe"), false);
 });
 
-// A drop carries whatever the user grabbed, so both halves have to survive the
-// split: the indexable files to upload, the rest to name in the toast.
 test("a mixed drop keeps the indexable files and names the rest", () => {
   const { supported, unsupported } = partitionSupported(
     ["notes.pdf", "photo.png", "readme.md", "archive.zip"],

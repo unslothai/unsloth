@@ -163,7 +163,6 @@ function Sparkline({
   const w = 120;
   const gradientId = `sparkFill-${id}`;
 
-  // Vertical padding so the stroke isn't clipped.
   const pts = values.map((v, i) => ({
     x: (i / (values.length - 1)) * w,
     y: pad + (1 - (v - min) / range) * (h - pad * 2),
@@ -253,8 +252,7 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
     useTrainingActions();
-  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel can now
-  // start and stop at any time, so refresh on click instead of polling at mount.
+  // The tunnel can start or stop any time, so resolve the copy-link base on click.
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
@@ -327,7 +325,6 @@ export function HistoryCardGrid({
     };
   }, [fetchRuns]);
 
-  // Poll while any run is "running" so cards show live progress.
   const hasRunningRun = runs.some((r) => r.status === "running");
   const visibleCount = runs.length;
   useEffect(() => {
@@ -341,7 +338,7 @@ export function HistoryCardGrid({
       try {
         const limit = Math.max(PAGE_SIZE, visibleCount);
         const result = await listTrainingRuns(limit, 0, controller.signal);
-        if (pollIdRef.current !== pid) return; // stale poll
+        if (pollIdRef.current !== pid) return;
         setRuns(result.runs);
         setTotal(result.total);
       } catch {
@@ -370,7 +367,7 @@ export function HistoryCardGrid({
         }
       }
       emitTrainingRunDeleted(deleteTarget);
-      // Re-fetch preserving visible count so "Load more" offsets stay consistent.
+      // Preserve the visible count so "Load more" offsets stay consistent.
       const currentCount = runs.length - 1;
       const limit = Math.max(PAGE_SIZE, currentCount);
       fetchRuns(0, false, limit).catch(() => {
@@ -465,7 +462,7 @@ export function HistoryCardGrid({
             run.project_name && title !== run.project_name
               ? run.project_name
               : null;
-          // Backend /p ref + its capability token. Both are required: the link 404s without the signature.
+          // The /p link 404s without the signature.
           const canCopyPreview = !!run.preview_ref && !!run.preview_sig;
           return (
             <div
@@ -609,7 +606,7 @@ export function HistoryCardGrid({
                     } catch {
                       // Fall back to the last known server URL or this origin.
                     }
-                    // Encode each segment but keep "/" so the /p route matches.
+                    // Keep "/" so the /p route matches.
                     const ref = (run.preview_ref ?? "")
                       .split("/")
                       .map(encodeURIComponent)

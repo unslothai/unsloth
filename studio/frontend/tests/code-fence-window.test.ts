@@ -16,16 +16,6 @@ import {
 
 import { readSrc } from "./helpers/kit.ts";
 
-/**
- * The line-window selection, RUN rather than described.
- *
- * Everything this decides is arithmetic over four numbers, and the thing it protects -- that a
- * fence small enough to be ordinary is NEVER windowed, and that an ordinary scroll inside a huge
- * one does not move the window -- is exactly the kind of claim a regex over the source cannot
- * make. The React side stays in `.tsx` and stays regex-tested, as `code-fence-defer.test.ts` does.
- */
-
-/** 20px lines, a 600px viewport sitting at the top of the fence: 30 lines visible, 30 overscan. */
 const geometry = (over: Partial<WindowGeometry> = {}): WindowGeometry => ({
   lineCount: 20_000,
   lineHeight: 20,
@@ -37,20 +27,15 @@ const geometry = (over: Partial<WindowGeometry> = {}): WindowGeometry => ({
 });
 
 test("a fence at or under the cap is never windowed", () => {
-  // The whole point of the cap: every fence in the benchmark corpus, and every fence anybody has
-  // ever complained about except the one in #10769, renders what main renders.
   assert.equal(selectLineWindow(geometry({ lineCount: 1 })), null);
   assert.equal(selectLineWindow(geometry({ lineCount: WINDOW_CAP_LINES })), null);
   assert.equal(selectLineWindow(geometry({ lineCount: WINDOW_CAP_LINES - 1 })), null);
-  // And an empty fence has no lines to window.
   assert.equal(selectLineWindow(geometry({ lineCount: 0 })), null);
 });
 
 test("past the cap the window covers the viewport plus one viewport each way", () => {
   const window = selectLineWindow(geometry({ viewportTop: 10_000 }));
   assert.ok(window, "a 20,000 line fence is windowed");
-  // 10,000px down at 20px a line is line 500; 600px of viewport is 30 lines; overscan is another
-  // 30 each way.
   const perViewport = 600 / 20;
   assert.equal(window.first, 500 - perViewport * OVERSCAN_VIEWPORTS);
   assert.equal(window.last, 500 + perViewport - 1 + perViewport * OVERSCAN_VIEWPORTS);
@@ -69,8 +54,6 @@ test("the window is clamped to the fence at both ends", () => {
 });
 
 test("the window is read against the viewport, not the fence, when the fence starts off screen", () => {
-  // The fence begins 5,000px ABOVE the viewport, which is what a fence part-way up a long reply
-  // looks like. Line 250 is the first on screen.
   const window = selectLineWindow(geometry({ contentTop: -5_000 }));
   assert.ok(window);
   assert.equal(window.first, 250 - 30);
@@ -79,7 +62,6 @@ test("the window is read against the viewport, not the fence, when the fence sta
 
 test("an ordinary scroll inside the window does not move it", () => {
   const previous: LineWindow = { first: 470, last: 559 };
-  // Scrolled by two lines. The visible range is still a long way inside `previous`.
   const kept = selectLineWindow(
     geometry({ viewportTop: 10_040, previous }),
   );
@@ -89,7 +71,6 @@ test("an ordinary scroll inside the window does not move it", () => {
 test("crossing the hysteresis band does move it", () => {
   const previous: LineWindow = { first: 470, last: 559 };
   const slack = Math.ceil((600 / 20) * HYSTERESIS_VIEWPORTS);
-  // Put the visible top exactly `slack` lines above `previous.first`, so the guard fails.
   const viewportTop = (previous.first - slack - 1) * 20;
   const moved = selectLineWindow(geometry({ viewportTop, previous }));
   assert.ok(moved);
@@ -98,8 +79,6 @@ test("crossing the hysteresis band does move it", () => {
 });
 
 test("hysteresis cannot pin a window that no longer covers the reader", () => {
-  // A jump: Ctrl+End, a scrollbar drag, a find-in-page hit thousands of lines away. The old window
-  // is nowhere near, so keeping it would leave the reader looking at uncoloured code indefinitely.
   const previous: LineWindow = { first: 0, last: 89 };
   const jumped = selectLineWindow(geometry({ viewportTop: 300_000, previous }));
   assert.ok(jumped);
@@ -108,7 +87,6 @@ test("hysteresis cannot pin a window that no longer covers the reader", () => {
 });
 
 test("the window itself never exceeds the cap", () => {
-  // A viewport taller than the cap: the ranges would otherwise add up to three times it.
   const window = selectLineWindow(
     geometry({
       lineCount: 40_000,
@@ -122,13 +100,10 @@ test("the window itself never exceeds the cap", () => {
     window.last - window.first + 1 <= WINDOW_CAP_LINES,
     `window held ${window.last - window.first + 1} lines`,
   );
-  // And it still covers where the reader actually is, which is the half worth keeping.
   assert.ok(window.first <= 5_000 && window.last >= 5_000);
 });
 
 test("geometry that cannot be trusted degrades to highlighting everything", () => {
-  // Fonts still loading, a detached node, a display:none ancestor. Every one of these has to land
-  // on today's rendering: this mechanism may cost colour off screen, never on it.
   for (const broken of [
     { lineHeight: 0 },
     { lineHeight: -20 },
@@ -158,7 +133,6 @@ test("membership is inclusive at both ends", () => {
   assert.equal(lineIsWindowed(window, 21), false);
 });
 
-/** JSX in the window module makes this file unloadable and every assertion above a comment. */
 test("the window module is plain TypeScript", () => {
   const source = readSrc("components/assistant-ui/code-fence-window.ts");
   assert.ok(

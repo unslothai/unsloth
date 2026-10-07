@@ -13,7 +13,6 @@ test("a second model's download does not stop the first", () => {
   trackers.start("qwen3-asr-0.6b", () => stopped.push("qwen3-asr-0.6b"));
   trackers.start("whisper-small", () => stopped.push("whisper-small"));
 
-  // Each engine has its own download state, so both transfers are still live.
   assert.deepEqual(stopped, []);
   assert.equal(trackers.has("qwen3-asr-0.6b"), true);
   assert.equal(trackers.has("whisper-small"), true);

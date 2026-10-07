@@ -136,7 +136,7 @@ function migrateThroughVersion12(
     if (legacyToken) {
       stageLegacyHfTokenForMigration(legacyToken);
     }
-    // Keep the legacy value persisted until authenticated migration confirms the backend write.
+    // Keep the legacy value until authenticated migration confirms the backend write.
   }
 }
 
@@ -240,8 +240,7 @@ function migrateThroughVersion21(
   version: number,
 ): void {
   if (version < 21) {
-    // currentStep belonged to the onboarding wizard and was persisted, so without
-    // this it survives every rehydrate and partialize writes it straight back.
+    // currentStep belonged to the removed onboarding wizard and would otherwise persist forever.
     Reflect.deleteProperty(state, "currentStep");
   }
 }

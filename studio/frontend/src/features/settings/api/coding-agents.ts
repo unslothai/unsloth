@@ -5,9 +5,7 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type CodingAgentsInfo = {
-  // Every agent `unsloth start` supports, in the CLI's declared order.
   agents: string[];
-  // Subset of `agents` whose CLI binary was found on PATH by the backend.
   detected: string[];
 };
 
@@ -16,14 +14,10 @@ type ApiCodingAgentsInfo = {
   detected: string[];
 };
 
-// Agents the CLI still supports but Unsloth does not list. Filtered here so
-// every consumer of this endpoint sees the same set.
+// Hidden here so every consumer of this endpoint sees the same set.
 const HIDDEN_AGENTS = new Set(["pi"]);
 
-// Which CLIs are on PATH is environment state, not a persisted setting -- it can change any time
-// the user installs something new, so this only de-duplicates concurrent in-flight calls (e.g.
-// React strict-mode's double mount) rather than caching the result across the module's lifetime.
-// Every fresh call (each time a settings panel mounts) re-checks PATH for real.
+// PATH can change any time, so only de-duplicate concurrent calls; never cache the result.
 let inFlightInfo: Promise<CodingAgentsInfo> | null = null;
 
 function fromApi(info: ApiCodingAgentsInfo): CodingAgentsInfo {

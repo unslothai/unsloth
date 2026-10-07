@@ -14,18 +14,15 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { hfApiToken, useHfTokenStore } from "../stores/hf-token-store";
 
 interface HfTokenIndicatorProps {
-  /** true: status chip (Train wizard); false: icon-only pill (Hub header). */
   showLabel?: boolean;
   onOpenSettings: () => void;
 }
 
-/** Masked preview so the saved token is identifiable without exposing it. */
 function maskHfToken(token: string): string {
   const trimmed = token.trim();
   return trimmed.length < 8 ? "••••" : `••••${trimmed.slice(-4)}`;
 }
 
-// Compact "set / not set" indicator for the app-wide HF token; click opens Settings -> General.
 export function HfTokenIndicator({
   showLabel = false,
   onOpenSettings,
@@ -80,7 +77,6 @@ export function HfTokenIndicator({
               >
                 {hasToken ? (
                   <>
-                    {/* Announced, not shown: the mask identifies the token. */}
                     <span className="sr-only">{t("picker.hfToken.saved")}</span>
                     {maskHfToken(hfToken)}
                   </>
@@ -110,7 +106,6 @@ export function HfTokenIndicator({
           onClick={onOpenSettings}
           aria-label={ariaLabel}
           className={cn(
-            // Solid circle reads optically larger than the flat HTTP/Xet box, so keep it 22px.
             "inline-flex h-[calc(22px*var(--ui-space-scale,1))] w-[calc(22px*var(--ui-space-scale,1))] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             hasToken
               ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
@@ -120,7 +115,6 @@ export function HfTokenIndicator({
           <HugeiconsIcon
             icon={AiSecurity03Icon}
             strokeWidth={1.75}
-            // Shield ink leans right; nudge left to optically centre it.
             className="block size-[calc(13px*var(--ui-space-scale,1))] shrink-0 -translate-x-[0.5px]"
           />
         </button>

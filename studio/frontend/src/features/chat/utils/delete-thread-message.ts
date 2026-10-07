@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** assistant-ui exposes no public `deleteMessage` in our version, but `MessageRepository` already
- *  does branch-safe deletion. Imported from `@assistant-ui/core/internal`, the exported internal
- *  surface; avoid the deeper `runtime/utils/message-repository` path, which newer releases no
- *  longer export. Keep this file the only importer, and re-run chat delete plus reload smoke
- *  tests when bumping `@assistant-ui/react`: the API may change without a semver signal. */
+/** Internal assistant-ui import; keep this the only importer and re-test delete on upgrades. */
 import { MessageRepository } from "@assistant-ui/core/internal";
 import type {
   CompleteAttachment,
@@ -23,9 +19,6 @@ import {
   reconcileServerManagedMessages,
 } from "./research-message-sync";
 
-// A copy of the list, not of what is in it. assistant-ui replaces parts and attachments rather
-// than mutating them, and the records built from these are serialized straight into the PUT
-// body, so a deep clone of the whole thread bought nothing.
 function snapshotContent(
   content: ThreadMessage["content"],
 ): ThreadMessage["content"] {
@@ -37,7 +30,7 @@ function snapshotContent(
     : [];
 }
 
-// Epoch millis pass through; `getTime?.()` alone re-dated them to now and reordered the thread.
+// Epoch millis pass through; `getTime?.()` alone re-dated them to now.
 function toEpochMillis(value: unknown): number {
   if (value instanceof Date) return value.getTime();
   return typeof value === "number" && Number.isFinite(value) ? value : Date.now();
@@ -91,11 +84,8 @@ async function withStoredResearchMessages(
   if (!records.some((record) => hasResearchMetadata(record.metadata))) {
     return records;
   }
-  // The read below wants the row in place, which is the only reason this path ensures it.
   await ensureStoredChatThread(remoteId);
-  // The backend copy, not the legacy-merged one: only what it stored can be echoed back to it.
-  // Swallowing a failure here would send the unreconciled payload, which the server rejects
-  // wholesale, so the read failure has to surface as itself rather than as a later 409.
+  // Use the backend copy and surface read failures; an unreconciled payload is rejected wholesale.
   const stored = await listChatMessages(remoteId).catch((error: unknown) => {
     throw new Error(
       `Could not read the stored research messages for thread ${remoteId} before syncing`,
@@ -105,14 +95,12 @@ async function withStoredResearchMessages(
   return reconcileServerManagedMessages(records, stored);
 }
 
-/** Persist exported messages, pruning only for explicit delete flows. */
 export async function syncExportedRepositoryToBackend(
   remoteId: string,
   exp: ExportedMessageRepository,
   options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<void> {
-  // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and this used
-  // to make every save pay for the same GET /threads/{id} twice.
+  // syncStoredChatMessages ensures the row itself.
   const records = exp.messages.map(({ message, parentId }) =>
     exportedItemToRecord(remoteId, parentId, message),
   );
@@ -131,7 +119,6 @@ type ThreadImportExport = {
   import: (data: ExportedMessageRepository) => void;
 };
 
-/** Remove a message from the thread and mirror the result to backend storage. */
 export async function deleteThreadMessage(args: {
   thread: ThreadImportExport;
   messageId: string;
@@ -155,7 +142,6 @@ export async function deleteThreadMessage(args: {
           .map(({ message }) => message.id)
       : [];
 
-  // Delete the prompt first; that relinks its replies up to the prompt's parent
   repo.deleteMessage(messageId);
   for (const replyId of assistantReplyIds) {
     repo.deleteMessage(replyId);

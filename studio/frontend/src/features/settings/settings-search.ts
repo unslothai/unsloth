@@ -5,11 +5,7 @@ import type { TranslationKey } from "@/i18n";
 import type { HubSource } from "@/lib/hf-endpoint";
 import type { SettingsTab } from "./stores/settings-dialog-store";
 
-/**
- * Searchable entries per tab: the label/title keys rendered by each tab.
- * Tab names themselves always match, so tabs without translatable rows
- * (profile, connections) are still reachable from search.
- */
+/** Tab names always match, so tabs without translatable rows stay reachable. */
 export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   accounts: [
     "settings.accounts.title",
@@ -52,9 +48,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.profile.description",
     "settings.profile.displayName",
     "settings.profile.nickname",
-    // avatarShape lives inside the avatar edit popover, so it has no always-rendered label for
-    // search to scroll to. The stats heading and highlight tiles render for every profile; the
-    // insight and training cards are conditional, so they stay out.
+    // Only always-rendered labels: the avatarShape popover and conditional cards have no anchor.
     "settings.profile.stats.title",
     "settings.profile.stats.lifetimeTokens",
     "settings.profile.stats.peakTokens",
@@ -186,7 +180,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.library.confirmDelete",
     "settings.library.reset",
   ],
-  // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
     "settings.data.manageFiles.label",
     "settings.data.fineTuneExport",
@@ -212,8 +205,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.accessTokens",
     "settings.apiKeys.decisionApi.title",
   ],
-  // The two cards label themselves in English in every locale, so keys naming them
-  // would never match their own anchor. The header carries both entries instead.
+  // The cards label themselves in English in every locale, so keys could not match their anchor.
   "remote-lan": ["settings.remoteLan.title", "settings.remoteLan.description"],
   agents: [
     // Every key needs a rendered data-settings-label, or a hit has nothing to scroll to.
@@ -223,8 +215,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.agents.agent",
     "settings.agents.model",
     "settings.agents.quantization",
-    // subagent.title is deliberately absent: its label only mounts for the agents
-    // that support subagents, so a hit would have nothing to scroll to otherwise.
+    // subagent.title is absent: its label only mounts for agents that support subagents.
     "settings.agents.options.title",
     "settings.agents.remote.title",
     "settings.agents.passthrough.title",
@@ -247,8 +238,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.previewLabel",
   ],
   "keyboard-shortcuts": [
-    // The tab title and every action label, so searching "sidebar" or
-    // "new chat" from the settings search lands on the row itself.
     "settings.keyboardShortcuts.title",
     "settings.keyboardShortcuts.actions.newChat.label",
     "settings.keyboardShortcuts.actions.newTemporaryChat.label",
@@ -309,7 +298,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.renameChat.label",
     "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
   ],
-  // The Windows rows render only on Windows, so only the rows every platform shows are indexed.
+  // The Windows rows render only on Windows, so they are not indexed.
   sandbox: [
     "settings.general.permissions.sectionTitle",
     "settings.sandbox.levelLabel",
@@ -355,11 +344,8 @@ export function createSettingsSearchIndex({
       "settings.general.startup.sectionTitle",
       "settings.general.startup.launchAtLogin",
       ...(closeToTray ? (["settings.general.startup.closeToTray"] as const) : []),
-      // Desktop only, like the row itself: DesktopRepairControl renders nothing without a
-      // Tauri repair controller, so indexing it on the web build would scroll to a row
-      // that is not there. Worth indexing at all because the capability message for a host
-      // whose PyTorch cannot use its GPUs says to "use Repair installation in Settings",
-      // and searching Settings for "repair" answered "No settings found."
+      // Desktop only, like the row (DesktopRepairControl renders nothing on web); indexed because the
+      // GPU capability message tells users to search Settings for Repair.
       "settings.general.repairInstall.label",
     ],
     about: SETTINGS_SEARCH_INDEX.about.filter(
@@ -397,23 +383,15 @@ export function renderedSearchEntries(
   );
 }
 
-/**
- * Extra terms a row matches on, beyond its own label. The value is a
- * translation key holding space-separated synonyms; it is never rendered.
- * Search matched labels only, so "models folder" or "directory" found nothing.
- */
+/** Value is a translation key of space-separated synonyms; it is never rendered. */
 export const SETTINGS_SEARCH_KEYWORDS: Partial<
   Record<TranslationKey, TranslationKey>
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
   "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
-  // "purge", "prune" and the tool names are in none of the labels, so the row
-  // the feature is named after was unreachable by search.
   "settings.resources.storage.caches.label":
     "settings.resources.storage.caches.keywords",
-  // mlock, vram, ulimit and pin are in none of these labels, so search
-  // missed the rows the feature is named after.
   "settings.resources.modelMemory.title":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.resources.modelMemory.keepResident":
@@ -421,7 +399,6 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.resources.modelMemory.noRamReserve":
     "settings.resources.modelMemory.modelMemoryKeywords",
   "settings.chat.autoCompact": "settings.chat.autoCompactKeywords",
-  // These rows are labelled with what they are, so the verbs people search for live here.
   "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
