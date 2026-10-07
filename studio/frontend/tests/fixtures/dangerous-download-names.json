@@ -230,7 +230,7 @@
     },
     {
       "name": "train.py",
-      "dangerous": false
+      "dangerous": true
     },
     {
       "name": "notebook.ipynb",
@@ -285,14 +285,6 @@
       "dangerous": true
     },
     {
-      "name": "train.py",
-      "dangerous": false
-    },
-    {
-      "name": "report.docx",
-      "dangerous": false
-    },
-    {
       "name": "book.xlsb",
       "dangerous": true
     },
@@ -301,11 +293,11 @@
       "dangerous": true
     },
     {
-      "name": "notes.txt",
-      "dangerous": false
+      "name": "addin.xla",
+      "dangerous": true
     },
     {
-      "name": "addin.xla",
+      "name": "cache.pyc",
       "dangerous": true
     }
   ]
