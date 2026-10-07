@@ -42,6 +42,37 @@ def int8_rotation_group() -> int:
 
 
 @lru_cache(maxsize = 1)
+def _row_major_op() -> Any:
+    """``unsloth_studio::native_row_major``: a row-major copy Inductor cannot re-layout, or None.
+
+    cuBLASLt runs int8 GEMMs only with a row-major activation. Inductor lays the int8 activation out in the stride
+    order of whatever produced it (a transposed view upstream, even one passed through ``.contiguous()``, which it
+    drops), so ``torch._int_mm`` can get it column-major and fail with CUBLAS_STATUS_NOT_SUPPORTED."""
+    import torch
+
+    ns = getattr(torch.ops, "unsloth_studio", None)
+    if ns is not None and hasattr(ns, "native_row_major"):
+        return ns.native_row_major
+    custom_op = getattr(getattr(torch, "library", None), "custom_op", None)
+    if custom_op is None:
+        return None
+    try:
+
+        @custom_op(
+            "unsloth_studio::native_row_major", mutates_args = (), schema = "(Tensor x) -> Tensor"
+        )
+        def _native_row_major(x):
+            return x.clone(memory_format = torch.contiguous_format)
+
+        @_native_row_major.register_fake
+        def _(x):
+            return x.new_empty(x.shape)
+    except Exception:  # noqa: BLE001 - a registration failure keeps the plain copy
+        return None
+    return torch.ops.unsloth_studio.native_row_major
+
+
+@lru_cache(maxsize = 1)
 def native_linear_class():
     """``NativeWeightOnlyLinear``, defined on first use so this module imports torch-free."""
     import torch
@@ -60,9 +91,10 @@ def native_linear_class():
             codes: Any = None,
             scale: Any = None,
         ):
-            """``codes`` / ``scale``: int8 codes [out, in] and per-row scales made elsewhere, stored as given
-            (``linear`` then supplies only the shapes, dtype and bias). With ``rot_group`` they are already
-            ConvRot-rotated, so the rotation is installed whether or not activations go int8."""
+            """``codes`` / ``scale``: int8 (or, for the fp8 scheme, float8_e4m3fn) codes [out, in] and per-row
+            scales made elsewhere, stored as given (``linear`` then supplies only the shapes, dtype and bias).
+            With ``rot_group`` int8 codes are already ConvRot-rotated, so the rotation is installed whether or
+            not activations go int8."""
             super().__init__()
             if scheme not in _QMAX:
                 raise ValueError(f"unsupported native scheme {scheme!r}")
@@ -77,8 +109,13 @@ def native_linear_class():
                 else 0
             )
             if codes is not None:
-                if scheme != NATIVE_INT8 or codes.dtype != torch.int8:
-                    raise ValueError("pre-quantized native codes must be int8")
+                wanted = torch.int8 if scheme == NATIVE_INT8 else torch.float8_e4m3fn
+                if codes.dtype != wanted:
+                    raise ValueError(
+                        f"pre-quantized native {scheme} codes must be {str(wanted).replace('torch.', '')}"
+                    )
+                if rot_group and scheme != NATIVE_INT8:
+                    raise ValueError("a ConvRot rotation needs int8 codes")
                 self.rot_group = int(rot_group or 0)
                 if self.rot_group and self.in_features % self.rot_group:
                     raise ValueError(
@@ -118,6 +155,8 @@ def native_linear_class():
                 "weight_scale", scale.squeeze(1).to(torch.float32).contiguous().view(torch.int32)
             )
             self.bias = linear.bias
+            # Registered here, in eager, so a compiled forward only reads the handle (see _row_major_op).
+            self._row_major = _row_major_op() if self.act_int8 and not self.rot_group else None
 
         def _stored_weight(self, dtype: Any) -> Any:
             wq = (
@@ -164,6 +203,10 @@ def native_linear_class():
             )
             x_scale = x_scale.clamp_(min = 1e-12).div_(127.0)
             xq = torch.mul(x2, x_scale.reciprocal()).round_().clamp_(-127, 127).to(torch.int8)
+            # A rotated input is a matmul output, row-major; an un-rotated one follows its producer's layout.
+            if not self.rot_group and (torch.compiler.is_compiling() or not xq.is_contiguous()):
+                op = getattr(self, "_row_major", None)
+                xq = op(xq) if op is not None else xq.contiguous()
             acc = torch._int_mm(xq, self.weight_q.t())
             w_scale = self.weight_scale.view(torch.float32)
             out = torch.mul(acc, x_scale)

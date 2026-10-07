@@ -6,6 +6,7 @@ import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
+import { defaultZoom } from "./prefs-store";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -32,8 +33,9 @@ export type ChatDock = "minimized" | "composer" | "expanded";
 
 export type RequestEdits = (prompt: string) => void;
 
-/** Resolves false when the composer refused them (it says why), so the marks stay. */
-export type SendAnnotations = (annotations: DocumentAnnotations) => Promise<boolean>;
+/** Resolves false when the composer refused them (it says why), so the marks stay.
+ *  `files` (an annotation screenshot) go in the same message. */
+export type SendAnnotations = (annotations: DocumentAnnotations, files?: File[]) => Promise<boolean>;
 
 /** Stages a file in the chat's composer; false when it refused it (it says why). */
 export type AttachToChat = (file: File) => Promise<boolean>;
@@ -65,6 +67,8 @@ export type BrowserTab = {
   zoom: number;
   nativeHistory: { back: boolean; forward: boolean } | null;
   nativeError: string | null;
+  /** The proxied page failed to load, so an error shows instead of its frame. */
+  pageError?: boolean;
   /** The name the reader gave the tab; kept as it navigates. */
   customTitle: string | null;
   muted: boolean;
@@ -157,7 +161,8 @@ function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserT
     loading: false,
     reloadKey: 0,
     openKey,
-    zoom: 1,
+    // Files open fitted; the default zoom is for web pages.
+    zoom: entry.kind === "file" ? 1 : defaultZoom(),
     nativeHistory: null,
     nativeError: null,
     customTitle: null,
@@ -294,7 +299,7 @@ type BrowserState = {
     patch: Partial<
       Pick<
         BrowserTab,
-        "title" | "favicon" | "documentType" | "displayUrl" | "loading" | "nativeHistory" | "nativeError"
+        "title" | "favicon" | "documentType" | "displayUrl" | "loading" | "nativeHistory" | "nativeError" | "pageError"
       >
     >,
   ) => void;
@@ -311,7 +316,26 @@ type BrowserState = {
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
   tabs.map((tab) => (tab.id === tabId ? update(tab) : tab));
 
+/** Zoom on entering `entry`, by opening it or going back or forward. A web page reached from a new
+ *  tab, a history page or an unzoomed file starts at the default; a file reached from an unzoomed
+ *  web page shows at 100%. A zoom the reader chose carries over, and Back/Forward (`traversal`)
+ *  skip the new tab rule, so a page keeps the zoom its new tab entry carried. */
+function zoomFor(tab: BrowserTab, entry: BrowserEntry, traversal = false): number {
+  const from = tab.history[tab.index];
+  if (!from) return tab.zoom;
+  const preferred = defaultZoom();
+  const at = (zoom: number) => Math.abs(tab.zoom - zoom) < 0.001;
+  if (entry.kind === "web") {
+    const unzoomedFile = from.kind === "file" && at(1);
+    const blank = !traversal && (from.kind === "newtab" || from.kind === "internal");
+    return blank || unzoomedFile ? preferred : tab.zoom;
+  }
+  if (entry.kind === "file" && from.kind === "web" && at(preferred)) return 1;
+  return tab.zoom;
+}
+
 function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): BrowserTab {
+  const zoom = zoomFor(tab, entry);
   const history = tab.history.slice(0, replace ? tab.index : tab.index + 1);
   history.push(entry);
   if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
@@ -326,6 +350,8 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     loading: entry.kind === "web",
     openKey: null,
     nativeError: null,
+    pageError: false,
+    zoom,
   };
 }
 
@@ -333,6 +359,7 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
   const entry = tab.history[index] ?? { kind: "newtab" };
   return {
     ...tab,
+    zoom: zoomFor(tab, entry, true),
     index,
     title: entry.kind === "file" ? entry.name : "",
     favicon: null,
@@ -341,6 +368,7 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
     loading: entry.kind === "web",
     openKey: entry.kind === "file" ? (entry.openKey ?? null) : null,
     nativeError: null,
+    pageError: false,
   };
 }
 

@@ -69,9 +69,10 @@ def test_resolve_family_repo_by_scheme():
     fam = _fam(prequant_repos = (("fp8", "org/hosted-fp8"), ("int8", "org/hosted-int8")))
     src = resolve_prequant_source(fam, "int8")
     assert src.kind == "repo" and src.location == "org/hosted-int8"
-    # Model-name convention first (repo scheme suffix stripped), safetensors ahead of the pickle,
-    # legacy name last.
+    # Model-name convention first (repo scheme suffix stripped), its ComfyUI-format twin ahead of it,
+    # safetensors ahead of the pickle, legacy name last.
     assert src.candidate_filenames == (
+        "hosted-INT8-ComfyUI.safetensors",
         "hosted-INT8.safetensors",
         "hosted-INT8.pt",
         "transformer_int8.pt",
@@ -110,7 +111,8 @@ def test_resolve_variant_base_picks_variant_repo():
     )
     src = resolve_prequant_source(fam, "int8", base_repo = "Org/Model-DEV")
     assert src.kind == "repo" and src.location == "org/dev-fp8"
-    assert src.filename == "dev-INT8.safetensors"
+    assert src.filename == "dev-INT8-ComfyUI.safetensors"
+    assert src.fallback_filenames[0] == "dev-INT8.safetensors"
 
 
 def test_resolve_variant_base_falls_back_to_default():
@@ -151,8 +153,10 @@ def test_resolve_prefers_a_family_declared_filename():
     fam = _fam(prequant_repos = (("int8", "unsloth/Model-FP8"),))
     fam = dataclasses.replace(fam, prequant_filenames = (("int8", "Model-INT8-ConvRot.pt"),))
     src = resolve_prequant_source(fam, "int8")
-    assert src.filename == "Model-INT8-ConvRot.pt"
+    assert src.filename == "Model-INT8-ConvRot-ComfyUI.safetensors"
     assert src.fallback_filenames == (
+        "Model-INT8-ConvRot.pt",
+        "Model-INT8-ComfyUI.safetensors",
         "Model-INT8.safetensors",
         "Model-INT8.pt",
         "transformer_int8.pt",
@@ -164,6 +168,7 @@ def test_resolve_prefers_a_family_declared_filename():
     assert other.candidate_filenames == (
         "Model-FP8.safetensors",
         "Model-FP8.pt",
+        "Model-FP8-ComfyUI.safetensors",
         "transformer_fp8.pt",
     )
 
@@ -2896,3 +2901,125 @@ def test_a_full_fingerprint_pass_is_remembered_per_unchanged_file(monkeypatch, t
     assert pq._verify_packed_fingerprint(expected, meta)
     assert pq._verify_packed_fingerprint(expected, meta)
     assert len(calls) == 5
+
+
+# ---- ComfyUI-format twins in the hosted chain ----
+
+
+def _own_names(names):
+    from core.inference.diffusion_prequant import is_comfy_prequant_filename
+    return tuple(n for n in names if not is_comfy_prequant_filename(n))
+
+
+@pytest.mark.parametrize(
+    "repo, family, scheme, env, own",
+    [
+        ("Tongyi-MAI/Z-Image-Turbo", None, "int8", {}, "Z-Image-Turbo-INT8-ConvRot.safetensors"),
+        ("Tongyi-MAI/Z-Image-Turbo", None, "fp8", {}, "Z-Image-Turbo-FP8.safetensors"),
+        (
+            "Qwen/Qwen-Image-2.1",
+            "qwen-image-2.1",
+            "int8",
+            {"UNSLOTH_DIFFUSION_INT8_CONVROT": "1"},
+            "Qwen-Image-2.1-INT8-ConvRot.safetensors",
+        ),
+        ("Qwen/Qwen-Image-2.1", "qwen-image-2.1", "int8", {}, "Qwen-Image-2.1-INT8.safetensors"),
+        ("Qwen/Qwen-Image-2.1", "qwen-image-2.1", "fp8", {}, "Qwen-Image-2.1-FP8.safetensors"),
+        ("black-forest-labs/FLUX.2-klein-4B", None, "fp8", {}, "FLUX.2-klein-4B-FP8.safetensors"),
+    ],
+)
+def test_image_families_resolve_the_comfy_twin_and_keep_every_old_name(
+    monkeypatch, repo, family, scheme, env, own
+):
+    """New builds also ask for ``<stem>-ComfyUI.safetensors``: AHEAD of the artifact for int8 (the twin holds the
+    same codes and scales), BEHIND it for fp8 (ComfyUI's per-tensor fp8 is a coarser rounding). Older builds never
+    ask for it, and the chain without it is exactly what the kill switch (and an older build) resolves."""
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_prequant import COMFY_PREQUANT_ENV, comfy_prequant_filename
+
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    fam = detect_family(repo, override = family) if family else detect_family(repo)
+    names = resolve_prequant_source(fam, scheme).candidate_filenames
+    twin = comfy_prequant_filename(own)
+    monkeypatch.setenv(COMFY_PREQUANT_ENV, "0")
+    old = resolve_prequant_source(fam, scheme).candidate_filenames
+    assert _own_names(names) == old
+    assert old[0] == own
+    if scheme == "int8":
+        assert names[0] == twin
+        # every artifact gets its twin right ahead of its first container
+        for name in old:
+            other = comfy_prequant_filename(name)
+            if other is not None and not name.endswith(".pt"):
+                assert names.index(other) == names.index(name) - 1
+    else:
+        stems = [n for n in names if n.startswith(own[: -len(".safetensors")] + ".")]
+        assert names.index(twin) == names.index(stems[-1]) + 1
+
+
+def test_comfy_twin_names():
+    from core.inference.diffusion_prequant import (
+        comfy_prequant_filename,
+        is_comfy_prequant_filename,
+        with_comfy_twins,
+    )
+
+    assert (
+        comfy_prequant_filename("Z-Image-Turbo-FP8.safetensors")
+        == "Z-Image-Turbo-FP8-ComfyUI.safetensors"
+    )
+    assert (
+        comfy_prequant_filename("Z-Image-Turbo-INT8.pt") == "Z-Image-Turbo-INT8-ComfyUI.safetensors"
+    )
+    # the legacy names, nested paths and the twin itself have none
+    assert comfy_prequant_filename("transformer_int8.pt") is None
+    assert comfy_prequant_filename("text_encoders/x.safetensors") is None
+    assert comfy_prequant_filename("A-FP8-ComfyUI.safetensors") is None
+    assert is_comfy_prequant_filename("A-FP8-ComfyUI.safetensors")
+    assert not is_comfy_prequant_filename("A-FP8.safetensors")
+    assert with_comfy_twins(["A-INT8.safetensors", "A-INT8.pt", "transformer_int8.pt"]) == [
+        "A-INT8-ComfyUI.safetensors",
+        "A-INT8.safetensors",
+        "A-INT8.pt",
+        "transformer_int8.pt",
+    ]
+    assert with_comfy_twins(
+        ["A-FP8.safetensors", "A-FP8.pt", "transformer_fp8.pt"], lead = False
+    ) == [
+        "A-FP8.safetensors",
+        "A-FP8.pt",
+        "A-FP8-ComfyUI.safetensors",
+        "transformer_fp8.pt",
+    ]
+    # a pickle-only chain still gets the twin ahead of it; a declared twin is not duplicated
+    assert with_comfy_twins(["A-INT8.pt"]) == ["A-INT8-ComfyUI.safetensors", "A-INT8.pt"]
+    assert with_comfy_twins(["A-INT8-ComfyUI.safetensors", "A-INT8.safetensors"]) == [
+        "A-INT8-ComfyUI.safetensors",
+        "A-INT8.safetensors",
+    ]
+
+
+def test_video_families_get_no_comfy_twin():
+    """Only the image denoiser loader reads the ComfyUI layout; video chains are unchanged."""
+    from core.inference.diffusion_prequant import is_comfy_prequant_filename
+    from core.inference.video_families import _FAMILIES as VIDEO_FAMILIES
+
+    checked = 0
+    for fam in VIDEO_FAMILIES:
+        for scheme, _repo in getattr(fam, "prequant_repos", ()) or ():
+            src = resolve_prequant_source(fam, scheme)
+            if src is None:
+                continue
+            checked += 1
+            assert not any(is_comfy_prequant_filename(n) for n in src.candidate_filenames)
+    assert checked
+
+
+def test_task_specific_artifacts_get_no_twin():
+    fam = dataclasses.replace(
+        _fam(prequant_repos = (("int8", "unsloth/Model-FP8"),)),
+        prequant_filenames = (("int8", "keyframe", "Model-KF-INT8.safetensors"),),
+    )
+    src = resolve_prequant_source(fam, "int8", task = "keyframe")
+    assert src.candidate_filenames == ("Model-KF-INT8.safetensors",)

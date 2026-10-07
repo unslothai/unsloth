@@ -149,6 +149,8 @@ export interface SidebarOrganizationState {
   sectionByChatId: Record<string, string>;
   /** Project id -> the custom section its folder is drawn in, on the same terms. */
   sectionByProjectId: Record<string, string>;
+  /** Pinned page id -> the custom section it shows in instead of Pinned. */
+  sectionByPageId: Record<string, string>;
   /** Section keys the "Show" toggles turned off: Projects or a custom section's id. */
   hiddenSections: string[];
   /** The order of the sections above Recents, as dragged; read through resolveSectionOrder. */
@@ -171,6 +173,7 @@ export interface SidebarOrganizationState {
   /** Files chats into a section, or out of every section with null. */
   setChatsSection: (chatIds: string[], sectionId: string | null) => void;
   setProjectsSection: (projectIds: string[], sectionId: string | null) => void;
+  setPagesSection: (pageIds: string[], sectionId: string | null) => void;
   setSectionHidden: (key: string, hidden: boolean) => void;
   /** Drops the section `key` against the `edge` side of `targetKey`, as a row drag lands. */
   moveSection: (key: string, targetKey: string, edge: "top" | "bottom") => void;
@@ -403,6 +406,7 @@ export function mergePersistedOrganization(
     customSections,
     sectionByChatId: readAssignments(saved?.sectionByChatId),
     sectionByProjectId: readAssignments(saved?.sectionByProjectId),
+    sectionByPageId: readAssignments(saved?.sectionByPageId),
     hiddenSections,
     sectionOrder,
   };
@@ -419,6 +423,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       customSections: [],
       sectionByChatId: assignmentMap(),
       sectionByProjectId: assignmentMap(),
+      sectionByPageId: assignmentMap(),
       hiddenSections: [],
       sectionOrder: [],
       pendingNewChatSection: null,
@@ -472,6 +477,7 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
             customSections: state.customSections.filter((s) => s.id !== sectionId),
             sectionByChatId: withoutSection(state.sectionByChatId, gone),
             sectionByProjectId: withoutSection(state.sectionByProjectId, gone),
+            sectionByPageId: withoutSection(state.sectionByPageId, gone),
             hiddenSections: state.hiddenSections.filter((key) => key !== sectionId),
             sectionOrder: state.sectionOrder.filter((key) => key !== sectionId),
             manualOrder,
@@ -533,6 +539,27 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           }
           return {
             sectionByProjectId: next,
+            customSections: touchSections(state.customSections, touched),
+          };
+        }),
+      setPagesSection: (pageIds, sectionId) =>
+        set((state) => {
+          if (sectionId && !state.customSections.some((s) => s.id === sectionId)) {
+            return state;
+          }
+          const next = assignmentMap(state.sectionByPageId);
+          const touched = new Set<string>();
+          for (const id of pageIds) {
+            const from = next[id];
+            if (from === (sectionId ?? undefined)) continue;
+            if (from) touched.add(from);
+            if (sectionId) {
+              next[id] = sectionId;
+              touched.add(sectionId);
+            } else delete next[id];
+          }
+          return {
+            sectionByPageId: next,
             customSections: touchSections(state.customSections, touched),
           };
         }),

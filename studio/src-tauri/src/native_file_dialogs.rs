@@ -242,7 +242,7 @@ fn saved_file_name(path: &Path) -> String {
 fn save_selected_file(
     selected_path: Option<PathBuf>,
     content: &[u8],
-) -> Result<Option<String>, String> {
+) -> Result<Option<PathBuf>, String> {
     let Some(path) = selected_path else {
         return Ok(None);
     };
@@ -254,7 +254,7 @@ fn save_selected_file(
     temporary
         .persist(&path)
         .map_err(|error| format!("Failed to save {}: {}", path.display(), error.error))?;
-    Ok(Some(saved_file_name(&path)))
+    Ok(Some(path))
 }
 
 fn native_save_chunk(body: &tauri::ipc::InvokeBody) -> Result<Cow<'_, [u8]>, String> {
@@ -442,6 +442,16 @@ pub async fn save_native_file(
     request: tauri::ipc::Request<'_>,
 ) -> Result<Option<String>, String> {
     crate::native_intents::ensure_main_window(&webview)?;
+    Ok(save_request_with_dialog(&app, &request)
+        .await?
+        .map(|path| saved_file_name(&path)))
+}
+
+/// Save the request body where the user picks; None if cancelled. Keep the path off the webview.
+pub(crate) async fn save_request_with_dialog(
+    app: &AppHandle,
+    request: &tauri::ipc::Request<'_>,
+) -> Result<Option<PathBuf>, String> {
     let encoded_name = request
         .headers()
         .get(NATIVE_FILE_NAME_HEADER)

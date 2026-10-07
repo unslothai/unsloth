@@ -99,9 +99,10 @@ import {
   useState,
 } from "react";
 import { fileNameFromUrl, hostOf, resolveAddress } from "./address";
-import { OtherSurfaceError, canPrintFrames, canScreenshot, printPage, screenshotPage } from "./capture";
+import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./capture";
+import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
-import { type BrowserDownload, saveBrowserDownload } from "./downloads";
+import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
@@ -117,7 +118,6 @@ import {
   ExitFullViewIcon,
   PadlockIcon,
   PadlockOpenIcon,
-  SplitPaneIcon,
 } from "./icons";
 import {
   hasNativeView,
@@ -142,7 +142,7 @@ import {
   useBrowserStore,
 } from "./store";
 import { TabView } from "./tab-view";
-import { ZOOM_STEPS, canZoom, stepZoom, zoomTab } from "./zoom";
+import { ZOOM_STEPS, canZoom, homeZoom, stepZoom, zoomTab } from "./zoom";
 
 function tabAddress(tab: BrowserTab | undefined): string {
   if (!tab) return "";
@@ -256,7 +256,7 @@ function IconButton({
           )}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom" className="tooltip-compact">
+      <TooltipContent side="top" className="tooltip-compact">
         {shortcut ? (
           <span className="flex items-center gap-1.5">
             {label}
@@ -718,9 +718,9 @@ function TabStrip({
       />
       <IconButton
         label={t("browser.close")}
-        icon={SplitPaneIcon}
+        icon={Cancel01Icon}
         onClick={closePanel}
-        className="size-8 rounded-[10px] bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] text-foreground"
+        className="size-8"
       />
     </div>
   );
@@ -734,7 +734,7 @@ function AddressBar({
   actions,
 }: {
   tab: BrowserTab | undefined;
-  /** Shown in place of the site button while the address isn't being edited. */
+  /** Shown in place of the site button. */
   leading?: ReactNode;
   actions?: ReactNode;
 }) {
@@ -770,8 +770,9 @@ function AddressBar({
         inputRef.current?.blur();
       }}
     >
-      <div className={cn("flex h-9 items-center gap-1 rounded-lg pl-1 pr-1 transition-colors", URLBAR)}>
-        {leading && !editing ? leading : <SiteIdentity address={editing ? "" : address} tab={tab} />}
+      <div className={cn("flex h-9 items-center gap-0.5 rounded-lg pl-1 pr-1 transition-colors", URLBAR)}>
+        {/* Icons step aside while typing and come back after. */}
+        {editing ? null : (leading ?? <SiteIdentity address={address} tab={tab} />)}
         <div className="relative min-w-0 flex-1">
           <input
             ref={inputRef}
@@ -798,7 +799,8 @@ function AddressBar({
             autoCapitalize="off"
             autoCorrect="off"
             className={cn(
-              "h-9 w-full min-w-0 bg-transparent px-1 text-ui-14 text-foreground outline-none placeholder:text-muted-foreground",
+              "h-9 w-full min-w-0 bg-transparent pe-1 text-ui-13 text-foreground outline-none placeholder:text-muted-foreground",
+              editing ? "ps-2" : "ps-0",
               // The input keeps the full URL, so focusing never changes its text or selection.
               !editing && address && "text-transparent",
             )}
@@ -806,13 +808,13 @@ function AddressBar({
           {!editing && address ? (
             <span
               aria-hidden={true}
-              className="pointer-events-none absolute inset-0 flex items-center px-1 text-ui-14 text-foreground"
+              className="pointer-events-none absolute inset-0 flex items-center ps-0 pe-1 text-ui-13 text-foreground"
             >
               <span className="truncate">{displayAddress(address, showFullUrl)}</span>
             </span>
           ) : null}
         </div>
-        {actions}
+        {editing ? null : actions}
       </div>
     </form>
   );
@@ -844,7 +846,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
   }
   if (!url || !/^https?:$/.test(url.protocol)) {
     return (
-      <span className="flex size-7 shrink-0 items-center justify-center text-muted-foreground">
+      <span className="flex h-7 w-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center justify-center text-muted-foreground">
         <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} aria-hidden={true} className="size-4" />
       </span>
     );
@@ -872,7 +874,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
               <button
                 type="button"
                 aria-label={label}
-                className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
+                className="flex h-7 w-[calc(26px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
               >
                 {secure ? (
                   <ShieldCheck strokeWidth={2} className="size-4" />
@@ -882,7 +884,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
               </button>
             </PopoverTrigger>
           </TooltipTrigger>
-          <TooltipContent side="bottom" className="tooltip-compact">
+          <TooltipContent side="top" className="tooltip-compact">
             {label}
           </TooltipContent>
         </Tooltip>
@@ -999,8 +1001,11 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
 function ZoomBadge({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const locale = useLocale();
-  const zoom = tab?.zoom ?? 1;
-  if (!canZoom(tab) || Math.abs(zoom - 1) < 0.001) return null;
+  const preferred = useBrowserPrefsStore((state) => state.defaultZoom);
+  if (!canZoom(tab)) return null;
+  const zoom = tab.zoom;
+  const resetZoom = homeZoom(tab, preferred);
+  if (Math.abs(zoom - resetZoom) < 0.001) return null;
   const label = t("browser.menu.zoomReset");
   return (
     <Tooltip>
@@ -1008,13 +1013,13 @@ function ZoomBadge({ tab }: { tab: BrowserTab | undefined }) {
         <button
           type="button"
           aria-label={label}
-          onClick={() => useBrowserStore.getState().setZoom(tab.id, 1)}
+          onClick={() => useBrowserStore.getState().setZoom(tab.id, resetZoom)}
           className="h-6 shrink-0 cursor-pointer rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] px-2 text-ui-12 tabular-nums text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
         >
           {new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(zoom)}
         </button>
       </TooltipTrigger>
-      <TooltipContent side="bottom" className="tooltip-compact">
+      <TooltipContent side="top" className="tooltip-compact">
         {label}
       </TooltipContent>
     </Tooltip>
@@ -1075,7 +1080,9 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const locale = useLocale();
   const zoomable = canZoom(tab);
-  const zoom = zoomable ? tab.zoom : 1;
+  const preferred = useBrowserPrefsStore((state) => state.defaultZoom);
+  const resetZoom = zoomable ? homeZoom(tab, preferred) : preferred;
+  const zoom = zoomable ? tab.zoom : resetZoom;
   const setZoom = (next: number) =>
     zoomable && useBrowserStore.getState().setZoom(tab.id, next);
   const percent = new Intl.NumberFormat(locale, {
@@ -1121,8 +1128,8 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
       <button
         type="button"
         aria-label={t("browser.menu.zoomReset")}
-        disabled={!zoomable || zoom === 1}
-        onClick={() => setZoom(1)}
+        disabled={!zoomable || zoom === resetZoom}
+        onClick={() => setZoom(resetZoom)}
         className={cn(step, "rounded-md")}
       >
         <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
@@ -1154,6 +1161,13 @@ async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<
   const attach = useBrowserStore.getState().attachToChat;
   if (attach && (await attach(new File([blob], name, { type: "image/png" })))) {
     toast.success(t("browser.screenshot.added"), {
+      action: { label: t("browser.screenshot.save"), onClick: () => void saveBrowserDownload(download) },
+    });
+    return;
+  }
+  // The share prompt outlasts the click, so the save dialog needs a fresh one.
+  if (saveNeedsClick()) {
+    toast.success(t("browser.screenshot.taken"), {
       action: { label: t("browser.screenshot.save"), onClick: () => void saveBrowserDownload(download) },
     });
     return;
@@ -1198,7 +1212,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
               </button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
-          <TooltipContent side="bottom" className="tooltip-compact">
+          <TooltipContent side="top" className="tooltip-compact">
             {t("browser.more")}
           </TooltipContent>
         </Tooltip>
@@ -1346,16 +1360,28 @@ function nativePage(tab: BrowserTab | undefined): boolean {
   return Boolean(tab && currentEntry(tab).kind === "web" && hasNativeView(tab.id));
 }
 
-/** Ask about the page, as with a file's Request edits. Native views can't be drawn over. */
+/** How a tab is annotated: a framed page, a native view, or Studio's own markup (new tab,
+ *  internal pages, documents, errors). Null while loading. Files use Request edits. */
+function annotateMode(tab: BrowserTab | undefined, native: boolean): "frame" | "native" | "dom" | null {
+  if (!tab) return null;
+  const entry = currentEntry(tab);
+  if (entry.kind === "newtab" || entry.kind === "internal") return "dom";
+  if (entry.kind !== "web" || tab.loading) return null;
+  if (native) return tab.nativeError ? "dom" : "native";
+  return tab.documentType || tab.pageError ? "dom" : "frame";
+}
+
+/** Ask about the page, as with a file's Request edits. */
 function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const canAnnotate = useBrowserStore((state) => state.sendAnnotations !== null);
   const annotating = useBrowserStore((state) => tab !== undefined && state.annotateTabId === tab.id);
-  if (!canAnnotate || nativePage(tab)) return null;
+  const native = useNativeBrowser((state) => state.enabled);
+  if (!canAnnotate) return null;
   return (
     <IconButton
       label={t("browser.annotate.page")}
-      disabled={!tab || !showsWebPage(tab)}
+      disabled={annotateMode(tab, native) === null}
       onClick={() => tab && useBrowserStore.getState().setAnnotating(annotating ? null : tab.id)}
       className={cn(
         ANNOTATE_BUTTON,
@@ -1618,7 +1644,7 @@ function BrowserFileToolbar({
                 {errorBadge}
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom" className="tooltip-compact">
+            <TooltipContent side="top" className="tooltip-compact">
               {consoleLabel}
             </TooltipContent>
           </Tooltip>
@@ -2103,6 +2129,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const activeTabId = useBrowserStore((state) => state.activeTabId);
   const device = useBrowserStore((state) => state.device);
   const annotateTabId = useBrowserStore((state) => state.annotateTabId);
+  const tabTitle = useTabTitle();
   const [pageElement, setPageElement] = useState<HTMLDivElement | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
   // Zoom keys, Ctrl+wheel and the View menu zoom the page, not the interface, while focus or the pointer is here.
@@ -2145,6 +2172,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
     device !== "off" && activeEntry?.kind === "web"
       ? DEVICE_WIDTHS[device]
       : null;
+  const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
 
   return (
     <section
@@ -2243,16 +2271,23 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               fileName={activeEntry.name}
             />
           ) : null}
-          {activeTab &&
-          annotateTabId === activeTab.id &&
-          showsWebPage(activeTab) &&
-          !nativePage(activeTab) ? (
+          {activeTab && activeEntry && (pageAnnotating === "frame" || pageAnnotating === "native") ? (
             // A new page, a reload or a replacement starts over: its marks were the last page's.
             <WebAnnotateLayer
-              key={`${activeTab.id}:${entryKey(currentEntry(activeTab))}:${activeTab.reloadKey}`}
+              key={`${activeTab.id}:${entryKey(activeEntry)}:${activeTab.reloadKey}:${pageAnnotating}`}
               tabId={activeTab.id}
               title={activeTab.title}
               url={webAddress(activeTab) ?? ""}
+              page={pageElement}
+              native={pageAnnotating === "native"}
+            />
+          ) : null}
+          {activeTab && activeEntry && pageAnnotating === "dom" && pageElement ? (
+            <AnnotateLayer
+              key={`${activeTab.id}:${entryKey(activeEntry)}:${activeTab.reloadKey}`}
+              page={pageElement}
+              fileName={tabTitle(activeTab, activeEntry)}
+              url={webAddress(activeTab) ?? undefined}
             />
           ) : null}
         </div>

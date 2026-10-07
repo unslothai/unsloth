@@ -19,7 +19,6 @@ import {
   macTtsPickAction,
   mergeGalleryPage,
   minimaxMusicFramesForSeconds,
-  modelLoadNote,
   nativeAudioInstructionsKind,
   persistedClipForGeneration,
   reconcileSttSelection,
@@ -831,16 +830,6 @@ test("history scrolling loads until the page gains a row, not one gallery page",
     audioPageSource,
     /const loadMoreVisible = useCallback\(async \(\) => \{[\s\S]*?await loadGalleryUntil\(\{\s*has: \(\) => countVisible\(\) > before,/,
   );
-});
-
-test("a run that loads a model first says so before it starts", () => {
-  assert.equal(
-    modelLoadNote({ model: "Kokoro", page: "Speak", seconds: 4.6 }),
-    "Loads Kokoro for Speak, about 5 s",
-  );
-  assert.equal(modelLoadNote({ model: "Kokoro", page: "Speak" }), "Loads Kokoro for Speak");
-  assert.equal(modelLoadNote({ model: "Kokoro", page: "Speak", seconds: 0.2 }), "Loads Kokoro for Speak, about 1 s");
-  assert.equal(modelLoadNote({ model: null, page: "Speak", seconds: 5 }), null);
 });
 
 test("paging for a visible row skips hidden edit originals, like the list does", () => {

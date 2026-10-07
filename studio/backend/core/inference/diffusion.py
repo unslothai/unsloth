@@ -212,6 +212,7 @@ from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
 from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
+from .diffusion_postprocess import install as install_device_postprocess
 from .diffusion_batched import (
     chunk_jobs,
     is_oom_error,
@@ -275,6 +276,7 @@ from .diffusion_denoiser_prequant import (
     prequant_artifact_label,
 )
 from .diffusion_comfy_quant import (
+    comfy_fp8_backend,
     comfy_int8_backend,
     comfy_torchao_quantized,
     load_comfy_quant_transformer,
@@ -343,6 +345,20 @@ from utils.paths.path_utils import (
 )
 
 logger = get_logger(__name__)
+
+_ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES = frozenset(("z-image", KREA2_FAMILY_NAME))
+
+
+def _negative_prompt_engaged(family: DiffusionFamily, guidance: float) -> bool:
+    if not family.uses_negative_prompt:
+        return False
+    if family.cfg_kwarg == "true_cfg_scale":
+        return float(guidance) > 1.0
+    if family.cfg_kwarg == "guidance_scale":
+        threshold = 0.0 if family.name in _ZERO_THRESHOLD_NEGATIVE_PROMPT_FAMILIES else 1.0
+        return float(guidance) > threshold
+    return True
+
 
 # Every `import diffusers` below is lazy, so this runs first. On Windows ROCm both reach an absent distributed
 # backend: diffusers imports xformers on sight, its quantizers torchao.
@@ -6734,7 +6750,8 @@ class DiffusionBackend:
                                 _install_gguf_prefix_strip(transformer_cls, logger)
                                 _install_gguf_dim_restore(logger)
                             if comfy_scan is not None:
-                                # int8 codes and scales go to the int8 runtime unchanged where it runs; the rest dequantize.
+                                # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
+                                _comfy_offload = not plan_keeps_transformer_resident(plan)
                                 transformer = load_comfy_quant_transformer(
                                     transformer_cls,
                                     single_file_path,
@@ -6744,10 +6761,17 @@ class DiffusionBackend:
                                         target,
                                         fam.name,
                                         base,
-                                        offload = not plan_keeps_transformer_resident(plan),
+                                        offload = _comfy_offload,
+                                    ),
+                                    fp8_backend = comfy_fp8_backend(
+                                        target,
+                                        fam.name,
+                                        base,
+                                        offload = _comfy_offload,
                                     ),
                                     family = fam.name,
                                     target = target,
+                                    fast_accum = transformer_quant_fast_accum,
                                     logger = logger,
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
@@ -7767,6 +7791,27 @@ class DiffusionBackend:
             return None
 
     @staticmethod
+    def _comfy_single_file_resident_mib(
+        single_file_path: Optional[str], fam: Any, target: Any, base: Optional[str]
+    ) -> Optional[int]:
+        """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
+        try:
+            from .diffusion_comfy_quant import comfy_resident_mib, scan_comfy_quant
+
+            scan = scan_comfy_quant(single_file_path)
+            if scan is None or scan.problems:
+                return None
+            name = getattr(fam, "name", None)
+            return comfy_resident_mib(
+                single_file_path,
+                scan,
+                keep_int8 = comfy_int8_backend(target, name, base) is not None,
+                keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+            )
+        except Exception:  # noqa: BLE001 - a planning aid: the file-size estimate stands
+            return None
+
+    @staticmethod
     def _gguf_offload_prequant_placement(
         replanned: Any,
         candidate: Any,
@@ -7905,6 +7950,7 @@ class DiffusionBackend:
                     cache_dir = hub_cache_dir(),
                     logger = logger,
                     placement_device = None if seed_device == device else seed_device,
+                    family = fam.name,
                 )
                 check_cancelled()
                 if transformer is None:
@@ -8848,6 +8894,13 @@ class DiffusionBackend:
                 transformer_resident = estimate_safetensors_dense_mib(
                     file_size_mib(single_file_path), fp8_upcast = fp8_upcast
                 )
+                if not getattr(fam, "single_file_is_pipeline", False):
+                    # Priced from the header: layers a resident runtime keeps at stored size, dequantized ones at 2x.
+                    _comfy_mib = self._comfy_single_file_resident_mib(
+                        single_file_path, fam, target, base
+                    )
+                    if _comfy_mib is not None:
+                        transformer_resident = _comfy_mib
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
             # Companions (VAE + text encoders) load near on-disk size; sum the base-repo cache, or a LOCAL base's
@@ -9909,7 +9962,11 @@ class DiffusionBackend:
                         kwargs["width"] = iw
                     if "height" in call_params:
                         kwargs["height"] = ih
-                if negative_prompt and "negative_prompt" in call_params:
+                if (
+                    negative_prompt
+                    and _negative_prompt_engaged(state.family, guidance)
+                    and "negative_prompt" in call_params
+                ):
                     kwargs["negative_prompt"] = negative_prompt
                 elif "negative_prompt" in call_params and true_cfg_needs_empty_negative(
                     state.family.cfg_kwarg, guidance
@@ -10223,6 +10280,8 @@ class DiffusionBackend:
                         elif state.transformer_cache:
                             # diffusers resets FBCache only after a SUCCESSFUL __call__; a raised call leaves a stale residual.
                             self._reset_step_cache(state.pipe)
+                        # Per pipe, idempotent: a workflow pipe built by from_pipe has its own image processor.
+                        install_device_postprocess(pipe, logger)
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"
@@ -10381,6 +10440,7 @@ class DiffusionBackend:
                     "images": list(images),
                     "seed": int(seed),
                     "seeds": [int(s) for s in per_image_seeds],
+                    "negative_prompt": kwargs.get("negative_prompt") or None,
                     "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD this ran on, not just the repo id: a GGUF quant and a torchao scheme each change the
                     # pixels.
@@ -10709,6 +10769,7 @@ class DiffusionBackend:
             "resolved": resolved,
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
+            "supports_negative_prompt": state.family.uses_negative_prompt,
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
