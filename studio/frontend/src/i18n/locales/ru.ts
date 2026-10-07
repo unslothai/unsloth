@@ -2993,6 +2993,13 @@ export const ru = {
         "Файлов датасета больше нет на этом устройстве, поэтому при запуске обучения они будут загружены снова.",
     },
     preview: {
+      perGpu: "на GPU",
+      gpus: "GPU",
+      globalBatch: "глобальный",
+      gpuDevice: "GPU {index}: {name}",
+      totalVram: "Всего: {total} GiB",
+      automaticGpu: "Автоматически — GPU выбирается при запуске",
+      noGpuSelected: "GPU не выбрана",
       title: "Предпросмотр запуска",
       ready: "Готово",
       notReady: "Не готово",
@@ -3321,6 +3328,22 @@ export const ru = {
       },
     },
     params: {
+      hardware: "Оборудование",
+      gpuPlacement: "Распределение GPU",
+      gpuPlacementTooltip: "Выберите автоматический выбор, одну GPU, разделение модели или DDP с параллелизмом данных. DDP создаёт копию модели на каждой выбранной GPU.",
+      hardwareModeAutoLabel: "Автоматически",
+      hardwareModeSingleLabel: "Одна GPU",
+      hardwareModeShardingLabel: "Разделение модели",
+      hardwareModeDdpLabel: "DDP (параллелизм данных)",
+      hardwareModeAuto: "Studio автоматически выбирает наименее загруженную совместимую GPU.",
+      hardwareModeSingle: "Одна копия модели на одной выбранной GPU.",
+      hardwareModeSharding: "Одна модель разделена между выбранными GPU. Это объединяет видеопамять; это не DDP.",
+      hardwareModeDdp: "Одна копия модели на каждой выбранной GPU. Градиенты синхронизируются; модель должна помещаться на каждой выбранной GPU.",
+      liveInventory: "Текущий список устройств:",
+      memoryAvailable: "Свободно {free} / {total} GiB",
+      memoryUnknown: "Свободная память неизвестна / всего {total} GiB",
+      noSelectableGpu: "Нет GPU со стабильным физическим индексом для явного выбора.",
+      multipleGpusRequired: "Выберите не менее двух GPU для этого режима.",
       mode: {
         simple: "Простой",
         advanced: "Расширенный",
@@ -3459,6 +3482,9 @@ export const ru = {
       setupChanged:
         "Настройки обучения изменились во время проверки. Проверьте их и снова запустите обучение.",
       validation: {
+        multipleGpusRequired: "Выберите не менее двух GPU для этого режима.",
+        singleGpuRequired: "Выберите ровно одну GPU для обучения на одной GPU.",
+        gpuSelectionUnavailable: "Выбранные GPU недоступны. Обновите выбор оборудования и повторите попытку.",
         s3MultimodalUnsupported:
           "Датасеты S3 пока не поддерживаются для обучения моделей зрения.",
         s3BucketRequired: "Сначала введите имя бакета S3.",

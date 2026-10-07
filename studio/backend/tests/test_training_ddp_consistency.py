@@ -36,7 +36,7 @@ def _trainer_method(name):
     "world_size, samples, expected", [(1, 100, 39), (4, 100, 12), (4, 101, 12)]
 )
 def test_epoch_steps_account_for_distributed_sampler(monkeypatch, world_size, samples, expected):
-    monkeypatch.setattr("core.training.dataset_bounds.os.environ", {"WORLD_SIZE": str(world_size)})
+    monkeypatch.setenv("WORLD_SIZE", str(world_size))
     assert _trainer_method("_calculate_total_steps")(None, samples, 2, 4, 3, 0) == expected
 
 
@@ -45,13 +45,15 @@ def test_explicit_max_steps_is_not_divided(monkeypatch):
     assert _trainer_method("_calculate_total_steps")(None, 100, 2, 4, 3, 17) == 17
 
 
-@pytest.mark.parametrize("should_save", [True, False])
+@pytest.mark.parametrize("is_world_process_zero", [True, False])
 @pytest.mark.parametrize("should_stop, save_on_stop", [(False, True), (True, True), (True, False)])
 def test_finalization_only_writing_rank_mutates_auxiliary_files(
-    should_save, should_stop, save_on_stop
+    is_world_process_zero, should_stop, save_on_stop
 ):
     trainer = MagicMock()
-    trainer.args = SimpleNamespace(should_save = should_save)
+    trainer.is_world_process_zero.return_value = is_world_process_zero
+    # Saving auxiliary files is independent of save strategy/should_save.
+    trainer.args = SimpleNamespace(should_save = False, save_strategy = "no")
     owner = SimpleNamespace(
         trainer = trainer,
         tokenizer = MagicMock(),
@@ -63,8 +65,12 @@ def test_finalization_only_writing_rank_mutates_auxiliary_files(
     _trainer_method("_finalize_training")(owner, "/tmp/ddp-output")
     saving = not should_stop or save_on_stop
     assert trainer.save_model.call_count == int(saving)
-    assert owner.tokenizer.save_pretrained.call_count == int(saving and should_save)
-    assert owner._patch_adapter_config.call_count == int(saving and should_save)
+    assert owner.tokenizer.save_pretrained.call_count == int(
+        saving and is_world_process_zero
+    )
+    assert owner._patch_adapter_config.call_count == int(
+        saving and is_world_process_zero
+    )
     assert trainer._save_checkpoint.call_count == int(should_stop and save_on_stop)
 
 

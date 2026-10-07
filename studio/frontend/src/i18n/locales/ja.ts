@@ -2943,6 +2943,13 @@ export const ja = {
         "データセットファイルがこのデバイス上に存在しないため、トレーニング時に再度ダウンロードします。",
     },
     preview: {
+      perGpu: "GPU あたり",
+      gpus: "GPU",
+      globalBatch: "グローバル",
+      gpuDevice: "GPU {index}: {name}",
+      totalVram: "合計: {total} GiB",
+      automaticGpu: "自動 — 起動時に GPU を選択",
+      noGpuSelected: "GPU が選択されていません",
       title: "実行プレビュー",
       ready: "準備完了",
       notReady: "準備未完了",
@@ -3261,6 +3268,22 @@ export const ja = {
       },
     },
     params: {
+      hardware: "ハードウェア",
+      gpuPlacement: "GPU 配置",
+      gpuPlacementTooltip: "自動選択、単一 GPU、モデル分割、またはデータ並列 DDP を選択します。DDP は選択した各 GPU にモデルを複製します。",
+      hardwareModeAutoLabel: "自動",
+      hardwareModeSingleLabel: "単一 GPU",
+      hardwareModeShardingLabel: "モデル分割",
+      hardwareModeDdpLabel: "DDP（データ並列）",
+      hardwareModeAuto: "Studio は互換性のある GPU のうち最も負荷の低いものを自動選択します。",
+      hardwareModeSingle: "選択した 1 つの GPU にモデルのコピーを配置します。",
+      hardwareModeSharding: "選択した GPU 間で 1 つのモデルを分割します。VRAM を組み合わせますが、DDP ではありません。",
+      hardwareModeDdp: "選択した各 GPU にモデルのコピーを配置します。勾配は同期され、各 GPU にモデルが収まる必要があります。",
+      liveInventory: "現在のデバイス一覧:",
+      memoryAvailable: "空き {free} / {total} GiB",
+      memoryUnknown: "空きメモリ不明 / 合計 {total} GiB",
+      noSelectableGpu: "明示的に選択できる安定した物理インデックスを持つ GPU がありません。",
+      multipleGpusRequired: "このモードでは 2 つ以上の GPU を選択してください。",
       mode: {
         simple: "シンプル",
         advanced: "詳細",
@@ -3386,6 +3409,9 @@ export const ja = {
       setupChanged:
         "確認中にトレーニング設定が変更されました。設定を確認してから、トレーニングをもう一度開始してください。",
       validation: {
+        multipleGpusRequired: "このモードでは 2 つ以上の GPU を選択してください。",
+        singleGpuRequired: "単一 GPU の学習では GPU を 1 つだけ選択してください。",
+        gpuSelectionUnavailable: "選択した GPU は利用できません。ハードウェアの選択を更新して再試行してください。",
         s3MultimodalUnsupported:
           "S3 データセットは、ビジョンのトレーニングではまだサポートされていません。",
         s3BucketRequired: "先に S3 バケット名を入力してください。",

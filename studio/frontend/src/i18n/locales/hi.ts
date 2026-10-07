@@ -2984,6 +2984,13 @@ export const hi = {
         "डेटासेट फ़ाइलें अब इस डिवाइस पर नहीं हैं, इसलिए ट्रेनिंग उन्हें दोबारा डाउनलोड करेगी।",
     },
     preview: {
+      perGpu: "प्रति GPU",
+      gpus: "GPU",
+      globalBatch: "वैश्विक",
+      gpuDevice: "GPU {index}: {name}",
+      totalVram: "कुल: {total} GiB",
+      automaticGpu: "स्वचालित — शुरू करते समय GPU चुना जाएगा",
+      noGpuSelected: "कोई GPU नहीं चुना गया",
       title: "रन पूर्वावलोकन",
       ready: "तैयार",
       notReady: "तैयार नहीं",
@@ -3305,6 +3312,22 @@ export const hi = {
       },
     },
     params: {
+      hardware: "हार्डवेयर",
+      gpuPlacement: "GPU आवंटन",
+      gpuPlacementTooltip: "स्वचालित चयन, एक GPU, मॉडल विभाजन या डेटा-समानांतर DDP चुनें। DDP प्रत्येक चयनित GPU पर मॉडल की प्रति बनाता है।",
+      hardwareModeAutoLabel: "स्वचालित",
+      hardwareModeSingleLabel: "एक GPU",
+      hardwareModeShardingLabel: "मॉडल विभाजन",
+      hardwareModeDdpLabel: "DDP (डेटा समानांतर)",
+      hardwareModeAuto: "Studio सबसे कम व्यस्त संगत GPU को स्वचालित रूप से चुनता है।",
+      hardwareModeSingle: "एक चयनित GPU पर मॉडल की एक प्रति।",
+      hardwareModeSharding: "एक मॉडल चयनित GPU में विभाजित होता है। यह VRAM को जोड़ता है; यह DDP नहीं है।",
+      hardwareModeDdp: "प्रत्येक चयनित GPU पर मॉडल की एक प्रति। ग्रेडिएंट समकालिक होते हैं; प्रत्येक चयनित GPU में मॉडल समाना चाहिए।",
+      liveInventory: "वर्तमान डिवाइस सूची:",
+      memoryAvailable: "{free} / {total} GiB खाली",
+      memoryUnknown: "खाली मेमोरी अज्ञात / कुल {total} GiB",
+      noSelectableGpu: "स्पष्ट चयन के लिए स्थिर भौतिक इंडेक्स वाला कोई GPU उपलब्ध नहीं है।",
+      multipleGpusRequired: "इस मोड के लिए कम से कम दो GPU चुनें।",
       mode: {
         simple: "सरल",
         advanced: "उन्नत",
@@ -3432,6 +3455,9 @@ export const hi = {
       setupChanged:
         "जांच के दौरान ट्रेनिंग सेटअप बदल गया। इसकी समीक्षा करें और फिर से ट्रेनिंग शुरू करें।",
       validation: {
+        multipleGpusRequired: "इस मोड के लिए कम से कम दो GPU चुनें।",
+        singleGpuRequired: "एकल-GPU प्रशिक्षण के लिए ठीक एक GPU चुनें।",
+        gpuSelectionUnavailable: "चयनित GPU उपलब्ध नहीं हैं। हार्डवेयर चयन रीफ़्रेश करें और फिर प्रयास करें।",
         s3MultimodalUnsupported:
           "S3 डेटासेट अभी विज़न ट्रेनिंग के लिए समर्थित नहीं हैं।",
         s3BucketRequired: "पहले S3 बकेट का नाम दर्ज करें।",

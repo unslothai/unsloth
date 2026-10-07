@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import threading
 import os
+import time
 from types import ModuleType, SimpleNamespace
 import sys
 
@@ -16,6 +17,7 @@ from core.training import ddp
 from core.training.dataset_bounds import world_size_from_env
 from core.training.ddp import (
     _RankEvents,
+    _SharedStopQueue,
     model_load_dtype_for_training,
     training_precision_flags_for_dtype,
 )
@@ -28,6 +30,67 @@ class _Events:
 
     def put(self, event):
         self.items.append(event)
+
+
+def test_shared_stop_queue_waits_after_delivering_stop():
+    stop_event = threading.Event()
+    stop_event.set()
+    stop_queue = _SharedStopQueue(stop_event, SimpleNamespace(value = True))
+
+    assert stop_queue.get(timeout = 0.01) == {"type": "stop", "save": True}
+    started = time.monotonic()
+    with pytest.raises(queue.Empty):
+        stop_queue.get(timeout = 0.03)
+    assert time.monotonic() - started >= 0.02
+
+
+@pytest.mark.parametrize("timeout", [None, 0])
+def test_shared_stop_queue_matches_queue_timeout_edges(timeout):
+    if timeout is None:
+        stop_event = threading.Event()
+        stop_queue = _SharedStopQueue(stop_event, SimpleNamespace(value = True))
+        result = []
+        waiter = threading.Thread(target = lambda: result.append(stop_queue.get()))
+        waiter.start()
+        time.sleep(0.02)
+        assert waiter.is_alive()
+        stop_event.set()
+        waiter.join(timeout = 1)
+        assert result == [{"type": "stop", "save": True}]
+        return
+
+    stop_queue = _SharedStopQueue(threading.Event(), SimpleNamespace(value = True))
+    with pytest.raises(queue.Empty):
+        stop_queue.get(timeout = timeout)
+
+
+@pytest.mark.parametrize("delivered", [False, True])
+def test_shared_stop_queue_rejects_negative_timeout(delivered):
+    stop_event = threading.Event()
+    stop_event.set()
+    stop_queue = _SharedStopQueue(stop_event, SimpleNamespace(value = True))
+    if delivered:
+        stop_queue.get(timeout = 0)
+    with pytest.raises(ValueError, match = "non-negative"):
+        stop_queue.get(timeout = -1)
+
+
+def test_shared_stop_queue_waits_on_an_unset_event_after_delivery(monkeypatch):
+    stop_event = threading.Event()
+    stop_event.set()
+    stop_queue = _SharedStopQueue(stop_event, SimpleNamespace(value = True))
+    stop_queue.get(timeout = 0)
+
+    class WaitReached(Exception):
+        pass
+
+    class UnsetEvent:
+        def wait(self):
+            raise WaitReached
+
+    monkeypatch.setattr(ddp.threading, "Event", UnsetEvent)
+    with pytest.raises(WaitReached):
+        stop_queue.get()
 
 
 @pytest.mark.parametrize(
@@ -312,33 +375,7 @@ def test_model_load_dtype_matches_ddp_training_precision(
     assert model_load_dtype_for_training(ddp_dtype, is_rocm, supports_bf16) == expected
 
 
-def test_progress_callback_preserves_aggregated_eval_loss_for_ddp(monkeypatch):
-    monkeypatch.setenv("WORLD_SIZE", "4")
-    events = _Events()
-    progress = SimpleNamespace(
-        step = 5,
-        loss = 0.4,
-        learning_rate = 0.001,
-        grad_norm = 1.0,
-        num_tokens = 100,
-        epoch = 0.5,
-        eval_loss = 0.8,
-        total_steps = 20,
-        is_run_summary = False,
-        elapsed_seconds = 2.0,
-        eta_seconds = 10.0,
-        session_start_step = 0,
-        status_message = None,
-        warnings = [],
-    )
-
-    _create_trainer_progress_callback(events)(progress)
-
-    assert events.items[0]["eval_loss"] == 0.8
-    assert events.items[0]["loss"] == 0.4
-
-
-def test_progress_callback_leaves_single_gpu_eval_loss_unchanged():
+def test_progress_callback_preserves_reported_eval_loss():
     events = _Events()
     progress = SimpleNamespace(
         step = 5,

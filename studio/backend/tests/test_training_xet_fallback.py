@@ -55,10 +55,6 @@ _npl = _types.ModuleType("utils.native_path_leases")
 _npl.native_path_secret_removed_for_child_start = lambda: contextlib.nullcontext()
 _npl.run_without_native_path_secret = lambda fn: fn
 _stub("utils.native_path_leases", _npl)
-_pth = _types.ModuleType("utils.paths")
-_pth.is_local_path = lambda *a, **k: False
-_pth.outputs_root = lambda *a, **k: "/tmp/outputs"
-_stub("utils.paths", _pth)
 
 import core.training.training as training_mod
 from core.training.training import TrainingBackend
@@ -70,7 +66,6 @@ for _name in (
     "structlog",
     "utils.hardware",
     "utils.native_path_leases",
-    "utils.paths",
 ):
     _prev = _SAVED.get(_name)
     if _prev is None:
@@ -157,8 +152,11 @@ def test_stall_during_load_arms_respawn_and_terminates_worker():
     assert proc.is_alive() is False, "stalled worker must be terminated"
 
 
-def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch):
+@pytest.mark.parametrize("mode", ["auto", "single", "model_parallel", "ddp"])
+def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch, mode):
     b, _ = _backend_mid_load()
+    gpu_ids = None if mode == "auto" else ([2] if mode == "single" else [2, 5])
+    b._last_full_config.update(parallelism_mode = mode, gpu_ids = gpu_ids)
     b._handle_event({"type": "stall", "message": "x"})
 
     fake_ctx = _FakeCtx()
@@ -179,6 +177,9 @@ def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch):
     cfg = fake_ctx.spawned[0]["kwargs"]["config"]
     assert cfg["disable_xet"] is True, "respawned worker must run with Xet disabled"
     assert cfg["model_name"] == "org/model"
+    assert cfg["parallelism_mode"] == mode
+    assert cfg["gpu_ids"] == gpu_ids
+    assert fake_ctx.spawned[0]["daemon"] is (mode != "ddp")
     assert created["n"] == 0, "respawn must not recreate the DB run row"
     assert finalized["n"] == 0, "a successful respawn must not finalize the run as error"
 

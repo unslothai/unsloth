@@ -2646,7 +2646,9 @@ class TrainingBackend:
                             target = run_without_native_path_secret,
                             args = process_args,
                             kwargs = process_kwargs,
-                            daemon = True,
+                            # Match the initial coordinator: DDP recovery must be
+                            # able to spawn its rank workers as well.
+                            daemon = config.get("parallelism_mode") != "ddp",
                         )
                         from utils.process_lifetime import adopt_pid, is_process_shutting_down
 

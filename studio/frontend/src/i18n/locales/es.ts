@@ -3018,6 +3018,13 @@ export const es = {
         "Los archivos del conjunto de datos ya no están en este dispositivo, por lo que el entrenamiento volverá a descargarlos.",
     },
     preview: {
+      automaticGpu: "Automático — GPU seleccionada al iniciar",
+      noGpuSelected: "No hay ninguna GPU seleccionada",
+      perGpu: "por GPU",
+      gpus: "GPU",
+      globalBatch: "global",
+      gpuDevice: "GPU {index}: {name}",
+      totalVram: "Total: {total} GiB",
       title: "Vista previa de la ejecución",
       ready: "Listo",
       notReady: "No está listo",
@@ -3347,6 +3354,22 @@ export const es = {
       },
     },
     params: {
+      hardware: "Hardware",
+      gpuPlacement: "Ubicación de GPU",
+      gpuPlacementTooltip: "Elige selección automática, una GPU, fragmentación del modelo o DDP en paralelo de datos. DDP replica el modelo en cada GPU seleccionada.",
+      hardwareModeAutoLabel: "Automático",
+      hardwareModeSingleLabel: "Una GPU",
+      hardwareModeShardingLabel: "Fragmentación del modelo",
+      hardwareModeDdpLabel: "DDP (paralelo de datos)",
+      hardwareModeAuto: "Studio selecciona automáticamente la GPU compatible menos ocupada.",
+      hardwareModeSingle: "Una copia del modelo en una GPU seleccionada.",
+      hardwareModeSharding: "Un modelo fragmentado entre las GPU seleccionadas. Combina la VRAM; no es DDP.",
+      hardwareModeDdp: "Una réplica del modelo por GPU seleccionada. Los gradientes se sincronizan; cada GPU debe poder alojar el modelo.",
+      liveInventory: "Inventario en tiempo real:",
+      memoryAvailable: "{free} / {total} GiB libres",
+      memoryUnknown: "Memoria libre desconocida / {total} GiB en total",
+      noSelectableGpu: "No hay ninguna GPU con un índice físico estable disponible para seleccionar.",
+      multipleGpusRequired: "Selecciona al menos dos GPU para este modo.",
       mode: {
         simple: "Simple",
         advanced: "Avanzado",
@@ -3479,6 +3502,9 @@ export const es = {
       setupChanged:
         "La configuración del entrenamiento cambió mientras se comprobaba. Revísala y vuelve a iniciar el entrenamiento.",
       validation: {
+        singleGpuRequired: "Selecciona exactamente una GPU para el entrenamiento con una sola GPU.",
+        gpuSelectionUnavailable: "Las GPU seleccionadas no están disponibles. Actualiza la selección de hardware e inténtalo de nuevo.",
+        multipleGpusRequired: "Selecciona al menos dos GPU para este modo.",
         s3MultimodalUnsupported:
           "Los conjuntos de datos de S3 todavía no son compatibles con el entrenamiento de visión.",
         s3BucketRequired: "Introduce primero el nombre de un bucket de S3.",

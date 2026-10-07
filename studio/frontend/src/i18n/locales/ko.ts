@@ -2967,6 +2967,13 @@ export const ko = {
         "데이터셋 파일이 더 이상 이 기기에 없어 학습 시 다시 다운로드합니다.",
     },
     preview: {
+      perGpu: "GPU당",
+      gpus: "GPU",
+      globalBatch: "전역",
+      gpuDevice: "GPU {index}: {name}",
+      totalVram: "합계: {total} GiB",
+      automaticGpu: "자동 — 시작 시 GPU 선택",
+      noGpuSelected: "선택된 GPU 없음",
       title: "실행 미리보기",
       ready: "준비됨",
       notReady: "준비 안 됨",
@@ -3288,6 +3295,22 @@ export const ko = {
       },
     },
     params: {
+      hardware: "하드웨어",
+      gpuPlacement: "GPU 배치",
+      gpuPlacementTooltip: "자동 선택, 단일 GPU, 모델 분할 또는 데이터 병렬 DDP를 선택하세요. DDP는 선택한 각 GPU에 모델을 복제합니다.",
+      hardwareModeAutoLabel: "자동",
+      hardwareModeSingleLabel: "단일 GPU",
+      hardwareModeShardingLabel: "모델 분할",
+      hardwareModeDdpLabel: "DDP(데이터 병렬)",
+      hardwareModeAuto: "Studio가 호환되는 GPU 중 가장 사용량이 적은 GPU를 자동으로 선택합니다.",
+      hardwareModeSingle: "선택한 하나의 GPU에 모델 복사본 하나를 배치합니다.",
+      hardwareModeSharding: "하나의 모델을 선택한 GPU에 분할합니다. VRAM을 결합하며 DDP는 아닙니다.",
+      hardwareModeDdp: "선택한 각 GPU에 모델 복제본 하나를 배치합니다. 그래디언트가 동기화되며 각 GPU에 모델이 들어갈 수 있어야 합니다.",
+      liveInventory: "현재 장치 목록:",
+      memoryAvailable: "{free} / {total} GiB 사용 가능",
+      memoryUnknown: "사용 가능한 메모리 알 수 없음 / 총 {total} GiB",
+      noSelectableGpu: "명시적으로 선택할 수 있는 안정적인 물리 인덱스의 GPU가 없습니다.",
+      multipleGpusRequired: "이 모드에서는 GPU를 두 개 이상 선택하세요.",
       mode: {
         simple: "간단",
         advanced: "고급",
@@ -3425,6 +3448,9 @@ export const ko = {
       setupChanged:
         "확인하는 동안 학습 설정이 변경되었습니다. 설정을 검토한 후 학습을 다시 시작하세요.",
       validation: {
+        multipleGpusRequired: "이 모드에서는 GPU를 두 개 이상 선택하세요.",
+        singleGpuRequired: "단일 GPU 학습에는 정확히 하나의 GPU를 선택하세요.",
+        gpuSelectionUnavailable: "선택한 GPU를 사용할 수 없습니다. 하드웨어 선택을 새로 고친 후 다시 시도하세요.",
         s3MultimodalUnsupported:
           "비전 학습에는 아직 S3 데이터셋을 사용할 수 없습니다.",
         s3BucketRequired: "S3 버킷 이름을 먼저 입력하세요.",

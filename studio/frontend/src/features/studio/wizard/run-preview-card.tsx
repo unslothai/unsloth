@@ -16,7 +16,7 @@ import {
   useTrainingTransformersUpgradeNotice,
 } from "@/features/training";
 import { useGpuInfo } from "@/hooks";
-import { useGpuDevices } from "@/hooks/use-gpu-info";
+import { useTrainingGpuDevices } from "@/hooks/use-gpu-info";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
@@ -25,6 +25,11 @@ import { type ReactElement, type ReactNode, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useTrainingResourceDisplayNames } from "../hooks/use-training-resource-display-names";
 import { countNonDefaultAdvancedSettings } from "./advanced-settings-summary";
+import {
+  selectedTrainingPreviewDevices,
+  trainingPreviewGpuCount,
+} from "@/features/training/lib/training-gpu-selection";
+import { TrainingGpuPreview } from "./training-gpu-preview";
 import type { ParamMode } from "./training-param-mode";
 
 const LEARNING_RATE_ZERO_RE = /\.?0+e/;
@@ -112,7 +117,10 @@ function ResourceNoticeRow({
               <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="top" className="max-w-[calc(260px*var(--ui-space-scale,1))] leading-relaxed">
+          <TooltipContent
+            side="top"
+            className="max-w-[calc(260px*var(--ui-space-scale,1))] leading-relaxed"
+          >
             {description}
           </TooltipContent>
         </Tooltip>
@@ -211,10 +219,12 @@ function BatchPreviewValue({
   batchSize,
   gradientAccumulation,
   gpuCount,
+  t,
 }: {
   batchSize: number;
   gradientAccumulation: number;
   gpuCount: number;
+  t: ReturnType<typeof useT>;
 }): ReactElement {
   if (gradientAccumulation <= 1 && gpuCount <= 1) {
     return <span className="font-mono">{batchSize}</span>;
@@ -225,10 +235,10 @@ function BatchPreviewValue({
     <>
       <span className="font-mono">{batchSize}</span>
       <span className="text-muted-foreground/70">
-        {" per GPU"}
+        {` ${t("studio.preview.perGpu")}`}
         {gradientAccumulation > 1 ? ` × ${gradientAccumulation}` : ""}
-        {gpuCount > 1 ? ` × ${gpuCount} GPUs` : ""}
-        {` = ${globalBatch} global`}
+        {gpuCount > 1 ? ` × ${gpuCount} ${t("studio.preview.gpus")}` : ""}
+        {` = ${globalBatch} ${t("studio.preview.globalBatch")}`}
       </span>
     </>
   );
@@ -389,20 +399,23 @@ export function RunPreviewCard({
   );
 
   const gpu = useGpuInfo();
-  const gpuDevices = useGpuDevices();
-  const selectedGpuCount =
-    parallelismMode === "ddp"
-      ? (selectedGpuIds?.length ?? 0)
-      : 1;
-  const previewGpuCount = Math.max(selectedGpuCount, 1);
-  const displayedGpuDevices =
-    parallelismMode === "auto" || selectedGpuIds === null
-      ? gpuDevices
-      : gpuDevices.filter((device) => selectedGpuIds.includes(device.index));
-  const displayedGpuMemoryGb = displayedGpuDevices.reduce(
-    (total, device) => total + device.memoryTotalGb,
-    0,
+  const gpuDevices = useTrainingGpuDevices();
+  const previewGpuCount = trainingPreviewGpuCount(
+    parallelismMode,
+    selectedGpuIds,
   );
+  const displayedGpuDevices = selectedTrainingPreviewDevices(
+    parallelismMode,
+    selectedGpuIds,
+    gpuDevices,
+  );
+  const displayedGpuMemoryGb =
+    parallelismMode === "model_parallel"
+      ? displayedGpuDevices.reduce(
+          (total, device) => total + device.memoryTotalGb,
+          0,
+        )
+      : (displayedGpuDevices[0]?.memoryTotalGb ?? 0);
   const hfToken = useHfTokenStore((s) => s.token);
   const hasToken = hfApiToken(hfToken) !== undefined;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
@@ -513,6 +526,7 @@ export function RunPreviewCard({
               batchSize={batchSize}
               gradientAccumulation={gradientAccumulation}
               gpuCount={previewGpuCount}
+              t={t}
             />
           }
         />
@@ -543,33 +557,22 @@ export function RunPreviewCard({
       </section>
 
       <section className="flex flex-col gap-3">
-        <MetaRow
-          label={t("studio.preview.hardware")}
-          wrap
-          value={
-            displayedGpuDevices.length > 0 ? (
-              <span className="flex min-w-0 flex-col items-end gap-1 text-right">
-                {displayedGpuDevices.map((device) => (
-                  <span key={device.index} className="max-w-full truncate">
-                    GPU {device.index}: {device.name}
-                  </span>
-                ))}
-                <span className="text-muted-foreground/70">
-                  {`Total: ${displayedGpuMemoryGb.toFixed(1)} GiB`}
-                </span>
-              </span>
-            ) : (
-              <span>{gpu.available ? gpu.name : t("studio.preview.noGpu")}</span>
-            )
-          }
+        <TrainingGpuPreview
+          mode={parallelismMode}
+          devices={displayedGpuDevices}
+          gpuAvailable={gpu.available}
+          totalMemoryGb={displayedGpuMemoryGb}
+          labels={{
+            hardware: t("studio.preview.hardware"),
+            vram: t("studio.preview.vram"),
+            automatic: t("studio.preview.automaticGpu"),
+            unavailable: t("studio.preview.noGpu"),
+            noSelection: t("studio.preview.noGpuSelected"),
+            device: (index, name) =>
+              t("studio.preview.gpuDevice", { index, name }),
+            total: (total) => t("studio.preview.totalVram", { total }),
+          }}
         />
-        {displayedGpuDevices.length === 1 && (
-          <MetaRow
-            label={t("studio.preview.vram")}
-            title={`${displayedGpuMemoryGb.toFixed(1)} GiB`}
-            value={`${displayedGpuMemoryGb.toFixed(1)} GiB`}
-          />
-        )}
         <MetaRow
           label={t("studio.preview.hfToken")}
           value={

@@ -84,6 +84,26 @@ test("migration preserves tuned values while protecting them from model defaults
     trainOnCompletionsBeforeCpt: null,
   });
   assert.equal("wandbToken" in migrated, false);
+  assert.equal(migrated.parallelismMode, "auto");
+  assert.equal(migrated.selectedGpuIds, null);
+});
+
+test("version 23 migration preserves the saved GPU placement", () => {
+  const migrated = migrateTrainingConfig(
+    { parallelismMode: "ddp", selectedGpuIds: [0, 2] },
+    23,
+  );
+  assert.equal(migrated.parallelismMode, "ddp");
+  assert.deepEqual(migrated.selectedGpuIds, [0, 2]);
+});
+
+test("pre-23 migration resets legacy GPU placement", () => {
+  const migrated = migrateTrainingConfig(
+    { parallelismMode: "ddp", selectedGpuIds: [0, 2] },
+    22,
+  );
+  assert.equal(migrated.parallelismMode, "auto");
+  assert.equal(migrated.selectedGpuIds, null);
 });
 
 test("migration keeps method-default learning rates automatic", () => {
@@ -105,6 +125,32 @@ test("merge never restores a persisted W&B token", () => {
   } as never);
 
   assert.equal(merged.wandbToken, "");
+});
+
+test("merge normalizes invalid persisted GPU placement", () => {
+  for (const persisted of [
+    { parallelismMode: "unknown", selectedGpuIds: [0] },
+    { parallelismMode: "single", selectedGpuIds: [] },
+    { parallelismMode: "ddp", selectedGpuIds: [1, 1] },
+    { parallelismMode: "model_parallel", selectedGpuIds: null },
+    { parallelismMode: "auto", selectedGpuIds: [0, 1] },
+  ]) {
+    const merged = mergeTrainingConfig(
+      persisted,
+      initialTrainingConfigState as never,
+    );
+    assert.equal(merged.parallelismMode, "auto");
+    assert.equal(merged.selectedGpuIds, null);
+  }
+});
+
+test("merge preserves valid placement and removes malformed GPU IDs", () => {
+  const merged = mergeTrainingConfig(
+    { parallelismMode: "ddp", selectedGpuIds: [2, -1, "0", 0, 2, 0.5] },
+    initialTrainingConfigState as never,
+  );
+  assert.equal(merged.parallelismMode, "ddp");
+  assert.deepEqual(merged.selectedGpuIds, [2, 0]);
 });
 
 test("merge rejects defaults metadata for a different selected model", () => {

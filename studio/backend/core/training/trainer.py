@@ -787,11 +787,18 @@ class UnslothTrainer:
         """Save model after training and update progress. Used by all training branches."""
         # Keep Trainer's save calls on every rank (they own distributed save
         # semantics), but only the writing rank may mutate auxiliary files.
-        should_save = getattr(getattr(self.trainer, "args", None), "should_save", True)
+        # LOCAL_RANK is intentionally zero in every isolated DDP rank. Use the
+        # global process-zero predicate, not TrainingArguments.should_save,
+        # which may also depend on save strategy.
+        is_writing_rank = (
+            self.trainer.is_world_process_zero()
+            if hasattr(self.trainer, "is_world_process_zero")
+            else getattr(getattr(self.trainer, "args", None), "process_index", 0) == 0
+        )
         if self.should_stop and self.save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
-            if should_save:
+            if is_writing_rank:
                 self.tokenizer.save_pretrained(output_dir)
                 self._patch_adapter_config(output_dir)
             msg = f"{label} training stopped" if label else "Training stopped"
@@ -806,7 +813,7 @@ class UnslothTrainer:
             self._update_progress(is_training = False, status_message = "Training cancelled.")
         else:
             self.trainer.save_model()
-            if should_save:
+            if is_writing_rank:
                 self.tokenizer.save_pretrained(output_dir)
                 self._patch_adapter_config(output_dir)
             msg = f"{label} training completed" if label else "Training completed"
