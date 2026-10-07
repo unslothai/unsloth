@@ -3386,6 +3386,15 @@ class DiffusionBackend:
             kwargs["_te_prequant_resolved"] = bool(te_prequant_files)
             if dit_prequant is not None:
                 expected += int(dit_prequant[2])
+            # load_pipeline downloads the pre-cast encoder. A mirrored file is read in place, never cached.
+            from .diffusion_te_prequant import te_prequant_unmirrored
+
+            te_hub_files = [
+                (repo, name, int(size or 0))
+                for repo, files in te_prequant_files.values()
+                for name, size in te_prequant_unmirrored(repo, files)
+            ]
+            expected += sum(size for _repo, _name, size in te_hub_files)
             # Only shards this prefetch staged may be materialised by the dense fallback, so read it off the staged
             # list: a failed size estimate drops every base file too. A LOCAL base directory has no listing to fail at
             # (model_info raises on a path) and its shards are already there, so it counts as staged on the filesystem
@@ -3449,10 +3458,7 @@ class DiffusionBackend:
                     self._loading.fetch_repo = fetch_base
                     self._loading.expected_bytes = expected
                     if skip_transformer_weights:
-                        # Claimed before a byte moves: a mid-fetch delete would leave this load with nothing.
-                        self._loading.asset_repos = tuple(
-                            dict.fromkeys(self._loading.asset_repos + (dit_prequant[0],))
-                        )
+                        # Claimed before a byte moves. File entry first: load_progress reads lock-free.
                         self._loading.asset_files += (
                             (
                                 dit_prequant[0],
@@ -3461,12 +3467,32 @@ class DiffusionBackend:
                                 asset_baseline,
                             ),
                         )
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(self._loading.asset_repos + (dit_prequant[0],))
+                        )
             if skip_transformer_weights:
                 self._fetch_denoiser_prequant(
                     dit_prequant,
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                 )
+            if te_hub_files:
+                # Baselined AFTER the denoiser fetch: one repo can hold both, and its bytes are not the encoder's.
+                te_baselines = {
+                    repo: self._cache_bytes(repo) for repo in {r for r, _n, _s in te_hub_files}
+                }
+                with self._load_cancel_lock:
+                    if self._load_token == token and self._loading is not None:
+                        self._loading.asset_files += tuple(
+                            (repo, name, size, te_baselines[repo])
+                            for repo, name, size in te_hub_files
+                        )
+                        self._loading.asset_repos = tuple(
+                            dict.fromkeys(
+                                self._loading.asset_repos
+                                + tuple(repo for repo, _n, _s in te_hub_files)
+                            )
+                        )
             # Download outside the lock so unload/an eviction can preempt the pull. The carried snapshot is the
             # fallback, never the override: it fires only when the estimate came back empty, since the metadata that
             # fills it is the same call whose failure earned the escape. Without it the load 401s with every byte
@@ -3557,11 +3583,14 @@ class DiffusionBackend:
             downloaded = self._cache_bytes(loading.repo_id)
             if companion and companion != loading.repo_id:
                 downloaded += self._cache_bytes(companion)
-        scoped = {entry[0] for entry in loading.asset_files}
-        for asset in loading.asset_repos:
+        # Repos read before files (_run_load stores files first), so every repo seen has its file entry.
+        asset_repos = loading.asset_repos
+        asset_files = loading.asset_files
+        scoped = {entry[0] for entry in asset_files}
+        for asset in asset_repos:
             if asset and asset not in (loading.repo_id, companion) and asset not in scoped:
                 downloaded += self._cache_bytes(asset)
-        for repo, filename, size, baseline in loading.asset_files:
+        for repo, filename, size, baseline in asset_files:
             if not repo or repo in (loading.repo_id, companion):
                 continue
             # The finished file plus what this load added since it claimed the repo (in-flight
@@ -10646,9 +10675,16 @@ class DiffusionBackend:
                 loading = self._loading
                 if loading is not None and loading.error is None:
                     # _run_load's finally drops this, so it spans the prefetch too, where nothing
-                    # is registered in _load_accounts.
+                    # is registered in _load_accounts. Asset repos too: the encoder download ignores the cancel event.
                     self._draining_repos.setdefault(cancelled_token, set()).update(
-                        r for r in (loading.repo_id, loading.base_repo, loading.fetch_repo) if r
+                        r
+                        for r in (
+                            loading.repo_id,
+                            loading.base_repo,
+                            loading.fetch_repo,
+                            *loading.asset_repos,
+                        )
+                        if r
                     )
                 self._cancel_event.set()
                 self._load_token += 1
