@@ -173,6 +173,7 @@ function codeSpanRegions(text: string): [number, number][] {
 
 const LINK_LABEL_USE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
 const NON_LINE_ENDING_RE = /[^\n]/g;
+const MAX_LINK_DESTINATION_DEPTH = 32;
 
 function isAsciiControl(char: string): boolean {
   const code = char.charCodeAt(0);
@@ -226,6 +227,9 @@ function bareDestinationEnd(
       at += 1;
     } else if (char === "(") {
       depth += 1;
+      if (depth > MAX_LINK_DESTINATION_DEPTH) {
+        return [-1, -1];
+      }
     } else if (char === ")") {
       if (depth === 0) {
         return [at, at + 1];

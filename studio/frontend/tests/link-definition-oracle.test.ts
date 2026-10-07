@@ -311,6 +311,10 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
       "> [1](/inline \"title\n> # heading\n> continuation\")",
       "[1]: https://x.test/one",
     ],
+    [
+      `Read [1](${"(".repeat(33)}x${")".repeat(33)}) first.`,
+      "[1]: https://x.test/one",
+    ],
     ["Read [SS] first.", "[\u1E9E]: https://x.test/ss"],
     ["Read [Stra\u00DFe] first.", "[STRASSE]: https://x.test/strasse"],
   ]) {
@@ -327,6 +331,7 @@ test("a bracketed label that is not a shortcut reference keeps block rendering",
     "Use [1](https://x.test/inline).\n\n[1]: https://x.test/unused\n",
     "Use [1](https://x.test/a_(b)).\n\n[1]: https://x.test/unused\n",
     "Use [1](foo(and(bar))).\n\n[1]: https://x.test/unused\n",
+    `Use [1](${"(".repeat(32)}x${")".repeat(32)}).\n\n[1]: https://x.test/unused\n`,
     "Use [1](\\(foo\\)).\n\n[1]: https://x.test/unused\n",
     "Use [1](<>).\n\n[1]: https://x.test/unused\n",
     "Use [1](<https://x.test/a b> \"title\").\n\n[1]: https://x.test/unused\n",
