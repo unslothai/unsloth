@@ -339,7 +339,8 @@ class PersistentConditioningCache:
         geom = f"{shape[0]}x{shape[1]}" if shape else str(self.resolution)
         var = f"{u_left:.6f}_{u_top:.6f}_{int(bool(flip))}"
         return (
-            f"lat_v{_LATENT_CACHE_VERSION}_{self.family}_{geom}_" f"{_file_content_hash(image_path)}_{var}"
+            f"lat_v{_LATENT_CACHE_VERSION}_{self.family}_{geom}_"
+            f"{_file_content_hash(image_path)}_{var}"
         )
 
     def text_key(self, caption: str) -> str:

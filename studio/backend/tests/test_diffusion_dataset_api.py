@@ -275,17 +275,19 @@ def test_thumbnail_of_transparent_image_shows_white_background(client, ds_root):
     assert min(thumb.getpixel((2, 2))) > 245
 
 
-
 def test_thumbnail_cached_before_white_flattening_is_not_served(client, ds_root):
     folder = ds_root / "d"
     (folder / ".thumbs").mkdir(parents = True)
     Image.new("RGBA", (64, 64), (0, 0, 0, 0)).save(folder / "sticker.png", format = "PNG")
-    Image.new("RGB", (64, 64), (0, 0, 0)).save(folder / ".thumbs" / "sticker.png_64.jpg", format = "JPEG")
+    Image.new("RGB", (64, 64), (0, 0, 0)).save(
+        folder / ".thumbs" / "sticker.png_64.jpg", format = "JPEG"
+    )
 
     r = client.get("/api/train/diffusion/dataset/d/image/sticker.png?thumb=64")
 
     assert r.status_code == 200
     assert min(Image.open(io.BytesIO(r.content)).convert("RGB").getpixel((2, 2))) > 245
+
 
 # ── traversal / validation ───────────────────────────────────────────────────
 def test_dataset_name_traversal_rejected_over_http(client, ds_root):
