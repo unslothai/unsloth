@@ -552,7 +552,7 @@ export function useLlamaUpdateCheck({
     const acceptSuppression = (suppression: OfferSuppression | null) => {
       if (suppressionRef.current === suppression) return;
       suppressionRef.current = suppression;
-      if (enabled && statusRef.current) presentStatus(statusRef.current);
+      if (statusRef.current) presentStatus(statusRef.current);
       else armSnoozeTimer();
     };
     const onSuppression = (event: Event) => {
