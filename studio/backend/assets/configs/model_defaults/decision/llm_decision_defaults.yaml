@@ -1,6 +1,4 @@
-# Defaults for training a text or vision LLM (Qwen3.5, Qwen3, Llama, Gemma...) as a decision model:
-# FastDecisionModel adds a fresh Clef joint schema head and trains it with LoRA on the LLM.
-# Same recipe as scripts/train_decision_from_lm.py.
+# A text or vision LLM trained as a decision model (fresh Clef head + LoRA), as scripts/train_decision_from_lm.py.
 
 training:
   max_seq_length: 4096

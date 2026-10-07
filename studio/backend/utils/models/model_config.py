@@ -3752,8 +3752,7 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
 
 
 _LAYA_MARKER = "rl_agent_config.json"
-# Cloudflare's Clef layout: a Qwen3.5 backbone plus the joint schema head. Unsloth also saves a
-# Clef head with LoRA adapters over the base LLM it was trained on (save_pretrained).
+# Clef: a backbone (merged, or LoRA adapters over the base LLM) plus the joint schema head.
 CLEF_HEAD_MARKERS = ("joint_head.safetensors", "joint_head_config.json")
 CLEF_MARKERS = ("config.json", *CLEF_HEAD_MARKERS)
 CLEF_ADAPTER_MARKERS = ("adapter_config.json", *CLEF_HEAD_MARKERS)

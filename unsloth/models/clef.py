@@ -43,8 +43,7 @@ def _fast_enabled() -> bool:
 _COMPILED = {}
 
 
-# The head runs eagerly unless UNSLOTH_CLEF_COMPILE=1: compiling it costs 7-20 minutes in every
-# process (warm Inductor cache included) and Qwen3.5-2B steps are no faster compiled (L4, G4).
+# Eager unless UNSLOTH_CLEF_COMPILE=1: compiling costs 7-20 minutes per process and is no faster (L4, G4).
 
 
 def _compile_supported(device) -> bool:

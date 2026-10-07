@@ -535,8 +535,7 @@ def test_the_decision_notebook_runs_unchanged_on_a_plain_qwen3_5(tmp_path, monke
 
 
 def test_long_states_are_cut_in_training_but_read_in_full_by_predict(monkeypatch):
-    # A state past max_seq_length keeps its questions and options and loses its end in training;
-    # predict() reads up to CLEF_SERVE_MAX_LEN tokens, as Studio's Decision API does.
+    # Training cuts the end of a long state; predict() reads up to CLEF_SERVE_MAX_LEN tokens, like serving.
     from unsloth.models import decision
 
     from transformers import AutoConfig

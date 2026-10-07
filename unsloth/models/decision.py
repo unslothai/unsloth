@@ -58,8 +58,7 @@ _CLEF_EXTRA_FILES = (
     "generation_config.json",
 )
 CLEF_MAX_LEN = 4096
-# predict() and Studio's Decision API read up to this many tokens, whatever the model trained at:
-# one prefill costs little, and cutting a long state at inference drops evidence.
+# predict() and serving read this many tokens whatever the training length: cutting a state drops evidence.
 CLEF_SERVE_MAX_LEN = 16384
 # laya 0.3.5 ships inside Unsloth for Studio's Decision API (studio/backend/vendor/README.md).
 _VENDORED_LAYA = (
@@ -111,7 +110,6 @@ def is_clef_checkpoint(folder) -> bool:
 
 
 def _is_clef_adapter(folder) -> bool:
-    # Merged weights win when a folder has both.
     folder = Path(folder)
     return not (folder / "config.json").is_file() and (folder / _ADAPTER_CONFIG).is_file()
 
@@ -131,7 +129,6 @@ def _is_clef_repo(model_name, prefix, token, revision) -> Optional[bool]:
 
 
 def _is_plain_lm(model_name, subfolder, token, revision, local_files_only) -> bool:
-    # Neither a Laya nor a Clef checkpoint, but a model FastModel loads: it gets a new Clef head.
     # Unknown (offline, no access) answers False, so the checkpoint loader names what is missing.
     markers = {_FILES[0], _CLEF_HEAD_FILES[1]}
     if subfolder:
@@ -712,8 +709,7 @@ def _decision_logits(
 
 
 def _predicted(question: dict, answer: dict, probabilities: dict) -> dict:
-    # The Decision API answer plus the top option as "answer" (an option for choice, True or
-    # False for noul, the level number for score) and every option's probability.
+    # The Decision API answer plus "answer": the option (choice), True / False (noul) or level number (score).
     kind = question["type"]
     best = max(probabilities, key = probabilities.__getitem__)
     return {
@@ -779,8 +775,7 @@ def _clef_decide(
 
 
 def _clef_truncated(tokenizer, state, questions, encoded, max_length) -> bool:
-    # A cut state fills the budget exactly, but so does one that fits exactly: one more token of
-    # room tells them apart, and is only spent on prompts at the limit.
+    # One spare token tells a cut state from one that fits exactly.
     if len(encoded.input_ids) < max_length:
         return False
     from .clef import encode_record
@@ -862,9 +857,8 @@ def _clef_forced_float32(model) -> bool:
 
 
 def _clef_amp_dtype(model, device):
-    # As _clef_mixed_precision trains: a model on Unsloth's float32 path (Qwen3.5 without bf16,
-    # whose gated delta net overflows in fp16) runs as loaded; any other autocasts, fp16 on a T4,
-    # where its fp32 norms would otherwise feed fp16 Linears. Serving uses this, to match calibration.
+    # As _clef_mixed_precision trains (serving uses it too): the float32 path runs as loaded (Qwen3.5's
+    # gated delta net overflows in fp16); anything else autocasts, fp16 on a T4.
     return None if _clef_forced_float32(model) else _amp_dtype(device)
 
 
@@ -1074,8 +1068,7 @@ def _stamp_transformers_version(config_file: Path) -> None:
 
 
 def _clef_head_weights(self, exact = False) -> tuple:
-    # The decision config and head weights both save layouts write. exact: a trainer
-    # checkpoint to resume from, so float32 and no temperature folded in.
+    # exact: a resumable trainer checkpoint, so float32 and no temperature folded in.
     config = {**self.decision_config, "fine_tuned": True}
     state = {k: v.detach().to("cpu", torch.float32) for k, v in self.head.state_dict().items()}
     if exact:
@@ -1128,8 +1121,7 @@ def _save_clef(self, save_directory, tokenizer) -> None:
         if hasattr(encoder, "save_pretrained_merged"):
             # Unsloth's merge dequantizes a 4-bit base and writes the processor files too.
             encoder.save_pretrained_merged(str(staging), tokenizer, save_method = "merged_16bit")
-            # The merge downloads the base's shards with local_dir = the save folder, which leaves
-            # huggingface_hub's .cache/huggingface (locks, metadata) behind: not part of the model.
+            # A merge with local_dir = the save folder leaves huggingface_hub's .cache behind.
             shutil.rmtree(staging / ".cache", ignore_errors = True)
         else:
             if hasattr(encoder, "merge_and_unload"):
@@ -1210,8 +1202,7 @@ def save_pretrained_clef(
     tokenizer = None,
     **kwargs,
 ) -> None:
-    # As for Unsloth's other models: LoRA adapters (plus the head) here, merged weights in
-    # save_pretrained_merged. A full finetune has no adapters, so it saves merged.
+    # Adapters plus the head, as Unsloth's other models; a full finetune has none, so it saves merged.
     tokenizer = self._saved_temp_tokenizer if tokenizer is None else tokenizer
     if not hasattr(self.encoder, "peft_config"):
         return _save_clef(self, save_directory, tokenizer)
@@ -1245,8 +1236,7 @@ def _attach_clef_saving(model) -> None:
 
 def _clef_mixed_precision(model, args) -> None:
     # Unsloth's rule for Qwen3.5 (rl.py): on its float32 path a model never autocasts, since
-    # float16 NaNs the gated delta net; otherwise bfloat16 weights pair with bf16 only, and a
-    # language model loaded in float16 (a T4) keeps fp16.
+    # float16 NaNs the gated delta net; bfloat16 weights pair with bf16 only; an fp16 load (T4) keeps fp16.
     if _clef_forced_float32(model):
         if args.fp16 or args.bf16:
             print("Unsloth: Clef trains in float32 here, since Qwen3.5 cannot train in float16.")
@@ -1761,7 +1751,6 @@ class FastDecisionModel:
         if kwargs.get("decision_head") is None and _is_plain_lm(
             model_name, subfolder, token, revision, local_files_only
         ):
-            # A plain language model (Qwen3.5, Llama, ...) becomes a Clef-style decision model.
             kwargs["decision_head"] = "clef"
         if kwargs.get("decision_head") is not None:
             # A plain language model plus a fresh (or given) decision head: see decision_from_lm.py.
@@ -2014,8 +2003,7 @@ class FastDecisionModel:
             report["reason"] = (
                 example if count == 1 else f"{example} (and {count - 1:,} more like it)"
             )
-        # A row longer than max_seq_length keeps its questions and options (and, for Clef, the
-        # start of its state); the end of the state is cut. Counted per row (Clef) or decision (Laya).
+        # Over max_seq_length the end of the state is cut, never questions or options.
         report["truncated"] = sum(len(item["input_ids"]) >= max_len for item in items)
         if report["truncated"]:
             print(
@@ -2061,8 +2049,7 @@ class FastDecisionModel:
         state = _parsed(state)
         if getattr(model, "is_clef", False):
             questions = {str(name): _clef_question(q) for name, q in questions.items()}
-            # Served like Studio's Decision API: a long state is read in full up to
-            # CLEF_SERVE_MAX_LEN tokens, even when training cut it at max_seq_length.
+            # Read up to CLEF_SERVE_MAX_LEN tokens, like serving, even past the training cut.
             max_length = max(
                 int(model.decision_config.get("max_len", CLEF_MAX_LEN)), CLEF_SERVE_MAX_LEN
             )

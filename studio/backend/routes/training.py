@@ -1271,8 +1271,7 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
         hf_token_arg(request.hf_token, allow_ambient_token = via_api_key is not True),
         subfolder = request.model_subfolder,
     )
-    # Not a decision checkpoint: a text or vision LLM that gets a fresh Clef head. A subfolder or
-    # a catalog repo still means Laya, so an uncached Laya checkpoint is not loaded as an LLM.
+    # A subfolder or a catalog repo still means Laya, so an uncached Laya checkpoint is not loaded as an LLM.
     llm = (
         layout is None
         and request.model_subfolder is None
