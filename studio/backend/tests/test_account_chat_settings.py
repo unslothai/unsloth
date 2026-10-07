@@ -503,7 +503,11 @@ def test_pinned_models_are_per_account(client):
         "/settings/pinned-models", json = {"pinned": ["org/a::Q4_K_M", "org/b", "org/b"]}
     )
     assert saved.status_code == 200, saved.text
-    assert saved.json() == {"pinned": ["org/a::Q4_K_M", "org/b"], "connected": None, "embedding": None}
+    assert saved.json() == {
+        "pinned": ["org/a::Q4_K_M", "org/b"],
+        "connected": None,
+        "embedding": None,
+    }
     both = client.put("/settings/pinned-models", json = {"connected": ["external::c1::gpt"]}).json()
     assert both == {
         "pinned": ["org/a::Q4_K_M", "org/b"],
