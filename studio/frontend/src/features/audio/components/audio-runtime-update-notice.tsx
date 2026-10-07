@@ -82,14 +82,14 @@ export function AudioRuntimeUpdateNotice({
           {mode === "ask_owner" ? (
             <>
               Some models may not work until it is updated. Ask the Unsloth
-              Studio owner to update it.
+              owner to update it.
             </>
           ) : mode === "updating" || mode === "checking" ? null : (
             <>Some models may not work until you update. </>
           )}
           {mode === "cli" ? (
             <>
-              Stop Unsloth Studio, run{" "}
+              Stop Unsloth, run{" "}
               <code className="font-mono">unsloth studio update</code>, then
               start it again.
             </>
