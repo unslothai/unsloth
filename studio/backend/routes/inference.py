@@ -11546,6 +11546,7 @@ async def _maybe_auto_switch_model(
                             # Stale pin (GPU removed, another host, or a backend change
                             # renumbering these ids): drop it rather than 400 the load.
                             load_kwargs.pop("gpu_ids", None)
+                            load_kwargs.pop("tensor_split", None)
                             logger.warning(
                                 "Dropping saved gpu_ids %s for %s: not available here.",
                                 saved_gpu_ids,
@@ -11606,6 +11607,7 @@ async def _maybe_auto_switch_model(
                                     exc.detail,
                                 )
                                 load_kwargs.pop("gpu_ids", None)
+                                load_kwargs.pop("tensor_split", None)
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True

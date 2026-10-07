@@ -1020,6 +1020,7 @@ class ModelOverridePayload(BaseModel):
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
+    tensor_split: Optional[list[float]] = Field(default = None, min_length = 2, max_length = MAX_GPU_IDS)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
     # Which index space gpu_ids is in. Absent means physical, the only thing a client
     # written before this field could have meant.
@@ -1028,6 +1029,27 @@ class ModelOverridePayload(BaseModel):
     remove: Optional[bool] = None
     # Fill in, don't replace: the backfill reads the map once then writes each model.
     fill_absent_fields: bool = False
+
+    @model_validator(mode = "after")
+    def _tensor_split_matches_gpu_ids(self):
+        if self.tensor_split is not None:
+            from utils.openai_auto_switch_settings import normalize_tensor_split
+            if normalize_tensor_split(self.tensor_split, self.gpu_ids) is None:
+                raise ValueError(
+                    "tensor_split must match an ordered selection of at least two unique GPUs"
+                )
+        return self
+
+    @field_validator("tensor_split")
+    @classmethod
+    def _valid_tensor_split(cls, value: Optional[list[float]]) -> Optional[list[float]]:
+        if value is None:
+            return None
+        from utils.openai_auto_switch_settings import normalize_tensor_split
+
+        if normalize_tensor_split(value, list(range(len(value)))) is None:
+            raise ValueError("tensor_split must be finite, non-negative, and have a positive total")
+        return value
 
     @field_validator("chat_template_override")
     @classmethod
@@ -1059,6 +1081,7 @@ class ModelOverridePayload(BaseModel):
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
+        "tensor_split",
         mode = "before",
     )
     @classmethod
@@ -2628,6 +2651,13 @@ def update_openai_auto_switch_override(
                         max_seq_length = explicit_ctx
                     if custom_context_length is not None:
                         custom_context_length = explicit_ctx
+            tensor_split = payload.tensor_split
+            if "tensor_split" not in fields_set:
+                previous = get_model_override(target_id)
+                if previous.get("gpu_ids") == payload.gpu_ids and previous.get(
+                    "gpu_index_kind", "physical"
+                ) == (payload.gpu_index_kind or "physical"):
+                    tensor_split = previous.get("tensor_split")
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
@@ -2672,6 +2702,7 @@ def update_openai_auto_switch_override(
                 gpu_layers = payload.gpu_layers,
                 n_cpu_moe = payload.n_cpu_moe,
                 gpu_ids = payload.gpu_ids,
+                tensor_split = tensor_split,
                 gpu_index_kind = payload.gpu_index_kind,
                 fill_absent_fields = payload.fill_absent_fields,
             )
