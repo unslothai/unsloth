@@ -459,6 +459,13 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
 
 # XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, PVC, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
 _INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
+# Core Ultra iGPUs PyTorch XPU lists (pciids.h: MTL less MTL_U, ARL_H, LNL, PTL).
+_INTEL_XPU_PCI_IDS = frozenset(
+    (0x7D55, 0x7D60, 0x7DD5)
+    + (0x7D51, 0x7DD1)
+    + (0x6420, 0x64A0, 0x64B0)
+    + (0xB080, 0xB081, 0xB082, 0xB083, 0xB084, 0xB085, 0xB086, 0xB087, 0xB08F, 0xB090, 0xB0A0, 0xB0B0)
+)
 
 
 def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
@@ -468,7 +475,9 @@ def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
             device_id = int(fh.read().strip(), 16)
     except (OSError, ValueError):
         return None
-    return any(lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES)
+    return device_id in _INTEL_XPU_PCI_IDS or any(
+        lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES
+    )
 
 
 def _linux_drm_sysfs_records(*, distinguish_failure: bool = False) -> "list[Dict[str, Any]] | None":
@@ -4687,9 +4696,20 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         }
 
     tokens = [value.strip() for value in cuda_visible.split(",") if value.strip()]
-    try:
-        numeric_ids = [int(value) for value in tokens]
-    except ValueError:
+    numeric_ids = []
+    for value in tokens:
+        try:
+            gpu_id = int(value)
+        except ValueError:
+            # A UUID/MIG id keeps the UUID path below; any other invalid token ends the list.
+            if not numeric_ids or value.upper().startswith(("GPU-", "MIG-")):
+                numeric_ids = None
+            break
+        # The runtime keeps only the devices before an invalid index: "0,2,-1,1" exposes 0 and 2.
+        if gpu_id < 0:
+            break
+        numeric_ids.append(gpu_id)
+    if numeric_ids is None:
         # nvidia-smi indices are PCI order, so they only name the same cards a numeric mask written back to a child would under PCI_BUS_ID (#8873).
         if not _is_rocm_spec and os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
             from . import nvidia
