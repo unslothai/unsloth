@@ -537,7 +537,7 @@ function inlineHtmlEnd(text: string, from: number, scan: InlineScan): number {
   if (text[at] === "/") {
     at += 1;
     if (!/[A-Za-z]/u.test(text[at] ?? "")) return -1;
-    for (at += 1; /[A-Za-z0-9_:-]/u.test(text[at] ?? ""); at += 1) {
+    for (at += 1; /[A-Za-z0-9-]/u.test(text[at] ?? ""); at += 1) {
       // scan the tag name
     }
     while (isHtmlWhitespace(text[at])) at += 1;
@@ -545,7 +545,7 @@ function inlineHtmlEnd(text: string, from: number, scan: InlineScan): number {
   }
 
   if (!/[A-Za-z]/u.test(text[at] ?? "")) return -1;
-  for (at += 1; /[A-Za-z0-9_-]/u.test(text[at] ?? ""); at += 1) {
+  for (at += 1; /[A-Za-z0-9-]/u.test(text[at] ?? ""); at += 1) {
     // scan the tag name
   }
   for (;;) {

@@ -360,6 +360,7 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
     ],
     ["Read <!-- ` --> [1] ` first.", "[1]: https://x.test/one"],
     ["Read <!A`> [1] ` first.", "[1]: https://x.test/one"],
+    ['Read <a_b title="`"> ` [1] ` first.', "[1]: https://x.test/one"],
     ["> `open\n>\n> [1]\n> `", "[1]: https://x.test/one"],
     ["> `open\n> # heading\n> [1]\n> `", "[1]: https://x.test/one"],
     [
