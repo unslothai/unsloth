@@ -25,8 +25,6 @@ import {
   quoteState,
 } from "./markdown-list-columns.ts";
 
-const DOLLAR_REGEX = /(?<![\\$])\$(?!\$)/g;
-
 /** matches currency bodies after `$`, including separators, decimals, and K/M/B suffixes. */
 const CURRENCY_REGEX = /\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d])/y;
 
@@ -40,6 +38,18 @@ const BLOCK_BREAK_RE =
 const VARIABLE_PROSE_RE =
   /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=*\-\p{L}\p{M}\u3000-\u303f\uff00-\uff65]*(?:[\s/:,.;|<>=\-\u3000-\u303f\uff00-\uff65]|[^\P{L}\p{ASCII}]|[\s(]["'(`])$/u;
 const NEW_TOKEN_RE = /[\w{\\]/;
+const isAsciiLetter = (c: number) => (c | 32) >= 97 && (c | 32) <= 122;
+const isWordChar = (c: number) =>
+  isAsciiLetter(c) || (c >= 48 && c <= 57) || c === 95;
+
+/** necessary prefix of VARIABLE_PROSE_RE, checked before slicing the span. */
+function startsLikeVariable(text: string, at: number): boolean {
+  const a = text.charCodeAt(at);
+  const b = text.charCodeAt(at + 1);
+  if (isAsciiLetter(a)) return isAsciiLetter(b);
+  if (a === 95) return isWordChar(b);
+  return a === 123 && (isAsciiLetter(b) || b === 95);
+}
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 
@@ -406,6 +416,17 @@ function findAutolinkRegions(content: string): Array<[number, number]> {
   return regions;
 }
 
+/** `isInRegion` for ascending positions: amortised O(1) per query. */
+function regionCursor(
+  regions: Array<[number, number]>,
+): (position: number) => boolean {
+  let k = 0;
+  return (position) => {
+    while (k < regions.length && regions[k][1] <= position) k++;
+    return k < regions.length && regions[k][0] <= position;
+  };
+}
+
 /** regions must be sorted by start and non-overlapping. */
 export function isInRegion(
   position: number,
@@ -539,6 +560,8 @@ function findInlineMathCloser(
   content: string,
   offset: number,
   lineStart: number,
+  lineEnd: number,
+  tableRow: boolean,
 ): number {
   let i = content.indexOf("$", offset + 1);
   while (i !== -1 && content[i + 1] === "$") {
@@ -546,12 +569,23 @@ function findInlineMathCloser(
     i = content.indexOf("$", i + 1);
   }
   if (i === -1) return -1;
-  const body = content.slice(offset + 1, i);
-  if (BLOCK_BREAK_RE.test(body)) return -1;
-  HEADING_LINE_RE.lastIndex = lineStart;
-  if (HEADING_LINE_RE.test(content) && body.includes("\n")) return -1;
-  TABLE_ROW_RE.lastIndex = lineStart;
-  if (TABLE_ROW_RE.test(content) && /\n|(?<!\\)\|/.test(body)) return -1;
+  // hot path: only multi-line spans can cross a block break or leave a heading.
+  const multiline = lineEnd !== -1 && lineEnd < i;
+  if (multiline) {
+    if (BLOCK_BREAK_RE.test(content.slice(offset + 1, i))) return -1;
+    HEADING_LINE_RE.lastIndex = lineStart;
+    if (HEADING_LINE_RE.test(content)) return -1;
+  }
+  if (tableRow) {
+    if (multiline) return -1;
+    for (
+      let p = content.indexOf("|", offset + 1);
+      p !== -1 && p < i;
+      p = content.indexOf("|", p + 1)
+    ) {
+      if (content[p - 1] !== "\\") return -1;
+    }
+  }
   return i;
 }
 
@@ -667,44 +701,89 @@ export function preprocessLaTeX(content: string): string {
   const codeRegions = findCodeBlockRegions(text);
   const linkRegions = mergeRegions(
     findLinkDestinationRegions(text),
-    findAutolinkRegions(text),
+    text.includes("<") || text.includes("://") || text.includes("www.")
+      ? findAutolinkRegions(text)
+      : [],
   );
   const rawTextRegions = findRawTextRegions(text);
+  const inCode = regionCursor(codeRegions);
+  const inLink = regionCursor(linkRegions);
+  const inMath = regionCursor(mathRegions);
+  const inRawText = regionCursor(rawTextRegions);
   let closer = -1;
   let lineStart = 0;
   let nextNewline = text.indexOf("\n");
+  let tableRow: boolean | null = null;
 
-  return text.replace(DOLLAR_REGEX, (match, offset) => {
-    if (isInRegion(offset, codeRegions) || isInRegion(offset, linkRegions)) {
-      return match;
+  const rewrite = (offset: number): string => {
+    // evaluate all cursors so each advances past `offset`.
+    const code = inCode(offset);
+    const link = inLink(offset);
+    const math = inMath(offset);
+    if (code || link) {
+      return "$";
     }
     // preserve converted numeric math to avoid currency re-escaping
-    if (isInRegion(offset, mathRegions)) {
-      return match;
+    if (math) {
+      return "$";
     }
+    const digit = text.charCodeAt(offset + 1) - 48;
     CURRENCY_REGEX.lastIndex = offset + 1;
-    const currency = CURRENCY_REGEX.test(text);
+    const currency = digit >= 0 && digit <= 9 && CURRENCY_REGEX.test(text);
     if (currency && !hasInlineMathCloser(text, offset, mathRegions)) {
-      return "\\" + match;
+      return "\\$";
     }
     if (offset === closer) {
-      return match;
+      return "$";
     }
     while (nextNewline !== -1 && nextNewline < offset) {
       lineStart = nextNewline + 1;
       nextNewline = text.indexOf("\n", lineStart);
+      tableRow = null;
     }
-    const next = findInlineMathCloser(text, offset, lineStart);
+    if (tableRow === null) {
+      TABLE_ROW_RE.lastIndex = lineStart;
+      tableRow = TABLE_ROW_RE.test(text);
+    }
+    const next = findInlineMathCloser(
+      text,
+      offset,
+      lineStart,
+      nextNewline,
+      tableRow,
+    );
     if (
       !currency &&
       next !== -1 &&
+      startsLikeVariable(text, offset + 1) &&
       (next + 1 === text.length || NEW_TOKEN_RE.test(text[next + 1])) &&
       VARIABLE_PROSE_RE.test(text.slice(offset + 1, next)) &&
-      !isInRegion(offset, rawTextRegions)
+      !inRawText(offset)
     ) {
       return VARIABLE_DOLLAR;
     }
     closer = next;
-    return match;
-  });
+    return "$";
+  };
+
+  // a single `$`: not escaped, not part of `$$`. A plain scan, since a regex replace
+  // callback per dollar dominated the streaming re-render cost.
+  const parts: string[] = [];
+  let last = 0;
+  for (
+    let offset = text.indexOf("$");
+    offset !== -1;
+    offset = text.indexOf("$", offset + 1)
+  ) {
+    const prev = text[offset - 1];
+    if (prev === "\\" || prev === "$" || text[offset + 1] === "$") continue;
+    const out = rewrite(offset);
+    if (out !== "$") {
+      parts.push(text.slice(last, offset), out);
+      last = offset + 1;
+    }
+  }
+  if (last === 0) return text;
+  parts.push(text.slice(last));
+  return parts.join("");
 }
