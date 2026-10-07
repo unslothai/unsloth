@@ -2904,6 +2904,11 @@ export const ja = {
       datasetLabel: "データセット",
       modelTooltip: "ファインチューニングするベースモデルです。",
       methodTooltip: "モデルの学習方法です。LoRA と QLoRA はすべての重みではなく小さなアダプターを更新します。",
+      trainAsLabel: "学習タイプ",
+      trainAsTooltip:
+        "言語モデルはテキストを生成します。意思決定モデルは指定した選択肢から確率付きで1つを選び、Decision API で動作します。",
+      trainAsLanguage: "言語モデル",
+      trainAsDecision: "意思決定モデル",
       checkpointLabel: "チェックポイント",
       checkpointTooltip:
         "ファインチューニングする Laya のチェックポイントです。多くのデータセットには多言語が適しています。",

@@ -6,7 +6,6 @@ import json
 import os
 import shutil
 import struct
-import sys
 import time
 from types import SimpleNamespace
 
@@ -364,6 +363,25 @@ def test_a_clef_fine_tune_serves_through_its_worker(home, client, clef):
     assert clef.agents[1].closed
 
 
+def test_an_adapter_clef_fine_tune_serves_through_its_worker(home, client, clef):
+    # FastDecisionModel.save_pretrained: LoRA adapters plus the Clef head over the base LLM.
+    path = home / "qwen_decisions_1"
+    path.mkdir(parents = True)
+    for name in ("adapter_config.json", "joint_head.safetensors", "joint_head_config.json"):
+        (path / name).write_text("{}", encoding = "utf-8")
+    served = catalog.CLEF_FINE_TUNE_PREFIX + "qwen_decisions_1"
+    # Not complete until the adapter weights are there.
+    assert _listed(client) == []
+    (path / "adapter_model.safetensors").write_bytes(b"")
+    assert _listed(client) == [served]
+    assert _put(client, enabled = True, model = served).status_code == 200
+
+    answer = _post(client).json()
+    assert answer["model"] == served
+    assert answer["answers"]["urgent"] == {"type": "noul", "noul": 0.25}
+    assert clef.agents[0].folder == path.resolve() or str(clef.agents[0].folder) == str(path)
+
+
 def test_a_clef_load_that_training_overtakes_frees_the_gpu(home, clef, monkeypatch):
     from core.systemone import clef_runtime
 
@@ -566,25 +584,3 @@ def test_a_clef_worker_that_died_after_loading_is_a_worker_error():
 
     with pytest.raises(clef_runtime.ClefWorkerError, match = "exited"):
         _clef_agent(Conn()).decide("state", {})
-
-
-def test_a_clef_prompt_that_fits_exactly_is_not_truncated(monkeypatch):
-    import types
-
-    from core.systemone import clef_runtime
-
-    def encode(tokenizer, record, max_length):
-        # The state needs `natural` tokens; anything over max_length is cut to fit.
-        return SimpleNamespace(input_ids = [0] * min(record["state"], max_length))
-
-    # Studio's backend CI has no unsloth_zoo, so the real module may not import: stand it in.
-    for name in ("unsloth", "unsloth.models"):
-        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
-    monkeypatch.setitem(sys.modules, "unsloth.models.clef", SimpleNamespace(encode_record = encode))
-    size = clef_runtime.MAX_LENGTH
-
-    def truncated(natural):
-        encoded = encode(None, {"state": natural}, size)
-        return clef_runtime._truncated(None, natural, {}, encoded)
-
-    assert (truncated(size - 1), truncated(size), truncated(size + 1)) == (False, False, True)

@@ -419,10 +419,15 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, lora):
     encoder_config = (checkpoint / "encoder" / "config.json").read_bytes()
     assert (tmp_path / "out" / "encoder" / "config.json").read_bytes() == encoder_config
     agent = laya.load(str(tmp_path / "out"), device = "cpu")
-    assert agent.predict("the server is down again", QUESTIONS)["answers"]["team"]["choice"] in (
-        "outage",
-        "billing",
-    )
+    served = agent.predict("the server is down again", QUESTIONS)["answers"]
+    assert served["team"]["choice"] in ("outage", "billing")
+    # predict() answers like the served checkpoint, from the model in memory.
+    ours = FastDecisionModel.predict(model, tokenizer, "the server is down again", QUESTIONS)
+    assert set(ours) == set(QUESTIONS)
+    for name, answer in served.items():
+        assert ours[name]["type"] == answer["type"]
+        for key, value in (answer.get("probabilities") or {}).items():
+            assert ours[name]["probabilities"][key] == pytest.approx(value, abs = 0.02)
 
     FastDecisionModel.for_inference(model)
     assert not model.training
@@ -1116,6 +1121,21 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     assert error <= 0.03 * scale + 0.05, (error, scale, folded)
     for row, z in enumerate(theirs):
         assert int(z.argmax()) == int(again[row, : len(z)].argmax()), (row, z, again[row, : len(z)])
+    # predict() serves the same calibrated answer from memory, the merged reload and the adapters.
+    state = "the server is down again"
+    ours = FastDecisionModel.predict(model, processor, state, QUESTIONS)
+    merged = FastDecisionModel.predict(reloaded, processor, state, QUESTIONS)
+    model.save_pretrained(str(tmp_path / "adapters"))
+    from_adapters, _ = FastDecisionModel.from_pretrained(
+        str(tmp_path / "adapters"), max_seq_length = 512
+    )
+    assert from_adapters.decision_config["base_model"] == str(clef_checkpoint)
+    adapters = FastDecisionModel.predict(from_adapters, processor, state, QUESTIONS)
+    for name in QUESTIONS:
+        for other in (merged, adapters):
+            assert other[name]["type"] == ours[name]["type"]
+            for key, value in (ours[name].get("probabilities") or {}).items():
+                assert other[name]["probabilities"][key] == pytest.approx(value, abs = 0.03)
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "the fast kernels need a CUDA device")
@@ -1416,7 +1436,7 @@ def test_clef_calibration_fits_being_right_and_serves_through_the_head_temperatu
     )
 
 
-def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypatch):
+def test_clef_autocasts_as_it_trains_and_never_on_the_float32_path(monkeypatch):
     model = torch.nn.Linear(1, 1)
     cuda = torch.device("cuda")
     monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: True)
@@ -1424,9 +1444,31 @@ def test_clef_autocasts_only_in_bfloat16_and_never_on_the_float32_path(monkeypat
     model._unsloth_forced_float32 = True
     assert decision._clef_amp_dtype(model, cuda) is None
     model._unsloth_forced_float32 = False
+    # A T4: an fp16 model autocasts like its fp16 training, else its fp32 norms meet fp16 Linears.
     monkeypatch.setattr(decision, "is_bfloat16_supported", lambda: False)
+    assert decision._clef_amp_dtype(model, cuda) == torch.float16
+    model._unsloth_forced_float32 = True
     assert decision._clef_amp_dtype(model, cuda) is None
+    model._unsloth_forced_float32 = False
     assert decision._clef_amp_dtype(model, torch.device("cpu")) is None
+
+
+def test_a_clef_prompt_that_fits_exactly_is_not_truncated(monkeypatch):
+    # Serving (Studio's Decision API) and predict share this rule.
+    from unsloth.models import clef
+
+    def encode(tokenizer, record, max_length):
+        # The state needs `natural` tokens; anything over max_length is cut to fit.
+        return types.SimpleNamespace(input_ids = [0] * min(record["state"], max_length))
+
+    monkeypatch.setattr(clef, "encode_record", encode)
+    size = 16384
+
+    def truncated(natural):
+        encoded = encode(None, {"state": natural}, size)
+        return decision._clef_truncated(None, natural, {}, encoded, size)
+
+    assert (truncated(size - 1), truncated(size), truncated(size + 1)) == (False, False, True)
 
 
 @pytest.mark.parametrize("forced", [False, True])
@@ -1443,6 +1485,18 @@ def test_clef_trains_under_the_autocast_it_evaluates_in(tmp_path, monkeypatch, f
     assert args.bf16 == (not forced) and not args.fp16, (args.bf16, args.fp16)
     assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == expected
     assert getattr(args, "mixed_precision", expected) == expected
+
+
+def test_clef_trains_under_fp16_autocast_on_a_gpu_without_bf16(tmp_path, monkeypatch):
+    # A T4: evaluate and serving autocast fp16, so training does too.
+    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
+    monkeypatch.setattr(decision, "_amp_dtype", lambda device: torch.float16)
+    model = torch.nn.Linear(1, 1)
+    model._unsloth_forced_float32 = False
+    args = _args(tmp_path)
+    decision._clef_mixed_precision(model, args)
+    assert args.fp16 and not args.bf16, (args.bf16, args.fp16)
+    assert decision.os.environ["ACCELERATE_MIXED_PRECISION"] == "fp16"
 
 
 def test_clef_calibration_with_every_holdout_decision_from_one_row():

@@ -12,7 +12,6 @@ __all__ = [
 ]
 
 import json
-import types
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -153,9 +152,8 @@ def load_lm_as_decision_model(
     from .decision import (
         CLEF_MAX_LEN,
         ClefDecisionModel,
+        _attach_clef_saving,
         _mark_full_finetuning,
-        push_to_hub_merged,
-        save_pretrained_merged,
     )
 
     if decision_head not in DECISION_HEADS:
@@ -206,6 +204,9 @@ def load_lm_as_decision_model(
         "max_len": max_len,
         "temperature": [1.0] * 3,
         "base_model": str(model_name),
+        **({"base_revision": revision} if revision else {}),
+        # How the backbone loaded, so a server puts saved adapters back on the same base.
+        "load_in_4bit": bool(load_in_4bit),
     }
     _mark_full_finetuning(model, full_finetuning)
     model._unsloth_forced_float32 = bool(getattr(backbone, "_unsloth_forced_float32", False))
@@ -214,36 +215,8 @@ def load_lm_as_decision_model(
     model._unsloth_source_vocab = len(tokenizer)
     source = _source_folder(model_name, token, revision, local_files_only)
     model._unsloth_source_folder = str(source) if source is not None else ""
-    model.save_pretrained_merged = types.MethodType(_save_with_reference_code, model)
-    model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
-    model._unsloth_save_pretrained_merged = save_pretrained_merged
+    _attach_clef_saving(model)
     return model, processor
-
-
-# Cloudflare's joint_schema_model.py, vendored unmodified.
-_REFERENCE_CODE = Path(__file__).resolve().parents[1] / "_vendor" / "clef" / "joint_schema_model.py"
-
-
-def _save_with_reference_code(
-    self,
-    save_directory,
-    tokenizer = None,
-    save_method = "merged_16bit",
-    **kwargs,
-):
-    import shutil
-
-    self._unsloth_save_pretrained_merged(self, save_directory, tokenizer, save_method, **kwargs)
-    # Cloudflare's loader is for Qwen3.5 vision backbones; ship it so the folder loads there too.
-    output = Path(save_directory)
-    architectures = getattr(self._backbone().config, "architectures", None) or []
-    reference = _REFERENCE_CODE
-    if (
-        reference.is_file()
-        and "Qwen3_5ForConditionalGeneration" in architectures
-        and not (output / "joint_schema_model.py").exists()
-    ):
-        shutil.copyfile(reference, output / "joint_schema_model.py")
 
 
 def freeze_backbone(model):

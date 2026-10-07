@@ -2937,6 +2937,11 @@ export const ar = {
       datasetLabel: "مجموعة البيانات",
       modelTooltip: "النموذج الأساسي الذي تريد ضبطه.",
       methodTooltip: "طريقة تدريب النموذج. يحدّث LoRA وQLoRA محوّلات صغيرة بدلاً من جميع الأوزان.",
+      trainAsLabel: "التدريب كـ",
+      trainAsTooltip:
+        "النموذج اللغوي يكتب نصًا. نموذج القرار يختار أحد الخيارات التي تعطيه إياها مع احتمال، ويعمل في Decision API.",
+      trainAsLanguage: "نموذج لغوي",
+      trainAsDecision: "نموذج قرار",
       checkpointLabel: "نقطة التحقق",
       checkpointTooltip:
         "نقطة تحقق Laya التي سيتم ضبطها. يناسب الإصدار متعدد اللغات معظم مجموعات البيانات.",

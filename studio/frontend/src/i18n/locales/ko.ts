@@ -2928,6 +2928,11 @@ export const ko = {
       datasetLabel: "데이터셋",
       modelTooltip: "파인튜닝할 기본 모델입니다.",
       methodTooltip: "모델 학습 방식입니다. LoRA와 QLoRA는 전체 가중치 대신 작은 어댑터를 업데이트합니다.",
+      trainAsLabel: "학습 유형",
+      trainAsTooltip:
+        "언어 모델은 텍스트를 생성합니다. 결정 모델은 주어진 옵션 중 하나를 확률과 함께 선택하며 Decision API에서 실행됩니다.",
+      trainAsLanguage: "언어 모델",
+      trainAsDecision: "결정 모델",
       checkpointLabel: "체크포인트",
       checkpointTooltip:
         "파인튜닝할 Laya 체크포인트입니다. 대부분의 데이터셋에는 다국어가 적합합니다.",

@@ -2881,6 +2881,11 @@ export const zhCN = {
       datasetLabel: "数据集",
       modelTooltip: "要微调的基础模型。",
       methodTooltip: "模型的训练方式。LoRA 和 QLoRA 只更新小型适配器，而不是全部权重。",
+      trainAsLabel: "训练为",
+      trainAsTooltip:
+        "语言模型生成文本。决策模型从你给出的选项中选择一个并给出概率，可在 Decision API 中运行。",
+      trainAsLanguage: "语言模型",
+      trainAsDecision: "决策模型",
       checkpointLabel: "检查点",
       checkpointTooltip: "要微调的 Laya 检查点。多语言版本适合大多数数据集。",
       datasetTooltip: "用于微调模型的训练数据。",

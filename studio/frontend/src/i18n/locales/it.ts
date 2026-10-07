@@ -2986,6 +2986,11 @@ export const it = {
       methodLabel: "Metodo",
       methodTooltip:
         "Il modo in cui viene addestrato il modello. LoRA e QLoRA aggiornano piccoli adattatori anziché tutti i pesi.",
+      trainAsLabel: "Addestra come",
+      trainAsTooltip:
+        "Un modello linguistico scrive testo. Un modello decisionale sceglie una delle opzioni che gli dai, con una probabilità, e funziona nella Decision API.",
+      trainAsLanguage: "Modello linguistico",
+      trainAsDecision: "Modello decisionale",
       checkpointLabel: "Checkpoint",
       checkpointTooltip:
         "Il checkpoint Laya da sottoporre a fine-tuning. Multilingue va bene per la maggior parte dei dataset.",

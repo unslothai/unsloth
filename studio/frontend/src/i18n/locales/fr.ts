@@ -2988,6 +2988,11 @@ export const fr = {
       datasetLabel: "Jeu de données",
       modelTooltip: "Le modèle de base que vous souhaitez affiner.",
       methodTooltip: "Comment le modèle est entraîné. LoRA et QLoRA mettent à jour de petits adaptateurs au lieu de tous les poids.",
+      trainAsLabel: "Entraîner comme",
+      trainAsTooltip:
+        "Un modèle de langage écrit du texte. Un modèle de décision choisit l'une des options que vous lui donnez, avec une probabilité, et fonctionne dans la Decision API.",
+      trainAsLanguage: "Modèle de langage",
+      trainAsDecision: "Modèle de décision",
       checkpointLabel: "Checkpoint",
       checkpointTooltip:
         "Le checkpoint Laya à affiner. Multilingue convient à la plupart des jeux de données.",

@@ -2978,6 +2978,11 @@ export const es = {
       datasetLabel: "Conjunto de datos",
       modelTooltip: "El modelo base que quieres ajustar.",
       methodTooltip: "Cómo se entrena el modelo. LoRA y QLoRA actualizan adaptadores pequeños en lugar de todos los pesos.",
+      trainAsLabel: "Entrenar como",
+      trainAsTooltip:
+        "Un modelo de lenguaje escribe texto. Un modelo de decisión elige una de las opciones que le das, con una probabilidad, y funciona en la Decision API.",
+      trainAsLanguage: "Modelo de lenguaje",
+      trainAsDecision: "Modelo de decisión",
       checkpointLabel: "Checkpoint",
       checkpointTooltip:
         "El checkpoint de Laya que se ajustará. Multilingüe sirve para la mayoría de los conjuntos de datos.",

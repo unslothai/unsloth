@@ -2984,6 +2984,11 @@ export const de = {
       datasetLabel: "Datensatz",
       modelTooltip: "Das Basismodell, das du feinabstimmen möchtest.",
       methodTooltip: "Wie das Modell trainiert wird. LoRA und QLoRA aktualisieren kleine Adapter statt aller Gewichte.",
+      trainAsLabel: "Trainieren als",
+      trainAsTooltip:
+        "Ein Sprachmodell schreibt Text. Ein Entscheidungsmodell wählt eine der vorgegebenen Optionen mit einer Wahrscheinlichkeit und läuft in der Decision API.",
+      trainAsLanguage: "Sprachmodell",
+      trainAsDecision: "Entscheidungsmodell",
       checkpointLabel: "Checkpoint",
       checkpointTooltip:
         "Der Laya-Checkpoint, der feinabgestimmt wird. Multilingual passt zu den meisten Datensätzen.",

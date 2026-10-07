@@ -2970,6 +2970,11 @@ export const en = {
       methodLabel: "Method",
       methodTooltip:
         "How the model is trained. LoRA and QLoRA update small adapters instead of every weight.",
+      trainAsLabel: "Train as",
+      trainAsTooltip:
+        "A language model writes text. A decision model picks one of the options you give it, with a probability, and runs in the Decision API.",
+      trainAsLanguage: "Language model",
+      trainAsDecision: "Decision model",
       checkpointLabel: "Checkpoint",
       checkpointTooltip:
         "The Laya checkpoint to fine-tune. Multilingual suits most datasets.",

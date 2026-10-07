@@ -520,6 +520,38 @@ def test_llm_output_scans_skip_decision_outputs(studio_home):
     assert [name for name, _, _ in scan_checkpoints(str(root))] == ["llama_merged_1"]
 
 
+def test_model_config_offers_an_llm_as_a_decision_model(studio_home):
+    import asyncio
+
+    from routes.models import get_model_config
+    from utils.models.model_config import load_llm_decision_defaults
+
+    llm = studio_home / "llm"
+    llm.mkdir()
+    config = {
+        "model_type": "llama",
+        "architectures": ["LlamaForCausalLM"],
+        "hidden_size": 64,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "vocab_size": 64,
+    }
+    (llm / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (llm / "model.safetensors").write_bytes(b"x")
+
+    def fetch(**kwargs):
+        return asyncio.run(
+            get_model_config(model_name = str(llm), hf_token = None, current_subject = "tester", **kwargs)
+        )
+
+    plain = fetch()
+    assert plain.model_type == "text" and plain.decision_layout is None
+    decision = fetch(as_decision = True)
+    assert decision.model_type == "decision" and decision.is_decision is True
+    assert decision.decision_layout == "llm" and decision.decision_checkpoints is None
+    assert decision.config == load_llm_decision_defaults()
+
+
 def test_model_config_classifies_a_local_laya_folder(base):
     import asyncio
 
