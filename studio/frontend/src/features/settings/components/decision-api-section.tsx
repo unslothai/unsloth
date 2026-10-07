@@ -172,7 +172,7 @@ export function DecisionApiSection(): ReactElement | null {
     const connection = connections?.find((c) => c.name === name);
     if (connection) return `${connection.provider} · ${connection.model}`;
     const option = settings?.models.find((m) => m.name === name);
-    if (option?.kind === "fine_tune" && option.label) return option.label;
+    if (option?.label) return option.label;
     return DECISION_MODEL_LABELS[name] ? t(DECISION_MODEL_LABELS[name]) : name;
   };
 
@@ -360,6 +360,9 @@ export function DecisionApiSection(): ReactElement | null {
   const remote = connections?.find((c) => c.name === settings.model);
   const knownModel = current !== undefined || isRemote;
   const longLabel = isRemote || current?.kind === "fine_tune";
+  // Laya is PyTorch only; Clef runs on either runtime, a GGUF-only model on llama.cpp only.
+  const runtimeChoice =
+    isClefDecisionModel(settings.model) || !!current?.llamaCppOnly;
   const connectionGroups = [
     ...new Set(connections?.map((c) => c.providerId)),
   ].map((id) => connections?.filter((c) => c.providerId === id) ?? []);
@@ -533,7 +536,7 @@ export function DecisionApiSection(): ReactElement | null {
                         key={option.name}
                         value={option.name}
                         disabled={!option.available}
-                        title={option.unavailableReason ?? undefined}
+                        title={option.unavailableReason ?? option.description}
                       >
                         <span className="flex items-center gap-2">
                           {modelLabel(option.name)}
@@ -571,7 +574,7 @@ export function DecisionApiSection(): ReactElement | null {
           </div>
         </SettingsRow>
 
-        {isClefDecisionModel(settings.model) ? (
+        {runtimeChoice ? (
           <>
             <SettingsRow
               label={t("settings.apiKeys.decisionApi.backend")}
@@ -687,7 +690,10 @@ export function DecisionApiSection(): ReactElement | null {
             </AlertDialogMedia>
             <AlertDialogTitle>
               {t(
-                isClefDecisionModel(confirm?.model ?? settings.model)
+                isClefDecisionModel(confirm?.model ?? settings.model) ||
+                  settings.models.find(
+                    (m) => m.name === (confirm?.model ?? settings.model),
+                  )?.llamaCppOnly
                   ? "settings.apiKeys.decisionApi.downloadConfirmTitleModel"
                   : "settings.apiKeys.decisionApi.downloadConfirmTitle",
                 { model: modelLabel(confirm?.model ?? settings.model) },

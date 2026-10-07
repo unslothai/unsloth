@@ -656,6 +656,8 @@ class SystemOneModelOption(BaseModel):
     label: Optional[str] = None
     available: bool = True
     unavailable_reason: Optional[str] = None
+    # A GGUF with no PyTorch form: the runtime setting matters, and PyTorch cannot serve it.
+    llama_cpp_only: bool = False
 
 
 class SystemOneConnectionOption(BaseModel):
@@ -1477,6 +1479,13 @@ def update_helper_precache(
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
     from core.systemone import laya_runtime
 
+    if getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+        # Selectable under a PyTorch runtime: the runtime row then says to switch it.
+        try:
+            laya_runtime.select(checkpoint, preference = "auto")
+        except laya_runtime.Unavailable as exc:
+            return {"llama_cpp_only": True, "available": False, "unavailable_reason": exc.message}
+        return {"llama_cpp_only": True}
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
     # llama.cpp serves Clef without CUDA or ROCm.
@@ -1525,6 +1534,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
                 name = c.name,
                 description = c.description,
                 download_bytes = c.download_bytes,
+                label = c.label,
                 **_clef_availability(c, clef_reason),
             )
             for c in catalog.CHECKPOINTS.values()

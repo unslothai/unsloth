@@ -265,7 +265,8 @@ def _cache_gguf(cache: Path, name: str = "clef-flash") -> None:
     )
     folder.mkdir(parents = True)
     for file in (companion.model, companion.mmproj):
-        (folder / file).write_bytes(b"GGUF")
+        if file:
+            (folder / file).write_bytes(b"GGUF")
 
 
 @pytest.fixture
@@ -1085,3 +1086,182 @@ def test_an_over_long_state_is_not_retried_where_pytorch_cannot_serve_clef(
     response = _post(client, state = "word " * 1100)
     assert response.status_code == 422 and "at most 1024" in response.json()["detail"]["message"]
     assert home.torch_agents == []
+
+
+# ---- GGUF-only entries (llama.cpp's other decision types)
+
+
+def _cache_blob(
+    cache: Path,
+    name: str,
+    revision: str,
+    sha256s = None,
+) -> None:
+    # The Hub cache layout: snapshot files link to blobs named by their LFS sha256.
+    companion = catalog.GGUF_COMPANIONS[name]
+    repo = cache / f"models--{companion.repo.replace('/', '--')}"
+    (repo / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo / "snapshots" / revision).mkdir(parents = True)
+    files = [f for f in (companion.model, companion.mmproj) if f]
+    for file, sha256 in zip(files, sha256s or companion.sha256):
+        (repo / "blobs" / sha256).write_bytes(b"GGUF")
+        (repo / "snapshots" / revision / file).symlink_to(Path("..", "..", "blobs", sha256))
+
+
+def test_gguf_entries_are_listed_as_llama_cpp_only(home, client, stub):
+    gguf = {n for n, c in catalog.CHECKPOINTS.items() if c.layout == "gguf"}
+    assert gguf == {
+        "kev-0.8b",
+        "kev-4b",
+        "kev-9b",
+        "lev",
+        "bespoke-nimble-9b-v3",
+        "openjev",
+        "laya-gguf",
+        "julia-1",
+    }
+    for name in gguf:
+        checkpoint, companion = catalog.CHECKPOINTS[name], catalog.GGUF_COMPANIONS[name]
+        assert checkpoint.backend == "llama.cpp" and checkpoint.source == companion.repo
+        assert len(companion.sha256) == (2 if companion.mmproj else 1)
+    assert systemone_settings.DEFAULT_MODEL == "laya-multilingual"
+    _put(client, enabled = True)
+    options = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
+    assert options["kev-0.8b"]["llama_cpp_only"] and options["kev-0.8b"]["label"] == "Kev 0.8B"
+    assert options["kev-0.8b"]["available"] and options["kev-0.8b"]["download_bytes"] == 812_406_304
+    assert not options["clef-flash"]["llama_cpp_only"] and options["clef-flash"]["label"] is None
+    listed = {
+        m["id"]: m["architecture"]["input_modalities"] for m in systemone.decision_model_objects()
+    }
+    assert listed["openjev"] == ["text", "image"] and listed["kev-0.8b"] == ["text"]
+    stub.set_mode("nodecisions")
+    laya_runtime._incapable.add(laya_runtime._binary_key(str(stub.binary)))
+    option = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}["lev"]
+    assert (
+        not option["available"] and "cannot serve decision models" in option["unavailable_reason"]
+    )
+
+
+def test_a_gguf_entry_is_served_only_by_llama_cpp(home, client, stub, monkeypatch):
+    _cache_gguf(home.cache, "kev-0.8b")
+    _put(client, enabled = True, model = "kev-0.8b")
+    settings = client.get("/api/settings/systemone").json()
+    assert (settings["effective_backend"], settings["input_modalities"]) == ("llama.cpp", ["text"])
+    response = _post(client)
+    assert response.status_code == 200, response.text
+    assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+    argv = stub.records("start")[0]["argv"]
+    companion = catalog.GGUF_COMPANIONS["kev-0.8b"]
+    assert argv[argv.index("-m") + 1].endswith(f"{companion.revision}/{companion.model}")
+    assert "--mmproj" not in argv and argv[argv.index("--alias") + 1] == "kev-0.8b"
+    refused = _post(client, images = [PNG])
+    assert (
+        refused.status_code == 422 and "no vision projector" in refused.json()["detail"]["message"]
+    )
+
+    _put(client, backend = "pytorch")
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["effective_backend"] is None
+    assert "served only by llama.cpp" in settings["fallback_reason"]
+    refused = _post(client)
+    assert refused.status_code == 400
+    assert "Auto or llama.cpp" in refused.json()["detail"]["message"]
+
+    _put(client, backend = "llama.cpp")
+    assert _post(client).status_code == 200
+    monkeypatch.setattr(native_worker, "resolve_binary", lambda: None)
+    _put(client, backend = "auto")
+    refused = _post(client)
+    assert refused.status_code == 503
+    assert refused.json()["detail"]["message"] == (
+        "kev-0.8b needs llama.cpp: llama-server is not installed."
+    )
+    assert home.torch_agents == []
+
+
+def test_a_build_without_decisions_is_a_clear_error_for_a_gguf_entry(home, client, stub):
+    _cache_gguf(home.cache, "julia-1")
+    stub.set_mode("nodecisions")
+    _put(client, enabled = True, model = "julia-1")
+    for _ in range(2):
+        response = _post(client)
+        assert response.status_code == 503
+        assert response.json()["detail"]["message"] == (
+            "julia-1 needs llama.cpp: This llama.cpp build cannot serve decision models; "
+            "update llama.cpp in Studio."
+        )
+    assert len(stub.records("start")) == 1 and home.torch_agents == []
+
+
+def test_a_gguf_entry_passes_llama_cpp_answers_through(home, client, stub):
+    _cache_gguf(home.cache, "laya-gguf")
+    _put(client, enabled = True, model = "laya-gguf")
+    response = _post(client)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["model"] == "laya-gguf"
+    assert body["usage"] == {"input_tokens": 14, "output_tokens": 0}
+    # llama.cpp's normalised confidence, not the Clef formatter's winning probability.
+    assert body["answers"]["route"] == {
+        "type": "choice",
+        "choice": "shipping",
+        "confidence": pytest.approx((2 / 3 - 1 / 2) / (1 - 1 / 2)),
+        "probabilities": {"billing": pytest.approx(1 / 3), "shipping": pytest.approx(2 / 3)},
+    }
+    assert body["answers"]["urgency"]["legend"] == {"0": "low", "1": "mid", "2": "high"}
+    assert body["answers"]["urgency"]["score"] == pytest.approx(2 / 6 + 2 * 3 / 6)
+    assert body["answers"]["angry"] == {"type": "noul", "noul": 0.7}
+
+    # An over-long state is refused, never retried on PyTorch.
+    _put(client, native_ctx = 1024)
+    response = _post(client, state = "word " * 1100)
+    assert response.status_code == 422 and "at most 1024" in response.json()["detail"]["message"]
+    assert home.torch_agents == []
+
+
+def test_gguf_answers_are_checked_before_they_pass_through():
+    questions = {"c": {"type": "choice", "instructions": "x", "criteria": {"a": "A", "b": "B"}}}
+    good = {
+        "type": "choice",
+        "choice": "a",
+        "probabilities": {"a": 0.8, "b": 0.2},
+        "confidence": 0.6,
+    }
+    result = native_worker.normalise({"answers": {"c": good}}, questions, clef_answers = False)
+    assert result["answers"]["c"] == good
+    for bad in (
+        {**good, "choice": "z"},
+        {**good, "confidence": None},
+        {**good, "probabilities": {"a": 0.8}},
+    ):
+        with pytest.raises(native_worker.NativeError, match = '"c"'):
+            native_worker.normalise({"answers": {"c": bad}}, questions, clef_answers = False)
+
+
+def test_the_download_plan_pins_the_revision_and_main_with_the_same_blob_counts(home, client):
+    companion = catalog.GGUF_COMPANIONS["openjev"]
+    checkpoint = catalog.CHECKPOINTS["openjev"]
+    assert laya_runtime.download_plan(checkpoint, preference = "pytorch")["revision"] == (
+        companion.revision
+    )
+    plan = client.get("/api/settings/systemone/resolve", params = {"model": "openjev"}).json()
+    assert plan == {
+        "repo": "ggml-org/OpenJev-GGUF",
+        "files": ["OpenJev-Q8_0.gguf", "mmproj-OpenJev-Q8_0.gguf"],
+        "size_bytes": 28_595_765_408 + 629_247_232,
+        "cached": False,
+        "error": None,
+    }
+    # The settings download fetches main: another commit holding different bytes is not the model.
+    _cache_blob(home.cache, "openjev", "f" * 40, ("0" * 64, "1" * 64))
+    assert not laya_runtime.is_cached(checkpoint)
+    _cache_blob(home.cache, "openjev", "e" * 40)
+    assert laya_runtime.is_cached(checkpoint)
+    model, mmproj = laya_runtime._native_files(checkpoint, local_only = True)
+    assert model.parent.name == mmproj.parent.name == "e" * 40
+    assert client.get("/api/settings/systemone/resolve", params = {"model": "openjev"}).json()[
+        "cached"
+    ]
+    # The Clef companions resolve the same way.
+    _cache_blob(home.cache, "clef-flash", "e" * 40)
+    assert laya_runtime.is_cached(laya_runtime._native_target(catalog.CHECKPOINTS["clef-flash"]))

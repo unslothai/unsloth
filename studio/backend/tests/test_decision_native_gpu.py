@@ -215,6 +215,10 @@ def reference(tmp_path_factory):
 
 @pytest.fixture
 def studio(tmp_path, monkeypatch):
+    yield from _studio(tmp_path, monkeypatch, {"model": "clef-flash"})
+
+
+def _studio(tmp_path, monkeypatch, settings):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -246,7 +250,7 @@ def studio(tmp_path, monkeypatch):
     app.dependency_overrides[get_current_subject] = lambda: "unsloth"
     client = TestClient(app)
     response = client.put(
-        "/api/settings/systemone", json = {"enabled": True, "model": "clef-flash", "device": "gpu"}
+        "/api/settings/systemone", json = {"enabled": True, "device": "gpu", **settings}
     )
     assert response.status_code == 200, response.text
     yield client
@@ -257,8 +261,9 @@ def _post(
     client,
     request,
     images = None,
+    model = "clef-flash",
 ):
-    body = {"model": "clef-flash", "state": request["state"], "questions": request["questions"]}
+    body = {"model": model, "state": request["state"], "questions": request["questions"]}
     if images:
         body["images"] = images
     deadline = time.monotonic() + 900
@@ -324,3 +329,110 @@ def test_clef_flash_on_llama_cpp_matches_pytorch(studio, reference, monkeypatch,
     busy = _post(studio, TEXT["support"])
     assert busy.status_code == 503 and "training run" in busy.json()["detail"]["message"]
     assert laya_runtime._agent is None and not agent.is_alive()
+
+
+def _bare_llama_server(model_path, requests, log_path):
+    """llama.cpp's own answers: the GGUF on a plain llama-server with the flags Studio passes."""
+    import socket
+    import urllib.request
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    binary = os.environ["LLAMA_SERVER_PATH"]
+    env = {**os.environ, "LD_LIBRARY_PATH": str(Path(binary).parent)}
+    command = [binary, "-m", str(model_path), "--host", "127.0.0.1", "--port", str(port)]
+    command += ["--parallel", "1", "-c", "8192", "-b", "8192", "-ub", "8192", "-ngl", "-1"]
+    with open(log_path, "wb") as log:
+        process = subprocess.Popen(command, stdout = log, stderr = subprocess.STDOUT, env = env)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.monotonic() + 600
+        while True:
+            assert process.poll() is None, Path(log_path).read_text(errors = "replace")[-2000:]
+            try:
+                with urllib.request.urlopen(base + "/health", timeout = 2) as response:
+                    if response.status == 200:
+                        break
+            except OSError:
+                pass
+            assert time.monotonic() < deadline
+            time.sleep(0.5)
+        answers = {}
+        for name, request in requests.items():
+            data = json.dumps({"model": "x", **request}).encode()
+            post = urllib.request.Request(
+                base + "/v1/systemone", data, {"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(post, timeout = 300) as response:
+                answers[name] = json.loads(response.read())
+        return answers
+    finally:
+        process.terminate()
+        process.wait(30)
+
+
+GGUF_ONLY = ["kev-0.8b", "laya-gguf", "julia-1"]
+# The ggml_decision_sweep requests: support, review, moderation (no long state, no images).
+SWEEP = {name: TEXT[name] for name in ("support", "review", "moderation")}
+
+
+@pytest.mark.parametrize("name", GGUF_ONLY)
+def test_a_gguf_only_model_answers_as_bare_llama_server(
+    name, tmp_path, monkeypatch, record_property
+):
+    from core.inference import llama_cpp
+    from core.systemone import catalog, laya_runtime
+
+    # Studio's own probe gives --list-devices 30 s; a loaded CI host can take longer.
+    binary = os.environ["LLAMA_SERVER_PATH"]
+    listed = subprocess.run(
+        [binary, "--list-devices"],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+        env = llama_cpp.LlamaCppBackend._llama_server_env_for_binary(binary),
+    )
+    devices = llama_cpp._parse_listed_devices(listed.stdout)
+    assert devices, listed.stdout + listed.stderr
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(lambda *_: devices)
+    )
+    client = next(
+        _studio(tmp_path, monkeypatch, {"model": name, "backend": "auto", "native_ctx": 8192})
+    )
+    try:
+        rows = []
+        for request_name, request in SWEEP.items():
+            response = _post(client, request, model = name)
+            assert response.status_code == 200, response.text
+            assert response.headers["x-unsloth-decision-backend"] == "llama.cpp"
+            rows.append((request_name, response.json()))
+        status = client.get("/api/settings/systemone").json()
+        assert (status["loaded_model"], status["loaded_backend"]) == (name, "llama.cpp")
+        assert status["loaded_device"].startswith("CUDA")
+        model_path, _ = laya_runtime._native_files(catalog.CHECKPOINTS[name], local_only = True)
+        assert catalog.GGUF_COMPANIONS[name].revision in str(model_path)
+    finally:
+        laya_runtime.shutdown()
+    bare = _bare_llama_server(model_path, SWEEP, tmp_path / "bare.log")
+    worst = 0.0
+    for request_name, body in rows:
+        assert body["model"] == name
+        expected = bare[request_name]
+        assert body["usage"] == expected["usage"]
+        assert set(body["answers"]) == set(expected["answers"])
+        for question, answer in body["answers"].items():
+            theirs = expected["answers"][question]
+            assert answer.keys() == theirs.keys(), (answer, theirs)
+            for key, value in answer.items():
+                if isinstance(value, float):
+                    worst = max(worst, abs(value - theirs[key]))
+                elif key == "probabilities":
+                    assert value.keys() == theirs[key].keys()
+                    worst = max(worst, *(abs(v - theirs[key][k]) for k, v in value.items()))
+                else:
+                    assert value == theirs[key], (question, key)
+    record_property("max_abs_diff", worst)
+    print(json.dumps({"model": name, "max_abs_diff": worst, "studio": dict(rows)}, indent = 1))
+    assert worst <= 1e-9

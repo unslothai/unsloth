@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Clef decisions from a GGUF on a private loopback llama-server (``POST /v1/systemone``).
+"""Decisions from a GGUF on a private loopback llama-server (``POST /v1/systemone``).
 
-Ported from wasimysaid's native worker in #12770. The server is Studio's own llama.cpp; its answers
+Ported from wasimysaid's native worker in #12770. The server is Studio's own llama.cpp. Clef answers
 are rebuilt with the formatter the PyTorch path uses, so the public response does not depend on the
 backend (llama.cpp's own confidence is a normalised formula, PyTorch's the winning probability).
+GGUF-only models (Kev, lev, Nimble, OpenJev, Laya GGUFs) have no Studio reference, so llama.cpp's
+answer is the reference: checked, then passed through.
 """
 
 from __future__ import annotations
@@ -148,18 +150,57 @@ def _probabilities(question: Mapping[str, Any], answer: Any) -> dict[str, float]
     return values
 
 
-def normalise(data: Any, questions: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    """Studio's decision result from a llama.cpp /v1/systemone body, answers rebuilt by the PyTorch formatter."""
+def _number(answer: Mapping[str, Any], key: str) -> float:
+    value = answer.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"missing {key}")
+    return float(value)
+
+
+def _llama_answer(question: Mapping[str, Any], answer: Any) -> dict[str, Any]:
+    """llama.cpp's own answer in Studio's shape, after checking it names the question's options."""
+    probabilities = _probabilities(question, answer)
+    kind = question["type"]
+    if kind == "noul":
+        return {"type": "noul", "noul": probabilities["true"]}
+    if kind == "choice":
+        choice = answer.get("choice")
+        if choice not in probabilities:
+            raise ValueError("choice is not one of the options")
+        return {
+            "type": "choice",
+            "choice": choice,
+            "confidence": _number(answer, "confidence"),
+            "probabilities": probabilities,
+        }
+    return {
+        "type": "score",
+        "score": _number(answer, "score"),
+        "confidence": _number(answer, "confidence"),
+        "legend": {str(i): c for i, c in enumerate(question["criteria"])},
+        "probabilities": probabilities,
+    }
+
+
+def normalise(
+    data: Any,
+    questions: Mapping[str, Mapping[str, Any]],
+    clef_answers: bool = True,
+) -> dict[str, Any]:
+    """Studio's decision result from a llama.cpp /v1/systemone body; Clef answers rebuilt by the PyTorch formatter."""
     if not isinstance(data, Mapping) or not isinstance(data.get("answers"), Mapping):
         raise NativeError("llama.cpp returned an invalid decision response.")
-    systemone_answer = _reference_formatter()
+    systemone_answer = _reference_formatter() if clef_answers else None
     answers = {}
     for name, question in questions.items():
+        answer = data["answers"].get(name)
         try:
-            probabilities = _probabilities(question, data["answers"].get(name))
+            if systemone_answer is None:
+                answers[name] = _llama_answer(question, answer)
+            else:
+                answers[name] = systemone_answer(dict(question), _probabilities(question, answer))
         except (TypeError, ValueError, KeyError) as exc:
             raise NativeError(f'llama.cpp returned an invalid answer for "{name}": {exc}') from None
-        answers[name] = systemone_answer(dict(question), probabilities)
     usage = data.get("usage") if isinstance(data.get("usage"), Mapping) else {}
     tokens = usage.get("input_tokens")
     return {
@@ -252,6 +293,7 @@ class NativeClefAgent:
         gpu: bool,
         ctx: int = DEFAULT_CTX,
         cancelled: Callable[[], bool] | None = None,
+        clef_answers: bool = True,
     ):
         from core.inference.llama_cpp import LlamaCppBackend
         from utils.process_lifetime import (
@@ -263,6 +305,7 @@ class NativeClefAgent:
         from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
         self.alias, self.ctx, self.gpu = alias, int(ctx), gpu
+        self.clef_answers = clef_answers
         self._lock = threading.Lock()
         self._process: subprocess.Popen | None = None
         self._client: httpx.Client | None = None
@@ -471,7 +514,7 @@ class NativeClefAgent:
             data = response.json()
         except ValueError:
             raise NativeError("llama.cpp returned a decision that is not JSON.") from None
-        return normalise(data, questions)
+        return normalise(data, questions, self.clef_answers)
 
     def close(self) -> None:
         """Terminate, then kill, then reap; the pid is forgotten only once it is gone."""

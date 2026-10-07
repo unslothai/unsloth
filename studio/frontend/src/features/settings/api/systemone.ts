@@ -15,6 +15,7 @@ export type SystemOneModel = {
   label: string | null;
   available: boolean;
   unavailableReason: string | null;
+  llamaCppOnly: boolean;
 };
 
 export type SystemOneSettings = {
@@ -95,6 +96,8 @@ type ApiSystemOneSettings = {
     available?: boolean;
     // biome-ignore lint/style/useNamingConvention: API schema
     unavailable_reason?: string | null;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    llama_cpp_only?: boolean;
   }[];
   // biome-ignore lint/style/useNamingConvention: API schema
   loaded_model: string | null;
@@ -178,6 +181,7 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
       label: m.label ?? null,
       available: m.available ?? true,
       unavailableReason: m.unavailable_reason ?? null,
+      llamaCppOnly: m.llama_cpp_only ?? false,
     })),
     loadedModel: settings.loaded_model,
     loadedDevice: settings.loaded_device,
