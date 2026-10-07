@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+import type { CustomReasoningConfig } from "../custom-reasoning";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
 
@@ -618,17 +619,22 @@ export type OpenAIImageGenerationCallContentPart = {
   response_id?: string;
 };
 
+export type ProviderCompactionContentPart = {
+  type: "compaction";
+  content?: string;
+  encrypted_content?: string;
+};
+
 export type OpenAIMessageContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } }
   | OpenAIReasoningContentPart
-  | OpenAIImageGenerationCallContentPart;
+  | OpenAIImageGenerationCallContentPart
+  | ProviderCompactionContentPart;
 
 export type OpenAIMessageContent = string | OpenAIMessageContentPart[];
 
-/** OpenAI Chat Completions tool_call shape. Assistant turns echo function calls as `tool_calls`;
- *  the matching result rides on a separate `role="tool"` message keyed by `tool_call_id`.
- *  `extra_content.google.thought_signature` is the Gemini round-trip field. */
+/** OpenAI tool_calls pair by tool_call_id; Gemini uses extra_content.google.thought_signature */
 export interface OpenAIToolCallPart {
   id?: string;
   type?: "function";
@@ -700,6 +706,9 @@ export interface OpenAIChatCompletionsRequest {
    *  call, "auto" only on calls flagged unsafe, "off" never, "full" never and drops the
    *  sandbox. Unset behaves as "ask". */
   permission_mode?: "ask" | "auto" | "off" | "full";
+  /** "high" (default) adds the OS sandbox when it works; "low" runs Python/Terminal on software
+   *  safeguards only. Full access overrides both. */
+  sandbox_level?: "high" | "low";
   /** Local models + enable_tools only. Full-access escape hatch. */
   bypass_permissions?: boolean;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
@@ -736,6 +745,7 @@ export interface OpenAIChatCompletionsRequest {
   encrypted_api_key?: string;
   provider_base_url?: string | null;
   provider_api_type?: "chat_completions" | "responses";
+  provider_reasoning_config?: CustomReasoningConfig;
   /** Boolean toggle for OpenAI/Anthropic ephemeral cache_control. For Gemini the backend also accepts
    *  a cached-content resource name, forwarded as `generationConfig.cachedContent`. */
   enable_prompt_caching?: boolean | string | null;
@@ -798,30 +808,23 @@ export interface OpenAIChatChunk {
     // the problem.
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
-    // Whether `latest_turn_tokens` is a real count or the four-characters-a-token estimate the fit
-    // falls back to. Only the counted one may be quoted as the turn's size.
+    // true when latest_turn_tokens is counted rather than estimated at four characters per token
     latest_turn_exact?: boolean;
-    // The floor both counts above carry: what a rendered prompt costs with no messages, which on a
-    // tool-enabled request is the whole tool catalogue. Subtract it before comparing them, or the
-    // catalogue is blamed on the turn.
+    // subtract message-free prompt cost so tools are not charged to the turn
     shared_prompt_tokens?: number;
-    // Where the compaction boundary sits in the messages THIS request was sent with. Absolute, unlike
-    // dropped_messages, so re-sending it after a turn that refit several times cannot advance the
-    // boundary past the turns actually evicted.
+    // absolute request boundary prevents repeated refits from advancing past evicted turns
     boundary_messages?: number;
-    // True when this fit started a new checkpoint, including within the current tool loop.
+    // true when this fit started a checkpoint, including inside the current tool loop
     checkpoint_started?: boolean;
-    // The text the boundary landed ON, so the count can be re-derived by position: a count is only
-    // valid against the transcript it was counted on, and deleting an already evicted prompt
-    // shortens that transcript.
+    // true when the provider summarized earlier turns instead of Unsloth dropping them
+    summarized?: boolean;
+    // boundary text lets the count be re-derived after deleting an already evicted prompt
     boundary_anchor?: string;
-    // How much extra trim the fit that set the boundary used. Replayed against the request's own
-    // ratio, so a boundary cut under more headroom than the caller now asks for is discarded.
+    // discard a replayed boundary when its trim used more headroom than the current request
     boundary_headroom_ratio?: number;
-    // Whose message that is: in a tool loop the last one is often a tool result rather than anything the user typed.
+    // the latest tool-loop message may be a tool result rather than a user message
     latest_turn_role?: string;
-    // The prompt's share of the window (context_length minus the reply reserve), which is what one turn
-    // must fit inside. Not re-derived here: the formula lives in the fit.
+    // prompt share of context_length after the reply reserve, calculated by the fit
     prompt_target?: number;
   };
 }

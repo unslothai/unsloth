@@ -24,6 +24,8 @@ import {
   type AudioGalleryCursor,
   clearAudioGallery,
   deleteAudioClip,
+  deleteAudioGroup,
+  fetchClipBlob,
   fetchClipObjectUrl,
   listAudioGallery,
   moveAudioClip,
@@ -35,11 +37,13 @@ import {
   MAX_PAGE_SIZE,
   PAGE_SIZE,
 } from "../audio-workspace-constants";
+import { clipFileName } from "../components/stem-zip";
 import { decodePeaks } from "../components/waveform-decode";
+import { saveAudio } from "../save-audio";
 import { clipWorkflow } from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 
-// Module scope so a tab switch re-renders the gallery instantly.
+// module scope preserves instant gallery rendering across tab switches.
 export const galleryCache: {
   clips: AudioGalleryClip[];
   hasMore: boolean;
@@ -61,6 +65,8 @@ export function useAudioGallery({
 }: Pick<AudioHostState, "active">) {
   const [fallbackClip, setFallbackClip] = useState<{
     url: string;
+    /** bytes for desktop saves when `url` is a blob URL. */
+    blob?: Blob;
     prompt: string;
     model: string;
     saved: boolean;
@@ -70,7 +76,7 @@ export function useAudioGallery({
   fallbackClipRef.current = fallbackClip;
   const loadingMoreRef = useRef(false);
   const galleryRefreshGeneration = useRef(0);
-  // Pins and moves in flight. A refresh that overlaps one read the old order, so it is dropped and rerun after.
+  // overlapping refreshes read stale order, so defer and rerun them after order writes finish.
   const orderWrites = useRef({ inFlight: 0, epoch: 0, deferred: false });
   const [clips, setClips] = useState<AudioGalleryClip[]>(galleryCache.clips);
   const [hasMore, setHasMore] = useState(galleryCache.hasMore);
@@ -288,6 +294,22 @@ export function useAudioGallery({
     [dropClip, refreshGallery],
   );
 
+  const handleDeleteGroup = useCallback(
+    async (groupId: string, ids: readonly string[]) => {
+      try {
+        await deleteAudioGroup(groupId);
+        for (const id of ids) dropClip(id);
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not delete the stems.",
+        );
+      }
+      // Either way, so a run the server only partly removed shows what is left.
+      await refreshGallery();
+    },
+    [dropClip, refreshGallery],
+  );
+
   const handleArchiveClip = useCallback(
     async (id: string) => {
       try {
@@ -466,44 +488,30 @@ export function useAudioGallery({
     (clip: AudioGalleryClip) => {
       const src = srcById[clip.id];
       if (!src) return;
-      const anchor = document.createElement("a");
-      anchor.href = src;
-      anchor.download = `${clip.id}.wav`;
-      anchor.click();
+      void saveAudio(clipFileName(clip), src, () => fetchClipBlob(clip.url));
     },
     [srcById],
   );
 
   const handleDownloadFallbackClip = useCallback(() => {
     if (!fallbackClip) return;
-    const anchor = document.createElement("a");
-    anchor.href = fallbackClip.url;
-    anchor.download = "generated-audio.wav";
-    anchor.click();
+    const { blob } = fallbackClip;
+    void saveAudio(
+      clipFileName(fallbackClip),
+      fallbackClip.url,
+      blob ? () => Promise.resolve(blob) : null,
+    );
   }, [fallbackClip]);
 
-  const handleDownloadClipById = useCallback(async (clip: AudioGalleryClip) => {
-    let temporaryUrl: string | null = null;
-    try {
-      let src = galleryCache.srcById.get(clip.id);
-      if (!src) {
-        const fetched = await fetchClipObjectUrl(clip.url);
-        src = fetched.url;
-        temporaryUrl = fetched.url;
-      }
-      const anchor = document.createElement("a");
-      anchor.href = src;
-      anchor.download = `${clip.id}.wav`;
-      anchor.click();
-    } catch {
-      toast.error("Could not download the clip.");
-    } finally {
-      if (temporaryUrl) {
-        const url = temporaryUrl;
-        window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      }
-    }
-  }, []);
+  const handleDownloadClipById = useCallback(
+    (clip: AudioGalleryClip) =>
+      saveAudio(
+        clipFileName(clip),
+        galleryCache.srcById.get(clip.id) ?? null,
+        () => fetchClipBlob(clip.url),
+      ),
+    [],
+  );
 
   const handleCopyPrompt = useCallback(async (text: string) => {
     if (await copyToClipboard(text)) {
@@ -528,6 +536,7 @@ export function useAudioGallery({
     loadMore,
     selectClip,
     handleDeleteClip,
+    handleDeleteGroup,
     handleArchiveClip,
     handleTogglePin,
     historyReorder,

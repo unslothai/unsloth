@@ -118,7 +118,6 @@ import {
   CHAT_SPECULATIVE_TYPE_KEY,
 } from "./chat-runtime-keys";
 import { useExternalProvidersStore } from "./external-providers-store";
-import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
 
 export {
   CHAT_GPU_MEMORY_MODE_KEY,
@@ -135,9 +134,6 @@ export const CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY =
   "unsloth_chat_deep_research_website_policy";
 export const CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY =
   "unsloth_chat_deep_research_model_timeout";
-export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
-export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
-  "unsloth_chat_show_canvas_menu_item";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -154,10 +150,13 @@ export const MODELS_FIT_ON_DEVICE_ONLY_KEY =
   "unsloth_models_fit_on_device_only";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_PERMISSION_MODE_KEY = "unsloth_chat_permission_mode";
+export const CHAT_SANDBOX_LEVEL_KEY = "unsloth_chat_sandbox_level";
 
 /** Local tool-call gate: "ask" every call, "auto" only high-risk ones, "off" never but keeps the
  *  sandbox, "full" drops both and is session-only. */
 export type PermissionMode = "ask" | "auto" | "off" | "full";
+/** "high" adds the OS sandbox (bubblewrap, Seatbelt, MXC) to the software safeguards; "low" uses only those. */
+export type SandboxLevel = "high" | "low";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
@@ -706,20 +705,6 @@ const MIRRORED_SETTINGS = {
     storageKey: CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
     ...NUMBER_SETTING,
   },
-  artifactsEnabled: {
-    storageKey: CHAT_ARTIFACTS_ENABLED_KEY,
-    ...BOOLEAN_SETTING,
-  },
-  showCanvasMenuItem: {
-    storageKey: CHAT_SHOW_CANVAS_MENU_ITEM_KEY,
-    ...BOOLEAN_SETTING,
-    // A profile predating the visibility flag keeps Canvas shown through its plus-menu pin.
-    readForBackfill: () =>
-      readStorageValue(CHAT_SHOW_CANVAS_MENU_ITEM_KEY) !== null ||
-      readStorageValue(PLUS_MENU_PINS_STORAGE_KEY) !== null
-        ? loadShowCanvasMenuItem()
-        : undefined,
-  },
   collapseHtmlArtifacts: {
     storageKey: CHAT_COLLAPSE_HTML_ARTIFACTS_KEY,
     ...BOOLEAN_SETTING,
@@ -744,6 +729,7 @@ const MIRRORED_SETTINGS = {
         ? loadPermissionMode()
         : undefined,
   },
+  sandboxLevel: { storageKey: CHAT_SANDBOX_LEVEL_KEY, ...STRING_SETTING },
   ragSource: { storageKey: CHAT_RAG_SOURCE_KEY, ...JSON_SETTING },
   ragMode: { storageKey: CHAT_RAG_MODE_KEY, ...STRING_SETTING },
   ragTopK: { storageKey: CHAT_RAG_TOP_K_KEY, ...NUMBER_SETTING },
@@ -1844,25 +1830,18 @@ export function resolvePreserveThinkingOnLoad(resp: {
   return storedPreserveThinking ?? preserveThinkingDefaultFromLoad(resp);
 }
 
-// The visibility flag shipped after the menu pins, so when absent an explicit Canvas pin wins.
-function loadShowCanvasMenuItem(): boolean {
-  const stored = loadOptionalBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY);
-  if (stored !== null) return stored;
-  if (!canUseStorage()) return false;
-  try {
-    const raw = localStorage.getItem(PLUS_MENU_PINS_STORAGE_KEY);
-    if (raw === null) return false;
-    const parsed = JSON.parse(raw) as {
-      state?: { pins?: { canvas?: boolean } };
-    };
-    return parsed.state?.pins?.canvas === true;
-  } catch {
-    return false;
-  }
-}
 
 /** "full" is never restored: it disables the sandbox and every confirmation gate, so it needs
  *  the warning dialog each session. First run derives from the legacy confirm toggle. */
+/** Anything but an explicit "low" (missing, garbled, a newer value) reads as the default, "high". */
+export function normalizeSandboxLevel(raw: unknown): SandboxLevel {
+  return raw === "low" ? "low" : "high";
+}
+
+export function loadSandboxLevel(): SandboxLevel {
+  return normalizeSandboxLevel(readStorageValue(CHAT_SANDBOX_LEVEL_KEY));
+}
+
 function loadPermissionMode(): PermissionMode {
   return normalizeStoredPermissionMode(
     readStorageValue(CHAT_PERMISSION_MODE_KEY),
@@ -2352,9 +2331,7 @@ type ChatRuntimeStore = {
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
   researchModelTimeoutSeconds: number;
-  artifactsEnabled: boolean;
   // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
-  showCanvasMenuItem: boolean;
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
   // web_search also returns images the model can place inline; read by the backend per call.
@@ -2382,6 +2359,7 @@ type ChatRuntimeStore = {
   /** Permission level. Single source of truth for the bypass dropdowns; bypassPermissions and
    *  confirmToolCalls mirror it. "full" is session-only. */
   permissionMode: PermissionMode;
+  sandboxLevel: SandboxLevel;
   /** Whether the bypass warning dialog is open. Lifted out of the composer menu so confirming
    *  it does not leave the menu frozen. */
   bypassConfirmOpen: boolean;
@@ -2651,11 +2629,6 @@ type ChatRuntimeStore = {
   setDeepResearchEnabled: (enabled: boolean) => void;
   setResearchWebsitePolicy: (policy: ResearchWebsitePolicy) => void;
   setResearchModelTimeoutSeconds: (seconds: number) => void;
-  setArtifactsEnabled: (
-    enabled: boolean,
-    options?: { persist?: boolean },
-  ) => void;
-  setShowCanvasMenuItem: (enabled: boolean) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setSearchImages: (enabled: boolean) => void;
@@ -2663,6 +2636,7 @@ type ChatRuntimeStore = {
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
   setPermissionMode: (mode: PermissionMode) => void;
+  setSandboxLevel: (level: SandboxLevel) => void;
   setBypassConfirmOpen: (open: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
@@ -2772,11 +2746,10 @@ type ScalarSettingKey =
   | "deepResearchEnabled"
   | "researchWebsitePolicy"
   | "researchModelTimeoutSeconds"
-  | "artifactsEnabled"
-  | "showCanvasMenuItem"
   | "mcpEnabledForChat"
   | "confirmToolCalls"
   | "permissionMode"
+  | "sandboxLevel"
   | "ragSource"
   | "ragMode"
   | "ragTopK"
@@ -2824,11 +2797,10 @@ const SCALAR_SETTING_KEYS = [
   "deepResearchEnabled",
   "researchWebsitePolicy",
   "researchModelTimeoutSeconds",
-  "artifactsEnabled",
-  "showCanvasMenuItem",
   "mcpEnabledForChat",
   "confirmToolCalls",
   "permissionMode",
+  "sandboxLevel",
   "ragSource",
   "ragMode",
   "ragTopK",
@@ -4170,8 +4142,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
   researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
-  artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
-  showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
@@ -4186,6 +4156,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // confirmation gate, so it needs the warning dialog each session.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
+  sandboxLevel: loadSandboxLevel(),
   bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
@@ -5157,7 +5128,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       codeToolsEnabled: false,
       imageToolsEnabled: false,
       deepResearchEnabled: false,
-      artifactsEnabled: false,
       mcpEnabledForChat: false,
       webFetchToolsEnabled: false,
       // Only the per-session enable pill resets; source/mode/top_k persist.
@@ -5387,7 +5357,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         saveBool(CHAT_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, false);
-        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, false);
         saveBool(CHAT_MCP_ENABLED_KEY, false);
         saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false);
       }
@@ -5398,7 +5367,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
             codeToolsEnabled: false,
             codeToolsDeclinedUnderFullAccess: false,
             imageToolsEnabled: false,
-            artifactsEnabled: false,
             mcpEnabledForChat: false,
             webFetchToolsEnabled: false,
             bypassPermissions: false,
@@ -5432,24 +5400,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         researchModelTimeoutSeconds: seconds,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
-  setArtifactsEnabled: (artifactsEnabled, options) =>
-    set((state) => {
-      if (options?.persist !== false) {
-        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
-      }
-      if (artifactsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
-      return {
-        ...(artifactsEnabled
-          ? { artifactsEnabled, deepResearchEnabled: false }
-          : { artifactsEnabled }),
-        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-      };
-    }),
-  setShowCanvasMenuItem: (showCanvasMenuItem) =>
-    set(() => {
-      saveBool(CHAT_SHOW_CANVAS_MENU_ITEM_KEY, showCanvasMenuItem);
-      return { showCanvasMenuItem };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set(() => {
@@ -5497,6 +5447,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         permissionMode,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
+    }),
+  setSandboxLevel: (sandboxLevel) =>
+    set((state) => {
+      saveString(CHAT_SANDBOX_LEVEL_KEY, sandboxLevel);
+      return { sandboxLevel, queuedSettingsEpoch: state.queuedSettingsEpoch + 1 };
     }),
   setPermissionMode: (permissionMode) =>
     set((state) => {

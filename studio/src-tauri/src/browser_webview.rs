@@ -233,6 +233,8 @@ enum BrowserEvent {
         size: Option<u64>,
         done: bool,
         success: bool,
+        /// A finished download's handle for Download history (browser_downloads.rs).
+        download_id: Option<String>,
     },
 }
 
@@ -993,6 +995,7 @@ fn create_view<R: Runtime>(
                                     size: None,
                                     done: true,
                                     success: false,
+                                    download_id: None,
                                 },
                             );
                             return false;
@@ -1028,6 +1031,7 @@ fn create_view<R: Runtime>(
                             size: None,
                             done: false,
                             success: false,
+                            download_id: None,
                         },
                     );
                     true
@@ -1048,9 +1052,13 @@ fn create_view<R: Runtime>(
                         recorded
                     };
                     let path = path.or(recorded);
-                    if let (true, Some(path)) = (success, path.as_deref()) {
-                        mark_downloaded(path, &url);
-                    }
+                    let download_id = match (success, path.as_deref()) {
+                        (true, Some(saved)) => {
+                            mark_downloaded(saved, &url);
+                            Some(crate::browser_downloads::record(app, saved.to_path_buf()))
+                        }
+                        _ => None,
+                    };
                     emit(
                         app,
                         BrowserEvent::Download {
@@ -1068,6 +1076,7 @@ fn create_view<R: Runtime>(
                             path: path.map(|p| p.to_string_lossy().into_owned()),
                             done: true,
                             success,
+                            download_id,
                         },
                     );
                     true

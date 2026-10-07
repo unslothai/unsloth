@@ -33,7 +33,11 @@ def _shared_setup_1(monkeypatch):
     return observed
 
 
-def _shared_setup_2(monkeypatch, tmp_path):
+def _shared_setup_2(
+    monkeypatch,
+    tmp_path,
+    name = "Org/Embedder",
+):
     monkeypatch.setattr(
         "utils.hf_cache_settings.active_hf_hub_cache",
         lambda: str(tmp_path / "selected-hub"),
@@ -47,7 +51,7 @@ def _shared_setup_2(monkeypatch, tmp_path):
     monkeypatch.setattr(embeddings, "_model", None)
     monkeypatch.setattr(embeddings, "_name", None)
 
-    embeddings._get("Org/Embedder")
+    embeddings._get(name)
 
 
 def _shared_setup_3(monkeypatch):
@@ -529,6 +533,28 @@ def test_opted_in_accelerator_loads_float16(monkeypatch, tmp_path):
 
     assert observed["device"] == "cuda"
     assert list(observed["model_kwargs"].values()) == ["float16"]
+
+
+@pytest.mark.parametrize(
+    "device, native, expected",
+    [
+        ("cuda", True, "bfloat16"),
+        ("cuda", False, "float32"),
+        ("xpu", True, "bfloat16"),
+        ("xpu", False, "float32"),
+    ],
+)
+def test_float16_unsafe_model_avoids_float16(monkeypatch, tmp_path, device, native, expected):
+    import core.training.diffusion_train_common as dtc
+
+    observed = _shared_setup_1(monkeypatch)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: device)
+    monkeypatch.setattr(dtc, "native_bf16_supported", lambda: native)
+    monkeypatch.setattr(dtc, "native_bf16_supported_xpu", lambda: native)
+    _shared_setup_2(monkeypatch, tmp_path, name = "unsloth/EmbeddingGemma-300m")
+
+    assert observed["device"] == device
+    assert list(observed["model_kwargs"].values()) == [expected]
 
 
 def test_accelerator_fallback_loads_float32_on_cpu(monkeypatch, tmp_path):

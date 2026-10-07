@@ -6,7 +6,22 @@ Qwen-Image dynamic ~2.0 + terminal stretch vs 3.1). No torch/diffusers imports."
 
 from __future__ import annotations
 
+import math
+import os
 from typing import Any, Optional
+
+# "0" keeps every shipped diffusers scheduler instead of ComfyUI's static schedule.
+COMFY_SIGMAS_ENV = "UNSLOTH_DIFFUSION_COMFY_SIGMAS"
+
+
+def comfy_sigmas_enabled() -> bool:
+    return os.environ.get(COMFY_SIGMAS_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def flux_mu_shift(mu: float) -> float:
+    """Static shift equal to ComfyUI's ModelSamplingFlux at a fixed ``mu``:
+    e^mu / (e^mu + 1/t - 1) == s*t / (1 + (s - 1)*t) for s = e^mu, at every resolution."""
+    return math.exp(mu)
 
 
 def flow_shift_overrides(config: Any, shift: float) -> Optional[dict]:
@@ -33,7 +48,7 @@ def apply_comfy_flow_shift(
     logger: Any = None,
 ) -> bool:
     """Rebuild ``pipe.scheduler`` at ComfyUI's static ``shift``. True when it changed."""
-    if shift is None:
+    if shift is None or not comfy_sigmas_enabled():
         return False
     scheduler = getattr(pipe, "scheduler", None)
     config = getattr(scheduler, "config", None)

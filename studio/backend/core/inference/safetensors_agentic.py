@@ -632,6 +632,7 @@ def run_safetensors_tool_loop(
     mcp_image = None,
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
+    sandbox_level: Optional[str] = None,
     reasoning_prefilled: bool = False,
     continue_final_message: bool = False,
     markup = None,
@@ -697,14 +698,17 @@ def run_safetensors_tool_loop(
     from state.tool_policy import (
         account_tool_stream,
         needs_tool_confirmation,
+        normalize_sandbox_level,
         normalize_tool_permissions,
         requires_os_isolation,
+        runs_without_os_sandbox,
         tool_call_may_prompt,
     )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
         permission_mode, bypass_permissions
     )
+    sandbox_level = normalize_sandbox_level(sandbox_level)
     stream_tool_execution = account_tool_stream(stream_tool_execution)
     from core.inference.skill_mentions import load_mentioned_skills
 
@@ -1531,6 +1535,7 @@ def run_safetensors_tool_loop(
                 permission_mode = permission_mode,
                 name = decision.tool_name,
                 arguments = decision.arguments,
+                sandbox_level = sandbox_level,
             )
             # Sending the user's image always asks, whatever the permission mode.
             image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
@@ -1542,6 +1547,7 @@ def run_safetensors_tool_loop(
                 name = decision.tool_name,
                 arguments = decision.arguments,
                 prompted = needs_confirm,
+                sandbox_level = sandbox_level,
             )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -1643,6 +1649,10 @@ def run_safetensors_tool_loop(
                     # Run unasked only because the OS sandbox was on: refuse if it is not any more.
                     if _strict and _accepts_kwarg(execute_tool, "tool_execution_mode"):
                         kwargs["tool_execution_mode"] = "required"
+                    elif runs_without_os_sandbox(
+                        _decision.tool_name, sandbox_level
+                    ) and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "software"
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
                         kwargs["conversation_branch"] = _extend_live_branch(conversation)
                     if _approved and _accepts_kwarg(execute_tool, "host_access_approved"):

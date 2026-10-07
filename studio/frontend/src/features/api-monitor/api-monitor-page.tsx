@@ -43,6 +43,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import { unloadResident } from "./unload-resident";
@@ -576,6 +577,8 @@ export function ApiMonitorPage(): ReactElement {
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const [unloading, setUnloading] = useState(false);
+  // A picker load in flight would land after the raw unload, which has no lifecycle guard.
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -731,6 +734,12 @@ export function ApiMonitorPage(): ReactElement {
           </p>
         </div>
         <div data-tour="api-toolbar" className="flex flex-wrap items-center gap-2">
+          <ApiModelLoadControls
+            activeModel={data?.active_model}
+            onSettled={refresh}
+            onUnloadActive={unloadActiveModel}
+            unloading={unloading}
+          />
           <Button
             type="button"
             variant="outline"
@@ -750,7 +759,7 @@ export function ApiMonitorPage(): ReactElement {
             variant="outline"
             size="sm"
             onClick={() => void unloadActiveModel()}
-            disabled={unloading || !data?.active_model}
+            disabled={unloading || modelLoading || !data?.active_model}
             title={
               data?.active_model
                 ? `Unload ${data.active_model} and free its VRAM`

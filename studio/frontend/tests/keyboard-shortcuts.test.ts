@@ -914,7 +914,8 @@ test("Reset all local preferences clears the rebound chords", async () => {
 // shows an English word in the middle of a translated settings dialog.
 test("every locale overlay carries the shortcut strings", async () => {
   const locales = [
-    "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "zh-CN",
+    "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "sv",
+    "zh-CN",
   ];
   for (const locale of locales) {
     const source = await readFile(

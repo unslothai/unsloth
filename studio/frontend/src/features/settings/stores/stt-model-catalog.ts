@@ -7,11 +7,14 @@
 
 import {
   AUDIO_CPP_DICTATION_MODELS,
+  AUDIO_CPP_MODELS,
   AUDIO_CPP_STT_KEYS,
   type AudioCppSttKey,
   audioCppDisplayName,
   audioCppModelFor,
   audioCppSizeLabel,
+  audioCppWorkflowsFor,
+  isAudioCppFolderId,
 } from "../../audio/audio-cpp-catalog.ts";
 
 /** Curated dictation models, mirrored by the backend sidecars. Listed in the
@@ -45,17 +48,37 @@ export const MTMD_STT_MODELS: ReadonlySet<SttModel> = new Set([
 export const AUDIO_CPP_STT_MODELS: ReadonlySet<SttModel> = new Set(
   AUDIO_CPP_STT_KEYS,
 );
-/** Curated models that transcribe only these primary languages; every other
- * curated model is multilingual. Moonshine and Nemotron are English-only, and
- * Canary covers en/de/es/fr. */
+const KEYED_FOLDERS = new Set(
+  AUDIO_CPP_DICTATION_MODELS.map((model) => model.id.toLowerCase()),
+);
+/** The Transcribe page's audio.cpp ASR folders no key above names; dictation
+ * lists them by folder id, in catalog order (the largest come last). */
+export const AUDIO_CPP_STT_FOLDER_IDS: readonly string[] =
+  AUDIO_CPP_MODELS.filter(
+    (model) =>
+      audioCppWorkflowsFor(model).includes("transcribe") &&
+      !KEYED_FOLDERS.has(model.id.toLowerCase()),
+  ).map((model) => model.id);
+/** What the Voice picker lists: the curated models, then every other ASR model
+ * Transcribe offers. */
+export const STT_PICKER_MODELS: readonly SttModel[] = [
+  ...STT_MODELS,
+  ...AUDIO_CPP_STT_FOLDER_IDS,
+];
+/** Models that transcribe only these primary languages; every other model is
+ * multilingual. Moonshine and Nemotron are English-only, Canary covers
+ * en/de/es/fr, and Hviske is Danish. */
 export const STT_MODEL_LANGUAGES: ReadonlyMap<SttModel, readonly string[]> =
   new Map(
-    AUDIO_CPP_DICTATION_MODELS.flatMap((model) => {
-      const languages = audioCppModelFor(model.id)?.languages;
-      return languages ? [[model.key, languages] as const] : [];
+    [
+      ...AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model.id]),
+      ...AUDIO_CPP_STT_FOLDER_IDS.map((id) => [id, id]),
+    ].flatMap(([model, id]) => {
+      const languages = audioCppModelFor(id)?.languages;
+      return languages ? [[model, languages] as const] : [];
     }),
   );
-/** Curated models that only transcribe English. */
+/** Models that only transcribe English. */
 export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set(
   [...STT_MODEL_LANGUAGES]
     .filter(([, languages]) => languages.length === 1 && languages[0] === "en")
@@ -137,7 +160,10 @@ export const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
 };
 
 export function sttModelName(model: SttModel): string {
-  return STT_MODEL_NAMES[model as DefaultSttModel] ?? model;
+  return (
+    STT_MODEL_NAMES[model as DefaultSttModel] ??
+    (isAudioCppFolderId(model) ? audioCppDisplayName(model) : model)
+  );
 }
 
 export function sttModelSize(model: SttModel): string {

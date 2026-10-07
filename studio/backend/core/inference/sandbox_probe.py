@@ -56,6 +56,12 @@ def reset_probe_cache() -> None:
     with _cache_lock:
         _cache.clear()
         _generation += 1
+    if sys.platform == "linux":
+        try:
+            from .sandbox_linux import forget_proc_layout
+            forget_proc_layout()
+        except Exception:  # noqa: BLE001 - nothing cached to forget
+            pass
     try:
         from .os_sandbox import forget_tool_isolation
     except Exception:  # noqa: BLE001 - a partially imported package has nothing cached yet
