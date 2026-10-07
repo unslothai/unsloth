@@ -177,7 +177,7 @@ test("Settings keeps the long text in the info hint and the status on the row", 
   assert.match(SECTION, /hint=\{`\$\{t\("settings\.general\.rag\.embeddingModelDescription"/);
   assert.match(SECTION, /settings\.general\.rag\.embeddingModelShort[\s\S]*?\{statusText \? \(/);
   // The row's `below` slot carries errors only.
-  assert.match(SECTION, /below=\{\s*embeddingModelError \|\| notLoaded \?/);
+  assert.match(SECTION, /below=\{\s*embeddingModelError \?/);
 });
 
 test("Eject sits on the picker and in the RAG menu, only while a model is resident", () => {
@@ -190,8 +190,8 @@ test("Eject sits on the picker and in the RAG menu, only while a model is reside
 test("On device explains itself and says when the model is not loaded", () => {
   assert.match(SECTION, /settings\.general\.rag\.onDeviceHint/);
   assert.match(SECTION, /const notLoaded = onDevice && !embeddingModel\?\.loaded && !downloading;/);
-  // Under the picker, a filled dot, with its own hint.
-  assert.match(SECTION, /below=\{\s*embeddingModelError \|\| notLoaded \?[\s\S]*?rounded-full bg-muted-foreground[\s\S]*?settings\.general\.rag\.notLoadedHint/);
+  // In the picker's column, a filled dot, with its own hint.
+  assert.match(SECTION, /<EmbeddingModelPicker[\s\S]*?\{notLoaded \? \([\s\S]*?rounded-full bg-muted-foreground[\s\S]*?settings\.general\.rag\.notLoadedHint/);
 });
 
 test("ejecting frees the model through the shared residency path", async () => {

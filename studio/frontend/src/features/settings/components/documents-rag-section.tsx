@@ -411,24 +411,14 @@ export function DocumentsRagSection(): ReactElement {
         }
         className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
         below={
-          embeddingModelError || notLoaded ? (
-            // Picker width, so the status lines up under the model name.
-            <span className="flex w-[calc(260px*var(--ui-space-scale,1))] flex-col gap-1 px-3.5 text-xs max-[360px]:w-full">
-              {notLoaded ? (
-                <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <span className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-muted-foreground" />
-                  {t("settings.general.rag.notLoaded")}
-                  <StatusHint text={t("settings.general.rag.notLoadedHint")} />
-                </span>
-              ) : null}
-              {embeddingModelError ? (
-                <span className="text-destructive">{embeddingModelError}</span>
-              ) : null}
+          embeddingModelError ? (
+            <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+              {embeddingModelError}
             </span>
           ) : undefined
         }
       >
-        <div className="flex items-center gap-2 max-[360px]:w-full">
+        <div className="flex items-start gap-2 max-[360px]:w-full">
           {forceCandidate ? (
             <Button
               variant="outline"
@@ -451,21 +441,31 @@ export function DocumentsRagSection(): ReactElement {
               {t("settings.general.rag.download")}
             </Button>
           ) : null}
-          <EmbeddingModelPicker
-            value={embeddingModel?.embeddingModel ?? ""}
-            onSelect={(model) => void applyEmbeddingModel(model, false)}
-            defaultModel={embeddingModel?.defaultEmbeddingModel}
-            cachedModels={cachedRepos}
-            pinnedModels={pinnedModels}
-            onTogglePin={togglePin}
-            accessToken={hfToken || undefined}
-            disabled={!embeddingModel}
-            busy={isSavingEmbeddingModel}
-            loaded={embeddingModel?.loaded}
-            // Any resident embedder, not just this one: switching does not release the old one.
-            onEject={embeddingModel?.backendLoaded ? () => void unload() : undefined}
-            className="w-[calc(260px*var(--ui-space-scale,1))] max-[360px]:w-full"
-          />
+          {/* Status sits in the picker's column, so it lines up under the model name. */}
+          <div className="flex flex-col gap-1 max-[360px]:w-full">
+            <EmbeddingModelPicker
+              value={embeddingModel?.embeddingModel ?? ""}
+              onSelect={(model) => void applyEmbeddingModel(model, false)}
+              defaultModel={embeddingModel?.defaultEmbeddingModel}
+              cachedModels={cachedRepos}
+              pinnedModels={pinnedModels}
+              onTogglePin={togglePin}
+              accessToken={hfToken || undefined}
+              disabled={!embeddingModel}
+              busy={isSavingEmbeddingModel}
+              loaded={embeddingModel?.loaded}
+              // Any resident embedder, not just this one: switching does not release the old one.
+              onEject={embeddingModel?.backendLoaded ? () => void unload() : undefined}
+              className="w-[calc(260px*var(--ui-space-scale,1))] max-[360px]:w-full"
+            />
+            {notLoaded ? (
+              <span className="flex items-center gap-1.5 px-3.5 text-xs text-muted-foreground">
+                <span className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-muted-foreground" />
+                {t("settings.general.rag.notLoaded")}
+                <StatusHint text={t("settings.general.rag.notLoadedHint")} />
+              </span>
+            ) : null}
+          </div>
         </div>
       </SettingsRow>
     </SettingsSection>
@@ -482,7 +482,7 @@ function StatusHint({ text }: { text: string }): ReactElement {
           aria-label={text}
           className="flex shrink-0 items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          <HugeiconsIcon icon={InformationCircleIcon} className="size-3" />
+          <HugeiconsIcon icon={InformationCircleIcon} className="size-[calc(10px*var(--ui-space-scale,1))]" />
         </button>
       </TooltipTrigger>
       <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
