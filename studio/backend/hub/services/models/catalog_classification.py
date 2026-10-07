@@ -495,6 +495,14 @@ def _local_family_needles(model) -> tuple[str, ...]:
             needles.append(single)
     except Exception:
         pass
+    try:
+        # A renamed loose checkpoint: its header still names the family.
+        path = Path(model.path)
+        if path.suffix.lower() == ".safetensors" and path.is_file():
+            from core.inference.diffusion_content import inspect_checkpoint
+            needles.append(inspect_checkpoint(str(path)).family)
+    except Exception:
+        pass
     return tuple(needle for needle in needles if needle)
 
 

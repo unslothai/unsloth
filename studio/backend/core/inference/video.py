@@ -1036,6 +1036,11 @@ def _assert_pick_is_not_speech(
     assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
 
+def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) -> None:
+    from .diffusion_content import assert_local_pick_is_dit
+    assert_local_pick_is_dit(repo_id, gguf_filename, page)
+
+
 def _detect_load_family(
     repo_id: str,
     gguf_filename: Optional[str],
@@ -1060,6 +1065,16 @@ def _detect_load_family(
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
+    # A local file's header outranks its name (the name still picks 480p vs 720p).
+    from .diffusion_content import local_pick_file, resolve_family_with_content
+
+    path = local_pick_file(repo_id, gguf_filename)
+    if path:
+        name, _ = resolve_family_with_content(fam.name if fam else None, path, "video")
+        if name is None:
+            return None
+        if fam is None or fam.name != name:
+            fam = detect_video_family("", override = name)
     return fam
 
 
@@ -2616,6 +2631,7 @@ class VideoBackend:
                 f"'{repo_id}' is a GGUF repo: pick one of its .gguf files "
                 "(gguf_filename) instead of loading it as a diffusers pipeline."
             )
+        _refuse_non_dit_pick(repo_id, gguf_filename, "video")
         fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
         if fam is None:
             raise ValueError(

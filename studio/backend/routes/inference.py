@@ -45705,6 +45705,7 @@ async def diffusion_download_plan(
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
+        split_local_checkpoint_path,
         resolve_model_kind,
     )
     from core.inference.diffusion_engine_router import predict_engine
@@ -45716,7 +45717,15 @@ async def diffusion_download_plan(
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # Same bare-single-file-directory reinterpretation as the load route, so the plan describes the load that will actually run.
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_model_kind(split[1])
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
@@ -45924,6 +45933,7 @@ async def load_diffusion_model_gated(
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
+        split_local_checkpoint_path,
         resolve_model_kind,
     )
     from core.inference.diffusion_device import (
@@ -45956,7 +45966,15 @@ async def load_diffusion_model_gated(
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # A local On-Device pick can be a bare single-file .safetensors directory; if it holds exactly one checkpoint, reinterpret it as a single_file load so all three paths agree.
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_model_kind(split[1])
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
@@ -47501,8 +47519,17 @@ async def _generate_openai_images(
                 ),
             )
 
-        # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
-        steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
+        # Same order as the load (FLUX.1's base is schnell).
+        from core.inference.diffusion_content import content_variant_hint
+
+        steps, guidance = default_generation_params(
+            status.get("gguf_filename"),
+            await asyncio.to_thread(
+                content_variant_hint, status.get("repo_id"), status.get("gguf_filename")
+            ),
+            status.get("repo_id"),
+            status.get("base_repo"),
+        )
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):

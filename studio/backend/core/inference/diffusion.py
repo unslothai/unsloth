@@ -43,6 +43,7 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
 
+from .diffusion_content import assert_local_pick_is_dit, content_variant_hint
 from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -579,6 +580,19 @@ def resolve_local_single_file(model_path: str) -> Optional[str]:
     except OSError:
         return None
     return checkpoints[0] if len(checkpoints) == 1 else None
+
+
+def split_local_checkpoint_path(model_path: str) -> Optional[tuple[str, str]]:
+    """``(dir, name)`` when ``model_path`` is one local ``.safetensors`` file, else None."""
+    try:
+        path = Path(model_path).expanduser()
+        if path.suffix.lower() != ".safetensors" or not path.is_file():
+            return None
+        if is_appledouble_metadata(path):
+            return None
+    except (OSError, ValueError):
+        return None
+    return str(path.parent), path.name
 
 
 def decode_b64_image(
@@ -2621,6 +2635,7 @@ class DiffusionBackend:
             fam,
             kwargs.get("base_repo"),
             kwargs.get("gguf_filename"),
+            content_variant_hint(kwargs.get("repo_id"), kwargs.get("gguf_filename")),
             kwargs.get("repo_id"),
             kwargs.get("display_repo_id"),
         ):
@@ -2960,6 +2975,7 @@ class DiffusionBackend:
         name, a non-unsloth non-GGUF repo, or an undetectable family, and
         ValueError/FileNotFoundError for a bad local path. Touches no GPU, network, or state."""
         kind = resolve_model_kind(gguf_filename, model_kind)
+        assert_local_pick_is_dit(repo_id, gguf_filename, "image")
         fam = detect_family_for_pick(repo_id, gguf_filename, family_override)
         if fam is None:
             # An excluded model gets its stated reason, not the unknown-family message that invites a doomed retry
@@ -5770,7 +5786,12 @@ class DiffusionBackend:
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
                     and transformer_variant_differs_from_base(
-                        fam, base, gguf_filename, repo_id, display_repo_id
+                        fam,
+                        base,
+                        gguf_filename,
+                        content_variant_hint(repo_id, gguf_filename),
+                        repo_id,
+                        display_repo_id,
                     )
                 ):
                     dense_declined = True
@@ -7164,7 +7185,11 @@ class DiffusionBackend:
                     static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
-                            gguf_filename, repo_id, base, fam.name
+                            gguf_filename,
+                            content_variant_hint(repo_id, gguf_filename),
+                            repo_id,
+                            base,
+                            fam.name,
                         )
                         static_plan = auto_static_skip_plan(
                             (repo_id, base), skip_tier(speed_mode, effective_speed), default_steps
@@ -7337,7 +7362,14 @@ class DiffusionBackend:
                     # Before from_pipe copies the scheduler.
                     apply_comfy_flow_shift(
                         pipe,
-                        comfy_flow_shift_for(fam, gguf_filename, repo_id, display_repo_id, base),
+                        comfy_flow_shift_for(
+                            fam,
+                            gguf_filename,
+                            content_variant_hint(repo_id, gguf_filename),
+                            repo_id,
+                            display_repo_id,
+                            base,
+                        ),
                         logger,
                     )
                     # Before the speed optims, so the fused batched tile decode does not replace it.
