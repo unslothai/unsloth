@@ -21076,6 +21076,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             if await asyncio.to_thread(_ov.cancel_load, request.model_path):
                 logger.info(f"Cancelled in-flight OpenVINO load: {request.model_path}")
                 return UnloadResponse(status = "unloaded", model = request.model_path)
+            if request.cancel_load_request_id is not None:
+                # A late "stop loading" for a load that already finished leaves the resident alone.
+                return UnloadResponse(status = "unloaded", model = request.model_path)
             async with inference_lifecycle_gate():
                 if getattr(_ov.loaded_model, "model_path", None) == request.model_path:
                     _raise_or_cancel_active_generations(
@@ -21963,7 +21966,7 @@ async def _slot_status(current_subject: str):
         from core.inference.openvino_backend import peek_openvino_backend
 
         _ov = peek_openvino_backend()
-        _ov_resident = _ov.resident() if _ov is not None else None
+        _ov_resident = _ov.resident() if _ov is not None and routed_slot.get() is None else None
         if _ov_resident is not None:
             _ov_model = _ov_resident.model
             return InferenceStatusResponse(
@@ -30356,7 +30359,7 @@ async def produce_openai_chat_completions(
     from core.inference.openvino_backend import OpenVinoError, peek_openvino_backend
 
     _ov = peek_openvino_backend()
-    if _ov is not None and _ov.is_loaded:
+    if _ov is not None and _ov.is_loaded and routed_slot.get() is None:
         try:
             _ov_upstream = _ov.upstream()
         except OpenVinoError as exc:

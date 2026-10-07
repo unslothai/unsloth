@@ -130,10 +130,12 @@ FAKE_SIDECAR = textwrap.dedent(
     import argparse, http.server
     ap = argparse.ArgumentParser()
     ap.add_argument("--model"); ap.add_argument("--model-id"); ap.add_argument("--port", type=int)
+    ap.add_argument("--max-context", type=int)
     a = ap.parse_args()
+    body = ('{"context_length": %d}' % min(a.max_context or 32768, 32768)).encode()
     class H(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+            self.send_response(200); self.end_headers(); self.wfile.write(body)
         def log_message(self, *args): pass
     http.server.HTTPServer(("127.0.0.1", a.port), H).serve_forever()
     """
@@ -151,6 +153,7 @@ def test_load_serves_upstream_and_unload_stops_the_sidecar(tmp_path, monkeypatch
     resident = backend.load(str(model), 8192)
     proc = backend._process
     try:
+        # the context the sidecar enforces: the requested 8192 caps the model's 32768
         assert backend.is_loaded and resident.context_length == 8192
         up = backend.upstream()
         assert up.base_url == f"{resident.base_url}/v1" and up.public_model == str(model)
@@ -162,6 +165,22 @@ def test_load_serves_upstream_and_unload_stops_the_sidecar(tmp_path, monkeypatch
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+def test_context_length_is_what_the_sidecar_enforces(tmp_path, monkeypatch):
+    model = _ir(tmp_path / "m")
+    fake = tmp_path / "sidecar.py"
+    fake.write_text(FAKE_SIDECAR)
+    monkeypatch.setattr(ovb, "_SIDECAR", fake)
+    monkeypatch.setenv(ovb.PYTHON_ENV, sys.executable)
+    backend = ovb.OpenVinoBackend()
+    try:
+        # asked for more than the model/KV cache holds: the sidecar's limit is reported
+        resident = backend.load(str(model), 100000)
+        assert resident.context_length == 32768 and resident.requested_context_length == 100000
+        assert backend.upstream().context_length == 32768
+    finally:
+        backend.unload()
 
 
 def test_a_crashing_sidecar_fails_the_load_with_its_output(tmp_path, monkeypatch):
@@ -372,3 +391,19 @@ def test_model_context_reads_config(monkeypatch, tmp_path):
     assert sc.model_context(str(tmp_path)) == 4096
     (tmp_path / "config.json").write_text('{"text_config": {"max_position_embeddings": 262144}}')
     assert sc.model_context(str(tmp_path)) == 262144
+
+
+def test_split_layout_ir_is_a_model_directory(tmp_path):
+    from hub.services.models.common import _is_model_directory as hub_is_model_dir
+    from routes.models import _is_model_directory, _is_weight_bin
+
+    d = tmp_path / "vlm-int4-ov"
+    d.mkdir()
+    (d / "config.json").write_text("{}")
+    for name in ("openvino_language_model", "openvino_vision_embeddings_model"):
+        (d / f"{name}.xml").write_text("")
+        (d / f"{name}.bin").write_bytes(b"")
+    assert _is_model_directory(d) and hub_is_model_dir(d)
+    assert _is_weight_bin("openvino_language_model.bin") and not _is_weight_bin(
+        "openvino_tokenizer.bin"
+    )

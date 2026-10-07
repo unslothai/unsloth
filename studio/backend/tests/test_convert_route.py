@@ -16,6 +16,8 @@ def _client(tmp_path = None, owner = True):
         app.dependency_overrides[convert._require_installation_owner] = lambda: None
     if tmp_path is not None:
         mock.patch.object(convert, "exports_root", return_value = tmp_path).start()
+    # The Popen fakes have no real pid to adopt.
+    mock.patch.object(convert, "adopt_pid").start()
     return TestClient(app)
 
 

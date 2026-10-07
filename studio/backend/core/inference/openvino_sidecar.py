@@ -339,7 +339,7 @@ def build_app(
 
     @app.get("/health")
     def health():
-        return {"status": "ok"}
+        return {"status": "ok", "context_length": context}
 
     @app.get("/v1/models")
     def models():
@@ -514,6 +514,7 @@ def main() -> None:
     ap.add_argument("--port", type = int, required = True)
     ap.add_argument("--device", default = "GPU")
     ap.add_argument("--cache-gb", type = float, default = 3.0)
+    ap.add_argument("--max-context", type = int, default = None)
     args = ap.parse_args()
 
     sched = ov_genai.SchedulerConfig()
@@ -532,8 +533,11 @@ def main() -> None:
         pipe = ov_genai.VLMPipeline(args.model, args.device, **props)
     except Exception:
         pipe = ov_genai.LLMPipeline(args.model, args.device, **props)
+    context = model_context(args.model, sched.cache_size)
+    if args.max_context:
+        context = min(context, args.max_context) if context else args.max_context
     uvicorn.run(
-        build_app(pipe, args.model_id, model_context(args.model, sched.cache_size)),
+        build_app(pipe, args.model_id, context),
         host = "127.0.0.1",
         port = args.port,
         log_level = "warning",

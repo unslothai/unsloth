@@ -13,6 +13,13 @@ from pydantic import BaseModel
 from auth import policy
 from auth.authentication import get_current_subject
 from utils.paths import exports_root
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    is_process_shutting_down,
+    spawn_on_lifetime_thread,
+    terminate_pid,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +76,20 @@ def run_conversion_task(model_id: str, format_type: str, output_dir: Path) -> No
     try:
         output_dir.parent.mkdir(parents = True, exist_ok = True)
         with open(log_path, "w", encoding = "utf-8") as log:
-            proc = subprocess.Popen(
-                [sys.executable, "-c", _SCRIPT, model_id, format_type, str(output_dir)],
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                text = True,
+            argv = [sys.executable, "-c", _SCRIPT, model_id, format_type, str(output_dir)]
+            proc = spawn_on_lifetime_thread(
+                lambda: subprocess.Popen(
+                    argv,
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.STDOUT,
+                    text = True,
+                    **child_popen_kwargs(),
+                )
             )
+            adopt_pid(proc.pid)
+            if is_process_shutting_down():
+                terminate_pid(proc.pid, timeout = 5.0, owner_verified = True)
+                raise RuntimeError("Unsloth is shutting down; not converting.")
             for line in proc.stdout:
                 log.write(line)
                 if line.startswith("STAGE "):

@@ -217,6 +217,8 @@ class OpenVinoBackend:
                     "--port",
                     str(port),
                 ]
+                if requested_context_length:
+                    cmd += ["--max-context", str(requested_context_length)]
                 logger.info("Starting OpenVINO sidecar: %s", " ".join(cmd))
                 self._tail.clear()
                 proc = spawn_on_lifetime_thread(
@@ -240,7 +242,7 @@ class OpenVinoBackend:
                 self._drain_thread = threading.Thread(target = self._drain, args = (proc,), daemon = True)
                 self._drain_thread.start()
                 base_url = f"http://127.0.0.1:{port}"
-                self._wait_ready(proc, base_url)
+                served_context = self._wait_ready(proc, base_url)
                 model = OpenVinoModel(
                     id = model_id,
                     model_path = model_path,
@@ -250,7 +252,7 @@ class OpenVinoBackend:
                 )
                 self._resident = OpenVinoResident(
                     model = model,
-                    context_length = requested_context_length,
+                    context_length = served_context or requested_context_length,
                     requested_context_length = requested_context_length,
                     base_url = base_url,
                 )
@@ -261,7 +263,8 @@ class OpenVinoBackend:
             finally:
                 self._loading = None
 
-    def _wait_ready(self, proc: subprocess.Popen, base_url: str) -> None:
+    def _wait_ready(self, proc: subprocess.Popen, base_url: str) -> Optional[int]:
+        """Waits for /health; returns the context length the sidecar enforces, if it reports one."""
         deadline = time.monotonic() + _READY_TIMEOUT_S
         while time.monotonic() < deadline:
             if self._cancel.is_set():
@@ -271,8 +274,13 @@ class OpenVinoBackend:
                 tail = "\n".join(self._tail)
                 raise OpenVinoError(f"The OpenVINO sidecar exited. Last output:\n{tail}")
             try:
-                if httpx.get(f"{base_url}/health", timeout = 2.0).status_code == 200:
-                    return
+                res = httpx.get(f"{base_url}/health", timeout = 2.0)
+                if res.status_code == 200:
+                    try:
+                        context = res.json().get("context_length")
+                    except (ValueError, AttributeError):
+                        context = None
+                    return context if isinstance(context, int) and context > 0 else None
             except httpx.HTTPError:
                 pass
             time.sleep(0.5)
