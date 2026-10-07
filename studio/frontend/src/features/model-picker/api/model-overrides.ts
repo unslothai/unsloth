@@ -604,6 +604,8 @@ async function sendModelOverride(
   };
 }
 
+const syncGenerations = new Map<string, number>();
+
 /**
  * Mirror a per-model config save to the backend without blocking the UI. Best-effort: the
  * localStorage write already happened, so a failed sync must not fail the save. Logged, not
@@ -617,8 +619,15 @@ export function syncModelOverride(
   config: PerModelConfig | null,
   options?: PutModelOverrideOptions,
 ): void {
+  const key = foldOverrideKey(modelOverrideKey(modelId, ggufVariant));
+  const generation = (syncGenerations.get(key) ?? 0) + 1;
+  syncGenerations.set(key, generation);
   void putModelOverride(modelId, ggufVariant, config, options)
     .then(({ removedKeys }) => {
+      // A later save (an undo, say) already rewrote the local record this forget would clear.
+      if (syncGenerations.get(key) !== generation) {
+        return;
+      }
       if (!deletePerModelConfigsForOverrideKeys(removedKeys)) {
         console.warn(
           "Forgot model settings on the server, but this browser kept its own copy.",

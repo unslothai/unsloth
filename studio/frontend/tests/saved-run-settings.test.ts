@@ -157,3 +157,41 @@ test("forget marks a mounted editor's draft unsaved, and undo marks it saved aga
     setAuthFetchHandler(null);
   }
 });
+
+test("an undo before the forget's response keeps the restored record", async () => {
+  store.clear();
+  let releaseForget: (() => void) | null = null;
+  setAuthFetchHandler((_input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const response = () =>
+      new Response(
+        JSON.stringify({
+          overrides: {},
+          // biome-ignore lint/style/useNamingConvention: API schema
+          removed_keys: body.remove ? [`${REPO}:${QUANT}`] : [],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    if (!body.remove) {
+      return response();
+    }
+    return new Promise<Response>((resolve) => {
+      releaseForget = () => resolve(response());
+    });
+  });
+  try {
+    savePerModelConfig(REPO, QUANT, tuned());
+    const undo = forgetRunSettings(ggufTarget());
+    assert.ok(undo);
+    assert.equal(undo(), true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.ok(releaseForget, "the forget is still in flight");
+    releaseForget();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const restored = resolveInitialConfig(REPO, QUANT);
+    assert.equal(restored.remembered, true);
+    assert.equal(restored.config.nParallel, 4);
+  } finally {
+    setAuthFetchHandler(null);
+  }
+});
