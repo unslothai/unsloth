@@ -183,3 +183,14 @@ test("a removed GPU, changed order, or backend namespace discards the saved spli
     null,
   );
 });
+
+test("an unpinned split survives a reload that stays unpinned", async () => {
+  const { reconcileTensorSplit } = await import(
+    "../src/hooks/gpu-tensor-split.ts"
+  );
+  assert.deepEqual(reconcileTensorSplit([3, 1], null, null), [3, 1]);
+  assert.deepEqual(reconcileTensorSplit([3, 1], undefined, null), [3, 1]);
+  assert.equal(reconcileTensorSplit([3, 1], null, [0, 1]), null);
+  assert.equal(reconcileTensorSplit([0, 0], null, null), null);
+  assert.equal(reconcileTensorSplit([3], null, null), null);
+});
