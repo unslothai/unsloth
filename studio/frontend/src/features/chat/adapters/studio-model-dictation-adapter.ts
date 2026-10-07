@@ -7,7 +7,9 @@ import {
   isAudioCppFolderId,
 } from "../../audio/audio-cpp-catalog";
 import { authFetch } from "@/features/auth";
+import { listGgufVariants } from "@/features/hub/inventory/api";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
@@ -18,7 +20,10 @@ import {
   isCuratedSttModel,
   recordRecentDictation,
   resolveModelDictationLanguage,
+  sttListedQuantDownloaded,
+  sttModelVariant,
   useVoiceSettingsStore,
+  withSttVariant,
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
@@ -29,7 +34,7 @@ import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { startDictationLevelMeter } from "./dictation-level";
 import { type SegmentRecorder, createAudioRecorder } from "./pcm-recorder";
 import { SttModelNotDownloadedError, sttRequestError } from "./stt-errors";
-// Re-exported so the one public entry point for dictation is unchanged.
+// re-export preserves the public dictation entry point
 export { SttModelNotDownloadedError } from "./stt-errors";
 import {
   beginDictationSession,
@@ -122,7 +127,6 @@ async function sttErrorDetail(response: Response): Promise<string> {
   return body?.detail ?? body?.error?.message ?? `HTTP ${response.status}`;
 }
 
-/** post recorded audio to the selected STT backend and return its transcript. */
 export async function transcribeAudioBlob(
   blob: Blob,
   options: {
@@ -130,6 +134,8 @@ export async function transcribeAudioBlob(
     language?: string;
     engine?: SttEngine;
     device?: SttDevice;
+    /** package-folder quant; defaults to the saved quant when `model` is also omitted */
+    ggufVariant?: string | null;
     providerId?: string;
     signal?: AbortSignal;
   } = {},
@@ -193,7 +199,19 @@ export async function transcribeAudioBlob(
 
   const language = resolveModelDictationLanguage(model, languageSetting);
   const engine = options.engine ?? sttEngineFor(model);
-  const params = new URLSearchParams({ model, fast: "true", engine });
+  // cold sidecars resolve bare rows to their default quant, so the pick travels as `row:variant`
+  const variant =
+    options.ggufVariant !== undefined
+      ? options.ggufVariant
+      : options.model === undefined
+        ? sttModelVariant(model, settings.sttGgufVariant)
+        : null;
+  const params = new URLSearchParams({
+    model:
+      engine === "audiocpp" && variant ? withSttVariant(model, variant) : model,
+    fast: "true",
+    engine,
+  });
   if (language) params.set("language", language);
   params.set("device", options.device ?? settings.sttDevice);
   const response = await authFetch(
@@ -222,10 +240,9 @@ export interface SttDownloadStatus {
   downloading: boolean;
   model: string | null;
   error: string | null;
-  /** The last download was stopped by the user rather than failing. */
+  /** whether the user stopped the last download */
   cancelled?: boolean;
-  /** Which model that cancellation applies to. `model` goes null once the worker thread stops,
-   *  so this is the only way to tell a settled cancellation from an unrelated one. */
+  /** cancellation target retained after the worker clears `model` */
   cancelled_model?: string | null;
   bytes_total: number | null;
   bytes_done: number | null;
@@ -234,6 +251,8 @@ export interface SttDownloadStatus {
 export interface SttEngineStatus {
   available: boolean;
   loaded_model: string | null;
+  /** resident audiocpp quant; absent for other engines */
+  loaded_variant?: string | null;
   loading: boolean;
   device: string | null;
   keep_alive_seconds: number;
@@ -325,8 +344,20 @@ export async function validateSttModel(
   }
 }
 
-/** The quant an audiocpp pick names, as the request field; every other engine takes none. A saved
- *  dictation key already implies its package, so callers pass nothing for one. */
+/** checks the quant because row status is true for any cached quant; unreadable listings defer to it */
+export async function sttQuantDownloaded(
+  model: string,
+  ggufVariant: string | null | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!ggufVariant) return true;
+  const listing = await listGgufVariants(model, hfApiToken(getHfToken()), {
+    signal,
+  }).catch(() => null);
+  return !listing || sttListedQuantDownloaded(listing, ggufVariant);
+}
+
+/** sends audiocpp quant picks; saved keys imply a package, and other engines take none */
 function sttVariantBody(
   engine: SttEngine,
   ggufVariant: string | null | undefined,
@@ -337,7 +368,6 @@ function sttVariantBody(
     : {};
 }
 
-/** Load a selected model that is already downloaded. */
 export function loadSttModel(
   model: string,
   engine?: SttEngine,
@@ -494,6 +524,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const sessionEngine = usesExternalEndpoint
       ? undefined
       : sttEngineFor(sessionModel);
+    const sessionVariant = usesExternalEndpoint
+      ? null
+      : sttModelVariant(sessionModel, settings.sttGgufVariant);
     const sessionChatId = resolveDictationChatId(this.chatId);
 
     const speechStartCallbacks = new Set<() => void>();
@@ -550,13 +583,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       if (reportedTranscriptionError || cancelled || ended) return;
       reportedTranscriptionError = true;
       console.error("STT transcription error:", error);
-      // An undownloaded model is the ordinary first-run state, not a failure. Point at the
-      // download; never start it here.
+      // undownloaded models require confirmation; never download from dictation
       if (
         !usesExternalEndpoint &&
         error instanceof SttModelNotDownloadedError
       ) {
-        requestSttDownload(sessionModel);
+        requestSttDownload(sessionModel, { ggufVariant: sessionVariant });
         finishSession("cancelled");
         return;
       }
@@ -570,9 +602,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           onClick: () => useSettingsDialogStore.getState().openDialog("voice"),
         },
       });
-      // The preload runs cache-only, so nothing it reports is transient: a missing runtime or a
-      // load refused for training means no segment of this session can be transcribed. End it
-      // rather than let the user keep speaking into a recorder whose audio is already lost.
+      // cache-only preload failures make the session unusable, so stop before more audio is lost
       if (stage === "preload") finishSession("cancelled");
     };
 
@@ -622,7 +652,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       }
     };
 
-    // Transcribe queued segments one at a time so the backend is never flooded.
+    // serialize segment transcription to avoid flooding the backend
     const processQueue = () => {
       if (worker || cancelled || ended) return;
       const item = queue.shift();
@@ -637,14 +667,14 @@ export class StudioModelDictationAdapter implements DictationAdapter {
             model: sessionModel,
             language: sessionLanguage,
             engine: sessionEngine,
+            ggufVariant: sessionVariant,
             providerId: sessionProviderId,
             signal: abortController.signal,
           });
           if (!cancelled) results[item.index] = text;
         } catch (error) {
           if (!cancelled && !abortController.signal.aborted) {
-            // Keep transcribed segments, but never hide that part was lost. Only a lost segment is
-            // partial: the model preload shares this reporter and can fail without costing any audio.
+            // only a lost segment is partial; preload failures cost no recorded audio
             markDictationFailed();
             reportTranscriptionError(error);
           }
@@ -850,9 +880,15 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           return;
         }
         if (!usesExternalEndpoint && sessionEngine) {
-          // warm the model only after mic access; the backend never downloads here.
-          void loadSttModel(sessionModel, sessionEngine).catch(
-            (error: unknown) => reportTranscriptionError(error, "preload"),
+          // warm the model only after mic access; the backend never downloads here
+          void loadSttModel(
+            sessionModel,
+            sessionEngine,
+            undefined,
+            undefined,
+            sessionVariant,
+          ).catch((error: unknown) =>
+            reportTranscriptionError(error, "preload"),
           );
         }
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {

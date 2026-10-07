@@ -1253,6 +1253,9 @@ export const it = {
         sttModelLabel: "Modello di riconoscimento vocale",
         sttModelDescription:
           "Scegli o cerca un modello STT da eseguire in locale.",
+        sttQuantLabel: "Quantizzazione",
+        sttQuantDescription:
+          "Scegli o cerca un modello STT da eseguire in locale, poi la sua quantizzazione.",
         sttDeviceLabel: "Carica in",
         sttDeviceAuto: "GPU quando disponibile",
         sttDeviceCpu: "RAM della CPU",

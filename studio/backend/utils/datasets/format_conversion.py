@@ -457,6 +457,8 @@ def convert_to_vlm_format(
 
         if uses_dynamic and instruction_column:
             current_instruction = sample[instruction_column]
+            if not isinstance(current_instruction, str) or not current_instruction.strip():
+                current_instruction = "Describe this image in detail."
         else:
             current_instruction = instruction
 

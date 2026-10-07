@@ -79,6 +79,8 @@ class DiffusionFamily:
     base_repo: str
     # Pipeline kwarg carrying guidance. Most use "guidance_scale"; Qwen-Image real CFG is "true_cfg_scale".
     cfg_kwarg: str = "guidance_scale"
+    # False when the diffusers pipeline ignores a negative prompt; the native engine decides on its own.
+    uses_negative_prompt: bool = True
     # The pipe attribute holding the denoiser: ``pipe.transformer`` for DiT families, ``pipe.unet`` for SDXL.
     denoiser_attr: str = "transformer"
     # True when a single-file ``.safetensors`` is the WHOLE pipeline (SDXL), so the loader calls ``from_single_file``.
@@ -230,6 +232,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
+        uses_negative_prompt = False,
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
         # ComfyUI fixed mu 1.15 for dev / Krea; schnell first (a dev GGUF may resolve to its base). Keys name the model: paths match too.
@@ -279,6 +282,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.2-klein",
         pipeline_class = "Flux2KleinPipeline",
+        uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-klein-4B",
         prequant_repos = (
@@ -325,6 +329,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.2-dev",
         pipeline_class = "Flux2Pipeline",
+        uses_negative_prompt = False,
         transformer_class = "Flux2Transformer2DModel",
         base_repo = "black-forest-labs/FLUX.2-dev",
         prequant_repos = (
@@ -355,6 +360,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             1.15
         ),  # ComfyUI ModelSamplingFlux fixed mu 1.15 (Kontext template)
         pipeline_class = "FluxKontextPipeline",
+        uses_negative_prompt = False,
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
         aliases = ("flux.1-kontext-dev", "flux1-kontext", "flux-kontext", "kontext"),
@@ -728,6 +734,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "ideogram-4",
         pipeline_class = "Ideogram4Pipeline",
+        uses_negative_prompt = False,
         transformer_class = "Ideogram4Transformer2DModel",
         base_repo = "ideogram-ai/ideogram-4-fp8",
         aliases = ("ideogram4", "ideogram-v4", "ideogram"),

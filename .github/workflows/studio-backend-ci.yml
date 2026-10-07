@@ -613,17 +613,42 @@ jobs:
         # Skipped:
         #   test_install_rollback_lifecycle.sh: covered by cross-platform-parity-ci.yml.
         run: |
-          set -e
+          set -euo pipefail
+          shopt -s nullglob
           skip="test_install_rollback_lifecycle.sh"
-          found=0
+          suites=()
           for s in tests/sh/test_*.sh; do
               case " $skip " in
                   *" $(basename "$s") "*) echo "skipping $s (see workflow comment)"; continue ;;
               esac
-              found=$((found + 1))
+              suites+=("$s")
+          done
+          found=${#suites[@]}
+          [ "$found" -gt 0 ] || { echo "::error::no shell tests discovered under tests/sh"; exit 1; }
+          export suite_logs
+          suite_logs=$(mktemp -d "$RUNNER_TEMP/shell-suites.XXXXXX")
+          # Each suite already owns its fixtures. Keep its output and exit status
+          # separate, then collect every result even when another suite fails.
+          failed=0
+          printf '%s\0' "${suites[@]}" | xargs -0 -P 4 -n 1 bash -c '
+              s=$1
+              name=${s##*/}
+              echo "Starting $s"
+              rc=0
+              timeout --signal=TERM --kill-after=10s 480s bash "$s" > "$suite_logs/$name.log" 2>&1 || rc=$?
+              printf "%s\n" "$rc" > "$suite_logs/$name.status"
+              echo "Finished $s (exit $rc)"
+          ' _ || failed=1
+          for s in "${suites[@]}"; do
+              name=${s##*/}
               echo "::group::$s"
-              bash "$s"
+              cat "$suite_logs/$name.log" || failed=1
+              rc=$(cat "$suite_logs/$name.status" 2>/dev/null) || rc=1
+              if [ "$rc" != 0 ]; then
+                  echo "::error::$s exited $rc (124 means the suite timed out)"
+                  failed=1
+              fi
               echo "::endgroup::"
           done
-          [ "$found" -gt 0 ] || { echo "::error::no shell tests discovered under tests/sh"; exit 1; }
           echo "ran $found shell installer test files"
+          exit "$failed"

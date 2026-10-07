@@ -1337,6 +1337,9 @@ export const en = {
         customModelDescription: "Model name sent to /v1/audio/transcriptions.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription: "Choose or search a STT model to run locally.",
+        sttQuantLabel: "Quantization",
+        sttQuantDescription:
+          "Choose or search a STT model to run locally, then its quantization.",
         sttDeviceLabel: "Load into",
         sttDeviceAuto: "GPU when available",
         sttDeviceCpu: "CPU RAM",
