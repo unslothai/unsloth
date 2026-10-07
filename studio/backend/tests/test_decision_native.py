@@ -497,6 +497,9 @@ def test_freest_gpu_follows_the_visibility_order(stub, monkeypatch, mask, expect
     assert native_worker._pick_device("llama-server", hip) == expected.replace("CUDA", "ROCm")
     hip.pop("HIP_VISIBLE_DEVICES")
     assert native_worker._pick_device("llama-server", hip) == expected.replace("CUDA", "ROCm")
+    rocr = {k: v for k, v in hip.items() if k != "CUDA_VISIBLE_DEVICES"}
+    rocr["ROCR_VISIBLE_DEVICES"] = mask
+    assert native_worker._pick_device("llama-server", rocr) == expected.replace("CUDA", "ROCm")
 
 
 @pytest.mark.parametrize("mode", ["nodecisions", "wrongalias"])
