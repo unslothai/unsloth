@@ -82,6 +82,7 @@ def _laya(tmp_path) -> Path:
 class _Recorder:
     def __init__(self):
         self.calls = []
+        self.tokens = []
 
 
 class _ForbiddenLoader:
@@ -135,7 +136,9 @@ def env(monkeypatch):
             quantization_method,
             source_folder = None,
             print_output = False,
+            token = None,
         ):
+            lib.tokens.append(token)
             lib.calls.append(
                 (
                     "save_pretrained_gguf",
@@ -200,6 +203,17 @@ def test_merged_clef_skips_chat_and_vision_loaders_and_exports_in_run_folder(env
     assert output == str(folder.resolve() / "gguf")
     assert "Q8_0, Q4_K_M" in message
     assert not (Path.cwd() / "ignored_dir").exists()
+
+
+@pytest.mark.parametrize("token", ["hf_caller", False])
+def test_adapter_only_clef_loads_and_merges_its_base_with_the_load_credential(env, tmp_path, token):
+    mod, lib = env
+    folder = _clef_adapter(tmp_path)
+    backend = mod.ExportBackend()
+    assert backend.load_checkpoint(str(folder), hf_token = token)[0]
+    assert backend.export_gguf("x", "q8_0")[0]
+    assert _exports(lib)[0][2]["token"] == token
+    assert lib.tokens == [token]
 
 
 def test_adapter_only_clef_merges_through_fast_decision_model(env, tmp_path):

@@ -699,18 +699,41 @@ def _export_decision_gguf(
             for name in (entry["model"], entry.get("mmproj"))
             if name
         }
-        # Readers see no export while files move, never a half-written one.
-        (output / contract.EXPORT_FILE).unlink(missing_ok = True)
-        if previous is not None:
-            for entry in previous["files"].values():
-                for name in (entry["model"], entry.get("mmproj")):
-                    if name and name not in wanted and Path(name).name == name:
-                        (output / name).unlink(missing_ok = True)
-        for entry in files.values():
-            for name in (entry["model"], entry["mmproj"]):
-                if name and (staging / name).is_file():
-                    os.replace(staging / name, output / name)
-        data = _write_export(output, layout, merged, source_fingerprint)
+        moved = []
+        try:
+            # Readers see no export while files move, never a half-written one.
+            (output / contract.EXPORT_FILE).unlink(missing_ok = True)
+            if previous is not None:
+                for entry in previous["files"].values():
+                    for name in (entry["model"], entry.get("mmproj")):
+                        if name and name not in wanted and Path(name).name == name:
+                            (output / name).unlink(missing_ok = True)
+            for quant, entry in files.items():
+                for name in (entry["model"], entry["mmproj"]):
+                    if name and (staging / name).is_file():
+                        os.replace(staging / name, output / name)
+                moved.append(quant)
+            data = _write_export(output, layout, merged, source_fingerprint)
+        except BaseException:
+            # Windows refuses to replace a GGUF llama-server has mapped: the export of these
+            # same weights stays listed rather than vanishing.
+            if (
+                previous is not None
+                and previous["source_fingerprint"] == source_fingerprint
+                and previous["layout"] == layout
+            ):
+                listed = {q: previous["files"][q] for q in previous["quantizations"]}
+                restore = {
+                    q: e
+                    for q, e in {**listed, **{q: files[q] for q in moved}}.items()
+                    if all((output / n).is_file() for n in (e["model"], e.get("mmproj")) if n)
+                }
+                if restore:
+                    try:
+                        _write_export(output, layout, restore, source_fingerprint)
+                    except Exception:
+                        pass
+            raise
     finally:
         shutil.rmtree(staging, ignore_errors = True)
     print(f"Unsloth: saved decision model GGUF ({', '.join(files)}) to {output}")
@@ -728,15 +751,27 @@ def save_pretrained_gguf(
 ) -> dict:
     """GGUF for llama.cpp's decision server in <save_directory>/gguf: merges into a temporary
     folder, converts, and writes the calibrated temperatures. quantization_method is one of
-    DECISION_GGUF_QUANTIZATIONS or a list of them."""
+    DECISION_GGUF_QUANTIZATIONS or a list of them. token: for the base weights the merge reads."""
     with _exit_on_sigterm():
         return _save_pretrained_gguf(
-            self, save_directory, tokenizer, quantization_method, source_folder, print_output
+            self,
+            save_directory,
+            tokenizer,
+            quantization_method,
+            source_folder,
+            print_output,
+            kwargs.get("token"),
         )
 
 
 def _save_pretrained_gguf(
-    self, save_directory, tokenizer, quantization_method, source_folder, print_output
+    self,
+    save_directory,
+    tokenizer,
+    quantization_method,
+    source_folder,
+    print_output,
+    token = None,
 ) -> dict:
     quants = _quantizations(quantization_method)
     eligibility = gguf_eligibility(self)
@@ -752,7 +787,9 @@ def _save_pretrained_gguf(
     output.mkdir(parents = True, exist_ok = True)
     _remove_abandoned_temp(output)
     with tempfile.TemporaryDirectory(prefix = _temp_prefix(".unsloth-merged-"), dir = output) as merged:
-        self.save_pretrained_merged(merged, tokenizer)
+        self.save_pretrained_merged(
+            merged, tokenizer, **({} if token is None else {"token": token})
+        )
         if source_folder is None and _layout(output) == layout:
             # The folder on disk names the export only if it holds these weights: after an
             # in-memory calibration or more training it is stale.
@@ -785,7 +822,11 @@ def push_to_hub_gguf(
     api = HfApi(token = token)
     with tempfile.TemporaryDirectory() as folder:
         data = self.save_pretrained_gguf(
-            folder, tokenizer, quantization_method = quantization_method, print_output = print_output
+            folder,
+            tokenizer,
+            quantization_method = quantization_method,
+            print_output = print_output,
+            token = token,
         )
         repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
         api.upload_folder(folder_path = str(Path(folder) / _contract().EXPORT_DIR), repo_id = repo_id)

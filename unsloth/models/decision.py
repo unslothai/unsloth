@@ -1069,7 +1069,12 @@ _MERGED_FILES = ("config.json", "model*.safetensors", "model.safetensors.index.j
 _ADAPTER_FILES = (_ADAPTER_CONFIG, "adapter_model.safetensors", "adapter_model.bin")
 
 
-def _save_clef(self, save_directory, tokenizer) -> None:
+def _save_clef(
+    self,
+    save_directory,
+    tokenizer,
+    token = None,
+) -> None:
     import shutil
 
     output = Path(save_directory)
@@ -1079,7 +1084,12 @@ def _save_clef(self, save_directory, tokenizer) -> None:
         encoder = self.encoder
         if hasattr(encoder, "save_pretrained_merged"):
             # Unsloth's merge dequantizes a 4-bit base and writes the processor files too.
-            encoder.save_pretrained_merged(str(staging), tokenizer, save_method = "merged_16bit")
+            encoder.save_pretrained_merged(
+                str(staging),
+                tokenizer,
+                save_method = "merged_16bit",
+                **({} if token is None else {"token": token}),
+            )
             # The merge downloads the base's shards with local_dir = the save folder, which leaves
             # huggingface_hub's .cache/huggingface (locks, metadata) behind: not part of the model.
             shutil.rmtree(staging / ".cache", ignore_errors = True)
@@ -1625,7 +1635,7 @@ def save_pretrained_merged(
         )
     tokenizer = self._saved_temp_tokenizer if tokenizer is None else tokenizer
     if getattr(self, "is_clef", False):
-        return _save_clef(self, save_directory, tokenizer)
+        return _save_clef(self, save_directory, tokenizer, kwargs.get("token"))
     encoder = self.encoder
     if hasattr(encoder, "merge_and_unload"):
         # Merged on a CPU copy: the model keeps its adapters and the GPU never holds a second encoder.

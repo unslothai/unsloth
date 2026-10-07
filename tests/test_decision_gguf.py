@@ -518,7 +518,9 @@ class _FakeClef:
         self,
         folder,
         tokenizer = None,
+        **kwargs,
     ):
+        self.merge_kwargs = kwargs
         _clef_folder(Path(folder), ("Qwen3_5ForCausalLM",))
         (Path(folder) / "joint_head.safetensors").write_bytes(self.head)
         if self.fail is not None:
@@ -617,6 +619,45 @@ def test_an_interrupted_export_leaves_no_temp_folders(tmp_path, fake_llama_cpp, 
     with pytest.raises(KeyboardInterrupt):
         decision_gguf.save_pretrained_gguf(_FakeClef(b"h", KeyboardInterrupt()), folder)
     assert _staged(folder) == [] and _staged(folder.parent) == []
+
+
+@needs_gguf
+def test_save_merges_with_the_callers_token(tmp_path, fake_llama_cpp):
+    model = _FakeClef(b"h")
+    decision_gguf.save_pretrained_gguf(model, tmp_path / "a", token = "hf_private")
+    assert model.merge_kwargs == {"token": "hf_private"}
+    decision_gguf.save_pretrained_gguf(model, tmp_path / "b")
+    assert model.merge_kwargs == {}
+
+
+@needs_gguf
+def test_a_failed_publish_keeps_the_export_of_the_same_weights(
+    tmp_path, fake_llama_cpp, monkeypatch
+):
+    folder = _clef_folder(tmp_path / "run")
+    decision_gguf.export_decision_gguf(folder, "q8_0")
+    served = contract.served_files(folder, "clef")
+    replace = os.replace
+
+    def mapped(source, target):
+        # Windows: llama-server has model-Q8_0.gguf mapped, so it cannot be replaced.
+        if Path(target) == folder / "gguf" / "model-Q8_0.gguf":
+            raise PermissionError(13, "The process cannot access the file", str(target))
+        return replace(source, target)
+
+    monkeypatch.setattr(decision_gguf.os, "replace", mapped)
+    with pytest.raises(PermissionError):
+        decision_gguf.export_decision_gguf(folder, ["q8_0", "f16"])
+    monkeypatch.setattr(decision_gguf.os, "replace", replace)
+    assert contract.served_files(folder, "clef") == served
+    assert contract.read_export(folder)["quantizations"] == ["Q8_0"]
+
+    # Other weights: nothing of the old export is current, so nothing is restored.
+    (folder / "joint_head.safetensors").write_bytes(b"retrained")
+    monkeypatch.setattr(decision_gguf.os, "replace", mapped)
+    with pytest.raises(PermissionError):
+        decision_gguf.export_decision_gguf(folder, "q8_0")
+    assert contract.read_export(folder) is None
 
 
 @needs_gguf
