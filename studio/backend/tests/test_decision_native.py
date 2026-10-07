@@ -456,6 +456,30 @@ def test_the_key_is_passed_in_a_private_file_and_files_go_with_the_server(home, 
     assert not key_file.exists() and not log_file.exists() and not second._key_file.exists()
 
 
+def test_a_shutdown_that_begins_during_the_spawn_kills_the_new_server(
+    home, stub, tmp_path, monkeypatch
+):
+    """The latch can be set between the gate and the pid record; _wait_ready rereads it, so the server dies."""
+    from utils import process_lifetime
+    from utils.paths.storage_roots import auth_root
+
+    model = tmp_path / "m.gguf"
+    model.write_bytes(b"GGUF")
+    reads = iter([False, True])
+    monkeypatch.setattr(process_lifetime, "is_process_shutting_down", lambda: next(reads, True))
+    spawned = []
+    spawn = process_lifetime.spawn_on_lifetime_thread
+    monkeypatch.setattr(
+        process_lifetime,
+        "spawn_on_lifetime_thread",
+        lambda start: spawned.append(spawn(start)) or spawned[-1],
+    )
+    with pytest.raises(native_worker.NativeError, match = "stopped while it loaded"):
+        native_worker.NativeClefAgent(model, None, "clef-flash", gpu = False)
+    assert len(spawned) == 1 and spawned[0].poll() is not None
+    assert not list(auth_root().glob("decision_llama_api_key_*"))
+
+
 def test_gpu_flags_offload_to_the_freest_device(home, stub, tmp_path):
     model = tmp_path / "m.gguf"
     model.write_bytes(b"GGUF")

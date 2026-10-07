@@ -205,9 +205,9 @@ def _serve_and_compare(export_dir, data, reference, rows, label, tmp_path):
     results["pytorch"] = {"nll": nll, "ece": ece}
     if REPORT:
         path = Path(REPORT)
-        report = json.loads(path.read_text()) if path.is_file() else {}
+        report = json.loads(path.read_text(encoding = "utf-8")) if path.is_file() else {}
         report[label] = results
-        path.write_text(json.dumps(report, indent = 2))
+        path.write_text(json.dumps(report, indent = 2), encoding = "utf-8")
     print(label, json.dumps(results, indent = 2))
     return results
 
