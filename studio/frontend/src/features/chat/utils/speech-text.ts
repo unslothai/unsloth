@@ -7,8 +7,24 @@ import { gfmFromMarkdown } from "mdast-util-gfm";
 import { mathFromMarkdown } from "mdast-util-math";
 import { gfm } from "micromark-extension-gfm";
 import { math } from "micromark-extension-math";
+import { defaultRehypePlugins } from "streamdown";
 import { normalizeEscapedInlineMath } from "../../../lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../../../lib/latex.ts";
+import { UNWRAPPED_TAGS } from "../../../lib/markdown-data-images.ts";
+
+// Tags the renderer renders; any other `<tag>` stays on the page as text (`Vec<T>`, `<placeholder>`).
+const SCHEMA_TAGS = new Set(
+  (defaultRehypePlugins.sanitize as [unknown, { tagNames?: string[] }])[1]
+    .tagNames,
+);
+const ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+};
 
 /** The words a markdown reply shows, for read-aloud: voices speak raw markup ("asterisk asterisk", #12547). */
 export function markdownToSpeechText(markdown: string): string {
@@ -59,7 +75,7 @@ function collectBlocks(
       return;
     // The sanitizer unwraps raw HTML, so its text shows on the page.
     case "html":
-      out.push(htmlText(node.value));
+      out.push(htmlText(node.value, true));
       return;
     case "thematicBreak":
     case "definition":
@@ -89,7 +105,7 @@ function inline(node: Nodes): string {
     case "imageReference":
       return node.alt ?? "";
     case "html":
-      return htmlText(node.value);
+      return htmlText(node.value, false);
     case "footnoteReference":
       return "";
     default:
@@ -97,10 +113,23 @@ function inline(node: Nodes): string {
   }
 }
 
-function htmlText(html: string): string {
+function htmlText(html: string, block: boolean): string {
   return html
     .replace(/<!--[\s\S]*?-->|<(script|style)\b[\s\S]*?<\/\1\s*>/gi, "")
-    .replace(/<[^>]*>/g, " ")
+    .replace(/<\/?([a-z][^\s/<>]*)[^<>]*>/gi, (tag, name: string) => {
+      const lower = name.toLowerCase();
+      return SCHEMA_TAGS.has(lower) || (block && UNWRAPPED_TAGS.has(lower))
+        ? " "
+        : tag;
+    })
+    .replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (ref, body: string) => {
+      if (body[0] !== "#") return ENTITIES[body.toLowerCase()] ?? ref;
+      const code = Number.parseInt(
+        body.slice(body[1] === "x" || body[1] === "X" ? 2 : 1),
+        body[1] === "x" || body[1] === "X" ? 16 : 10,
+      );
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ref;
+    })
     .split("\n")
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean)

@@ -77,3 +77,14 @@ test("text inside raw HTML and footnotes is read, as the page shows it", () => {
     "Visible answer",
   );
 });
+
+test("tags the page shows as text are read, and entities read as their characters", () => {
+  assert.equal(
+    markdownToSpeechText("Use <placeholder> here, a Vec<T>, and <b>bold</b>."),
+    "Use <placeholder> here, a Vec<T>, and bold.",
+  );
+  assert.equal(
+    markdownToSpeechText("<div>AT&amp;T &lt; 5 &#33; &#x41;</div>"),
+    "AT&T < 5 ! A",
+  );
+});

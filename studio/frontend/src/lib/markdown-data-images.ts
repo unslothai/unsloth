@@ -26,7 +26,7 @@ const INNER_TAG = /<(\/?)([a-z][^\s/<>]*)/gi;
 // Formatting tags outside the schema that documents use as markup. Where a pipeline opts in, they are
 // left for sanitize to unwrap so their text shows: always in a raw HTML block, which closes them
 // implicitly, and in prose only when matched, so "the <small> tag" stays text like any unknown tag.
-const UNWRAPPED_TAGS = new Set([
+export const UNWRAPPED_TAGS = new Set([
   "abbr",
   "big",
   "center",
