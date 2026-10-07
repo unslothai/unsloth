@@ -27,10 +27,7 @@ import {
 
 const DOLLAR_REGEX = /(?<![\\$])\$(?!\$)/g;
 
-/**
- * Matches a number pattern (currency) right after a `$`, e.g.:
- *   $5, $1,000, $5.99, $100K, $3.5M
- */
+/** matches currency bodies after `$`, including separators, decimals, and K/M/B suffixes. */
 const CURRENCY_REGEX = /\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d])/y;
 
 const HEADING_LINE_RE = / {0,3}#{1,6}(?=[ \t\r\n]|$)/y;
@@ -38,17 +35,14 @@ const TABLE_ROW_RE = /[ \t]*\|/y;
 const BLOCK_BREAK_RE =
   /\n[ \t\r]*(?:\n|#{1,6}(?=[ \t\r\n])|[>|]|[-*+][ \t]|1[.)][ \t]|```|~~~|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)(?=\r?(?:\n|$)))/;
 
-/** A `$NAME ... $` span that reads as prose: no math symbols, and the closer starts a word. */
+/** matches prose-like `$NAME ... $word` spans without math symbols. */
 const VARIABLE_PROSE_RE =
   /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
 const NEW_TOKEN_RE = /[\w{\\]/;
+// an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 
-/**
- * Union of two span lists, each ascending by start (overlap within a list is
- * fine, non-ascending input silently drops spans). The sorted, non-overlapping
- * result is the shape `isInRegion`'s binary search needs.
- */
+/** merges ascending spans; overlaps merge and non-ascending spans drop. */
 function mergeRegions(
   left: ReadonlyArray<readonly [number, number]>,
   right: ReadonlyArray<readonly [number, number]>,
@@ -366,36 +360,24 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
   const blocks = mergeRegions(fenced, indented);
   const inline = findInlineCodeRegions(content, blocks);
 
-  // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
-  // the binary search land on the inner span and miss the outer one.
+  // merge overlaps so binary search does not miss a containing inline span.
   return mergeRegions(blocks, inline);
 }
 
-/**
- * Match an inline link/image `[text](DEST)`, capturing the destination as group 1
- * with the `d` flag so its span is read straight from `match.indices` (the text
- * can contain an escaped `\](`, so a string search for the separator is unsafe).
- * The text disallows unescaped `]`; the destination allows escapes and one level
- * of balanced parens.
- */
+/** destinations allow escapes and one level of balanced parentheses. */
 const LINK_DEST_RE =
   /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
 const AUTOLINK_RE =
   /<(?:[a-z][a-z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>|\b(?:https?:\/\/|www\.)[^\s<]+/gi;
 
-/**
- * Find the destination spans of inline links/images, so a `\(...\)` written with
- * escaped parens inside a URL isn't rewritten as math (which would break the
- * link). Only the destination is returned, not the link text, so math in the
- * visible text still converts. Sorted, non-overlapping (matches are disjoint).
- */
+/** shields link destinations from math rewrites; link text stays convertible. */
 function findLinkDestinationRegions(content: string): Array<[number, number]> {
   if (!content.includes("](")) return [];
   const regions: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
   LINK_DEST_RE.lastIndex = 0;
   while ((match = LINK_DEST_RE.exec(content)) !== null) {
-    // `indices` is present (the `d` flag); group 1 spans the destination.
+    // escaped separators make searches unsafe; use the `d` flag's bounds.
     regions.push(match.indices![1]);
   }
   return regions;
@@ -410,10 +392,7 @@ function findAutolinkRegions(content: string): Array<[number, number]> {
   return regions;
 }
 
-/**
- * Binary search to check if a position falls inside any region. Regions must be
- * sorted by start and non-overlapping.
- */
+/** regions must be sorted by start and non-overlapping. */
 export function isInRegion(
   position: number,
   regions: Array<[number, number]>,
@@ -541,7 +520,7 @@ function hasInlineMathCloser(
   return false;
 }
 
-// Inside an open span remark-math closes on the next single `$`, escaped or not, within the block.
+// remark-math closes an open span at the next single `$`, escaped or not, within the block.
 function findInlineMathCloser(
   content: string,
   offset: number,
@@ -562,10 +541,7 @@ function findInlineMathCloser(
   return i;
 }
 
-/**
- * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. The body
- * is capped so repeated incomplete openers stay linear during streaming.
- */
+/** caps LaTeX delimiter bodies at 4,096 characters so repeated incomplete openers stay linear while streaming. */
 const CONVERT_LATEX_DELIM_RE =
   /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
 
@@ -668,21 +644,7 @@ function convertLatexDelimiters(content: string): {
   return { text: parts.join(""), mathRegions };
 }
 
-/**
- * Preprocess a markdown string so LaTeX renders: convert bracket delimiters to
- * dollar forms, then escape currency dollar signs so they are not parsed as
- * math delimiters.
- *
- * - `\[E = mc^2\]` becomes a `$$` display block on its own lines (display math)
- * - `\(\alpha\)` becomes `$\alpha$` (inline math)
- * - `\(x\)` in a code span is untouched
- * - `$5` alone becomes `\$5` (currency, not math)
- * - `$\alpha$` is untouched (real LaTeX)
- * - `$30^\circ$` is untouched (LaTeX whose body starts with a digit)
- * - `**$30^\circ$**` is untouched (LaTeX wrapped in bold)
- * - `$$E = mc^2$$` is untouched (display math)
- * - Currency inside code blocks/spans is untouched
- */
+/** converts bracketed LaTeX and protects currency or shell variables from single-dollar math. */
 export function preprocessLaTeX(content: string): string {
   const { text, mathRegions } = convertLatexDelimiters(content);
 
@@ -701,8 +663,7 @@ export function preprocessLaTeX(content: string): string {
     if (isInRegion(offset, codeRegions) || isInRegion(offset, linkRegions)) {
       return match;
     }
-    // Skip the spans we just created from `\(...\)` so a numeric body like
-    // `$5$` isn't re-escaped back to literal `\$5$`.
+    // preserve converted numeric math to avoid currency re-escaping
     if (isInRegion(offset, mathRegions)) {
       return match;
     }
