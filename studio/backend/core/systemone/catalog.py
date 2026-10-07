@@ -155,8 +155,7 @@ class GgufCompanion:
     sha256: tuple[str, ...] = ()
 
 
-# ggml-org's conversions of the stock Clef models and of the GGUF-only entries above, served by
-# llama.cpp's /v1/systemone (b11443 and newer).
+# ggml-org GGUFs served by llama.cpp's /v1/systemone (b11443 and newer).
 GGUF_COMPANIONS = {
     "clef-flash": GgufCompanion(
         "ggml-org/Clef-Flash-GGUF",

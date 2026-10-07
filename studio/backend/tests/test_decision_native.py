@@ -1088,9 +1088,6 @@ def test_an_over_long_state_is_not_retried_where_pytorch_cannot_serve_clef(
     assert home.torch_agents == []
 
 
-# ---- GGUF-only entries (llama.cpp's other decision types)
-
-
 def _cache_blob(
     cache: Path,
     name: str,
