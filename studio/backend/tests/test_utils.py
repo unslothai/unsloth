@@ -104,6 +104,27 @@ class TestGetDevice:
             assert _reset_and_detect() == DeviceType.CUDA
         assert "<unavailable>" in capsys.readouterr().out
 
+    @needs_torch
+    def test_device0_probe_failure_is_logged_with_allocator_config(self, monkeypatch):
+        # A failed first CUDA init can crash the process later, so its cause must reach the log, not just debug.
+        monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising = False)
+        monkeypatch.delenv("PYTORCH_HIP_ALLOC_CONF", raising = False)
+        monkeypatch.setenv("PYTORCH_ALLOC_CONF", "expandable_segments:maybe")
+        error = ValueError(
+            "Expected 'True' or 'False' at index 2 in ConfigTokenizer but got 'maybe'"
+        )
+        with (
+            patch("utils.hardware.hardware._has_torch", return_value = True),
+            patch("torch.cuda.is_available", return_value = True),
+            patch("torch.cuda.device_count", return_value = 1),
+            patch("torch.cuda.get_device_properties", side_effect = error),
+            patch.object(_hw_module, "logger") as logger,
+        ):
+            assert _reset_and_detect() == DeviceType.CUDA
+        logged = [c.args for c in logger.error.call_args_list if error in c.args]
+        assert len(logged) == 1
+        assert {"PYTORCH_ALLOC_CONF": "expandable_segments:maybe"} in logged[0]
+
     @needs_mlx
     def test_returns_mlx_when_on_apple_silicon_with_mlx(self):
         with (

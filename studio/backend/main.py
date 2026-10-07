@@ -42,6 +42,15 @@ try:
 except Exception:
     pass
 
+# Before torch first touches the GPU, which parses these; spawned workers inherit the fix.
+from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
+
+for _name, _old, _new in _normalize_allocator_conf():
+    print(
+        f"Unsloth: {_name}={_old!r} has a lowercase boolean, which PyTorch rejects; using {_new!r}.",
+        file = sys.stderr,
+    )
+
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
 if sys.platform == "win32":
