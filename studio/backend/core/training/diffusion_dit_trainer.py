@@ -1514,7 +1514,9 @@ def _open_resized(path, resolution):
     Returns the resized PIL image and its (rw, rh)."""
     from PIL import Image, ImageOps
 
-    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    from core.inference.mcp_images import flattened_rgb
+
+    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     w0, h0 = img.size
     scale = resolution / min(w0, h0)
     rw, rh = max(resolution, round(w0 * scale)), max(resolution, round(h0 * scale))

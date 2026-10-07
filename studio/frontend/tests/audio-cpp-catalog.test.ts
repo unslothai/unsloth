@@ -62,14 +62,21 @@ import {
 import { hasGgufRepoSuffix } from "../src/features/hub/lib/model-identifiers.ts";
 import { shortModelLabel } from "../src/features/loaded-models/loaded-models-sources.ts";
 import {
+  AUDIO_CPP_STT_FOLDER_IDS,
   AUDIO_CPP_STT_MODELS,
   DEFAULT_STT_MODEL,
   MTMD_STT_MODELS,
+  RECOMMENDED_STT_MODELS,
   STT_MODEL_LANGUAGES,
   STT_MODEL_REPOS,
   STT_MODELS,
+  STT_PICKER_MODELS,
   sttModelName,
   sttModelSize,
+  sttModelVariant,
+  sttListedQuantDownloaded,
+  sttShownVariant,
+  withSttVariant,
 } from "../src/features/settings/stores/stt-model-catalog.ts";
 
 import {
@@ -82,9 +89,12 @@ import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
 registerBundlerResolver();
 installLocalStorageFake();
-const { ENGLISH_ONLY_STT_MODELS, isSttModelLanguageCompatible } = await import(
-  "../src/features/settings/stores/voice-settings-store.ts"
-);
+const {
+  ENGLISH_ONLY_STT_MODELS,
+  isSttModelId,
+  isSttModelLanguageCompatible,
+  normalizeSttModel,
+} = await import("../src/features/settings/stores/voice-settings-store.ts");
 const {
   audioCapabilityLine,
   audioModelRequiresRemoteCode,
@@ -141,13 +151,24 @@ test("folders of the shared repo the pickers leave out are never seeded and say 
     assert.match(folder, /-GGUF$/);
     assert.ok(reason.trim(), folder);
   }
-  // Single-language transcription models say so; the rest are multilingual.
+  // Transcription models with limited language coverage declare it.
   for (const [folder, languages] of [
+    ["Citrinet-ASR-GGUF", ["en"]],
+    [
+      "Cohere-Transcribe-GGUF",
+      ["en", "fr", "de", "es", "it", "pt", "nl", "pl", "el", "ar", "ja", "zh", "vi", "ko"],
+    ],
+    ["Fun-ASR-Nano-2512-GGUF", ["zh", "en", "ja"]],
     ["Granite-Speech-5.0-470M-TurboCTC-GGUF", ["en"]],
+    ["Higgs-Audio-v3-STT-GGUF", ["en"]],
     ["Kroko-ASR-GGUF", ["en"]],
     ["Niagara-ASR-GGUF", ["en"]],
     ["Hviske-v5.3-GGUF", ["da"]],
-    ["GigaAM-ASR-GGUF", undefined],
+    ["GigaAM-ASR-GGUF", ["ru", "en", "kk", "ky", "uz"]],
+    [
+      "Voxtral-Mini-4B-Realtime-2602-GGUF",
+      ["en", "fr", "es", "de", "ru", "zh", "ja", "it", "pt", "nl", "ar", "hi", "ko"],
+    ],
   ] as const) {
     assert.deepEqual(audioCppModelFor(`${AUDIO_CPP_REPO}/${folder}`)?.languages, languages, folder);
   }
@@ -401,7 +422,92 @@ test("dictation settings list the saved keys by their Hub name", () => {
   assert.equal(sttModelName("audiocpp-qwen3-asr-0.6b"), "Qwen3-ASR-0.6B-GGUF");
   assert.equal(sttModelName("audiocpp-moonshine-tiny"), "Moonshine-Streaming-GGUF (tiny)");
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
-  assert.match(voiceTab, /if \(AUDIO_CPP_STT_MODELS\.has\(model\)\) return sttModelName\(model\);/);
+  assert.match(
+    voiceTab,
+    /if \(AUDIO_CPP_STT_MODELS\.has\(model\) \|\| isAudioCppFolderId\(model\)\) \{\s*return sttModelName\(model\);/,
+  );
+});
+
+// Transcribe models Settings > Voice may leave out, each with the reason it cannot dictate.
+const STT_PICKER_EXCLUDED: Readonly<Record<string, string>> = {};
+
+test("Settings > Voice lists every ASR model the Transcribe page offers", () => {
+  const transcribe = new Set(
+    AUDIO_CATALOG.filter((group) => group.task === "stt").map((group) =>
+      group.canonicalId.toLowerCase(),
+    ),
+  );
+  const settings = new Set(
+    STT_PICKER_MODELS.map((model) => {
+      const keyed = audioCppDictationModelFor(model);
+      if (keyed) return keyed.id.toLowerCase();
+      if (isAudioCppFolderId(model)) return model.toLowerCase();
+      const engine = MTMD_STT_MODELS.has(model) ? "mtmd" : "transformers";
+      return sttRepoIdForSidecarKey(model, engine).toLowerCase();
+    }),
+  );
+  for (const [id, reason] of Object.entries(STT_PICKER_EXCLUDED)) {
+    assert.ok(reason.trim(), id);
+    assert.ok(
+      transcribe.delete(id.toLowerCase()),
+      `${id} is not on Transcribe`,
+    );
+  }
+  assert.deepEqual([...settings].sort(), [...transcribe].sort());
+  // Every Moonshine size Transcribe offers has its own key.
+  assert.deepEqual(
+    AUDIO_CPP_DICTATION_MODELS.filter((model) =>
+      model.id.endsWith("/Moonshine-Streaming-GGUF"),
+    ).map((model) => model.variant),
+    ["tiny", "small", "medium"],
+  );
+});
+
+test("Transcribe's other ASR folders are listed by id, after the keyed models", () => {
+  assert.equal(AUDIO_CPP_STT_FOLDER_IDS.length, 12);
+  const keyedFolders = new Set(
+    AUDIO_CPP_DICTATION_MODELS.map((model) => model.id),
+  );
+  for (const id of AUDIO_CPP_STT_FOLDER_IDS) {
+    assert.ok(isAudioCppFolderId(id), id);
+    assert.equal(audioCppModelFor(id)?.task, "asr", id);
+    assert.ok(!keyedFolders.has(id), `${id} is listed twice`);
+    assert.equal(sttEngineForRepoId(id), "audiocpp", id);
+    // A saved folder id survives the store's id gate and a reload.
+    assert.ok(isSttModelId(id), id);
+    assert.equal(normalizeSttModel(id), id);
+    assert.equal(sttModelName(id), audioCppDisplayName(id));
+    assert.doesNotMatch(sttModelName(id), BRAND);
+    // Their size comes from the variant listing, not a hand-kept table.
+    assert.equal(sttModelSize(id), "");
+  }
+  assert.deepEqual(STT_PICKER_MODELS, [
+    ...STT_MODELS,
+    ...AUDIO_CPP_STT_FOLDER_IDS,
+  ]);
+  assert.ok(
+    [...RECOMMENDED_STT_MODELS].every(
+      (model, index) => STT_PICKER_MODELS[index] === model,
+    ),
+  );
+  // The two largest sort last.
+  assert.deepEqual(AUDIO_CPP_STT_FOLDER_IDS.slice(-2), [
+    `${AUDIO_CPP_REPO}/VibeVoice-ASR-GGUF`,
+    `${AUDIO_CPP_REPO}/Voxtral-Mini-4B-Realtime-2602-GGUF`,
+  ]);
+  const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
+  assert.match(
+    voiceTab,
+    /STT_PICKER_MODELS\.filter\(\(model\) =>\s*isSttModelLanguageCompatible\(model, language\)/,
+  );
+  // Searching finds them by name too, not only Hub Whisper repos.
+  assert.match(
+    voiceTab,
+    /STT_PICKER_MODELS\.filter\(\s*\(model\) =>\s*\(sttModelName\(model\)\.toLowerCase\(\)\.includes\(needle\)/,
+  );
+  assert.match(voiceTab, /listGgufVariants\(id, hfApiToken\(hfToken\)\)/);
+  assert.match(voiceTab, /downloadedModels\.has\(model\)/);
+  assert.match(voiceTab, /\{ value: "da-DK", label: "Dansk" \}/);
 });
 
 test("an Audio-page ASR pick sends its quant; other engines and saved keys send none", () => {
@@ -421,9 +527,132 @@ test("an Audio-page ASR pick sends its quant; other engines and saved keys send 
     page.match(/controller\.signal,\s*undefined,\s*ggufVariant,/g)?.length,
     2,
   );
-  // Settings > Voice passes a saved key and no variant.
+  // Settings > Voice sends its saved quant only for package folders.
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
-  assert.match(voiceTab, /await startSttDownload\(sttModel, hfApiToken\(hfToken\)\);/);
+  assert.match(
+    voiceTab,
+    /await startSttDownload\(\s*sttModel,\s*hfApiToken\(hfToken\),\s*undefined,\s*sttVariant,\s*\);/,
+  );
+  assert.match(voiceTab, /const sttVariant = sttModelVariant\(sttModel, sttGgufVariant\);/);
+});
+
+const GIGAAM = `${AUDIO_CPP_REPO}/GigaAM-ASR-GGUF`;
+
+test("only a package folder row runs a saved quant; saved keys and other engines ignore it", () => {
+  assert.equal(sttModelVariant(GIGAAM, "v3-ctc/F16"), "v3-ctc/F16");
+  assert.equal(withSttVariant(GIGAAM, "v3-ctc/F16"), `${GIGAAM}:v3-ctc/F16`);
+  // an empty pin keeps the resident quant, or the default when none is resident.
+  assert.equal(sttModelVariant(GIGAAM, ""), null);
+  assert.equal(withSttVariant(GIGAAM, ""), GIGAAM);
+  for (const model of ["audiocpp-moonshine-small", "qwen3-asr-0.6b", "small", "openai/whisper-small"]) {
+    assert.equal(sttModelVariant(model, "Q8_0"), null, model);
+    assert.equal(withSttVariant(model, "Q8_0"), model, model);
+  }
+});
+
+test("the saved quant is cleared with its model and rehydrated only beside it", () => {
+  const store = readSrc("features/settings/stores/voice-settings-store.ts");
+  assert.match(
+    store,
+    /return sttModel === state\.sttModel\s*\?\s*\{ sttModel \}\s*:\s*\{ sttModel, sttGgufVariant: "" \};/,
+  );
+  assert.match(store, /sttModel: DEFAULT_STT_MODEL,\s*sttGgufVariant: "",/);
+  assert.match(
+    store,
+    /sttGgufVariant:\s*sttModel === savedSttModel\s*\?\s*asString\(saved\?\.sttGgufVariant, ""\)\s*:\s*"",/,
+  );
+});
+
+test("every Settings dictation path carries the saved quant", () => {
+  const adapter = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
+  // a raw transcription folds the quant into the id so a cold sidecar does not load the default.
+  assert.match(
+    adapter,
+    /model:\s*engine === "audiocpp" && variant \? withSttVariant\(model, variant\) : model,/,
+  );
+  assert.match(adapter, /sttModelVariant\(model, settings\.sttGgufVariant\)/);
+  // the session pins the quant for preload and every segment.
+  assert.match(adapter, /const sessionVariant = usesExternalEndpoint\s*\?\s*null\s*:\s*sttModelVariant\(sessionModel, settings\.sttGgufVariant\);/);
+  assert.match(adapter, /ggufVariant: sessionVariant,/);
+  assert.match(adapter, /sessionEngine,\s*undefined,\s*undefined,\s*sessionVariant,/);
+
+  const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
+  assert.match(voiceTab, /await loadSttModel\(sttModel, undefined, undefined, undefined, sttVariant\);/);
+  assert.match(voiceTab, /void autoLoadSttModel\(sttModel, sttVariant\);/);
+  // ready requires the pinned quant to be resident, not merely its row.
+  assert.match(voiceTab, /\(!sttVariant \|\| engineStatus\.loaded_variant === sttVariant\)/);
+  // status is row-level; the listing shows whether the pinned quant is cached.
+  assert.match(
+    voiceTab,
+    /!sttListedQuantDownloaded\(sttVariantListing\.listing, sttVariant\)\s*\?\s*sttDownload\?\.error\s*\?\s*"error"\s*:\s*"missing"/,
+  );
+  // binding Select to the pin preserves an active quant selection.
+  assert.match(voiceTab, /value=\{sttVariant \?\? ""\}/);
+  assert.match(voiceTab, /setSttGgufVariant\(next\);\s*if \(next === shownSttVariant\) return;/);
+  assert.match(voiceTab, /<SelectValue placeholder=\{shownSttLabel\}>/);
+
+  // the prompt fetches the requester's pin, not the current Voice setting.
+  const prompt = readSrc("features/settings/components/stt-download-prompt.tsx");
+  assert.match(prompt, /hfApiToken\(hfToken\),\s*undefined,\s*request\.ggufVariant,/);
+  assert.match(prompt, /const variant = pending\?\.ggufVariant \?\? null;/);
+  assert.doesNotMatch(prompt, /sttGgufVariant/);
+  assert.match(prompt, /candidate\.quant === \(variant \?\? listing\.default_variant\)/);
+  assert.match(adapter, /requestSttDownload\(sessionModel, \{ ggufVariant: sessionVariant \}\)/);
+  const offer = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
+  assert.match(offer, /const ggufVariant = sttModelVariant\(sttModel, sttGgufVariant\);/);
+  assert.match(offer, /requestSttDownload\(sttModel, \{ selectLocalEngine: true, ggufVariant \}\)/);
+
+  const mirror = readSrc("features/settings/lib/stt-download-mirror.ts");
+  // a stopped second-quant download must not look complete because its row is already listed.
+  const cancelledAt = mirror.indexOf("download?.cancelled && (download.cancelled_model ?? model) === model");
+  const erroredAt = mirror.indexOf("if (download?.error)");
+  const downloadedAt = mirror.indexOf("if (engineStatus?.downloaded_models.includes(model))");
+  assert.ok(cancelledAt > 0 && cancelledAt < erroredAt && erroredAt < downloadedAt);
+  // do not warm a new pin after another quant lands; adopted downloads warm only unpinned rows.
+  assert.match(
+    mirror,
+    /\(tracked === undefined \? variant === null : tracked === variant\)/,
+  );
+  assert.match(voiceTab, /trackSttDownload\(sttModel, \{ ggufVariant: sttVariant \}\)/);
+  // The tab's own watcher loads a landed download only when it is still the pinned quant.
+  assert.match(voiceTab, /startedDownloadRef\.current = \{ model: sttModel, variant: sttVariant \};/);
+  assert.match(
+    voiceTab,
+    /started\?\.model === finished\s*\?\s*started\.variant === sttVariant\s*:\s*sttVariant === null;/,
+  );
+  assert.match(voiceTab, /!loaded &&\s*landedPinned\s*\)/);
+  assert.match(prompt, /trackSttDownload\(request\.model, \{\s*ggufVariant: request\.ggufVariant \?\? null,\s*\}\)/);
+  assert.match(mirror, /sttModelVariant\(model, sttGgufVariant\)/);
+  assert.match(mirror, /outcome === "complete" && isAudioCppFolderId\(model\)[\s\S]*invalidateGgufVariantsCache\(model\)/);
+
+  const upload = readSrc("features/chat/hooks/use-chat-audio-upload.ts");
+  assert.match(upload, /ggufVariant: sttModelVariant\(model\.trim\(\), ggufVariant\),/);
+  assert.match(upload, /ggufVariant: source\.ggufVariant,/);
+  for (const holder of ["target", "source", "failed\\.snapshot"]) {
+    assert.match(upload, new RegExp(`requestSttDownload\\([^)]*\\{\\s*ggufVariant: ${holder}\\.ggufVariant,`));
+  }
+  // status lists a row after any quant is cached; a pin needs its own listing row.
+  assert.match(adapter, /return !listing \|\| sttListedQuantDownloaded\(listing, ggufVariant\);/);
+  // upload readiness and the no-service fallback require the pinned quant on disk.
+  assert.match(upload, /sttQuantDownloaded\(\s*targetModel,\s*target\.ggufVariant,\s*signal,\s*\)/);
+  assert.match(
+    upload,
+    /engineStatus\.downloaded_models\.includes\(targetModel\) &&\s*quantDownloaded\s*\?\s*"ready"/,
+  );
+  assert.match(
+    offer,
+    /engine\?\.downloaded_models\.includes\(sttModel\) &&\s*\(await sttQuantDownloaded\(sttModel, ggufVariant\)\)/,
+  );
+
+  const reference = readSrc("features/audio/hooks/use-reference-transcribe.ts");
+  assert.match(reference, /withSttVariant\(model, voice\.sttGgufVariant\)/);
+});
+
+test("the quant Select appears for package folders with more than one quant", () => {
+  const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
+  assert.match(voiceTab, /\{sttVariants\.length > 1 \? \([\s\S]{0,200}?<Select\s/);
+  assert.match(voiceTab, /if \(!isLocalEngine \|\| !isAudioCppFolderId\(sttModel\)\) return;/);
+  assert.match(voiceTab, /aria-label=\{t\("settings\.voice\.dictation\.sttQuantLabel"\)\}/);
 });
 
 test("sttEngineFor sends saved keys, folders and GGUF repos to the audiocpp engine", () => {
@@ -436,7 +665,13 @@ test("English-only and partial-language ASR models are gated by language", () =>
   for (const key of [
     "audiocpp-moonshine-tiny",
     "audiocpp-moonshine-small",
+    "audiocpp-moonshine-medium",
     "audiocpp-nemotron-3.5-asr-0.6b",
+    `${AUDIO_CPP_REPO}/Citrinet-ASR-GGUF`,
+    `${AUDIO_CPP_REPO}/Granite-Speech-5.0-470M-TurboCTC-GGUF`,
+    `${AUDIO_CPP_REPO}/Higgs-Audio-v3-STT-GGUF`,
+    `${AUDIO_CPP_REPO}/Kroko-ASR-GGUF`,
+    `${AUDIO_CPP_REPO}/Niagara-ASR-GGUF`,
   ]) {
     assert.ok(ENGLISH_ONLY_STT_MODELS.has(key), key);
     assert.equal(isSttModelLanguageCompatible(key, "en-US"), true);
@@ -450,11 +685,30 @@ test("English-only and partial-language ASR models are gated by language", () =>
     assert.equal(isSttModelLanguageCompatible(canary, language), true, language);
   }
   assert.equal(isSttModelLanguageCompatible(canary, "ja-JP"), false);
+  const hviske = `${AUDIO_CPP_REPO}/Hviske-v5.3-GGUF`;
+  assert.equal(isSttModelLanguageCompatible(hviske, "da-DK"), true);
+  assert.equal(isSttModelLanguageCompatible(hviske, "auto"), true);
+  assert.equal(isSttModelLanguageCompatible(hviske, "en-US"), false);
+  for (const [folder, languages, unsupported] of [
+    ["Cohere-Transcribe-GGUF", ["ko-KR", "ar-SA", "pt-BR"], "ru-RU"],
+    ["Fun-ASR-Nano-2512-GGUF", ["en-US", "zh-CN", "ja-JP"], "ko-KR"],
+    ["GigaAM-ASR-GGUF", ["en-US", "ru-RU"], "ja-JP"],
+    ["Voxtral-Mini-4B-Realtime-2602-GGUF", ["ko-KR", "hi-IN", "ru-RU"], "sv-SE"],
+  ] as const) {
+    const id = `${AUDIO_CPP_REPO}/${folder}`;
+    for (const language of languages) {
+      assert.equal(isSttModelLanguageCompatible(id, language), true, `${folder}: ${language}`);
+    }
+    assert.equal(isSttModelLanguageCompatible(id, unsupported), false, folder);
+    assert.equal(isSttModelLanguageCompatible(id, "auto"), true, folder);
+  }
   for (const key of [
     "audiocpp-parakeet-tdt-0.6b-v3",
     "audiocpp-qwen3-asr-0.6b",
     "qwen3-asr-0.6b",
     "small",
+    `${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`,
+    `${AUDIO_CPP_REPO}/VibeVoice-ASR-GGUF`,
   ]) {
     assert.equal(STT_MODEL_LANGUAGES.has(key), false, key);
     assert.equal(isSttModelLanguageCompatible(key, "ja-JP"), true, key);
@@ -633,4 +887,58 @@ test("the picked STT quant is remembered with the repo across a restart", () => 
   assert.match(page, /usePersistedChoice\("unsloth:audio:last-stt-variant", ""\)/);
   assert.match(page, /lastSttRepo && lastSttVariant \? \[\[lastSttRepo\.toLowerCase\(\), lastSttVariant\]\]/);
   assert.match(page, /setLastSttVariant\(sttGgufVariants\.current\.get\(repo\.toLowerCase\(\)\) \?\? ""\)/);
+});
+
+test("the quant Select shows the quant a dictation would actually run", () => {
+  const listing = {
+    default_variant: "multilingual-ctc/F16",
+    variants: [
+      { quant: "multilingual-ctc/F16", downloaded: false },
+      { quant: "v3-ctc/F16", downloaded: true },
+      { quant: "v3-rnnt/F16", downloaded: true },
+    ],
+  };
+  // a pin overrides the resident quant.
+  assert.equal(sttShownVariant("v3-rnnt/F16", "v3-ctc/F16", listing), "v3-rnnt/F16");
+  // without a pin, the resident quant runs.
+  assert.equal(sttShownVariant(null, "v3-rnnt/F16", listing), "v3-rnnt/F16");
+  // without a resident quant, an offline bare load uses the first cached quant.
+  assert.equal(sttShownVariant(null, null, listing), "v3-ctc/F16");
+  // without a cache, use the default.
+  const cold = { ...listing, variants: listing.variants.map((v) => ({ ...v, downloaded: false })) };
+  assert.equal(sttShownVariant(null, null, cold), "multilingual-ctc/F16");
+  // a cache-only load reports a loose key that maps to its sole cached quant.
+  const moonshine = {
+    default_variant: "tiny/Q8_0",
+    variants: [
+      { quant: "tiny/Q8_0", downloaded: false },
+      { quant: "small/Q8_0", downloaded: true },
+    ],
+  };
+  assert.equal(sttShownVariant(null, "Q8_0", moonshine), "small/Q8_0");
+  // without a listing, use the resident quant.
+  assert.equal(sttShownVariant(null, "Q8_0", null), "Q8_0");
+  const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
+  assert.match(voiceTab, /const shownSttVariant = sttShownVariant\(\s*sttVariant,\s*sttLoadedVariant,/);
+});
+
+test("only the pinned quant's own listing row can say it is not on disk", () => {
+  const online = {
+    variants: [
+      { quant: "multilingual-ctc/F16", downloaded: true },
+      { quant: "v3-ctc/F16", downloaded: false },
+    ],
+  };
+  assert.equal(sttListedQuantDownloaded(online, "multilingual-ctc/F16"), true);
+  assert.equal(sttListedQuantDownloaded(online, "v3-ctc/F16"), false);
+  // A cache-only listing keys cached files by what tells them apart, so a pinned key it leaves out
+  // may still be cached (the backend matches it on load): defer instead of calling it missing.
+  const offline = {
+    variants: [
+      { quant: "ctc/F16", downloaded: true },
+      { quant: "rnnt/F16", downloaded: true },
+    ],
+  };
+  assert.equal(sttListedQuantDownloaded(offline, "v3-ctc/F16"), true);
+  assert.equal(sttListedQuantDownloaded({ variants: [] }, "small/Q8_0"), true);
 });

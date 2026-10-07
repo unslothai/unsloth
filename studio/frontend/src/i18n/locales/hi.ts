@@ -1294,6 +1294,9 @@ export const hi = {
           "/v1/audio/transcriptions को भेजा जाने वाला मॉडल नाम।",
         sttModelLabel: "स्पीच रिकग्निशन मॉडल",
         sttModelDescription: "लोकली चलाने के लिए STT मॉडल चुनें या खोजें।",
+        sttQuantLabel: "क्वांटाइज़ेशन",
+        sttQuantDescription:
+          "लोकली चलाने के लिए STT मॉडल चुनें या खोजें, फिर उसका क्वांटाइज़ेशन चुनें।",
         sttDeviceLabel: "इसमें लोड करें",
         sttDeviceAuto: "उपलब्ध होने पर GPU",
         sttDeviceCpu: "CPU RAM",

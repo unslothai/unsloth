@@ -1296,6 +1296,9 @@ export const de = {
         sttModelLabel: "Spracherkennungsmodell",
         sttModelDescription:
           "Wählen oder suchen Sie ein STT-Modell für die lokale Ausführung.",
+        sttQuantLabel: "Quantisierung",
+        sttQuantDescription:
+          "Wählen oder suchen Sie ein STT-Modell für die lokale Ausführung, dann seine Quantisierung.",
         sttDeviceLabel: "Laden in",
         sttDeviceAuto: "GPU, wenn verfügbar",
         sttDeviceCpu: "CPU-RAM",

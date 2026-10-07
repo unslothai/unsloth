@@ -1294,6 +1294,9 @@ export const ptBR = {
         sttModelLabel: "Modelo de reconhecimento de fala",
         sttModelDescription:
           "Escolha ou busque um modelo STT para executar localmente.",
+        sttQuantLabel: "Quantização",
+        sttQuantDescription:
+          "Escolha ou busque um modelo STT para executar localmente e depois sua quantização.",
         sttDeviceLabel: "Carregar em",
         sttDeviceAuto: "GPU quando disponível",
         sttDeviceCpu: "RAM da CPU",

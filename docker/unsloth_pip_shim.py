@@ -168,6 +168,16 @@ _TARGET_VALUE_FLAGS = {"--group", "--upgrade-group", "--requirements-from-script
 _ARCHIVE_EXTS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar", ".zip")
 
 
+def _restore_install_privileges():
+    if os.environ.get("UNSLOTH_NB_ROOT_INSTALL") != "1":
+        return
+    try:
+        os.setgid(0)
+        os.setuid(0)
+    except OSError as exc:
+        raise SystemExit(f"unsloth notebook install could not restore root: {exc}") from exc
+
+
 def _norm_name(name):
     """PEP 503 normalised name; every _KEEP / _KEEP_PREFIX comparison goes through here."""
     return re.sub(r"[-_.]+", "-", name.strip()).lower() or None
@@ -1095,6 +1105,8 @@ def main():
 
     if argv[:1] == ["--unsloth-selfcheck-value-flags"]:
         _selfcheck_value_flags()
+
+    _restore_install_privileges()
 
     if os.environ.get("UNSLOTH_NB_SHIM") != "1":
         os.execv(REAL[tool], [REAL[tool]] + argv)

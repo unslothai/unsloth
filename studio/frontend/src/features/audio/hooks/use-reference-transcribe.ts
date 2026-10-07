@@ -2,14 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { sttEngineFor } from "@/features/chat/adapters/studio-model-dictation-adapter";
-import { useVoiceSettingsStore } from "@/features/settings";
+import { useVoiceSettingsStore, withSttVariant } from "@/features/settings";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { transcribeAudioInput } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 
-/** Fills "What's said in the clip" without adding it to the transcript list. No language hint:
- *  the page's language is the output's, and a cross-lingual reference is not in it. */
+/** fills the prompt without a transcript entry or language hint for cross-lingual references. */
 export function useReferenceTranscribe({
   sttRepo,
   onText,
@@ -29,7 +28,7 @@ export function useReferenceTranscribe({
   const transcribe = useCallback(
     async (reference: AudioSourceSelection | null) => {
       if (!reference) return;
-      // A newer clip wins, so its own transcription is never skipped.
+      // a newer clip wins so its transcription is never skipped.
       abort.current?.abort();
       const controller = new AbortController();
       abort.current = controller;
@@ -41,7 +40,10 @@ export function useReferenceTranscribe({
         const result = await transcribeAudioInput(
           sourceRefOf(reference),
           {
-            model,
+            // the Settings model uses its saved quant; a Transcribe selection is already resident.
+            model: sttRepo
+              ? model
+              : withSttVariant(model, voice.sttGgufVariant),
             engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
             device: voice.sttDevice,
             purpose,

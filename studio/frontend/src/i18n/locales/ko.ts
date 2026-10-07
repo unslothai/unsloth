@@ -1291,6 +1291,9 @@ export const ko = {
           "/v1/audio/transcriptions에 전송할 모델 이름입니다.",
         sttModelLabel: "음성 인식 모델",
         sttModelDescription: "로컬에서 실행할 STT 모델을 선택하거나 검색하세요.",
+        sttQuantLabel: "양자화",
+        sttQuantDescription:
+          "로컬에서 실행할 STT 모델을 선택하거나 검색한 다음 양자화를 고르세요.",
         sttDeviceLabel: "로드 위치",
         sttDeviceAuto: "GPU(사용 가능할 때)",
         sttDeviceCpu: "CPU RAM",
