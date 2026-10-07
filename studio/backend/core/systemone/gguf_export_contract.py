@@ -21,6 +21,7 @@ LAYOUTS = ("clef", "laya")
 
 _CLEF_FILES = ("unsloth_decision_config.json", "joint_head_config.json", "joint_head.safetensors")
 _LAYA_FILES = ("rl_agent_config.json",)
+_OPTIONAL_FILES = ("unsloth_decision_config.json",)
 
 
 def _fingerprint_files(folder: Path, layout: str) -> list:
@@ -39,9 +40,13 @@ def fingerprint(folder, layout: str) -> str:
     folder = Path(folder)
     digest = hashlib.sha256()
     for path in _fingerprint_files(folder, layout):
-        if not path.is_file():
-            raise FileNotFoundError(f"{path} is missing, so {folder} cannot be fingerprinted")
         digest.update(path.name.encode("utf-8") + b"\0")
+        if not path.is_file():
+            # A stock Clef checkpoint has no Unsloth config: it serves at temperature 1.
+            if path.name in _OPTIONAL_FILES:
+                digest.update(b"\1missing\0")
+                continue
+            raise FileNotFoundError(f"{path} is missing, so {folder} cannot be fingerprinted")
         with open(path, "rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 digest.update(chunk)

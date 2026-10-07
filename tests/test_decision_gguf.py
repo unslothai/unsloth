@@ -235,6 +235,13 @@ def test_fingerprint_and_export_json(tmp_path):
     assert contract.fingerprint(folder, "clef") == first
     (folder / "joint_head.safetensors").write_bytes(b"other")
     assert contract.fingerprint(folder, "clef") != first
+    # A stock Clef checkpoint has no Unsloth decision config.
+    second = contract.fingerprint(folder, "clef")
+    (folder / "unsloth_decision_config.json").unlink()
+    assert contract.fingerprint(folder, "clef") not in (first, second)
+    (folder / "joint_head_config.json").unlink()
+    with pytest.raises(FileNotFoundError):
+        contract.fingerprint(folder, "clef")
     laya = _laya_folder(tmp_path / "laya")
     laya_print = contract.fingerprint(laya, "laya")
     (laya / "model.safetensors").write_bytes(b"trained")
