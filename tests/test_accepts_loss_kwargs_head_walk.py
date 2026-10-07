@@ -654,6 +654,19 @@ def test_a_mean_fallback_branch_is_undecided(ns, mods):
     assert _trainer_sees(peft) is False
 
 
+def test_an_older_zoo_keeps_the_fused_branch_answer(ns, mods, monkeypatch):
+    # An older unsloth_zoo never gives these fallbacks the count; only the fused branch trains.
+    head = mods.ReturnLogitsFallbackForConditionalGeneration()
+    ns["_zoo_counts_fallback_branches"] = lambda: False
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    assert ns["_forward_consumes_num_items_in_batch"](head) is True
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+    assert ns["_forward_consumes_num_items_in_batch"](head) is None
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS")
+    ns["_zoo_counts_fallback_branches"] = lambda: True
+    assert ns["_forward_consumes_num_items_in_batch"](head) is None
+
+
 def test_copied_kwargs_dict_counts(ns, mods):
     assert ns["_forward_consumes_num_items_in_batch"](mods.CopiedKwargsForCausalLM()) is True
 

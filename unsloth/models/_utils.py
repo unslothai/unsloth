@@ -5572,6 +5572,26 @@ def _resolve_callee(obj, call, namespace):
     return None
 
 
+def _zoo_counts_fallback_branches():
+    try:
+        from unsloth_zoo.fused_losses import cross_entropy_loss as zoo_ce
+    except Exception:
+        return False
+    return hasattr(zoo_ce, "unsloth_loss_count_kwargs")
+
+
+def _old_zoo_fallbacks_only(head, fused_with_count, via_loss_function):
+    # An older unsloth_zoo leaves the UNSLOTH_RETURN_LOGITS / non-causal fallbacks of a fused forward
+    # without the count; only the fused branch trains then, so keep the answer that zoo relied on.
+    return (
+        fused_with_count
+        and not via_loss_function
+        and not _zoo_counts_fallback_branches()
+        and os.environ.get("UNSLOTH_RETURN_LOGITS", "0") != "1"
+        and _known_loss_function(head)
+    )
+
+
 def _forward_consumes_num_items_in_batch(head):
     """Does the loss head's forward hand num_items_in_batch to its loss?
 
@@ -5673,6 +5693,7 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
 
     consumes = False
     via_loss_function = False
+    fused_with_count = False
     fused_without_count = False
     uncounted = False
     loss_calls = set()
@@ -5688,6 +5709,7 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
         if passes_count(call):
             consumes = True
             via_loss_function = via_loss_function or leaf == "loss_function"
+            fused_with_count = fused_with_count or leaf in _FUSED_LOSS_CALLEES
         elif leaf in _FUSED_LOSS_CALLEES:
             fused_without_count = True
         else:
@@ -5708,7 +5730,9 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
     if consumes:
         if tampered:
             return None
-        if fused_without_count or uncounted:
+        if fused_without_count or (
+            uncounted and not _old_zoo_fallbacks_only(head, fused_with_count, via_loss_function)
+        ):
             return None
         if ce_kinds or used:
             return None

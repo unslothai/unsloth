@@ -69,6 +69,8 @@ _NAMES = {
     "_resolve_callee",
     "_ce_reductions",
     "_known_loss_function",
+    "_zoo_counts_fallback_branches",
+    "_old_zoo_fallbacks_only",
     "_CARRIER_MUTATORS",
     "_nested_scope_ids",
     "_pass_through_child",
