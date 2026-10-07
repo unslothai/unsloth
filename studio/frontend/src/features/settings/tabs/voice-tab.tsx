@@ -639,6 +639,11 @@ export function VoiceTab() {
   // so one throttled timer or bursty poll set the displayed speed outright.
   // Model whose download this tab watched; completion auto-loads it.
   const watchedDownloadRef = useRef<string | null>(null);
+  // The quant this tab started downloading; an adopted transfer's quant is unknown.
+  const startedDownloadRef = useRef<{
+    model: string;
+    variant: string | null;
+  } | null>(null);
   // Quant resident for the selected row, so an unpinned Select shows what dictation would run.
   const [sttLoadedVariant, setSttLoadedVariant] = useState<string | null>(null);
   // The selected package folder's quants, from the same cached listing the Transcribe picker reads.
@@ -776,6 +781,13 @@ export function VoiceTab() {
         } else {
           const finished = watchedDownloadRef.current;
           watchedDownloadRef.current = null;
+          const started = startedDownloadRef.current;
+          startedDownloadRef.current = null;
+          // Only the quant that landed may load: a quant picked meanwhile is not on disk.
+          const landedPinned =
+            started?.model === finished
+              ? started.variant === sttVariant
+              : sttVariant === null;
           if (finished === sttModel && isAudioCppFolderId(sttModel)) {
             // The cached listing still has this quant as not downloaded.
             invalidateGgufVariantsCache(sttModel);
@@ -784,7 +796,8 @@ export function VoiceTab() {
           if (
             finished === sttModel &&
             engineStatus.downloaded_models.includes(sttModel) &&
-            !loaded
+            !loaded &&
+            landedPinned
           ) {
             // The download this tab watched just finished; load the model.
             void autoLoadSttModel(sttModel, sttVariant);
@@ -904,6 +917,7 @@ export function VoiceTab() {
         sttVariant,
       );
       trackSttDownload(sttModel, { ggufVariant: sttVariant });
+      startedDownloadRef.current = { model: sttModel, variant: sttVariant };
       // The status effect only re-polls while it can see a download. Its last read was before this
       // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
       // Download for the whole transfer.

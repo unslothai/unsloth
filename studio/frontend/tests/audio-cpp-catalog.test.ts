@@ -616,6 +616,13 @@ test("every Settings dictation path carries the saved quant", () => {
     /\(tracked === undefined \? variant === null : tracked === variant\)/,
   );
   assert.match(voiceTab, /trackSttDownload\(sttModel, \{ ggufVariant: sttVariant \}\)/);
+  // The tab's own watcher loads a landed download only when it is still the pinned quant.
+  assert.match(voiceTab, /startedDownloadRef\.current = \{ model: sttModel, variant: sttVariant \};/);
+  assert.match(
+    voiceTab,
+    /started\?\.model === finished\s*\?\s*started\.variant === sttVariant\s*:\s*sttVariant === null;/,
+  );
+  assert.match(voiceTab, /!loaded &&\s*landedPinned\s*\)/);
   assert.match(prompt, /trackSttDownload\(request\.model, \{\s*ggufVariant: request\.ggufVariant \?\? null,\s*\}\)/);
   assert.match(mirror, /sttModelVariant\(model, sttGgufVariant\)/);
   assert.match(mirror, /outcome === "complete" && isAudioCppFolderId\(model\)[\s\S]*invalidateGgufVariantsCache\(model\)/);
