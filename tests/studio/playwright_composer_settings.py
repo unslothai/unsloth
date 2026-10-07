@@ -19,7 +19,11 @@ PAGE = "/smoke-composer-settings.html"
 ENTRY = "/smoke-composer-settings-main.tsx"
 
 
-def expect_submissions(submitted, count, timeout = 5.0):
+def expect_submissions(
+    submitted,
+    count,
+    timeout = 5.0,
+):
     """The harness renders submissions from React state after the key press returns, so a
     one-shot read can still show the previous list (a macOS chrome run read the earlier
     "steer" entry where "queue" was due). Poll until exactly `count` are rendered."""
