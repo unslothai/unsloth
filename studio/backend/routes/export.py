@@ -369,7 +369,8 @@ def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, A
         return None
     from core.export.decision import read_existing_export
 
-    export = read_existing_export(output_path)
+    # output_path is <run folder>/gguf; the contract reads from the run folder.
+    export = read_existing_export(Path(output_path).parent)
     return {
         "output_path": str(output_path),
         "decision_export": export,
