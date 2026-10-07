@@ -1685,6 +1685,7 @@ export const ru = {
         unpin: "Открепить из меню RAG",
         menuChip: "Модель",
         moreModels: "Другие модели",
+        pinMoreModels: "Закрепить другие модели",
         defaultTag: "По умолчанию",
         localModel: "Локальная модель",
         switched: "Модель эмбеддингов: {model}",

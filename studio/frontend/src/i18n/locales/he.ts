@@ -1783,6 +1783,7 @@ export const he = {
         unpin: "ביטול הצמדה מתפריט RAG",
         menuChip: "מודל",
         moreModels: "מודלים נוספים",
+        pinMoreModels: "הצמדת מודלים נוספים",
         defaultTag: "ברירת מחדל",
         localModel: "מודל מקומי",
         switched: "מודל ההטמעה הוגדר ל-{model}",

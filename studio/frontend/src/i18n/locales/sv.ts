@@ -1850,6 +1850,7 @@ export const sv = {
         unpin: "Lossa från RAG-menyn",
         menuChip: "Modell",
         moreModels: "Fler modeller",
+        pinMoreModels: "Fäst fler modeller",
         defaultTag: "Standard",
         localModel: "Lokal modell",
         switched: "Inbäddningsmodellen är nu {model}",

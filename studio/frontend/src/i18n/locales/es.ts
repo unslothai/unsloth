@@ -1700,6 +1700,7 @@ export const es = {
         unpin: "Quitar del menú RAG",
         menuChip: "Modelo",
         moreModels: "Más modelos",
+        pinMoreModels: "Fijar más modelos",
         defaultTag: "Predeterminado",
         localModel: "Modelo local",
         switched: "Modelo de embedding cambiado a {model}",

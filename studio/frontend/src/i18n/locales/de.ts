@@ -1705,6 +1705,7 @@ export const de = {
         unpin: "Vom RAG-Menü lösen",
         menuChip: "Modell",
         moreModels: "Weitere Modelle",
+        pinMoreModels: "Weitere Modelle anheften",
         defaultTag: "Standard",
         localModel: "Lokales Modell",
         switched: "Embedding-Modell auf {model} gesetzt",

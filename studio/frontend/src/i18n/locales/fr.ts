@@ -1703,6 +1703,7 @@ export const fr = {
         unpin: "Désépingler du menu RAG",
         menuChip: "Modèle",
         moreModels: "Plus de modèles",
+        pinMoreModels: "Épingler d'autres modèles",
         defaultTag: "Par défaut",
         localModel: "Modèle local",
         switched: "Modèle d'embedding défini sur {model}",

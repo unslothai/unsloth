@@ -1676,6 +1676,7 @@ export const ko = {
         unpin: "RAG 메뉴에서 고정 해제",
         menuChip: "모델",
         moreModels: "더 많은 모델",
+        pinMoreModels: "모델 더 고정하기",
         defaultTag: "기본값",
         localModel: "로컬 모델",
         switched: "임베딩 모델을 {model}(으)로 설정했습니다",

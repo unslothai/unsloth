@@ -1680,6 +1680,7 @@ export const ar = {
         unpin: "إلغاء التثبيت من قائمة RAG",
         menuChip: "النموذج",
         moreModels: "المزيد من النماذج",
+        pinMoreModels: "ثبّت نماذج أخرى",
         defaultTag: "افتراضي",
         localModel: "نموذج محلي",
         switched: "تم تعيين نموذج التضمين إلى {model}",

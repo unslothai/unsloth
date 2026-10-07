@@ -1739,6 +1739,7 @@ export const en = {
         unpin: "Unpin from the RAG menu",
         menuChip: "Model",
         moreModels: "More models",
+        pinMoreModels: "Pin more models",
         defaultTag: "Default",
         localModel: "Local model",
         switched: "Embedding model set to {model}",

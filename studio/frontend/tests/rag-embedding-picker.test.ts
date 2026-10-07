@@ -153,7 +153,7 @@ test("More models and the download toasts open the embedding row in Settings", (
   const opens = MENU_PICKER.match(
     /openSettings\("general", \{ scrollTarget: "general-rag-embedding" \}\)/g,
   );
-  assert.equal(opens?.length, 3);
+  assert.equal(opens?.length, 4);
   assert.match(SECTION, /if \(scrollTarget !== "general-rag-embedding"\) return;/);
   assert.match(SECTION, /<SettingsSection ref=\{sectionRef\}/);
 });
@@ -304,4 +304,11 @@ test("embedding pins mirror to the account like the chat model pins", () => {
   assert.match(store, /mirrorPins\("embedding", pinned\)/);
   assert.match(store, /onPinsRestored\("embedding"/);
   assert.match(read("../src/lib/pins-mirror.ts"), /embedding: "unsloth_embedding_pins"/);
+});
+
+test("with nothing pinned, a Pin more models link opens the Settings embedding row", () => {
+  assert.match(
+    MENU_PICKER,
+    /\{pinned\.length === 0 \? \(\s*<DropdownMenuPrimitive\.Item[\s\S]*?scrollTarget: "general-rag-embedding"[\s\S]*?settings\.general\.rag\.pinMoreModels/,
+  );
 });

@@ -1658,6 +1658,7 @@ export const zhCN = {
         unpin: "从 RAG 菜单取消固定",
         menuChip: "模型",
         moreModels: "更多模型",
+        pinMoreModels: "固定更多模型",
         defaultTag: "默认",
         localModel: "本地模型",
         switched: "嵌入模型已设为 {model}",

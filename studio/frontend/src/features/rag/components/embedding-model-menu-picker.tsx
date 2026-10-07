@@ -305,6 +305,17 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
             </div>
           );
         })}
+        {pinned.length === 0 ? (
+          <DropdownMenuPrimitive.Item
+            className={cn(HEADING_LINK_CLASS, "mx-3 mt-1 mb-2 inline-flex w-fit text-xs")}
+            // Deferred past the menu's focus restore, as More models is.
+            onSelect={() =>
+              setTimeout(() => openSettings("general", { scrollTarget: "general-rag-embedding" }), 0)
+            }
+          >
+            {t("settings.general.rag.pinMoreModels")}
+          </DropdownMenuPrimitive.Item>
+        ) : null}
       </div>
       {settings.backendLoaded ? (
         <div className="shrink-0">

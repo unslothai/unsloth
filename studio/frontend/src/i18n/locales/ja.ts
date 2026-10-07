@@ -1665,6 +1665,7 @@ export const ja = {
         unpin: "RAG メニューからピン留めを外す",
         menuChip: "モデル",
         moreModels: "その他のモデル",
+        pinMoreModels: "他のモデルをピン留め",
         defaultTag: "デフォルト",
         localModel: "ローカルモデル",
         switched: "埋め込みモデルを {model} に設定しました",

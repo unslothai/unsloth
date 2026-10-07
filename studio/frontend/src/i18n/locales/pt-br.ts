@@ -1692,6 +1692,7 @@ export const ptBR = {
         unpin: "Desafixar do menu RAG",
         menuChip: "Modelo",
         moreModels: "Mais modelos",
+        pinMoreModels: "Fixar mais modelos",
         defaultTag: "Padrão",
         localModel: "Modelo local",
         switched: "Modelo de embedding definido como {model}",

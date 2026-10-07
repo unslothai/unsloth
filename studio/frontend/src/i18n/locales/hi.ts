@@ -1683,6 +1683,7 @@ export const hi = {
         unpin: "RAG मेन्यू से अनपिन करें",
         menuChip: "मॉडल",
         moreModels: "और मॉडल",
+        pinMoreModels: "और मॉडल पिन करें",
         defaultTag: "डिफ़ॉल्ट",
         localModel: "लोकल मॉडल",
         switched: "एम्बेडिंग मॉडल {model} पर सेट किया गया",
