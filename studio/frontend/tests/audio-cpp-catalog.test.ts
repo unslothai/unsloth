@@ -527,7 +527,7 @@ test("an Audio-page ASR pick sends its quant; other engines and saved keys send 
     page.match(/controller\.signal,\s*undefined,\s*ggufVariant,/g)?.length,
     2,
   );
-  // Settings > Voice passes its saved quant, which sttModelVariant keeps for package folders only.
+  // Settings > Voice sends its saved quant only for package folders.
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(
     voiceTab,
@@ -541,7 +541,7 @@ const GIGAAM = `${AUDIO_CPP_REPO}/GigaAM-ASR-GGUF`;
 test("only a package folder row runs a saved quant; saved keys and other engines ignore it", () => {
   assert.equal(sttModelVariant(GIGAAM, "v3-ctc/F16"), "v3-ctc/F16");
   assert.equal(withSttVariant(GIGAAM, "v3-ctc/F16"), `${GIGAAM}:v3-ctc/F16`);
-  // "" is no pin: the bare row keeps the resident quant, else the default.
+  // an empty pin keeps the resident quant, or the default when none is resident.
   assert.equal(sttModelVariant(GIGAAM, ""), null);
   assert.equal(withSttVariant(GIGAAM, ""), GIGAAM);
   for (const model of ["audiocpp-moonshine-small", "qwen3-asr-0.6b", "small", "openai/whisper-small"]) {
@@ -556,7 +556,6 @@ test("the saved quant is cleared with its model and rehydrated only beside it", 
     store,
     /return sttModel === state\.sttModel\s*\?\s*\{ sttModel \}\s*:\s*\{ sttModel, sttGgufVariant: "" \};/,
   );
-  // A language that drops the model drops its quant too.
   assert.match(store, /sttModel: DEFAULT_STT_MODEL,\s*sttGgufVariant: "",/);
   assert.match(
     store,
@@ -566,13 +565,13 @@ test("the saved quant is cleared with its model and rehydrated only beside it", 
 
 test("every Settings dictation path carries the saved quant", () => {
   const adapter = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
-  // A raw transcription folds the quant into the id; a cold sidecar would load the default.
+  // a raw transcription folds the quant into the id so a cold sidecar does not load the default.
   assert.match(
     adapter,
     /model:\s*engine === "audiocpp" && variant \? withSttVariant\(model, variant\) : model,/,
   );
   assert.match(adapter, /sttModelVariant\(model, settings\.sttGgufVariant\)/);
-  // The session pins it for the preload and every segment.
+  // the session pins the quant for preload and every segment.
   assert.match(adapter, /const sessionVariant = usesExternalEndpoint\s*\?\s*null\s*:\s*sttModelVariant\(sessionModel, settings\.sttGgufVariant\);/);
   assert.match(adapter, /ggufVariant: sessionVariant,/);
   assert.match(adapter, /sessionEngine,\s*undefined,\s*undefined,\s*sessionVariant,/);
@@ -580,19 +579,19 @@ test("every Settings dictation path carries the saved quant", () => {
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(voiceTab, /await loadSttModel\(sttModel, undefined, undefined, undefined, sttVariant\);/);
   assert.match(voiceTab, /void autoLoadSttModel\(sttModel, sttVariant\);/);
-  // Ready means the pinned quant is the resident one, not merely the row.
+  // ready requires the pinned quant to be resident, not merely its row.
   assert.match(voiceTab, /\(!sttVariant \|\| engineStatus\.loaded_variant === sttVariant\)/);
-  // Status only knows rows; the listing says whether the pinned quant is on disk.
+  // status is row-level; the listing shows whether the pinned quant is cached.
   assert.match(
     voiceTab,
     /!sttListedQuantDownloaded\(sttVariantListing\.listing, sttVariant\)\s*\?\s*sttDownload\?\.error\s*\?\s*"error"\s*:\s*"missing"/,
   );
-  // The Select is bound to the pin, so picking the quant that runs now still saves it.
+  // binding Select to the pin preserves an active quant selection.
   assert.match(voiceTab, /value=\{sttVariant \?\? ""\}/);
   assert.match(voiceTab, /setSttGgufVariant\(next\);\s*if \(next === shownSttVariant\) return;/);
   assert.match(voiceTab, /<SelectValue placeholder=\{shownSttLabel\}>/);
 
-  // The prompt fetches the quant its requester pinned, not whatever Voice settings say now.
+  // the prompt fetches the requester's pin, not the current Voice setting.
   const prompt = readSrc("features/settings/components/stt-download-prompt.tsx");
   assert.match(prompt, /hfApiToken\(hfToken\),\s*undefined,\s*request\.ggufVariant,/);
   assert.match(prompt, /const variant = pending\?\.ggufVariant \?\? null;/);
@@ -604,13 +603,12 @@ test("every Settings dictation path carries the saved quant", () => {
   assert.match(offer, /requestSttDownload\(sttModel, \{ selectLocalEngine: true, ggufVariant \}\)/);
 
   const mirror = readSrc("features/settings/lib/stt-download-mirror.ts");
-  // A stopped download of a second quant must not read as complete: the row is already listed.
+  // a stopped second-quant download must not look complete because its row is already listed.
   const cancelledAt = mirror.indexOf("download?.cancelled && (download.cancelled_model ?? model) === model");
   const erroredAt = mirror.indexOf("if (download?.error)");
   const downloadedAt = mirror.indexOf("if (engineStatus?.downloaded_models.includes(model))");
   assert.ok(cancelledAt > 0 && cancelledAt < erroredAt && erroredAt < downloadedAt);
-  // A quant picked while another one downloads is not warmed when the first lands.
-  // An adopted download's quant is unknown: warm it only for an unpinned row.
+  // do not warm a new pin after another quant lands; adopted downloads warm only unpinned rows.
   assert.match(
     mirror,
     /\(tracked === undefined \? variant === null : tracked === variant\)/,
@@ -633,9 +631,9 @@ test("every Settings dictation path carries the saved quant", () => {
   for (const holder of ["target", "source", "failed\\.snapshot"]) {
     assert.match(upload, new RegExp(`requestSttDownload\\([^)]*\\{\\s*ggufVariant: ${holder}\\.ggufVariant,`));
   }
-  // Status lists a row once any quant is cached; a pinned quant needs its own listing row.
+  // status lists a row after any quant is cached; a pin needs its own listing row.
   assert.match(adapter, /return !listing \|\| sttListedQuantDownloaded\(listing, ggufVariant\);/);
-  // Upload readiness and the no-speech-service switch both require the pinned quant on disk.
+  // upload readiness and the no-service fallback require the pinned quant on disk.
   assert.match(upload, /sttQuantDownloaded\(\s*targetModel,\s*target\.ggufVariant,\s*signal,\s*\)/);
   assert.match(
     upload,
@@ -900,16 +898,16 @@ test("the quant Select shows the quant a dictation would actually run", () => {
       { quant: "v3-rnnt/F16", downloaded: true },
     ],
   };
-  // A pin always wins.
+  // a pin overrides the resident quant.
   assert.equal(sttShownVariant("v3-rnnt/F16", "v3-ctc/F16", listing), "v3-rnnt/F16");
-  // Unpinned, the resident quant runs.
+  // without a pin, the resident quant runs.
   assert.equal(sttShownVariant(null, "v3-rnnt/F16", listing), "v3-rnnt/F16");
-  // Nothing resident: a bare load picks the first cached quant offline, not the default.
+  // without a resident quant, an offline bare load uses the first cached quant.
   assert.equal(sttShownVariant(null, null, listing), "v3-ctc/F16");
-  // Nothing cached: the default.
+  // without a cache, use the default.
   const cold = { ...listing, variants: listing.variants.map((v) => ({ ...v, downloaded: false })) };
   assert.equal(sttShownVariant(null, null, cold), "multilingual-ctc/F16");
-  // A cache-only load reports the loose key; map it to the one cached quant it can be.
+  // a cache-only load reports a loose key that maps to its sole cached quant.
   const moonshine = {
     default_variant: "tiny/Q8_0",
     variants: [
@@ -918,7 +916,7 @@ test("the quant Select shows the quant a dictation would actually run", () => {
     ],
   };
   assert.equal(sttShownVariant(null, "Q8_0", moonshine), "small/Q8_0");
-  // No listing yet: whatever is resident.
+  // without a listing, use the resident quant.
   assert.equal(sttShownVariant(null, "Q8_0", null), "Q8_0");
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(voiceTab, /const shownSttVariant = sttShownVariant\(\s*sttVariant,\s*sttLoadedVariant,/);

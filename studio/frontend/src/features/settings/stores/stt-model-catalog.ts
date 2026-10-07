@@ -166,8 +166,7 @@ export function sttModelName(model: SttModel): string {
   );
 }
 
-/** The quant a dictation pick runs. Only a package folder row takes one: a saved key already
- *  names its own, and "" leaves the row's resident or default quant. */
+/** package folder quant; "" uses the resident or default, while saved keys encode their own. */
 export function sttModelVariant(
   model: SttModel,
   variant: string,
@@ -175,15 +174,13 @@ export function sttModelVariant(
   return variant && isAudioCppFolderId(model) ? variant : null;
 }
 
-/** `model` as one id with its quant folded in (`row:variant`), as the audio runtime reads it. */
+/** folds a quant into the audio runtime model id as `row:variant`. */
 export function withSttVariant(model: SttModel, variant: string): string {
   const quant = sttModelVariant(model, variant);
   return quant ? `${model}:${quant}` : model;
 }
 
-/** The quant a dictation pick runs, as the listing names it: the pinned one, else the resident one
- *  (a cache-only load can report the loose key, "Q8_0" for "small/Q8_0"), else what a bare load
- *  picks offline, the first cached quant in listing order, else the default. */
+/** picks the pinned, loaded, cached, or default quant; resolves loose cache keys like `Q8_0`. */
 export function sttShownVariant(
   pinned: string | null,
   loaded: string | null,

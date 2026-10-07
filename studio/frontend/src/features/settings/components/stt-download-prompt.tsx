@@ -30,7 +30,7 @@ import {
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
-/** Emphasise the model name in translated copy; plain text if absent. */
+/** emphasise the model name in translated copy; use plain text if absent */
 function highlightModel(text: string, model: string): ReactNode {
   const at = model ? text.indexOf(model) : -1;
   if (at === -1) return text;
@@ -43,10 +43,7 @@ function highlightModel(text: string, model: string): ReactNode {
   );
 }
 
-/**
- * App-level confirmation for a dictation model download. Mounted once so the
- * mic can raise it before Voice settings is ever opened.
- */
+/** app-level confirmation mounted once so the mic can raise it before Voice settings opens */
 export function SttDownloadPrompt() {
   const t = useT();
   const pending = useSttDownloadPromptStore((s) => s.pending);
@@ -54,7 +51,7 @@ export function SttDownloadPrompt() {
   const hfToken = useHfTokenStore((state) => state.token);
   const pendingModel = pending?.model ?? null;
   const variant = pending?.ggufVariant ?? null;
-  // A package folder has no curated size: read its quant's from the cached listing.
+  // a package folder has no curated size, so read its quant's from the cached listing
   const [listedSize, setListedSize] = useState<{
     model: string;
     variant: string | null;
@@ -83,7 +80,7 @@ export function SttDownloadPrompt() {
   }, [pendingModel, variant, hfToken]);
 
   const confirm = async (request: SttDownloadRequest) => {
-    // Only on accept: a cancel must not leave the engine changed.
+    // change the engine only on accept because cancel must leave it unchanged
     if (request.selectLocalEngine) {
       useVoiceSettingsStore.getState().setDictationEngine("model");
     }
@@ -94,7 +91,7 @@ export function SttDownloadPrompt() {
         undefined,
         request.ggufVariant,
       );
-      // Progress goes to the shared download panel; the model loads itself when it lands.
+      // progress uses the shared download panel; the model loads when the download finishes
       trackSttDownload(request.model, {
         ggufVariant: request.ggufVariant ?? null,
       });
@@ -120,8 +117,7 @@ export function SttDownloadPrompt() {
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          {/* The glyph fills its viewBox, unlike the padded hugeicons the
-              default circle is sized for, so both come down together. */}
+          {/* the glyph fills its viewBox, unlike the padded hugeicons, so size both together */}
           <AlertDialogMedia className="size-12">
             <MicIcon className="text-muted-foreground size-5" />
           </AlertDialogMedia>

@@ -62,7 +62,7 @@ export type ChatAudioUploadReadiness =
 interface ChatAudioUploadSnapshot extends ChatAudioUploadFence {
   model: string;
   engine: SttEngine;
-  /** Quant of a package folder model, pinned with it. */
+  /** quant of a package folder model, pinned with it */
   ggufVariant: string | null;
   language: string;
   device: "auto" | "cpu";
@@ -204,7 +204,7 @@ export function useChatAudioUpload({
         }
         try {
           const status = await fetchSttStatus(undefined, targetModel, signal);
-          // Status knows rows; a pinned quant is ready only once its own files are.
+          // status tracks rows; a pinned quant is ready only when its own files are
           const quantDownloaded = await sttQuantDownloaded(
             targetModel,
             target.ggufVariant,

@@ -8,8 +8,7 @@ import { transcribeAudioInput } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 
-/** Fills "What's said in the clip" without adding it to the transcript list. No language hint:
- *  the page's language is the output's, and a cross-lingual reference is not in it. */
+/** fills the prompt without a transcript entry or language hint for cross-lingual references. */
 export function useReferenceTranscribe({
   sttRepo,
   onText,
@@ -29,7 +28,7 @@ export function useReferenceTranscribe({
   const transcribe = useCallback(
     async (reference: AudioSourceSelection | null) => {
       if (!reference) return;
-      // A newer clip wins, so its own transcription is never skipped.
+      // a newer clip wins so its transcription is never skipped.
       abort.current?.abort();
       const controller = new AbortController();
       abort.current = controller;
@@ -41,7 +40,7 @@ export function useReferenceTranscribe({
         const result = await transcribeAudioInput(
           sourceRefOf(reference),
           {
-            // The Settings model runs its saved quant; a Transcribe pick is already resident.
+            // the Settings model uses its saved quant; a Transcribe selection is already resident.
             model: sttRepo
               ? model
               : withSttVariant(model, voice.sttGgufVariant),

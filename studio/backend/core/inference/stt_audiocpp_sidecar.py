@@ -181,8 +181,7 @@ def resolve_audio_cpp_stt_model(
     try:
         require_runnable(found, "asr")
     except AudioCppModelError as exc:
-        # The cache only lists cached quants, so a picked quant that is not on disk reads as
-        # missing; when its row runs, it is a download away, which callers offer.
+        # cached rows omit absent quants, so callers treat a selected missing quant as downloadable.
         if not network and (variant or ref_variant):
             row = resolve(base, None, hf_token, network = False)
             if row is not None and row.task == "asr" and row.unsupported is None:
@@ -195,8 +194,7 @@ def resolve_audio_cpp_stt_model(
 
 
 def resolve_audio_cpp_stt_model_id(model: Optional[str]) -> str:
-    """The name dictation reports for ``model``: a legacy key stays that key (Settings compares
-    against it), anything else becomes its row id."""
+    """keeps legacy keys for Settings comparisons; all other names become row ids."""
     if model is None or not str(model).strip():
         return DEFAULT_AUDIO_CPP_STT_MODEL
     base, variant = split_variant_ref(str(model).strip())
