@@ -333,35 +333,19 @@ function inlineLinkEnd(text: string, from: number): number {
 
 function inlineLinkRegions(text: string): [number, number][] {
   const regions: [number, number][] = [];
-  const brackets: { start: number; containsLink: boolean }[] = [];
-  for (let at = 0; at < text.length; at += 1) {
-    if (text[at] === "\\") {
-      at += 1;
-      continue;
+  let coveredEnd = -1;
+  for (let at = text.indexOf("]("); at >= 0; at = text.indexOf("](", at + 1)) {
+    if (at < coveredEnd || isEscaped(text, at)) continue;
+    const paragraphStart = text.lastIndexOf("\n\n", at) + 2;
+    let opener = text.lastIndexOf("[", at - 1);
+    while (opener >= paragraphStart && isEscaped(text, opener)) {
+      opener = text.lastIndexOf("[", opener - 1);
     }
-    if (text[at] === "[") {
-      brackets.push({ start: at, containsLink: false });
-      continue;
-    }
-    if (text[at] !== "]" || brackets.length === 0) continue;
-
-    const bracket = brackets.pop() as {
-      start: number;
-      containsLink: boolean;
-    };
-    if (bracket.containsLink) continue;
+    if (opener < paragraphStart) continue;
     const end = inlineLinkEnd(text, at + 1);
     if (end < 0) continue;
-
-    regions.push([bracket.start, end]);
-    const image =
-      bracket.start > 0 &&
-      text[bracket.start - 1] === "!" &&
-      !isEscaped(text, bracket.start - 1);
-    if (!image) {
-      for (const parent of brackets) parent.containsLink = true;
-    }
-    at = end - 1;
+    regions.push([at, end]);
+    coveredEnd = end;
   }
   return regions;
 }
@@ -495,6 +479,7 @@ function inlineHtmlRegions(text: string): [number, number][] {
 }
 
 function opaqueInlineRegions(text: string): [number, number][] {
+  if (!text.includes("`")) return [];
   const candidates = [
     ...inlineLinkRegions(text),
     ...autolinkRegions(text),

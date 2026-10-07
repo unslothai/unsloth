@@ -322,6 +322,10 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
       "[1]: https://x.test/one",
     ],
     [
+      "Read [a `[`](https://x.test/`tag) [1] ` first.",
+      "[1]: https://x.test/one",
+    ],
+    [
       'Read <span title="`"> [1] ` first.',
       "[1]: https://x.test/one",
     ],
@@ -329,6 +333,11 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
       'Read <span hidden title="`"> [1] ` first.',
       "[1]: https://x.test/one",
     ],
+    [
+      'Read <span title=">`"> [1] ` first.',
+      "[1]: https://x.test/one",
+    ],
+    ["Read <!-- ` --> [1] ` first.", "[1]: https://x.test/one"],
     ["> `open\n>\n> [1]\n> `", "[1]: https://x.test/one"],
     ["> `open\n> # heading\n> [1]\n> `", "[1]: https://x.test/one"],
     [
