@@ -28,7 +28,7 @@ from fastapi import (
 )
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import Field
 from starlette.requests import ClientDisconnect
 from typing import (
     Any,
