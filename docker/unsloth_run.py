@@ -151,9 +151,16 @@ def _open_url_download(url):
     while True:
         path = os.path.abspath(f"{stem}-{n}.ipynb" if n else f"{stem}.ipynb")
         try:
-            return path, os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
         except FileExistsError:
             n += 1
+            continue
+        try:
+            parent = os.stat(os.path.dirname(path))
+            os.fchown(fd, parent.st_uid, parent.st_gid)
+        except (OSError, AttributeError):
+            pass
+        return path, fd
 
 
 def main():

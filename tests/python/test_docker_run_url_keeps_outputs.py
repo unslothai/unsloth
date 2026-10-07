@@ -118,6 +118,17 @@ def test_a_failed_url_run_keeps_what_it_saved(runner, monkeypatch, cwd):
     assert json.loads((cwd / "Llama.ipynb").read_text(encoding = "utf-8")) == NOTEBOOK
 
 
+def test_a_url_download_takes_the_owner_of_the_directory_it_lands_in(runner, monkeypatch, cwd):
+    owners = []
+    monkeypatch.setattr(
+        runner.os, "fchown", lambda fd, uid, gid: owners.append((uid, gid)), raising = False
+    )
+    _run(runner, monkeypatch, ["https://example.invalid/nb/Llama.ipynb"])
+
+    st = os.stat(cwd)
+    assert owners == [(st.st_uid, st.st_gid)]
+
+
 def _run_sh_argv(tmp_path, *command):
     bindir = tmp_path / "bin"
     bindir.mkdir()
