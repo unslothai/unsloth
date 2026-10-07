@@ -115,6 +115,18 @@ def resolve_openvino_dir(model_path: Optional[str]) -> Optional[Path]:
     return next((s for s in sorted(snapshots.iterdir()) if _is_ir_dir(s)), None)
 
 
+def _template_reasons(directory: Path) -> bool:
+    """Whether the chat template knows ``<think>``; a template without it never reasons."""
+    for name in ("chat_template.jinja", "chat_template.json", "tokenizer_config.json"):
+        try:
+            text = (directory / name).read_text(encoding = "utf-8")
+        except OSError:
+            continue
+        if "enable_thinking" in text or "<think>" in text:
+            return True
+    return False
+
+
 def is_openvino_model_path(model_path: Optional[str]) -> bool:
     return resolve_openvino_dir(model_path) is not None
 
@@ -234,6 +246,7 @@ class OpenVinoBackend:
                     model_path = model_path,
                     directory = str(directory),
                     vision = (directory / "openvino_vision_embeddings_model.xml").is_file(),
+                    reasoning = _template_reasons(directory),
                 )
                 self._resident = OpenVinoResident(
                     model = model,

@@ -28041,7 +28041,14 @@ async def _proxy_to_external_provider(
         provider_type = managed.provider_type
         base_url = managed.base_url
         api_type = "chat_completions"
-        reasoning_config = None
+        # Custom reasoning is opt-in, and the OpenVINO sidecar reads the template kwarg.
+        reasoning_config = (
+            normalize_provider_reasoning_config(
+                {"enabled": True, "style": "chat_template_kwargs.enable_thinking"}
+            )
+            if provider_type == "custom"
+            else None
+        )
     elif payload.provider_id and (
         not payload.encrypted_api_key or payload.provider_reasoning_config is not None
     ):

@@ -32,6 +32,18 @@ def test_resolves_local_dir_prefix_and_hub_cache(tmp_path, monkeypatch):
     assert ovb.resolve_openvino_dir("org/m-ov_int4") == repo / "snapshots" / "local_export"
 
 
+def test_template_reasons_only_when_it_knows_think(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "tokenizer_config.json").write_text(json.dumps({"chat_template": "{{ messages }}"}))
+    assert ovb._template_reasons(plain) is False
+
+    thinking = tmp_path / "thinking"
+    thinking.mkdir()
+    (thinking / "chat_template.jinja").write_text("{% if enable_thinking %}<think>{% endif %}")
+    assert ovb._template_reasons(thinking) is True
+
+
 def test_non_openvino_paths_are_not_claimed(tmp_path, monkeypatch):
     monkeypatch.setattr(ovb, "_hub_cache", lambda: tmp_path)
     (tmp_path / "plain").mkdir()

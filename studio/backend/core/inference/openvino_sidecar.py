@@ -348,6 +348,13 @@ def build_app(
             "data": [{"id": model_id, "object": "model", "owned_by": "local"}],
         }
 
+    def generate(text_prompt: str, **kwargs):
+        # LLMPipeline answers a bare str with a bare str; a batch of one returns DecodedResults,
+        # which carries the token counts and finish reasons.
+        if isinstance(pipe, ov_genai.LLMPipeline):
+            return pipe.generate([text_prompt], **kwargs)
+        return pipe.generate(text_prompt, **kwargs)
+
     @app.post("/v1/chat/completions")
     def chat(req: ChatRequest):
         thinking = thinking_enabled(req)
@@ -401,7 +408,7 @@ def build_app(
         if not req.stream:
             try:
                 with lock:
-                    res = pipe.generate(text_prompt, generation_config = cfg)
+                    res = generate(text_prompt, generation_config = cfg)
             except Exception as exc:
                 raise HTTPException(*generation_error(exc)) from exc
             splitter = ThinkSplitter(thinking)
@@ -449,7 +456,7 @@ def build_app(
             def run():
                 try:
                     with lock:
-                        result["res"] = pipe.generate(
+                        result["res"] = generate(
                             text_prompt,
                             generation_config = cfg,
                             streamer = streamer,
