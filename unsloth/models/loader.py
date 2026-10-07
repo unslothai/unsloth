@@ -1896,6 +1896,12 @@ class FastModel(FastBaseModel):
                         )
                         fast_inference = False
                         break
+            # Same fallback as FastLanguageModel: zoo's vLLM loader raises on compute capability < 7.
+            if DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
+                print(
+                    "Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!"
+                )
+                fast_inference = False
 
         old_model_name = model_name
         fp8_mode = None
