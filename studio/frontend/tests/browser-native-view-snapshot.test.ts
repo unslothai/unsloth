@@ -192,7 +192,11 @@ test("toasts move left of a page that sits beside the Run settings panel", async
 test("a finished download is listed and reported after its tab closed, and warns when it isn't marked", async () => {
   const stop = startNativeViews();
   try {
-    await settle();
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    useBrowserStore.getState().closeTab(tabId);
+    await frame();
     const seen: { level: string; message: string }[] = [];
     const g = globalThis as {
       nativeViewListener?: (event: { payload: unknown }) => void;
@@ -201,7 +205,7 @@ test("a finished download is listed and reported after its tab closed, and warns
     g.nativeViewSeen = seen;
     const done = {
       kind: "download",
-      tabId: "closed-tab",
+      tabId,
       url: "https://example.com/a.zip",
       name: "a.zip",
       path: null,
@@ -212,6 +216,8 @@ test("a finished download is listed and reported after its tab closed, and warns
     g.nativeViewListener?.({ payload: { ...done, downloadId: "d1", marked: true } });
     g.nativeViewListener?.({ payload: { ...done, downloadId: "d2", marked: false } });
     g.nativeViewListener?.({ payload: { ...done, downloadId: "d3", marked: null } });
+    // A tab this page never opened: the account signed in before the last reload (an account switch) started it.
+    g.nativeViewListener?.({ payload: { ...done, tabId: "tab-before-reload", downloadId: "d4", marked: true } });
     assert.deepEqual(seen, [
       { level: "history", message: "d1" },
       { level: "success", message: "browser.native.downloaded" },

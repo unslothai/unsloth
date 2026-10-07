@@ -12,6 +12,8 @@ const DANGEROUS = new Set<string>(policy.extensions);
 export function isDangerousDownload(name: string): boolean {
   const base = name.slice(Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\")) + 1).replace(/[. ]+$/, "");
   const dot = base.lastIndexOf(".");
-  // A bare `.exe` still runs as one.
-  return dot >= 0 && DANGEROUS.has(base.slice(dot + 1).toLowerCase());
+  if (dot < 0) return false;
+  // A bare `.exe` still runs as one. Windows compares names upper-cased, so `.mſi` (long s) is `.MSI`.
+  const extension = base.slice(dot + 1);
+  return DANGEROUS.has(extension.toLowerCase()) || DANGEROUS.has(extension.toUpperCase().toLowerCase());
 }

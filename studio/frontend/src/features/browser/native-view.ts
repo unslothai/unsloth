@@ -60,6 +60,9 @@ type Bounds = { x: number; y: number; width: number; height: number; viewportWid
 const t = (key: TranslationKey, values?: InterpolationValues) => translate(key, values, getLocale());
 
 const views = new Map<string, number>();
+// Tabs this page has opened a view for. A download from any other tab started under the account
+// signed in before the last reload (an account switch reloads), so it isn't this account's to list.
+const openedTabs = new Set<string>();
 let recency: string[] = [];
 const zooms = new Map<string, number>();
 const icons = new Map<string, string>();
@@ -139,7 +142,7 @@ function onNativeEvent(event: NativeEvent): void {
   }
   // A download outlives its page: it often lands after the tab closed or moved on, and still belongs in history.
   if (event.kind === "download") {
-    onDownload(event);
+    if (openedTabs.has(event.tabId)) onDownload(event);
     return;
   }
   if (!tab || currentEntry(tab).kind !== "web") return;
@@ -479,6 +482,7 @@ async function applyView(desired: Desired): Promise<void> {
     return true;
   };
   try {
+    openedTabs.add(tabId);
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
     clearSnapshot();

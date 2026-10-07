@@ -291,6 +291,18 @@
     {
       "name": "report.docx",
       "dangerous": false
+    },
+    {
+      "name": "book.xlsb",
+      "dangerous": true
+    },
+    {
+      "name": "payload.m\u017fi",
+      "dangerous": true
+    },
+    {
+      "name": "notes.txt",
+      "dangerous": false
     }
   ]
 }
