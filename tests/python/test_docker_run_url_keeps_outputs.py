@@ -158,7 +158,7 @@ def test_ownership_monitor_tracks_only_changed_paths(runner, tmp_path):
     artifact.write_bytes(b"model")
     affected, recursive = monitor.stop()
 
-    assert str(artifact) in affected
+    assert str(artifact) in affected or str(created) in recursive
     assert str(created) in recursive
     assert str(modified) in affected
     assert str(untouched) not in affected

@@ -179,6 +179,7 @@ class _OwnershipMonitor:
         self.affected = set()
         self.recursive = set()
         self.failed = False
+        self.overflowed = False
         self.stop_event = threading.Event()
         self.thread = None
         self.libc = ctypes.CDLL(None, use_errno = True)
@@ -235,9 +236,10 @@ class _OwnershipMonitor:
         if self.fd < 0:
             return False
         self._add_tree(self.root)
-        if not self.watches:
+        if self.failed or not self.watches:
             os.close(self.fd)
             self.fd = -1
+            self.watches.clear()
             return False
         self.thread = threading.Thread(target = self._run, daemon = True)
         self.thread.start()
@@ -262,6 +264,7 @@ class _OwnershipMonitor:
                 offset += length
                 if mask & _IN_Q_OVERFLOW:
                     self.failed = True
+                    self.overflowed = True
                     continue
                 parent = self.watches.get(wd)
                 if mask & _IN_IGNORED:
@@ -362,8 +365,12 @@ def main():
     kernel_dir = os.path.dirname(os.path.abspath(src_path)) or "."
     ownership_monitor = _OwnershipMonitor(kernel_dir) if host_ids is not None else None
     if ownership_monitor is not None and not ownership_monitor.start():
-        print("[unsloth-run] could not monitor output ownership", file = sys.stderr)
-        ownership_monitor = None
+        for p in tmp_files:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        raise SystemExit("unsloth-run could not establish a complete output ownership monitor")
 
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"
@@ -401,6 +408,7 @@ def main():
         "[unsloth-run] executing:",
         os.path.basename(args.notebook.split("?")[0]) if args.out else os.path.basename(src_path),
     )
+    ownership_overflow = False
     try:
         rc = subprocess.call(cmd, env = env)
         if rc == 0 and publish_from is not None:
@@ -426,6 +434,7 @@ def main():
         if ownership_monitor is not None:
             affected, recursive = ownership_monitor.stop()
             _restore_output_ownership(affected, recursive, *host_ids)
+            ownership_overflow = ownership_monitor.overflowed
             if ownership_monitor.failed:
                 print(
                     "[unsloth-run] some output ownership events could not be monitored",
@@ -436,6 +445,8 @@ def main():
                 os.remove(p)
             except OSError:
                 pass
+    if ownership_overflow:
+        raise SystemExit("unsloth-run output ownership monitoring overflowed")
     sys.exit(rc)
 
 
