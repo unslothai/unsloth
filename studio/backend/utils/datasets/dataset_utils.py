@@ -513,7 +513,9 @@ def format_dataset(
                         all_columns = set(examples.keys())
                         mapped_columns = set(custom_mapping.keys())
                         preserved_columns = {
-                            col: examples[col] for col in all_columns - mapped_columns
+                            col: examples[col]
+                            for col in all_columns - mapped_columns
+                            if col != "conversations"
                         }
 
                         for i in range(num_examples):
@@ -528,7 +530,7 @@ def format_dataset(
                                         )
                             conversations.append(convo)
 
-                        return {"conversations": conversations, **preserved_columns}
+                        return {**preserved_columns, "conversations": conversations}
 
                     try:
                         dataset = dataset.map(

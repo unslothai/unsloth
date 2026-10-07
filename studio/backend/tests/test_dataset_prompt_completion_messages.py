@@ -91,6 +91,32 @@ def test_prompt_completion_pair_wins_over_another_chat_column(prompt):
     assert result["dataset"][0]["conversations"] == [_user("Sky?"), _assistant("Blue")]
 
 
+@pytest.mark.parametrize("chat_column", ["messages", "conversations", "texts"])
+def test_prompt_completion_pair_wins_over_an_exact_chat_column(chat_column):
+    row = {
+        "prompt": [_user("Sky?")],
+        "completion": [_assistant("Blue")],
+        chat_column: [_user("Unrelated?"), _assistant("Unrelated")],
+    }
+    dataset = Dataset.from_list([row])
+
+    assert check_dataset_format(dataset)["suggested_mapping"] == _MAPPING
+    result = format_dataset(dataset)
+    assert result["dataset"][0]["conversations"] == [_user("Sky?"), _assistant("Blue")]
+
+
+def test_plain_prompt_completion_keeps_existing_column_priority():
+    question = "This longer question column keeps its prior user-role priority over prompt text."
+    dataset = Dataset.from_list([{"prompt": "p", "completion": "c", "question": question}])
+
+    assert check_dataset_format(dataset)["suggested_mapping"] == {
+        "completion": "assistant",
+        "question": "user",
+    }
+    result = format_dataset(dataset)
+    assert result["dataset"][0]["conversations"] == [_user(question), _assistant("c")]
+
+
 _CALL = {"id": "c1", "type": "function", "function": {"name": "weather", "arguments": "{}"}}
 
 
