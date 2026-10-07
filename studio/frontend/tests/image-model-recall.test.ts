@@ -184,6 +184,20 @@ test("recalling a quantized model carries the selected adapters into its load", 
   await reloaded.callbacks.handleGenerateWithRecall();
   assert.equal(readImageModel()?.textEncoderFiles, undefined);
   assert.equal(readImageModel()?.vaeFile, undefined);
+  // Same for this tab's own last load once the resident build no longer uses its files.
+  const ownStale = recall({
+    rememberedModel: null,
+    lastLoad: { current: supplied },
+    status: { loaded: true, repo_id: supplied.repoId, model_kind: "gguf", gguf_filename: "z.gguf", component_files: null },
+    matchesRememberedModel,
+    componentFilesMatch,
+    withEngagedFamily: (m: Record<string, unknown>) => m,
+    rememberImageModel: (m: unknown) => storage.setItem("unsloth:images:last-model", JSON.stringify(m)),
+    setRememberedModel: () => {},
+    handleGenerate: async () => {},
+  });
+  await ownStale.callbacks.handleGenerateWithRecall();
+  assert.equal(readImageModel()?.textEncoderFiles, undefined);
   const without = recall({ rememberedModel: { ...supplied, textEncoderFiles: undefined, vaeFile: undefined }, textEncoderFiles: "live.safetensors" });
   await without.callbacks.handleGenerateWithRecall();
   assert.equal((without.loads[0][2] as Files).text_encoder_file, undefined);

@@ -4524,7 +4524,9 @@ export function ImagesPage({
           ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
       ) {
         const model = withEngagedFamily(
-          lastLoad.current && matchesRememberedModel(lastLoad.current, status)
+          lastLoad.current &&
+            matchesRememberedModel(lastLoad.current, status) &&
+            componentFilesMatch(lastLoad.current, status.component_files)
             ? lastLoad.current
             : rememberedModel &&
                 matchesRememberedModel(rememberedModel, status) &&

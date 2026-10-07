@@ -67,6 +67,9 @@ VAE_KIND_CLASSES: dict[str, frozenset] = {
     ),
 }
 
+# Slots a family loads from their own repo (not ``<base>/<slot>``), so a supplied file has no config to fit.
+_STANDALONE_TE_SLOTS: dict[str, tuple[str, ...]] = {"hidream-i1": ("text_encoder_4",)}
+
 # Tensors a ComfyUI file may carry that the diffusers-side class never reads. Everything else must match.
 _DEAD_UNEXPECTED = (
     re.compile(r"(^|\.)position_ids$"),
@@ -916,7 +919,10 @@ def assign_components(
         fits = [
             c
             for c in TEXT_ENCODER_COMPONENTS
-            if c in classes and classes[c] in TE_KIND_CLASSES.get(kind, ()) and c not in assigned
+            if c in classes
+            and classes[c] in TE_KIND_CLASSES.get(kind, ())
+            and c not in assigned
+            and c not in _STANDALONE_TE_SLOTS.get(family, ())
         ]
         if kind in ("clip_l", "clip_g") and len(fits) > 1:
             # HiDream: text_encoder = CLIP-L, text_encoder_2 = CLIP-G (both WithProjection).
@@ -924,9 +930,16 @@ def assign_components(
         if not fits:
             wanted = ", ".join(f"{c}={classes[c]}" for c in TEXT_ENCODER_COMPONENTS if c in classes)
             taken = [c for c in assigned if classes.get(c) in TE_KIND_CLASSES.get(kind, ())]
+            standalone = [
+                c
+                for c in _STANDALONE_TE_SLOTS.get(family, ())
+                if classes.get(c) in TE_KIND_CLASSES.get(kind, ())
+            ]
             why = (
                 f"its slot ({', '.join(taken)}) is already taken by another supplied file"
                 if taken
+                else f"{family} loads {', '.join(standalone)} from its own repo, not from a supplied file"
+                if standalone
                 else f"the {family or 'pipeline'} text encoders are {wanted or 'none'}"
             )
             raise ComponentFileError(f"'{ref.name}' is a {kind} text encoder, but {why}")
@@ -1086,6 +1099,8 @@ def verify_override_fit(
     from .diffusion_text_encoder_trim import family_trims_lm_head
 
     requested = normalize_te_quant(text_encoder_quant)
+    if requested is None and str(text_encoder_quant or "").strip().lower() in ("none", "off"):
+        requested = "dense"  # an explicit request, unlike unset / auto
     for component, class_name in overrides.classes.items():
         path = _resolved_path(overrides, component)
         cls, config = _component_class_and_config(

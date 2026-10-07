@@ -923,7 +923,54 @@ def test_verify_fit_refuses_recasting_a_stored_int8_encoder(tmp_path):
     path = _save(tmp_path / "q_int8.safetensors", out)
     base = _base_with_configs(tmp_path, cfg)
     overrides = _overrides({"text_encoder": path}, {"text_encoder": "Qwen3Model"})
-    for ok in (None, "auto", "none", "int8"):
+    for ok in (None, "auto", "int8"):
         C.verify_override_fit(overrides, base = base, local_files_only = True, text_encoder_quant = ok)
     with pytest.raises(C.ComponentFileError, match = "cannot be re-cast to fp8"):
         C.verify_override_fit(overrides, base = base, local_files_only = True, text_encoder_quant = "fp8")
+    for dense in ("none", "off"):
+        with pytest.raises(C.ComponentFileError, match = "cannot be re-cast to dense"):
+            C.verify_override_fit(
+                overrides, base = base, local_files_only = True, text_encoder_quant = dense
+            )
+
+
+def test_memory_plan_prices_hosted_precast_only_for_unsupplied_slots(monkeypatch):
+    import core.inference.diffusion as D
+    import core.inference.diffusion_te_prequant as P
+
+    src = types.SimpleNamespace(kind = "path", location = __file__)
+    monkeypatch.setattr(
+        P,
+        "te_prequant_sources_for_base",
+        lambda *a, **k: {"text_encoder": src, "text_encoder_2": src},
+    )
+    full = D.DiffusionBackend._precast_text_encoder_mib(
+        types.SimpleNamespace(name = "flux"), "b", None, "fp8"
+    )
+    one = D.DiffusionBackend._precast_text_encoder_mib(
+        types.SimpleNamespace(name = "flux"), "b", None, "fp8", skip_components = ("text_encoder",)
+    )
+    both = D.DiffusionBackend._precast_text_encoder_mib(
+        types.SimpleNamespace(name = "flux"),
+        "b",
+        None,
+        "fp8",
+        skip_components = ("text_encoder", "text_encoder_2"),
+    )
+    assert (
+        full[1] == ("text_encoder", "text_encoder_2")
+        and one[1] == ("text_encoder_2",)
+        and both is None
+    )
+
+
+def test_hidream_standalone_llama_slot_refused_by_name():
+    ref = C.ComponentFileRef(spec = "llama.safetensors", local_path = "llama.safetensors")
+    header = {
+        "model.layers.0.self_attn.q_proj.weight": {"shape": [4, 4]},
+        "model.embed_tokens.weight": {"shape": [4, 4]},
+    }
+    with pytest.raises(C.ComponentFileError, match = "loads text_encoder_4 from its own repo"):
+        C.assign_components(
+            [(ref, header)], None, {"text_encoder_4": "LlamaForCausalLM"}, family = "hidream-i1"
+        )

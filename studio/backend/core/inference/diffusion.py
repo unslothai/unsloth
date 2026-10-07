@@ -1118,6 +1118,12 @@ def _hub_file_size(repo_id: str, filename: str, hf_token: Optional[str]) -> int:
     return 0
 
 
+def _active_supplied_text_encoders() -> tuple[str, ...]:
+    from .diffusion_comfy_components import active_component_overrides
+    overrides = active_component_overrides()
+    return tuple(c for c in overrides.paths if c.startswith("text_encoder")) if overrides else ()
+
+
 def _active_component_summary() -> Optional[dict]:
     from .diffusion_comfy_components import active_component_overrides
     overrides = active_component_overrides()
@@ -5472,6 +5478,7 @@ class DiffusionBackend:
         target: Any,
         text_encoder_quant: Optional[str],
         staged_dir: Optional[str] = None,
+        skip_components: tuple[str, ...] = (),
     ) -> Optional[tuple[int, tuple[str, ...], bool]]:
         """``(MiB, components, exact)`` for the hosted pre-cast text encoder(s) this pick loads, or None.
 
@@ -5493,6 +5500,7 @@ class DiffusionBackend:
             sources = te_prequant_sources_for_base(
                 fam, base, te_quant_mode = text_encoder_quant, target = target, **extra
             )
+            sources = {c: v for c, v in (sources or {}).items() if c not in skip_components}
             if not sources:
                 return None
             total = 0
@@ -9054,7 +9062,7 @@ class DiffusionBackend:
         if _float_load_itemsize(load_dtype) is None:
             load_dtype = None
         companions_from_cache = False
-        supplied_te = False
+        supplied_te: tuple[str, ...] = ()
         if kind == "pipeline" and transformer_resident_override_mib is not None:
             # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already
             # splits transformer from companions; the cache scan below would price the bf16 transformer this
@@ -9213,13 +9221,19 @@ class DiffusionBackend:
                     text_encoder_mib = (
                         max(0, int(text_encoder_mib or 0) - scanned_te_mib) + supplied_te_mib
                     ) or None
-                    supplied_te = supplied_te_mib > 0
+                    supplied_te = _active_supplied_text_encoders()
             model_dense_mib = None
             if transformer_resident is not None:
                 model_dense_mib = transformer_resident + (companion_mib or 0)
-        if companions_from_cache and text_encoder_quant is not None and not supplied_te:
+        if companions_from_cache and text_encoder_quant is not None:
+            # Supplied encoders are priced above; only the slots they leave to a hosted pre-cast count here.
             precast = self._precast_text_encoder_mib(
-                fam, base, target, text_encoder_quant, base_local_dir
+                fam,
+                base,
+                target,
+                text_encoder_quant,
+                base_local_dir,
+                skip_components = supplied_te,
             )
             if precast:
                 precast_mib, precast_components, _exact = precast
