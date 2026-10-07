@@ -181,6 +181,7 @@ export const zhCN = {
     downloadPrompt: {
       title: "要下载此文件吗？",
       description: "{host} 想要将 {name} 保存到你的电脑。",
+      dangerous: "此类文件可以在你的电脑上运行程序。仅在你信任 {host} 时下载。",
       remember: "下次记住",
       cancel: "取消",
       download: "下载",
@@ -368,6 +369,7 @@ export const zhCN = {
       downloading: "正在下载 {name}",
       downloaded: "已将 {name} 保存到“下载”",
       downloadFailed: "无法下载 {name}",
+      notMarked: "{name} 已保存,但无法标记为从互联网下载,因此打开前系统不会发出警告。",
       blocked: "此地址无法在浏览器面板中打开。面板只打开公开网站。",
       clearDataSettingDescription: "清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，这会让你退出各网站。",
       clearDataDescription: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",

@@ -237,6 +237,8 @@ enum BrowserEvent {
         success: bool,
         /// A finished download's handle for Download history (browser_downloads.rs).
         download_id: Option<String>,
+        /// Marked as from the internet: false if that failed (the panel warns), None where nothing marks.
+        marked: Option<bool>,
     },
     DownloadPrompt {
         tab_id: String,
@@ -535,6 +537,7 @@ pub(crate) fn emit_download_done<R: Runtime>(
     url: &Url,
     path: &Path,
     download_id: Option<String>,
+    marked: Option<bool>,
 ) {
     emit(
         app,
@@ -550,6 +553,7 @@ pub(crate) fn emit_download_done<R: Runtime>(
             done: true,
             success: true,
             download_id,
+            marked,
         },
     );
 }
@@ -571,6 +575,7 @@ pub(crate) fn emit_download_failed<R: Runtime>(
             done: true,
             success: false,
             download_id: None,
+            marked: None,
         },
     );
 }
@@ -710,8 +715,24 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
         .unwrap_or(candidate)
 }
 
-/// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it.
-pub(crate) fn mark_downloaded(path: &Path, url: &Url) {
+/// Where a download came from, for the file's internet mark: no credentials, query or fragment,
+/// which can carry tokens. Web addresses only.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sanitized_source(url: &Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let mut clean = url.clone();
+    let _ = clean.set_username("");
+    let _ = clean.set_password(None);
+    clean.set_query(None);
+    clean.set_fragment(None);
+    Some(clean.to_string())
+}
+
+/// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it. Whether that
+/// worked (FAT, exFAT and some network drives keep no mark); None where there is no mark.
+pub(crate) fn mark_downloaded(path: &Path, url: &Url) -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CString;
@@ -725,9 +746,10 @@ pub(crate) fn mark_downloaded(path: &Path, url: &Url) {
             CString::new(path.as_os_str().as_bytes()),
             CString::new("com.apple.quarantine"),
         ) else {
-            return;
+            return Some(false);
         };
-        unsafe {
+        let _ = url;
+        let result = unsafe {
             libc::setxattr(
                 path.as_ptr(),
                 name.as_ptr(),
@@ -735,21 +757,24 @@ pub(crate) fn mark_downloaded(path: &Path, url: &Url) {
                 value.len(),
                 0,
                 0,
-            );
-        }
-        let _ = url;
+            )
+        };
+        Some(result == 0)
     }
     #[cfg(windows)]
     {
         let mut stream = path.as_os_str().to_owned();
         stream.push(":Zone.Identifier");
-        let _ = std::fs::write(
-            stream,
-            format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={url}\r\n"),
-        );
+        let host = sanitized_source(url)
+            .map(|source| format!("HostUrl={source}\r\n"))
+            .unwrap_or_default();
+        Some(std::fs::write(stream, format!("[ZoneTransfer]\r\nZoneId=3\r\n{host}")).is_ok())
     }
     #[cfg(not(any(target_os = "macos", windows)))]
-    let _ = (path, url);
+    {
+        let _ = (path, url);
+        None
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1098,7 +1123,11 @@ fn create_view<R: Runtime>(
                         let pending = inner.downloads.entry(url.to_string()).or_default();
                         let index = path
                             .as_ref()
-                            .and_then(|path| pending.iter().position(|p| p == path))
+                            .and_then(|path| {
+                                pending
+                                    .iter()
+                                    .position(|p| crate::browser_downloads::same_path(p, path))
+                            })
                             .unwrap_or(0);
                         let recorded = (index < pending.len()).then(|| pending.remove(index));
                         if pending.is_empty() {
@@ -1106,9 +1135,12 @@ fn create_view<R: Runtime>(
                         }
                         recorded
                     };
-                    if let Some(staged) = path.or(recorded) {
-                        crate::browser_downloads::finished(app, &staged, success);
-                    }
+                    // The reserved path first: the engine may report another spelling of it.
+                    crate::browser_downloads::finished(
+                        app,
+                        [recorded.as_deref(), path.as_deref()],
+                        success,
+                    );
                     true
                 }
                 _ => false,
@@ -1728,6 +1760,16 @@ fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_internet_mark_keeps_where_not_secrets() {
+        let source = |url: &str| sanitized_source(&Url::parse(url).unwrap());
+        assert_eq!(
+            source("https://user:pass@example.com:8443/f/a.exe?sig=secret#x").as_deref(),
+            Some("https://example.com:8443/f/a.exe")
+        );
+        assert_eq!(source("file:///etc/passwd"), None);
+    }
 
     mod url_poll {
         use super::*;

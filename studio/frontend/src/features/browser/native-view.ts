@@ -50,6 +50,8 @@ type NativeEvent =
       done: boolean;
       success: boolean;
       downloadId: string | null;
+      /** False when the file couldn't be marked as downloaded from the internet; null where nothing marks. */
+      marked?: boolean | null;
     }
   | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string };
 
@@ -135,6 +137,11 @@ function onNativeEvent(event: NativeEvent): void {
     onDownloadPrompt(event, tab);
     return;
   }
+  // A download outlives its page: it often lands after the tab closed or moved on, and still belongs in history.
+  if (event.kind === "download") {
+    onDownload(event);
+    return;
+  }
   if (!tab || currentEntry(tab).kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
   switch (event.kind) {
@@ -191,22 +198,24 @@ function onNativeEvent(event: NativeEvent): void {
         onClick: () => openExternalLink(event.url),
       });
       break;
-    case "download":
-      if (!event.done) {
-        toast(t("browser.native.downloading", { name: event.name }));
-      } else if (event.success) {
-        history.recordDownload({
-          name: event.name,
-          url: event.url,
-          size: event.size ?? 0,
-          contentType: "",
-          nativeId: event.downloadId ?? undefined,
-        });
-        toast.success(t("browser.native.downloaded", { name: event.name }));
-      } else {
-        toast.error(t("browser.native.downloadFailed", { name: event.name }));
-      }
-      break;
+  }
+}
+
+function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
+  if (!event.done) {
+    toast(t("browser.native.downloading", { name: event.name }));
+  } else if (event.success) {
+    useBrowserHistoryStore.getState().recordDownload({
+      name: event.name,
+      url: event.url,
+      size: event.size ?? 0,
+      contentType: "",
+      nativeId: event.downloadId ?? undefined,
+    });
+    if (event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
+    else toast.success(t("browser.native.downloaded", { name: event.name }));
+  } else {
+    toast.error(t("browser.native.downloadFailed", { name: event.name }));
   }
 }
 

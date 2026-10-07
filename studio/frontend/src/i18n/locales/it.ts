@@ -180,6 +180,7 @@ export const it = {
     downloadPrompt: {
       title: "Scaricare questo file?",
       description: "{host} vuole salvare {name} sul tuo computer.",
+      dangerous: "File come questo possono eseguire programmi sul tuo computer. Scaricalo solo se ti fidi di {host}.",
       remember: "Ricorda per la prossima volta",
       cancel: "Annulla",
       download: "Scarica",
@@ -367,6 +368,7 @@ export const it = {
       downloading: "Download di {name} in corso",
       downloaded: "{name} salvato in Download",
       downloadFailed: "Impossibile scaricare {name}",
+      notMarked: "{name} è stato salvato ma non è stato possibile contrassegnarlo come scaricato da Internet, quindi il sistema non avviserà prima di aprirlo.",
       blocked: "Questo indirizzo non si può aprire nel pannello del browser. Apre solo siti web pubblici.",
       clearDataSettingDescription: "Cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti.",
       clearDataDescription: "Questo cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti. I file scaricati restano sul computer.",

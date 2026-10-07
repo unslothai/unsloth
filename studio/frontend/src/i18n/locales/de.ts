@@ -181,6 +181,7 @@ export const de = {
     downloadPrompt: {
       title: "Diese Datei herunterladen?",
       description: "{host} möchte {name} auf deinem Computer speichern.",
+      dangerous: "Dateien wie diese können Programme auf deinem Computer ausführen. Lade sie nur herunter, wenn du {host} vertraust.",
       remember: "Für das nächste Mal merken",
       cancel: "Abbrechen",
       download: "Herunterladen",
@@ -368,6 +369,7 @@ export const de = {
       downloading: "{name} wird heruntergeladen",
       downloaded: "{name} in Downloads gespeichert",
       downloadFailed: "{name} konnte nicht heruntergeladen werden",
+      notMarked: "{name} wurde gespeichert, konnte aber nicht als aus dem Internet heruntergeladen markiert werden. Dein System warnt deshalb vor dem Öffnen nicht.",
       blocked: "Diese Adresse kann im Browserbereich nicht geöffnet werden. Er öffnet nur öffentliche Websites.",
       clearDataSettingDescription: "Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten löschen. Du wirst dabei von Websites abgemeldet.",
       clearDataDescription: "Dadurch werden Browserverlauf, Downloadverlauf, zwischengespeicherte Seiten sowie Cookies und Websitedaten gelöscht, und du wirst von Websites abgemeldet. Heruntergeladene Dateien bleiben auf deinem Computer.",

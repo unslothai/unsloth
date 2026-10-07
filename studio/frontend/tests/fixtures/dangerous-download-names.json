@@ -1,0 +1,296 @@
+{
+  "cases": [
+    {
+      "name": "setup.exe",
+      "dangerous": true
+    },
+    {
+      "name": "SETUP.EXE",
+      "dangerous": true
+    },
+    {
+      "name": "report.pdf",
+      "dangerous": false
+    },
+    {
+      "name": "report.pdf.exe",
+      "dangerous": true
+    },
+    {
+      "name": "installer.exe.",
+      "dangerous": true
+    },
+    {
+      "name": "installer.exe . ",
+      "dangerous": true
+    },
+    {
+      "name": "notes.txt",
+      "dangerous": false
+    },
+    {
+      "name": "archive.zip",
+      "dangerous": false
+    },
+    {
+      "name": "Tool.dmg",
+      "dangerous": true
+    },
+    {
+      "name": "run.command",
+      "dangerous": true
+    },
+    {
+      "name": "script.PS1",
+      "dangerous": true
+    },
+    {
+      "name": "photo.jpg",
+      "dangerous": false
+    },
+    {
+      "name": "x.App",
+      "dangerous": true
+    },
+    {
+      "name": "page.html",
+      "dangerous": false
+    },
+    {
+      "name": "data.json",
+      "dangerous": false
+    },
+    {
+      "name": "noext",
+      "dangerous": false
+    },
+    {
+      "name": ".bashrc",
+      "dangerous": false
+    },
+    {
+      "name": "deploy.sh",
+      "dangerous": true
+    },
+    {
+      "name": "lib.dylib",
+      "dangerous": true
+    },
+    {
+      "name": "shortcut.lnk",
+      "dangerous": true
+    },
+    {
+      "name": "link.url",
+      "dangerous": true
+    },
+    {
+      "name": "readme",
+      "dangerous": false
+    },
+    {
+      "name": "movie.mp4",
+      "dangerous": false
+    },
+    {
+      "name": "disk.iso",
+      "dangerous": true
+    },
+    {
+      "name": "",
+      "dangerous": false
+    },
+    {
+      "name": "invoice\u202etxt.exe",
+      "dangerous": true
+    },
+    {
+      "name": "invoice\u202eexe.txt",
+      "dangerous": false
+    },
+    {
+      "name": "setup.exe.txt",
+      "dangerous": false
+    },
+    {
+      "name": "archive.tar.gz",
+      "dangerous": false
+    },
+    {
+      "name": "x.app.zip",
+      "dangerous": false
+    },
+    {
+      "name": "x.exe ",
+      "dangerous": true
+    },
+    {
+      "name": "x.exe...",
+      "dangerous": true
+    },
+    {
+      "name": "x.exe . . ",
+      "dangerous": true
+    },
+    {
+      "name": "x.exe\u00a0",
+      "dangerous": false
+    },
+    {
+      "name": "a.txt:b.exe",
+      "dangerous": true
+    },
+    {
+      "name": "../x.exe",
+      "dangerous": true
+    },
+    {
+      "name": "C:\\x.exe",
+      "dangerous": true
+    },
+    {
+      "name": "dir/sub/x.dmg",
+      "dangerous": true
+    },
+    {
+      "name": ".exe",
+      "dangerous": true
+    },
+    {
+      "name": ".sh",
+      "dangerous": true
+    },
+    {
+      "name": "...",
+      "dangerous": false
+    },
+    {
+      "name": ". .",
+      "dangerous": false
+    },
+    {
+      "name": "x.\uff45\uff58\uff45",
+      "dangerous": false
+    },
+    {
+      "name": "x.\u212aext",
+      "dangerous": true
+    },
+    {
+      "name": "SETUP.ExE",
+      "dangerous": true
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.exe",
+      "dangerous": true
+    },
+    {
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.pdf",
+      "dangerous": false
+    },
+    {
+      "name": "x.msc",
+      "dangerous": true
+    },
+    {
+      "name": "x.webloc",
+      "dangerous": true
+    },
+    {
+      "name": "x.appinstaller",
+      "dangerous": true
+    },
+    {
+      "name": "x.library-ms",
+      "dangerous": true
+    },
+    {
+      "name": "x.AppImage",
+      "dangerous": true
+    },
+    {
+      "name": "x.mobileconfig",
+      "dangerous": true
+    },
+    {
+      "name": "x.xll",
+      "dangerous": true
+    },
+    {
+      "name": "x.scf",
+      "dangerous": true
+    },
+    {
+      "name": "model.safetensors",
+      "dangerous": false
+    },
+    {
+      "name": "weights.gguf",
+      "dangerous": false
+    },
+    {
+      "name": "train.py",
+      "dangerous": false
+    },
+    {
+      "name": "notebook.ipynb",
+      "dangerous": false
+    },
+    {
+      "name": "config.ini",
+      "dangerous": false
+    },
+    {
+      "name": "report.docx",
+      "dangerous": false
+    },
+    {
+      "name": "sheet.xlsx",
+      "dangerous": false
+    },
+    {
+      "name": "page.mhtml",
+      "dangerous": false
+    },
+    {
+      "name": "data.csv",
+      "dangerous": false
+    },
+    {
+      "name": "x.dmg.part",
+      "dangerous": false
+    },
+    {
+      "name": "windows10.0-kb5005565-x64.msu",
+      "dangerous": true
+    },
+    {
+      "name": "tool.pyw",
+      "dangerous": true
+    },
+    {
+      "name": "report.DOCM",
+      "dangerous": true
+    },
+    {
+      "name": "budget.xlsm",
+      "dangerous": true
+    },
+    {
+      "name": "deck.pptm",
+      "dangerous": true
+    },
+    {
+      "name": "addin.xlam",
+      "dangerous": true
+    },
+    {
+      "name": "train.py",
+      "dangerous": false
+    },
+    {
+      "name": "report.docx",
+      "dangerous": false
+    }
+  ]
+}

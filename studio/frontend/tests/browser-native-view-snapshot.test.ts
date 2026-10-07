@@ -188,3 +188,39 @@ test("toasts move left of a page that sits beside the Run settings panel", async
     pageBox = rect(500, 100, 500, 600);
   }
 });
+
+test("a finished download is listed and reported after its tab closed, and warns when it isn't marked", async () => {
+  const stop = startNativeViews();
+  try {
+    await settle();
+    const seen: { level: string; message: string }[] = [];
+    const g = globalThis as {
+      nativeViewListener?: (event: { payload: unknown }) => void;
+      nativeViewSeen?: unknown;
+    };
+    g.nativeViewSeen = seen;
+    const done = {
+      kind: "download",
+      tabId: "closed-tab",
+      url: "https://example.com/a.zip",
+      name: "a.zip",
+      path: null,
+      size: 3,
+      done: true,
+      success: true,
+    };
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d1", marked: true } });
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d2", marked: false } });
+    g.nativeViewListener?.({ payload: { ...done, downloadId: "d3", marked: null } });
+    assert.deepEqual(seen, [
+      { level: "history", message: "d1" },
+      { level: "success", message: "browser.native.downloaded" },
+      { level: "history", message: "d2" },
+      { level: "warning", message: "browser.native.notMarked" },
+      { level: "history", message: "d3" },
+      { level: "success", message: "browser.native.downloaded" },
+    ]);
+  } finally {
+    stop();
+  }
+});

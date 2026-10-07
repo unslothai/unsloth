@@ -14,7 +14,7 @@ const TOAST_STUB =
   "data:text/javascript," +
   encodeURIComponent(
     "const toast = (message, options) => void (globalThis.__toasts ??= []).push({ message, options });" +
-      " toast.error = toast.success = toast; export { toast };",
+      " toast.error = toast.success = toast.warning = toast; export { toast };",
   );
 
 const AUTH_STUB =

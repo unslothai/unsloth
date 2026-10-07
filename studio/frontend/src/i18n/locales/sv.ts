@@ -192,6 +192,7 @@ export const sv = {
     downloadPrompt: {
       title: "Hämta den här filen?",
       description: "{host} vill spara {name} på din dator.",
+      dangerous: "Filer som den här kan köra program på din dator. Ladda bara ned den om du litar på {host}.",
       remember: "Kom ihåg till nästa gång",
       cancel: "Avbryt",
       download: "Hämta",
@@ -390,6 +391,7 @@ export const sv = {
       downloading: "Hämtar {name}",
       downloaded: "{name} sparades i Hämtade filer",
       downloadFailed: "Det gick inte att hämta {name}",
+      notMarked: "{name} sparades men kunde inte markeras som nedladdad från internet, så systemet varnar inte innan den öppnas.",
       blocked:
         "Den här adressen kan inte öppnas i webbläsarpanelen. Den öppnar bara offentliga webbplatser.",
       clearDataSettingDescription:

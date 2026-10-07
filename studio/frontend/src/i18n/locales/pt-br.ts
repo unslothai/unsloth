@@ -181,6 +181,7 @@ export const ptBR = {
     downloadPrompt: {
       title: "Baixar este arquivo?",
       description: "{host} quer salvar {name} no seu computador.",
+      dangerous: "Arquivos como este podem executar programas no seu computador. Baixe-o apenas se confiar em {host}.",
       remember: "Lembrar na próxima vez",
       cancel: "Cancelar",
       download: "Baixar",
@@ -368,6 +369,7 @@ export const ptBR = {
       downloading: "Baixando {name}",
       downloaded: "{name} salvo em Downloads",
       downloadFailed: "Não foi possível baixar {name}",
+      notMarked: "{name} foi salvo, mas não pôde ser marcado como baixado da internet, então seu sistema não avisará antes de abri-lo.",
       blocked: "Este endereço não pode ser aberto no painel do navegador. Ele só abre sites públicos.",
       clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites.",
       clearDataDescription: "Isso limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites. Os arquivos baixados continuam no seu computador.",

@@ -5,11 +5,11 @@ import { getLocale, translate } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { fileNameFromUrl, isWebUrl, withBaseUrl } from "./address";
+import { fileNameFromUrl, isWebUrl, safeDownloadName, withBaseUrl } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
 import { approveDownload } from "./download-approval-queue";
 import { useBrowserHistoryStore } from "./history-store";
-import { saveNativeDownload } from "./native-downloads";
+import { type SavedNativeDownload, saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
 
 export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null; site?: string };
@@ -75,11 +75,10 @@ export async function saveBrowserDownload(download: BrowserDownload, target?: Sa
   await writeDownload(download, target);
 }
 
-async function writeDownload(
-  { blob, name, contentType, url }: BrowserDownload,
-  target: SaveHandle | null | undefined,
-): Promise<void> {
-  let saved: { id: string; name: string } | null = null;
+async function writeDownload(download: BrowserDownload, target: SaveHandle | null | undefined): Promise<void> {
+  const { blob, contentType, url } = download;
+  const name = safeDownloadName(download.name);
+  let saved: SavedNativeDownload | null = null;
   let picked: SaveHandle | null = null;
   try {
     if (isTauri) {
@@ -107,6 +106,9 @@ async function writeDownload(
     contentType,
     nativeId: saved?.id,
   });
+  if (saved?.marked === false) {
+    toast.warning(translate("browser.native.notMarked", { name: saved.name || name }, getLocale()));
+  }
 }
 
 // Well inside the ~5 s a click lets a page open the save dialog.
