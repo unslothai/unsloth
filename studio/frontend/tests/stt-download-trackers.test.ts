@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isSameSttAttempt,
   shouldRecheckSttReplacement,
   SttDownloadTrackers,
   sttReplacementAction,
@@ -138,4 +139,11 @@ test("a transient confirmation failure retries after the prior tracker settles",
     shouldRecheckSttReplacement("attempt-y", "attempt-y"),
     false,
   );
+});
+
+test("adopting an already tracked attempt leaves its owner's policy alone", () => {
+  assert.equal(isSameSttAttempt(true, "a", "a"), true);
+  assert.equal(isSameSttAttempt(true, "a", undefined), true);
+  assert.equal(isSameSttAttempt(true, "a", "b"), false);
+  assert.equal(isSameSttAttempt(false, undefined, "a"), false);
 });

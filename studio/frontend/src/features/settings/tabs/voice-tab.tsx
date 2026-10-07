@@ -73,6 +73,7 @@ import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
+  isTrackingSttDownload,
   trackSttDownload,
 } from "../lib/stt-download-mirror";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -769,7 +770,14 @@ export function VoiceTab() {
         if (download.downloading) {
           // Adopt a transfer that outlived the page that started it, so it
           // still shows in the download panel.
-          if (download.model) {
+          if (
+            download.model &&
+            !isTrackingSttDownload(
+              download.model,
+              undefined,
+              download.download_id,
+            )
+          ) {
             trackSttDownload(download.model, {
               ggufVariant: download.variant,
               downloadId: download.download_id,

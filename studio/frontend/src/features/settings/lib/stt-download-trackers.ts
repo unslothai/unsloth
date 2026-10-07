@@ -57,3 +57,12 @@ export function shouldRecheckSttReplacement(
 ): boolean {
   return currentDownloadId !== candidateDownloadId;
 }
+
+/** An adopter's attempt is already tracked; a missing id (older backend) matches by row. */
+export function isSameSttAttempt(
+  hasTracker: boolean,
+  trackedDownloadId: string | null | undefined,
+  downloadId: string | null | undefined,
+): boolean {
+  return hasTracker && (!downloadId || trackedDownloadId === downloadId);
+}

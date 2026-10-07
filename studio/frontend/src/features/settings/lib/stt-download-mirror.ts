@@ -26,6 +26,7 @@ import {
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 import {
+  isSameSttAttempt,
   shouldRecheckSttReplacement,
   SttDownloadTrackers,
   sttReplacementAction,
@@ -205,6 +206,21 @@ async function poll(
   }
 }
 
+/** Whether a status poll's transfer already has a row, so adopting it must not
+ * take over the completion policy of the surface that started it. */
+export function isTrackingSttDownload(
+  model: SttModel,
+  engine?: SttEngine,
+  downloadId?: string | null,
+): boolean {
+  const key = trackerKey(model, engine ?? sttEngineFor(model));
+  return isSameSttAttempt(
+    trackers.has(key),
+    trackedDownloadIds.get(key),
+    downloadId,
+  );
+}
+
 /**
  * Mirror an already-started download of `model` into the panel. Any other
  * model's download keeps its own row: switching models does not stop it.
@@ -236,15 +252,10 @@ function trackSttDownloadNow(
       warmSelectedVoiceModelOnComplete.set(key, true);
     return;
   }
-  if (wasTracking && !changedAttempt) {
-    if (options.warmSelectedVoiceModelOnComplete !== false)
-      warmSelectedVoiceModelOnComplete.set(key, true);
-  } else {
-    warmSelectedVoiceModelOnComplete.set(
-      key,
-      options.warmSelectedVoiceModelOnComplete ?? true,
-    );
-  }
+  warmSelectedVoiceModelOnComplete.set(
+    key,
+    options.warmSelectedVoiceModelOnComplete ?? true,
+  );
   if (!trackedStartedAt.has(key)) trackedStartedAt.set(key, Date.now());
   startExternalJob({
     key: jobKey(model, resolvedEngine),
