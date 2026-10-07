@@ -47,7 +47,8 @@ from utils.allocator_conf import normalize_allocator_conf as _normalize_allocato
 
 for _name, _old, _new in _normalize_allocator_conf():
     print(
-        f"Unsloth: {_name}={_old!r} has a lowercase boolean, which PyTorch rejects; using {_new!r}.",
+        f"Unsloth: {_name}={_old!r} has noncanonical boolean casing, which PyTorch rejects; "
+        f"using {_new!r}.",
         file = sys.stderr,
     )
 

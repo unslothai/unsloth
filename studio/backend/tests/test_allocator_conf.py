@@ -34,7 +34,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
         ),
     ],
 )
-def test_lowercase_booleans_are_capitalized(name, raw, expected):
+def test_noncanonical_booleans_are_capitalized(name, raw, expected):
     env = {name: raw}
 
     assert normalize_allocator_conf(env) == [(name, raw, expected)]
@@ -55,7 +55,7 @@ def test_lowercase_booleans_are_capitalized(name, raw, expected):
         "",
     ],
 )
-def test_values_without_a_lowercase_boolean_are_untouched(raw):
+def test_values_without_a_noncanonical_boolean_are_untouched(raw):
     env = {"PYTORCH_ALLOC_CONF": raw}
 
     assert normalize_allocator_conf(env) == []
@@ -103,6 +103,6 @@ def test_import_main_normalizes_the_allocator_config():
     assert proc.returncode == 0, proc.stderr[-4000:]
     assert "ALLOC expandable_segments:False False" in proc.stdout
     assert (
-        "PYTORCH_ALLOC_CONF='expandable_segments:false' has a lowercase boolean, "
+        "PYTORCH_ALLOC_CONF='expandable_segments:false' has noncanonical boolean casing, "
         "which PyTorch rejects; using 'expandable_segments:False'."
     ) in proc.stderr

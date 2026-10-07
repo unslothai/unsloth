@@ -29,7 +29,7 @@ def _canonical_bool(match: "re.Match[str]") -> str:
 def normalize_allocator_conf(
     env: Optional[MutableMapping[str, str]] = None,
 ) -> List[Tuple[str, str, str]]:
-    """Rewrite lowercase allocator booleans such as ``expandable_segments:false`` to ``False``.
+    """Capitalize allocator booleans PyTorch would reject, such as ``expandable_segments:false``.
 
     PyTorch accepts only ``True``/``False``. Anything else makes the first CUDA init raise
     ``ValueError ... in ConfigTokenizer``, and a later CUDA call in the same process then
