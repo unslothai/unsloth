@@ -209,18 +209,17 @@ export function sttShownVariant(
   );
 }
 
-/** Whether a listing shows the pinned quant on disk. A cache-only listing names only cached quants,
- *  some by the loose key ("Q8_0" for "small/Q8_0"), so a quant it leaves out is not cached. */
+/** Whether a listing leaves the pinned quant possibly on disk. Only the row with that exact key can
+ *  say no: a cache-only (offline) listing keys cached files by what tells them apart ("ctc/F16" for
+ *  "v3-ctc/F16"), so a key it leaves out may still be cached; the backend matches it on load. */
 export function sttListedQuantDownloaded(
   listing: { variants: readonly { quant: string; downloaded?: boolean }[] },
   pinned: string,
 ): boolean {
-  const exact = listing.variants.find((variant) => variant.quant === pinned);
-  const loose = listing.variants.filter((variant) =>
-    pinned.endsWith(`/${variant.quant}`),
+  return (
+    listing.variants.find((variant) => variant.quant === pinned)?.downloaded !==
+    false
   );
-  const row = exact ?? (loose.length === 1 ? loose[0] : undefined);
-  return row?.downloaded === true;
 }
 
 export function sttModelSize(model: SttModel): string {

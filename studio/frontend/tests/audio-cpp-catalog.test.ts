@@ -917,7 +917,7 @@ test("the quant Select shows the quant a dictation would actually run", () => {
   assert.match(voiceTab, /const shownSttVariant = sttShownVariant\(\s*sttVariant,\s*sttLoadedVariant,/);
 });
 
-test("a pinned quant counts as on disk only when the listing shows it downloaded", () => {
+test("only the pinned quant's own listing row can say it is not on disk", () => {
   const online = {
     variants: [
       { quant: "multilingual-ctc/F16", downloaded: true },
@@ -926,11 +926,14 @@ test("a pinned quant counts as on disk only when the listing shows it downloaded
   };
   assert.equal(sttListedQuantDownloaded(online, "multilingual-ctc/F16"), true);
   assert.equal(sttListedQuantDownloaded(online, "v3-ctc/F16"), false);
-  // A cache-only listing names only what is cached: a quant it leaves out is not on disk.
-  const offline = { variants: [{ quant: "multilingual-ctc/F16", downloaded: true }] };
-  assert.equal(sttListedQuantDownloaded(offline, "v3-ctc/F16"), false);
-  // ...and it can key the one cached quant loosely.
-  const loose = { variants: [{ quant: "Q8_0", downloaded: true }] };
-  assert.equal(sttListedQuantDownloaded(loose, "small/Q8_0"), true);
-  assert.equal(sttListedQuantDownloaded({ variants: [] }, "small/Q8_0"), false);
+  // A cache-only listing keys cached files by what tells them apart, so a pinned key it leaves out
+  // may still be cached (the backend matches it on load): defer instead of calling it missing.
+  const offline = {
+    variants: [
+      { quant: "ctc/F16", downloaded: true },
+      { quant: "rnnt/F16", downloaded: true },
+    ],
+  };
+  assert.equal(sttListedQuantDownloaded(offline, "v3-ctc/F16"), true);
+  assert.equal(sttListedQuantDownloaded({ variants: [] }, "small/Q8_0"), true);
 });
