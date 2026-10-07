@@ -5,6 +5,8 @@ import json
 import math
 import os
 import random
+import signal
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -130,10 +132,16 @@ def test_llama_cpp_lookup_matches_pytorch_serving_on_random_configs():
             assert got == pytest.approx(want, rel = 1e-12)
 
 
-def _write_gguf(path: Path, temperatures: dict) -> None:
+def _write_gguf(
+    path: Path,
+    temperatures: dict,
+    max_head_tokens = None,
+) -> None:
     writer = gguf.GGUFWriter(str(path), arch = "clef")
     writer.add_string("general.name", "tiny")
     writer.add_uint32("clef.decision.block_count", 4)
+    if max_head_tokens is not None:
+        writer.add_uint32("clef.decision.max_head_tokens", max_head_tokens)
     writer.add_array("tokenizer.ggml.tokens", ["a", "b", "c"])
     writer.add_float32("clef.attention.layer_norm_epsilon", 1e-5)
     for name, value in temperatures.items():
@@ -350,8 +358,8 @@ def fake_llama_cpp(tmp_path, monkeypatch):
         if mmproj:
             outfile.write_bytes(b"mmproj " + outtype.encode())
         else:
-            # The converter's own temperatures (Laya writes raw, unclamped ones).
-            _write_gguf(outfile, {"choice": 0.1006, "choice.11": 0.1006})
+            # The converter's own temperatures and head length (Laya writes raw, unclamped ones).
+            _write_gguf(outfile, {"choice": 0.1006, "choice.11": 0.1006}, max_head_tokens = 96)
 
     def quantize(quantizer, source, target, method, print_output):
         calls.append(("quantize", source.name, target.name))
@@ -359,6 +367,9 @@ def fake_llama_cpp(tmp_path, monkeypatch):
 
     monkeypatch.setattr(decision_gguf, "_converter_dir", lambda *a: tmp_path)
     monkeypatch.setattr(decision_gguf, "_quantizer", lambda *a: "llama-quantize")
+    monkeypatch.setattr(
+        decision_gguf, "_kquant_quantizer", lambda *a: "llama-quantize", raising = False
+    )
     monkeypatch.setattr(decision_gguf, "_convert", convert)
     monkeypatch.setattr(decision_gguf, "_quantize", quantize)
     return calls
@@ -435,3 +446,219 @@ def test_export_refuses_ineligible_and_adapter_only_folders(tmp_path, fake_llama
     with pytest.raises(ValueError, match = "save_pretrained_gguf"):
         decision_gguf.export_decision_gguf(adapters, "q8_0")
     assert fake_llama_cpp == []
+
+
+def _staged(folder: Path) -> list:
+    return sorted(
+        p.name
+        for p in folder.iterdir()
+        if p.name.startswith((".unsloth-merged-", ".unsloth-gguf-"))
+    )
+
+
+def _head_tokens(path: Path) -> int:
+    return int(gguf.GGUFReader(str(path), "r").fields["clef.decision.max_head_tokens"].contents())
+
+
+@needs_gguf
+@pytest.mark.parametrize(
+    "positions, head_max_len, served",
+    [(8192, 96, 256), (300, 96, 150), (None, 400, 400)],
+)
+def test_laya_export_writes_the_head_length_pytorch_serves(
+    tmp_path, fake_llama_cpp, positions, head_max_len, served
+):
+    folder = _laya_folder(tmp_path / "laya")
+    encoder = {"model_type": "modernbert"}
+    if positions is not None:
+        encoder["max_position_embeddings"] = positions
+    (folder / "encoder" / "config.json").write_text(json.dumps(encoder))
+    config = {"temperature": [1.0, 1.0, 1.0], "max_len": 256, "head_max_len": head_max_len}
+    (folder / "rl_agent_config.json").write_text(json.dumps(config))
+    decision_gguf.export_decision_gguf(folder, ["f16", "q4_k_m"])
+    for name in ("model-F16.gguf", "model-Q4_K_M.gguf"):
+        assert _head_tokens(folder / "gguf" / name) == served
+
+
+@needs_gguf
+def test_clef_export_leaves_the_head_length_alone(tmp_path, fake_llama_cpp):
+    folder = _clef_folder(tmp_path / "run")
+    decision_gguf.export_decision_gguf(folder, "q8_0")
+    assert _head_tokens(folder / "gguf" / "model-Q8_0.gguf") == 96
+
+
+@needs_gguf
+def test_metadata_writer_sets_the_head_length_idempotently(tmp_path):
+    path = tmp_path / "model.gguf"
+    _write_gguf(path, {"choice": 1.0}, max_head_tokens = 96)
+    assert write_decision_temperatures(path, {"choice": 1.0}, max_head_tokens = 256) is True
+    assert decision_gguf.read_decision_max_head_tokens(path) == 256
+    assert read_decision_temperatures(path) == {"choice": 1.0}
+    assert write_decision_temperatures(path, {"choice": 1.0}, max_head_tokens = 256) is False
+    with pytest.raises(ValueError):
+        write_decision_temperatures(path, {"choice": 1.0}, max_head_tokens = 0)
+
+
+class _FakeClef:
+    is_clef = True
+
+    def __init__(
+        self,
+        head: bytes,
+        fail = None,
+    ):
+        self.head, self.fail = head, fail
+
+    def _backbone(self):
+        return types.SimpleNamespace(
+            config = types.SimpleNamespace(architectures = ["Qwen3_5ForCausalLM"])
+        )
+
+    def save_pretrained_merged(
+        self,
+        folder,
+        tokenizer = None,
+    ):
+        _clef_folder(Path(folder), ("Qwen3_5ForCausalLM",))
+        (Path(folder) / "joint_head.safetensors").write_bytes(self.head)
+        if self.fail is not None:
+            raise self.fail
+
+
+@needs_gguf
+def test_save_adopts_the_folder_only_when_it_holds_the_saved_weights(tmp_path, fake_llama_cpp):
+    folder = _clef_folder(tmp_path / "run", ("Qwen3_5ForCausalLM",))
+    data = decision_gguf.save_pretrained_gguf(_FakeClef(b"head-weights"), folder)
+    assert data["source_fingerprint"] == contract.fingerprint(folder, "clef")
+    assert contract.served_files(folder, "clef") is not None
+
+    # Calibrated or trained in memory since the folder was saved: the folder is stale.
+    data = decision_gguf.save_pretrained_gguf(_FakeClef(b"recalibrated"), folder)
+    assert data["source_fingerprint"] != contract.fingerprint(folder, "clef")
+    assert contract.served_files(folder, "clef") is None
+    assert _staged(folder) == []
+
+
+def _old_llama_cpp(tmp_path: Path) -> Path:
+    old = tmp_path / "old_llama.cpp"
+    old.mkdir()
+    (old / "convert_hf_to_gguf.py").write_text("")
+    return old
+
+
+def _new_llama_cpp(tmp_path: Path) -> Path:
+    good = tmp_path / "new_llama.cpp"
+    (good / "conversion").mkdir(parents = True)
+    (good / "gguf-py" / "gguf").mkdir(parents = True)
+    (good / "convert_hf_to_gguf.py").write_text("")
+    (good / "conversion" / "clef.py").write_text("")
+    (good / "gguf-py" / "gguf" / "constants.py").write_text(
+        'CLEF = "clef"\nTEMPERATURE = "{arch}.decision.temperature.{name}"\n'
+    )
+    return good
+
+
+def test_kquants_are_refused_before_the_merge_when_llama_cpp_predates_decision(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(decision_gguf, "_converter_dir", lambda *a: tmp_path)
+    monkeypatch.setattr(decision_gguf, "_quantizer", lambda *a: "llama-quantize")
+    old = _old_llama_cpp(tmp_path)
+    monkeypatch.setattr(decision_gguf, "_llama_cpp_folder", lambda: old)
+    model = _FakeClef(b"h")
+    model.save_pretrained_merged = lambda *a, **k: pytest.fail("merged before refusing")
+    out = tmp_path / "out"
+    with pytest.raises(RuntimeError, match = "predates llama.cpp b11443"):
+        decision_gguf.save_pretrained_gguf(model, out, quantization_method = ["q8_0", "q4_k_m"])
+    monkeypatch.setattr(
+        decision_gguf, "_convert", lambda *a: pytest.fail("converted before refusing")
+    )
+    with pytest.raises(RuntimeError, match = "predates llama.cpp b11443"):
+        decision_gguf.export_decision_gguf(_clef_folder(tmp_path / "run"), "q4_k_m")
+
+
+def _fake_quantizer(tmp_path: Path, output: str) -> str:
+    script = tmp_path / "llama-quantize"
+    script.write_text(f"#!{sys.executable}\nprint({output!r}, flush = True)\nraise SystemExit(1)\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "shebang script")
+@pytest.mark.parametrize("print_output", [False, True])
+def test_quantize_explains_an_old_quantizer_with_or_without_print_output(
+    tmp_path, monkeypatch, capsys, print_output
+):
+    new = _new_llama_cpp(tmp_path)
+    monkeypatch.setattr(decision_gguf, "_llama_cpp_folder", lambda: new)
+    old = _fake_quantizer(tmp_path, "llama_model_load: error: unknown model architecture: 'clef'")
+    with pytest.raises(RuntimeError, match = "predates llama.cpp b11443"):
+        decision_gguf._quantize(old, tmp_path / "a", tmp_path / "b", "q4_k_m", print_output)
+    assert ("unknown model architecture" in capsys.readouterr().out) == print_output
+    other = _fake_quantizer(tmp_path, "out of disk space")
+    with pytest.raises(RuntimeError, match = "out of disk space") as error:
+        decision_gguf._quantize(other, tmp_path / "a", tmp_path / "b", "q4_k_m", print_output)
+    assert "predates" not in str(error.value)
+
+
+@needs_gguf
+def test_an_interrupted_export_leaves_no_temp_folders(tmp_path, fake_llama_cpp, monkeypatch):
+    folder = _clef_folder(tmp_path / "run", ("Qwen3_5ForCausalLM",))
+
+    def interrupted(*args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(decision_gguf, "_convert", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        decision_gguf.export_decision_gguf(folder, "q8_0")
+    assert _staged(folder) == []
+    with pytest.raises(KeyboardInterrupt):
+        decision_gguf.save_pretrained_gguf(_FakeClef(b"h"), folder)
+    with pytest.raises(KeyboardInterrupt):
+        decision_gguf.save_pretrained_gguf(_FakeClef(b"h", KeyboardInterrupt()), folder)
+    assert _staged(folder) == [] and _staged(folder.parent) == []
+
+
+@needs_gguf
+@pytest.mark.skipif(
+    not hasattr(signal, "SIGKILL") or signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL,
+    reason = "POSIX signals with the default SIGTERM handler",
+)
+def test_sigterm_cleans_up_and_a_killed_export_is_swept_later(
+    tmp_path, fake_llama_cpp, monkeypatch
+):
+    folder = _clef_folder(tmp_path / "run", ("Qwen3_5ForCausalLM",))
+    convert = decision_gguf._convert
+
+    def terminated(*args):
+        decision_gguf._run(
+            [
+                sys.executable,
+                "-c",
+                f"import os, signal, time; os.kill({os.getpid()}, signal.SIGTERM); time.sleep(60)",
+            ],
+            "converting",
+            False,
+        )
+
+    # Studio cancels an export by terminating its worker process.
+    monkeypatch.setattr(decision_gguf, "_convert", terminated)
+    with pytest.raises(SystemExit):
+        decision_gguf.save_pretrained_gguf(_FakeClef(b"h"), folder)
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+    assert _staged(folder) == []
+
+    # SIGKILL runs no cleanup: the next export removes what a dead process left.
+    dead = subprocess.Popen([sys.executable, "-c", ""])
+    dead.wait()
+    for prefix in decision_gguf._TEMP_PREFIXES:
+        (folder / f"{prefix}{dead.pid}-x").mkdir()
+        (folder / f"{prefix}{os.getppid()}-alive").mkdir()
+        (folder / f"{prefix}legacy").mkdir()
+    monkeypatch.setattr(decision_gguf, "_convert", convert)
+    decision_gguf.save_pretrained_gguf(_FakeClef(b"h"), folder)
+    assert _staged(folder) == sorted(
+        f"{prefix}{name}"
+        for prefix in decision_gguf._TEMP_PREFIXES
+        for name in (f"{os.getppid()}-alive", "legacy")
+    )
