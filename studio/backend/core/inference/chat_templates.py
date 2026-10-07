@@ -19,8 +19,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-# assets live at <backend>/assets/chat_templates/. This module is at <backend>/core/inference/chat_templates.py, so walk
-# up three parents to <backend> (mirrors utils/inference/inference_config.py).
 _ASSETS_DIR = Path(__file__).parent.parent.parent / "assets" / "chat_templates"
 
 # unsloth/gemma-4-<variant>-GGUF (case-insensitive). The "-GGUF" suffix is retained on ModelConfig.identifier for HF
@@ -28,12 +26,7 @@ _ASSETS_DIR = Path(__file__).parent.parent.parent / "assets" / "chat_templates"
 # gemma-3, non-Unsloth, and non-GGUF identifiers (e.g. the bf16 "unsloth/gemma-4-E2B-it").
 _GEMMA4_GGUF_RE = re.compile(r"^unsloth/gemma-4-.+-gguf$", re.IGNORECASE)
 
-# Google ships two distinct gemma-4 chat templates: E2B/E4B omit the empty "<|channel>thought<channel|>" block on
-# enable_thinking=false, while the 12b/26B-A4B/31B family emits it. Route the two GGUF families to the matching
-# bundled template so each keeps its model's intended behavior.
-# The QAT repos (gemma-4-E4B-it-qat-GGUF, plus the -qat-mobile builds) are the same edge models under a longer name.
-# Without the optional suffix they fell through to the standard template and got the empty thought block on
-# thinking-off, so the Think toggle did nothing (#12708).
+# E2B/E4B (incl. QAT builds) omit the empty thought block on thinking-off; larger models emit it.
 _GEMMA4_EDGE_GGUF_RE = re.compile(r"^unsloth/gemma-4-e[24]b-it(?:-qat(?:-mobile)?)?-gguf$", re.IGNORECASE)
 
 _GEMMA4_TEMPLATE_FILE = "gemma-4.jinja"
@@ -76,16 +69,16 @@ def _gemma4_template_file(model_identifier: Optional[str]) -> Optional[str]:
     return None
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize = 8)
 def load_bundled_chat_template(name: str) -> str:
     """Read a bundled chat-template asset by filename (cached for the process)."""
-    return (_ASSETS_DIR / name).read_text(encoding="utf-8")
+    return (_ASSETS_DIR / name).read_text(encoding = "utf-8")
 
 
 def resolve_effective_chat_template_override(
     *,
     model_identifier: Optional[str],
-    user_override: Optional[str],
+    user_override: Optional[str]
 ) -> Optional[str]:
     """Resolve which chat-template text to launch llama-server with.
 

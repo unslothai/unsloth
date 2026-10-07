@@ -102,7 +102,6 @@ def test_a_huge_file_is_read_in_a_bounded_window(tmp_path, monkeypatch):
     monkeypatch.undo()
 
     assert len(result.lines) == 1000
-    # One block of slack for the block-aligned backward scan.
     assert read_bytes["total"] <= MAX_TAIL_BYTES + 65_536
 
 
@@ -244,7 +243,6 @@ def test_a_record_larger_than_the_window_shows_its_tail_not_an_empty_pane(tmp_pa
     assert result.lines, "a non-empty log must never read as no lines at all"
     assert result.lines[-1].endswith(" END")
     assert result.truncated_head is True
-    # Still bounded: the tail of the record, not the whole record.
     assert sum(len(line) for line in result.lines) <= MAX_TAIL_BYTES
 
 

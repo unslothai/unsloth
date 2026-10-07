@@ -113,8 +113,9 @@ class TestMaxIsPerRequestNotPerCache:
     default as a real cap and four default chats stop fitting in four caches.
     """
 
-    WINDOW = 4096  # per slot, and what "Max" sends
-    BUDGET = WINDOW * 4  # four private caches
+    # per slot, and what "Max" sends
+    WINDOW = 4096
+    BUDGET = WINDOW * 4
 
     def test_max_is_unstated_against_the_per_request_window(self):
         assert (

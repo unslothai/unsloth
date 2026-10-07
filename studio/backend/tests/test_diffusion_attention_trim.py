@@ -14,15 +14,12 @@ import types
 
 import pytest
 
-# Skip at collection (not abort) when torch is absent so the rest of the backend suite
-# stays collectable, matching how the policy tests next door gate their heavy imports.
 torch = pytest.importorskip("torch")
 
 import core.inference.diffusion_attention as att  # noqa: E402
 
 
 def test_trim_stream_drops_trailing_padding():
-    # right-padded (valid prefix): drop the globally-invalid tail, keep valid, flag all_valid.
     states = torch.arange(6.0).reshape(1, 6, 1)
     mask = torch.tensor([[1, 1, 1, 0, 0, 0]])
     out_s, out_m, all_valid = att._trim_stream(states, mask)
@@ -32,8 +29,7 @@ def test_trim_stream_drops_trailing_padding():
 
 
 def test_trim_stream_layout_agnostic_drops_only_global_padding():
-    # left-padded (valid suffix): any(dim=0) keeps positions valid for at least one element,
-    # so the leading globally-invalid columns are dropped regardless of padding side.
+    # any(dim=0) keeps columns valid for any element, regardless of padding side.
     states = torch.arange(4.0).reshape(1, 4, 1)
     mask = torch.tensor([[0, 0, 1, 1]])
     out_s, out_m, all_valid = att._trim_stream(states, mask)
@@ -54,12 +50,11 @@ def test_trim_stream_none_mask_passthrough():
 
 
 def test_trim_stream_mixed_batch_not_all_valid():
-    # batch>1 with different valid sets: the union is kept, but a column valid for only one
-    # element remains partially padded -> all_valid False -> caller keeps the dense mask.
+    # A column valid for only one element stays padded -> all_valid False -> keep the dense mask.
     states = torch.ones(2, 4, 1)
-    mask = torch.tensor([[1, 1, 0, 0], [1, 1, 1, 0]])  # elem1 has 2 valid, elem2 has 3
+    mask = torch.tensor([[1, 1, 0, 0], [1, 1, 1, 0]])
     out_s, out_m, all_valid = att._trim_stream(states, mask)
-    assert out_s.shape == (2, 3, 1)  # dropped the last col (invalid for both)
+    assert out_s.shape == (2, 3, 1)
     assert all_valid is False
 
 
@@ -71,22 +66,21 @@ def _fake_dit(n_blocks = 2):
 def test_trim_pre_hook_empties_t2v_image_and_trims_and_flags():
     dit = _fake_dit()
     kwargs = {
-        "image_embeds": torch.zeros(1, 5, 3),  # all-zero -> t2v -> emptied
+        "image_embeds": torch.zeros(1, 5, 3),
         "encoder_hidden_states": torch.arange(4.0).reshape(1, 4, 1),
         "encoder_attention_mask": torch.tensor([[1, 1, 0, 0]]),
         "encoder_hidden_states_2": torch.arange(3.0).reshape(1, 3, 1),
         "encoder_attention_mask_2": torch.tensor([[1, 0, 0]]),
     }
     args, out = att._hunyuan_trim_pre_hook(dit, (), kwargs)
-    assert out["image_embeds"].shape == (1, 0, 3)  # image tokens dropped
-    assert out["encoder_hidden_states"].shape == (1, 2, 1)  # mllm trimmed to 2 valid
-    assert out["encoder_hidden_states_2"].shape == (1, 1, 1)  # byt5 trimmed to 1 valid
+    assert out["image_embeds"].shape == (1, 0, 3)
+    assert out["encoder_hidden_states"].shape == (1, 2, 1)
+    assert out["encoder_hidden_states_2"].shape == (1, 1, 1)
     assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is True for b in dit.transformer_blocks)
 
 
 def test_trim_stream_all_invalid_yields_empty_but_valid():
-    # A fully-padded secondary stream (e.g. unused byt5 in t2v) trims to 0 length and reports
-    # all_valid True (vacuous) so it does NOT drop the fast path -- it just contributes no tokens.
+    # A fully padded secondary stream trims to 0 length with all_valid True (vacuous).
     states = torch.ones(1, 5, 2)
     mask = torch.zeros(1, 5, dtype = torch.long)
     out_s, out_m, all_valid = att._trim_stream(states, mask)
@@ -94,48 +88,45 @@ def test_trim_stream_all_invalid_yields_empty_but_valid():
 
 
 def test_trim_pre_hook_byt5_all_invalid_keeps_fast_path():
-    # The real t2v case: byt5 is entirely padding (valid=0). It must be emptied WITHOUT dropping
-    # the null-mask fast path, since mllm still carries the prompt.
     dit = _fake_dit()
     kwargs = {
         "image_embeds": torch.zeros(1, 5, 3),
         "encoder_hidden_states": torch.arange(4.0).reshape(1, 4, 1),
         "encoder_attention_mask": torch.tensor([[1, 1, 1, 0]]),
         "encoder_hidden_states_2": torch.ones(1, 6, 1),
-        "encoder_attention_mask_2": torch.zeros(1, 6, dtype = torch.long),  # all padding
+        "encoder_attention_mask_2": torch.zeros(1, 6, dtype = torch.long),
     }
     _, out = att._hunyuan_trim_pre_hook(dit, (), kwargs)
     assert out["encoder_hidden_states"].shape == (1, 3, 1)
-    assert out["encoder_hidden_states_2"].shape == (1, 0, 1)  # byt5 emptied
+    assert out["encoder_hidden_states_2"].shape == (1, 0, 1)
     assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is True for b in dit.transformer_blocks)
 
 
 def test_trim_pre_hook_empty_primary_reverts_and_disables():
-    # Pathological empty prompt: mllm has 0 valid tokens. The TokenRefiner must not get a
-    # 0-length sequence -> revert all inputs to original and take the stock dense-mask path.
+    # 0 valid mllm tokens: the TokenRefiner cannot take a 0-length sequence, so revert to stock.
     dit = _fake_dit()
     mllm = torch.ones(1, 4, 1)
     kwargs = {
         "image_embeds": torch.zeros(1, 5, 3),
         "encoder_hidden_states": mllm,
-        "encoder_attention_mask": torch.zeros(1, 4, dtype = torch.long),  # 0 valid
+        "encoder_attention_mask": torch.zeros(1, 4, dtype = torch.long),
     }
     _, out = att._hunyuan_trim_pre_hook(dit, (), kwargs)
-    assert out["encoder_hidden_states"] is mllm  # reverted (not emptied)
-    assert out["image_embeds"].shape == (1, 5, 3)  # image revert too
+    assert out["encoder_hidden_states"] is mllm
+    assert out["image_embeds"].shape == (1, 5, 3)
     assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is False for b in dit.transformer_blocks)
 
 
 def test_trim_pre_hook_keeps_i2v_image():
     dit = _fake_dit()
-    img = torch.ones(1, 5, 3)  # nonzero -> i2v -> kept
+    img = torch.ones(1, 5, 3)
     kwargs = {
         "image_embeds": img,
         "encoder_hidden_states": torch.arange(4.0).reshape(1, 4, 1),
         "encoder_attention_mask": torch.tensor([[1, 1, 1, 1]]),
     }
     _, out = att._hunyuan_trim_pre_hook(dit, (), kwargs)
-    assert out["image_embeds"] is img  # not emptied
+    assert out["image_embeds"] is img
     assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is True for b in dit.transformer_blocks)
 
 
@@ -151,7 +142,6 @@ def test_trim_pre_hook_mixed_batch_flags_false():
 
 
 def test_trim_pre_hook_never_raises_sets_flag_false():
-    # A malformed mask (not a tensor) must not break the forward: flag False, no exception.
     dit = _fake_dit()
     kwargs = {"encoder_hidden_states": torch.ones(1, 2, 1), "encoder_attention_mask": "oops"}
     args, out = att._hunyuan_trim_pre_hook(dit, (), kwargs)
@@ -159,8 +149,7 @@ def test_trim_pre_hook_never_raises_sets_flag_false():
 
 
 def test_trim_pre_hook_restores_inputs_on_midtrim_failure():
-    # A later stream trips the trim AFTER earlier inputs were mutated. The fallback must restore
-    # the ORIGINAL kwargs so the stock dense-mask path runs on them, never a half-trimmed mix.
+    # The fallback must restore the ORIGINAL kwargs, never a half-trimmed mix.
     dit = _fake_dit()
     img = torch.zeros(1, 5, 3)
     mllm = torch.arange(4.0).reshape(1, 4, 1)
@@ -171,11 +160,11 @@ def test_trim_pre_hook_restores_inputs_on_midtrim_failure():
         "encoder_hidden_states": mllm,
         "encoder_attention_mask": mllm_mask,
         "encoder_hidden_states_2": byt5,
-        "encoder_attention_mask_2": "oops",  # malformed -> _trim_stream raises after mllm is trimmed
+        "encoder_attention_mask_2": "oops",
     }
     _, out = att._hunyuan_trim_pre_hook(dit, (), kwargs)
-    assert out["image_embeds"] is img  # emptied then restored
-    assert out["encoder_hidden_states"] is mllm  # trimmed then restored
+    assert out["image_embeds"] is img
+    assert out["encoder_hidden_states"] is mllm
     assert out["encoder_attention_mask"] is mllm_mask
     assert out["encoder_hidden_states_2"] is byt5
     assert out["encoder_attention_mask_2"] == "oops"
@@ -183,10 +172,9 @@ def test_trim_pre_hook_restores_inputs_on_midtrim_failure():
 
 
 def test_trim_pre_hook_absent_stream_not_written_back():
-    # If encoder_hidden_states is absent (passed positionally), the hook must NOT write it back
-    # (would collide) and must drop the fast path rather than null a mask it never verified.
+    # Positional encoder_hidden_states: do not write it back (would collide), drop the fast path.
     dit = _fake_dit()
-    kwargs = {"image_embeds": torch.zeros(1, 4, 3)}  # no encoder_hidden_states key
+    kwargs = {"image_embeds": torch.zeros(1, 4, 3)}
     _, out = att._hunyuan_trim_pre_hook(dit, (torch.ones(1, 5, 1),), kwargs)
     assert "encoder_hidden_states" not in out
     assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is False for b in dit.transformer_blocks)
@@ -199,17 +187,12 @@ def test_install_trim_noop_for_non_hunyuan_family():
 
 
 def test_install_trim_noop_when_transformer_class_mismatch():
-    # Family claims Hunyuan but the loaded module isn't -> no processors touched, no diffusers
-    # import; returns False rather than swapping an unknown attention processor.
     fam = types.SimpleNamespace(transformer_class = "HunyuanVideo15Transformer3DModel")
-    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())  # class name mismatch
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
     assert att.install_hunyuan_attention_trim(pipe, fam) is False
 
 
-# ── null-mask flag lifecycle (scoped to one hooked forward) ───────────────────────
 def test_set_and_post_hook_clear_null_mask_flag():
-    # _set_hunyuan_null_mask flips every block's flag; the post-hook clears it and returns
-    # the output unchanged.
     dit = _fake_dit()
     att._set_hunyuan_null_mask(dit, True)
     assert all(getattr(b.attn, att._NULL_ATTN_FLAG) is True for b in dit.transformer_blocks)
@@ -220,10 +203,7 @@ def test_set_and_post_hook_clear_null_mask_flag():
 
 
 def test_post_hook_always_clears_flag_after_forward_and_on_exception():
-    # Wire the pre+post hooks the way install_hunyuan_attention_trim does on a real module: the
-    # flag is only ever True DURING the forward its pre-hook set up. After the call it is False,
-    # so a later direct dit.forward(...) can never run unmasked over untrimmed padding -- and the
-    # always_call post-hook clears it even when the forward raises (no latch across exceptions).
+    # The flag is True only during the hooked forward; always_call clears it even when forward raises.
     class _DiT(torch.nn.Module):
         def __init__(self):
             super().__init__()
@@ -233,7 +213,6 @@ def test_post_hook_always_clears_flag_after_forward_and_on_exception():
             self.boom = False
 
         def forward(self):
-            # The processor would read a True flag here (padding removed by the pre-hook).
             assert all(getattr(b.attn, att._NULL_ATTN_FLAG) for b in self.transformer_blocks)
             if self.boom:
                 raise RuntimeError("mid-forward boom")
@@ -263,7 +242,6 @@ def _t2v_kwargs(device = "cpu"):
 
 
 def test_trim_pre_hook_plans_once_per_input_tensors_and_matches_the_stock_trim():
-    # A pipeline hands the same prompt tensors to every step: the decisions (host reads) are made once and reused.
     dit = _fake_dit()
     base = _t2v_kwargs()
     first = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
@@ -277,7 +255,6 @@ def test_trim_pre_hook_plans_once_per_input_tensors_and_matches_the_stock_trim()
         second["encoder_attention_mask"], want_m
     )
     assert len(dit.__dict__[att._TRIM_MEMO_ATTR]) == 1
-    # an edited mask (version bump) or a new tensor plans afresh
     base["encoder_attention_mask"][0, 2] = 1
     third = att._hunyuan_trim_pre_hook(dit, (), dict(base))[1]
     assert third["encoder_hidden_states"].shape == (1, 3, 2)
@@ -290,7 +267,7 @@ def test_trim_pre_hook_makes_no_host_wait_after_the_first_step():
 
     dit = _fake_dit()
     base = _t2v_kwargs("cuda")
-    att._hunyuan_trim_pre_hook(dit, (), dict(base))  # step 0 reads the host
+    att._hunyuan_trim_pre_hook(dit, (), dict(base))
     torch.cuda.synchronize()
     prev = torch.cuda.get_sync_debug_mode()
     torch.cuda.set_sync_debug_mode("warn")
@@ -318,8 +295,7 @@ def test_the_null_mask_flag_keys_the_cuda_graph():
 
 
 def test_trim_pre_hook_trims_and_plans_once_for_inference_tensors():
-    # Renders run under torch.inference_mode: an inference tensor has no version counter (reading one raises), and
-    # the hook must still trim (not fall back to the untrimmed inputs) and reuse its plan.
+    # Inference tensors have no version counter (reading one raises); the hook must still trim.
     dit = _fake_dit()
     with torch.inference_mode():
         base = _t2v_kwargs()

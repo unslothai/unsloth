@@ -54,20 +54,19 @@ def _modules(
 
 
 def test_retry_skipped_without_a_supported_accelerator(monkeypatch):
-    # A CPU-only or MPS host cannot import unsloth, so paying ~940 MB of RSS to find out is pure cost. Ungated this took down a Linux CI runner and a 7 GB macOS one.
+    # importing unsloth on CPU/MPS costs ~940 MB RSS and OOMed CI runners
     _modules(monkeypatch, torch = _torch())
     assert pb._retry_could_help(_SENTINEL_ERROR) is False
 
 
 def test_retry_skipped_when_torch_is_not_loaded(monkeypatch):
-    # The retry must never be the thing that loads torch into a process that had avoided it.
+    # the retry must never be what imports torch
     _modules(monkeypatch, torch = None)
     assert pb._retry_could_help(_SENTINEL_ERROR) is False
 
 
 @pytest.mark.parametrize("device", ["cuda", "xpu"])
 def test_retry_runs_on_an_accelerator_unsloth_supports(monkeypatch, device):
-    # The case the retry exists for: a GPU host whose process has simply not imported unsloth yet.
     _modules(monkeypatch, torch = _torch(**{device: True}))
     assert pb._retry_could_help(_SENTINEL_ERROR) is True
 
@@ -79,19 +78,18 @@ def test_retry_runs_on_cpu_when_explicitly_allowed(monkeypatch):
 
 
 def test_retry_skipped_when_unsloth_is_already_imported(monkeypatch):
-    # Then the sentinel would already be set and the first attempt would have worked, so re-importing cannot fix the failure.
+    # unsloth already imported: re-importing cannot fix the failure
     _modules(monkeypatch, torch = _torch(cuda = True), unsloth = True)
     assert pb._retry_could_help(_SENTINEL_ERROR) is False
 
 
 def test_retry_skipped_for_a_non_import_failure(monkeypatch):
-    # A broken patch_function is not fixed by importing unsloth.
     _modules(monkeypatch, torch = _torch(cuda = True))
     assert pb._retry_could_help(RuntimeError("boom")) is False
 
 
 def test_retry_skipped_when_the_device_probe_raises(monkeypatch):
-    # An unprobeable device is not one unsloth can use, so fail closed rather than pay the import.
+    # unprobeable device: fail closed rather than pay the import
     broken = types.SimpleNamespace(
         cuda = types.SimpleNamespace(is_available = lambda: (_ for _ in ()).throw(RuntimeError())),
         xpu = None,
@@ -101,7 +99,7 @@ def test_retry_skipped_when_the_device_probe_raises(monkeypatch):
 
 
 def test_helpers_memoises_the_unavailable_result(monkeypatch):
-    # Resolution can import unsloth, so it must be attempted at most once per process.
+    # resolution can import unsloth, so try it at most once per process
     attempts: list[int] = []
 
     def _boom():
@@ -116,7 +114,6 @@ def test_helpers_memoises_the_unavailable_result(monkeypatch):
 
 
 def test_apply_and_revert_are_no_ops_when_helpers_are_unavailable(monkeypatch):
-    # The contract the callers rely on: never raise, just report that nothing was patched.
     monkeypatch.setattr(pb, "_helpers", lambda: None)
     target = types.SimpleNamespace(fn = lambda: 1)
     assert pb.apply_patch(target, "fn", lambda: 2) is False

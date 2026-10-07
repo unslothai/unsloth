@@ -61,9 +61,6 @@ def _fake_torch(archs, *, hip = "6.4.0"):
     return torch
 
 
-# ── Vulkan, where the shared set is ggml's compact ordinals ──
-
-
 def test_an_igpu_only_target_shares_system_memory():
     assert _vulkan({0}, [(0, 170079)], gpu_indices = [0]) is True
 
@@ -90,9 +87,6 @@ def test_a_discrete_only_host_keeps_the_tuning():
 def test_a_load_with_no_device_at_all_fails_closed():
     assert _vulkan({0}, []) is False
     assert _vulkan(set(), []) is False
-
-
-# ── ROCm and CUDA, where the ids are physical ──
 
 
 def test_an_amd_apu_shares_system_memory(monkeypatch):
@@ -201,9 +195,6 @@ def test_a_cuda_host_is_answered_without_touching_the_device(monkeypatch):
     )
 
 
-# ── _without_flag_pairs: the strip the arch-crash respawn uses ──
-
-
 def test_only_the_pairs_this_policy_emitted_are_stripped():
     """The respawn reuses the argv it already built, so taking the tuning back off has
     to be an exact-token removal. Every pair is a flag with its value, which is what
@@ -220,7 +211,6 @@ def test_only_the_pairs_this_policy_emitted_are_stripped():
         "--verbose",
     ]
     out = LlamaCppBackend._without_flag_pairs(cmd, ["--cache-ram", "0", "--ctx-checkpoints", "0"])
-    # The user's own --cache-ram 4096 survives; only the emitted zeros go.
     assert out == ["llama-server", "--cache-ram", "4096", "--verbose"]
 
 
@@ -230,12 +220,8 @@ def test_stripping_a_pair_that_is_gone_is_a_no_op():
 
 
 def test_a_trailing_flag_without_its_value_is_left_alone():
-    # Defensive: an odd-length pair list would otherwise index past the end.
     cmd = ["llama-server", "--cache-ram"]
     assert LlamaCppBackend._without_flag_pairs(cmd, ["--cache-ram"]) == cmd
-
-
-# ── the target the tuning is chosen against ──
 
 
 def test_a_user_device_flag_makes_the_target_unknown():
@@ -243,22 +229,17 @@ def test_a_user_device_flag_makes_the_target_unknown():
 
 
 def test_an_inherited_device_env_makes_the_target_unknown():
-    # Only an explicit gpu_ids clears the env twin, and llama.cpp reads it before argv, so
-    # the generated pin is not what the child places against. Reading argv alone emitted
-    # --cache-ram 0 at an APU the picker had paired with a discrete card.
+    # llama.cpp reads LLAMA_ARG_DEVICE before argv and only gpu_ids clears it.
     assert LlamaCppBackend._cache_tuning_target_unknown(None, False, {"LLAMA_ARG_DEVICE": "ROCm0"})
     assert not LlamaCppBackend._cache_tuning_target_unknown(None, False, {"LLAMA_ARG_DEVICE": "  "})
 
 
 def test_an_explicit_pin_owns_the_placement_so_the_target_is_known():
-    # The control: gpu_ids clears both spellings, so neither can name another device.
     assert not LlamaCppBackend._cache_tuning_target_unknown(
         ["--device", "ROCm1"], True, {"LLAMA_ARG_DEVICE": "ROCm0"}
     )
     assert not LlamaCppBackend._cache_tuning_target_unknown(None, False, {})
 
-
-# ── the arch-crash retry keeps the launch's precedence ──
 
 _CAPS = {"supports_cache_ram": True, "ctx_checkpoints_flag": "--ctx-checkpoints"}
 
@@ -273,8 +254,7 @@ def test_the_retry_applies_the_tuning_when_nothing_states_it():
 
 
 def test_the_retry_does_not_overrule_a_cache_flag_the_command_already_states():
-    # The extras sit in cmd already, so appending here wins last-wins and zeroes a value
-    # the panel still shows -- the reverse of the launch, where the extras win.
+    # The extras are already in cmd, so appending here would win last-wins, the reverse of launch.
     flags = LlamaCppBackend._retry_cache_tuning_flags(
         ["llama-server", "-m", "x.gguf", "--cache-ram", "8192"],
         cache_ram = None,
@@ -295,8 +275,7 @@ def test_the_retry_does_not_overrule_a_cache_flag_the_command_already_states():
 
 
 def test_the_retry_reads_the_short_spellings_as_the_same_settings():
-    # -cram and -ctxcp are aliases llama.cpp accepts and the panel offers, so appending
-    # the long form after one would silently zero the user's value.
+    # -cram and -ctxcp are accepted aliases; appending the long form would zero the user's value.
     assert (
         LlamaCppBackend._retry_cache_tuning_flags(
             ["llama-server", "-cram", "8192", "-ctxcp", "4"],
@@ -307,7 +286,6 @@ def test_the_retry_reads_the_short_spellings_as_the_same_settings():
         == []
     )
 
-    # One at a time, so a single alias cannot stand in for the pair.
     assert LlamaCppBackend._retry_cache_tuning_flags(
         ["llama-server", "-cram", "8192"],
         cache_ram = None,
@@ -323,7 +301,6 @@ def test_the_retry_reads_the_short_spellings_as_the_same_settings():
 
 
 def test_the_retry_reads_the_other_checkpoint_alias_as_the_same_setting():
-    # A build advertising --ctx-checkpoints can still be handed --swa-checkpoints.
     assert LlamaCppBackend._retry_cache_tuning_flags(
         ["llama-server", "--swa-checkpoints", "4"],
         cache_ram = None,
@@ -333,7 +310,6 @@ def test_the_retry_reads_the_other_checkpoint_alias_as_the_same_setting():
 
 
 def test_the_retry_skips_what_the_build_and_the_fields_already_own():
-    # An explicit field, as at launch, and a build without the capability.
     assert (
         LlamaCppBackend._retry_cache_tuning_flags(
             ["llama-server"], cache_ram = 4096, ctx_checkpoints = 8, server_caps = _CAPS

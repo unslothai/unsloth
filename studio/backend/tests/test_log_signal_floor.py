@@ -27,7 +27,6 @@ if _TESTS_DIR not in sys.path:
 from loggers import handlers as hmod  # noqa: E402
 from log_budget import policy, replay, session  # noqa: E402
 
-# Every way a request can fail that a user or a support engineer would go looking for.
 FAILURE_STATUSES = (400, 401, 403, 404, 409, 422, 429, 500, 502, 503)
 MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 
@@ -65,20 +64,11 @@ class TestFailuresAreNeverSuppressed:
 
     @pytest.mark.parametrize("status", FAILURE_STATUSES)
     def test_repeated_failures_all_log_on_every_classified_path(self, status, monkeypatch):
-        # Zero gap: the worst case for any window-based suppressor.
-        #
-        # The `excluded` class is left out because it is the one suppressor that is NOT
-        # gated on a 2xx: `__call__` drops the path before the status is considered, so a
-        # 500 on /api/train/status is invisible here. That is existing behaviour, not
-        # something this guard can assert away; it is pinned instead by
-        # test_the_excluded_set_is_exactly_what_was_reviewed below.
+        # `excluded` is left out: it drops the path before status is considered.
         paths = sorted(
             p
             for p in session.ALL_POLLS
             if policy.classify(hmod, p) != policy.EXCLUDED
-            # Chat-list 401s have one narrow, deliberate exemption during the bootstrap
-            # token race. Its exact boundaries are pinned by
-            # test_the_chat_list_401_exemption_is_only_pre_auth rather than waved through.
             and not (status == 401 and p in hmod._CHAT_LIST_PATHS)
         )
         requests = [
@@ -123,8 +113,8 @@ class TestFailuresAreNeverSuppressed:
             monkeypatch,
             [
                 replay.Request("GET", path, 200),
-                replay.Request("GET", path, 200),  # collapsed, correctly
-                replay.Request("GET", path, 503),  # must not be
+                replay.Request("GET", path, 200),
+                replay.Request("GET", path, 503),
                 replay.Request("GET", path, 503),
             ],
             gap_s = 0.0,
@@ -170,13 +160,11 @@ class TestFailuresAreNeverSuppressed:
             "successful refresh"
         )
 
-        # A 500 is not covered by the exemption even during bootstrap.
         send(500)
         assert (
             len(capture.events) == 1
         ), "only 401 is exempt during bootstrap; a 500 on the same path must log"
 
-        # After a refresh succeeds, a 401 is real.
         middleware._auth_refreshed = True
         send(401)
         assert len(capture.events) == 2, (

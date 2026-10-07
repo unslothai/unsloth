@@ -48,8 +48,7 @@ def test_a_complete_split_counts_once_by_its_first_part(tmp_path):
     assert [p.name for p in staged] == ["Big-Model-00001-of-00003.gguf"]
 
     rows = scan_hermes_dir(tmp_path)
-    # llama.cpp opens the whole set from part one, so the row points at it and
-    # carries the id Hermes knows the model by, not the part's own stem.
+    # llama.cpp opens the whole split set from part one.
     assert len(rows) == 1
     assert rows[0].display_name == "Big-Model"
     assert rows[0].path.endswith("Big-Model-00001-of-00003.gguf")
@@ -64,7 +63,6 @@ def test_a_split_download_is_sized_as_the_whole_set(tmp_path):
 
 
 def test_a_download_still_in_flight_is_not_offered(tmp_path):
-    # Parts 1 and 2 of 3 on disk: loading this fails, so it must not be listed.
     _gguf(tmp_path / "Big-Model-00001-of-00003.gguf")
     _gguf(tmp_path / "Big-Model-00002-of-00003.gguf")
 
@@ -73,7 +71,6 @@ def test_a_download_still_in_flight_is_not_offered(tmp_path):
 
 
 def test_a_continuation_part_is_never_a_row_of_its_own(tmp_path):
-    # Only the tail parts, e.g. after the first was deleted: nothing is servable.
     _gguf(tmp_path / "Big-Model-00002-of-00003.gguf")
     _gguf(tmp_path / "Big-Model-00003-of-00003.gguf")
 
@@ -82,8 +79,7 @@ def test_a_continuation_part_is_never_a_row_of_its_own(tmp_path):
 
 def test_companions_under_assets_are_not_models(tmp_path):
     _gguf(tmp_path / "Vision-Model-Q4_K_M.gguf")
-    # Hermes parks vision projectors and spec-decode drafters here precisely so its
-    # own router never lists them; a recursive scan would surface both as models.
+    # Hermes parks mmproj and draft models here so its router skips them; do not recurse.
     _gguf(tmp_path / "assets" / "mmproj-BF16.gguf")
     _gguf(tmp_path / "assets" / "Draft-Model-Q4_K_M.gguf")
 
@@ -136,8 +132,6 @@ class TestHermesRoot:
         if sys.platform == "win32":
             pytest.skip("POSIX home layout")
         monkeypatch.setenv("HERMES_HOME", str(Path.home() / ".hermes" / "profiles" / "coder"))
-        # A 20 GB GGUF is a machine asset every profile shares, so it never
-        # follows the active profile.
         assert _hermes_root() == Path.home() / ".hermes"
 
     def test_a_custom_deployment_root_is_used_as_is(self, monkeypatch, tmp_path):
@@ -149,8 +143,7 @@ class TestHermesRoot:
         assert _hermes_root() == tmp_path / "data"
 
     def test_the_native_home_is_scanned_even_under_a_session_home(self, monkeypatch, tmp_path):
-        # `unsloth start hermes` points HERMES_HOME at a throwaway session dir; the
-        # user's real downloads stay under the native home and must still be found.
+        # `unsloth start hermes` uses a throwaway HERMES_HOME; downloads stay in the native home.
         if sys.platform == "win32":
             pytest.skip("POSIX home layout")
         native_models = tmp_path / "home" / ".hermes" / "models"

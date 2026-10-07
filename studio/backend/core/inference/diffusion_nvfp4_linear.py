@@ -42,7 +42,6 @@ def reset_nvfp4_state() -> None:
     reset_tuned_shapes()
     _ops.reset_barriers()
     _dispatch.reset()
-    # verify() runs only in the preflight, so a memoised one would leave _VERIFIED empty next load.
     _ops.reset_preflight_cache()
 
 

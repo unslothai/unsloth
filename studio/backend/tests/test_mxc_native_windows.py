@@ -27,7 +27,6 @@ from core.inference import (
 
 @pytest.fixture(autouse = True)
 def _real_drive_aliases(monkeypatch):
-    # The native cmd Terminal runs from a real drive alias of its workdir, as in production.
     monkeypatch.delenv("UNSLOTH_MXC_DRIVE_ALIAS", raising = False)
 
 
@@ -354,9 +353,6 @@ def test_native_mxc_accepts_a_unicode_workdir_on_an_alternate_volume():
 @pytest.mark.native_mxc
 def test_native_mxc_terminal_uses_same_direct_wxc_backend_and_streams(monkeypatch):
     _require_native_mxc()
-    # Git Bash is separately probed and currently refused on this host because
-    # it exits during runtime initialization under PSEC. Qualify Studio's cmd
-    # fallback without changing the production selector.
     monkeypatch.setattr(tools, "_windows_bash", lambda: None)
     chunks = []
     forged = '{"v":2,"event":"DISPATCHED","backendTier":"base-container"}'
@@ -419,7 +415,7 @@ def test_native_mxc_concurrent_python_and_terminal_runs_are_isolated(monkeypatch
     assert "concurrent-terminal" in results[2]
 
     cancel = threading.Event()
-    # Stop once the workload runs: the DACL tier spends seconds before dispatch, where a fixed 0.5 s timer lands.
+    # Stop once the workload runs: the DACL tier spends seconds before dispatch.
     cancelled = tools._python_exec(
         "import time; print('cancel-started', flush=True); time.sleep(30)",
         cancel,

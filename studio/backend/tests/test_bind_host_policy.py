@@ -260,9 +260,6 @@ def test_run_server_publishes_urls_through_the_shared_formatter():
     assert run._url_host is published_url_host
 
 
-# ── self-call address resolution ─────────────────────────────────────
-
-
 def _resolve_recipe_endpoint(request):
     from routes.data_recipe.jobs import _resolve_local_v1_endpoint
     return _resolve_local_v1_endpoint(request)
@@ -311,7 +308,6 @@ def test_the_data_recipe_endpoint_falls_back_to_the_accepting_address_outside_ru
 def test_the_data_recipe_endpoint_maps_a_wildcard_bind_back_to_loopback(
     wildcard, expected_authority
 ):
-    # The IPv6 family carries this: loopback is also the fallback.
     request = _recipe_request(server = (wildcard, 8889), base_url = "http://testserver:1234/")
     assert _resolve_recipe_endpoint(request) == f"http://{expected_authority}/v1"
 

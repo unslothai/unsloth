@@ -14,11 +14,9 @@ from typing import Any
 
 _ATTN_BLOCK = "HunyuanVideo15AttnBlock"
 _VAE_CLASS = "AutoencoderKLHunyuanVideo15"
-# The stock body this replaces; a diffusers release that rewrites it keeps its own version.
 _STOCK_NEEDLES = ("for i in range(seq_len)", "mask[i, : (i_frame + 1) * n_hw] = 0")
 
 
-# One implementation for both installers: the fused VAE path (CUDA + Triton) patches the same method with it.
 from .diffusion_vae_fused import _hv_causal_mask as causal_attention_mask  # noqa: E402
 
 
@@ -43,8 +41,7 @@ def install_vectorised_causal_mask(pipe: Any, logger: Any = None) -> int:
             cls = type(module)
             if cls.__name__ != _ATTN_BLOCK or not _stock_loop(cls):
                 continue
-            # A plain function on the instance is not bound, so ``self.prepare_causal_attention_mask(...)`` calls it
-            # with the staticmethod's own arguments.
+            # A plain function on the instance is unbound, so it gets the staticmethod's arguments.
             module.prepare_causal_attention_mask = causal_attention_mask
             patched += 1
     except Exception as exc:  # noqa: BLE001 - optimisation only

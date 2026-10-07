@@ -36,12 +36,10 @@ def _clean_env(monkeypatch):
 
 def test_depth_keeps_the_prefetch_inside_the_reserved_stream_window():
     gb = int(1e9)
-    # H3 int8 blocks are ~0.39 GB: running + 2 ahead = 1.17 GB fits the 1.5 GB window
+    # ~0.39 GB blocks: running + 2 ahead fits the 1.5 GB window.
     assert res.h3_stream_prefetch_depth([int(0.39 * gb)] * 50, 2) == 2
-    # a block too big for two ahead drops to diffusers' own depth (the next group only)
     assert res.h3_stream_prefetch_depth([int(0.6 * gb)], 2) == 1
     assert res.h3_stream_prefetch_depth([int(2 * gb)], 4) == 1
-    # never deeper than the prefetcher's own setting
     assert res.h3_stream_prefetch_depth([int(0.1 * gb)], 2) == 2
     assert res.h3_stream_prefetch_depth([], 3) == 3
 
@@ -63,7 +61,7 @@ def test_resident_onload_kicks_the_prefetcher_and_stays_a_noop_without_one():
         pass
 
     g = _G()
-    res._resident_onload(g)()  # no prefetcher: plain no-op
+    res._resident_onload(g)()
     assert calls == []
     g._unsloth_prefetcher = _PF()
     res._resident_onload(g)()
@@ -74,7 +72,7 @@ def test_kill_switch_and_unstreamed_module_leave_it_alone(monkeypatch):
     monkeypatch.setenv(res.H3_STREAM_PREFETCH_ENV, "0")
     assert res.install_h3_stream_prefetch(torch.nn.Linear(2, 2), "cuda") == 0
     monkeypatch.delenv(res.H3_STREAM_PREFETCH_ENV)
-    assert res.install_h3_stream_prefetch(torch.nn.Linear(2, 2), "cuda") == 0  # no offload groups
+    assert res.install_h3_stream_prefetch(torch.nn.Linear(2, 2), "cuda") == 0
 
 
 def _cuda():
@@ -147,7 +145,6 @@ def _h3_streamed(
         kwargs["low_cpu_mem_usage"] = True
     apply_group_offloading(net, **kwargs)
     if outside_inference:
-        # what stream_prequantized_module does for torchao v1 int8: every group move outside inference_mode
         from core.inference.diffusion_prequant import _move_groups_outside_inference_mode
         _move_groups_outside_inference_mode(net)
     assert res.pin_streamed_top_level_group(net) is pin_top
@@ -202,10 +199,10 @@ def test_streamed_h3_forward_has_no_host_sync_and_is_bit_identical(resident, mon
     net = _DiT().eval()
     ref = copy.deepcopy(net).cuda()
     block = sum(p.numel() * p.element_size() for p in net.transformer_blocks[0].parameters())
-    # the 1.5 GB H3 reserve, scaled to these blocks: 3.85 blocks, as 1.5 GB is to H3's 0.39 GB blocks
+    # The 1.5 GB H3 reserve scaled: 3.85 blocks of H3's 0.39 GB.
     monkeypatch.setattr(res, "H3_STREAM_WINDOW_GB", 3.85 * block / 1e9)
     covered = _h3_streamed(net, monkeypatch)
-    assert covered == 1 + len(net.transformer_blocks)  # the pinned top group is one of them
+    assert covered == 1 + len(net.transformer_blocks)
     pf = module_prefetcher(net)
     assert pf is not None
     residency = res.H3Residency(net, "cuda")
@@ -214,7 +211,7 @@ def test_streamed_h3_forward_has_no_host_sync_and_is_bit_identical(resident, mon
     x = torch.randn(4, 64, device = "cuda")
     with torch.no_grad():
         want = ref(x)
-        assert torch.equal(net(x), want)  # records the order
+        assert torch.equal(net(x), want)
         late["n"] = 0
         for _ in range(3):
             got, syncs = _count_syncs(lambda: net(x))
@@ -222,12 +219,10 @@ def test_streamed_h3_forward_has_no_host_sync_and_is_bit_identical(resident, mon
             torch.cuda.synchronize()
             assert torch.equal(got, want)
     assert pf.stats["prefetched"] > 0 and pf.stats["missed"] == 0
-    # every block's copy is queued before its predecessor's offload fences the copy stream on that predecessor's
-    # compute; otherwise the copy runs after it and the GPU alternates copy and compute (no overlap)
+    # Each copy must queue before the predecessor's offload fences the stream, else no overlap.
     assert late["n"] == 0, late
     assert pf.peak_inflight_bytes <= pf.window
     if resident:
-        # the resident prefix kicks the prefetch, so the first streamed block is already in flight
         assert all(res.is_resident(g) for g in residency.blocks[:resident])
     assert net.transformer_blocks[-1].lin.weight.device.type == "cpu"
 
@@ -305,7 +300,6 @@ def test_top_pin_kill_switch_keeps_diffusers_top_group(monkeypatch):
 
     def _spy(module, *a, **k):
         top_group, _ = res.h3_offload_groups(module)
-        # H3's top group is torchao: adoption takes it whenever it is unstreamed and its onload_ is not replaced
         seen.append(top_group.stream is None and "onload_" not in top_group.__dict__)
         return adopt(module, *a, **k)
 

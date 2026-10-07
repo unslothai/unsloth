@@ -821,8 +821,7 @@ def test_auth_schema_setup_runs_once_per_database_file(auth_env, tmp_path):
     conn = storage.get_connection()
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
-    # The recreated file may reuse the inode and reach the same schema version, so the key can
-    # collide with the first one; the schema running again is the observable requirement.
+    # A recreated file may reuse the inode and collide on the key; check the schema reran.
     assert "auth_user" in tables
 
 

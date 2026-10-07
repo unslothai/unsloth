@@ -26,7 +26,7 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
-# Renders a single-turn conversation byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
+# Renders a single turn byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
 STUDIO_ALPACA_CHAT_TEMPLATE = (
     "{{ bos_token }}"
     "{% if messages[0]['role'] == 'system' %}"
@@ -49,8 +49,6 @@ STUDIO_ALPACA_CHAT_TEMPLATE = (
 
 _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 
-# Rows per batch when scanning or filtering the error column, so neither pass
-# materialises the whole column in Python.
 _ERROR_SCAN_BATCH = 10_000
 
 _TEMPLATE_PROBE_ROWS = 8
@@ -118,7 +116,6 @@ def get_tokenizer_chat_template(tokenizer, model_name):
         if has_chat_template:
             logger.info(f"📝 Using tokenizer's own chat template (no Unsloth template match)")
         else:
-            # Base model with no chat template: apply default ChatML.
             logger.info(f"📝 No chat template found — applying default ChatML template (base model)")
             try:
                 tokenizer = get_chat_template(
@@ -147,7 +144,6 @@ def get_training_chat_template(tokenizer, model_name, final_format):
             chat_template = "alpaca",
             **_chat_template_kwargs(),
         )
-        # Unsloth's "alpaca" template words the preamble differently and has no Input section.
         _set_chat_template(tokenizer, STUDIO_ALPACA_CHAT_TEMPLATE)
         logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
     except Exception as e:
@@ -164,8 +160,7 @@ def _set_chat_template(tokenizer, chat_template):
 
 
 def _drop_none_values(value):
-    # A loaded dict cannot tell an explicit null from a key another row added, so dict-typed
-    # arguments lose their nulls; JSON-string arguments keep them.
+    # Dict-typed arguments lose nulls; JSON-string arguments keep them.
     if isinstance(value, dict):
         return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
     if isinstance(value, list):
@@ -188,8 +183,6 @@ def _render_conversation(tokenizer, conversation):
                 attempt, tokenize = False, add_generation_prompt = False
             )
         except Exception as error:
-            # The row as loaded is kept for templates that need a None content (DeepSeek V3), but its
-            # error is usually a key the loader filled with None, so report the cleaned row's.
             if first_error is None:
                 first_error = error
     raise first_error
@@ -206,7 +199,7 @@ def _count_renderable(tokenizer, conversations):
     return rendered
 
 
-def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+def _sample_conversations(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS,):
     """Sample across the dataset, or from the start for streaming datasets."""
     n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
     conversations = []
@@ -267,7 +260,6 @@ def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
         chosen = (model_name, getattr(tokenizer, "chat_template", None))
         setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, chosen)
     except Exception:
-        # Wrappers that reject new attributes cannot retain the choice across splits.
         pass
     return tokenizer, note
 
@@ -344,7 +336,7 @@ def apply_chat_template_to_dataset(
             "errors": errors,
         }
 
-    # A processor (Gemma 3 on the text path) keeps eos_token on its inner tokenizer.
+    # A processor keeps eos_token on its inner tokenizer.
     eos_token = (
         getattr(tokenizer, 'eos_token', None)
         or getattr(getattr(tokenizer, 'tokenizer', None), 'eos_token', None)
@@ -353,7 +345,6 @@ def apply_chat_template_to_dataset(
     if not eos_token and (add_eos_token or final_format == "alpaca"):
         warnings.append("Tokenizer has no eos_token, so EOS was not appended")
 
-    # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
         if custom_format_mapping is None and auto_detect_mapping:
             if not dataset_info.get("auto_detection_attempted", False):
@@ -388,7 +379,6 @@ def apply_chat_template_to_dataset(
                 conversations = []
                 num_examples = len(examples[list(examples.keys())[0]])
 
-                # Preserve unmapped columns only if auto-detected.
                 preserved_columns = {}
                 if not is_user_provided:
                     all_columns = set(examples.keys())
@@ -408,10 +398,8 @@ def apply_chat_template_to_dataset(
                                 content = examples[col_name][i]
 
                                 if is_user_provided:
-                                    # User-mapped: include even if empty.
                                     convo.append({"role": role, "content": cell_text(content)})
                                 else:
-                                    # Auto-detected: skip empty.
                                     text = cell_text(content)
                                     if text.strip():
                                         convo.append({"role": role, "content": text})
@@ -424,7 +412,7 @@ def apply_chat_template_to_dataset(
                 return result
 
             try:
-                # Mirror the other call sites: omit eager-only kwargs (num_proc/desc) for streaming IterableDatasets, whose .map() rejects them.
+                # Streaming IterableDataset.map() rejects num_proc/desc.
                 custom_map_kwargs = {"batched": True, "batch_size": batch_size}
                 if not is_streaming_dataset(dataset):
                     custom_map_kwargs["desc"] = "Applying custom ChatML mapping"
@@ -442,7 +430,6 @@ def apply_chat_template_to_dataset(
                     "errors": errors
                 }
 
-    # ALPACA FORMAT
     if final_format == "alpaca":
 
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
@@ -500,7 +487,6 @@ def apply_chat_template_to_dataset(
                 "errors": errors
             }
 
-    # CHATML FORMATS
     elif final_format in ["chatml_messages", "chatml_conversations"]:
 
         if not is_standardized:
@@ -515,10 +501,7 @@ def apply_chat_template_to_dataset(
 
         streamed_failures = []
 
-        # Never clobber a real column: a dataset is allowed to already carry one named
-        # like our marker, and remove_columns would then delete the user's own data.
-        # A generator-backed IterableDataset reports column_names AND features as None,
-        # so resolve_column_names' first-row probe is what sees the column there.
+        # Never clobber a real column named like our marker.
         from .raw_text import resolve_column_names
 
         existing_columns = set(resolve_column_names(dataset))
@@ -538,7 +521,6 @@ def apply_chat_template_to_dataset(
                     try:
                         text = _render_conversation(tokenizer, with_system)
                     except Exception:
-                        # A template without a system role still trains the conversation.
                         if with_system is convo:
                             raise
                         text = _render_conversation(tokenizer, convo)
@@ -616,11 +598,7 @@ def apply_chat_template_to_dataset(
                     _keep_streamed_row, input_columns = [error_column]
                 ).remove_columns(error_column)
             elif len(formatted_dataset):
-                # Everything here stays Arrow-side and batched. Reading the error column
-                # into a Python list, or building one index per surviving row, costs a
-                # measured 85 MB at 2M rows (70 MB of it the index list) and scales
-                # linearly, so a dataset of tens of millions of mostly valid rows could be
-                # killed during formatting.
+                # Stay Arrow-side and batched: Python lists here OOM on huge datasets.
                 n_total = len(formatted_dataset)
                 kept = formatted_dataset.filter(
                     lambda row_errors: [not row_error for row_error in row_errors],
@@ -678,7 +656,6 @@ def apply_chat_template_to_dataset(
                 "errors": errors
             }
 
-    # UNKNOWN FORMAT
     else:
         errors.append(
             f"Cannot apply chat template to format: {final_format}. "

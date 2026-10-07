@@ -114,9 +114,6 @@ def test_search_root_walk_still_works(tmp_path: Path):
     assert result == str(mmproj.resolve())
 
 
-# -- Family token detection: word-bounded matching ----------------------
-
-
 def test_family_token_phi_does_not_match_sapphire():
     """``phi`` substring inside ``sapphire`` must not tag Phi."""
     assert _detect_family_token("sapphire-7b-q4_k_m.gguf") is None
@@ -159,9 +156,6 @@ def test_family_token_new_families_recognised():
     assert _detect_family_token("LFM2.5-VL-1.6B-BF16.gguf") == "lfm"
 
 
-# -- Cross-family rejection with the expanded token list ----------------
-
-
 def test_blocks_cross_family_for_new_token_pair(tmp_path: Path):
     """Nemotron weight + lone Gemma projector returns None."""
     model = _touch(tmp_path / "NVIDIA-Nemotron-3-Nano-Omni-30B-A3B-Reasoning-MXFP4_MOE.gguf")
@@ -175,9 +169,6 @@ def test_picks_devstral_mmproj_in_mixed_dir(tmp_path: Path):
     dev_mm = _touch(tmp_path / "Devstral-Small-2-mmproj-bf16.gguf")
     _touch(tmp_path / "Qwen3.5-9B-BF16-mmproj.gguf")
     assert detect_mmproj_file(str(model)) == str(dev_mm.resolve())
-
-
-# -- Launcher-level family guard ----------------------------------------
 
 
 def test_mmproj_family_guard_blocks_cross_family():
@@ -222,9 +213,6 @@ def test_mmproj_family_guard_allows_unrecognised_model_family():
     )
 
 
-# -- Metadata-primary pairing in detect_mmproj_file ---------------------
-
-
 def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
     """URL match beats a longer-prefix sibling."""
     weight = _gguf_with_general(
@@ -236,7 +224,6 @@ def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
             "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
         },
     )
-    # Closer filename prefix, wrong upstream.
     _gguf_with_general(
         tmp_path / "Qwen3.5-9B-mmproj-bf16.gguf",
         {
@@ -246,7 +233,6 @@ def test_metadata_url_match_picked_over_filename_lookalike(tmp_path: Path):
             "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-1.5B",
         },
     )
-    # Matching upstream.
     correct = _gguf_with_general(
         tmp_path / "mmproj-BF16.gguf",
         {
@@ -339,9 +325,7 @@ def test_metadata_score_outranks_filename_prefix(tmp_path: Path):
             "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
         },
     )
-    # Headerless: long shared stem, score 0.
     _touch(tmp_path / "Qwen3.5-9B-Q4_K_M-mmproj.gguf")
-    # Headered: generic name, score 100.
     correct = _gguf_with_general(
         tmp_path / "mmproj-BF16.gguf",
         {

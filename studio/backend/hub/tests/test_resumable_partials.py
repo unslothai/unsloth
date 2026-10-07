@@ -99,9 +99,6 @@ def _patched_writer(module):
     return module._download_to_tmp_and_move
 
 
-# ---------------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "version, expected",
     [("0.36.2", False), ("1.17.0", False), ("1.18.0", True), ("1.28.0", True), ("2.0.0", False)],
@@ -233,8 +230,6 @@ def test_each_cache_root_is_judged_on_its_own_filesystem(tmp_path, monkeypatch):
     local_root, network_root = tmp_path / "local", tmp_path / "network"
     local_root.mkdir()
     network_root.mkdir()
-    # Past the version gate, so the filesystem is what is left to decide.
-    # And out through the public entry point, past the version gate.
     monkeypatch.setattr("huggingface_hub.__version__", "1.28.0", raising = False)
     monkeypatch.setattr(rp, "_hub_is_patchable", lambda: True)
     monkeypatch.setattr(
@@ -417,13 +412,8 @@ def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
     assert hf_cache_state.hf_partials_are_resumable() is True
 
     monkeypatch.setattr(rp, "can_restore_partials", lambda _c = None: False)
-    # No cache at this layer any more: the verdict follows the filesystem, and a result kept against the
-    # path alone outlives a remount at the same name.
     assert hf_cache_state.hf_partials_are_resumable() is False
     hf_cache_state.invalidate_partial_resumability()
-
-
-# ---------------------------------------------------------------------------------------------
 
 
 def test_it_appends_to_the_stable_name_and_says_how_far_it_got(monkeypatch, tmp_path):
@@ -458,7 +448,6 @@ def test_a_planted_symlink_is_not_appended_to(monkeypatch, tmp_path):
 
     assert victim.read_bytes() == b"keep me", "the download was appended to the symlink target"
     assert not partial.is_symlink(), "the planted link survived"
-    # Started from zero rather than trusting the target's length.
     assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
 
 
@@ -473,8 +462,6 @@ def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"poison" * 100)
 
-    # Only the planted file reads as somebody else's, and the fresh partial replacing it has to still
-    # be ours; keyed on which open it is, since a filesystem may reuse the released inode.
     real_fstat = os.fstat
     opens: list[int] = []
 
@@ -532,7 +519,6 @@ def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tm
 
     def swap_then_write(url, handle, **kwargs):
         real_http_get(url, handle, **kwargs)
-        # The writer is finished with the descriptor; the name now points somewhere else.
         partial.unlink()
         partial.write_bytes(b"attacker's model")
 
@@ -750,9 +736,6 @@ def test_patching_twice_keeps_one_layer(monkeypatch):
     first = module._download_to_tmp_and_move
     assert rp.restore_resumable_partials() is True
     assert module._download_to_tmp_and_move is first
-
-
-# ---------------------------------------------------------------------------------------------
 
 
 def test_the_ui_is_told_partials_are_resumable_again(monkeypatch):

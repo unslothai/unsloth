@@ -46,7 +46,7 @@ def test_disabled_by_env(monkeypatch):
 
 
 def test_rocm_and_old_triton_keep_stock(monkeypatch):
-    # the #11801 kernels are gated off on ROCm (missing add_rn / rint, wrong fp16 GroupNorm on gfx1151): same here
+    # the fused kernels are gated off on ROCm (missing add_rn / rint, wrong fp16 GroupNorm on gfx1151)
     monkeypatch.delenv(F.VAE_FUSED_ENV, raising = False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
@@ -70,7 +70,7 @@ def test_missing_triton_keeps_stock(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     F._triton_version_ok.cache_clear()
-    monkeypatch.setitem(sys.modules, "triton", None)  # `import triton` raises ImportError
+    monkeypatch.setitem(sys.modules, "triton", None)
     try:
         assert F.runtime_ok() is False
         assert F.will_install(type("AutoencoderKL", (), {})()) is False
@@ -111,7 +111,7 @@ def test_install_is_noop_without_runtime(monkeypatch):
 
 
 def test_uncovered_class_not_planned():
-    class AutoencoderKLMiniMaxH3(torch.nn.Module):  # has its own fast path
+    class AutoencoderKLMiniMaxH3(torch.nn.Module):
         pass
 
     assert F.will_install(AutoencoderKLMiniMaxH3()) is False
@@ -129,7 +129,6 @@ def test_speed_layer_skips_vae_compile_when_fused(monkeypatch):
 
     assert S._fused_vae_planned(Pipe()) is True
     assert S._vae_decode_compile_allowed(Pipe(), "max") is False
-    # forcing the compile keeps the old behaviour and skips the fused path
     monkeypatch.setenv(S.COMPILE_VAE_ENV, "1")
     assert S._fused_vae_planned(Pipe()) is False
     assert S._install_fused_vae(Pipe(), None) is False
@@ -171,7 +170,7 @@ def _check(
         assert not any(
             getattr(m.__dict__.get("forward"), "_unsloth_vae_fused", False) for m in vae.modules()
         )
-        # the channels-last weights stay, and cuDNN may pick another algorithm for them (torch 2.7: 71 dB)
+        # channels-last weights stay, and cuDNN may pick another algorithm for them (torch 2.7: 71 dB)
         assert torch.equal(_decode(vae, z), ref) or _psnr(_decode(vae, z), ref) > 60
 
 
@@ -327,7 +326,7 @@ def test_guard_falls_back_to_stock_for_good(monkeypatch):
 
 @needs_cuda
 def test_guard_restores_causal_cache_state_on_fallback(monkeypatch):
-    # a fast residual block that dies AFTER writing its first cache slot must not desync the stock retry
+    # a fast residual block dying AFTER writing its first cache slot must not desync the stock retry
     from diffusers import AutoencoderKLWan
 
     torch.manual_seed(0)
@@ -406,13 +405,12 @@ def test_attention_oom_falls_back_for_that_call_only(monkeypatch, oom):
         monkeypatch.setattr(F, "single_head_attention", boom)
         out = attn(x)
     assert torch.equal(out, ref)
-    # an OOM keeps the fused path for the next call; a real failure retires it
     assert getattr(attn, "_unsloth_vae_fused_failed", False) is (not oom)
 
 
 @needs_cuda
 def test_qwenimage_tiled_decode_is_not_clamped_like_stock(monkeypatch):
-    # diffusers' AutoencoderKLQwenImage.tiled_decode returns the raw decoder output (Wan's and Qwen-Image-2.1's clamp)
+    # diffusers' AutoencoderKLQwenImage.tiled_decode returns raw decoder output (Wan's and Qwen-Image-2.1's clamp)
     from diffusers import AutoencoderKLQwenImage
 
     torch.manual_seed(0)
@@ -426,16 +424,16 @@ def test_qwenimage_tiled_decode_is_not_clamped_like_stock(monkeypatch):
                       tile_sample_stride_width = 48)  # fmt: skip
     monkeypatch.setenv(F.TILE_BATCH_ENV, "3")
     with torch.no_grad():
-        vae.decoder.conv_out.weight.mul_(64)  # the decode lands far outside [-1, 1]
+        vae.decoder.conv_out.weight.mul_(64)
     z = torch.randn(1, 4, 1, 14, 18, device = "cuda", dtype = torch.bfloat16)
     with torch.inference_mode():
         ref = _decode(vae, z)
-        assert ref.abs().max() > 1.5  # the case under test exists
+        assert ref.abs().max() > 1.5
         F.install(vae)
         out = _decode(vae, z)
     assert out.shape == ref.shape
     assert out.abs().max() > 1.5
-    assert ((out - ref).norm() / ref.norm()).item() < 2e-2  # same values, unclamped
+    assert ((out - ref).norm() / ref.norm()).item() < 2e-2
 
 
 def test_hv_causal_mask_allocates_nothing_quadratic_besides_the_output():
@@ -515,7 +513,7 @@ def test_blend_seam_on_cuda_is_bit_identical_and_host_free(dtype):
 
 
 def test_wan_attention_oom_retries_stock_for_that_call_only(monkeypatch):
-    # the fused attention holds fp32 score chunks the stock SDPA never allocates, so its OOM must not abort the decode
+    # the fused attention holds fp32 score chunks stock SDPA never allocates, so its OOM must not abort
     diffusers = pytest.importorskip("diffusers")
     monkeypatch.setattr(F, "runtime_ok", lambda: True)
     torch.manual_seed(0)
@@ -561,7 +559,7 @@ def test_causal_cache_is_a_compact_two_frame_copy(frames):
 
 
 def test_pipeline_qkv_fuse_keeps_the_fused_vae_attention():
-    # SDXL's pipe-level fuse_qkv_projections() resets every VAE processor; the fused one must be re-wrapped around it
+    # SDXL's fuse_qkv_projections() resets every VAE processor; the fused one must be re-wrapped
     diffusers = pytest.importorskip("diffusers")
     from diffusers.models.attention_processor import FusedAttnProcessor2_0
     from diffusers.pipelines.pipeline_utils import StableDiffusionMixin

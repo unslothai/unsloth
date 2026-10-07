@@ -33,9 +33,8 @@ from core._torchao_stub import (
     install_xformers_windows_rocm_stub,
 )
 
-_BACKEND = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND = Path(__file__).resolve().parent.parent
 _CORE = _BACKEND / "core"
-# Renaming either installer breaks the import above, loudly, rather than these assertions.
 _INSTALLS = frozenset(
     {
         install_xformers_windows_rocm_stub.__name__,
@@ -44,7 +43,6 @@ _INSTALLS = frozenset(
     }
 )
 
-# Where diffusers gets imported: the loader, and the trainers' shared module (a spawned child, so the loader's install does not carry over).
 _DIFFUSION_MODULES = [
     _CORE / "inference" / "diffusion.py",
     _CORE / "training" / "diffusion_train_common.py",
@@ -53,7 +51,7 @@ _DIFFUSION_MODULES = [
 _ENTRY_POINT = _BACKEND / "run.py"
 _STUB_MODULE = "core._torchao_stub"
 _ML_ROOTS = frozenset({"diffusers", "peft", "torch", "torchao", "transformers", "xformers"})
-# Must run BEFORE the installers: these set the env vars torch reads when it sizes its OpenMP/BLAS pools. Imports stdlib only.
+# Must run before the installers: sets env vars torch reads for thread pools.
 _PRE_STUB = frozenset({"utils.cpu_threads"})
 
 
@@ -69,7 +67,6 @@ def _import_roots(node) -> set[str]:
 
 
 def _reaches_torch(root: str) -> bool:
-    # Anything in the backend tree can, transitively; probing the tree keeps this honest as modules come and go. stdlib falls through.
     return root in _ML_ROOTS or (_BACKEND / root).is_dir() or (_BACKEND / f"{root}.py").is_file()
 
 
@@ -134,7 +131,7 @@ def test_the_entry_point_installs_both_stubs_before_its_first_heavy_import():
 
 
 def _is_stub_key(name: str) -> bool:
-    # Both packages: a torchao stub left behind turns a later importorskip("torchao.quantization") into a silent no-op.
+    # A leftover torchao stub makes a later importorskip a silent no-op.
     return any(name == p or name.startswith(p + ".") for p in ("xformers", "torchao"))
 
 
@@ -155,7 +152,6 @@ def on_windows_rocm(monkeypatch):
 def test_xformers_is_stubbed_on_windows_rocm(on_windows_rocm):
     install_xformers_windows_rocm_stub()
 
-    # The names diffusers imports, plus a deeper one nothing seeded: the finder covers it.
     import xformers  # noqa: F401
     import xformers.ops  # noqa: F401
     import xformers.ops.fmha  # noqa: F401
@@ -176,7 +172,6 @@ def test_a_real_xformers_is_left_alone(on_windows_rocm, monkeypatch):
 
 
 def test_no_stub_off_windows_rocm(monkeypatch):
-    # A CUDA or Linux host has a working xformers; shadowing it would cost real attention kernels.
     monkeypatch.setattr(_torchao_stub, "_is_windows_rocm", lambda: False)
     monkeypatch.delitem(sys.modules, "xformers", raising = False)
 
@@ -305,8 +300,6 @@ def test_dense_quant_declines_a_stubbed_torchao(on_windows_rocm):
 def test_dense_quant_still_allowed_without_the_stub(on_windows_rocm):
     """The positive control: the guard must reject the stub, not the whole path."""
     from core.inference.diffusion_transformer_quant import dense_transformer_supported
-
-    # The fixture cleared torchao out of sys.modules, so nothing is stubbed here.
     assert dense_transformer_supported(_bf16_target()) is True
 
 
@@ -355,15 +348,13 @@ def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode, monkeypatch):
     with pytest.raises(ValueError, match = "Windows-ROCm stub"):
         _resolve_base_precision(cfg, None, "cuda")
 
-    # Pin the earlier gates: on a CPU-only runner they answer first and correctly,
-    # so without this the assertion below reads their message and the stub gate is
-    # never exercised (it passes only on a GPU host).
+    # Pin earlier gates, or on CPU runners they answer first and the stub gate is skipped.
     import torch
 
     monkeypatch.setattr(dtc, "bf16_unsupported_reason", lambda _f: None)
     monkeypatch.setattr(dtc, "dit_accelerator_missing_reason", lambda _f: None)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    # A real DiT family name, or the gate block is skipped and the test proves nothing.
+    # A real DiT family name, or the gate block is skipped.
     reason = training_precision_preflight_error("flux.1", mode)
     assert reason and "Windows-ROCm stub" in reason, (
         f"the child refuses {mode} under the stub but the preflight does not, so a start would "
@@ -374,9 +365,8 @@ def test_the_preflight_refuses_the_stub_too(on_windows_rocm, mode, monkeypatch):
 @pytest.mark.parametrize(
     "dist_version, hip_line, expected",
     [
-        # AMD's own Windows build (repo.radeon.com/rocm/windows) carries no "rocm" tag, so only hip answers.
+        # AMD's Windows build has no "rocm" tag, so only hip answers.
         ("2.8.0a0+gitfc14c65", "hip: Optional[str] = '6.4.50101-9a6572ae7'", True),
-        # download.pytorch.org and TheRock DO tag theirs; the fast path must still work.
         ("2.9.1+rocm7.2.1", "hip: Optional[str] = '7.2.1'", True),
         ("2.9.0+rocmsdk20251116", "hip: Optional[str] = None", True),
         ("2.9.1+cu128", "hip: Optional[str] = None", False),
@@ -410,7 +400,6 @@ def test_rocm_is_detected_off_disk_without_importing_torch(
     assert "torch" not in sys.modules
 
 
-# The two ways a ROCm wheel identifies itself: torch.version.hip set (pytorch.org), or a "rocm" tag in torch.__version__ only (AMD SDK / Radeon).
 _ROCM_WHEELS = [("7.2.1", "2.9.1+rocm7.2.1"), (None, "2.10.0a0+rocm7.10.0a20251116")]
 
 
@@ -429,7 +418,6 @@ def test_xformers_is_never_selected_on_a_rocm_target(monkeypatch, hip, version):
     for speed in (True, False):
         assert select_attention_backend(rocm, "xformers", speed_active = speed) is None
         assert select_attention_backend(rocm, "auto", speed_active = speed) != "_native_cudnn"
-    # aiter is the AMD kernel: misreading the wheel as NVIDIA drops the one that works here.
     assert select_attention_backend(rocm, "aiter", speed_active = True) == "aiter"
 
 
@@ -464,7 +452,7 @@ def test_transformers_reads_the_torchao_stub_as_unavailable(on_windows_rocm, mon
     if Version(transformers.__version__).major < 5:
         pytest.skip("transformers 4.x reads torchao once, at its own import")
 
-    # Hide torchao's dist-info as on Windows ROCm, or a real install answers instead of the stub.
+    # Hide torchao's dist-info as on Windows ROCm, or a real install answers.
     real_version = importlib.metadata.version
 
     def no_torchao_metadata(name):

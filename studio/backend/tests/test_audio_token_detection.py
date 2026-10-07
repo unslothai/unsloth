@@ -69,12 +69,10 @@ def test_gemma3n_audio_soft_token_is_audio_vlm():
 
 
 def test_gemma4_pipe_audio_token_is_audio_vlm():
-    # Gemma 4 uses <|audio|> (and <|image|>) instead of *_soft_token.
     assert _classify(["<bos>", "<|image|>", "<|audio|>"]) == "audio_vlm"
 
 
 def test_csm_uppercase_audio_not_classified_as_audio_vlm():
-    # csm uses uppercase <|AUDIO|> + <|audio_eos|>; must stay csm, not audio_vlm.
     tokens = ["<|AUDIO|>", "<|audio_eos|>"]
     assert _classify(tokens) == "csm"
 
@@ -153,14 +151,12 @@ def _detect_checked(
 
 
 def test_a_gated_repo_is_not_reported_as_definitively_non_audio(monkeypatch):
-    # 401 on every tokenizer_config path: nothing was read, so None means unknown.
     audio_type, definitive = _detect_checked(monkeypatch, [_Resp(401), _Resp(401)])
     assert audio_type is None
     assert definitive is False
 
 
 def test_a_readable_repo_without_audio_tokens_is_definitive(monkeypatch):
-    # 200 with a plain tokenizer, then a 404 for the LLM/ variant: a real negative.
     plain = {"added_tokens_decoder": {"0": {"content": "<bos>"}}}
     audio_type, definitive = _detect_checked(monkeypatch, [_Resp(200, plain), _Resp(404)])
     assert audio_type is None
@@ -185,9 +181,7 @@ def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
     """
     from utils.models import model_config
 
-    # Recorded rather than raised: the fetch loop catches every exception and treats it as
-    # a transient failure, so a raising stub would be swallowed and the test would pass
-    # against the unfixed code.
+    # Recorded, not raised: the fetch loop swallows exceptions as transient failures.
     fetched = []
 
     import requests
@@ -200,7 +194,6 @@ def test_a_local_path_never_reaches_the_hub(monkeypatch, tmp_path):
     result, definitive = model_config._detect_audio_from_tokenizer(str(adapter))
     assert fetched == [], fetched
     assert result is None
-    # Nothing was read, so the answer is not definitive and must not be cached.
     assert definitive is False
 
 
@@ -245,7 +238,6 @@ def test_the_offline_miss_expires_so_a_later_download_is_seen(monkeypatch):
     assert model_config.detect_audio_type_checked("org/m", local_files_only = True)[0] is None
     clock[0] += model_config._AUDIO_OFFLINE_MISS_TTL_S + 1
     assert model_config.detect_audio_type_checked("org/m", local_files_only = True) == ("snac", True)
-    # Definitive now, so it is in the real cache and the miss entry is gone.
     assert model_config._audio_offline_miss_cache == {}
 
 
@@ -274,10 +266,8 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
     added there without a marker here would silently stop being detected."""
     from utils.audio_tokens import AUDIO_TOKEN_MARKERS, may_hold_audio_tokens
 
-    # Fails when a codec is added, which is the point: add its marker too.
     assert set(AUDIO_TOKEN_PATTERNS) == {"csm", "whisper", "bicodec", "dac", "snac", "audio_vlm"}
 
-    # Whatever each pattern matches, the marker scan must let it through to the parse.
     samples = {
         "csm": ["<|AUDIO|>", "<|audio_eos|>"],
         "whisper": ["<|startoftranscript|>"],
@@ -291,7 +281,6 @@ def test_every_pattern_has_a_marker_so_the_parse_can_be_skipped():
         assert may_hold_audio_tokens(json.dumps(tokens)), audio_type
     assert may_hold_audio_tokens(json.dumps(["<|image|>", "<|audio|>"]))
 
-    # And an ordinary text tokenizer is settled without a parse.
     assert not may_hold_audio_tokens(
         json.dumps([f"<|extra_token_{i}|>" for i in range(500)] + ["<bos>", "<eos>"])
     )
@@ -327,7 +316,6 @@ def test_a_large_text_tokenizer_is_not_parsed(monkeypatch, tmp_path):
     )
 
     assert result is None
-    # Read successfully, so "not audio" is a definitive answer, not an unknown.
     assert definitive is True
     assert parsed == [], parsed
 

@@ -26,9 +26,7 @@ from startup_banner import print_studio_access_banner
 PUBLIC_IP = "104.32.48.18"
 LAN_IP = "192.168.1.50"
 LAN_IPV6 = "fd00::50"
-# What the route lookup reports where detect_lan_addresses declines to advertise
-# anything: WSL's NAT-side address is real and routable from the Windows host,
-# it is just not an address to hand a phone.
+# Routable (e.g. WSL NAT side) but never advertised by detect_lan_addresses.
 ROUTE_ONLY_IP = "172.29.1.5"
 
 
@@ -70,11 +68,7 @@ def public_and_lan(monkeypatch):
     monkeypatch.delenv(run.DISABLE_PUBLIC_CHECK_ENV, raising = False)
 
 
-# ── resolution ───────────────────────────────────────────────────────
-
-
 def test_resolve_lan_ip_never_calls_the_network(public_and_lan, monkeypatch):
-    # Only the UDP-socket trick backs this, never urlopen.
     monkeypatch.setattr(
         urllib.request,
         "urlopen",
@@ -99,7 +93,6 @@ def test_network_share_host_is_lan_not_public(monkeypatch):
 
 
 def test_network_share_host_is_unchanged_for_a_specific_bind(public_and_lan):
-    # A non-wildcard bind already names its own address; nothing to resolve.
     assert _network_share_host_for_bind("192.168.1.7") == "192.168.1.7"
 
 
@@ -120,11 +113,7 @@ def test_external_ip_falls_back_to_the_raw_route_address(monkeypatch):
 
     monkeypatch.setattr(socket, "socket", lambda *a, **k: _RouteSocket())
     assert run._resolve_external_ip() == ROUTE_ONLY_IP
-    # The sharing resolver still declines, which is the whole point of the split.
     assert _network_share_host_for_bind("0.0.0.0") == "0.0.0.0"
-
-
-# ── the direct server URL ────────────────────────────────────────────
 
 
 def test_direct_server_url_is_the_lan_address(monkeypatch):
@@ -152,9 +141,6 @@ def test_direct_server_url_is_unset_when_no_lan_address_is_detectable(monkeypatc
     assert _direct_server_url("0.0.0.0", 8888) is None
     monkeypatch.setattr(run, "_resolve_lan_ip", lambda ip_version = 6: "::")
     assert _direct_server_url("::", 8888) is None
-
-
-# ── the uvicorn startup log line ─────────────────────────────────────
 
 
 @pytest.fixture
@@ -195,13 +181,9 @@ def test_startup_log_line_names_the_lan_address(uvicorn_log_filters, monkeypatch
 def test_startup_log_line_keeps_the_wildcard_when_no_lan_address_resolves(
     uvicorn_log_filters, monkeypatch
 ):
-    # The issue's own "expected behavior": say 0.0.0.0 rather than invent an address.
     monkeypatch.setattr(run, "_resolve_lan_ip", lambda ip_version = 4: "0.0.0.0")
     run._install_uvicorn_startup_log_rewrite("0.0.0.0")
     assert "http://0.0.0.0:8888" in _rewritten_startup_line(uvicorn_log_filters, "0.0.0.0")
-
-
-# ── the banner line itself ──────────────────────────────────────────
 
 
 def test_banner_network_line_shows_lan_ip_not_public_ip(capsys):
@@ -229,7 +211,6 @@ def test_banner_network_line_brackets_ipv6_for_a_wildcard_alias(capsys):
 
 
 def test_banner_falls_back_to_display_host_when_network_host_is_unset(capsys):
-    # Back-compat for a caller that only ever had one address to give.
     print_studio_access_banner(
         port = 8888,
         bind_host = "0.0.0.0",

@@ -219,7 +219,6 @@ def native_linear_class():
         def _forward_int_mm(self, x: Any) -> Any:
             x2 = x.reshape(-1, self.in_features)
             rows = x2.shape[0]
-            # Eager materialises fp32 [rows, features] temporaries (inductor fuses them): cap them per chunk.
             chunk = _INT_MM_CHUNK_ELEMS // max(self.in_features, self.out_features)
             if torch.compiler.is_compiling() or rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS:
                 out = self._int_mm_rows(x2).to(x.dtype)
@@ -305,7 +304,6 @@ def _first_native_linear(module: Any) -> Any:
 
 
 def _rotation_group(module: Any, layer: Any) -> int:
-    # Every layer: rotation skips widths the group does not divide, so the first layer alone can read unrotated.
     try:
         return max(
             int(getattr(sub, "rot_group", 0) or 0)

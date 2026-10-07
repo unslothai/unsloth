@@ -226,8 +226,6 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
             "LICENSE",
             id = "raw_dataset_cache_has_data_rejects_a_metadata_only_snapshot",
         ),
-        # Neither suffix is in `datasets`' extension map, and `datasets>=4` dropped
-        # `trust_remote_code`, which no load path here passes anyway.
         pytest.param(
             "README.md",
             "CITATION.cff",
@@ -235,7 +233,6 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
             "docs/usage.md",
             id = "raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script",
         ),
-        # `datasets` skips every dotted name when resolving data files, so none supply rows.
         pytest.param(
             "README.md",
             ".gitignore",
@@ -255,27 +252,21 @@ def test_raw_dataset_cache_has_data_rejects_payload_free_snapshots(
 @pytest.mark.parametrize(
     "file_a, file_b, expected",
     [
-        # Finder and Explorer drop `.DS_Store`/`Thumbs.db`, which must not read as payload.
         pytest.param(
             ".DS_Store", "Thumbs.db", False, id = "raw_dataset_cache_has_data_ignores_os_clutter"
         ),
-        # Image and audio repos match no known format, so the check asks whether anything
-        # beyond metadata is present.
         pytest.param(
             "data/train-00000-of-00001.parquet",
             "data/train/0001.png",
             True,
             id = "raw_dataset_cache_has_data_finds_nested_payload_of_any_format",
         ),
-        # A Mac zip adds `._name` sidecars and `__MACOSX`; `datasets` skips both, so counting
-        # them as payload offered a card-only snapshot On Device.
         pytest.param(
             "._README.md",
             "__MACOSX/._README.md",
             False,
             id = "raw_dataset_cache_has_data_ignores_appledouble_sidecars",
         ),
-        # The suffix rule is for files only: a script beside real data is still payload.
         pytest.param(
             "data.py",
             "data/train.parquet",
@@ -312,8 +303,6 @@ def test_raw_dataset_cache_has_data_does_not_loop_on_a_link_to_an_ancestor(monke
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", "data/notes.md"))
     data = next((repo_root / "snapshots").iterdir()) / "data"
     (data / "loop").symlink_to(data, target_is_directory = True)
-    # a junction resolves like a link while reporting is_symlink() False, and Linux cannot create one,
-    # so this is a symlink that answers the way a junction does
     real_is_symlink = Path.is_symlink
     monkeypatch.setattr(
         Path,
@@ -411,7 +400,6 @@ def test_raw_dataset_cache_has_data_keeps_the_real_dir_when_an_alias_precedes_it
             dirnames = [name for name in names if (base / name).is_dir()]
             filenames = [name for name in names if name not in dirnames]
             yield str(base), dirnames, filenames
-            # POSIX: a symlinked directory is listed but not descended.
             stack.extend(base / name for name in dirnames if not (base / name).is_symlink())
 
     monkeypatch.setattr(cache_inventory.os, "walk", _walk_alias_first)
@@ -488,8 +476,6 @@ def test_raw_dataset_cache_has_data_never_walks_outside_the_snapshot(monkeypatch
     (outside / "deep").mkdir(parents = True)
     (outside / "deep" / "huge.parquet").write_bytes(b"PAR1")
     repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md",))
-    # Named like clutter, so it is not payload evidence either, and the tree behind it is never entered,
-    # which is what stops a scan from stalling on someone else's disk.
     (repo_root / "snapshots" / "abc" / ".hidden_link").symlink_to(outside, target_is_directory = True)
 
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
@@ -664,7 +650,6 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
     result = cache_inventory._delete_cached_dataset_blocking("Org/Data")
 
     assert result == {"status": "deleted", "repo_id": "Org/Data"}
-    # Only the selected cache's revision is deleted; the other cache's copy stays.
     assert calls == ["active"]
     assert not (target_hub / "datasets--Org--Data").exists()
     assert (other_hub / "datasets--Org--Data").exists()
@@ -678,7 +663,6 @@ def test_delete_processed_only_dataset_accepts_processed_cache_path(monkeypatch,
     processed_dir = datasets_root / "Org___Data"
     processed_dir.mkdir(parents = True)
 
-    # No Hub-cache copy exists; only the processed Arrow cache holds this repo.
     monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
     monkeypatch.setattr(cache_inventory, "_hf_datasets_cache_roots", lambda: [datasets_root])
     processed_calls: list[str] = []

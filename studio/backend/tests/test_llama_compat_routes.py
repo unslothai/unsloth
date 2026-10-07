@@ -147,24 +147,17 @@ def _teardown():
     sys.modules.pop("llama_compat_under_test", None)
 
 
-# ── the reported probe sequence ───────────────────────────────────────────────
-
-
 def test_the_reported_probe_sequence_no_longer_returns_html():
     """THE REGRESSION THIS FILE EXISTS FOR: every probed path answers JSON or 404,
     never 200 text/html."""
     mod = _load()
     with _client(mod) as c:
-        # The two that used to answer with the app shell now answer with JSON.
         for path in ("/props", "/v1/props", "/version"):
             r = c.get(path)
             assert r.status_code == 200, (path, r.status_code)
             assert "application/json" in r.headers["content-type"], path
 
-        # The Ollama pair stays a 404 on purpose: see test_the_ollama_surface_is_not
-        # _advertised. What matters is that no probe in the sequence gets HTML.
-        # 405 for POST /api/show is main.py's standing answer for a POST to any unknown
-        # /api/ path, unchanged by this PR; what matters is that none of them is HTML.
+        # Ollama paths stay 404 on purpose; 405 is main.py's answer to POST on unknown /api/
         for method, path in (
             ("GET", "/api/v1/models"),
             ("GET", "/api/tags"),
@@ -200,12 +193,9 @@ def test_probe_matching_ignores_case_and_stray_slashes():
     assert mod.is_engine_probe_path("/slots/")
     assert mod.is_engine_probe_path("Metrics")
     assert not mod.is_engine_probe_path("chat")
-    # Served paths are deliberately absent: they are real routes, matched first.
+    # served paths are deliberately absent: they are real routes, matched first
     assert not mod.is_engine_probe_path("props")
     assert not mod.is_engine_probe_path("version")
-
-
-# ── /props ────────────────────────────────────────────────────────────────────
 
 
 def test_props_never_echoes_the_on_disk_gguf_path():
@@ -232,9 +222,6 @@ def test_props_degrades_to_the_local_view_when_the_engine_cannot_be_read():
         body = c.get("/props").json()
     assert body["model_path"] == "unsloth/Qwen3.8-27B-GGUF"
     assert body["default_generation_settings"]["n_ctx"] == 262144
-    # Not 0: this same response advertises the model as loaded, and a client reading
-    # props for capacity would conclude it cannot serve. The backend knows what it
-    # launched with.
     assert body["total_slots"] == 4
     assert body["build_info"].startswith("unsloth-studio/")
 
@@ -244,8 +231,6 @@ def test_props_with_nothing_loaded_reports_no_model():
     with _client(mod) as c:
         body = c.get("/props").json()
     assert "model_path" not in body
-    # No llama-server, so no llama-server props. Reporting total_slots 0 and an empty
-    # template would describe an engine that is not running.
     assert "total_slots" not in body
     assert "chat_template" not in body
     assert body["build_info"].startswith("unsloth-studio/")
@@ -257,9 +242,6 @@ def test_v1_props_and_props_agree():
         assert c.get("/props").json() == c.get("/v1/props").json()
 
 
-# ── /version ──────────────────────────────────────────────────────────────────
-
-
 def test_version_answers_on_the_bare_path_only():
     """Ollama spells it /api/version; answering there is part of claiming to be Ollama."""
     mod = _load()
@@ -269,9 +251,6 @@ def test_version_answers_on_the_bare_path_only():
     assert bare.status_code == 200
     assert isinstance(bare.json()["version"], str) and bare.json()["version"]
     assert prefixed.status_code == 404
-
-
-# ── platform and robustness, from the sandbox run ─────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -378,9 +357,6 @@ def test_no_client_side_ui_route_is_shadowed_by_the_deny_list():
     assert not shadowed, f"UI route(s) shadowed by the probe deny-list: {shadowed}"
 
 
-# ── the four findings from review ─────────────────────────────────────────────
-
-
 def test_the_ollama_surface_is_not_advertised():
     """Answering /api/tags makes a client select Ollama and then fail on /api/chat.
     The reporting user's client got 404 here, fell back to OpenAI, and worked, so
@@ -390,8 +366,6 @@ def test_the_ollama_surface_is_not_advertised():
     assert "/api/tags" not in routes
     assert "/api/show" not in routes
     assert "/api/version" not in routes
-    # And the inference endpoints an Ollama client would go on to call are absent, which
-    # is what makes advertising the discovery pair wrong rather than merely incomplete.
     assert "/api/chat" not in routes and "/api/generate" not in routes
 
 
@@ -451,12 +425,8 @@ def test_the_probe_paths_are_admitted_under_keyless_inference_scope():
     assert ("GET", "/v1/models") in _INFERENCE_ROUTES, "baseline moved; re-derive this"
     for path in ("/props", "/v1/props", "/version"):
         assert ("GET", path) in _INFERENCE_ROUTES, path
-    # Not the Ollama paths: they are not served at all.
     for path in ("/api/tags", "/api/show", "/api/version"):
         assert ("GET", path) not in _INFERENCE_ROUTES, path
-
-
-# ── round two ─────────────────────────────────────────────────────────────────
 
 
 def test_head_on_an_unserved_probe_path_is_404_not_405():
@@ -566,7 +536,6 @@ def test_props_does_not_advertise_child_endpoints_studio_denies():
     assert body["endpoint_metrics"] is False
     for child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         assert child_only not in body, child_only
-    # The fields that do describe the model still come through untouched.
     assert body["total_slots"] == 4
 
 
@@ -576,11 +545,7 @@ def test_the_denied_endpoints_props_advertises_really_are_denied():
     with _client(mod) as c:
         for path in ("/slots", "/metrics"):
             assert c.get(path).status_code == 404, path
-        # POST /props is llama-server's props-change endpoint; Studio serves GET only.
         assert c.post("/props", json = {}).status_code in (404, 405)
-
-
-# ── round three ───────────────────────────────────────────────────────────────
 
 
 def test_a_transient_props_failure_does_not_report_zero_slots():
@@ -707,9 +672,6 @@ def test_the_slash_and_bare_forms_agree():
     with _client(mod) as c:
         assert c.get("/props").json() == c.get("/props/").json()
         assert c.get("/version").json() == c.get("/version/").json()
-
-
-# ── 405 leaks the same signal a 200 did ───────────────────────────────────────
 
 
 def _lifespan_app(mod, *, frontend_mounted = False):

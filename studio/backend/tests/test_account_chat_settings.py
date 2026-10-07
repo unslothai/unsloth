@@ -451,7 +451,6 @@ def test_owner_setting_keeps_200_and_single_account_policy_is_inert(client, monk
     response = client.get("/settings/llama-cpp-path", headers = {"x-test-account": "unsloth"})
     assert response.status_code == 200, response.text
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
-    # Deactivating the last managed account must not open an owner-only setting to a request still bound to it.
     owner = client.get("/settings/llama-cpp-path", headers = {"x-test-account": "unsloth"})
     assert owner.status_code == 200
     assert client.get("/settings/llama-cpp-path").status_code == 403
@@ -483,7 +482,6 @@ def test_managed_load_uses_its_own_override_then_the_owners(fresh_override_cache
     from utils.openai_auto_switch_settings import resolve_override_for_load, set_model_override
 
     run_as(OWNER, set_model_override, "org/model", max_seq_length = 4096)
-    # Never configured by Alice: the owner's settings apply, as they did before she could save any.
     assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
     run_as(ALICE, set_model_override, "org/model", max_seq_length = 16384)
     assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 16384

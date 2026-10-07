@@ -12,7 +12,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Opening a cloud placeholder for data recalls it; these attributes are available through ``stat_result.st_file_attributes`` on Windows without reading file contents.
+# Opening a cloud placeholder recalls it; these attributes are readable without opening.
 _WINDOWS_CONTENT_RECALL_ATTRIBUTES = 0x00001000 | 0x00040000 | 0x00400000
 
 
@@ -26,8 +26,8 @@ def file_contents_available_locally(path, stat_result = None) -> bool:
     return not bool(attributes & _WINDOWS_CONTENT_RECALL_ATTRIBUTES)
 
 
-# A volume without native xattrs makes macOS keep them in a "._" companion that answers every name-shaped question the way the real file does; only the magic bytes settle it. The volumes are exFAT, FAT, most SMB and NFS, and nothing may be refused for the prefix alone: a user's own "._model.gguf" is a real model.
-# ── macOS Finder metadata companions ───────────────────────────
+# macOS stores xattrs in ._ companions on exFAT/FAT/SMB/NFS; only the magic identifies one,
+# since a user's own ._model.gguf is a real model.
 _MAGIC = b"\x00\x05\x16\x07"
 
 PathLike = TypeVar("PathLike", str, Path)
@@ -41,7 +41,7 @@ def is_appledouble_name(path: str) -> bool:
 def has_appledouble_magic(path: Path) -> bool:
     """The four bytes ``file(1)`` reads to report "AppleDouble encoded Macintosh file"."""
     try:
-        # Directory scans reach here with whatever the volume holds, and opening a FIFO blocks until someone writes to it. Only a regular file can carry the magic anyway.
+        # Opening a FIFO blocks, so only regular files are checked.
         if not path.is_file():
             return False
         with open(path, "rb") as handle:
@@ -72,7 +72,7 @@ def _shadowed_name(path: str) -> str:
 
 
 def drop_shadowed_appledouble_names(
-    # Optional[...] rather than a PEP 604 union: this module has no `from __future__ import annotations`, so annotations are evaluated at import and PEP 604 is a TypeError on the declared 3.9 floor. tests/test_python39_compatibility.py gates it.
+    # Optional[...] not PEP 604: no future annotations here and the floor is 3.9 (test gated).
     files: list[str],
     *,
     subject_key: Optional[Callable[[str], object]] = None,
@@ -83,7 +83,6 @@ def drop_shadowed_appledouble_names(
     return [f for f in files if not (is_appledouble_name(f) and key(_shadowed_name(f)) in present)]
 
 
-# Per-process cache to avoid repeated cache-dir scans for the same identifier.
 _CACHE_CASE_RESOLUTION_MEMO: dict[str, str] = {}
 
 _CACHE_CASE_RESOLUTION_STATS: dict[str, int] = {
@@ -117,7 +116,6 @@ def normalize_path(path: str) -> str:
         return path
 
     if len(path) >= 3 and path[1] == ":" and path[2] in ("\\", "/"):
-        # Map to /mnt/<drive>/ only under WSL; native Windows keeps the drive letter.
         if _IS_WSL:
             drive = path[0].lower()
             rest = path[3:].replace("\\", "/")
@@ -183,7 +181,6 @@ def is_local_path(path: str) -> bool:
     if not path:
         return False
 
-    # Exists on disk → local (covers relative paths like "outputs/foo").
     try:
         if Path(normalize_path(path)).expanduser().exists():
             return True
@@ -248,7 +245,6 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
         _CACHE_CASE_RESOLUTION_STATS["exact_hits"] += 1
         return model_name
 
-    # Revalidate memoized entries on disk to avoid stale results.
     if use_memo:
         cached = _CACHE_CASE_RESOLUTION_MEMO.get(model_name)
         if cached is not None:
@@ -256,7 +252,6 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
             if cached_path.is_dir():
                 _CACHE_CASE_RESOLUTION_STATS["memo_hits"] += 1
                 return cached
-            # Stale entry -- drop it and re-scan below
             _CACHE_CASE_RESOLUTION_MEMO.pop(model_name, None)
 
     expected_lower = expected_dir.lower()
@@ -275,7 +270,6 @@ def resolve_cached_repo_id_case(model_name: str, use_memo: bool = True) -> str:
             candidates.append(repo_part.replace("--", "/"))
 
         if candidates:
-            # Deterministic tie-break if multiple case variants coexist
             resolved = sorted(candidates)[0]
             if len(candidates) > 1:
                 _CACHE_CASE_RESOLUTION_STATS["tie_breaks"] += 1
@@ -391,7 +385,6 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     else:
         if not path.exists():
             raise FileNotFoundError(str(path))
-        # Decided ONCE and then only read; each branch used to re-stat.
         is_dir = path.is_dir()
         is_file = not is_dir and path.is_file()
         if not is_dir and not is_file:
@@ -409,12 +402,11 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
         else:
             os.startfile(target)  # noqa: S606 - local user's own file manager
     elif not _wsl_reveal_in_explorer(path, is_file):
-        # No cross-desktop "select file" standard on Linux; open the directory.
+        # No cross-desktop select-file standard on Linux; open the directory.
         subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
 
 
-# What "Open in default app" may hand to the OS: documents and media, which open in a viewer. A
-# script, app bundle or installer would run instead, and these files are model-written.
+# Viewer-opened types only: scripts or installers would execute, and these files are model-written.
 DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
     {
         ".pdf",
@@ -582,7 +574,7 @@ def open_in_default_app(path: Path, root: Optional[Path] = None) -> None:
         subprocess.Popen(["xdg-open", target])
 
 
-# pathconf's _PC_CASE_SENSITIVE on macOS, which Python has no name for.
+# macOS _PC_CASE_SENSITIVE, which Python has no name for.
 _PC_CASE_SENSITIVE = 11
 
 

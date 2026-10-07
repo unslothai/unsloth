@@ -122,17 +122,14 @@ class _FakeBackend(video_module.VideoBackend):
     def __init__(self) -> None:
         super().__init__()
         self.last_load_kwargs: dict = {}
-        # Repo ids of in-flight loads; empty = none. The unload route reads this to keep VIDEO ownership during a concurrent load.
         self.loading: tuple = ()
 
-    # The real backend keys "loaded" off its committed pipeline state, so map the fake flag onto it for the inherited begin_generate.
     @property
     def loaded(self) -> bool:
         return self._state is not None
 
     @loaded.setter
     def loaded(self, value: bool) -> None:
-        # Minimal committed state required by inherited generation validation.
         import types
 
         from core.inference.video_families import detect_video_family
@@ -162,14 +159,11 @@ class _FakeBackend(video_module.VideoBackend):
         text_encoder_quant = None,
         h3_task = None,
     ):
-        # Mirror the real backend cheap validation so the route validate-before-evict ordering is exercised.
         from pathlib import Path
 
         kind = (model_kind or ("gguf" if gguf_filename else "pipeline")).lower()
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
-        # Non-GGUF loads are gated to unsloth/* repos, the official bases, and existing local paths.
-        # minimaxai/: the real gate trusts MiniMaxAI/MiniMax-H3 as an official family base repo.
         trusted = model_path.lower().startswith(("unsloth/", "lightricks/", "minimaxai/")) or (
             Path(model_path).expanduser().exists()
         )
@@ -185,7 +179,6 @@ class _FakeBackend(video_module.VideoBackend):
         return object()
 
     def begin_load(self, model_path, **kwargs):
-        # The real backend loads on a thread; the fake completes instantly.
         self.loaded = True
         self.last_load_kwargs = dict(kwargs)
         return {
@@ -231,7 +224,6 @@ class _FakeBackend(video_module.VideoBackend):
             "fps": kwargs.get("fps") or 24,
             "duration_s": 5.0,
             "has_audio": True,
-            # Include every field persisted to the gallery sidecar.
             "conditioning": "t2va",
             "flow_shift": None,
             "audio_flow_shift": None,
@@ -272,13 +264,11 @@ def _healthy_diffusers(healthy_diffusers):
 def client(monkeypatch, tmp_path):
     backend = _FakeBackend()
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
-    # Isolate from the real GPU arbiter: reset ownership and stub the evictors so acquire_for() never touches live singletons.
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.VIDEO, lambda: None)
 
-    # Pin the device to cpu so the load route deterministically takes the non-GPU branch; the arbiter gating has its own tests.
     import types
 
     import core.inference.diffusion_device as devmod
@@ -287,13 +277,11 @@ def client(monkeypatch, tmp_path):
         devmod, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
     )
 
-    # Persist to a real tmp gallery so save/list/file/delete/clear run the actual video_gallery code without touching studio_root.
     monkeypatch.setattr(gallery_module, "gallery_dir", lambda: tmp_path)
 
     app = FastAPI()
     app.include_router(video_router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
-    # A browser session: the status routes redact host paths for an API-key caller.
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
     return TestClient(app)
 
@@ -326,12 +314,10 @@ def _generate_and_wait(client, payload) -> dict:
 
 
 def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
-    # Force the device to cuda so the load takes the GPU arbiter, and record the acquire.
     devmod = _shared_setup_3(monkeypatch)
     acquired: list = []
 
     def _fake_acquire(role, register = None):
-        # Mirror the real arbiter: record the handoff and run the (registered) load under it.
         acquired.append(role)
         return register() if register is not None else None
 
@@ -349,11 +335,10 @@ def test_load_happy_path_and_arbiter_acquired(client, monkeypatch):
     assert body["loaded"] is True and body["family"] == "ltx-2"
     assert body["has_audio"] is True
     assert body["defaults"]["num_frames"] == 121
-    assert acquired == [gpu_arbiter.VIDEO]  # the GPU was handed to VIDEO
+    assert acquired == [gpu_arbiter.VIDEO]
 
 
 def test_load_forwards_the_gpu_selection(client, monkeypatch):
-    # /video/load carried no gpu_ids at all, so sd.cpp and diffusers both pinned ordinal 0.
     import types
 
     import core.inference.diffusion_device as devmod
@@ -377,7 +362,6 @@ def test_load_forwards_the_gpu_selection(client, monkeypatch):
 
 
 def test_load_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
-    # Refused BEFORE the arbiter evicts chat, so a bad pick costs a resident model nothing.
     devmod = _shared_setup_3(monkeypatch)
 
     def _refuse(_ids):
@@ -398,14 +382,12 @@ def test_load_refuses_a_gpu_index_this_host_does_not_have(client, monkeypatch):
 
 
 def test_load_value_error_returns_400(client):
-    # A non-ltx repo is not a supported family: the cheap validation rejects it -> 400.
     resp = client.post(
         "/api/inference/video/load",
         json = {"model_path": "x/some-image-model", "gguf_filename": "q.gguf"},
     )
     assert resp.status_code == 400
     assert "supported text-to-video model" in resp.json()["detail"]
-    # Validation runs before the arbiter handoff, so ownership is untouched.
     assert gpu_arbiter._owner is None
 
 
@@ -430,9 +412,6 @@ def test_load_threads_options_through_to_backend(client):
 
 
 def test_load_threads_transformer_quant_and_guidance_2(client, monkeypatch):
-    # The load-time transformer_quant field reaches the backend, and the per-generation guidance_2 reaches generate() (dual-DiT MoE).
-    # The dense DiT quant is pipeline-only, so a GGUF pick with an explicit scheme is refused by the
-    # route's precision gate before it gets here; stub the gate out, since this is about threading.
     monkeypatch.setattr(video_module, "assert_video_precision_available", lambda fam, **kw: None)
     resp = client.post(
         "/api/inference/video/load",
@@ -451,7 +430,6 @@ def test_load_threads_transformer_quant_and_guidance_2(client, monkeypatch):
 
 
 def test_load_rejects_bad_transformer_quant_422(client):
-    # transformer_quant is a Literal, so an unknown scheme is a 422 at request validation.
     resp = client.post(
         "/api/inference/video/load",
         json = {
@@ -464,11 +442,7 @@ def test_load_rejects_bad_transformer_quant_422(client):
 
 
 def test_load_threads_text_encoder_quant(client, monkeypatch):
-    # The load-time text_encoder_quant field reaches the backend (the video path also quantises the dense companion encoder).
-    #
-    # Under the precision escape hatch, because whether an fp8 encoder is available is a
-    # property of the HOST: on a CPU-only runner the gate refuses this pick with a 409 and the
-    # forwarding this test is about never happens. The hatch is the product's own bypass.
+    # Precision escape hatch: fp8 encoder availability is host dependent.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     resp = client.post(
         "/api/inference/video/load",
@@ -484,7 +458,6 @@ def test_load_threads_text_encoder_quant(client, monkeypatch):
 
 
 def test_load_rejects_bad_text_encoder_quant_422(client):
-    # text_encoder_quant is a Literal, so an unknown scheme is a 422 at request validation.
     resp = client.post(
         "/api/inference/video/load",
         json = {
@@ -529,7 +502,6 @@ def test_load_progress_route_logs_backend_snapshot(client, monkeypatch):
 
 
 def test_load_local_single_file_dir_routes_through_single_file(client, tmp_path):
-    # A local video-family dir with one .safetensors and no model_index.json arrives as a pipeline with no filename; the route reinterprets it as a single_file load.
     d = tmp_path / "ltx-2.3-local"
     d.mkdir()
     (d / "ltx-dit.safetensors").write_bytes(b"0")
@@ -544,7 +516,6 @@ def test_load_local_single_file_dir_routes_through_single_file(client, tmp_path)
 
 
 def test_load_local_pipeline_dir_stays_pipeline(client, tmp_path):
-    # A real diffusers directory (has model_index.json) is left as a pipeline load.
     d = tmp_path / "ltx-2.3-pipeline"
     d.mkdir()
     (d / "model_index.json").write_text("{}")
@@ -563,16 +534,14 @@ def test_generate_happy_path_persists_and_reports_record(client, monkeypatch):
     resets = []
     monkeypatch.setattr(video_routes, "reset_media_generation_progress", resets.append)
     _shared_setup_1(client)
-    # The POST returns at once ("started"); the saved record arrives through the generate-progress terminal state.
     video = _generate_and_wait(client, {"prompt": "a sloth surfing", "seed": 7})
     assert resets == ["video"]
     assert video["seed"] == 7 and video["prompt"] == "a sloth surfing" and video["id"]
     assert video["has_audio"] is True
     assert video["model"] == "unsloth/LTX-2.3-GGUF"
     assert video["url"].endswith(f"/gallery/{video['id']}/file")
-    assert video["created_at"]  # ISO timestamp string
+    assert video["created_at"]
 
-    # The clip is now listable and fetchable as MP4 bytes.
     listed = client.get("/api/inference/video/gallery").json()["videos"]
     assert [v["id"] for v in listed] == [video["id"]]
     fetched = client.get(video["url"])
@@ -596,7 +565,6 @@ def test_generate_accepts_a_half_specified_size_without_a_keyframe(client):
     video = _generate_and_wait(client, {"prompt": "a cat", "width": 768})
     assert (video["width"], video["height"]) == (768, 512)
 
-    # With a keyframe the ambiguity is real and the refusal stands.
     resp = client.post(
         "/api/inference/video/generate",
         json = {
@@ -616,7 +584,6 @@ def test_generate_without_load_returns_409(client):
 
 
 def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
-    # A cancel mid-run surfaces as the job's terminal failed state carrying the exact sentinel, not as an HTTP error.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -630,7 +597,6 @@ def test_generate_cancelled_reports_failed_with_sentinel(client, monkeypatch):
 
 
 def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
-    # A loaded model failing mid-pipeline (CUDA OOM) is a server failure.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -641,13 +607,11 @@ def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
     progress = _shared_setup_4(client)
     assert progress["error"].startswith("Video generation failed.")
     assert "ran out of memory" in progress["error"]
-    # The engine's own text stays server-side.
     assert "CUDA" not in progress["error"]
     assert "40.00 GiB" not in progress["error"]
 
 
 def test_generate_unclassified_error_keeps_the_bare_fallback(client, monkeypatch):
-    # Nothing recognised means nothing invented: the message must not grow a guess.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -687,7 +651,6 @@ def test_generate_native_sd_cli_exit_points_at_the_log(client, monkeypatch, code
 
 
 def test_generate_value_error_reports_reason(client, monkeypatch):
-    # Bad client input is feedback: the terminal failed state carries the reason.
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -700,7 +663,6 @@ def test_generate_value_error_reports_reason(client, monkeypatch):
 
 
 def test_generate_concurrent_second_returns_409(client, monkeypatch):
-    # While a job runs, a second generate is refused synchronously with the busy sentinel; the first still completes and persists.
     backend = video_module.get_video_backend()
     backend.loaded = True
     release = threading.Event()
@@ -724,7 +686,6 @@ def test_generate_concurrent_second_returns_409(client, monkeypatch):
     release.set()
     progress = _wait_terminal(client)
     assert progress["phase"] == "completed" and progress["video"]["seed"] == 1
-    # With the job finished, a new generate is accepted again.
     assert _generate_and_wait(client, {"prompt": "c", "seed": 2})["seed"] == 2
 
 
@@ -750,7 +711,6 @@ def test_cancel_generation_route(client):
 
 
 def test_cancel_running_job(client, monkeypatch):
-    # begin_generate registers the cancel event before the worker starts, so the cancel route reports True at once and the job lands in failed(cancelled).
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -768,7 +728,6 @@ def test_cancel_running_job(client, monkeypatch):
     progress = _wait_terminal(client)
     assert progress["phase"] == "failed"
     assert progress["error"] == VIDEO_CANCELLED_MSG
-    # Nothing was persisted for the cancelled run.
     assert client.get("/api/inference/video/gallery").json()["videos"] == []
 
 
@@ -778,7 +737,6 @@ def test_file_endpoint_404_for_bad_id(client):
 
 
 def test_serve_and_export_refuse_orphan_mp4(client, tmp_path):
-    # An orphan MP4 is hidden by the listing, and serve / export resolve through the ownership guard, so a guessed stem can neither stream nor transcode it out.
     (tmp_path / "recording.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
     assert client.get("/api/inference/video/gallery/recording/file").status_code == 404
     assert client.get("/api/inference/video/gallery/recording/export?format=gif").status_code == 404
@@ -790,13 +748,11 @@ def test_delete_and_clear(client):
     second = _generate_and_wait(client, {"prompt": "b"})
     assert len(client.get("/api/inference/video/gallery").json()["videos"]) == 2
 
-    # Delete one, then confirm it 404s and the other remains.
     assert client.delete(f"/api/inference/video/gallery/{first['id']}").status_code == 200
     assert client.delete(f"/api/inference/video/gallery/{first['id']}").status_code == 404
     remaining = client.get("/api/inference/video/gallery").json()["videos"]
     assert [v["id"] for v in remaining] == [second["id"]]
 
-    # Clear wipes the rest.
     cleared = client.delete("/api/inference/video/gallery")
     assert cleared.status_code == 200 and cleared.json()["removed"] == 1
     assert client.get("/api/inference/video/gallery").json()["videos"] == []
@@ -857,8 +813,6 @@ def test_status_passthrough(client, monkeypatch):
     resolved = {
         "speed_mode": {"value": "eager", "source": "auto", "reason": "GGUF default"},
         "transformer_cache": {"value": None, "source": "auto", "reason": "few-step model"},
-        # A declined explicit precision has to survive the boundary here too (the Linux half of
-        # P1-2: the label kept reading BF16 while telemetry confirmed NVFP4).
         "transformer_quant": {
             "value": "off",
             "requested": "nvfp4",
@@ -888,7 +842,6 @@ def test_status_passthrough(client, monkeypatch):
     )
     body = client.get("/api/inference/video/status").json()
     assert body["loaded"] is True and body["family"] == "ltx-2"
-    # ``artifact`` / ``replaced`` are additive on the response model: a record naming neither is null.
     assert body["resolved"]["transformer_quant"] == {
         **resolved["transformer_quant"],
         "artifact": None,
@@ -899,7 +852,6 @@ def test_status_passthrough(client, monkeypatch):
         "artifact": None,
         "replaced": None,
     }
-    # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
     assert body["resolved"]["speed_mode"]["requested"] is None
     assert body["resolved"]["speed_mode"]["status"] == "applied"
     assert body["defaults"]["frame_step"] == 8
@@ -919,9 +871,6 @@ def _load_fake_video(client):
 
 
 def test_saved_clip_records_the_engaged_build(client, monkeypatch):
-    # A saved MP4 has to name the BUILD it came off, like a saved PNG already does: without it a
-    # clip rendered at bf16 is indistinguishable from one rendered at the precision that was asked
-    # for. Every value here is the ENGAGED state, never the load request.
     backend = video_module.get_video_backend()
     real_generate = backend.generate
 
@@ -945,15 +894,12 @@ def test_saved_clip_records_the_engaged_build(client, monkeypatch):
     assert video["text_encoder_quant"] == "fp8"
     assert video["memory_mode"] == "low_vram"
     assert video["offload_policy"] == "sequential"
-    # ...and it round-trips through the on-disk sidecar, not just the in-memory record.
     listed = client.get("/api/inference/video/gallery").json()["videos"]
     assert listed[0]["text_encoder_quant"] == "fp8"
     assert listed[0]["gguf_filename"] == "ltx-2.3-Q4_K_M.gguf"
 
 
 def test_sidecars_without_the_build_fields_still_list(client):
-    # The new keys are NOT in video_gallery._REQUIRED_META, so a clip written before they existed
-    # lists with them null instead of being skipped as a foreign sidecar.
     _load_fake_video(client)
     video = _generate_and_wait(client, {"prompt": "a sloth"})
     assert video["model_kind"] is None and video["transformer_quant"] is None
@@ -962,8 +908,6 @@ def test_sidecars_without_the_build_fields_still_list(client):
 
 
 def test_load_refuses_an_unusable_explicit_precision_with_409(client, monkeypatch):
-    # begin_load refuses an EXPLICIT precision this host cannot honor; the route answers 409 with
-    # the reason instead of accepting the load and denoising at some other precision.
     from core.inference.diffusion_auto_policy import precision_refusal_message
 
     backend = video_module.get_video_backend()
@@ -985,9 +929,7 @@ def test_load_refuses_an_unusable_explicit_precision_with_409(client, monkeypatc
 
 
 def test_precision_refusal_precedes_eviction(client, monkeypatch):
-    # The refusal belongs to validate_load_request, which the route calls BEFORE the GPU handoff:
-    # acquire_for evicts chat under the arbiter lock before it runs begin_load, so a refusal made
-    # there arrives after the eviction the 409 exists to prevent.
+    # Refusal must happen before acquire_for evicts chat.
     from core.inference.diffusion_auto_policy import precision_refusal_message
 
     backend = video_module.get_video_backend()
@@ -1018,7 +960,6 @@ def test_precision_refusal_precedes_eviction(client, monkeypatch):
 
 
 def test_unload_releases_arbiter(client, monkeypatch):
-    # Pin VIDEO as the current owner; unload must drop that claim.
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
     resp = client.post("/api/inference/video/unload")
     assert resp.status_code == 200 and resp.json()["loaded"] is False
@@ -1026,8 +967,7 @@ def test_unload_releases_arbiter(client, monkeypatch):
 
 
 def test_unload_keeps_ownership_when_a_load_is_in_flight(client, monkeypatch):
-    # A concurrent /video/load re-acquires VIDEO and starts a background load, so the backend is not loaded yet but a load IS in
-    # flight: ownership must be kept on that alone, or a later chat/image load skips eviction and OOMs against the new pipeline.
+    # Ownership must be kept for an in-flight load or a later load skips eviction and OOMs.
     backend = video_module.get_video_backend()
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.VIDEO)
 
@@ -1035,13 +975,12 @@ def test_unload_keeps_ownership_when_a_load_is_in_flight(client, monkeypatch):
     backend.loading = ("unsloth/ltx-video-2b",)
     resp = client.post("/api/inference/video/unload")
     assert resp.status_code == 200 and resp.json()["loaded"] is False
-    assert gpu_arbiter.current_owner() == gpu_arbiter.VIDEO  # ownership retained for the load
+    assert gpu_arbiter.current_owner() == gpu_arbiter.VIDEO
 
     backend.loading = ()
 
 
 def test_load_refused_during_training(client, monkeypatch):
-    # A video load while training is active is refused (409) before the GPU is taken.
     import core.training as core_training
 
     monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
@@ -1060,7 +999,7 @@ def test_load_refused_during_training(client, monkeypatch):
     )
     assert resp.status_code == 409
     assert "training" in resp.json()["detail"].lower()
-    assert evicted == []  # chat backend was never evicted
+    assert evicted == []
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
@@ -1070,7 +1009,6 @@ def test_generate_missing_prompt_returns_422(client):
 
 
 def test_routes_require_auth():
-    # No dependency override: the auth dependency must reject the request.
     app = FastAPI()
     app.include_router(video_router, prefix = "/api/inference")
     unauth = TestClient(app)
@@ -1078,14 +1016,11 @@ def test_routes_require_auth():
 
 
 def test_export_endpoint_validation(client, monkeypatch):
-    # Unknown format is a 400 before any work happens.
     resp = client.get("/api/inference/video/gallery/x/export?format=avi")
     assert resp.status_code == 400
-    # Unknown id is a 404.
     resp = client.get("/api/inference/video/gallery/does-not-exist/export?format=gif")
     assert resp.status_code == 404
 
-    # A missing codec surfaces as 501 with the transcoder's message.
     def _boom(video_id, fmt):
         raise RuntimeError("WebM export needs the 'av' package (PyAV).")
 
@@ -1098,7 +1033,6 @@ def test_export_endpoint_validation(client, monkeypatch):
 
 
 def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
-    # For a GGUF / single-file video load the companion base supplies the VAE and text encoders, so it is as much the live model as the checkpoint; the guard only compared repo_id.
     from hub.services.models import deletion
 
     class _Backend:
@@ -1119,8 +1053,6 @@ def test_delete_guard_protects_the_loaded_video_companion_base(monkeypatch):
 
 
 def test_delete_guard_protects_the_native_video_companion_repos(monkeypatch):
-    # The native H3 runtime re-reads its Qwen encoder and both VAEs from companion repos that are
-    # neither repo_id nor the BF16 base_repo the status publishes, so the guard needs loaded_repo_ids().
     from hub.services.models import deletion
 
     class _Backend:
@@ -1143,9 +1075,6 @@ def test_delete_guard_protects_the_native_video_companion_repos(monkeypatch):
 
 
 def test_delete_guard_protects_the_native_video_companion_repos_mid_load(monkeypatch):
-    # The in-flight twin of the check above: during an H3 load status()["loaded"] is still False,
-    # yet the download is pulling from the same companion repos, so deleting one would yank blobs
-    # out from under it. loading_repo_ids() reported only repo_id and base_repo.
     from hub.services.models import deletion
 
     class _Backend:
@@ -1165,15 +1094,11 @@ def test_delete_guard_protects_the_native_video_companion_repos_mid_load(monkeyp
 
     monkeypatch.setattr(video_module, "get_video_backend", lambda: _Backend())
     assert deletion._video_blocks_delete("Comfy-Org/MiniMax-H3") is not None
-    # Loading from the leejet mirror still pulls the Qwen encoder from the unsloth GGUF companion.
     assert deletion._video_blocks_delete("unsloth/MiniMax-H3-GGUF") is not None
     assert deletion._video_blocks_delete("unsloth/something-else") is None
 
 
 def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
-    # The plan drives the staged download, so it must use the encoder policy the load will run with: an fp8 request takes a hosted pre-cast encoder, and staging the dense one pulls ~49 GB of Gemma3.
-    # Same host-independence as the load twin: the plan now makes the precision check too, so
-    # without the escape hatch a GPU-less runner answers 409 and forwards nothing.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     backend = video_module.get_video_backend()
     seen: dict = {}
@@ -1204,8 +1129,6 @@ def test_video_download_plan_forwards_the_encoder_policy(client, monkeypatch):
 def test_the_video_plan_refuses_an_impossible_precision_before_anything_is_staged(
     client, monkeypatch
 ):
-    # The video weights are the tens-of-GB case: /video/load refuses a precision this host cannot
-    # honour, but the UI plans and stages first, so the refusal used to arrive after the download.
     import core.inference.video as video_core
 
     backend = video_module.get_video_backend()
@@ -1238,7 +1161,6 @@ def test_the_video_plan_refuses_an_impossible_precision_before_anything_is_stage
 
 
 def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(client, monkeypatch):
-    # Same independence rule as the image guard: a raising LLM probe used to return early, so a video load ran into an active diffusion trainer on the same GPU.
     import core.training as core_training
     import routes.video as video_routes
 
@@ -1267,7 +1189,6 @@ def test_video_load_guard_still_checks_diffusion_when_the_llm_probe_raises(clien
 
 
 def test_signed_video_link_streams_without_a_bearer(client):
-    # A clip is tens to hundreds of MB, so the gallery cannot fetch it into a blob like a PNG: that buffers the whole MP4, kills seeking and pins the bytes. The signed link makes the range-capable /file route usable as a plain <video src>.
     _shared_setup_1(client)
     video = _generate_and_wait(client, {"prompt": "a"})
     vid = video["id"]
@@ -1277,13 +1198,11 @@ def test_signed_video_link_streams_without_a_bearer(client):
     url = minted.json()["url"]
     assert url.startswith(f"/api/inference/video/gallery/{vid}/file-signed?token=")
 
-    # Served with no Authorization header at all, and byte-identical to the bearer route.
     signed = client.get(url, headers = {})
     assert signed.status_code == 200
     assert signed.headers["content-type"] == "video/mp4"
     assert signed.content == client.get(f"/api/inference/video/gallery/{vid}/file").content
 
-    # Range requests work, which is the point: the player seeks instead of downloading everything.
     ranged = client.get(url, headers = {"Range": "bytes=0-3"})
     assert ranged.status_code == 206
     assert len(ranged.content) == 4
@@ -1312,12 +1231,10 @@ def test_signed_video_link_rejects_tampering_and_other_ids(client):
         .split("token=", 1)[1]
     )
 
-    # The token names exactly one clip.
     assert (
         client.get(f"/api/inference/video/gallery/{second}/file-signed?token={token}").status_code
         == 401
     )
-    # A flipped signature, a malformed token, and an expired one are all refused.
     assert (
         client.get(
             f"/api/inference/video/gallery/{first}/file-signed?token={token[:-1]}x"
@@ -1353,9 +1270,6 @@ def test_signed_url_mint_is_bearer_gated_and_404s_for_an_unknown_clip(client):
 
 
 def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
-    # Same rule as the encoder policy above, for the denoiser: with a hosted pre-quantized
-    # checkpoint the plan must drop the dense transformer shards, and without this forwarding it
-    # stages ~66 GB the load then never opens.
     backend = video_module.get_video_backend()
     seen: dict = {}
 
@@ -1365,10 +1279,7 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
         return {"entries": [], "total_bytes": 0}
 
     monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
-    # What is under test is the ROUTE forwarding the denoiser policy into download_plan, not the
-    # precision gate that now runs ahead of it. That gate has its own tests and it refuses an
-    # explicit scheme on a gguf pick before download_plan is ever reached, so stub it out here and
-    # keep this test on the forwarding.
+    # Stub the precision gate; this test is about forwarding into download_plan.
     monkeypatch.setattr(
         video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
     )
@@ -1390,7 +1301,6 @@ def test_video_download_plan_forwards_the_denoiser_policy(client, monkeypatch):
 def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_load(
     client, monkeypatch
 ):
-    # Precision fallback under balanced / low_vram loads bf16, so the FP8 artifact must not be staged (needs the route to forward the policy).
     import types
 
     import core.inference.diffusion_device as devmod
@@ -1473,7 +1383,6 @@ def test_video_download_plan_does_not_stage_the_hosted_fp8_dit_for_an_offloaded_
 
 
 def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypatch):
-    # Trainer holds the GPU: the planner reads the cached verdict, never spawns the smoke probe.
     import types
 
     import core.inference.diffusion_device as devmod
@@ -1547,9 +1456,6 @@ def test_video_download_plan_does_not_probe_fp8_while_training(client, monkeypat
 
 
 def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
-    # h3_task decides WHICH of the two 66.28 GB MiniMax-H3 denoiser folders is staged. It was
-    # swallowed by **load_kwargs, so a ref2va plan staged the fl2va partition and the one the load
-    # actually opens came down inline, outside the download panel's preflight.
     backend = video_module.get_video_backend()
     seen: dict = {}
 
@@ -1578,20 +1484,7 @@ def test_video_download_plan_forwards_the_h3_partition(client, monkeypatch):
 
 
 def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(client, monkeypatch):
-    # The plan route asks the same (scheme, PARTITION) question the load does, so a pick it
-    # answers 200 is one the load will honour. Both halves matter and they are one test because
-    # either alone passes for the wrong reason: refusing everything, or accepting everything.
-    #
-    # ref2va now has its own hosted int8 and fp8 denoisers, so the reference partition is a real
-    # pick rather than a keyframe checkpoint wearing the wrong name. A scheme with no checkpoint
-    # at all is still refused BEFORE staging, which is the failure this route check was added for
-    # -- a 200 plan carrying 20 GB for a request the load then answered with a 400.
-    #
-    # The host-level precision gate is a DIFFERENT question from the one under test, and on a
-    # box with no CUDA and no torchao it answers 409 before the partition check is ever reached.
-    # Stubbing it keeps the availability refusal (a 400, raised by validate_load_request below)
-    # under test everywhere, including the Backend CI matrix that installs no torchao. Same stub
-    # the neighbouring route tests use; test_video_h3_te_quant.py covers the gate itself.
+    # Stub the host precision gate so the partition refusal is tested on CPU CI too.
     monkeypatch.setattr(
         video_module, "assert_video_precision_available", lambda fam, **kw: None, raising = False
     )
@@ -1618,7 +1511,6 @@ def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(cli
 
     served = _ask("int8")
     assert served.status_code == 200, served.json()
-    # Planned for the partition that was asked for, not the keyframe one it used to fall back to.
     assert seen["h3_task"] == "ref2va"
     assert seen["transformer_quant"] == "int8"
 
@@ -1626,17 +1518,12 @@ def test_video_download_plan_judges_a_quantized_reference_pick_per_partition(cli
     refused = _ask("nvfp4")
     assert refused.status_code == 400
     detail = refused.json()["detail"]
-    # Named per task: "unavailable" here is a claim about ref2va, not about the whole family.
     assert "ref2va" in detail
-    # A refusal that does not name the alternative just moves the dead end earlier.
     assert "int8" in detail and "fp8" in detail
     assert not seen, "download_plan must not be reached for a refused pick"
 
 
 def test_video_download_plan_refuses_an_unsupported_combination_before_staging(client, monkeypatch):
-    # The whole point of moving the refusal into validation: this pick used to return a 200 plan,
-    # stage ~98.7 GB, and only then fail inside the loader. Runs the REAL validation rather than
-    # the fake backend's mirror of it, since the rule under test lives in the real one.
     backend = _shared_setup_2(monkeypatch)
 
     def _plan(model_path, **kwargs):  # pragma: no cover - reaching this IS the regression
@@ -1656,14 +1543,11 @@ def test_video_download_plan_refuses_an_unsupported_combination_before_staging(c
 
     assert resp.status_code == 400
     detail = resp.json()["detail"]
-    # A refusal that does not name the alternative just moves the dead end earlier.
     assert "MiniMaxAI/MiniMax-H3" in detail
     assert "unsloth/MiniMax-H3-GGUF" in detail
 
 
 def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, monkeypatch):
-    # And the quant-keyed refusal has to fire on THIS route too, which needs the route to forward
-    # transformer_quant into validation: it is the route that stages the download.
     backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,
@@ -1686,15 +1570,6 @@ def test_video_download_plan_refuses_an_unavailable_transformer_quant(client, mo
 
 
 def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypatch):
-    # One of the quant-keyed refusals is task-keyed: a pre-quantized H3 denoiser belongs to ONE
-    # partition, so a scheme whose only artifact is the keyframe one must not be seeded into the
-    # reference workflow. Validation only sees the task when the route forwards h3_task, and this
-    # is the route that stages the download -- so without it the plan pulls the 66 GB dense
-    # transformer_ref/ AND the wrong-partition quant before /video/load rejects the same request.
-    # nvfp4 stands in for that pair here: int8 and fp8 both ship a reference artifact now, so
-    # neither is refused any more (test_a_quantized_reference_load_resolves_the_reference_denoiser
-    # in test_video_backend.py pins that), and the per-scheme table in test_video_prequant.py
-    # covers a family where the pair itself is missing.
     backend = _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         backend,
@@ -1716,19 +1591,11 @@ def test_video_download_plan_refuses_a_quantized_reference_task(client, monkeypa
     assert resp.status_code == 400
     detail = resp.json()["detail"]
     assert "nvfp4" in detail
-    # Naming the way out, not just the dead end.
     assert "int8" in detail and "fp8" in detail
 
 
 def test_video_download_plan_hands_the_h3_task_to_validation(client, monkeypatch):
-    # The other side of the same gate. The refusal above would still pass if a refactor dropped
-    # the forwarding and something else happened to reject that pick, so assert the forwarding
-    # itself -- and that fl2va, which is exactly what the hosted checkpoints are, still plans.
-    #
-    # Validation is stubbed rather than real here because its later transformer_class probe
-    # imports the family's diffusers module, which is an environment question and not this
-    # test's; the negative case above exercises the real validator, since the ref2va refusal
-    # fires before that probe.
+    # Validation is stubbed: its transformer_class probe imports diffusers.
     backend = video_module.get_video_backend()
     fam = video_module._detect_load_family("MiniMaxAI/MiniMax-H3", None, None)
     assert fam is not None
@@ -1765,10 +1632,7 @@ def test_video_download_plan_hands_the_h3_task_to_validation(client, monkeypatch
 
 
 def test_the_training_guard_runs_before_the_precision_probe(client, monkeypatch):
-    # The precision gate's support check quantises a real Linear on the GPU and synchronises, so
-    # running it first initialises a CUDA context and allocates next to the training subprocess
-    # for a load that is about to be refused anyway -- and an OOM there under that contention is
-    # not a verdict on the scheme. The image route already guards first; this one now does too.
+    # The precision check opens a CUDA context, so the training guard must run first.
     import routes.video as video_routes
 
     def _refuse_training() -> None:
@@ -1830,8 +1694,6 @@ def test_the_video_gate_leaves_a_measured_memory_mode_alone(monkeypatch):
 
 
 def test_video_download_plan_sizes_its_file_set_for_the_selected_card(client, monkeypatch):
-    # The H3 planner sets its denoiser partition and memory policy from device capacity, so a
-    # plan sized against the default card stages the wrong weights.
     import types
 
     import core.inference.diffusion_device as devmod
@@ -1865,7 +1727,6 @@ def test_video_download_plan_sizes_its_file_set_for_the_selected_card(client, mo
     )
     assert resp.status_code == 200
     assert seen["gpu_ordinal"] == 1
-    # One ranking for the request, shared by the precision preflight and the plan.
     assert ranked == [[0, 1]]
 
 
@@ -1899,8 +1760,6 @@ def test_video_download_plan_refuses_a_gpu_index_this_host_does_not_have(client,
 def test_video_download_plan_still_refuses_a_bad_gpu_while_training_holds_the_cards(
     client, monkeypatch
 ):
-    # Same rule as the image twin: the training guard bars the ranking, not the validation,
-    # which reads the mask and nvidia-smi and opens no CUDA context.
     import types
 
     import core.inference.diffusion_device as devmod

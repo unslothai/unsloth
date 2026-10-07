@@ -5,8 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-# Mirror the frontend's 64 KiB chat-template contract (per-model-config.ts) at the API boundary:
-# MaxBodyMiddleware only caps the whole request body, not this field.
+# Mirrors the frontend's 64 KiB limit; MaxBodyMiddleware caps only the whole body.
 MAX_CHAT_TEMPLATE_BYTES = 65_536
 
 

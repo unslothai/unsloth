@@ -102,7 +102,7 @@ def test_bundle_key_tracks_the_pin(monkeypatch):
     assert pinned["inductor"] == {"dynamic_scale_rblock": False}
     monkeypatch.setenv(_KILL_SWITCH, "1")
     unpinned = _fingerprint()
-    # Kill switch = the pre-pin key, so bundles compiled with inductor's default still hit under it.
+    # kill switch = pre-pin key, so bundles compiled with inductor's default still hit
     assert "inductor" not in unpinned
     env = cache.environment_fingerprint()
     assert cache.cache_key(env, pinned) != cache.cache_key(env, unpinned)
@@ -198,7 +198,6 @@ def test_pinned_reduction_has_one_block_size_and_the_default_has_two(monkeypatch
         pytest.skip(
             "this GPU does not give the fused norm kernel a second R0_BLOCK (register budget not exceeded)"
         )
-    # The second launcher is the same tile with half the reduction block.
     assert any(len(b) == 2 and b[1] == 2 * b[0] for b in default_seen), default_seen
     small, large = next(b for b in default_seen if len(b) == 2)
     _, sha_small = _run_counting_reduction_autotunes(
@@ -207,7 +206,7 @@ def test_pinned_reduction_has_one_block_size_and_the_default_has_two(monkeypatch
     _, sha_large = _run_counting_reduction_autotunes(
         monkeypatch, tmp_path / "large", force_r0_block = large
     )
-    # Which one wins the per-process benchmark changes the bits: that is the cross-server drift.
+    # the per-process benchmark winner changes the bits: the cross-server drift
     assert sha_small != sha_large
     _compile()
     pinned_seen, sha_pinned = _run_counting_reduction_autotunes(monkeypatch, tmp_path / "pinned")
@@ -215,7 +214,7 @@ def test_pinned_reduction_has_one_block_size_and_the_default_has_two(monkeypatch
     assert sha_pinned in (sha_small, sha_large)
 
 
-# Per-family reduction-config filter (diffusion_speed.pin_reduction_configs): per compile only, never the global knob.
+# per compile only, never the global inductor knob
 
 _FILTER = "test_configs.force_filter_reduction_configs"
 _HAS_FILTER = hasattr(_INDUCTOR.test_configs, "force_filter_reduction_configs")
@@ -250,7 +249,7 @@ def _filter_reaching_compile(monkeypatch, family):
 
 
 def test_only_ltx_opts_into_the_reduction_filter(monkeypatch):
-    # Off sm120, where the image families' arch-scoped opt-in (test_diffusion_reduction_filter_arch.py) is inert.
+    # off sm120, where the image families' arch-scoped opt-in is inert
     monkeypatch.setattr(cc, "_device_capability", lambda: (10, 0))
     assert _filter_reaching_compile(monkeypatch, _family("ltx-2")) is True
     for name in ("hunyuanvideo-1.5", "wan2.2-ti2v-5b", "flux.1"):
@@ -274,7 +273,7 @@ def test_opted_in_compile_carries_the_filter_and_leaves_the_process_knob(max_aut
     _INDUCTOR.test_configs.force_filter_reduction_configs = False
     kwargs = _compiled_kwargs(max_autotune, filter_reductions = True)
     assert kwargs["options"][_FILTER] is True
-    # torch.compile takes mode or options: max's mode is folded into the options.
+    # torch.compile takes mode or options, so max's mode is folded into options
     assert "mode" not in kwargs
     if max_autotune:
         assert kwargs["options"]["max_autotune"] is True
@@ -463,7 +462,6 @@ def test_filter_option_gives_the_norm_one_config(monkeypatch, tmp_path, build):
     small, large = min(default_seen[0]), max(default_seen[0])
     _, sha_small = _run_norm(monkeypatch, tmp_path / "small", force_r0_block = small, build = build)
     _, sha_large = _run_norm(monkeypatch, tmp_path / "large", force_r0_block = large, build = build)
-    # The per-process benchmark decides the summation order: that is the cross-server drift.
     assert sha_small != sha_large
     kwargs = {"fullgraph": True, "dynamic": False}
     assert ds.pin_reduction_configs(kwargs) is True
@@ -472,7 +470,6 @@ def test_filter_option_gives_the_norm_one_config(monkeypatch, tmp_path, build):
     )
     assert pinned_seen == []
     assert sha_pinned in (sha_small, sha_large)
-    # Per compile only: the same process compiling without the option still sees inductor's configs.
     assert _INDUCTOR.test_configs.force_filter_reduction_configs is False
     after_seen, _ = _run_norm(monkeypatch, tmp_path / "after", build = build)
     assert after_seen == default_seen

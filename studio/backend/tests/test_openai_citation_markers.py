@@ -58,7 +58,6 @@ def test_marker_rewritten_to_link_when_annotation_known():
 def test_unknown_source_marker_dropped_silently():
     text = f"Foo {_marker('turn9view9')} bar."
     out = _replace_openai_citation_markers(text, [])
-    # Marker stripped, no garbled "E202" glyph leaks, surrounding text intact.
     assert not _has_marker_codepoints(out)
     assert "E202" not in out
     assert "turn9view9" not in out
@@ -88,7 +87,7 @@ def test_marker_with_locator_resolves():
     ]
     out = _replace_openai_citation_markers(text, citations)
     assert "[[1]](https://example.com/doc.txt)" in out
-    assert "L8-L13" not in out  # locator detail dropped; we just link.
+    assert "L8-L13" not in out
     assert not _has_marker_codepoints(out)
 
 
@@ -101,7 +100,6 @@ def test_mixed_known_and_unknown_markers():
     ]
     out = _replace_openai_citation_markers(text, citations)
     assert "[[1]](https://example.com/known)" in out
-    # Unknown markers leave no trace, but surrounding prose stays.
     assert "Known" in out and "unknown" in out
     assert not _has_marker_codepoints(out)
     assert "E202" not in out
@@ -120,7 +118,7 @@ def test_idempotent_on_pre_stripped_text():
 @pytest.mark.parametrize(
     "citation",
     [
-        {"url": "https://example.com/a"},  # no source_id at all
+        {"url": "https://example.com/a"},
         {"source_id": None, "url": "https://example.com/b"},
         {"source_id": "", "url": "https://example.com/c"},
     ],
@@ -128,7 +126,6 @@ def test_idempotent_on_pre_stripped_text():
 def test_citation_without_source_id_does_not_crash(citation):
     text = f"X {_marker('turnXviewY')} Y"
     out = _replace_openai_citation_markers(text, [citation])
-    # No mapping, marker stripped. Crash-free is the contract.
     assert not _has_marker_codepoints(out)
     assert "turnXviewY" not in out
 
@@ -147,8 +144,6 @@ def test_multiple_source_id_aliases_resolve_to_same_url():
         },
     ]
     out = _replace_openai_citation_markers(text, citations)
-    # All three aliases collapse onto citation [1] -- same URL, so showing
-    # three different numbers would mislead.
     assert out.count("[[1]](https://example.com/paris)") == 3
     assert not _has_marker_codepoints(out)
 
@@ -170,9 +165,7 @@ def test_source_ids_list_and_legacy_source_id_both_resolve():
     assert not _has_marker_codepoints(out)
 
 
-# _rewrite_citation_markers_partial: deferred-annotation tests. OpenAI emits
-# url_citation annotations on a later SSE event; this helper reports
-# `has_unresolved` so the stream loop defers emission. See PR #5713 audit.
+# OpenAI emits url_citation annotations on a later SSE event, so has_unresolved defers emission.
 
 
 def test_partial_known_marker_resolves_and_clears_unresolved():
@@ -215,9 +208,6 @@ def test_partial_multi_source_partial_resolution_keeps_marker_pending():
     out, unresolved = _rewrite_citation_markers_partial(text, citations)
     assert unresolved is True
     assert cite in out
-    # End-of-stream force flush: drop the unresolved token, keep the resolved
-    # link. The streamer routes pending segments through
-    # `_replace_openai_citation_markers` at force=True for this.
     forced = _replace_openai_citation_markers(out, citations)
     assert "[[1]](https://example.com/y)" in forced
     assert "locator" not in forced
@@ -237,7 +227,6 @@ def test_partial_mixed_known_and_pending_markers_flags_unresolved():
     text = f"{known} {pending}"
     citations = [{"source_id": "known", "url": "https://example.com/k"}]
     out, unresolved = _rewrite_citation_markers_partial(text, citations)
-    assert unresolved is True  # the pending marker drives the flag
+    assert unresolved is True
     assert "[[1]](https://example.com/k)" in out
-    # The pending marker stays verbatim for the next pass.
     assert CITE_START in out and "pending" in out

@@ -156,7 +156,7 @@ def load_mentioned_skills(
     names = mentioned_skill_names(_text(messages[-1]))
     if not names:
         return
-    # @john is a person, not a skill: no card or approval. Known-but-unusable skills report unavailable.
+    # @john is a person, not a skill: no card or approval.
     try:
         known = list_skills()
     except (SkillError, OSError):
@@ -192,7 +192,6 @@ def load_mentioned_skills(
                 continue
         yield {**event, "status": "loading"}
         try:
-            # Re-validates enabled/account-scoped discovery; never a cached or paged read.
             content = read_skill_instructions(name)
             size = len(content.encode("utf-8"))
             existing = next(

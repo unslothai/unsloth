@@ -34,7 +34,6 @@ def flow_shift_overrides(config: Any, shift: float) -> Optional[dict]:
     if "flow_shift" in keys and config.get("use_flow_sigmas", True):
         return {"flow_shift": float(shift)}
     if "shift" in keys and "use_dynamic_shifting" in keys:
-        # FlowMatchEulerDiscrete: static shift, no resolution-dependent mu, no terminal stretch.
         overrides = {"shift": float(shift), "use_dynamic_shifting": False}
         if "shift_terminal" in keys:
             overrides["shift_terminal"] = None

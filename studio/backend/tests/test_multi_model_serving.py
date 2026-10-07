@@ -103,7 +103,6 @@ def test_request_model_name_picks_the_backend(backends):
     assert _routed("org/A-GGUF") == (None, primary)
     assert _routed(None) == (None, primary)
     assert extra.last_used > 0.0
-    # The primary wins a bare name both serve.
     model_slots.slots.append(
         model_slots.ExtraSlot(FakeLlama("org/A-GGUF", "Q8_0"), FakeOrchestrator(), "owner")
     )
@@ -151,7 +150,6 @@ def test_a_load_picks_its_slot(backends):
     assert _selected(LoadRequest(model_path = "org/C-GGUF")) is None
     served = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
     assert _selected(served) is extra
-    # The NPU backend is one per process: it takes the primary's seat even alongside.
     npu = LoadRequest(model_path = "lemonade:qwen3-0.6b-FLM", alongside = True)
     assert _selected(npu) is None
     assert _selected(alongside.model_copy(update = {"engine": "vllm"})) is None
@@ -162,10 +160,8 @@ def test_a_load_picks_its_slot(backends):
 def test_alongside_is_off_until_settings_turns_it_on(backends, monkeypatch):
     _, extra = backends
     monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: False)
-    # A model already kept alongside still reloads in its own slot.
     served = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True)
     assert _selected(served) is extra
-    # Any other load goes to the primary, and retires a kept model once nothing uses it.
     extra.refs += 1
     assert _selected(LoadRequest(model_path = "org/C-GGUF", alongside = True)) is None
     assert model_slots.slots == [extra]
@@ -211,10 +207,8 @@ def test_turning_the_setting_off_saves_first_and_unloads_after_the_reply(backend
     response = settings_routes.update_multi_model(
         settings_routes.MultiModelPayload(enabled = False), tasks, "s"
     )
-    # The saved value comes back before any teardown runs.
     assert response.enabled is False and model_slots.slots == [extra]
     asyncio.run(tasks())
-    # A teardown that fails is logged, not raised, and the slot stays counted.
     assert model_slots.slots == [] and model_slots.stuck == [extra] and model_slots.holds_vram()
 
 
@@ -226,7 +220,6 @@ def test_unload_drops_only_the_named_extra_slot(backends, monkeypatch):
     response = asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s"))
     assert response.status == "unloaded"
     assert primary.is_loaded and not extra.llama.is_loaded and model_slots.slots == []
-    # Tried, but the claim the primary holds stays.
     assert released == [False] and gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
@@ -278,7 +271,6 @@ def test_status_describes_the_named_slot_and_lists_the_rest(backends, monkeypatc
             active_model = "org/A-GGUF", loaded = ["org/A-GGUF", "org/held-hf"]
         )
 
-    # serving leaves out a model only held in memory behind the active one.
     monkeypatch.setattr(inf, "_slot_status", held_behind)
     status = asyncio.run(inf.get_status("s"))
     assert status.serving == ["org/A-GGUF", "org/B-GGUF"] and "org/held-hf" in status.loaded
@@ -287,7 +279,6 @@ def test_status_describes_the_named_slot_and_lists_the_rest(backends, monkeypatc
 
 
 def test_status_pairs_each_serving_model_with_the_checkpoint_to_select_it_by(backends, monkeypatch):
-    # A local model is listed under its label but selected, loaded and unloaded by its path.
     _, extra = backends
     local, twin = "/home/alice/models/B-local.gguf", "/home/alice/other/B-local.gguf"
     extra.llama = FakeLlama(local, "Q8_0")
@@ -308,7 +299,6 @@ def test_status_pairs_each_serving_model_with_the_checkpoint_to_select_it_by(bac
 
     monkeypatch.setattr(inf, "_slot_status", slot_status)
     status = asyncio.run(inf.get_status("s"))
-    # Two files sharing a label both stay listed, each with its own path.
     assert status.serving == ["org/A-GGUF", "B-local", "B-local"]
     assert status.serving_checkpoints == ["org/A-GGUF", local, twin]
 
@@ -544,7 +534,6 @@ def test_a_failed_slot_load_ends_its_attempt_even_when_the_slot_will_not_stop(
     request = LoadRequest(model_path = "org/missing-GGUF", alongside = True, load_request_id = "r1")
     with pytest.raises(RuntimeError):
         asyncio.run(inf.load_model_gated(request, None, "s"))
-    # Not left loading in /status, and the same request id can be retried.
     assert inf._pending_load_attempts == {}
     assert not any(key[1] == "r1" for key in inf._scoped_load_attempts)
 
@@ -601,7 +590,7 @@ def test_unloading_a_slot_waits_for_a_request_already_routed_to_it(backends, mon
     event = threading.Event()
 
     async def run(starts_generating):
-        extra.refs += 1  # another request routed here, not yet generating
+        extra.refs += 1
         seen = {}
 
         async def routed_request():
@@ -636,7 +625,6 @@ def test_unloading_a_slot_waits_for_a_reload_of_it_queued_on_the_gate(backends, 
     seen = {}
 
     async def reload():
-        # As load_model_gated: the load gate, a ref on the slot, then the lifecycle gate.
         async with model_load_gate():
             extra.refs += 1
             await asyncio.sleep(0.3)
@@ -651,7 +639,6 @@ def test_unloading_a_slot_waits_for_a_reload_of_it_queued_on_the_gate(backends, 
         await task
 
     asyncio.run(run())
-    # The reload finished on a slot still kept, and the unload ran after it.
     assert seen == {"still_kept": True}
     assert model_slots.slots == [] and not extra.llama.is_loaded
 
@@ -721,7 +708,6 @@ def test_reloading_a_kept_model_stops_only_its_own_chats(backends, monkeypatch):
 def test_training_sizes_and_frees_the_models_kept_alongside(backends, monkeypatch):
     primary, extra = backends
     primary.unload_model()
-    # A loaded one is in the free VRAM training reads; only a still-loading one is unsizable.
     summary = training_vram.summarize_resident_chat()
     assert summary["any"] and not summary["loading"]
     monkeypatch.setattr(model_slots, "loading", (extra, "org/D-GGUF"))
@@ -794,7 +780,6 @@ def test_a_routed_request_holds_its_slot_until_it_ends(backends):
 
     async def main():
         task = asyncio.create_task(request())
-        # Routing hops through a thread: wait for it, not a fixed number of loop turns.
         await routed.wait()
         seen["refs"] = extra.refs
         seen["victims"] = model_slots.eviction_victims(None, 5000)
@@ -808,8 +793,7 @@ def test_a_routed_request_holds_its_slot_until_it_ends(backends):
 
 
 def test_a_chat_run_holds_its_slot_after_its_post_has_answered(backends):
-    # A durable chat run's task starts inside POST /chat-runs, which answers 202 before the run routes
-    # and preprocesses; the slot must stay held through that window, not end with the POST.
+    # POST /chat-runs answers 202 before routing, so the slot must stay held past the POST.
 
     _, extra = backends
     seen = {}
@@ -853,7 +837,6 @@ def test_eviction_skips_other_gpus_and_victims_that_cannot_make_room(backends):
     model_slots.slots.append(other)
     assert model_slots.eviction_victims(None, 5000, (0,)) == [other]
     assert model_slots.eviction_victims(None, 5000) == [extra]
-    # Victims that together cannot make room are left loaded.
     assert model_slots.eviction_victims(None, 20000) == []
 
 
@@ -1107,7 +1090,6 @@ def test_active_generations_for_a_model_lists_only_its_chats(backends):
         assert get("?model=org/B-GGUF") == ["chat-on-B"]
         assert get("?model=org/A-GGUF") == ["chat-on-A"]
         assert sorted(get("")) == ["chat-on-A", "chat-on-B"]
-        # A name nothing serves (a row just evicted): its unload stops nothing.
         assert get("?model=org/gone-GGUF") == []
         extra.llama.effective_parallel_slots = 4
         slots = client.get("/api/inference/active-generations?model=org/B-GGUF").json()
@@ -1118,10 +1100,8 @@ def test_an_integrated_gpu_keeps_its_free_memory_next_to_a_loaded_model():
     from core.inference.llama_cpp import _net_of_held_vram
 
     held = {0: 900}
-    # Discrete: capped at total less what the other model planned.
     assert _net_of_held_vram([(0, 20_000, 24_000)], held) == [(0, 20_000, 24_000)]
     assert _net_of_held_vram([(0, 23_500, 24_000)], held) == [(0, 23_100, 24_000)]
-    # Integrated (total 0, shared RAM): the free reading is left alone, not zeroed.
     assert _net_of_held_vram([(0, 60_000, 0)], held) == [(0, 60_000, 0)]
     assert _net_of_held_vram([(0, 60_000, 0)], {}) == [(0, 60_000, 0)]
 
@@ -1134,11 +1114,8 @@ def test_a_model_that_fits_one_card_takes_one_no_other_model_runs_on():
     pick = lambda **kw: LlamaCppBackend._select_gpus(
         10 * 1024**3, gpus, usable_fraction = 0.9, total_by_idx = total, **kw
     )
-    # Alone, the most free card, as before.
     assert pick() == ([0], False)
-    # Card 0 serves another model: the next card that holds it alone.
     assert pick(shared = frozenset({0})) == ([1], False)
-    # Every card that could hold it is shared: still the most free one, never a split.
     assert pick(shared = frozenset({0, 1})) == ([0], False)
     assert LlamaCppBackend._select_gpus_split_aware(
         10 * 1024**3, gpus, usable_fraction = 0.9, total_by_idx = total, shared = frozenset({0})
@@ -1226,7 +1203,6 @@ def test_turning_the_setting_off_drops_the_claim_its_kept_models_held(backends, 
 
     primary, extra = backends
     _hold_chat_claim(monkeypatch)
-    # The primary was ejected earlier and kept CHAT for the model still loaded beside it.
     primary.unload_model()
     monkeypatch.setattr(settings_routes, "set_multi_model_enabled", lambda value: value)
     tasks = BackgroundTasks()
@@ -1457,12 +1433,10 @@ def test_training_sees_and_retries_a_kept_model_that_failed_to_unload(backends, 
     _hold_chat_claim(monkeypatch)
     inf._release_chat_for_zero_vram_primary()
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
-    # Out of routing, but its server may still hold VRAM: training counts it and stops on it.
     assert training_vram.summarize_resident_chat()["gguf"] == "org/B-GGUF"
     monkeypatch.setattr(training_vram, "summarize_resident_stt", lambda: {"any": False})
     with pytest.raises(training_vram.ManagedEngineStillRunning):
         training_vram.coordinate_models_for_training(lambda: (False, {}))
-    # Once it stops, the retry clears it.
     monkeypatch.delattr(extra.llama, "unload_model")
     assert training_vram.free_kept_models_for_training("test") == ["kept:org/B-GGUF"]
     assert model_slots.stuck == [] and not extra.llama.is_active
@@ -1476,7 +1450,6 @@ def test_a_kept_worker_that_outlives_its_kill_stays_tracked(backends, monkeypatc
     extra.orchestrator._cleanup = lambda: setattr(extra.orchestrator, "active_model_name", None)
     with pytest.raises(RuntimeError):
         model_slots.unload_extra_models(strict = True)
-    # Still priced for VRAM and retried, though _cleanup cleared its model name.
     assert model_slots.slots == [] and model_slots.stuck == [extra] and model_slots.holds_vram()
     alive[0] = False
     model_slots.unload_extra_models(strict = True)

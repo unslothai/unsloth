@@ -22,7 +22,6 @@ logger = structlog.get_logger(__name__)
 
 # 24h TTL keeps the GitHub call off the hot path and within rate limits.
 RELEASE_CACHE_TTL_SECONDS = 24 * 60 * 60
-# Briefly memoize failed lookups so recurring status reads do not retry an unreachable GitHub endpoint on every request.
 RELEASE_FAILURE_CACHE_TTL_SECONDS = 60
 GITHUB_RATE_LIMITED_DEFAULT_SECONDS = 15 * 60
 # A skewed or proxied reset header is held to one primary window.
@@ -30,7 +29,7 @@ GITHUB_RATE_LIMIT_MAX_SECONDS = 60 * 60
 # Secondary limits can 403 with no rate headers; only the body names them.
 _RATE_LIMIT_BODY_MARKERS = ("rate limit", "abuse detection")
 
-# One lockout for the whole process: the quota is per token or per IP, not per repo.
+# One lockout per process: the quota is per token or IP, not per repo.
 _api_rate_limited_lock = threading.Lock()
 _api_rate_limited_until: float = 0.0
 
@@ -256,7 +255,7 @@ def latest_published_release(
     """Latest release tag with optional short-lived failure caching. Successes use the 24h memory and disk cache; supplying ``failed_at`` also caches failures for ``RELEASE_FAILURE_CACHE_TTL_SECONDS``, while omitting it keeps retry-on-every-call behavior."""
     if not repo:
         return None
-    # Success timestamps persist to disk and need wall time. Failure timestamps are process-local and use monotonic time so clock changes cannot extend them.
+    # Failure timestamps use monotonic time so clock changes cannot extend them.
     wall_now = time.time()
     if not force_refresh:
         last_failure = failed_at.get(repo) if failed_at is not None else None
@@ -280,7 +279,6 @@ def latest_published_release(
     if latest is None:
         if failed_at is not None:
             failed_at[repo] = time.monotonic()
-        # Keep the last-good disk value rather than poison it with None.
         disk = load_disk_cache(repo, cache_dir())
         if disk:
             memo[repo] = disk
@@ -403,5 +401,5 @@ def reset_caches(
     if drop_disk:
         import shutil
 
-        # cache_dir() is a freshness-only subdir re-created on the next save_disk_cache, and ignore_errors so a missing or locked dir cannot break an otherwise successful install.
+        # ignore_errors: a locked cache dir must not break a successful install.
         shutil.rmtree(cache_dir(), ignore_errors = True)

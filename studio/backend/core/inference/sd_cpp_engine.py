@@ -87,20 +87,14 @@ def _diagnostic_tail(
 # sd-cli (sd-cli.exe on Windows); older builds shipped ``sd`` -- both probed on PATH.
 _BINARY_STEM = "sd-cli"
 _LEGACY_STEM = "sd"
-# The first stable-diffusion.cpp release already exposed all three. Together they distinguish its oldest help text
-# (before it printed the project name) from unrelated tools also called ``sd``.
+# Together these tell old stable-diffusion.cpp help text apart from unrelated tools named ``sd``.
 _LEGACY_HELP_MARKERS = ("--negative-prompt", "--cfg-scale", "--steps")
-# The persistent HTTP server target, shipped next to sd-cli in both prebuilt and cmake builds.
 _SERVER_STEM = "sd-server"
 
-# ownership marker written by install_sd_cpp_prebuilt.install and required by setup.sh / uninstall.sh / uninstall.ps1
-# before they delete a tree
+# Ownership marker; setup.sh / uninstall.sh / uninstall.ps1 require it before deleting a tree.
 OWNER_MARKER = ".unsloth-studio-owned"
 
-# Ceiling for one native run. The native engine exists FOR slow CPU hosts: on GPU-less CI runners a 512x512 4-step
-# Q2_K generation took 900 s on Linux and 1465 s on Windows, so a 30-minute cap killed jobs that were still
-# progressing. It matches the Images page's own SETTLE_MAX_MS (6 h), so it only stops a WEDGED process from holding
-# the lock forever; cancel_event is the user-facing abort.
+# Only stops a WEDGED process: CPU-only runs took up to ~25 min. Matches the Images page SETTLE_MAX_MS.
 NATIVE_GENERATION_TIMEOUT_S = 6 * 60 * 60.0
 
 _PRIVATE_TEXT_OPTIONS = frozenset({"--prompt", "--negative-prompt", "-p", "-n"})
@@ -186,14 +180,11 @@ def _sd_cpp_command_summary(cmd: list[str], *, default_mode: str = "img_gen") ->
     return " ".join(fields)
 
 
-# sd-cli redraws its progress bar IN PLACE. Each redraw is one printf + fflush shaped "\r<bar> <step>/<steps> -
-# <speed>\033[K", with a trailing newline only on the final step of a phase. So the carriage return LEADS the record and
-# the erase-to-end-of-line CLOSES it.
+# sd-cli redraws progress in place: "\r<bar> <step>/<steps> - <speed>\033[K", so \r LEADS a record
+# and the erase-to-EOL CLOSES it.
 _ANSI_ERASE = "\x1b[K"
-# Any CSI escape (the erase above, plus colour runs some builds emit), stripped before a record reaches on_log / the
-# error tail: an escape in the middle of a line corrupts both.
+# Escapes mid-line corrupt on_log and the error tail.
 _ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-# one read1() per redraw in practice; large enough that a burst of finished lines costs one read
 _READ_CHUNK = 4096
 
 
@@ -222,7 +213,6 @@ def split_progress_records(buf: str) -> tuple[list[str], str]:
         ch = buf[i]
         if ch == "\r" or ch == "\n":
             records.append(buf[start:i])
-            # CRLF is one terminator, not two (Windows sd-cli builds).
             if ch == "\r" and i + 1 < n and buf[i + 1] == "\n":
                 i += 1
             i += 1
@@ -266,7 +256,6 @@ def iter_sd_cpp_records(stream) -> Iterator[str]:
         records, pending = split_progress_records(pending)
         for rec in records:
             yield strip_ansi(rec)
-    # EOF: hand over any final line the child left unterminated.
     if pending:
         yield strip_ansi(pending)
 
@@ -291,7 +280,6 @@ def _terminate(proc: "subprocess.Popen") -> None:
             proc.kill()
         except Exception:  # noqa: BLE001 -- best-effort teardown
             pass
-    # reap the killed child: callers raise right after _terminate
     try:
         proc.wait(timeout = 5)
     except Exception:  # noqa: BLE001 -- best-effort reap; never block teardown
@@ -358,19 +346,11 @@ def _first_file(paths: list[Path]) -> Optional[str]:
     return None
 
 
-# Identity verdicts, keyed by the file itself rather than by the path alone, so replacing a binary in place re-probes
-# it while a rebuild elsewhere on PATH is unaffected. Bounded: an Unsloth session sees a handful of candidates, and a
-# runaway key set would only come from a path being rewritten under us, which is exactly the case that must not be
-# served from here.
+# Keyed by file stat, so an in-place replace re-probes while a rebuild elsewhere on PATH is unaffected.
 _IDENTITY_MEMO: dict[tuple[str, int, int, int], tuple[bool, float]] = {}
 _IDENTITY_MEMO_LOCK = threading.Lock()
 _IDENTITY_MEMO_MAX = 32
-# How long a verdict may answer for. The key catches the replacements it can SEE, but no stat tuple is a content hash:
-# on Windows ``st_ctime`` is the CREATION time, which an in-place overwrite preserves, so a same-sized write that also
-# restores mtime is invisible to it. Hashing the file on every lookup would trade the exec this memo exists to avoid
-# for a read of the whole binary, on a path walked for every load. A short life is the cheaper guarantee and it is not
-# platform-specific: whatever the key misses expires within a minute, which is long enough for the several resolutions
-# inside one load sequence.
+# No stat tuple is a content hash (Windows st_ctime survives overwrite), so verdicts also expire.
 _IDENTITY_MEMO_TTL_S = 60.0
 
 
@@ -452,8 +432,7 @@ def sd_cpp_binary_identifies(binary: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         help_text = ""
     identified = help_text_identifies_sd_cpp(help_text)
-    # Identifying output settles it whatever the exit code (old builds print usage and exit 1). Otherwise only a clean
-    # exit is evidence of anything; rc 127 from the dynamic loader is not.
+    # Old builds print usage and exit 1; rc 127 from the dynamic loader is not evidence.
     decisive = identified or returncode == 0
     if key is not None and decisive:
         with _IDENTITY_MEMO_LOCK:
@@ -631,22 +610,20 @@ def _find_binary(
         if hit:
             return hit
 
-    # 3. Default install root: <studio home>/stable-diffusion.cpp (honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the
-    # installer so side-by-side Unsloth instances stay isolated), else ~/.unsloth/....
+    # 3. Default install root (honors UNSLOTH_STUDIO_HOME / STUDIO_HOME like the installer).
     default_root = managed_install_root()
     hit = _first_file(_layout_candidates(default_root, layout_stem))
     if hit:
         return hit
 
-    # 3b. A tree an older build installed beside the Unsloth home. Marker-gated (see legacy_sibling_install_root), so
-    # only a real previous install is picked up here.
+    # 3b. Marker-gated legacy tree beside the Unsloth home.
     legacy_root = legacy_sibling_install_root()
     if legacy_root is not None:
         hit = _first_file(_layout_candidates(legacy_root, layout_stem))
         if hit:
             return hit
 
-    # 4. In-tree developer build: <repo_root>/stable-diffusion.cpp.
+    # 4. In-tree developer build.
     in_tree = in_tree_install_root()
     if in_tree is not None:
         hit = _first_file(_layout_candidates(in_tree, layout_stem))
@@ -842,7 +819,7 @@ class SdCppEngine:
     def _prepare_out(output_path: str) -> Path:
         out = Path(output_path)
         out.parent.mkdir(parents = True, exist_ok = True)
-        # drop a stale file so the post-run is_file() check proves THIS run produced the image
+        # Drop a stale file so the post-run is_file() check proves THIS run produced the image.
         out.unlink(missing_ok = True)
         return out
 
@@ -872,9 +849,7 @@ class SdCppEngine:
             logger.info("sd-cli run started: %s", summary)
 
         t0 = time.time()
-        # A generation admitted before the quit can still reach this Popen after the
-        # shutdown sweep has taken its snapshot, and sd-cli would then keep running with
-        # nothing left to reap it, holding VRAM past the app.
+        # A generation admitted before quit can reach Popen after the shutdown sweep snapshot.
         if is_process_shutting_down():
             raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
         proc = subprocess.Popen(
@@ -885,18 +860,12 @@ class SdCppEngine:
             encoding = "utf-8",
             errors = "replace",
             env = run_env,
-            # Own session/process group so cancellation/timeout kills the whole tree (POSIX).
             start_new_session = (os.name == "posix"),
-            # Bind the child to the parent's lifetime (PR_SET_PDEATHSIG) so a parent crash cannot orphan sd-cli holding
-            # VRAM/RAM.
             **child_popen_kwargs(),
         )
-        # the kwargs above are empty on macOS, so record it too, else a crash mid-generation leaves sd-cli holding VRAM
-        # with nothing able to find it
+        # child_popen_kwargs is empty on macOS, so record the pid for the shutdown sweep too.
         adopt_pid(proc.pid)
-        # Recheck once the pid is recorded, for the window between the gate above and this
-        # record. Adoption ran first, so the child killed here was in the sweep record for
-        # as long as it existed.
+        # Recheck after recording: covers the window between the gate above and adopt_pid.
         if is_process_shutting_down():
             logger.info("shutdown began during the spawn; killing the new sd-cli")
             _terminate(proc)
@@ -923,7 +892,6 @@ class SdCppEngine:
         stdout_done = False
         try:
             while True:
-                # Cancellation: kill the process tree and signal cancelled, not failure.
                 if cancel_event is not None and cancel_event.is_set() and proc.poll() is None:
                     _terminate(proc)
                     raise SdCppCancelled("sd-cli generation was cancelled.")
@@ -969,7 +937,6 @@ class SdCppEngine:
 ENGINE_DIFFUSERS = "diffusers"
 ENGINE_SD_CPP = "sd_cpp"
 
-# Backends diffusers serves well with GPU acceleration; everything else is native-engine territory.
 _GPU_BACKENDS = frozenset({"cuda", "rocm", "xpu"})
 
 

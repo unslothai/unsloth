@@ -139,7 +139,7 @@ def test_repeated_open_close_does_not_accumulate_threads(tiny):
 
 
 def test_repeated_open_close_does_not_accumulate_descriptors(tiny):
-    for i in range(5):  # warm up: the first loops allocate lazily
+    for i in range(5):
         call_tool_sync(HTTP_URL, None, "t", {}, scope = f"warm-{i}")
         close_mcp_sessions()
     baseline = _session_threads()
@@ -150,8 +150,7 @@ def test_repeated_open_close_does_not_accumulate_descriptors(tiny):
         close_mcp_sessions()
     _settle(lambda: _session_threads() <= baseline)
     gc.collect()
-    # An event loop costs a couple of descriptors, so allow slack for scheduling
-    # rather than demanding an exact match; a leak shows up as growth per cycle.
+    # An event loop costs a few descriptors; a leak shows up as growth per cycle.
     assert _open_fds() <= before + 4, f"descriptors grew {before} -> {_open_fds()}"
 
 
@@ -164,8 +163,7 @@ def test_every_cached_client_is_exited_on_close(tiny):
 
 
 def test_the_cache_stays_within_its_cap(monkeypatch, tiny):
-    # Thread counts are process-global and other modules in the run may still be
-    # winding sessions down, so compare against a baseline rather than zero.
+    # Thread counts are process-global, so compare against a baseline rather than zero.
     before = _session_threads()
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 3)
     for i in range(10):
@@ -192,8 +190,7 @@ def test_key_locks_do_not_pile_up(tiny):
 
 
 def test_a_close_with_nothing_cached_leaves_no_tombstone(tiny):
-    # Scoped to this url: the generation maps are module-global and earlier tests
-    # in the same process legitimately leave entries for servers they did cache.
+    # The generation maps are module-global and earlier tests leave entries, so use a fresh url.
     url = "https://never-used.example.test/mcp"
     cfg = mcp_client._cfg_close_key(url, None)
     url_key = mcp_client._url_close_key(url)

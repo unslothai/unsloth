@@ -103,7 +103,6 @@ def test_a_definition_that_does_not_verify_is_removed_and_skipped(host, tmp_path
     workdir = _workdir(tmp_path)
     lease = mxc_drive_alias.acquire(workdir)
     assert lease.letter == "X"
-    # Removal is exact-match on our own target, so the misdirected definition stays for its owner.
     assert host.query("Z") == "\\??\\C:\\elsewhere"
     assert ("Z", "C:\\elsewhere") not in host.removed
 
@@ -115,7 +114,7 @@ def test_concurrent_launches_of_one_workdir_share_a_letter(host, tmp_path):
     other = mxc_drive_alias.acquire(_workdir(tmp_path, "other"))
     assert first.letter == second.letter == "Z" and other.letter == "Y"
     first.release()
-    first.release()  # idempotent: a second release must not drop the other lease
+    first.release()
     assert host.query("Z") == "\\??\\" + workdir
     second.release()
     assert host.query("Z") is None
@@ -130,7 +129,6 @@ def test_a_letter_redefined_by_someone_else_is_left_alone(host, tmp_path):
     again = mxc_drive_alias.acquire(workdir)
     assert again.letter == "Y"
     lease.release()
-    # The other definition stays in effect; ours under it is removed, so it cannot resurface later.
     assert host.definitions("Z") == ["\\??\\C:\\other-owner"]
     again.release()
     assert host.query("Y") is None
@@ -216,7 +214,6 @@ def test_an_unwritable_record_undoes_the_mapping(host, tmp_path, monkeypatch):
 def test_a_record_temp_file_that_cannot_be_removed_still_undoes_the_mapping(
     host, tmp_path, monkeypatch
 ):
-    # Security software holding the new file: the replace and the cleanup both fail.
     real_replace, real_unlink = os.replace, Path.unlink
 
     def held(path, *args, **kwargs):
@@ -263,9 +260,6 @@ def test_release_runtime_drops_the_alias():
     mxc_adapter.release_runtime(proc)
     mxc_adapter.release_runtime(proc)
     assert lease.released == 1
-
-
-# prepare() wiring: only a cmd Terminal launch gets an alias, and it is released on every path.
 
 
 @pytest.fixture(autouse = True)

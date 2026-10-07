@@ -22,11 +22,9 @@ class BearerTokenMiddleware:
         if not token or not token.strip():
             raise ValueError("Unsloth MCP bearer token must be a non-empty value")
         if not token.isascii():
-            # A non-ASCII token cannot be sent in an HTTP header; reject it here.
             raise ValueError("Unsloth MCP bearer token must contain ASCII characters only")
         self.app = app
-        # Compare on raw header bytes: str hmac.compare_digest raises on non-ASCII input, which would
-        # surface as a 500 instead of a clean 401.
+        # Compare bytes: str compare_digest raises on non-ASCII (a 500, not a 401).
         self.expected = token.encode("utf-8")
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -108,7 +106,7 @@ def create_studio_mcp() -> FastMCP:
             "training": _dump(training),
             "export": _dump(export),
             "inference": _dump(inference),
-            # Off-loop: reaches hardware detection, which blocks on the warm's torch import.
+            # Off-loop: hardware detection blocks on the torch import.
             "hardware": await asyncio.to_thread(get_gpu_utilization),
         }
 
@@ -153,7 +151,7 @@ def create_studio_mcp() -> FastMCP:
         """List completed and stopped training runs, newest first."""
         from routes.training_history import list_training_runs as list_runs
 
-        # Clamp here (direct call skips Query bounds); a negative LIMIT = no limit.
+        # Direct call skips Query bounds; a negative LIMIT means no limit.
         limit = _clamp(limit, 1, 200)
         offset = max(0, offset)
         return _dump(await list_runs(limit = limit, offset = offset, current_subject = "mcp"))
@@ -164,8 +162,7 @@ def create_studio_mcp() -> FastMCP:
         from models.data_recipe import RecipePayload
         from routes.data_recipe.validate import validate
 
-        # Direct call, so the ViaApiKey dependency never runs and its `= False` default would read as a UI
-        # session; this surface is a remote static bearer.
+        # Direct call: ViaApiKey never runs, so pass the remote-bearer flag explicitly.
         return _dump(validate(RecipePayload(recipe = recipe), via_api_key = True))
 
     @mcp.tool
@@ -183,7 +180,6 @@ def create_studio_mcp() -> FastMCP:
         """Read a bounded page of generated Data Recipe rows."""
         from routes.data_recipe.jobs import job_dataset
 
-        # Clamp here (direct call skips FastAPI's Query bounds).
         limit = _clamp(limit, 1, 500)
         offset = max(0, offset)
         return _dump(job_dataset(job_id, limit = limit, offset = offset))
@@ -210,7 +206,7 @@ def create_studio_mcp() -> FastMCP:
         from models import LoadCheckpointRequest
         from routes.export import load_checkpoint as load
 
-        # Omit an unset load_in_4bit so the backend can pick 16-bit for a full fine-tune.
+        # Omit unset load_in_4bit so a full fine-tune can pick 16-bit.
         optional = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
         request = LoadCheckpointRequest(
             checkpoint_path = checkpoint_path,

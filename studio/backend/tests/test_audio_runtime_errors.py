@@ -288,7 +288,6 @@ def test_runtime_tail_redacts_before_the_cut():
     out = sanitize_runtime_tail(text)
     assert len(out) <= 280
     assert "someone" not in out and "private" not in out
-    # Cutting the raw text first left the path without its leading "/".
     raw = text[-280:]
     assert "private" in raw
 

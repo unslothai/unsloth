@@ -26,7 +26,6 @@ from utils.utils import (
     st_repo_id_candidates,
 )
 
-# Minimal sentence-transformers modules.json (the marker the gate keys on).
 MODULES_JSON = (
     '[{"idx": 0, "name": "0", "path": "", "type": "sentence_transformers.models.Transformer"}]'
 )
@@ -134,9 +133,6 @@ def _clean_env(monkeypatch):
     mc._embedding_detection_cache.clear()
 
 
-# ── hf_env_offline ───────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", "  On  "])
 def test_hf_env_offline_true(monkeypatch, value):
     monkeypatch.setenv("HF_HUB_OFFLINE", value)
@@ -158,9 +154,6 @@ def test_hf_env_offline_default_false():
     assert hf_env_offline() is False
 
 
-# ── st_repo_id_candidates ────────────────────────────────────────
-
-
 def test_candidates_slashless_adds_st_alias():
     assert st_repo_id_candidates("all-MiniLM-L6-v2") == [
         "all-MiniLM-L6-v2",
@@ -174,9 +167,6 @@ def test_candidates_with_org_is_verbatim():
 
 def test_candidates_empty_name():
     assert st_repo_id_candidates("   ") == []
-
-
-# ── hf_cache_snapshot_dir ────────────────────────────────────────
 
 
 def test_snapshot_dir_resolves_active_commit(hf_cache):
@@ -200,12 +190,11 @@ def test_snapshot_dir_none_when_snapshot_missing(hf_cache):
 
     repo_dir = hf_cache / repo_folder_name(repo_id = "org/broken", repo_type = "model")
     (repo_dir / "refs").mkdir(parents = True)
-    (repo_dir / "refs" / "main").write_text("deadbeef")  # no snapshots/deadbeef dir
+    (repo_dir / "refs" / "main").write_text("deadbeef")
     assert hf_cache_snapshot_dir("org/broken") is None
 
 
 def test_snapshot_dir_expands_env_vars_in_cache_path(tmp_path, monkeypatch):
-    # An unexpanded $VAR in HF_HUB_CACHE must resolve where the loader looks.
     real = tmp_path / "hub"
     real.mkdir()
     monkeypatch.setenv("MY_HF_CACHE", str(real))
@@ -228,11 +217,7 @@ def test_snapshot_dir_uses_sentence_transformers_home(tmp_path, monkeypatch):
 
 
 def test_snapshot_dir_prefers_selected_cache_over_st_home(tmp_path, monkeypatch):
-    # The RAG loader passes cache_folder=active_hf_hub_cache(), which overrides
-    # SENTENCE_TRANSFORMERS_HOME, so the snapshot + offline security lookup must
-    # search the selected cache even when ST_HOME points elsewhere. Otherwise the
-    # gate scans a cache the model never loads from and a pickle weight in the
-    # selected cache slips through.
+    # The loader's cache_folder overrides ST_HOME, so the gate must scan the selected cache.
     st_home = tmp_path / "st_home"
     st_home.mkdir()
     selected = tmp_path / "hub"
@@ -244,7 +229,7 @@ def test_snapshot_dir_prefers_selected_cache_over_st_home(tmp_path, monkeypatch)
         "utils.hf_cache_settings.get_hf_cache_paths",
         lambda: SimpleNamespace(hub_cache = selected),
     )
-    snapshot = _make_cache(selected, "org/emb", {"modules.json": MODULES_JSON})  # only in selected
+    snapshot = _make_cache(selected, "org/emb", {"modules.json": MODULES_JSON})
     assert hf_cache_snapshot_dir("org/emb") == snapshot
 
 
@@ -362,7 +347,6 @@ def test_sentence_transformer_module_shards_must_be_complete(hf_cache):
 
 
 def test_snapshot_is_not_loadable_when_metadata_only(hf_cache):
-    # A partial cache (refs/main resolves but no weights) is not loadable.
     _make_cache(hf_cache, "org/partial", {"config.json": "{}", "modules.json": MODULES_JSON})
     assert hf_cache_snapshot_is_loadable("org/partial") is False
 
@@ -372,7 +356,6 @@ def test_snapshot_is_not_loadable_when_uncached(hf_cache):
 
 
 def test_gate_blocks_pickle_in_sentence_transformers_home(tmp_path, monkeypatch):
-    # A pickle under SENTENCE_TRANSFORMERS_HOME must still fail closed offline.
     st_home = tmp_path / "st_home"
     st_home.mkdir()
     monkeypatch.setenv("SENTENCE_TRANSFORMERS_HOME", str(st_home))
@@ -381,9 +364,6 @@ def test_gate_blocks_pickle_in_sentence_transformers_home(tmp_path, monkeypatch)
     _make_cache(st_home, "org/pk", {"config.json": "{}", "pytorch_model.bin": "x"})
     with _no_network():
         assert evaluate_file_security("org/pk", local_only_load = True).blocked is True
-
-
-# ── is_embedding_model: offline (no network) ─────────────────────
 
 
 def test_offline_true_for_cached_st_model(hf_cache, monkeypatch):
@@ -414,33 +394,26 @@ def test_offline_slashless_resolves_via_alias(hf_cache, monkeypatch):
 
 
 def test_offline_ignores_stale_online_memo(hf_cache, monkeypatch):
-    # An online lookup memoizes True for an UNCACHED repo (tags say embedding, no weights). Once
-    # offline, is_embedding_model must reclassify from the empty cache and return False, not the
-    # stale online True that would make settings accept a repo _get() cannot load.
+    # Offline must reclassify an uncached repo from the empty cache, not reuse the online memo.
     with patch(
         "huggingface_hub.model_info",
         side_effect = lambda *a, **k: SimpleNamespace(
             tags = ["sentence-transformers"], pipeline_tag = None
         ),
     ):
-        assert _is_embedding_model("org/uncached-emb") is True  # memoized True online
+        assert _is_embedding_model("org/uncached-emb") is True
 
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     with _no_network():
-        assert _is_embedding_model("org/uncached-emb") is False  # recomputed from empty cache
+        assert _is_embedding_model("org/uncached-emb") is False
 
 
 def test_offline_recomputes_after_cache_materializes(hf_cache, monkeypatch):
-    # Because the offline branch never records a memo, once an uncached repo's snapshot
-    # materializes (another process populates the cache) the next call re-reports True.
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     with _no_network():
-        assert _is_embedding_model("org/later") is False  # uncached
+        assert _is_embedding_model("org/later") is False
         _make_cache(hf_cache, "org/later", {"modules.json": MODULES_JSON})
-        assert _is_embedding_model("org/later") is True  # cache now present, no stale negative
-
-
-# ── is_embedding_model: online (bounded + fallback) ──────────────
+        assert _is_embedding_model("org/later") is True
 
 
 def test_online_passes_bounded_timeout(hf_cache):
@@ -469,9 +442,6 @@ def test_online_error_falls_back_to_cache_marker(hf_cache):
 def test_online_error_without_cache_returns_false(hf_cache):
     with patch("huggingface_hub.model_info", side_effect = RuntimeError("dns dead")):
         assert _is_embedding_model("org/missing") is False
-
-
-# ── evaluate_file_security: offline fail-closed gate ─────────────
 
 
 def _offline_decision(name):
@@ -512,9 +482,7 @@ def test_gate_blocks_sharded_pickle(hf_cache):
 
 
 def test_gate_blocks_indexed_pickle_shard_in_subdirectory(hf_cache):
-    # from_pretrained follows weight_map paths relative to the root index, so these nested shards
-    # are deserialized even though they are not direct children of the load root (iterdir misses
-    # them). The online gate blocks index-referenced subdir pickles; the offline gate must too.
+    # from_pretrained follows index-relative nested shards, so the offline gate must block them.
     _make_cache(
         hf_cache,
         "org/indexed-shard",
@@ -534,8 +502,7 @@ def test_gate_blocks_indexed_pickle_shard_in_subdirectory(hf_cache):
 
 
 def test_gate_blocks_indexed_pickle_shard_with_nonstandard_stem(hf_cache):
-    # The index tells the loader to deserialize this file, so a pickle EXTENSION is enough -- the
-    # shard's stem need not match the on-disk weight-name heuristic (which only guesses bare files).
+    # The index forces deserialization, so a pickle extension suffices regardless of stem.
     _make_cache(
         hf_cache,
         "org/indexed-odd",
@@ -551,9 +518,7 @@ def test_gate_blocks_indexed_pickle_shard_with_nonstandard_stem(hf_cache):
 
 
 def test_gate_blocks_safetensors_index_pointing_to_pickle_shard(hf_cache):
-    # load_state_dict picks safetensors vs torch.load by each shard's own suffix, so a
-    # model.safetensors.index.json that maps a weight to a .bin shard still deserializes it. The
-    # index's own existence must not suppress the shard it names.
+    # Shard format follows its own suffix, so a .bin in a safetensors index still unpickles.
     _make_cache(
         hf_cache,
         "org/st-index-pickle",
@@ -573,8 +538,6 @@ def test_gate_blocks_safetensors_index_pointing_to_pickle_shard(hf_cache):
 
 
 def test_gate_blocks_indexed_shard_with_no_pickle_extension(hf_cache):
-    # Transformers torch.loads any indexed shard not ending in .safetensors, so an unconventional
-    # extensionless name is still a deserialization target.
     _make_cache(
         hf_cache,
         "org/indexed-noext",
@@ -598,8 +561,7 @@ _UPPER_INDEX_FILES = {
 
 
 def test_gate_blocks_uppercase_index_on_case_insensitive_fs(hf_cache):
-    # On a case-insensitive volume (Windows/macOS) from_pretrained opens an oddly-cased index when it
-    # requests the canonical lowercase name, so the loader-mirror lookup resolves it and blocks.
+    # Case-insensitive FS: from_pretrained opens an oddly-cased index, so it must block.
     _requires_case_insensitive_fs(hf_cache)
     _make_cache(hf_cache, "org/upper-index", _UPPER_INDEX_FILES)
     with _no_network():
@@ -611,8 +573,7 @@ def test_gate_blocks_uppercase_index_on_case_insensitive_fs(hf_cache):
 
 
 def test_gate_allows_uppercase_index_on_case_sensitive_fs(hf_cache):
-    # On a case-sensitive FS from_pretrained's os.path.isfile of the canonical lowercase name misses
-    # the uppercase artifact and never loads its shard, so the gate must not over-block it.
+    # Case-sensitive FS: the uppercase index is never loaded, so do not over-block.
     _requires_case_sensitive_fs(hf_cache)
     _make_cache(hf_cache, "org/upper-index", _UPPER_INDEX_FILES)
     with _no_network():
@@ -620,8 +581,7 @@ def test_gate_allows_uppercase_index_on_case_sensitive_fs(hf_cache):
 
 
 def test_gate_blocks_indexed_shard_named_with_backslash(hf_cache):
-    # On POSIX a backslash is a literal filename char, so from_pretrained joins the raw weight_map
-    # value and deserializes a file actually named "dir\payload.bin"; the gate must probe it verbatim.
+    # On POSIX a backslash is a literal filename char; probe the weight_map value verbatim.
     import os
 
     if os.sep != "/":
@@ -641,8 +601,7 @@ def test_gate_blocks_indexed_shard_named_with_backslash(hf_cache):
 
 
 def test_gate_blocks_indexed_shard_with_uppercase_safetensors_suffix(hf_cache):
-    # load_state_dict's endswith(".safetensors") is case-sensitive, so a shard named payload.SAFETENSORS
-    # falls to torch.load. The gate must classify shard suffixes case-sensitively to match it.
+    # load_state_dict's .safetensors check is case-sensitive; .SAFETENSORS goes to torch.load.
     _make_cache(
         hf_cache,
         "org/upper-suffix",
@@ -658,8 +617,7 @@ def test_gate_blocks_indexed_shard_with_uppercase_safetensors_suffix(hf_cache):
 
 
 def test_gate_allows_stale_safetensors_index_beside_direct_safetensors(hf_cache):
-    # A complete direct model.safetensors is selected before either index, so a stale
-    # model.safetensors.index.json referencing a .bin shard never deserializes -> must not block.
+    # A direct model.safetensors wins over any index, so a stale index must not block.
     _make_cache(
         hf_cache,
         "org/direct-plus-stale-index",
@@ -676,8 +634,7 @@ def test_gate_allows_stale_safetensors_index_beside_direct_safetensors(hf_cache)
 
 
 def test_gate_blocks_pytorch_index_with_uppercase_safetensors_decoy(hf_cache):
-    # On a case-sensitive FS, from_pretrained asks for the canonical lowercase model.safetensors, does
-    # not find an uppercase decoy, and selects the pytorch index instead. The decoy must not suppress.
+    # Case-sensitive FS: an uppercase safetensors decoy is not found, so must not suppress.
     _requires_case_sensitive_fs(hf_cache)
     _make_cache(
         hf_cache,
@@ -699,8 +656,6 @@ def test_gate_blocks_pytorch_index_with_uppercase_safetensors_decoy(hf_cache):
 
 
 def test_gate_blocks_direct_pickle_with_uppercase_safetensors_decoy(hf_cache):
-    # Same decoy against a direct pytorch_model.bin: the loader selects the pickle, so the uppercase
-    # safetensors must not suppress it on a case-sensitive FS.
     _requires_case_sensitive_fs(hf_cache)
     _make_cache(
         hf_cache,
@@ -714,7 +669,6 @@ def test_gate_blocks_direct_pickle_with_uppercase_safetensors_decoy(hf_cache):
 
 
 def test_gate_blocks_indexed_pickle_shard_in_module_subdir(hf_cache):
-    # A weight index inside a sentence-transformers module load root points at a nested pickle shard.
     _make_cache(
         hf_cache,
         "org/mod-indexed",
@@ -736,8 +690,7 @@ def test_gate_blocks_indexed_pickle_shard_in_module_subdir(hf_cache):
 
 
 def test_gate_allows_indexed_pickle_shard_with_safetensors_sibling(hf_cache):
-    # A base model.safetensors makes the loader ignore the pickle index entirely, so it must not
-    # block (mirrors the direct-file safetensors-sibling suppression).
+    # A base model.safetensors makes the loader ignore the pickle index.
     _make_cache(
         hf_cache,
         "org/indexed-both",
@@ -754,8 +707,6 @@ def test_gate_allows_indexed_pickle_shard_with_safetensors_sibling(hf_cache):
 
 
 def test_gate_allows_indexed_safetensors_shard_in_subdirectory(hf_cache):
-    # A safetensors index lists inert shards -- following it must never block (guards against a
-    # scanner that flags every indexed shard regardless of format).
     _make_cache(
         hf_cache,
         "org/st-indexed",
@@ -771,7 +722,6 @@ def test_gate_allows_indexed_safetensors_shard_in_subdirectory(hf_cache):
 
 
 def test_gate_blocks_on_index_path_traversal(hf_cache):
-    # A weight_map entry escaping the snapshot via ".." is abnormal/hostile -> fail closed.
     _make_cache(
         hf_cache,
         "org/escape",
@@ -782,8 +732,7 @@ def test_gate_blocks_on_index_path_traversal(hf_cache):
 
 
 def test_gate_allows_symlinked_sharded_safetensors(tmp_path, monkeypatch):
-    # Real HF caches store snapshot files as symlinks into blobs/. A resolve()-based containment
-    # check would escape the snapshot and false-block every sharded model; the lexical gate must not.
+    # HF caches symlink into blobs/; resolve()-based containment would false-block, keep it lexical.
     from huggingface_hub.file_download import repo_folder_name
 
     import hashlib
@@ -823,8 +772,7 @@ def test_gate_allows_symlinked_sharded_safetensors(tmp_path, monkeypatch):
 
 
 def test_gate_allows_index_without_weight_map(hf_cache):
-    # An index whose top-level JSON has no dict weight_map lets the loader resolve no shards, so it
-    # must not crash or block on its own (only inert safetensors are cached here).
+    # No dict weight_map: the loader resolves no shards, so neither crash nor block.
     _make_cache(
         hf_cache,
         "org/no-wm",
@@ -846,7 +794,6 @@ def test_gate_allows_gguf_only(hf_cache):
 
 
 def test_gate_blocks_pickle_in_module_subdir(hf_cache):
-    # 0_Transformer is a module load root (listed in modules.json), so its pickle blocks.
     _make_cache(
         hf_cache,
         "org/mod",
@@ -871,13 +818,12 @@ def test_gate_allows_pickle_in_subdir_with_safetensors(hf_cache):
 
 
 def test_gate_allows_unreferenced_nested_pickle(hf_cache):
-    # A pickle in a dir NOT referenced by modules.json (e.g. nemo/) is never deserialized, so it
-    # must not block the offline load (matches the online gate).
+    # Dirs outside modules.json are never deserialized, so their pickles must not block.
     _make_cache(
         hf_cache,
         "org/aux",
         {
-            "modules.json": MODULES_JSON,  # Transformer at the root only
+            "modules.json": MODULES_JSON,
             "model.safetensors": "w",
             "nemo/pytorch_model.bin": "x",
         },
@@ -901,15 +847,13 @@ def test_gate_allows_adapter_pickle_with_adapter_safetensors(hf_cache):
 
 
 def test_gate_blocks_base_pickle_with_only_adapter_safetensors_decoy(hf_cache):
-    # A decoy adapter_model.safetensors must NOT suppress a base pytorch_model.bin (the base
-    # loader would still deserialize the unscanned pickle).
+    # A decoy adapter safetensors must not suppress a base pytorch_model.bin.
     _make_cache(hf_cache, "org/decoy", {"pytorch_model.bin": "x", "adapter_model.safetensors": "y"})
     with _no_network():
         assert _offline_decision("org/decoy").blocked is True
 
 
 def test_gate_blocks_adapter_pickle_with_only_base_safetensors_decoy(hf_cache):
-    # Symmetric: a base model.safetensors must NOT suppress an adapter_model.bin.
     _make_cache(hf_cache, "org/decoy2", {"adapter_model.bin": "x", "model.safetensors": "y"})
     with _no_network():
         assert _offline_decision("org/decoy2").blocked is True
@@ -925,9 +869,6 @@ def test_gate_reports_snapshot_relative_path(hf_cache):
         decision = _offline_decision("org/mod3")
     assert decision.blocked is True
     assert any(u["path"] == "0_Transformer/pytorch_model.bin" for u in decision.unsafe_files)
-
-
-# ── evaluate_file_security: online path unchanged ────────────────
 
 
 def test_online_default_blocks_unsafe():
@@ -951,9 +892,6 @@ def test_online_default_allows_clean():
         assert evaluate_file_security("org/x").blocked is False
 
 
-# ── embeddings guard + loader ────────────────────────────────────
-
-
 def test_guard_offline_blocks_pickle_only(hf_cache):
     from core.rag.embeddings import UnsafeEmbeddingModelError, _guard_model_security
     _make_cache(hf_cache, "org/pk", {"config.json": "{}", "pytorch_model.bin": "x"})
@@ -966,7 +904,7 @@ def test_guard_offline_allows_safetensors(hf_cache):
     from core.rag.embeddings import _guard_model_security
     _make_cache(hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"})
     with _no_network():
-        _guard_model_security("org/st", local_only = True)  # must not raise
+        _guard_model_security("org/st", local_only = True)
 
 
 def _install_fake_sentence_transformers(monkeypatch, captured):
@@ -995,8 +933,7 @@ def test_get_offline_loads_from_local_snapshot(hf_cache, monkeypatch):
     snapshot = _make_cache(
         hf_cache, "org/st", {"modules.json": MODULES_JSON, "model.safetensors": "x"}
     )
-    # TRANSFORMERS_OFFLINE only: a cached model loads from its local snapshot dir (a local path,
-    # never the Hub), offline-safe on ANY sentence-transformers version.
+    # TRANSFORMERS_OFFLINE: cached models load from the local snapshot path, any ST version.
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.setattr(embeddings, "_model", None, raising = False)
@@ -1024,7 +961,6 @@ def test_get_offline_uncached_uses_local_files_only(tmp_path, monkeypatch):
     monkeypatch.setattr(embeddings, "_name", None, raising = False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
-    # No cache -> repo-id load forced cache-only (fails fast offline, not a hang).
     monkeypatch.setattr(
         embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
     )
@@ -1044,7 +980,6 @@ def test_get_online_omits_local_files_only(monkeypatch):
     monkeypatch.setattr(embeddings, "_name", None, raising = False)
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
     monkeypatch.setattr(embeddings, "_device", lambda: "cpu")
-    # Isolate the loader wiring from the online guard's network calls.
     monkeypatch.setattr(
         embeddings, "_guard_model_security", lambda name, local_only = False, display = None: None
     )
@@ -1152,8 +1087,6 @@ def test_a_module_declared_but_absent_makes_the_snapshot_incomplete(monkeypatch,
 
     assert utils.hf_cache_snapshot_is_loadable("org/torn") is False
 
-    # A config-only module needs no weights of its own, so its bare presence is
-    # enough; what was missing before is the directory, not the checkpoint.
     (snapshot / "1_Pooling").mkdir()
     (snapshot / "0_Transformer").mkdir()
     (snapshot / "0_Transformer" / "model.safetensors").write_bytes(b"ST")
@@ -1172,7 +1105,6 @@ def test_an_eviction_between_the_check_and_the_snapshot_keeps_the_marker(monkeyp
     monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: cleared.append(m) or True)
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
-    # Evicted in the window between the two calls.
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: None)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: None)
     monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
@@ -1212,7 +1144,6 @@ def test_a_gguf_only_cache_does_not_retire_the_pending_st_marker(monkeypatch, tm
     cleared = []
     monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: cleared.append(m) or True)
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
-    # The shared predicate says yes; the ST-specific one must not.
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
@@ -1256,7 +1187,6 @@ def test_a_partial_st_transfer_keeps_the_pending_marker(monkeypatch, tmp_path):
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda m: snapshot)
-    # The ST family is there; the snapshot as a whole is not complete.
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: False)
     monkeypatch.setattr(embeddings, "_load_device", lambda: "cpu")
     monkeypatch.setattr(embeddings, "_install_torchao_stub_once", lambda: None)
@@ -1355,7 +1285,6 @@ def test_a_pending_transfer_does_not_make_the_security_scan_offline(monkeypatch,
             target = target, local_only = local_only
         ),
     )
-    # Pending, but the Hub is reachable.
     monkeypatch.setattr(ems, "get_stored_download_pending", lambda m: True)
     monkeypatch.setattr(ems, "clear_stored_download_pending", lambda m: True)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda m: snapshot)
@@ -1376,12 +1305,9 @@ def test_a_pending_transfer_does_not_make_the_security_scan_offline(monkeypatch,
         embeddings._model = None
         embeddings._name = None
 
-    # The load still came from the cache...
     assert seen["target"] == str(snapshot)
-    # ...but the gate was told the truth about the network.
     assert seen["local_only"] is False
 
-    # Genuinely offline still scans offline.
     seen.clear()
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     embeddings._model = None
@@ -1438,7 +1364,6 @@ def test_a_failed_st_constructor_keeps_the_pending_marker(monkeypatch, tmp_path)
 
     assert cleared == [], "a llama fallback must not inherit a cleared marker"
 
-    # It does retire once the model actually constructs.
     st_mod.SentenceTransformer = lambda *_a, **_k: SimpleNamespace(tokenizer = None)
     embeddings._model = None
     embeddings._name = None
@@ -1467,7 +1392,6 @@ def test_a_local_path_is_not_replaced_by_a_hub_cache_of_the_same_name(monkeypatc
     (hub / "config.json").write_text("{}")
     (hub / "model.safetensors").write_bytes(b"HUB")
 
-    # The same name is cached under the namespace, which is what shadowed it.
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir", lambda repo: hub)
     monkeypatch.setattr(utils, "hf_cache_snapshot_dir_for_repo", lambda repo: hub)
     monkeypatch.setattr(utils, "hf_cache_snapshot_is_loadable", lambda m: True)

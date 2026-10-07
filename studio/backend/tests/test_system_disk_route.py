@@ -60,7 +60,6 @@ def test_the_route_walks_nothing():
 
     names = {node.id for node in ast.walk(_route_body()) if isinstance(node, ast.Name)}
     assert "psutil" not in names
-    # Imported inside the function, so the resolver is not pulled in at module import time.
     imported = {
         alias.name
         for node in ast.walk(_route_body())
@@ -187,7 +186,7 @@ def test_a_disk_reading_is_microseconds(tmp_path):
     budget is deliberately loose, three orders of magnitude above what it costs here, so this
     fails on a genuinely slow path (a stalled network mount) and not on a busy runner.
     """
-    shutil.disk_usage(tmp_path)  # warm any lazy loading, so the first call is not the sample
+    shutil.disk_usage(tmp_path)
     started = time.perf_counter()
     for _ in range(200):
         shutil.disk_usage(tmp_path)
@@ -409,9 +408,7 @@ def test_an_unreadable_cache_volume_is_not_reported_as_its_parent(monkeypatch, t
         return real_stat(path, *args, **kwargs)
 
     def deny_usage(path, *args, **kwargs):
-        # Both calls, because an unreadable volume refuses both and the two versions of this
-        # route fail at different ones: denying only os.stat left the old code reading the
-        # cache happily and the test passing against the bug.
+        # Deny both calls: the old and new route versions fail at different ones.
         if str(path) == str(cache):
             raise PermissionError(13, "Permission denied")
         return real_usage(path, *args, **kwargs)

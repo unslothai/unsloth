@@ -30,9 +30,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Imported for its side effects: installs the process-wide loggers/structlog/httpx
-# stubs that models.inference needs on a runner without the real packages. Same
-# pattern as test_kv_cache_estimate_route.py.
+# Imported for side effects: installs loggers/structlog/httpx stubs.
 import test_kv_cache_estimation  # noqa: E402,F401
 
 import pytest  # noqa: E402
@@ -43,10 +41,9 @@ from core.inference.memory_contract import (  # noqa: E402
     project_kv_cache_estimate,
 )
 
-# A planner breakdown where every term is a distinct number, so a projection
-# that reads the wrong field cannot coincidentally look right.
+# Distinct values per term so reading the wrong field cannot pass by coincidence.
 _BREAKDOWN = SimpleNamespace(
-    weights_bytes = 5_000_000_000,  # resident: quant + projector + drafter
+    weights_bytes = 5_000_000_000,
     kv_bytes = 3_000_000_000,
     kv_checkpoint_bytes = 600_000_000,
     compute_bytes = 700_000_000,
@@ -66,8 +63,6 @@ _BREAKDOWN = SimpleNamespace(
     gpu_layers = 28,
 )
 
-# The quant file alone: strictly smaller than the resident total above, which is
-# the relationship the two fields exist to express.
 _QUANT_FILE_BYTES = 4_100_000_000
 
 
@@ -86,9 +81,6 @@ def estimate():
 
 class TestTheCanonicalModel:
     def test_the_ambiguous_name_is_gone(self, estimate):
-        # Absent rather than redefined: a field named weights_bytes on the shared
-        # model would be picked up and guessed at by exactly the readers this
-        # separation exists to protect.
         assert not hasattr(estimate, "weights_bytes"), (
             "MemoryEstimate has grown a weights_bytes field. That name means two "
             "different things on the two legacy routes and belongs on neither the "
@@ -98,13 +90,10 @@ class TestTheCanonicalModel:
     def test_the_two_meanings_are_separate_and_ordered(self, estimate):
         assert estimate.quant_file_bytes == _QUANT_FILE_BYTES
         assert estimate.resident_files_bytes == _BREAKDOWN.weights_bytes
-        # The quant file is one of the resident files, so this ordering is a
-        # property of the model rather than of this fixture.
         assert estimate.quant_file_bytes < estimate.resident_files_bytes
 
     def test_the_planner_weights_field_is_the_resident_meaning(self, estimate):
-        # The planner's own field name is weights_bytes and it carries the
-        # AGGREGATE. Mapping it to quant_file_bytes would be the easy mistake.
+        # Planner weights_bytes is the AGGREGATE; mapping it to quant_file_bytes is the trap.
         assert estimate.resident_files_bytes == _BREAKDOWN.weights_bytes
         assert estimate.quant_file_bytes != _BREAKDOWN.weights_bytes
 
@@ -124,8 +113,7 @@ class TestTheCanonicalModel:
 
     def test_optional_terms_default_without_being_invented(self):
         out = build_memory_estimate(_BREAKDOWN, quant_file_bytes = _QUANT_FILE_BYTES)
-        # None means "not computed" and must not become 0, which is a real value
-        # meaning "nothing is pinned to the card at the shortest context".
+        # None means not computed; 0 is a real value.
         assert out.gpu_floor_bytes is None
         assert out.native_context is None
 
@@ -134,13 +122,10 @@ class TestTheRouteOverrides:
     """The figures /kv-cache-estimate computes itself, passed in not assigned on."""
 
     def test_gpu_bytes_carries_three_distinct_states(self):
-        # A number, a real None (planner never ran), and "use the breakdown's".
-        # None cannot express the third, which is why there is a sentinel.
         assert build_memory_estimate(_BREAKDOWN, quant_file_bytes = 1, gpu_bytes = 0).gpu_bytes == 0
         assert (
             build_memory_estimate(_BREAKDOWN, quant_file_bytes = 1, gpu_bytes = None).gpu_bytes is None
         )
-        # Omitted entirely: falls through to whatever the breakdown had.
         assert (
             build_memory_estimate(_BREAKDOWN, quant_file_bytes = 1).gpu_bytes == _BREAKDOWN.gpu_bytes
         )
@@ -154,8 +139,6 @@ class TestTheRouteOverrides:
             n_ctx = 33,
         )
         assert (out.compute_bytes, out.total_bytes, out.n_ctx) == (11, 22, 33)
-        # And None collapses to 0 for the three that are declared non-optional,
-        # matching what the route's `or None` handling produced before.
         none_out = build_memory_estimate(
             _BREAKDOWN,
             quant_file_bytes = 1,
@@ -187,8 +170,6 @@ class TestTheRouteOverrides:
             )
 
     def test_assignment_really_is_unvalidated(self):
-        # The premise of the guard above. If a future pydantic or a model_config
-        # change makes assignment validate, this fails and the guard can relax.
         from models.inference import MemoryEstimate
 
         m = MemoryEstimate(available = True)
@@ -233,9 +214,7 @@ class TestTheLegacyProjections:
         )
 
     def test_the_kv_projection_keeps_none_rather_than_zero(self):
-        # This route uses None for "no such term" throughout, and the frontend's
-        # estimateIsUnsized() distinguishes null from 0. Coercing to 0 would make
-        # an unsizable model look like a free one.
+        # Frontend estimateIsUnsized() distinguishes null from 0.
         empty = SimpleNamespace(**{**_BREAKDOWN.__dict__, "kv_bytes": 0})
         out = project_kv_cache_estimate(
             build_memory_estimate(empty, quant_file_bytes = 0), kv_bytes = 0
@@ -259,8 +238,6 @@ class TestTheLegacyProjections:
         assert out["gpu_bytes"] == 0, "a real zero GPU share was folded into 'no answer'"
 
     def test_a_missing_planner_leaves_the_gpu_share_null(self):
-        # The other side of the same coin: never ran is not the same as ran and
-        # found nothing.
         absent = SimpleNamespace(**{**_BREAKDOWN.__dict__, "gpu_bytes": None})
         out = project_kv_cache_estimate(
             build_memory_estimate(absent, quant_file_bytes = _QUANT_FILE_BYTES),
@@ -269,14 +246,9 @@ class TestTheLegacyProjections:
         assert out["gpu_bytes"] is None
 
     def test_the_kv_projection_does_not_borrow_the_planners_kv(self, estimate):
-        # This route prices the target cache itself; the planner's figure is not
-        # interchangeable. Passing no kv_bytes must yield None rather than
-        # silently substituting the planner's.
         assert project_kv_cache_estimate(estimate)["kv_bytes"] is None
 
     def test_the_kv_projection_passes_its_own_itemization_through(self, estimate):
-        # These four are the models route's own terms; the planner does not model
-        # them separately, so they must survive the round trip untouched.
         out = project_kv_cache_estimate(
             estimate,
             spec_bytes = 111,
@@ -288,8 +260,6 @@ class TestTheLegacyProjections:
         assert (out["projector_bytes"], out["kv_checkpoint_bytes"]) == (333, 44)
 
     def test_both_projections_carry_every_key_their_route_promises(self, estimate):
-        # Cross-checked against the frozen key sets, so the projections and the
-        # freeze cannot drift apart from each other.
         from test_memory_estimate_contract_freeze import _KV_CACHE_ESTIMATE_KEYS
 
         assert set(project_kv_cache_estimate(estimate)) == set(_KV_CACHE_ESTIMATE_KEYS)

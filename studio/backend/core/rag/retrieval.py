@@ -58,8 +58,6 @@ def retrieve_dense(
 ) -> list[Hit]:
     k = k or config.TOP_K_DENSE
     effective = model_name or config.effective_embedding_model()
-    # The identity comes from the encode, so it names the backend that served this query even if a
-    # concurrent ST failure swapped the process meanwhile.
     vectors, identity = embeddings.encode_with_identity(
         [query], model_name = effective, normalize = True
     )
@@ -136,7 +134,7 @@ def retrieve_hybrid(
     is not a sentence and embedding it would throw away the paraphrase recall that is the
     dense leg's whole reason for existing. No ranking maths changes here."""
     k = k if k is not None else config.TOP_K_HYBRID
-    k = int(k)  # tool-call / scope top_k may arrive as a float; LIMIT + slice need int
+    k = int(k)  # top_k may arrive as a float
     if mode == "lexical":
         return retrieve_lexical(conn, scope, query, k, match_query = lexical_query)
     if mode == "dense":

@@ -33,8 +33,7 @@ def waiting_orchestrator(monkeypatch):
     from core.export import orchestrator as orchestrator_module
 
     clock = types.SimpleNamespace(now = 0.0)
-    # Swap the module reference, not `time.monotonic` itself: patching the attribute would hand the
-    # frozen clock to every other thread in the process for the length of the test.
+    # swap the module reference: patching time.monotonic would freeze every thread's clock
     fake_time = types.SimpleNamespace(monotonic = lambda: clock.now, time = real_time.time)
     monkeypatch.setattr(orchestrator_module, "time", fake_time)
 
@@ -42,7 +41,6 @@ def waiting_orchestrator(monkeypatch):
     script: list = []
 
     def fake_read(timeout = None):
-        # A real read blocks for at most the timeout it was given, so charge the clock the same.
         clock.now += min(READ_SECONDS, timeout) if timeout is not None else READ_SECONDS
         return script.pop(0) if script else None
 
@@ -139,9 +137,7 @@ def test_a_multi_quant_export_is_allowed_to_stay_silent_for_the_whole_batch(monk
     """
     from core.export import orchestrator as orchestrator_module
 
-    # _run_export imports this at call time. Injected per test and undone after: a module-level
-    # sys.modules entry would shadow the real utils.transformers_version for the whole session,
-    # and the rest of the backend suite imports a dozen names from it.
+    # injected per test: a module-level sys.modules entry would shadow the real one suite-wide
     tv_stub = types.ModuleType("utils.transformers_version")
     tv_stub.sidecar_swap_in_progress = lambda: False
     tv_stub.SidecarSwapInProgress = type("SidecarSwapInProgress", (RuntimeError,), {})

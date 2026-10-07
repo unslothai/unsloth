@@ -101,9 +101,6 @@ class _Target:
     backend = "diffusers"
 
 
-# ----------------------------------------------------------------------------- #
-# The #8224 guard, which is the one #8403 is about
-# ----------------------------------------------------------------------------- #
 def test_activation_guard_fires_on_a_full_card_that_reports_itself_empty(win_rocm, monkeypatch):
     """A 24 GiB card with 20 GiB of pipeline resident, driver reporting the whole
     card free. 1536x1536 does not fit the 4 GiB that is actually left, and on
@@ -112,7 +109,7 @@ def test_activation_guard_fires_on_a_full_card_that_reports_itself_empty(win_roc
     _shared_setup_1(monkeypatch)
 
     memory = dm.snapshot_device_memory(_Target())
-    assert memory.free_mib == 4 * 1024  # not the driver's 24576
+    assert memory.free_mib == 4 * 1024
 
     message = dm.image_activation_shortfall_message(
         device_memory = memory, width = 1536, height = 1536, family = "sdxl"
@@ -163,9 +160,6 @@ def test_windows_nvidia_reading_is_untouched(monkeypatch):
     assert dm.snapshot_device_memory(_Target()).free_mib == 9 * 1024
 
 
-# ----------------------------------------------------------------------------- #
-# The #8224 memory PLAN reads the same feeder
-# ----------------------------------------------------------------------------- #
 def test_memory_plan_budget_sees_the_corrected_free(win_rocm, monkeypatch):
     """_plan_memory budgets from settled_snapshot_device_memory, so the offload
     tier was picked against a card that claimed to be empty. The settling loop's
@@ -194,9 +188,6 @@ def test_reclaimable_snapshot_credits_the_cache_back(win_rocm, monkeypatch):
     assert dm.reclaimable_snapshot_device_memory(_Target()).free_mib == 10 * 1024
 
 
-# ----------------------------------------------------------------------------- #
-# The shared helper (pure unit)
-# ----------------------------------------------------------------------------- #
 def test_trusted_mem_get_info_caps_free_at_unreserved_bytes(win_rocm, monkeypatch):
     monkeypatch.setitem(
         sys.modules,
@@ -204,15 +195,12 @@ def test_trusted_mem_get_info_caps_free_at_unreserved_bytes(win_rocm, monkeypatc
         _fake_torch(16 * GiB, free_bytes = 16 * GiB, reserved_bytes = 11 * GiB),
     )
     assert hw.trusted_mem_get_info() == (5 * GiB, 16 * GiB)
-    # A near-sentinel reading (TheRock#3724: 52.71 GiB "free" of 53.92 GiB while
-    # OOMing) is capped too: the cap does not depend on exact equality.
     monkeypatch.setitem(
         sys.modules,
         "torch",
         _fake_torch(16 * GiB, free_bytes = 15 * GiB, reserved_bytes = 11 * GiB),
     )
     assert hw.trusted_mem_get_info() == (5 * GiB, 16 * GiB)
-    # Never optimistic: a driver figure already below the cap is kept.
     monkeypatch.setitem(
         sys.modules,
         "torch",

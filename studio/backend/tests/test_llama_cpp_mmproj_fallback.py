@@ -23,8 +23,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Match the stubbing pattern in sibling tests so the module imports in a
-# lightweight env without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -45,7 +43,6 @@ _nonproj = LlamaCppBackend._output_has_nonprojector_diagnostic
 _mmproj_cpu = LlamaCppBackend._with_mmproj_offload_disabled
 _gpu_memory_failure = LlamaCppBackend._is_gpu_memory_start_failure
 
-# Real abort captured loading gemma-4 on a 3-day-old prebuilt (build b9496).
 _GEMMA4_OLD_LLAMACPP_OUT = (
     "srv    load_model: loading model 'gemma-4-E2B-it-UD-Q4_K_XL.gguf'\n"
     "/build_work/src/llama.cpp-b9496/tools/mtmd/clip.cpp:4391: "
@@ -53,7 +50,6 @@ _GEMMA4_OLD_LLAMACPP_OUT = (
     "libggml-base.so.0(ggml_abort+0x152)\n"
     "libmtmd.so.0(clip_n_mmproj_embd)\n"
 )
-# Unrelated failures that must keep their own handling (no projector retry).
 _OOM_OUT = (
     "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 12000.00 MiB on "
     "device 0: cudaMalloc failed: out of memory"
@@ -61,7 +57,6 @@ _OOM_OUT = (
 _BAD_ARCH_OUT = "llama_model_load: error loading model: unknown model architecture: 'qwen_image'"
 _PORT_OUT = "srv start: failed to bind: address already in use"
 _MISSING_OUT = "error: failed to open GGUF file: no such file or directory"
-# A healthy startup log that merely mentions the projector must not match.
 _HEALTHY_VISION_OUT = (
     "Using mmproj for vision: /cache/mmproj-F16.gguf\n"
     "clip_model_loader: loaded meta data with 20 key-value pairs\n"
@@ -71,7 +66,6 @@ _HEALTHY_VISION_OUT = (
 
 class TestProjectorIncompatibilityDetector:
     def test_gemma4_on_old_llamacpp_triggers_retry(self):
-        # Headline case: a 3-day-old llama.cpp aborts on Gemma-4's projector.
         assert _detect(_GEMMA4_OLD_LLAMACPP_OUT) is True
 
     @pytest.mark.parametrize(
@@ -98,7 +92,6 @@ class TestProjectorIncompatibilityDetector:
             _MISSING_OUT,
             _HEALTHY_VISION_OUT,
             "",
-            # bare multimodal words without a failure term must not match
             "loading clip model",
             "mmproj file resolved from cache",
         ],
@@ -121,8 +114,6 @@ class TestSignalCrashDetector:
         assert _signal_crash(rc) is False
 
 
-# A realistic vision launch argv (mirrors the live "Starting llama-server"
-# command), projector pair at the end.
 _VISION_CMD = [
     "/home/u/.unsloth/llama.cpp/build/bin/llama-server",
     "-m",
@@ -262,7 +253,6 @@ class TestStripMmprojArgs:
             "on",
         ):
             assert flag in stripped
-        # Exactly the two projector tokens are dropped.
         assert len(stripped) == len(_VISION_CMD) - 2
 
     def test_strips_mmproj_in_the_middle(self):
@@ -277,7 +267,7 @@ class TestStripMmprojArgs:
         cmd = ["llama-server", "--mmproj", "/p/mm.gguf"]
         out = _strip(cmd)
         assert out is not cmd
-        assert cmd[-1] == "/p/mm.gguf"  # input untouched
+        assert cmd[-1] == "/p/mm.gguf"
 
 
 class TestFlashAttnOff:
@@ -288,7 +278,6 @@ class TestFlashAttnOff:
     def test_flips_on_to_off_keeping_vision_and_mtp(self):
         out = _flash_off(_VISION_CMD)
         assert out is not None
-        # FA disabled, every other capability (mmproj, MTP, ctx) preserved.
         i = out.index("--flash-attn")
         assert out[i + 1] == "off"
         assert "--mmproj" in out and "--spec-default" in out
@@ -304,7 +293,7 @@ class TestFlashAttnOff:
         cmd = ["llama-server", "--flash-attn", "on"]
         out = _flash_off(cmd)
         assert out == ["llama-server", "--flash-attn", "off"]
-        assert cmd[-1] == "on"  # input not mutated
+        assert cmd[-1] == "on"
 
     def test_flips_equals_form(self):
         out = _flash_off(["llama-server", "--flash-attn=on", "-c", "4096"])
@@ -327,8 +316,7 @@ class TestFlashAttnOff:
         assert _flash_off(["llama-server", "--flash-attn", value]) is None
 
     def test_flips_every_occurrence_last_wins(self):
-        # extra_args can re-enable FA after Unsloth's flag; llama.cpp is last-wins,
-        # so one leftover 'on' would re-crash the retry. Every enable must flip.
+        # llama.cpp is last-wins, so extra_args can re-enable FA.
         cmd = ["llama-server", "--flash-attn", "on", "--mmproj", "/p", "--flash-attn", "on"]
         out = _flash_off(cmd)
         assert out is not None
@@ -339,15 +327,10 @@ class TestFlashAttnOff:
         assert _flash_off(["llama-server", "--flash-attn=off"]) is None
 
     def test_none_when_user_off_wins_last(self):
-        # User appended 'off' after Unsloth's 'on'; effective (last-wins) is off,
-        # so there is nothing to retry.
         assert _flash_off(["llama-server", "--flash-attn", "on", "--flash-attn", "off"]) is None
 
     def test_neutralizes_trailing_bare_flag(self):
-        # A bare --flash-attn reads as on under last-wins; it must be neutralized
-        # too, else the retry re-enables FA and re-crashes. It is dropped rather
-        # than valued: llama.cpp matches argv tokens verbatim, so --flash-attn=off
-        # is "invalid argument", and a build accepting the bare form takes no value.
+        # A bare --flash-attn reads as on under last-wins, so it is dropped rather than valued.
         out = _flash_off(["llama-server", "--flash-attn", "on", "--flash-attn"])
         assert out == ["llama-server", "--flash-attn", "off"]
         assert "on" not in out
@@ -385,8 +368,7 @@ class TestFlashAttnOffQuantizedKvCache:
         ]
         out = _flash_off(cmd)
         assert out is not None
-        # FA flipped off AND the V axis reset to f16; the K axis is preserved so
-        # the FA-off retry keeps its memory budget (quantized K is FA-independent).
+        # Quantized K is FA-independent, so only V is reset (K keeps its memory budget).
         assert out[out.index("--flash-attn") + 1] == "off"
         assert out[out.index("--cache-type-k") + 1] == qtype
         assert out[out.index("--cache-type-v") + 1] == "f16"
@@ -394,8 +376,7 @@ class TestFlashAttnOffQuantizedKvCache:
 
     @pytest.mark.parametrize("qtype", _QUANTIZED)
     def test_quantized_draft_v_reset(self, qtype):
-        # The draft context shares the global --flash-attn flag, so its quantized
-        # V cache aborts too and must be reset; the draft K cache is preserved.
+        # The draft context shares the global --flash-attn flag, so its quantized V aborts too.
         for v_flag, k_flag in (
             ("--cache-type-v-draft", "--cache-type-k-draft"),
             ("--spec-draft-type-v", "--spec-draft-type-k"),
@@ -420,7 +401,6 @@ class TestFlashAttnOffQuantizedKvCache:
         ]
         out = _flash_off(cmd)
         assert out is not None
-        # Only FA flips; the non-quantized cache type is preserved verbatim.
         assert out[out.index("--flash-attn") + 1] == "off"
         assert out[out.index("--cache-type-k") + 1] == ntype
         assert out[out.index("--cache-type-v") + 1] == ntype
@@ -438,7 +418,6 @@ class TestFlashAttnOffQuantizedKvCache:
         assert out == ["llama-server", "-fa", "off", "-ctk", "q4_0", "-ctv", "f16"]
 
     def test_asymmetric_cache_only_v_reset(self):
-        # Quantized V, non-quantized K: reset V, keep K untouched.
         out = _flash_off(
             [
                 "llama-server",
@@ -458,8 +437,6 @@ class TestFlashAttnOffQuantizedKvCache:
         assert out == ["llama-server", "--flash-attn", "off", "-c", "4096"]
 
     def test_quantized_k_only_still_flips_fa_but_keeps_k(self):
-        # A quantized K cache with no V flag is a valid FA-off launch; the retry
-        # must not touch the K cache (it would waste memory for nothing).
         out = _flash_off(["llama-server", "--flash-attn", "on", "--cache-type-k", "q8_0"])
         assert out == ["llama-server", "--flash-attn", "off", "--cache-type-k", "q8_0"]
 
@@ -473,13 +450,10 @@ class TestFlashAttnOffQuantizedKvCache:
         ["--cache_type_v", "--cache-type_v", "--cache_type-v"],
     )
     def test_underscore_alias_v_reset(self, flag):
-        # llama.cpp normalizes '_' to '-' in any '--' long option before
-        # matching, so a pass-through --cache_type_v enables a quantized V cache
-        # and must be reset by the FA-off retry too (else init aborts).
+        # llama.cpp normalizes '_' to '-' in '--' long options.
         out = _flash_off(["llama-server", "--flash-attn", "on", flag, "q8_0"])
         assert out is not None
         assert out[out.index("--flash-attn") + 1] == "off"
-        # The user's flag spelling is preserved; llama.cpp normalizes it anyway.
         assert out[out.index(flag) + 1] == "f16"
 
     def test_underscore_alias_draft_v_reset(self):
@@ -496,15 +470,12 @@ class TestFlashAttnOffQuantizedKvCache:
         assert out == ["llama-server", "--flash_attn=off"]
 
     def test_underscore_value_not_normalized_for_nonquantized(self):
-        # Only the flag name is canonicalized; a non-quantized type value is
-        # matched verbatim and left untouched (no spurious reset).
         out = _flash_off(["llama-server", "--flash-attn", "on", "--cache_type_v", "f16"])
         assert out[out.index("--cache_type_v") + 1] == "f16"
         assert out[out.index("--flash-attn") + 1] == "off"
 
     def test_short_alias_underscore_not_applied(self):
-        # Short flags are never underscore-normalized by llama.cpp; -ctv still
-        # matches and resets, and an unrelated short token is left alone.
+        # Short flags are never underscore-normalized by llama.cpp.
         out = _flash_off(["llama-server", "-fa", "on", "-ctv", "q8_0"])
         assert out == ["llama-server", "-fa", "off", "-ctv", "f16"]
 
@@ -531,7 +502,6 @@ class TestDropEnvQuantizedVCache:
         assert "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V" not in env
 
     def test_preserves_quantized_k_env(self):
-        # A quantized K cache runs without FA, so its env must not be dropped.
         env = {"LLAMA_ARG_CACHE_TYPE_K": "q8_0", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q4_0"}
         assert _drop_env_v(env) is False
         assert env["LLAMA_ARG_CACHE_TYPE_K"] == "q8_0"
@@ -539,8 +509,6 @@ class TestDropEnvQuantizedVCache:
 
     @pytest.mark.parametrize("ntype", ["f16", "bf16", "f32", "F16", " q8_0 "])
     def test_preserves_nonquantized_v_env(self, ntype):
-        # Non-quantized V env values (and whitespace/case variants of them) run
-        # fine without FA; only a genuinely quantized value is dropped.
         if ntype.strip().lower() in ("q8_0",):
             env = {"LLAMA_ARG_CACHE_TYPE_V": ntype}
             assert _drop_env_v(env) is True
@@ -576,8 +544,8 @@ class TestNonProjectorDiagnostic:
     @pytest.mark.parametrize(
         "out",
         [
-            "",  # bare crash: no marker -> still eligible for the text-only retry
-            _GEMMA4_OLD_LLAMACPP_OUT,  # a real projector abort must NOT be suppressed
+            "",
+            _GEMMA4_OLD_LLAMACPP_OUT,
             _HEALTHY_VISION_OUT,
             _PORT_OUT,
         ],
@@ -590,16 +558,12 @@ class TestRetryContract:
     """The two helpers compose into the load_model retry decision."""
 
     def test_gemma4_failure_yields_valid_text_only_command(self):
-        # Old-llama.cpp projector abort -> retry, and the retry argv is a
-        # valid text-only launch (model + context kept, projector gone).
         assert _detect(_GEMMA4_OLD_LLAMACPP_OUT) is True
         retry_cmd = _strip(_VISION_CMD)
         assert "--mmproj" not in retry_cmd
         assert "-m" in retry_cmd and "--jinja" in retry_cmd
 
     def test_oom_retries_with_the_projector_on_cpu_before_text_only(self):
-        # A concrete GPU allocation failure is not projector incompatibility,
-        # but it is exactly when --no-mmproj-offload can preserve image input.
         assert _detect(_OOM_OUT) is False
         assert _gpu_memory_failure(_OOM_OUT) is True
         retry_cmd = _mmproj_cpu(_VISION_CMD, {})
@@ -608,9 +572,8 @@ class TestRetryContract:
         assert "--mmproj" in retry_cmd
 
     def test_bare_segfault_with_mmproj_yields_text_only_retry(self):
-        # Field report: a -11 SIGSEGV on --mmproj has no projector line; the
-        # signal path fires only when no other diagnostic explains the crash.
-        out = ""  # a SIGSEGV produced no projector-format line
+        # A -11 SIGSEGV on --mmproj prints no projector line.
+        out = ""
         assert _detect(out) is False
         should_retry = _detect(out) or (_signal_crash(-11) and not _nonproj(out))
         assert should_retry is True
@@ -618,8 +581,6 @@ class TestRetryContract:
         assert "--mmproj" not in retry_cmd and "-m" in retry_cmd
 
     def test_signal_crash_with_oom_output_uses_the_cpu_projector_rung(self):
-        # OOM remains excluded from the ambiguous signal-only diagnosis, but
-        # has its own recovery: keep --mmproj and move that projector to CPU.
         assert _signal_crash(-6) is True
         signal_only = _detect(_OOM_OUT) or (_signal_crash(-6) and not _nonproj(_OOM_OUT))
         assert signal_only is False
@@ -631,12 +592,10 @@ class TestRetryContract:
         assert should_retry is False
 
     def test_clean_nonzero_exit_with_mmproj_does_not_retry(self):
-        # Clean non-zero exit (bad path, port bind) is not a hard crash; stay message-based.
         assert (_detect(_MISSING_OUT) or _signal_crash(1)) is False
 
     def test_signal_crash_tries_non_destructive_rungs_before_dropping_vision(self):
-        # Ladder order: FA-off first, then projector-on-CPU. Only if both fail
-        # does Unsloth remove --mmproj and become text-only.
+        # Ladder order: FA-off first, then projector-on-CPU.
         assert _signal_crash(-11) is True
         fa_retry = _flash_off(_VISION_CMD)
         assert fa_retry is not None

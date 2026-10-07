@@ -70,7 +70,6 @@ MSYS = mxc_probe.MSYS_NAMESPACE_REASON
         (BASH, _cap(True), _cap(True), "bash"),
         (BASH, _cap(False, MSYS), _cap(True), "cmd_isolated"),
         (BASH, _cap(False, MSYS), _cap(False, "no"), "bash"),
-        # A freshly prepared host fails bash without the MSYS signature while cmd passes.
         (
             BASH,
             _cap(False, "the live MXC probe did not complete cleanly"),
@@ -194,7 +193,7 @@ def test_a_sandboxed_windows_child_finds_its_home_and_an_absolute_pip_cache(tmp_
 
 
 def test_blocklist_still_catches_blocked_commands_under_cmd(windows):
-    windows()  # bash on the host: the lexer must follow the explicit dialect, not the host shell
+    windows()
     for command in (
         "rm -rf x",
         "echo hi && rm -rf x",
@@ -374,7 +373,7 @@ def test_approval_reads_a_cmd_command_the_way_cmd_splits_it(windows, monkeypatch
     command = "echo 'hi & del victim.txt & echo bye'"
     assert tools._terminal_is_high_risk(command) is True
     monkeypatch.setattr(tools, "_terminal_profile", lambda *_a, **_k: "bash")
-    assert tools._terminal_is_high_risk(command) is False  # bash keeps the whole thing one argument
+    assert tools._terminal_is_high_risk(command) is False
 
 
 def test_the_host_cmd_fallback_is_read_as_cmd_too(windows, monkeypatch, tmp_path):

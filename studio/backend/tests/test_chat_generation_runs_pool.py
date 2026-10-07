@@ -353,8 +353,6 @@ def test_borrowing_races_a_global_discard_without_handing_out_a_closed_handle():
         def __eq__(self, other):
             worker = threading.Thread(target = invalidate)
             worker.start()
-            # Long enough that an unlocked borrow really does lose the handle, short enough that the
-            # locked one is not slowed: with the lock held the worker cannot get past its acquire.
             worker.join(timeout = 2.0)
             return str(self) == str(other)
 
@@ -401,7 +399,6 @@ def test_a_connection_whose_migration_lost_the_lock_is_not_pooled():
         runs_db._prepare_connection = real_prepare
         runs_db.reset_connection_pool_for_tests()
 
-    # And once it does complete, pooling resumes.
     third = runs_db._connect()
     underlying = third._conn
     third.close()
@@ -423,7 +420,6 @@ def test_a_handle_prepared_across_an_invalidation_is_not_pooled():
 
     def prepare_then_invalidate():
         conn, migrated = real_prepare()
-        # Exactly the window: prepared, not yet registered.
         runs_db._discard_all_pooled()
         return conn, migrated
 

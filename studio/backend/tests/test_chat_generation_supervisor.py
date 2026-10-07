@@ -117,7 +117,6 @@ async def test_durable_producer_preserves_monitor_origin(monkeypatch, scope, cal
             "server": ("127.0.0.1", 8000),
         }
     )
-    # Origin is fixed at run creation; the settings change below must not alter it.
     keyless.mark_keyless_admission(request, caller == "keyless")
     monkeypatch.setattr(policy, "installation_has_managed_accounts", lambda: False)
     monkeypatch.setattr(storage, "is_internal_api_key", lambda _token: caller == "workflow")
@@ -297,7 +296,6 @@ async def test_background_producer_persists_chunks_and_completes(durable_run, mo
     [
         ("stop", True, {"reason": "quote_cut"}),
         ("stop", False, None),
-        # Length takes precedence over the heuristic.
         ("length", True, {"reason": "length"}),
     ],
     ids = ["cut", "clean-stop", "length-wins"],
@@ -400,7 +398,6 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     sampled: dict = {}
 
     def _progress(processed):
-        # What llama-server sends under return_progress: a content-less delta.
         return {
             "choices": [{"delta": {"role": "assistant", "content": None}, "finish_reason": None}],
             "prompt_progress": {
@@ -437,7 +434,6 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
     assert released.is_set()
     assert len(sampled["events"]) == 3, sampled["events"]
     assert all("prompt_progress" in e for e in sampled["events"])
-    # The lease counts writes, so it renewed three times before the first token.
     assert sampled["progress"][1] == 3, sampled["progress"]
     assert runs_db.get_run("run-1", "alice")["status"] == "completed"
 
@@ -462,13 +458,11 @@ async def test_progress_comments_hold_the_lease_but_a_stalled_stream_does_not(
     async def body():
         now["ms"] += 21 * 60_000
         yield comment
-        # Asked for only once the producer has handled the comment before it.
         yield comment
         sampled["reaped"] = runs_db.reconcile_runs(stale_after_ms = 1_200_000)
         yield "data: [DONE]\n\n"
 
     async def fake(_payload, _request, _subject, *, cancel_on_disconnect):
-        # Preparation has already read its own interval; only the stream's rate limit is lifted.
         monkeypatch.setattr(chat_generation_runs, "_renew_interval_seconds", lambda: 0.0)
         return SimpleNamespace(status_code = 200, body_iterator = body())
 
@@ -543,14 +537,12 @@ async def test_native_gguf_prefill_progress_holds_the_lease(
 
     async def wrapped(payload, request, subject, *, cancel_on_disconnect):
         if tools:
-            # What the UI sends with the web-search pill lit: server-side tools, no client tools.
             payload.enable_tools = True
             payload.enabled_tools = ["web_search"]
         response = await real_produce(
             payload, request, subject, cancel_on_disconnect = cancel_on_disconnect
         )
         inner = response.body_iterator
-        # Preparation has already read its own interval; only the stream's rate limit is lifted.
         monkeypatch.setattr(chat_generation_runs, "_renew_interval_seconds", lambda: 0.0)
 
         async def body():
@@ -732,7 +724,6 @@ async def test_event_batch_flushes_while_upstream_is_idle(durable_run, monkeypat
     monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
     supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
     task = asyncio.create_task(supervisor._produce("run-1"))
-    # Polled, not slept: a fixed sleep races the flush on a loaded runner.
     stored = await _await_chunk_payloads("run-1", len(chunks), 0.5)
     assert stored == chunks
     release.set()
@@ -740,13 +731,11 @@ async def test_event_batch_flushes_while_upstream_is_idle(durable_run, monkeypat
 
 
 def test_event_flush_interval_is_one_display_frame():
-    # This interval is the chat's text frame rate; 0.1s made streaming stutter (#11778).
     assert _EVENT_FLUSH_SECONDS <= 1 / 60
 
 
 @pytest.mark.asyncio
 async def test_a_lone_chunk_is_appended_without_waiting_for_another(durable_run, monkeypatch):
-    # A lone chunk used to wait up to 1s for a second one before it was appended.
     release = asyncio.Event()
     chunk = {"choices": [{"delta": {"content": "Hello"}}]}
 
@@ -905,7 +894,6 @@ async def test_a_caught_up_reconnect_to_a_settled_run_does_not_block(durable_run
         timeout = 5,
     )
     assert caught_up == []
-    # A client that is behind still gets the whole ledger.
     assert await _subscriber_sequences() == list(range(1, int(settled["lastEventSeq"]) + 1))
 
 
@@ -1039,11 +1027,7 @@ async def test_shutdown_returns_even_when_a_producer_will_not_unwind(durable_run
         await asyncio.sleep(0)
 
 
-# ── The durable marker is production state, so a test must read it off the producer ──
-# Every approval test constructs `cancel.durable = True` by hand, which means the line in
-# _ensure_reservation that actually sets it was pinned by nothing: deleting it left the whole
-# backend suite green while silently returning every parked approval to the 3600s auto-deny.
-# Same for durable_run_id, which is how the gate asks whether anyone is still watching.
+# Pins the line in _ensure_reservation that sets cancel.durable; other tests set it by hand.
 
 
 def test_the_producers_cancel_event_carries_the_durable_marker_and_its_run_id():

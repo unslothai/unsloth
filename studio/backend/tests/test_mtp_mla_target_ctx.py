@@ -19,12 +19,7 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Stub heavy/unavailable deps before importing the module under test, so this
-# file is order-independent (importing core.inference pulls in orchestrator ->
-# structlog, absent in the lightweight test env). Mirrors test_mtp_vram_budget.
-# ---------------------------------------------------------------------------
-
+# Stub heavy/unavailable deps before importing the module under test (mirrors test_mtp_vram_budget).
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -35,8 +30,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 
-# httpx -- only stub when the real library is missing. Unconditional stubbing
-# shadows HTTPError/Response that huggingface_hub.errors imports at load time.
+# Only stub httpx when missing; a stub shadows names huggingface_hub.errors imports.
 try:
     import httpx as _httpx_real  # noqa: F401
 except ImportError:
@@ -109,8 +103,6 @@ def _make_mla_backend(
     b._kv_value_length_swa = None
     b._draft_backend_cache = None
     b._vocab_size = vocab
-    # The speculative compute buffers ride on this reserve too; test_compute_buffer
-    # prices them, and these cases pin the cache terms.
     b._mtp_draft_compute_bytes = lambda *args, **kwargs: 0
     return b
 
@@ -139,21 +131,18 @@ class TestMlaTargetCtxReserve:
         draft = b._mtp_draft_kv_bytes(ctx)
         overhead = b._estimate_mtp_overhead_bytes(ctx)
         main_kv_f16 = b._estimate_kv_cache_bytes(ctx, "f16")
-        # Overhead = embedded draft head + a full f16 copy of the target KV.
         assert overhead == draft + main_kv_f16
-        # The copy dominates: GLM-5.2 @1M is a ~2 GiB head next to a ~89 GiB copy.
         assert overhead / GIB > 80
         assert main_kv_f16 > 30 * draft
 
     def test_target_copy_is_f16_regardless_of_main_cache_type(self):
-        # The MTP target context is always f16 in llama.cpp; the reserve must not
-        # shrink when the user runs a quantized main KV.
+        # The MTP target context is always f16 in llama.cpp regardless of main KV type.
         b = _make_mla_backend()
         ctx = 262144
         f16 = _kv_bytes_per_elem("f16")
         expected_copy = b._estimate_kv_cache_bytes(ctx, "f16")
         assert b._estimate_mtp_overhead_bytes(ctx) == (b._mtp_draft_kv_bytes(ctx) + expected_copy)
-        assert f16 == 2.0  # sanity: f16 is 2 bytes/elem
+        assert f16 == 2.0
 
     def test_target_copy_scales_linearly_with_context(self):
         b = _make_mla_backend()
@@ -162,41 +151,32 @@ class TestMlaTargetCtxReserve:
         assert o_128k == pytest.approx(2 * o_64k)
 
     def test_non_mla_embedded_head_unchanged(self):
-        # Qwen-class MTP keeps no target copy: overhead == draft KV exactly.
         b = _make_non_mla_backend()
         for ctx in (16384, 131072):
             assert b._estimate_mtp_overhead_bytes(ctx) == b._mtp_draft_kv_bytes(ctx)
 
     def test_mla_reserve_strictly_larger_than_non_mla_shape(self):
-        # Same embedded-head dims, MLA toggled on/off: only MLA adds the copy.
         mla = _make_mla_backend()
         non = _make_mla_backend()
-        non._kv_lora_rank = None  # flip MLA off, keep every other dim identical
+        non._kv_lora_rank = None
         ctx = 131072
         assert mla._estimate_mtp_overhead_bytes(ctx) > non._estimate_mtp_overhead_bytes(ctx)
 
     def test_separate_drafter_mode_drops_target_copy(self):
-        # The duplicated target context is MTP-only. draft-simple / draft-eagle3
-        # load a small separate drafter with its own KV (counted in the draft KV)
-        # and keep no target copy, so even on an MLA model the reserve must drop
-        # the f16 copy when mtp_keeps_target_ctx=False -- which is what the loader
-        # threads for those modes. The default (True) keeps the MTP copy.
+        # Only MTP keeps a target copy; separate drafters (simple/eagle3) do not.
         b = _make_mla_backend()
         ctx = 262144
-        mtp = b._estimate_mtp_overhead_bytes(ctx)  # default True == MTP draft
+        mtp = b._estimate_mtp_overhead_bytes(ctx)
         separate = b._estimate_mtp_overhead_bytes(ctx, mtp_keeps_target_ctx = False)
-        # Separate-drafter overhead is exactly the draft KV (no target copy)...
         assert separate == b._mtp_draft_kv_bytes(ctx)
-        # ...and the MTP reserve is that plus the full f16 target copy.
         assert mtp == separate + b._estimate_kv_cache_bytes(ctx, "f16")
         assert mtp > separate
 
     def test_one_layer_mtp_arch_drops_target_copy(self):
-        # Charging the absent copy trips drafter_no_vram, dropping the MTP itself.
         b = _make_mla_backend()
         b._architecture = "glm5next"
         other = _make_mla_backend()
-        other._architecture = "glm-dsa"  # same dims, still pays the copy
+        other._architecture = "glm-dsa"
         ctx = 262144
         assert b._estimate_mtp_overhead_bytes(ctx) == b._mtp_draft_kv_bytes(ctx)
         assert other._estimate_mtp_overhead_bytes(ctx) == (
@@ -218,7 +198,7 @@ class TestKdaRollbackReserve:
     """
 
     MIB = 1024**2
-    PER_SEQ = 145.5625  # MiB, and the size llama.cpp logs per context checkpoint
+    PER_SEQ = 145.5625  # MiB, the size llama.cpp logs per context checkpoint
 
     def _kda(self):
         b = _make_mla_backend()
@@ -233,7 +213,7 @@ class TestKdaRollbackReserve:
 
     def test_base_state_matches_llama_cpp(self):
         b = self._kda()
-        assert b._mamba_recurrent_state_bytes(1) == 0  # no SSM fields: the gap
+        assert b._mamba_recurrent_state_bytes(1) == 0
         assert b._recurrent_state_bytes(1) / self.MIB == pytest.approx(self.PER_SEQ)
 
     def test_rollback_copies_are_reserved(self):
@@ -249,8 +229,6 @@ class TestKdaRollbackReserve:
         assert four > one
 
     def test_cpu_pinned_drafter_keeps_target_rollback(self):
-        # Pinning the drafter to CPU does not move the target's snapshots, and the
-        # loader drops its whole rollback-only callback when this reads 0.
         b = self._kda()
         assert b._rollback_state_bytes(1) / self.MIB == pytest.approx(self.PER_SEQ)
         assert b._rollback_state_bytes(4) == 4 * b._rollback_state_bytes(1)
@@ -265,7 +243,6 @@ class TestKdaRollbackReserve:
         assert b._rollback_state_bytes(1) == b._mamba_recurrent_state_bytes(1)
 
     def test_mamba_path_unchanged(self):
-        # The KDA fallback must not shadow or double-count the Mamba helper.
         b = _make_mla_backend()
         b._ssm_inner_size = 6144
         b._ssm_state_size = 128
@@ -283,7 +260,7 @@ class TestMlaFitPreventsOom:
     """The corrected reserve must actually lower the auto-fit context so the
     config holds at runtime instead of OOMing on the first decode."""
 
-    # 2x B200, mirroring the GLM-5.2 UD-IQ1_S crash (only 2 GPUs were selected).
+    # 2x B200, mirroring the GLM-5.2 UD-IQ1_S crash.
     AVAIL_MIB = 2 * 182010
     TOTAL_MIB = 2 * 182633
     MODEL_BYTES = 200 * GIB  # ~UD-IQ1_S weight footprint
@@ -299,7 +276,6 @@ class TestMlaFitPreventsOom:
             total_mib = self.TOTAL_MIB,
             mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
         )
-        # The old behaviour (draft head only, no target copy) kept the full ctx.
         draft_only = b._fit_context_to_vram(
             self.REQ_CTX,
             self.AVAIL_MIB,
@@ -308,5 +284,5 @@ class TestMlaFitPreventsOom:
             total_mib = self.TOTAL_MIB,
             mtp_overhead_fn = lambda c: b._mtp_draft_kv_bytes(c) or 0,
         )
-        assert draft_only == self.REQ_CTX  # reproduces the over-advertised context
-        assert with_copy < self.REQ_CTX  # corrected reserve backs the context off
+        assert draft_only == self.REQ_CTX
+        assert with_copy < self.REQ_CTX

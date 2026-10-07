@@ -67,8 +67,7 @@ def test_real_weights_are_not_mistaken_for_an_imatrix(name):
 
 @pytest.mark.parametrize("name", IMATRIX_NAMES + MODEL_NAMES)
 def test_the_three_copies_of_the_predicate_agree(name):
-    # hub cannot be imported from utils and core avoids importing it, so the rule is
-    # spelled three times; a drift here is a file one surface hides and another loads.
+    # hub can't be imported from utils/core, so the rule is spelled 3 times; keep them in sync.
     expected = is_imatrix_filename(name)
     assert _is_imatrix_path(name) is expected
     if name.lower().endswith(".gguf"):
@@ -98,8 +97,7 @@ def test_the_imatrix_is_neither_planned_nor_downloaded():
 
     assert list(plans) == ["ud-q4_k_xl"]
     plan = plans["ud-q4_k_xl"]
-    # Not a main file and not a companion folded into the plan: llama-quantize reads an
-    # imatrix, llama-server never does, so no variant needs it on disk.
+    # llama-quantize reads an imatrix, llama-server never does, so no variant needs it.
     assert plan.target_filenames == ("Qwen3.8-27B-UD-Q4_K_XL.gguf",)
     assert plan.download_size_bytes == 17_559_178_144
     assert not is_main_gguf_variant_path("imatrix_unsloth.gguf", "ud-q4_k_xl")
@@ -117,7 +115,6 @@ def test_local_listing_and_load_path_skip_the_imatrix(tmp_path):
     assert pick_best_gguf(["imatrix_unsloth.gguf", "Qwen3.8-27B-UD-Q4_K_XL.gguf"]) == (
         "Qwen3.8-27B-UD-Q4_K_XL.gguf"
     )
-    # Pointed at directly it is not a model either, so a folder scan cannot route it.
     assert detect_gguf_model(os.fspath(imatrix)) is None
     assert detect_gguf_model(os.fspath(tmp_path)) == os.fspath(
         tmp_path / "Qwen3.8-27B-UD-Q4_K_XL.gguf"
@@ -125,9 +122,7 @@ def test_local_listing_and_load_path_skip_the_imatrix(tmp_path):
 
 
 def test_the_local_models_route_does_not_list_an_imatrix(tmp_path):
-    # routes/models.py keeps its own copies of these predicates, and GET /models/local
-    # (the picker) reads them, so the hub-side exclusion alone left a standalone imatrix
-    # and an imatrix-only folder still offered there as loadable GGUF models.
+    # routes/models.py keeps its own copies of these predicates (used by GET /models/local).
     from routes.models import _dir_model_format, _is_main_gguf_filename, _is_model_directory
 
     assert _is_main_gguf_filename("Qwen3.8-27B-UD-Q4_K_XL.gguf")
@@ -144,10 +139,7 @@ def test_the_local_models_route_does_not_list_an_imatrix(tmp_path):
 
 
 def test_the_models_dir_scanner_does_not_publish_an_imatrix_only_child(tmp_path):
-    # The predicates are not what gates a CHILD folder: _scan_models_dir decides presence
-    # from any .gguf, so an interrupted download that landed only the repo's smallest file
-    # published the folder as a local model. mmproj and MTP still decide presence, as they
-    # are companions of a real model; an imatrix is not a model artifact at all.
+    # _scan_models_dir decides child presence from any .gguf; an imatrix is not a model artifact.
 
     from routes.models import _scan_models_dir
 
@@ -162,8 +154,7 @@ def test_the_models_dir_scanner_does_not_publish_an_imatrix_only_child(tmp_path)
 
 
 def test_an_mmproj_only_child_still_decides_presence(tmp_path):
-    # Guard the line this change must not cross: a lone vision projector keeps its row
-    # (format None), which is what the scanner has always reported for a companion.
+    # A lone vision projector keeps its row (format None).
 
     from routes.models import _scan_models_dir
 
@@ -176,9 +167,7 @@ def test_an_mmproj_only_child_still_decides_presence(tmp_path):
 
 
 def test_a_recommended_folder_chip_matches_what_the_picker_would_show(tmp_path):
-    # _dir_has_downloaded_model mirrors the scanners on purpose, so that a chip never leads
-    # to an empty picker. Once the scanners stopped surfacing an imatrix-only folder, an
-    # unfiltered probe here would have advertised exactly that.
+    # _dir_has_downloaded_model mirrors the scanners so a chip never leads to an empty picker.
     from routes.models import _scan_models_dir
 
     from routes.models import _dir_has_downloaded_model, _scan_models_dir
@@ -192,11 +181,7 @@ def test_a_recommended_folder_chip_matches_what_the_picker_would_show(tmp_path):
 
 
 def test_a_config_beside_an_imatrix_lists_for_the_reason_a_lone_config_does(tmp_path):
-    # The boundary of this change, asserted so it reads as deliberate. A folder holding a
-    # config and nothing loadable has always been listed (format None) -- that is how a
-    # checkpoint still downloading its weights stays visible -- and it lists whether or not
-    # an imatrix sits beside it. So the config disjunct is not an imatrix filter to bypass:
-    # suppressing it would hide in-flight downloads, which is a different change.
+    # A config-only folder is listed (format None) so in-flight downloads stay visible.
 
     from routes.models import _scan_models_dir
 
@@ -210,7 +195,6 @@ def test_a_config_beside_an_imatrix_lists_for_the_reason_a_lone_config_does(tmp_
 
 
 def test_the_lmstudio_scanner_does_not_publish_an_imatrix_only_model_dir(tmp_path):
-    # Same presence test in the nested publisher/model layout.
     from routes.models import _scan_lmstudio_dir
 
     model_dir = tmp_path / "unsloth" / "Qwen3.8-27B-GGUF"
@@ -224,9 +208,6 @@ def test_the_lmstudio_scanner_does_not_publish_an_imatrix_only_model_dir(tmp_pat
 
 
 def test_a_downloaded_imatrix_is_not_a_downloaded_gguf_repo(tmp_path):
-    # The surface a user who already clicked the old phantom row lands on: the imatrix is
-    # in the HF cache, and the Downloaded list sizes a repo with the same routes/models.py
-    # predicate, so the repo came back as a ~13 MB GGUF download it could not load.
     from huggingface_hub import scan_cache_dir
 
     from routes.models import _repo_gguf_size_bytes, _repo_has_gguf_files
@@ -253,9 +234,7 @@ def test_a_downloaded_imatrix_is_not_a_downloaded_gguf_repo(tmp_path):
 
 
 def test_a_lora_repo_weight_named_like_an_imatrix_is_still_picked(monkeypatch):
-    # The exclusion belongs to the .gguf fallback: an imatrix is a GGUF holding no
-    # adapter. Applied to the whole listing it also dropped .safetensors candidates,
-    # and a repo whose only weight leads with the token raised FileNotFoundError.
+    # The exclusion applies only to the .gguf fallback, not .safetensors candidates.
     from core.inference import diffusion_lora
 
     files = ["imatrix-tuned.safetensors", "imatrix_unsloth.gguf", "README.md"]
@@ -305,10 +284,7 @@ def _state_sources(monkeypatch, manifests, markers, manifest_for):
 
 
 def test_interrupted_imatrix_state_does_not_come_back_as_a_row(monkeypatch):
-    # An older build offered the imatrix as a variant, so a cancelled download of it can
-    # still be on disk. Skipping only its expected file left main_filename unset, and the
-    # synthetic "<variant>.gguf" fallback put the row back at zero bytes on exactly the
-    # offline path this listing serves.
+    # An older build offered the imatrix as a variant, so a cancelled download may be on disk.
     manifest = SimpleNamespace(
         expected_files = [SimpleNamespace(path = "imatrix_unsloth.gguf", size = 13_642_656)]
     )
@@ -324,9 +300,7 @@ def test_interrupted_imatrix_state_does_not_come_back_as_a_row(monkeypatch):
 
 
 def test_a_marker_only_imatrix_variant_is_dropped_but_a_real_quant_survives(monkeypatch):
-    # A cancel marker carries no manifest at all, so the filtered-file check above cannot
-    # see it; the stored variant key is the only evidence. A real quant in the same state
-    # must keep its synthetic row, or an interrupted download becomes unresumable.
+    # A cancel marker has no manifest; the stored variant key is the only evidence.
     _state_sources(
         monkeypatch,
         manifests = [],

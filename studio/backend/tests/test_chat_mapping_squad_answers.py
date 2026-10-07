@@ -9,7 +9,6 @@ from utils.datasets.cells import cell_text
 
 
 def _squad_rows():
-    # The shape of rajpurkar/squad: `answers` is a dict of parallel lists.
     return Dataset.from_dict(
         {
             "context": ["Architecturally, the school has a Catholic character."],
@@ -55,7 +54,6 @@ def test_template_mapping_trains_the_squad_answer_not_the_dict():
 
 def test_cell_text_reads_the_text_of_an_answer_dict():
     assert cell_text({"text": ["first", "second"], "answer_start": [1, 9]}) == "first"
-    # squad_v2 marks an unanswerable question with no answer.
     assert cell_text({"text": [], "answer_start": []}) == ""
     assert cell_text({"label": 1}) == "{'label': 1}"
     assert cell_text({"label": ["A", "B"], "text": ["x", "y"]}) == (

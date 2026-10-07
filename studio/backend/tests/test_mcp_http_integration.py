@@ -37,7 +37,7 @@ pytest.importorskip("uvicorn")
 from core.inference import mcp_client
 from core.inference.mcp_client import call_tool_sync, close_mcp_sessions
 
-# Matches the scope tools.py builds: "s={session_id}:t={thread_id}".
+# Matches the scope tools.py builds: s={session_id}:t={thread_id}.
 SCOPE = "s=sess1:t=threadA"
 SCOPE_B = "s=sess1:t=threadB"
 
@@ -208,7 +208,6 @@ def _start(tmp_path: Path, host: str):
         stderr = subprocess.STDOUT,
         text = True,
     )
-    # The server binds its own port and reports it before serving; an early exit ends the pipe.
     first = proc.stdout.readline()
     if not first.startswith("PORT "):
         proc.wait(15)
@@ -278,9 +277,7 @@ def _conn(text: str) -> str:
 
 
 def test_the_server_comes_up_when_a_port_the_harness_could_pick_is_taken(tmp_path, monkeypatch):
-    # Under xdist another worker can bind a port between this process choosing it and the server
-    # binding it. Make every port this process is handed by the OS one that is already listening:
-    # the server must still start, because it binds and reports its own port.
+    # Under xdist another worker can steal a chosen port; the server must bind and report its own.
     held = socket.socket(socket.AF_INET)
     held.bind(("127.0.0.1", 0))
     held.listen()
@@ -390,9 +387,7 @@ def test_an_expired_session_is_replaced_before_the_users_call_fails(monkeypatch,
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     _call(server, "list_notes", scope = SCOPE)
     _call(server, "expire_me", scope = SCOPE)
-    # The next request on that session gets 404, which is what the spec requires
-    # of a server that terminated it. The recheck must absorb that and reconnect
-    # rather than letting the user's tool call be the thing that discovers it.
+    # A terminated session answers 404 per spec; the recheck must reconnect, not fail the call.
     second = _call(server, "list_notes", scope = SCOPE)
     assert not second.startswith("Error:"), second
 

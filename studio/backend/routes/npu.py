@@ -113,7 +113,6 @@ def _start_download(npu, model_id: str) -> _Download:
             with job.changed:
                 job.finished = True
                 job.changed.notify_all()
-            # Followers hold their own reference; nothing else reads a finished pull.
             with _downloads_lock:
                 if _downloads.get(model_id) is job:
                     del _downloads[model_id]

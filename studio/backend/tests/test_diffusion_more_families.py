@@ -22,7 +22,6 @@ from core.inference.sd_cpp_args import text_encoder_flags_for_family
 from core.inference.diffusion_lora import _CURATED, list_loras
 
 
-# ── ideogram-4 family detection ──────────────────────────────────────────────
 @pytest.mark.parametrize(
     "repo_id",
     [
@@ -47,7 +46,6 @@ def test_detect_family_ideogram4_override():
 
 
 def test_ideogram4_repos_are_trusted_non_gguf():
-    # The three official vendor pipelines load via from_pretrained, gated to the unsloth org + the explicit allowlist.
     for rid in (
         "ideogram-ai/ideogram-4-fp8",
         "ideogram-ai/ideogram-4-nf4",
@@ -57,30 +55,27 @@ def test_ideogram4_repos_are_trusted_non_gguf():
     assert not _is_trusted_diffusion_repo("ideogram-ai/some-future-repo")
 
 
-# ── FLUX.1 Krea dev (flux.1 family variant) ──────────────────────────────────
 @pytest.mark.parametrize(
     "repo_id",
     [
         "black-forest-labs/FLUX.1-Krea-dev",
         "QuantStack/FLUX.1-Krea-dev-GGUF",
-        # A local GGUF pick where the family keyword lives in the filename.
         "QuantStack/FLUX.1-Krea-dev-GGUF/flux1-krea-dev-Q4_K_M.gguf",
     ],
 )
 def test_detect_family_flux1_krea_dev(repo_id):
-    # Krea's FLUX.1-dev finetune keeps the exact dev layout, so it resolves to flux.1, never krea-2 (a different arch).
+    # Krea's FLUX.1-dev finetune keeps the dev layout, so it is flux.1, never krea-2.
     fam = detect_family(repo_id)
     assert fam is not None and fam.name == "flux.1"
     assert fam.pipeline_class == "FluxPipeline"
 
 
 def test_flux1_krea_dev_is_trusted_non_gguf():
-    # The gated official pipeline loads via from_pretrained, so it needs the allowlist.
     assert _is_trusted_diffusion_repo("black-forest-labs/FLUX.1-Krea-dev")
 
 
 def test_flux1_krea_dev_generation_defaults():
-    # Model-card recipe: 28 steps at guidance 4.5. The generic "krea" key (Turbo's 8-step no-CFG shape) must NOT swallow it, and the krea-2 defaults must stay intact.
+    # The generic "krea" key (Turbo's 8-step no-CFG recipe) must not swallow this repo.
     assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (20, 3.5)
     assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (20, 3.5)
     assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
@@ -88,7 +83,7 @@ def test_flux1_krea_dev_generation_defaults():
 
 
 def test_flux_dev_and_krea_do_not_inherit_the_schnell_nvfp4_checkpoint():
-    # The NVFP4 artifact is schnell-only: dev and Krea-dev inheriting it failed validation with no dense fallback.
+    # The NVFP4 artifact is schnell-only; dev variants inheriting it had no dense fallback.
     from core.inference.diffusion_families import family_prequant_repo
 
     fam = detect_family("black-forest-labs/FLUX.1-schnell")
@@ -112,21 +107,15 @@ def test_flux2_klein_generation_defaults_distinguish_base_from_distilled():
         assert default_generation_params(f"unsloth/FLUX.2-klein-{size}") == (4, 1.0)
 
 
-# ── z-image: the undistilled base ────────────────────────────────────────────
 def test_zimage_base_is_trusted_so_the_gguf_keeps_its_companion_base():
-    # unsloth/Z-Image-GGUF carries base_model: Tongyi-MAI/Z-Image, and _resolve_base_repo drops a
-    # tag that fails this gate. While it did, that pick fell back to the Turbo companions and
-    # denoised on their shift 3.0 scheduler instead of the base's 6.0.
+    # unsloth/Z-Image-GGUF's base_model must pass this gate, else it gets Turbo companions (wrong shift).
     assert _is_trusted_diffusion_repo("Tongyi-MAI/Z-Image")
     assert _is_trusted_diffusion_repo("Tongyi-MAI/Z-Image-Turbo")
     assert not _is_trusted_diffusion_repo("someone/Z-Image-finetune")
 
 
 def test_zimage_base_has_no_hosted_prequant_to_inherit():
-    # Both hosted checkpoints are baked from the Turbo transformer. Falling back to them for the
-    # undistilled base made planning treat an unrelated artifact as usable: auto declined the dense
-    # path when it was uncached, and an explicit int8/fp8 request downloaded it, hit the
-    # base_model_id refusal, then had no dense shards staged to fall back to.
+    # Both hosted checkpoints are baked from Turbo; the undistilled base must not fall back to them.
     from core.inference.diffusion_families import family_prequant_repo
 
     fam = detect_family("Tongyi-MAI/Z-Image-Turbo")
@@ -138,15 +127,12 @@ def test_zimage_base_has_no_hosted_prequant_to_inherit():
             == "unsloth/Z-Image-Turbo-FP8"
         )
         assert family_prequant_repo(fam, scheme, base_repo = "Tongyi-MAI/Z-Image") is None
-        # However the id was typed, and through the mirror the loader actually fetches.
         assert family_prequant_repo(fam, scheme, base_repo = "  tongyi-mai/Z-IMAGE ") is None
 
 
 def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
-    # family_prequant_repo is shared with the VIDEO loader, whose VideoFamily has no
-    # prequant_excluded_bases. A plain attribute read raises AttributeError here, and the only
-    # caller wraps this in a bare except that turns any raise into "no hosted checkpoint", so
-    # every video family would quietly drop to the dense path whenever a base_repo is passed.
+    # Shared with the video loader, whose VideoFamily lacks prequant_excluded_bases; a bare except
+    # upstream would turn an AttributeError into a silent dense fallback.
     from core.inference.diffusion_families import family_prequant_repo
     from core.inference.diffusion_prequant import resolve_prequant_source
     from core.inference.video_families import detect_video_family
@@ -155,7 +141,6 @@ def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
     assert h3 is not None
     assert not hasattr(h3, "prequant_excluded_bases")
     for scheme in ("int8", "fp8"):
-        # The base_repo argument is the trigger: an empty base short-circuits before the read.
         assert (
             family_prequant_repo(h3, scheme, base_repo = "MiniMaxAI/MiniMax-H3")
             == "unsloth/MiniMax-H3-FP8"
@@ -165,20 +150,17 @@ def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
 
 
 def test_zimage_base_generation_defaults_are_not_the_distilled_recipe():
-    # The base is undistilled: 20 steps at guidance 4. The more specific "z-image-turbo" key sits
-    # ahead of "z-image", so the 9-step CFG-free Turbo recipe must not swallow it.
+    # The undistilled base gets the generic "z-image" recipe, not the CFG-free Turbo one.
     assert default_generation_params("Tongyi-MAI/Z-Image") == (25, 3.0)
     assert default_generation_params("unsloth/Z-Image-GGUF") == (25, 3.0)
     assert default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (8, 0.0)
     assert default_generation_params("unsloth/Z-Image-Turbo-GGUF") == (8, 0.0)
 
 
-# ── lumina-2 family ──────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "repo_id",
     [
         "Alpha-VLLM/Lumina-Image-2.0",
-        # A same-arch finetune must group here via the lumina-image-2.0 token.
         "neta-art/NetaYume-Lumina-Image-2.0",
     ],
 )
@@ -188,30 +170,27 @@ def test_detect_family_lumina2_repos(repo_id):
     assert fam.pipeline_class == "Lumina2Pipeline"
     assert fam.transformer_class == "Lumina2Transformer2DModel"
     assert fam.base_repo == "Alpha-VLLM/Lumina-Image-2.0"
-    # Published bf16-only upstream; the fp16 fallback stays off.
     assert fam.fp16_incompatible is True
 
 
 def test_detect_family_lumina2_override_and_next_rejected():
     assert detect_family("x", override = "lumina-2").name == "lumina-2"
     assert detect_family("x", override = "lumina2").name == "lumina-2"
-    # Lumina-Next is a DIFFERENT arch (LuminaText2ImgPipeline): it must stay unknown, not resolve here and crash mid-load.
+    # Lumina-Next is a different arch (LuminaText2ImgPipeline): it must stay unknown.
     assert detect_family("Alpha-VLLM/Lumina-Next-SFT-diffusers") is None
 
 
 def test_lumina2_is_trusted_non_gguf():
-    # The official pipeline loads via from_pretrained -> needs the allowlist.
     assert _is_trusted_diffusion_repo("Alpha-VLLM/Lumina-Image-2.0")
     assert not _is_trusted_diffusion_repo("Alpha-VLLM/some-future-repo")
 
 
 def test_lumina2_generation_defaults():
-    # Model-card recipe: 50 steps at guidance 4.0 (cfg_trunc_ratio is added by the backend generate call itself).
+    # cfg_trunc_ratio is added by the backend generate call itself.
     assert default_generation_params("Alpha-VLLM/Lumina-Image-2.0") == (50, 4.0)
 
 
 def test_lumina2_prequant_wiring():
-    # Hosted int8/fp8 checkpoints (gate-validated) serve the family default base.
     from core.inference.diffusion_families import family_prequant_repo
     fam = detect_family("Alpha-VLLM/Lumina-Image-2.0")
     for scheme in ("int8", "fp8"):
@@ -229,13 +208,12 @@ def test_lumina2_bf16_component_table_present():
     assert vae_gb <= 0.5
 
 
-# ── hunyuanimage-2.1 family ──────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "repo_id",
     [
         "hunyuanvideo-community/HunyuanImage-2.1-Diffusers",
         "QuantStack/HunyuanImage-2.1-GGUF",
-        # A local GGUF pick whose family keyword lives in the filename (QuantStack drops the dash, covered by the hunyuanimage2.1 alias).
+        # QuantStack drops the dash; covered by the hunyuanimage2.1 alias.
         "QuantStack/HunyuanImage-2.1-GGUF/HunyuanImage2.1-Q4_K_M.gguf",
     ],
 )
@@ -245,29 +223,26 @@ def test_detect_family_hunyuanimage21_repos(repo_id):
     assert fam.pipeline_class == "HunyuanImagePipeline"
     assert fam.transformer_class == "HunyuanImageTransformer2DModel"
     assert fam.base_repo == "hunyuanvideo-community/HunyuanImage-2.1-Diffusers"
-    # The call's guidance knob is distilled_guidance_scale; there is no guidance_scale kwarg.
     assert fam.cfg_kwarg == "distilled_guidance_scale"
-    # Published bf16-only upstream; the fp16 fallback stays off.
     assert fam.fp16_incompatible is True
 
 
 def test_detect_family_hunyuanimage21_override_and_30_still_excluded():
     assert detect_family("x", override = "hunyuanimage-2.1").name == "hunyuanimage-2.1"
     assert detect_family("x", override = "hunyuanimage2.1").name == "hunyuanimage-2.1"
-    # HunyuanImage-3.0 has no diffusers pipeline, so its structured exclusion must survive the 2.1 family.
+    # HunyuanImage-3.0 has no diffusers pipeline, so its exclusion must survive the 2.1 family.
     assert detect_family("tencent/HunyuanImage-3.0") is None
     assert excluded_model_reason("tencent/HunyuanImage-3.0") is not None
     assert excluded_model_reason("hunyuanvideo-community/HunyuanImage-2.1-Diffusers") is None
 
 
 def test_hunyuanimage21_is_trusted_non_gguf():
-    # The mirror pipeline loads via from_pretrained -> needs the allowlist.
     assert _is_trusted_diffusion_repo("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
     assert not _is_trusted_diffusion_repo("hunyuanvideo-community/some-future-repo")
 
 
 def test_hunyuanimage21_generation_defaults():
-    # Card recipe: 50 steps; guidance feeds distilled_guidance_scale, while CFG runs inside the repo's guider components.
+    # Guidance feeds distilled_guidance_scale; CFG runs inside the repo's guider components.
     assert default_generation_params("hunyuanvideo-community/HunyuanImage-2.1-Diffusers") == (
         50,
         3.25,
@@ -275,7 +250,6 @@ def test_hunyuanimage21_generation_defaults():
 
 
 def test_hunyuanimage21_prequant_wiring():
-    # Hosted int8/fp8 checkpoints, verified bit-identical to on-the-fly quantize.
     from core.inference.diffusion_families import family_prequant_repo
     fam = detect_family("hunyuanvideo-community/HunyuanImage-2.1-Diffusers")
     for scheme in ("int8", "fp8"):
@@ -293,7 +267,6 @@ def test_hunyuanimage21_bf16_component_table_present():
     assert vae_gb <= 1.0
 
 
-# ── hidream-i1 family ────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "repo_id",
     [
@@ -303,20 +276,17 @@ def test_hunyuanimage21_bf16_component_table_present():
     ],
 )
 def test_detect_family_hidream_repos(repo_id):
-    # One family covers all three variants (same 17B MoE arch + 4-TE stack).
     fam = detect_family(repo_id)
     assert fam is not None and fam.name == "hidream-i1"
     assert fam.pipeline_class == "HiDreamImagePipeline"
     assert fam.transformer_class == "HiDreamImageTransformer2DModel"
     assert fam.base_repo == "HiDream-ai/HiDream-I1-Full"
-    # Published bf16-only upstream; the fp16 fallback stays off.
     assert fam.fp16_incompatible is True
 
 
 def test_hidream_override_and_trust():
     assert detect_family("x", override = "hidream-i1").name == "hidream-i1"
     assert detect_family("x", override = "hidream").name == "hidream-i1"
-    # The three official repos load via from_pretrained so they are allowlisted; the Llama TE4 rides the trusted unsloth mirror.
     for rid in (
         "HiDream-ai/HiDream-I1-Full",
         "HiDream-ai/HiDream-I1-Dev",
@@ -328,7 +298,7 @@ def test_hidream_override_and_trust():
 
 
 def test_hidream_generation_defaults():
-    # Upstream inference.py: Full 50 steps / guidance 5; Dev and Fast are distilled and guidance-free at 28 / 16 steps. The specific keys must beat the generic "hidream".
+    # The specific Full / Dev / Fast keys must beat the generic "hidream".
     assert default_generation_params("HiDream-ai/HiDream-I1-Full") == (50, 5.0)
     assert default_generation_params("HiDream-ai/HiDream-I1-Dev") == (28, 0.0)
     assert default_generation_params("HiDream-ai/HiDream-I1-Fast") == (16, 0.0)
@@ -339,20 +309,19 @@ def test_hidream_bf16_component_table_present():
     sizes = family_bf16_components_gb(fam)
     assert sizes is not None
     transformer_gb, encoders_gb, vae_gb = sizes
-    # 17B MoE DiT 34.2 GB; TEs are CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5 plus the ~16 GB Llama TE4 mirror, so ~28.8 GB.
+    # 17B MoE DiT 34.2 GB; TEs CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5 + ~16 GB Llama TE4.
     assert 32.0 <= transformer_gb <= 37.0
     assert 26.0 <= encoders_gb <= 32.0
     assert vae_gb <= 0.5
 
 
 def test_ideogram4_generation_defaults():
-    # ComfyUI's template: 20 steps at constant guidance 7 (an explicit 48 / 7 still keeps the card's tapered schedule).
     assert default_generation_params("ideogram-ai/ideogram-4-fp8") == (20, 7.0)
 
 
 def test_ideogram4_bf16_reservation_table_present():
-    # The memory planner reserves this bf16 footprint for a narrow (fp8) ideogram-4 base even with no blob-cache
-    # estimate, so the ~54 GB pipeline never plans a resident placement it cannot fit. Pin its presence and sum.
+    # The planner reserves this bf16 footprint for the fp8 base without a cache estimate, so the
+    # ~54 GB pipeline never plans an unfittable resident placement.
     fam = detect_family("ideogram-ai/ideogram-4-fp8")
     table = family_bf16_components_gb(fam, fam.base_repo)
     assert table is not None
@@ -364,13 +333,12 @@ def test_ideogram4_memory_table_counts_both_dits():
     components = family_bf16_components_gb(fam)
     assert components is not None
     transformer_gb, text_encoders_gb, _vae_gb = components
-    # Two ~9.3B bf16 DiTs, well above one DiT's ~18.6 GB: a single-DiT entry would let auto planning under-reserve and OOM.
+    # Two ~9.3B bf16 DiTs: a single-DiT entry would under-reserve and OOM.
     assert transformer_gb > 30.0
     assert text_encoders_gb > 5.0
 
 
 def test_hidream_prequant_wiring():
-    # Hosted int8/fp8 checkpoints (28/28 per-case gate pairs each; int8 bit-identical to on-the-fly) serve the family default base.
     from core.inference.diffusion_families import family_prequant_repo
     fam = detect_family("HiDream-ai/HiDream-I1-Full")
     for scheme in ("int8", "fp8"):
@@ -378,15 +346,12 @@ def test_hidream_prequant_wiring():
 
 
 def test_hidream_distilled_variants_have_no_hosted_prequant_to_inherit():
-    # Dev and Fast are distillations of Full, so the hosted Full checkpoint is baked from other
-    # weights. Inheriting it made a Dev / Fast pick plan the Full artifact, drop its own shards,
-    # download several GB and only then hit the base_model_id refusal.
+    # Dev and Fast are distillations of Full, so the hosted Full checkpoint must not be inherited.
     from core.inference.diffusion_families import family_prequant_repo
     for repo_id in ("HiDream-ai/HiDream-I1-Dev", "HiDream-ai/HiDream-I1-Fast"):
         fam = detect_family(repo_id)
         for scheme in ("int8", "fp8"):
             assert family_prequant_repo(fam, scheme, base_repo = repo_id) is None
-            # However the id was typed, and through the mirror the loader actually fetches.
             assert family_prequant_repo(fam, scheme, base_repo = f"  {repo_id.upper()} ") is None
             assert (
                 family_prequant_repo(
@@ -397,8 +362,7 @@ def test_hidream_distilled_variants_have_no_hosted_prequant_to_inherit():
 
 
 def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
-    # 2512 is a different checkpoint with its own baked artifacts. Falling back to the Qwen-Image ones
-    # made a 2512 pick plan an artifact base_model_id refuses, after its shards had been dropped.
+    # 2512 is a different checkpoint; Qwen-Image artifacts would be refused by base_model_id.
     from core.inference.diffusion_families import family_prequant_repo
 
     fam = detect_family("Qwen/Qwen-Image-2512")
@@ -421,10 +385,7 @@ def test_qwen_image_2512_routes_to_its_own_hosted_prequant():
 
 
 def test_qwen_image_2512_prequant_filenames_match_its_repo():
-    # The names derive from the repo name, so the variant repo must be asked for <Model>-<SCHEME>
-    # in both containers. The .pt is what that repo actually serves today and is asserted to stay
-    # in the chain: preferring safetensors is only allowed to ADD a name in front of it, never to
-    # replace it, or every checkpoint already published would stop resolving.
+    # The .pt the repo serves today must stay in the chain; safetensors may only be added in front.
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
     fam = detect_family("Qwen/Qwen-Image-2512")
     for scheme, safetensors_name, pickle_name in (
@@ -444,13 +405,12 @@ def test_qwen_image_2512_prequant_filenames_match_its_repo():
             else safetensors_name
         ), names
         assert pickle_name in names[1:], names
-        # And the legacy repo-agnostic spelling stays last, for a repo predating the model-named one.
+        # The legacy repo-agnostic name stays last, for repos predating the model-named one.
         assert names[-1] == f"transformer_{scheme}.pt", names
 
 
 def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():
-    # Measured on a B200: int8 and fp8 both engage and render cleanly, including 2-3 token prompts on int8. The routed
-    # MoE expert Linears only see the concatenated image+text stream (M >> 16), so torch._int_mm's minimum never binds.
+    # Routed MoE expert Linears see the image+text stream (M >> 16), so _int_mm's floor never binds.
     from core.inference.diffusion_transformer_quant import (
         _FAMILY_SCHEME_DENY,
         _INT8_EXCLUDE_NAME_TOKENS,
@@ -462,7 +422,6 @@ def test_hidream_quant_schemes_not_denied_and_no_extra_excludes():
     assert exclude_tokens_for_scheme("fp8", "hidream-i1") == ()
 
 
-# ── structured exclusions ────────────────────────────────────────────────────
 def test_hunyuanimage_is_excluded_with_reason():
     reason = excluded_model_reason("tencent/HunyuanImage-3.0")
     assert reason is not None and "diffusers" in reason
@@ -482,7 +441,6 @@ def test_validate_load_request_surfaces_exclusion_reason():
         backend.validate_load_request("tencent/HunyuanImage-3.0")
 
 
-# ── curated krea LoRA catalog ────────────────────────────────────────────────
 def test_curated_krea2_loras_present_and_well_formed():
     krea = [e for e in _CURATED if e.repo_id and e.repo_id.startswith("krea/Krea-2-LoRA-")]
     assert len(krea) == 9
@@ -496,22 +454,20 @@ def test_curated_krea2_loras_present_and_well_formed():
 
 def test_list_loras_family_filter_gates_krea_entries():
     krea_ids = {e.id for e in _CURATED if e.families == ("krea-2",)}
-    assert krea_ids  # curated entries exist
+    assert krea_ids
     listed_for_krea = {e.id for e in list_loras(family = "krea-2")}
     assert krea_ids <= listed_for_krea
     listed_for_flux = {e.id for e in list_loras(family = "flux.1")}
     assert not (krea_ids & listed_for_flux)
 
 
-# ── ideogram-4 fp8 transformer remap ─────────────────────────────────────────
 def test_convert_fp8_state_dict_dequantizes_and_splits_qkv():
-    # The vendor fp8 transformer stores fused attention.qkv + attention.o with per-output-channel weight_scale, while
-    # diffusers wants split to_q/to_k/to_v/to_out.0 with the scale applied. Undo both or every attention weight loads wrong.
+    # Vendor fp8 stores fused qkv + o with per-channel weight_scale; diffusers wants split, scaled.
     torch = pytest.importorskip("torch")
 
     from core.inference.diffusion_ideogram4 import _convert_fp8_state_dict
 
-    hidden = 4  # tiny stand-in for attention_head_dim * num_attention_heads
+    hidden = 4
     # Reference (real) weights, then a fake per-channel fp8 encoding: value / scale.
     q = torch.randn(hidden, hidden)
     k = torch.randn(hidden, hidden)
@@ -522,7 +478,7 @@ def test_convert_fp8_state_dict_dequantizes_and_splits_qkv():
     qkv_scale = torch.rand(3 * hidden) + 0.5
     o_scale = torch.rand(hidden) + 0.5
     ff_scale = torch.rand(hidden) + 0.5
-    norm = torch.randn(hidden)  # dense (unscaled) weight passes through
+    norm = torch.randn(hidden)
     raw = {
         "layers.0.attention.qkv.weight": fused / qkv_scale[:, None],
         "layers.0.attention.qkv.weight_scale": qkv_scale,
@@ -534,30 +490,24 @@ def test_convert_fp8_state_dict_dequantizes_and_splits_qkv():
     }
     out = _convert_fp8_state_dict(raw, hidden, torch.bfloat16)
 
-    # Every converted tensor is cast to the requested compute dtype (the load_state_dict copy would silently re-cast).
+    # Cast to the requested dtype here; the load_state_dict copy would silently re-cast.
     assert all(t.dtype == torch.bfloat16 for t in out.values())
-    # Re-run in float32 for the exact value checks below (bf16 loses precision).
     out = _convert_fp8_state_dict(raw, hidden, torch.float32)
 
-    # No scale keys leak through; fused/renamed keys are gone.
     assert not any(key.endswith("_scale") for key in out)
     assert "layers.0.attention.qkv.weight" not in out
     assert "layers.0.attention.o.weight" not in out
-    # QKV split back to the reference weights in Q/K/V order.
     torch.testing.assert_close(out["layers.0.attention.to_q.weight"], q)
     torch.testing.assert_close(out["layers.0.attention.to_k.weight"], k)
     torch.testing.assert_close(out["layers.0.attention.to_v.weight"], v)
-    # o renamed to to_out.0 with the scale applied.
     torch.testing.assert_close(out["layers.0.attention.to_out.0.weight"], o)
-    # A non-attention fp8 weight keeps its name, scale applied.
     torch.testing.assert_close(out["layers.0.feed_forward.w1.weight"], ff)
-    # A dense weight passes through unchanged.
     torch.testing.assert_close(out["layers.0.attention_norm1.weight"], norm)
 
 
 def test_ideogram4_repo_is_fp8_detects_local_layout(tmp_path):
-    # A local mirror of the fp8 base never string-matches base_repo, so memory planning relies on this shard-header
-    # probe. The fp8 layout is marked by a companion ``*.weight_scale``; the bnb-4bit mirror carries none.
+    # A local fp8 mirror never matches base_repo, so planning relies on this header probe;
+    # fp8 is marked by a companion *.weight_scale, which the bnb-4bit mirror lacks.
     torch = pytest.importorskip("torch")
     st = pytest.importorskip("safetensors.torch")
 
@@ -582,12 +532,11 @@ def test_ideogram4_repo_is_fp8_detects_local_layout(tmp_path):
     )
     assert ideogram4_repo_is_fp8(str(nf4)) is False
 
-    # A directory with no transformer shards at all resolves to False, not an error.
     assert ideogram4_repo_is_fp8(str(tmp_path / "missing")) is False
 
 
 def test_create_causal_mask_patch_is_self_disabling_and_idempotent():
-    # The patch adapts the pipeline's inputs_embeds kwarg to the installed transformers create_causal_mask signature; a match forwards unchanged and a second apply must not double-wrap.
+    # Adapts inputs_embeds to the installed create_causal_mask signature; must not double-wrap.
     pytest.importorskip("torch")
     pytest.importorskip("diffusers")
 
@@ -599,15 +548,14 @@ def test_create_causal_mask_patch_is_self_disabling_and_idempotent():
         ig4._CAUSAL_MASK_PATCHED = False
         ig4._patch_create_causal_mask()
         wrapped = pipe_mod.create_causal_mask
-        assert wrapped is not original  # the patch installed a wrapper
-        ig4._patch_create_causal_mask()  # idempotent: no re-wrap
+        assert wrapped is not original
+        ig4._patch_create_causal_mask()
         assert pipe_mod.create_causal_mask is wrapped
     finally:
         pipe_mod.create_causal_mask = original
         ig4._CAUSAL_MASK_PATCHED = False
 
 
-# ── FLUX.2 klein size resolution ─────────────────────────────────────────────
 def test_flux2_klein_9b_resolves_its_own_base_and_text_encoder():
     """A klein-9B GGUF must not inherit the family's 4B default.
 
@@ -639,7 +587,6 @@ def test_flux2_gguf_base_mismatch_check_fails_open(tmp_path):
     fam = detect_family("unsloth/FLUX.2-klein-9B-GGUF")
     empty = tmp_path / "not-a-gguf.gguf"
     empty.write_bytes(b"")
-    # No path, an unreadable file, an unmapped base, and a non-FLUX.2 family are all pass-through.
     assert_flux2_gguf_matches_base(fam, "black-forest-labs/FLUX.2-klein-4B", None)
     assert_flux2_gguf_matches_base(fam, "black-forest-labs/FLUX.2-klein-4B", empty)
     assert_flux2_gguf_matches_base(fam, "unsloth/Something-FP8", empty)
@@ -664,18 +611,14 @@ def test_qwen_image_21_is_reachable_end_to_end_not_just_detectable():
 
     fam = detect_family("Qwen/Qwen-Image-2.1")
     assert fam is not None and fam.name == "qwen-image-2.1"
-    # Not swallowed by the generic family, and not swallowing it either.
     assert detect_family("Qwen/Qwen-Image").name == "qwen-image"
     assert detect_family("Qwen/Qwen-Image-2512").name == "qwen-image"
     for alias in ("qwen_image_21", "qwenimage21", "qwen-image-21"):
         assert detect_family("", override = alias) is fam, alias
-    # The class really is what the published model_index.json names.
     assert detect_family_by_pipeline_class("QwenImage21Pipeline") is fam
     assert fam.pipeline_class in _PIPELINE_MIN_DIFFUSERS
 
-    # The gate that made the entry inert. _is_trusted_diffusion_repo is asked of the base repo by
-    # validate_load_request BEFORE anything is built, so a family base missing from that list is
-    # unloadable however correct the rest of the entry is.
+    # validate_load_request checks the base repo before building: an untrusted base is unloadable.
     assert _is_trusted_diffusion_repo(fam.base_repo), (
         f"{fam.base_repo} is the family's own base and is not in _TRUSTED_NON_GGUF_REPOS, so "
         "every non-GGUF pick of this family is refused before the pipeline is built"
@@ -710,21 +653,16 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
         "unsloth/Qwen-Image-2.1-FP8",
         "vae/qwen_image_2.1_vae_bf16.safetensors",
     )
-    # Not the qwen-image VAE: a different class for a different latent space, which decodes to
-    # noise rather than raising if it is ever substituted here.
+    # Not the qwen-image VAE: a different latent space that decodes to noise, not an error.
     assert "2.1" in fam.sd_cpp_vae[1]
 
     encoders = sd_cpp_text_encoders_for(fam, "unsloth/Qwen-Image-2.1-GGUF", None)
-    # The encoder, then the vision projector native editing reads through --llm_vision.
     assert len(encoders) == 2
     assert encoders[1] == ("unsloth/Qwen3-VL-8B-Instruct-GGUF", "mmproj-F16.gguf", "llm_vision")
     repo, filename, kind = encoders[0]
     assert repo == "unsloth/Qwen3-VL-8B-Instruct-GGUF"
-    # Which rung is the family's call, pinned by exact name in
-    # test_diffusion_compat_preflight.py::test_qwen_image_2_1_takes_the_dynamic_4bit_text_encoder.
-    # Restating it here broke when #11542 moved it to UD-Q4_K_XL. What this route needs is that
-    # the declared file is what reaches sd.cpp, and that it stays a 4-bit GGUF: the CPU RAM win
-    # is the reason the no-GPU route exists (bf16 is 16.4 GB).
+    # The exact rung is pinned in test_diffusion_compat_preflight.py; here only require the declared
+    # file reaches sd.cpp and stays a 4-bit GGUF (bf16 is 16.4 GB on the CPU route).
     assert filename == fam.sd_cpp_text_encoders[0][1]
     assert filename.endswith(".gguf") and "Q4_K" in filename, filename
     assert kind == "llm"
@@ -733,13 +671,10 @@ def test_qwen_image_21_gguf_reaches_sd_cpp_with_its_own_vae_and_a_qwen3vl_encode
     assert fam.sd_cpp_sampling_method == "euler"
     assert fam.sd_cpp_flow_shift is None
 
-    # The encoder repo is fetch-only and must not be offered as a loadable model. The VAE repo is
-    # the base itself, so it must NOT be classified that way.
+    # The encoder repo is fetch-only; the VAE repo is the base itself, so it must not be.
     companions = sd_cpp_companion_only_repo_ids()
     assert "unsloth/qwen3-vl-8b-instruct-gguf" in companions
-    # The VAE ships inside a repo that is itself loadable, so it must NOT be classified fetch-only.
-    # Putting it in the GGUF repo instead WOULD be: that repo appears in no family field, so
-    # companions-minus-loadable would mark the home of every denoiser as a companion and hide it.
+    # The GGUF repo appears in no family field, so moving the VAE there would hide every denoiser.
     assert "unsloth/qwen-image-2.1-fp8" not in companions
     assert "qwen/qwen-image-2.1" not in companions
 
@@ -796,12 +731,10 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
         f"https://github.com/huggingface/diffusers/archive/{commit.group(1).lower()}.zip" in message
     ), message
 
-    # A released minimum keeps the ordinary remedy.
     released = _too_old_message("Krea2Pipeline", "krea-2", "0.38.0")
     assert "pip install -U 'diffusers>=0.39.0'" in released
 
-    # Every unreleased entry must still be a minimum some class actually declares, so a stale one
-    # cannot sit here unnoticed after its release ships.
+    # Every unreleased entry must be a minimum some class declares, so stale ones are caught.
     declared = set(_PIPELINE_MIN_DIFFUSERS.values())
     assert _UNRELEASED_MIN_DIFFUSERS <= declared, sorted(_UNRELEASED_MIN_DIFFUSERS - declared)
 
@@ -823,11 +756,9 @@ def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():
     assert fam.reference is True
     assert fam.edit is False
     assert fam.pipeline_class == "QwenImage21Pipeline"
-    # It also has no separate img2img or inpaint pipeline upstream: the one class covers both jobs.
     assert fam.img2img_pipeline_class is None
     assert fam.inpaint_pipeline_class is None
 
-    # The edit family is a different model entirely, and must not have been merged into this one.
     edit = detect_family("Qwen/Qwen-Image-Edit-2511")
     assert edit is not None and edit.name == "qwen-image-edit" and edit.edit is True
     assert edit.pipeline_class != fam.pipeline_class

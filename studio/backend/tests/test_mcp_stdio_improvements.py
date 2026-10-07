@@ -29,9 +29,6 @@ def _disable(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", raising = False)
 
 
-# ── P1: _client() self-gates the stdio sink ─────────────────────────
-
-
 def test_client_refuses_stdio_when_disabled(monkeypatch):
     _disable(monkeypatch)
     with pytest.raises(PermissionError):
@@ -40,8 +37,7 @@ def test_client_refuses_stdio_when_disabled(monkeypatch):
 
 def test_client_builds_stdio_when_enabled_without_spawning(monkeypatch):
     _enable(monkeypatch)
-    # Constructing the Client must not spawn the subprocess (spawn happens on
-    # __aenter__); only assert it builds.
+    # Constructing the Client must not spawn the subprocess; that happens on __aenter__.
     client = mcp_client._client("npx -y server /tmp", {"K": "v"})
     assert client is not None
 
@@ -83,9 +79,6 @@ def test_client_builds_stdio_with_encoded_arguments_without_shell(monkeypatch):
 def test_client_http_unaffected_by_gate(monkeypatch):
     _disable(monkeypatch)
     assert mcp_client._client("https://example.com/mcp", None) is not None
-
-
-# ── P3: OAuth normalised off for stdio (create + update) ────────────
 
 
 def test_create_forces_oauth_off_for_stdio(tmp_path, monkeypatch):
@@ -163,9 +156,6 @@ def test_update_url_to_stdio_clears_oauth(tmp_path, monkeypatch):
     assert resp.use_oauth is False
 
 
-# ── P4: env/headers dropped on a transport-type switch ──────────────
-
-
 def test_switch_stdio_to_http_drops_env(tmp_path, monkeypatch):
     from models.mcp_servers import McpServerUpdate
     import routes.mcp_servers as routes_mcp
@@ -183,7 +173,6 @@ def test_switch_stdio_to_http_drops_env(tmp_path, monkeypatch):
             "s1", McpServerUpdate(url = "https://remote/mcp"), current_subject = "u"
         )
     )
-    # stdio env must NOT survive as HTTP headers on the remote endpoint
     assert resp.headers == {}
     assert mcp_servers_db.get_server("s1")["headers_json"] is None
 
@@ -222,14 +211,10 @@ def test_same_transport_edit_keeps_headers(tmp_path, monkeypatch):
         url = "npx server",
         headers_json = '{"API_KEY": "secret"}',
     )
-    # editing only the display name (still stdio) must keep env vars
     resp = asyncio.run(
         routes_mcp.update_mcp_server("s1", McpServerUpdate(display_name = "B"), current_subject = "u")
     )
     assert resp.headers == {"API_KEY": "secret"}
-
-
-# ── P5: reject a command whose first token is a URL scheme ───────────
 
 
 def test_validate_url_rejects_url_scheme_command_when_enabled(monkeypatch):
@@ -244,11 +229,9 @@ def test_validate_url_rejects_url_scheme_command_when_enabled(monkeypatch):
 def test_validate_url_allows_url_in_argument(monkeypatch):
     from routes.mcp_servers import _validate_url
     _enable(monkeypatch)
-    # :// inside an ARGUMENT (not the first token) is a valid command
     assert _validate_url("npx server --url https://x/mcp") == ("npx server --url https://x/mcp")
 
 
-# ── P6: Data Recipe stdio path obeys the same host gate ─────────────
 # build_mcp_providers needs the Unsloth-only data_designer plugin; skip if absent.
 
 _STDIO_RECIPE = {
@@ -269,7 +252,6 @@ def test_data_recipe_skips_stdio_when_disabled(monkeypatch):
     _disable(monkeypatch)
     from core.data_recipe.service import build_mcp_providers
 
-    # gate off -> the stdio provider is dropped (no subprocess spawned)
     assert build_mcp_providers(_STDIO_RECIPE) == []
 
 
@@ -279,4 +261,4 @@ def test_data_recipe_builds_stdio_when_enabled(monkeypatch):
     from core.data_recipe.service import build_mcp_providers
 
     built = build_mcp_providers(_STDIO_RECIPE)
-    assert len(built) == 1  # constructed (not spawned) only when enabled
+    assert len(built) == 1

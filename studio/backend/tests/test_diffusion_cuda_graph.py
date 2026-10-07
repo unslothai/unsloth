@@ -103,12 +103,12 @@ def _build_stub_torch():
     """Just enough torch for the capture path, plus a record of what the layer did to it."""
     torch = types.ModuleType("torch")
     records = {
-        "graphs": [],  # (graph, pool) per torch.cuda.graph(...)
+        "graphs": [],
         "streams": [],
         "synchronize": 0,
         "empty_cache": 0,
         "inference_mode": [],
-        "graph_error": None,  # set to an exception to make CUDAGraph() raise
+        "graph_error": None,
     }
     torch._records = records
 
@@ -249,7 +249,7 @@ def test_flatten_refuses_unknown_object_and_keys_it_as_o(stub_torch):
 
 def test_graph_key_distinguishes_metadata(stub_torch):
     base = cg.graph_key(_t((2, 4)))
-    assert base == cg.graph_key(_t((2, 4)))  # equal metadata -> equal key -> one graph
+    assert base == cg.graph_key(_t((2, 4)))
     assert base != cg.graph_key(_t((2, 8)))
     assert base != cg.graph_key(_t((2, 4), stride = (1, 2)))
     assert base != cg.graph_key(_t((2, 4), dtype = "float16"))
@@ -266,7 +266,7 @@ def test_has_float_only_for_real_floats(stub_torch):
 def test_return_dict_true_or_absent_runs_eager(stub_torch):
     module = _FakeDiT()
     handle = _armed(module)
-    handle(_t(), timestep = _t((1,)))  # absent -> defaults to True
+    handle(_t(), timestep = _t((1,)))
     handle(_t(), timestep = _t((1,)), return_dict = True)
     assert handle.stats["eager_calls"] == 2
     assert handle.stats["captures"] == 0
@@ -284,11 +284,9 @@ def test_capture_then_replay_uses_one_graph_and_copies_statics(stub_torch):
     assert handle.stats["replays"] == 2
     assert len(handle.cache) == 1
     entry = next(iter(handle.cache.values()))
-    # One copy at capture, one per call: the live values reach the static buffers every time.
     assert entry.static[0].copied_from == [first, first, second]
     assert entry.static[0].value == 2.0
     assert entry.graph.replays == 2
-    # Warm-ups plus the capture call, all on the ORIGINAL forward.
     assert module.calls == cg.WARMUP_ITERS + 1
     assert stub_torch._records["synchronize"] == 1
     assert stub_torch._records["inference_mode"] == [False]
@@ -344,9 +342,8 @@ def test_host_tensor_poisons_with_capture_error(stub_torch):
     assert handle.capture_error["type"] == "RuntimeError"
     assert "not on cuda" in handle.capture_error["msg"]
     assert handle.capture_error["traceback"]
-    assert module.calls == 1  # eager, and nothing was warmed up first
+    assert module.calls == 1
     assert out[0].value == ("out", 1)
-    # Poisoned means eager forever, with no further capture attempts.
     handle(_t(), timestep = _t((1,)), return_dict = False)
     assert handle.stats["captures"] == 0
     assert module.calls == 2
@@ -367,11 +364,10 @@ def test_capture_exception_poisons_and_returns_the_eager_result(stub_torch):
     assert handle.poisoned is True
     assert handle.capture_error["type"] == "RuntimeError"
     assert handle.stats["fallbacks"] == 1
-    assert module.calls == cg.WARMUP_ITERS + 1  # warm-ups ran, then CUDAGraph() raised
+    assert module.calls == cg.WARMUP_ITERS + 1
     assert out[0].value == ("out", module.calls)
     assert len(logged) == 1
     assert "%s" in logged[0][0] and "capture failed" in logged[0][0]
-    # Type and message only in the log line; the traceback stays on capture_error.
     assert all("Traceback" not in str(part) for part in logged[0][1:])
 
 
@@ -428,15 +424,13 @@ def test_poisoning_drops_the_graphs_it_can_no_longer_replay(stub_torch):
     assert len(handle.cache) == 1
     assert cg._POOL_BOX[0] is not None
 
-    # A second shape fails to capture.
     stub_torch._records["graph_error"] = RuntimeError("CUDA out of memory during capture")
     out = handle(_t((2, 4)), timestep = _t((1,)), return_dict = False)
 
     assert handle.poisoned is True
-    assert out[0].value[0] == "out"  # the eager result still came back
+    assert out[0].value[0] == "out"
     assert handle.cache == {}, "graphs that can never replay again are still pinning memory"
     assert cg._POOL_BOX[0] is None, "and the pool token outlived the last graph in it"
-    # Still eager from here on, and it does not try to capture again.
     before = module.calls
     handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
     assert module.calls == before + 1
@@ -459,9 +453,8 @@ def test_graph_cap_degrades_to_eager_without_poisoning(stub_torch):
     assert handle.stats["cap_skips"] == 2
     assert handle.poisoned is False
     assert len(handle.cache) == 2
-    assert len(logged) == 1  # one warning, not one per skipped shape
+    assert len(logged) == 1
 
-    # The graphs already recorded keep replaying.
     before = handle.stats["replays"]
     handle(_t((1, 4)), timestep = _t((1,)), return_dict = False)
     assert handle.stats["replays"] == before + 1
@@ -479,7 +472,7 @@ def test_bypass_runs_eager_and_keeps_the_graphs(stub_torch):
     assert handle.bypassed is True
     assert handle.stats["eager_calls"] == 1
     assert handle.stats["replays"] == 1
-    assert len(handle.cache) == 1  # graphs survive the bypass
+    assert len(handle.cache) == 1
 
     cg.set_bypass([handle], False)
     handle(_t(), timestep = _t((1,)), return_dict = False)
@@ -517,7 +510,7 @@ def test_reset_drops_the_graphs(stub_torch):
     assert stub_torch._records["empty_cache"] == 1
 
     handle(_t(), timestep = _t((1,)), return_dict = False)
-    assert handle.stats["captures"] == 2  # a LoRA swap re-captures rather than serving old weights
+    assert handle.stats["captures"] == 2
 
 
 def test_install_uninstall_restores_the_class_forward(stub_torch):
@@ -536,7 +529,7 @@ def test_install_uninstall_restores_the_class_forward(stub_torch):
     assert "forward" not in module.__dict__
     assert module.forward.__func__ is _FakeDiT.forward
     assert handles[0].cache == {}
-    cg.uninstall_all(handles)  # idempotent
+    cg.uninstall_all(handles)
     cg.uninstall_all(())
     cg.uninstall_all(None)
 
@@ -560,11 +553,11 @@ def test_second_wrapper_reuses_the_shared_pool(stub_torch):
     second(_t((2, 4)), timestep = _t((1,)), return_dict = False)
 
     recorded = stub_torch._records["graphs"]
-    assert recorded[0][1] is None  # first capture seeds the pool
-    assert recorded[1][1] == pool  # every later capture is handed it
+    assert recorded[0][1] is None
+    assert recorded[1][1] == pool
 
     cg.uninstall_all([first, second])
-    assert cg._POOL_BOX[0] is None  # last wrapper freed -> the pool id is forgotten
+    assert cg._POOL_BOX[0] is None
 
 
 def test_pool_survives_while_another_wrapper_still_holds_a_graph(stub_torch):
@@ -581,7 +574,7 @@ def test_a_graph_in_an_earlier_pool_does_not_keep_the_current_token(stub_torch):
     another wrapper into a fresh pool) must not keep the current token alive after its own last graph is gone."""
     first, second = _armed(), _armed()
     first(_t(), timestep = _t((1,)), return_dict = False)
-    cg._POOL_BOX[0] = None  # what a drop of the first pool's token leaves
+    cg._POOL_BOX[0] = None
     second(_t(), timestep = _t((1,)), return_dict = False)
     current = cg._POOL_BOX[0]
     assert current is not None and first.cache
@@ -598,15 +591,12 @@ def test_reset_all_forgets_the_pool_token_with_the_last_graph(stub_torch):
     pool = cg._POOL_BOX[0]
     assert pool is not None
 
-    # One wrapper still holds a graph: the pool is live and the token stays.
     cg.reset_all([first])
     assert cg._POOL_BOX[0] == pool
 
-    # Now nothing does.
     cg.reset_all([second])
     assert cg._POOL_BOX[0] is None
 
-    # And the next capture seeds a fresh pool instead of replaying the dead token.
     first(_t(), timestep = _t((1,)), return_dict = False)
     assert stub_torch._records["graphs"][-1][1] is None
 
@@ -747,10 +737,9 @@ def test_compiled_unet_is_graphed_at_the_compiled_call(stub_torch):
     for _ in range(2):
         unet._compiled_call_impl(_t(), timestep = _t((1,)), return_dict = False)
     assert handles[0].stats["captures"] == 1 and handles[0].stats["replays"] == 2
-    # Warm-ups plus the capture call, all through the COMPILED callable.
     assert unet.calls == cg.WARMUP_ITERS + 1
 
-    unet._compiled_call_impl(_t(), timestep = _t((1,)))  # return_dict absent: eager, still compiled
+    unet._compiled_call_impl(_t(), timestep = _t((1,)))
     assert unet.calls == cg.WARMUP_ITERS + 2
 
     cg.uninstall_all(handles)
@@ -800,7 +789,6 @@ def test_graph_eligible_family_opt_in_on_the_video_backend(stub_torch, monkeypat
     assert _eligible(monkeypatch, family = opted_in, family_default = False)[0] is True
     bare = types.SimpleNamespace()
     assert _eligible(monkeypatch, family = bare, family_default = False)[0] is False
-    # a family can opt in only for an offloaded denoiser
     offload_only = types.SimpleNamespace(offload_cuda_graph = True)
     assert _eligible(monkeypatch, family = offload_only, family_default = False)[0] is False
     assert (
@@ -901,7 +889,6 @@ def test_real_cuda_capture_replays_bit_identically():
         assert handle.stats["replays"] == 3
         assert len(handle.cache) == 1
 
-        # A second shape records a second graph rather than replaying the first.
         hidden = torch.randn(2, 16, dim, device = "cuda", dtype = torch.bfloat16)
         timestep = torch.randn(1, 1, device = "cuda", dtype = torch.bfloat16)
         with torch.inference_mode():
@@ -911,7 +898,6 @@ def test_real_cuda_capture_replays_bit_identically():
         assert handle.stats["captures"] == 2
         assert cg.stats([handle])["graphs"] == 2
 
-        # return_dict = True stays eager and still returns the dataclass-shaped output.
         with torch.inference_mode():
             assert hasattr(module(hidden_states = hidden, timestep = timestep), "sample")
         assert handle.stats["eager_calls"] == 1
@@ -1006,7 +992,7 @@ def test_unbaked_activation_scales_poison_the_capture(stub_torch, record_prewarm
     assert "unbaked activation scales" in handle.capture_error["msg"]
     assert "blocks.1.attention.to_q" in handle.capture_error["msg"]
     assert record_prewarm == []
-    assert module.calls == 1  # the eager fallback only
+    assert module.calls == 1
     assert out[0].value == ("out", 1)
 
 
@@ -1021,7 +1007,7 @@ def test_a_layer_that_cannot_answer_counts_as_unbaked(stub_torch, record_prewarm
 
 def test_prewarm_token_counts_are_bounded_and_sorted(stub_torch):
     counts = cg._prewarm_token_counts([_t((2, 8, 4)), _t((1,)), _t((4, 4))])
-    assert counts[0] == 1  # the modulation M is always tuned
+    assert counts[0] == 1
     assert counts == tuple(sorted(set(counts)))
     assert set(counts) >= {1, 4, 16}
     assert len(cg._prewarm_token_counts([_t((n, 4)) for n in range(2, 40)])) <= 8
@@ -1086,7 +1072,6 @@ def test_live_status_turns_off_when_a_graph_that_replayed_is_poisoned(stub_torch
     handle(_t(), timestep = _t((1,)), return_dict = False)
     handle(_t(), timestep = _t((1,)), return_dict = False)
     assert handle.stats["replays"] == 2 and cg.never_engaged((handle,)) is None
-    # A later shape whose capture fails poisons the wrapper: it never replays again.
     handle(_t(device_type = "cpu"), timestep = _t((1,)), return_dict = False)
     assert handle.poisoned
     resolved, optims = cg.live_status(_RESOLVED_ON, ("compiled", "cuda_graph"), (handle,))

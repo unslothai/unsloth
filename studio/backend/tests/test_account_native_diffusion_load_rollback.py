@@ -50,7 +50,6 @@ def _failing_backend(monkeypatch):
             RuntimeError("sd-cli binary is present but not runnable.")
         ),
     )
-    # Alice's native pipeline is what stays resident through the failure.
     backend._state = types.SimpleNamespace(repo_id = "org/alice-model")
     backend._loading = _SdLoading(repo_id = "org/bob-model", base_repo = "")
     return backend
@@ -58,7 +57,6 @@ def _failing_backend(monkeypatch):
 
 def test_failed_native_load_returns_gpu_residency_to_the_displaced_account(monkeypatch):
     backend = _failing_backend(monkeypatch)
-    # /images/load on a GPU host: the arbiter claim runs under Bob, displacing Alice.
     run_as(BOB, gpu_arbiter.acquire_for, "diffusion", lambda: None)
     run_as(BOB, access.note_resident_account, "diffusion", "org/bob-model")
     assert gpu_arbiter.owner_account() == BOB.account_id
@@ -75,8 +73,8 @@ def test_failed_native_load_returns_gpu_residency_to_the_displaced_account(monke
         ),
     )
 
-    assert backend._loading.error  # the load really failed
-    assert backend._state is not None  # Alice's pipeline is still resident
+    assert backend._loading.error
+    assert backend._state is not None
     assert gpu_arbiter.owner_account() == ALICE.account_id
     assert run_as(ALICE, access.resident_hidden, "diffusion", "org/alice-model") is False
     assert run_as(BOB, access.resident_hidden, "diffusion", "org/alice-model") is True

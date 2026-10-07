@@ -15,7 +15,6 @@ logger = get_logger(__name__)
 
 REMOTE_ACCESS_AUTO_START_KEY = "remote_access_auto_start"
 DEFAULT_REMOTE_ACCESS_AUTO_START = False
-# Longest a Stop waits for a live start worker to claim settings ownership.
 _STOP_OWNERSHIP_WAIT = 5.0
 
 _worker_lock = threading.Lock()
@@ -45,8 +44,7 @@ class RemoteAccessStopResponseMiddleware:
 
         release = acquire_remote_access_stop_response()
         if release is None:
-            # Teardown has already linearized. Preserve downstream auth and
-            # idempotent route behavior without admitting new drain work.
+            # Teardown already linearized: keep auth and idempotent routes, admit no new drain work.
             await self.app(scope, receive, send)
             return
 
@@ -178,8 +176,7 @@ def remote_access_status(app_state) -> dict:
         starting = _worker_is_current(_start_worker, _start_worker_admission, current)
         stopping = _worker_is_current(_stop_worker, _stop_worker_admission, current)
         generation_advanced = stopping and _stop_worker_admission[1] != current[1]
-    # A stop worker outlives its teardown. Only one that advanced the generation
-    # and left the tunnel off with nothing pending has actually performed it.
+    # Only a stop worker that advanced the generation and left the tunnel off did the teardown.
     if generation_advanced and status["state"] == "off" and not status.get("stop_pending"):
         stopping = False
     if stopping:
@@ -194,8 +191,7 @@ def remote_access_status(app_state) -> dict:
     owner = status["managed_by"]
     state = status["state"]
     stop_pending = bool(status.get("stop_pending"))
-    # Reported on its own too: a higher-precedence block hides the reason, but
-    # the desktop still offers setting the password that is pending.
+    # Reported separately: a higher-precedence block hides it, but the UI still offers the fix.
     password_pending = not _admin_password_ready()
     block_reason = None
     if not ready:
@@ -222,7 +218,6 @@ def remote_access_status(app_state) -> dict:
         "Cloudflare URL was not reachable",
         "cloudflared did not register a connection",
         "cloudflared exited",
-        # Why Start is blocked: the connector's exit was never confirmed
         "cloudflared could not be stopped",
     }:
         error = "Cloudflare tunnel failed"
@@ -237,9 +232,7 @@ def remote_access_status(app_state) -> dict:
         "can_stop": can_stop,
         "block_reason": block_reason,
         "password_pending": password_pending,
-        # Plain GET/EventSource support, not Unsloth's own streams, which use POST.
-        # Measured on three quick tunnels: a streamed GET delivers nothing until it
-        # closes, and no response header changes that.
+        # Quick tunnels buffer streamed GETs until close (no header fixes it); Unsloth streams use POST.
         "streaming_supported": status["url"] is None,
     }
 
@@ -332,8 +325,7 @@ def stop_remote_access(app_state) -> dict:
         if current[0] != admission[0]:
             return
         if get_studio_tunnel_status()["managed_by"] == "settings":
-            # Every Stop admitted before this teardown decision must finish traversing cloudflared, so
-            # admission closes at the end of the drain, else a later request creates an unobserved lease.
+            # Close admission only after the drain, else a later Stop creates an unobserved lease.
             _drain_and_close_remote_access_stop_responses()
             current = get_studio_tunnel_control_token()
             if current[0] != admission[0] or get_studio_tunnel_status()["managed_by"] != "settings":

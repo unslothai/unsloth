@@ -61,7 +61,6 @@ def test_repeats_still_visible_at_debug(monkeypatch):
     rec = _reset(monkeypatch)
     for _ in range(3):
         load_model_defaults("definitely-not-a-real-model-xyz")
-    # First call is the info line, the other two are debug: nothing is lost.
     assert len(rec.at("debug", "defaults from")) == 2, rec.calls
 
 

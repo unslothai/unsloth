@@ -467,7 +467,6 @@ def floor_tiles(vae: Any) -> tuple[int, int]:
     return max(TILE_LATENTS, stock[0]), max(OVERLAP_LATENTS, stock[1])
 
 
-# Class name -> measured reason to keep diffusers' tiles. Empty: every covered VAE measured better or identical.
 KEEP_STOCK: dict[str, str] = {}
 
 

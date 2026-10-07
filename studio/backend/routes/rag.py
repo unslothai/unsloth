@@ -103,24 +103,22 @@ def _document_label(name: str) -> str:
     base = re.sub(r" +", " ", base).strip() or "document"
     if len(base) <= 200:
         return base
-    # Trim the stem, not the extension: _save_upload gates on the extension, so
-    # a plain truncation would reject a long-named .txt as "unsupported".
+    # Trim the stem: _save_upload gates on the extension.
     stem, ext = os.path.splitext(base)
     if not ext or len(ext) > 32:
         return base[:200]
     return stem[: 200 - len(ext)] + ext
 
 
-# Names treated as Windows paths. Each is also a legal POSIX filename; the list stays
-# narrow because splitting a real name loses part of it. One leading backslash counts as
-# UNC because multipart parsing unescapes "\\" to "\".
+# Kept narrow: splitting a real name loses part of it.
+# One leading backslash counts as UNC because multipart parsing unescapes "\\" to "\".
 _LOOKS_LIKE_WINDOWS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\?|\.{1,2}\\)")
 
 
 def _sanitize_filename(name: str) -> str:
     """Label a browser upload, whose client-supplied name may carry a path."""
-    # Not ntpath.basename: it reads "P:L statement.pdf", how macOS stores a Finder "/",
-    # as drive "P:". Classify first: splitting on "/" would strip the drive from "C:/a\b".
+    # Not ntpath.basename: macOS names like "P:L x.pdf" would read as drive "P:".
+    # Classify first: splitting on "/" would strip the drive from "C:/a\b".
     raw = name or ""
     parts = re.split(r"[\\/]", raw) if _LOOKS_LIKE_WINDOWS_PATH.match(raw) else raw.split("/")
     return _document_label(parts[-1])
@@ -199,7 +197,7 @@ def _save_native_path_upload(lease: str) -> tuple[str, str, str]:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
     account_path(grant.canonical_path)
-    # Path.name is one component, so a "\" in it is part of the name, as in "AC\DC.pdf".
+    # Path.name is one component, so a "\" in it is part of the name ("AC\DC.pdf").
     filename = _document_label(grant.canonical_path.name)
     try:
         with open(grant.canonical_path, "rb") as source:
@@ -409,11 +407,7 @@ def list_knowledge_bases(subject: str = Depends(get_current_subject)) -> dict:
     try:
         conn = rag_db.get_connection()
     except rag_db.RagExtensionUnavailable:
-        # RAG_AVAILABLE only covers the import; the native library can still fail to load per connection (a missing
-        # vec0 binary in the venv). The UI polls this list, so 500ing costs a traceback every few seconds for a
-        # condition that never changes in a session, and rag_db has warned once. The marker is the difference between
-        # "no knowledge bases yet" and "RAG cannot run here". Only the unavailable case degrades: a locked or corrupt
-        # database still raises.
+        # The vec0 native lib can fail per connection; degrade instead of 500 on every poll.
         return {"knowledgeBases": [], **_availability(False)}
     try:
         kbs = store.list_kbs(conn)
@@ -498,8 +492,7 @@ def _raise_if_scope_retired(scope: str, detail: str = "Knowledge base is being d
         raise HTTPException(status_code = 409, detail = detail)
 
 
-# The three upload routes stay sync so FastAPI runs them in the threadpool; their
-# copy + start_ingestion work would stall every other request on the event loop.
+# Upload routes stay sync so their blocking work runs in the threadpool.
 @router.post("/knowledge-bases/{kb_id}/documents")
 def upload_kb_document(
     kb_id: str,
@@ -562,7 +555,6 @@ def link_kb_folder(
     return _create_linked_folder("knowledge_base", kb_id, payload)
 
 
-# Stays sync for the reason above upload_kb_document.
 @router.post("/threads/{thread_id}/documents")
 def upload_thread_document(
     thread_id: str,
@@ -607,13 +599,10 @@ def _discard_document(document_id: str) -> None:
         store.delete_document(conn, document_id)
     finally:
         conn.close()
-    # Same uploads-root confinement as every other cleanup path, and best-effort for the same reason: on Windows
-    # commonpath raises across drives and os.remove raises while the ingestion worker still holds the file, neither
-    # of which should turn this into a 500.
+    # Best-effort: on Windows commonpath and os.remove can raise; must not 500.
     _remove_stored_upload(document.get("stored_path"))
 
 
-# Stays sync for the reason above upload_kb_document.
 @router.post("/projects/{project_id}/documents")
 def upload_project_document(
     project_id: str,
@@ -650,8 +639,7 @@ def upload_project_document(
     except Exception:
         _remove_stored_upload(stored_path)
         raise
-    # the project delete runs in the threadpool and can commit after the check above, once its own
-    # RAG cleanup has already listed the project's documents
+    # The threadpool project delete can commit after the check above.
     if get_chat_project(project_id) is None:
         _discard_document(document_id)
         raise HTTPException(status_code = 404, detail = "Project not found")
@@ -899,7 +887,6 @@ def folder_job_status(job_id: str, subject: str = Depends(get_current_subject)) 
     return _folder_job_view(row)
 
 
-# POST too, for the same reason as /jobs/{job_id}/events above.
 @router.post("/linked-folder-jobs/{job_id}/events")
 @router.get("/linked-folder-jobs/{job_id}/events", include_in_schema = False)
 def folder_job_events(
@@ -935,7 +922,6 @@ def folder_job_events(
 @router.post("/search")
 def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    # One connection for the whole request; the ownership check reads a single row.
     conn = _rag_connection()
     try:
         if payload.kb_id:
@@ -982,8 +968,7 @@ def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) 
         conn.close()
 
 
-# Per-process secret so pdf.js range requests fetch the file without a bearer
-# header; tokens only work on this server instance.
+# Per-process secret so pdf.js range requests work without a bearer header.
 _PREVIEW_SECRET = secrets.token_bytes(32)
 _PREVIEW_TTL = 600
 
@@ -992,8 +977,7 @@ _CONTENT_TYPES = {
     ".txt": "text/plain; charset=utf-8",
     ".md": "text/markdown; charset=utf-8",
     ".markdown": "text/markdown; charset=utf-8",
-    # Served as plain text, never text/html: an uploaded HTML document rendered same-origin would
-    # execute its scripts with access to the app's storage.
+    # Never text/html: uploaded HTML would run scripts same-origin.
     ".html": "text/plain; charset=utf-8",
     ".htm": "text/plain; charset=utf-8",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1110,8 +1094,7 @@ def document_file_url(
 def document_file_signed(document_id: str, token: str = Query(...)) -> FileResponse:
     """Serve the source file gated by the HMAC token (no bearer) so pdf.js range
     requests work."""
-    # Token first: this is the one endpoint with no bearer, and _require_rag() now opens
-    # a connection on its first call, which is not work an unverified token should buy.
+    # Verify the token first: this endpoint has no bearer auth.
     account = _verify_document_token(document_id, token)
     if account is None:
         raise HTTPException(status_code = 401, detail = "Invalid or expired token")
@@ -1137,6 +1120,6 @@ def document_file_signed(document_id: str, token: str = Query(...)) -> FileRespo
     return FileResponse(
         stored_path,
         media_type = _CONTENT_TYPES.get(ext, "application/octet-stream"),
-        # linked documents are named by a posix relative path, invalid in this header
+        # Linked documents are named by a posix relative path, invalid in this header.
         filename = doc["filename"].rsplit("/", 1)[-1],
     )

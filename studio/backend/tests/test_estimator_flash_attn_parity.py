@@ -33,8 +33,7 @@ import sys
 import types as _types
 from pathlib import Path
 
-# Stub heavy / unavailable deps before importing the module under test.
-# Same block, same reasons, as tests/test_memory_estimate.py.
+# stub heavy deps before importing; same block as tests/test_memory_estimate.py
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -59,8 +58,7 @@ import routes.inference as ri  # noqa: E402
 from models.inference import EstimateMemoryRequest  # noqa: E402
 from core.inference.llama_cpp import _kv_bytes_per_elem  # noqa: E402
 
-# Reuse the GGUF blob builder rather than copying it, for the reason its first
-# borrower gives: a second copy of the writer would drift from the parser.
+# reuse the GGUF blob builder: a second copy of the writer would drift from the parser
 _kv_spec = _ilu.spec_from_file_location(
     "_kv_cache_estimation_for_flash_attn_parity",
     Path(__file__).resolve().parent / "test_kv_cache_estimation.py",
@@ -69,7 +67,7 @@ _kv_mod = _ilu.module_from_spec(_kv_spec)
 _kv_spec.loader.exec_module(_kv_mod)
 _make_gguf_bytes = _kv_mod._make_gguf_bytes
 
-# Qwen3-0.6B's real shape, so the ratios below are the ones that were measured.
+# Qwen3-0.6B's real shape, so the ratios below match the measured ones
 _QWEN3_FIELDS = {
     "context_length": 40960,
     "block_count": 28,
@@ -119,9 +117,7 @@ def ragged_swa_gguf(tmp_path):
 
 @pytest.fixture
 def qwen3_shaped_gguf(tmp_path):
-    # general.architecture goes in FIRST. The reader takes it before it knows which
-    # prefix the rest of the keys carry, so a blob that writes it last parses as a
-    # header with no dimensions and every figure below silently becomes zero.
+    # general.architecture must go FIRST: the reader needs it to know the key prefix
     fields = {"general.architecture": "qwen3"}
     fields.update({f"qwen3.{k}": v for k, v in _QWEN3_FIELDS.items()})
     path = tmp_path / "qwen3-shaped.gguf"
@@ -225,10 +221,6 @@ def test_a_quantized_v_in_the_extra_arguments_is_read_the_same_way(qwen3_shaped_
     )
 
 
-# The round that followed: four placement inputs the estimate was reading wrong.
-# Each of these fails on the parent commit.
-
-
 def test_a_cpu_only_manual_launch_is_not_charged_for_a_pinned_card(monkeypatch, qwen3_shaped_gguf):
     """Manual with zero layers is a CPU-only launch, and the loader drops the split
     flags for it. Charging the pinned card count added per-device pipeline overhead
@@ -297,8 +289,7 @@ def test_an_inherited_gpu_layer_count_is_read_in_auto(monkeypatch, qwen3_shaped_
     half = ri._gguf_offloaded_layer_fraction("auto", None, 27, None)
     assert 0.0 < half < 1.0, f"a partial inherited count priced {half}"
 
-    # -1 and auto are llama.cpp's own default, so they leave the fitter free to choose
-    # and are not an override.
+    # -1 and auto are llama.cpp's own default, so they are not an override
     for auto_value in ("-1", "auto", ""):
         monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", auto_value)
         assert ri._gguf_offloaded_layer_fraction("auto", None, 27, None) == 1.0
@@ -326,13 +317,10 @@ def test_pass_through_adapters_are_charged_and_follow_the_base_placement(
     size = 7 * 1024 * 1024
     lora.write_bytes(b"\0" * size)
     assert _sidecar_adapter_bytes(["--lora", str(lora)]) == size
-    # A named file that cannot be stat'd is the "engaged but unsized" case.
     assert _sidecar_adapter_bytes(["--lora", str(tmp_path / "missing.gguf")]) is None
-    # And no adapters is zero, not None, so the marker stays off for every ordinary load.
     assert _sidecar_adapter_bytes([]) == 0
 
-    # The helper pre-dates this; what is new is that the panel asks it. Driven through
-    # the breakdown so the test fails on a tree where the term is computed and dropped.
+    # driven through the breakdown so a computed-but-dropped term fails
     config = SimpleNamespace(
         identifier = "local",
         gguf_file = qwen3_shaped_gguf,
@@ -444,27 +432,21 @@ def test_the_admission_estimate_keeps_the_no_flash_reserve(monkeypatch, ragged_s
 
     managed = kv()
     priced_off = kv(["--flash-attn", "off"])
-    # The control: the two readings really do differ on this shape, or nothing below holds.
+    # control: the two readings must differ on this shape, or nothing below holds
     assert priced_off > managed
 
-    # A user's own --fit off, and the environment spelling of it: both take away the
-    # re-placement, so both keep the conservative reserve.
     assert kv(["--fit", "off"]) == priced_off
     monkeypatch.setenv("LLAMA_ARG_FIT", "off")
     assert kv() == priced_off
     monkeypatch.delenv("LLAMA_ARG_FIT")
 
-    # A fixed layer count is the other fitter-proof placement.
     assert kv(["-ngl", "99"]) == priced_off
 
-    # An ordinary managed placement keeps the launch price: the fitter re-places the
-    # respawn, so reserving for it would refuse contexts that fit.
+    # the fitter re-places the respawn, so reserving for it would refuse contexts that fit
     assert kv() == managed
 
-    # Tensor mode is exempt, because llama.cpp has no flash-attention-off respawn there.
+    # llama.cpp has no flash-attention-off respawn in tensor mode
     assert kv(["--fit", "off"], tensor_parallel = True) == managed
 
-    # And the panel is untouched: its total is what the launch uses, and an existing pin
-    # holds it placement-independent (test_memory_estimate's extras -ngl case).
     assert panel(["--fit", "off"]) == panel()
     assert panel(["-ngl", "99"]) == panel()

@@ -59,7 +59,7 @@ def _record_plan(repo, files):
 
 @pytest.fixture()
 def hub_calls(monkeypatch, tmp_path):
-    # A cache of this test's own: the suite-wide empty cache is shared across tests.
+    # Own cache: the suite-wide empty cache is shared across tests.
     hub_cache = str(tmp_path / "hub")
     monkeypatch.setitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HUB_CACHE", hub_cache)
     monkeypatch.setenv("HF_HUB_CACHE", hub_cache)
@@ -87,7 +87,6 @@ def _answer(**kwargs):
     return asyncio.run(gguf_variants.get_gguf_variants_response(REPO, **kwargs))
 
 
-# What the picker sends when it believes the Hub is offline, and a Hub that fails a request.
 HUBLESS = [
     pytest.param({"prefer_local_cache": True, "offline": True}, id = "offline"),
     pytest.param({}, id = "hub_failed"),
@@ -208,7 +207,7 @@ def test_a_requirement_past_its_refresh_ttl_still_counts_without_the_hub(hub_cal
         )
     )
     gguf_variants._variant_requirement_cache_set_many("org/Sole-GGUF", None, {QUANT: requirement})
-    # The live listing's entry expires; what it said the variant needs does not.
+    # The listing entry expires; the recorded requirement must not.
     gguf_variants._VARIANT_REQUIREMENT_CACHE.clear()
     assert _answer(**request_kwargs).dependencies_resolved is False
 
@@ -228,8 +227,6 @@ def test_a_live_listing_still_resolves_dependencies(hub_calls, monkeypatch):
 
 @pytest.mark.parametrize("request_kwargs", HUBLESS)
 def test_a_requirement_learned_under_another_token_still_counts(hub_calls, request_kwargs):
-    # The listing that named the drafter ran with the old token; the owner has since replaced
-    # or cleared it. The drafter is still missing, so the copy is still not resolved.
     _repo, snapshot = _snapshot()
     _write(snapshot / MAIN)
     requirement = SimpleNamespace(
@@ -247,8 +244,6 @@ def test_a_requirement_learned_under_another_token_still_counts(hub_calls, reque
 def test_an_evicted_requirement_is_not_read_as_nothing_required(
     hub_calls, monkeypatch, request_kwargs
 ):
-    # A long session listed enough variants to push this one's requirement out. Its drafter may
-    # still be missing, so the copy stays unresolved rather than being called complete.
     _repo, snapshot = _snapshot()
     _write(snapshot / MAIN)
     requirement = SimpleNamespace(

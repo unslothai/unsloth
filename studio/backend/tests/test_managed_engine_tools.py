@@ -59,7 +59,7 @@ def test_named_tool_template_and_unknown_syntax(tmp_path):
 def native(monkeypatch):
     from routes import managed_engine_chat
 
-    # The module the route really uses: another test module re-imports httpx at collection.
+    # Use the route's own httpx: another test module re-imports httpx at collection.
     httpx = managed_engine_chat.httpx
     backend = route_test._ScriptedBackend(route_test._fixed("plain"))
     backend.models["sf-model"].update(engine = "vllm", supports_tools = True)
@@ -263,8 +263,6 @@ def test_studio_loop_executes_and_replays_native_tool_calls(native, monkeypatch)
 
 
 def test_run_automatically_streams_arm_the_no_sandbox_gate(native, monkeypatch):
-    # Same rule as the llama.cpp and safetensors loops: a streaming UI chat in "off" arms the confirm
-    # gate, and the loop then asks only for a risky Python/Terminal call without OS isolation.
     from core.inference import studio_tool_loop
     from routes import managed_engine_chat
 
@@ -497,8 +495,7 @@ def test_managed_route_never_forwards_a_bare_image_path(native):
 
 
 def test_managed_engine_serves_multiple_choices_one_at_a_time():
-    # The non-streaming n > 1 route batches when slots > 1, and a managed engine yields plain
-    # text rather than the (row, text) events the batch drain unpacks.
+    # A managed engine yields plain text, not the (row, text) events batching expects.
     from core.inference.orchestrator import InferenceOrchestrator
 
     backend = InferenceOrchestrator.__new__(InferenceOrchestrator)
@@ -523,7 +520,7 @@ def test_engine_left_by_a_cancelled_load_is_reaped_once_it_dies():
     backend._shutdown_subprocess = lambda *a, **k: reaped.append(True)
     backend.loading_models = {"m"}
     backend.reap_dead_managed_engine()
-    assert reaped == []  # a load still starting it is not reaped
+    assert reaped == []
     backend.loading_models = set()
 
     def shutdown(*a, **k):
@@ -536,7 +533,6 @@ def test_engine_left_by_a_cancelled_load_is_reaped_once_it_dies():
 
 
 def test_reaping_a_crashed_engine_drops_its_claim_and_sharers(monkeypatch):
-    # Otherwise other accounts keep getting the hidden-resident status for an engine that died.
     from core.inference import gpu_arbiter
     from routes import inference as api
 
@@ -550,7 +546,6 @@ def test_reaping_a_crashed_engine_drops_its_claim_and_sharers(monkeypatch):
     api.reap_dead_managed_engine(SimpleNamespace(reap_dead_managed_engine = lambda: False))
     assert calls == []
 
-    # A newer load took the claim before the release: its sharers stay.
     monkeypatch.setattr(api, "release_chat_gpu_claim", lambda: False)
     monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.CHAT)
     api.reap_dead_managed_engine(SimpleNamespace(reap_dead_managed_engine = lambda: True))
@@ -560,7 +555,6 @@ def test_reaping_a_crashed_engine_drops_its_claim_and_sharers(monkeypatch):
 @pytest.mark.parametrize("stream", [False, True])
 def test_tool_responses_report_the_public_model_id(native, stream):
     backend, requests = native
-    # The engine answers as "sf-model"; clients were told the model is "org/public".
     backend._openai_advertised_id = "org/public"
     result = run(
         route_test._request(tools = [route_test.LOOKUP_TOOL], stream = stream, enable_tools = False)
@@ -578,7 +572,7 @@ def test_a_catalog_with_tool_choice_none_is_plain_chat(native):
         route_test._request(tools = [route_test.LOOKUP_TOOL], tool_choice = "none", enable_tools = False)
     )
     assert result["choices"][0]["message"]["content"]
-    assert requests == []  # served by the plain path, not the native tool route
+    assert requests == []
 
 
 @pytest.mark.parametrize("tools", [False, True])
@@ -608,7 +602,7 @@ def test_managed_messages_get_no_unrequested_date(native, monkeypatch, tools):
         sent = requests[-1]["messages"]
     else:
         sent = [*seen[-1], {"role": "system", "content": backend.calls[-1]["system_prompt"]}]
-    # vLLM/SGLang render a template Studio never sees, so no system turn is made up for it.
+    # vLLM/SGLang render a template Studio never sees, so no system turn is made up.
     assert "2026-08-15" not in json.dumps(sent)
 
 

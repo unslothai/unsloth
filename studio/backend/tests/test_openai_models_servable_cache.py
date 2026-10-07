@@ -62,7 +62,6 @@ def test_residency_is_recomputed_every_call(_stub):
     catalog = _catalog(3)
     for _ in range(10):
         inf._servable_catalog_rows(catalog, 111.0)
-    # Residency changes on load/unload, so it must never ride the cache.
     assert _stub["resident"] == 30
 
 
@@ -75,7 +74,6 @@ def test_new_catalog_stamp_rescans(_stub):
 
 
 def test_no_stamp_disables_caching(_stub):
-    # Direct callers that pass no stamp keep the original uncached behaviour.
     catalog = _catalog(2)
     inf._servable_catalog_rows(catalog)
     inf._servable_catalog_rows(catalog)

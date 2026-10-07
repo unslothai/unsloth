@@ -54,30 +54,22 @@ def test_a_parsed_catalogue_is_returned(monkeypatch):
 
 
 def test_a_failed_probe_is_unverifiable_not_empty_of_flags(monkeypatch):
-    # The distinction the editor turns into copy: probe_ok False means "cannot
-    # check", and every argument has to be let through. Reporting no flags as if
-    # the binary supported none would mark every correct flag as a typo.
+    # probe_ok False means 'cannot check': every argument must be let through.
     result = _call(monkeypatch, {}, raises = True)
 
     assert result.probe_ok is False
     assert result.flags == {}
-    # Still worth answering: the managed list needs no binary, so a rejection can
-    # still be explained before the request is made.
     assert "--parallel" in result.managed
 
 
 def test_a_missing_binary_is_also_unverifiable(monkeypatch):
-    # found=False is the no-binary answer, which is not the same as a binary whose
-    # help would not parse, but the editor can do nothing different about it.
     result = _call(monkeypatch, {"found": False, "flags": {}})
 
     assert result.probe_ok is False
 
 
 def test_a_help_run_that_failed_partway_is_unverifiable(monkeypatch):
-    # The catalogue is non-empty, which is exactly the trap: --help exited nonzero
-    # after printing some of itself, so everything below the failure point is
-    # missing and would be reported as "not in this build".
+    # --help exited nonzero after partial output; the missing tail is not 'unsupported'.
     result = _call(
         monkeypatch,
         {"found": True, "flags": {"--top-k": "x"}, "help_probe_ok": False},
@@ -87,25 +79,18 @@ def test_a_help_run_that_failed_partway_is_unverifiable(monkeypatch):
 
 
 def test_an_older_probe_without_the_field_is_still_trusted(monkeypatch):
-    # The key is new; a capability dict that predates it (or a stub in another test)
-    # must not read as a failed probe.
     result = _call(monkeypatch, {"found": True, "flags": {"--top-k": "x"}})
 
     assert result.probe_ok is True
 
 
 def test_a_binary_whose_help_did_not_parse_is_unverifiable(monkeypatch):
-    # A binary that ran but produced nothing parseable must not read as verified,
-    # or every flag becomes unknown.
     result = _call(monkeypatch, {"found": True, "flags": {}})
 
     assert result.probe_ok is False
 
 
 def test_the_managed_list_cannot_drift_from_the_validator(monkeypatch):
-    # The editor explains a rejection using this list, and the load is refused by
-    # validate_extra_args. If they disagree, the UI accepts an argument the load
-    # then refuses, or warns about one that would have worked.
     result = _call(monkeypatch, {"found": True, "flags": {"--top-k": "x"}})
 
     for flag in result.managed:
@@ -116,16 +101,9 @@ def test_the_managed_list_cannot_drift_from_the_validator(monkeypatch):
 
 @pytest.mark.parametrize("value", [123, None])
 def test_help_text_is_coerced_to_a_string(monkeypatch, value):
-    # The probe's dict is typed as object, and a non-string description would fail
-    # response validation at request time rather than here.
     result = _call(monkeypatch, {"found": True, "flags": {"--top-k": value}})
 
     assert isinstance(result.flags["--top-k"], str)
-
-
-# --- what the probe publishes ---------------------------------------------------
-# The route only forwards; these pin the map it forwards, driven through the real
-# --help parser rather than a stub of it.
 
 
 def _probe_with_help(
@@ -147,7 +125,7 @@ def _probe_with_help(
         return types.SimpleNamespace(stdout = help_text, stderr = "", returncode = returncode)
 
     monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", _run)
-    # Keyed on (path, mtime, size), so a fresh file per test is a fresh probe.
+    # Probe cache keys on (path, mtime, size).
     return LlamaCppBackend.probe_server_capabilities(str(binary))
 
 
@@ -159,9 +137,7 @@ _HELP_WITH_A_REMOVAL_STUB = """\
 
 
 def test_a_removed_flag_is_not_published_as_supported(monkeypatch, tmp_path):
-    # llama.cpp keeps the old names in --help only to say they are gone. Publishing
-    # them would make the editor stay quiet about a flag the load then refuses,
-    # which is the one thing the catalogue exists to prevent.
+    # Removed flags stay in --help only to say they are gone; do not publish them.
     caps = _probe_with_help(monkeypatch, tmp_path, _HELP_WITH_A_REMOVAL_STUB)
 
     assert "--top-k" in caps["flags"]
@@ -171,9 +147,6 @@ def test_a_removed_flag_is_not_published_as_supported(monkeypatch, tmp_path):
 
 
 def test_short_aliases_are_published_too(monkeypatch, tmp_path):
-    # -t is as valid as --threads, and the catalogue is what the editor checks a
-    # typed flag against, so publishing only long names warned that a correct flag
-    # was not in this build.
     caps = _probe_with_help(
         monkeypatch,
         tmp_path,
@@ -185,14 +158,11 @@ def test_short_aliases_are_published_too(monkeypatch, tmp_path):
     assert "-t" in caps["flags"]
     assert caps["flags"]["-t"] == caps["flags"]["--threads"]
     assert "-fa" in caps["flags"]
-    # A value placeholder is not a flag.
     assert "-1" not in caps["flags"]
     assert "N" not in caps["flags"]
 
 
 def test_a_help_that_exited_nonzero_says_so(monkeypatch, tmp_path):
-    # Partial output parses fine, so nothing else in the dict would reveal that the
-    # rest of the catalogue is missing.
     caps = _probe_with_help(monkeypatch, tmp_path, _HELP_WITH_A_REMOVAL_STUB, returncode = 1)
 
     assert caps["help_probe_ok"] is False
@@ -205,9 +175,7 @@ def test_a_clean_help_run_says_so(monkeypatch, tmp_path):
 
 
 def test_the_denylist_can_be_read_without_probing(monkeypatch):
-    # The panel sanitizes a stored list with this before turning it into an explicit
-    # request, and a cold --help takes up to ten seconds. Waiting for the probe would
-    # leave a flag denied since that list was saved sitting in the request.
+    # A cold --help can take ~10s, so sanitizing must not wait for the probe.
 
     import routes.inference as inference_route
 
@@ -226,14 +194,11 @@ def test_the_denylist_can_be_read_without_probing(monkeypatch):
     assert probed is False
     assert "--agent" in result.managed
     assert result.flags == {}
-    # Nothing was checked against a binary, so nothing may be called a typo.
     assert result.probe_ok is False
 
 
 def test_the_published_slot_default_is_the_effective_one(monkeypatch):
-    # A build without --kv-unified serves one slot however many are configured, and
-    # load_model clamps to that before launch. An editor sizing its batch floor from
-    # the raw default would refuse "--batch-size 2" against a command that runs it.
+    # Without --kv-unified the build serves one slot; load_model clamps to it.
 
     import routes.inference as inference_route
 
@@ -243,7 +208,6 @@ def test_the_published_slot_default_is_the_effective_one(monkeypatch):
         staticmethod(lambda *a, **k: {"found": True, "supports_kv_unified": False}),
     )
     assert inference_route._effective_parallel_slots(4) == 1
-    # With the flag the ask stands, and one slot is already the floor.
     monkeypatch.setattr(
         inference_route.LlamaCppBackend,
         "probe_server_capabilities",
@@ -251,14 +215,10 @@ def test_the_published_slot_default_is_the_effective_one(monkeypatch):
     )
     assert inference_route._effective_parallel_slots(4) == 4
     assert inference_route._effective_parallel_slots(1) == 1
-    # The diffusion runner receives no --parallel at all.
     assert inference_route._effective_parallel_slots(4, diffusion_kind = True) == 1
 
 
 def test_an_unreadable_probe_keeps_the_asked_for_slot_count(monkeypatch):
-    # Refusing to answer is not a reason to clamp: every other caller of the probe
-    # here keeps the ask when it cannot be read.
-
     import routes.inference as inference_route
 
     def _boom(*_a, **_k):
@@ -273,10 +233,7 @@ def test_an_unreadable_probe_keeps_the_asked_for_slot_count(monkeypatch):
 
 
 def test_the_slot_probe_never_runs_on_the_event_loop(monkeypatch):
-    # The clamp asks the binary whether it supports --kv-unified, and on a cold cache
-    # that is `llama-server --help` with a ten second timeout. Computed inline it
-    # stalled every other request on the first open of the panel after an update, and
-    # the managed-only answer too, which exists precisely to avoid waiting for a probe.
+    # Clamp probes --help with a 10s timeout; computing it inline stalled other requests.
     import routes.inference as inference_route
 
     import threading
@@ -307,10 +264,6 @@ def test_the_slot_probe_never_runs_on_the_event_loop(monkeypatch):
 
 
 def test_a_single_slot_default_still_reports_the_clamp(monkeypatch):
-    # One slot cannot be clamped below one, so the default needs no probe. Whether
-    # this build clamps is a different question and still has to be answered: the
-    # editor sizes an EXPLICIT Slots value the user may raise without re-reading
-    # this route, and off the loop like the rest of it.
     import routes.inference as inference_route
 
     import threading
@@ -354,7 +307,6 @@ def test_the_clamp_is_read_from_the_same_helper_the_load_uses(monkeypatch):
         staticmethod(lambda *a, **k: {"found": True, "supports_kv_unified": False}),
     )
     assert inference_route._parallel_slots_are_clamped() is True
-    # An unreadable probe keeps the ask here too, so nothing is refused over it.
     monkeypatch.setattr(
         inference_route.LlamaCppBackend,
         "probe_server_capabilities",

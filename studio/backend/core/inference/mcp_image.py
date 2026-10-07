@@ -25,7 +25,7 @@ WITHHELD_RESULT = (
     "[The tool's reply contained the attached image, so it was withheld from the model.]"
 )
 _PROBE_BYTES = 48
-# Any inline image a call carrying the user's image returns may be a resized copy of it.
+# Any inline image from a call carrying the user's image may be a resized copy of it.
 _B64_RUN = r"(?:[A-Za-z0-9+/_=-]|\\/)+"
 _IMAGE_DATA_URL = re.compile(
     r"data:image\\?/[\w.+-]+(?:;[\w.+-]+=[^;,\s\"']*)*;base64,"
@@ -35,7 +35,6 @@ _IMAGE_DATA_URL = re.compile(
     + r")*",
     re.IGNORECASE,
 )
-# Bare base64 has no prefix to match, so a long run is decoded and kept only if it is not an image.
 _LONG_B64 = re.compile(_B64_RUN + r"(?:(?:\\[rn]|\r?\n)" + _B64_RUN + r")*")
 _IMAGE_MAGIC = (
     b"\x89PNG",
@@ -66,7 +65,6 @@ def _is_image_b64(run: str) -> bool:
     data = _decode_b64(compact[:32])
     if data and (data.startswith(_IMAGE_MAGIC) or data[8:12] == b"WEBP" or data[4:8] == b"ftyp"):
         return True
-    # Wrapped base64 has full-width lines; a column of short words does not.
     lines = [line for line in re.split(r"\\[rn]|\s+", run.split("=", 1)[0]) if line]
     return (
         len(compact) >= _OPAQUE_B64_CHARS
@@ -111,8 +109,6 @@ class McpImage:
         return WITHHELD_RESULT if self._reencoded_in(head) else head
 
     def _reencoded_in(self, text: str) -> bool:
-        # Slices spread over the image, at every base64 alignment, catch wrapped, escaped, percent, url-safe and
-        # hex copies, partial ones too.
         compact = "".join(text.split()).replace("\\n", "").replace("\\r", "").replace("\\/", "/")
         if "%" in compact:
             compact = unquote(compact)

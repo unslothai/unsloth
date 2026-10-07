@@ -34,14 +34,11 @@ def _http_error(name: str, *, fallback: str | None = None) -> Exception:
     try:
         return cls(name, response = response)
     except TypeError:
-        # The plain-Exception base takes a message and nothing else.
         return cls(name)
 
 
 _BACKEND = Path(__file__).resolve().parents[1]
 
-# Optional-file readers and the guard each must call before downloading. The template reader
-# reuses its existing path lookup instead of adding another request.
 _GUARDED = {
     "core/inference/llama_cpp.py": {"_fetch_swa_entry_from_hf": "hf_file_definitely_absent"},
     "picker/service.py": {"read_default_chat_template": "get_paths_info"},
@@ -67,9 +64,6 @@ def _raise(exc):
 
 def _patch_metadata(monkeypatch, behavior):
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", behavior)
-
-
-# --- what counts as absent ---------------------------------------------------
 
 
 def test_the_real_remote_404_reads_as_absent(monkeypatch):
@@ -134,9 +128,6 @@ def test_an_unimportable_hub_is_not_an_answer(monkeypatch):
     assert hf_file_definitely_absent("Org/Model", "config.json") is False
 
 
-# --- the cache is never touched ----------------------------------------------
-
-
 def test_the_probe_writes_nothing_to_the_cache(monkeypatch, tmp_path):
     """A 404 probe leaves refs, snapshots, and no-exist markers unchanged."""
     repo_dir = tmp_path / "models--Org--Model"
@@ -199,9 +190,6 @@ def test_the_chat_template_search_skips_paths_the_listing_does_not_name(monkeypa
     assert service.read_default_chat_template("Org/Model") is None
     assert listed, "the listing must still run; it is what answers both questions"
     assert downloads == [], "a path the listing does not name must never reach the cache"
-
-
-# --- the guard cannot be dropped ---------------------------------------------
 
 
 def _functions(path: Path) -> dict:

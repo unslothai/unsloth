@@ -30,7 +30,7 @@ from storage import chat_generation_runs_db as runs_db  # noqa: E402
 from storage import studio_db  # noqa: E402
 
 _MINUTE_MS = 60_000
-_LEASE_MS = 1_200_000  # the shipped default, 1200s
+_LEASE_MS = 1_200_000
 
 
 class _Clock:
@@ -101,9 +101,6 @@ def _drop_lease_columns():
     runs_db._schema_ready = set()
 
 
-# --------------------------------------------------------------------------- upgrade
-
-
 def test_migration_adds_both_columns(clock):
     _seed()
     assert {"progress_at", "progress_tokens"} <= _columns()
@@ -118,7 +115,6 @@ def test_migration_is_idempotent(clock):
 
 
 def test_upgrade_over_an_existing_database_preserves_rows(clock):
-    # A run written by the old build, then the new build starts and migrates.
     token = _seed("run-old")
     _drop_lease_columns()
     assert "progress_at" not in _columns() or True  # DROP may be unsupported; see below
@@ -131,29 +127,24 @@ def test_upgrade_over_an_existing_database_preserves_rows(clock):
 
 
 def test_pre_upgrade_rows_have_a_usable_lease_fallback(clock):
-    # progress_at is NULL for rows written before the migration. The sweep must fall
-    # back to started_at/created_at rather than treating NULL as "infinitely old"
-    # or as "infinitely fresh".
+    # Pre-migration rows have NULL progress_at; the sweep must fall back to started_at/created_at.
     _seed("run-null")
     conn = runs_db._connect()
     conn.execute("UPDATE chat_generation_runs SET progress_at = NULL WHERE id = ?", ("run-null",))
     conn.commit()
 
-    # Not yet stale: started_at is now.
     assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == []
     clock.advance_ms(_LEASE_MS + _MINUTE_MS)
     assert runs_db.reconcile_runs(error = "x", stale_after_ms = _LEASE_MS) == ["run-null"]
 
 
 def test_missing_table_does_not_raise(monkeypatch, clock):
-    # A database whose schema has not been created yet must not turn a history read
-    # into a crash.
     runs_db._schema_ready = set()
     conn = runs_db._connect()
     conn.execute("DROP TABLE IF EXISTS chat_generation_runs")
     conn.commit()
     runs_db._schema_ready = set()
-    runs_db._connect()  # must not raise
+    runs_db._connect()
 
 
 def test_concurrent_migration_from_many_threads(clock):
@@ -179,7 +170,6 @@ def test_concurrent_migration_from_many_threads(clock):
 
 
 def test_duplicate_column_error_is_swallowed(clock, monkeypatch):
-    # Another process migrated between our PRAGMA and our ALTER.
     _seed()
     _drop_lease_columns()  # otherwise the ALTER is skipped and the race cannot fire
     runs_db._schema_ready = set()
@@ -202,11 +192,8 @@ def test_duplicate_column_error_is_swallowed(clock, monkeypatch):
             return getattr(self._inner, name)
 
     monkeypatch.setattr(runs_db, "get_connection", lambda **kw: _Racy(real_get(**kw)))
-    runs_db._connect()  # must not raise
+    runs_db._connect()
     assert state["fired"], "the simulated race did not fire"
-
-
-# ------------------------------------------------------------------------- downgrade
 
 
 def test_old_build_can_still_insert_after_migration(clock):
@@ -233,7 +220,6 @@ def test_old_build_can_still_insert_after_migration(clock):
 
 
 def test_old_build_reads_are_unaffected_by_the_extra_columns(clock):
-    # A downgraded build selects named columns, so additive columns are invisible.
     _seed("run-b")
     conn = runs_db._connect()
     row = conn.execute(
@@ -242,12 +228,8 @@ def test_old_build_reads_are_unaffected_by_the_extra_columns(clock):
     assert row["id"] == "run-b" and row["status"] == "running"
 
 
-# ------------------------------------------------------------------------ lease edge
-
-
 def test_progressing_run_is_never_reaped_however_long_it_runs(clock):
     token = _seed("run-slow")
-    # 2 hours at one chunk every 30s, far beyond the 1200s lease.
     for _ in range(240):
         clock.advance_ms(30_000)
         runs_db.append_events(
@@ -264,7 +246,7 @@ def test_clock_stepping_backwards_does_not_age_a_live_run(clock):
         "run-back", token, [("chunk", {"choices": [{"delta": {"content": "x"}}]})]
     )
     before = runs_db.get_progress("run-back")[0]
-    clock.now -= 10 * _MINUTE_MS  # NTP correction backwards
+    clock.now -= 10 * _MINUTE_MS
     runs_db.append_events(
         "run-back", token, [("chunk", {"choices": [{"delta": {"content": "y"}}]})]
     )
@@ -317,9 +299,7 @@ def test_boot_reconcile_still_settles_everything(clock):
 def test_zero_timeout_disables_the_sweep(clock):
     _seed("run-off")
     clock.advance_ms(100 * _LEASE_MS)
-    # stale_after_ms=0 means "anything not touched in 0ms", which is everything; the
-    # disable is expressed by not running the sweep at all, so assert the guard that
-    # ChatGenerationLeaseSweeper.enabled provides rather than a magic argument.
+    # Disabling is done by not running the sweep, so assert ChatGenerationLeaseSweeper.enabled.
     from core.inference.chat_generation_runs import ChatGenerationLeaseSweeper
     from types import SimpleNamespace
 
@@ -356,9 +336,6 @@ def test_a_second_lifespan_restarts_the_sweeper(clock):
         await second.stop()
 
     asyncio.run(_drive())
-
-
-# ------------------------------------------------------- migration blocked by a writer
 
 
 @contextlib.contextmanager
@@ -424,9 +401,8 @@ def test_live_reaping_is_deferred_until_the_migration_lands(clock, monkeypatch):
     """
     _seed()
     with _migration_blocked(monkeypatch):
-        clock.advance_ms(100 * _LEASE_MS)  # far past the timeout by age alone
+        clock.advance_ms(100 * _LEASE_MS)
         assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-    # Once the columns exist the sweep resumes and the genuinely stale run is settled.
     clock.advance_ms(100 * _LEASE_MS)
     assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == ["run-1"]
 
@@ -469,15 +445,11 @@ def test_a_real_no_such_column_error_is_not_swallowed(clock, monkeypatch):
         runs_db.get_progress("run-1")
 
 
-# ------------------------------------------------------------------ load before prefill
-
-
 def test_touch_progress_renews_the_lease_without_recording_output(clock):
     _seed()
     clock.advance_ms(_LEASE_MS - 1)
     runs_db.touch_progress("run-1")
     clock.advance_ms(_LEASE_MS - 1)
-    # Without the renewal the run is now nearly two lease periods old and would be swept.
     assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
     _at, tokens = runs_db.get_progress("run-1")
     assert tokens == 0, "a renewal is not streamed output"
@@ -488,21 +460,18 @@ def test_a_long_model_load_does_not_consume_the_prefill_budget(clock):
     first-token budget starts. Ageing from mark_running would reap a legitimate load
     followed by a legitimate prefill once the two together reached the lease."""
     _seed()
-    clock.advance_ms(int(0.9 * _LEASE_MS))  # a slow automatic model load
-    runs_db.touch_progress("run-1")  # what _produce does once the stream is open
-    clock.advance_ms(int(0.9 * _LEASE_MS))  # a slow but legitimate prefill
+    clock.advance_ms(int(0.9 * _LEASE_MS))
+    runs_db.touch_progress("run-1")
+    clock.advance_ms(int(0.9 * _LEASE_MS))
     assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == []
-    clock.advance_ms(2 * _LEASE_MS)  # now genuinely wedged
+    clock.advance_ms(2 * _LEASE_MS)
     assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == ["run-1"]
 
 
 def test_touch_progress_survives_a_blocked_migration(clock, monkeypatch):
     _seed()
     with _migration_blocked(monkeypatch):
-        runs_db.touch_progress("run-1")  # must not raise
-
-
-# ---------------------------------------------- the lease during model preparation
+        runs_db.touch_progress("run-1")
 
 
 def _supervisor():
@@ -532,7 +501,7 @@ def test_the_heartbeat_renews_the_lease_while_preparation_runs(clock, monkeypatc
 
     async def _run():
         task = asyncio.create_task(sup._renew_lease_while_preparing("run-1"))
-        while ticks["n"] < 40:  # 40 minutes, twice the 1200s lease
+        while ticks["n"] < 40:
             await real_sleep(0)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -558,7 +527,6 @@ def test_the_heartbeat_is_bounded_so_a_wedged_load_still_ages_out(clock, monkeyp
         await real_sleep(0)
 
     monkeypatch.setattr(runs_mod.asyncio, "sleep", _sleep)
-    # Runs to completion on its own rather than being cancelled: the bound is the exit.
     asyncio.run(sup._renew_lease_while_preparing("run-1"))
     clock.advance_ms(10 * _LEASE_MS)
     assert runs_db.reconcile_runs(stale_after_ms = _LEASE_MS) == ["run-1"]
@@ -576,10 +544,7 @@ def test_a_renewal_that_cannot_be_written_does_not_fail_the_generation(clock, mo
     monkeypatch.setattr(
         runs_db, "touch_progress", lambda _id: (_ for _ in ()).throw(RuntimeError("gone"))
     )
-    asyncio.run(sup._renew_lease_while_preparing("run-1"))  # must not raise
-
-
-# ------------------------------------------------- admission wait and heartbeat retry
+    asyncio.run(sup._renew_lease_while_preparing("run-1"))
 
 
 def test_touch_progress_moves_updated_at_so_a_follower_sees_liveness(clock):
@@ -601,7 +566,7 @@ def test_updated_at_never_moves_backwards(clock):
     clock.advance_ms(10 * _MINUTE_MS)
     runs_db.touch_progress("run-1")
     peak = int(runs_db.get_run("run-1")["updatedAt"])
-    clock.now -= 5 * _MINUTE_MS  # NTP correction backwards
+    clock.now -= 5 * _MINUTE_MS
     runs_db.touch_progress("run-1")
     assert int(runs_db.get_run("run-1")["updatedAt"]) == peak
 
@@ -622,7 +587,6 @@ def test_one_failed_renewal_does_not_disable_the_rest(clock, monkeypatch):
         return real_touch(run_id)
 
     monkeypatch.setattr(runs_db, "touch_progress", _flaky)
-    # Bounded by total time, so express the bound in the same terms the code uses.
     interval = runs_mod._renew_interval_seconds()
     monkeypatch.setattr(sup, "_PREPARE_RENEW_MAX_SECONDS", 40 * interval, raising = False)
     real_sleep = asyncio.sleep
@@ -649,7 +613,7 @@ def test_a_contended_keepalive_renewal_does_not_abort_the_generation(clock, monk
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(runs_db, "touch_progress", _locked)
-    asyncio.run(sup._try_touch_progress("run-1"))  # must not raise
+    asyncio.run(sup._try_touch_progress("run-1"))
 
 
 def test_every_non_output_renewal_goes_through_the_tolerant_path():
@@ -683,14 +647,13 @@ def test_the_sweeper_survives_a_second_lifespan_on_a_new_event_loop(clock):
 
     async def _lifespan(label):
         sweeper.start()
-        # Long enough for the task to reach _stop_event.wait(), which is what binds it.
         for _ in range(50):
             await asyncio.sleep(0)
         alive[label] = not sweeper._task.done()
         await sweeper.stop()
 
     asyncio.run(_lifespan("first"))
-    asyncio.run(_lifespan("second"))  # a brand new loop
+    asyncio.run(_lifespan("second"))
 
     assert alive["first"], "the first lifespan's sweeper should be waiting, not finished"
     assert alive[
@@ -708,7 +671,6 @@ def test_the_admission_marker_matches_the_route_that_emits_it():
     assert inference_route._OPENAI_PREFILL_PROGRESS_SSE.startswith(
         runs_mod._PREFILL_PROGRESS_MARKER
     )
-    # And none may match the stall keep-alive, which is the opposite signal.
     for marker in (
         runs_mod._ADMISSION_WAIT_MARKER,
         runs_mod._ADMISSION_DONE_MARKER,
@@ -733,7 +695,6 @@ def test_only_admission_comments_renew_the_lease_from_the_stream():
     for marker in ("_ADMISSION_DONE_MARKER in text", "_ADMISSION_WAIT_MARKER in text"):
         guard = source.index(marker)
         renew = source.index("_try_touch_progress", guard)
-        # The renewal must sit inside the marker guard, not beside it.
         assert source[guard:renew].count("\n") < 8, f"the renewal drifted outside {marker}"
 
 
@@ -764,11 +725,9 @@ def test_the_renewal_interval_stays_under_the_lease_actually_in_force(monkeypatc
         monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", configured)
         applied = runs_mod._applied_lease_timeout(float(configured))
         interval = runs_mod._renew_interval_seconds()
-        # Three renewals inside every window, however short the lease is configured.
         assert interval * 3.0 <= applied
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1200")
     assert runs_mod._renew_interval_seconds() == 30.0
-    # The point of the change: a one second lease no longer buys a 250ms write cadence.
     monkeypatch.setenv("UNSLOTH_STUDIO_CHAT_RUN_LEASE_TIMEOUT_S", "1")
     assert runs_mod._renew_interval_seconds() > 1.0
 
@@ -819,7 +778,6 @@ def test_a_producer_that_ignores_the_cooperative_cancel_is_force_cancelled(clock
                 break
             await asyncio.sleep(0)
         outcome["cancelled"] = task.cancelled()
-        # Settle it so the loop does not tear down with work outstanding.
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
@@ -864,7 +822,6 @@ def test_an_unusable_admission_cadence_does_not_poison_the_lease(monkeypatch, ra
         == max(1.0, float(DEFAULT_ADMISSION_KEEPALIVE_INTERVAL_S)) * 3.0
     )
     applied = runs_mod._applied_lease_timeout(1200.0)
-    # The conversion the sweep performs on every pass must survive it.
     assert int(applied * 1000) == 1_200_000
 
 
@@ -892,5 +849,4 @@ def test_the_events_keepalive_carries_the_progress_stamp():
     line_end = source.index("\n", keepalive)
     line = source[source.rindex("\n", 0, keepalive) : line_end]
     assert "updatedAt" in line, f"the keep-alive carries no progress stamp: {line.strip()}"
-    # And the stamp has to be the run's own, not a clock: a wall clock always moves.
     assert "snapshot" in line, "the stamp must come from the run row, not from a clock"

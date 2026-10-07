@@ -53,8 +53,7 @@ def ocr_pages(path: str, page_numbers) -> dict[int, str]:
                 )
                 text = page.get_text("text", textpage = textpage).strip()
             except Exception:
-                # A missing engine/language pack affects every page. Do not repeatedly
-                # try an unavailable OCR engine for an entire scanned document.
+                # A missing engine/language pack affects every page, so stop.
                 logger.warning("Local PDF OCR failed on page %s", number, exc_info = True)
                 break
             if text:

@@ -23,10 +23,6 @@ from pathlib import Path
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Same external-dep stubs as the other llama_cpp tests.
-# ---------------------------------------------------------------------------
-
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -58,11 +54,8 @@ _httpx_stub.Client = type(
         "__exit__": lambda s, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Stub only if httpx is not installed: a stub without Response breaks later
+# starlette.testclient imports for the whole session.
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -111,7 +104,6 @@ def test_the_flag_is_emitted_unless_the_build_lacks_it():
     assert (
         'if _caps.get("supports_no_context_shift", True):' in source
     ), "the gate must default to True, so a failed probe still emits the flag"
-    # And the default really is True in both places the probe can return.
     probe_src = inspect.getsource(llama_cpp_module.LlamaCppBackend.probe_server_capabilities)
     assert '"supports_no_context_shift": True' in probe_src
     assert "supports_no_context_shift = True" in probe_src
@@ -136,9 +128,7 @@ def test_the_base_cmd_list_still_leads_straight_into_the_context_flag():
             end_rel = line_start
             break
     assert end_rel > 0, "could not find end of cmd = [...] block"
-    # Wide enough to span the gated flags and their comments that now sit between
-    # the base list and -c; the point is that -c is still emitted here rather than
-    # somewhere else entirely.
+    # Wide enough to span the gated flags (and comments) between the base list and -c.
     after = rest[end_rel : end_rel + 2400]
     assert '"-c"' in after, (
         "-c must still be emitted near the base cmd list (omitted only in "
@@ -155,8 +145,7 @@ def test_flash_attention_drops_its_value_only_for_a_boolean_build():
     boolean_form = "-fa, --flash-attn                 enable flash attention"
     assert llama_cpp_module.LlamaCppBackend._flash_attn_takes_value(value_form) is True
     assert llama_cpp_module.LlamaCppBackend._flash_attn_takes_value(boolean_form) is False
-    # Fail open when the help says nothing about it, since the pinned prebuilt
-    # is the value form and guessing wrong there breaks the supported path.
+    # Fail open: the pinned prebuilt is the value form.
     assert llama_cpp_module.LlamaCppBackend._flash_attn_takes_value("-m, --model FNAME") is True
     assert llama_cpp_module.LlamaCppBackend._flash_attn_takes_value("") is True
 

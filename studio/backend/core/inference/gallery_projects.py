@@ -27,7 +27,7 @@ class ProjectNotFound(LookupError):
     """No live project has this id."""
 
 
-# POSIX: walk into the folder by descriptor so a symlink swapped in cannot redirect the write.
+# POSIX: walk in by descriptor so a swapped-in symlink cannot redirect the write.
 _DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 _USE_DIR_FD = (
     hasattr(os, "O_NOFOLLOW")
@@ -52,7 +52,6 @@ def _sandbox_dir(project_id: str) -> str:
     sandbox_path = project.get("sandboxPath")
     if not root_path or not sandbox_path:
         raise ProjectNotFound(project_id)
-    # Same containment check as the chat tools.
     root_real = os.path.realpath(root_path)
     sandbox_real = os.path.realpath(sandbox_path)
     if sandbox_real != root_real and not sandbox_real.startswith(root_real + os.sep):
@@ -101,12 +100,10 @@ def _copy_with_dir_fd(source: Union[Path, BinaryIO], sandbox: str, folder: str, 
             os.mkdir(folder, 0o755, dir_fd = sandbox_fd)
         except FileExistsError:
             pass
-        # O_NOFOLLOW makes a symlinked folder fail here (ELOOP) instead of writing through it.
         folder_fd = os.open(folder, _DIR_FLAGS, dir_fd = sandbox_fd)
     finally:
         os.close(sandbox_fd)
     try:
-        # Keyed by gallery id and written atomically, so a file here is this item, maybe since edited.
         try:
             st = os.stat(name, dir_fd = folder_fd, follow_symlinks = False)
             if stat.S_ISREG(st.st_mode):

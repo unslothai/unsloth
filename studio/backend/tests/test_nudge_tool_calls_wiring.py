@@ -37,11 +37,7 @@ _CHAT_ADAPTER_SOURCE = (
 )
 
 try:
-    # core.inference.inference imports unsloth at module scope, which requires
-    # unsloth_zoo. The dependency-light backend CI matrix job does not install
-    # it, so the safetensors InferenceBackend is folded into the checks below
-    # only when the unsloth stack is importable (local runs / full CI); the
-    # other entry points are always checked.
+    # InferenceBackend needs unsloth_zoo, absent from the light CI job; checked only if importable.
     from core.inference.inference import InferenceBackend
 except ImportError:
     InferenceBackend = None
@@ -60,18 +56,16 @@ def test_backends_accept_the_flag():
         InferenceOrchestrator.generate_chat_completion_with_tools,
         LlamaCppBackend.generate_chat_completion_with_tools,
     ]
-    if InferenceBackend is not None:  # safetensors path; needs the unsloth stack
+    if InferenceBackend is not None:
         methods.append(InferenceBackend.generate_chat_completion_with_tools)
     for method in methods:
         assert "nudge_tool_calls" in _params(method), method.__qualname__
 
 
 def test_delegating_backends_forward_the_flag_to_the_shared_loop():
-    # safetensors (in-process transformers) and MLX (parent-process orchestrator)
-    # both delegate to run_safetensors_tool_loop; GGUF runs its own in-file loop
-    # and consumes the flag directly (asserted separately by the gate test).
+    # safetensors and MLX delegate to run_safetensors_tool_loop; GGUF has its own loop.
     methods = [InferenceOrchestrator.generate_chat_completion_with_tools]
-    if InferenceBackend is not None:  # safetensors path; needs the unsloth stack
+    if InferenceBackend is not None:
         methods.append(InferenceBackend.generate_chat_completion_with_tools)
     for method in methods:
         src = inspect.getsource(method)
@@ -137,7 +131,7 @@ def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
     src = _CHAT_ADAPTER_SOURCE.read_text(encoding = "utf-8")
     external_body = _external_request_body(src)
 
-    # false, not omitted (#9686); chat-adapter.ts carries the why.
+    # false, not omitted; chat-adapter.ts carries the why.
     assert "nudge_tool_calls: false" in external_body
     assert "nudge_tool_calls: runtime.nudgeToolCalls" not in external_body
 

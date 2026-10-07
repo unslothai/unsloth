@@ -47,9 +47,8 @@ appendWindowsPath=false
 root=/mnt/
 """
 
-# Runs the engine in its own process group. The engine exits when Studio closes the stdin
-# pipe, which happens on stop and when Studio itself dies, so vLLM never outlives its owner.
-# A non-interactive sh gives background jobs /dev/null as stdin, hence the fd 3 duplicate.
+# The engine exits when Studio closes stdin, so vLLM never outlives it.
+# fd 3: a non-interactive sh gives background jobs /dev/null as stdin.
 RUNNER = """#!/bin/sh
 exec 3<&0
 setsid "$@" </dev/null &
@@ -102,8 +101,6 @@ def host_dir() -> Path:
 
 def distro_name() -> str:
     from utils.paths.storage_roots import studio_root
-
-    # One distro per Studio home, so two installs never drive the same guest.
     return "Unsloth-Engines-" + hashlib.sha256(str(studio_root()).encode()).hexdigest()[:8]
 
 
@@ -158,8 +155,7 @@ def boot_id() -> int:
 
 def decode(raw: bytes) -> str:
     """wsl.exe writes its own messages as UTF-16LE; guest programs write UTF-8."""
-    # Localized messages can open with a non-ASCII character, so no single byte identifies
-    # UTF-16; UTF-8 text never carries NULs and CJK UTF-16 is almost never valid UTF-8.
+    # Localized text may start non-ASCII; UTF-8 never has NULs, CJK UTF-16 is rarely valid UTF-8.
     if raw[:2] == b"\xff\xfe" or b"\x00" in raw:
         return raw.decode("utf-16-le", errors = "replace").lstrip("\ufeff")
     try:
@@ -227,7 +223,6 @@ def wsl_state() -> str:
     if state.get("state") == "restart_required":
         if state.get("boot") == boot_id():
             return "restart_required"
-        # Restarted and WSL still does not start: something the user must fix.
         return "blocked: " + (blocker(output) or output.strip()[-300:] or "WSL did not start.")
     return "missing"
 
@@ -304,8 +299,7 @@ def guest_command(
     if exe is None:
         raise RuntimeError("WSL is not installed.")
     secrets = secrets or {}
-    # `withhold` keys the caller chose not to send (an anonymous load) must not ride in on the
-    # user's own WSLENV either.
+    # Withheld keys (anonymous load) must not ride in via the user's WSLENV.
     windows_env = {key: value for key, value in os.environ.items() if key.upper() not in withhold}
     windows_env.update(secrets)
     shared = [item for item in windows_env.get("WSLENV", "").split(":") if item]
@@ -443,7 +437,6 @@ def ensure_distro(progress = None, cancel = None) -> None:
         if code and distro_name() in registered_distros():
             raise RuntimeError("Could not reset the WSL environment. " + output.strip()[-500:])
         target = host_dir() / "distro"
-        # An import interrupted before registration leaves its VHD behind and --import refuses it.
         shutil.rmtree(target, ignore_errors = True)
         target.mkdir(parents = True, exist_ok = True)
         code, output = run(
@@ -455,7 +448,6 @@ def ensure_distro(progress = None, cancel = None) -> None:
             )
         put("/etc/wsl.conf", WSL_CONF)
         run(["--terminate", distro_name()], timeout = 120)
-        # The GPU paravirtualization library comes from the Windows driver, not the distro.
         try:
             guest(["test", "-e", "/usr/lib/wsl/lib/libcuda.so"])
         except RuntimeError:
@@ -485,7 +477,6 @@ def ensure_distro(progress = None, cancel = None) -> None:
 
 def prepare(progress = None, cancel = None) -> None:
     """Everything before the engine's own packages. Raises ``Waiting`` for a user step."""
-    # vLLM and SGLang installs share one download, one elevation prompt and one distro import.
     with _PREPARE_LOCK:
         _prepare(progress, cancel)
 

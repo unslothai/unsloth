@@ -66,7 +66,6 @@ def _to_ms(value: object) -> int:
     try:
         number = float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        # Video and audio records keep ISO-8601 ("2026-09-25T10:00:00Z").
         try:
             return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp() * 1000)
         except ValueError:
@@ -107,7 +106,6 @@ def _item(
     return {
         "id": item_id,
         "name": name,
-        # The source's own name, which a rename leaves alone, so the type never follows it.
         "fileName": name,
         "source": source,
         "contentType": content_type,
@@ -229,8 +227,7 @@ def save_upload(name: str, content_type: str, chunks) -> dict:
             for chunk in chunks:
                 size += len(chunk)
                 handle.write(chunk)
-        # Settings > Library may have moved the uploads folder meanwhile. A move leaves `.tmp`
-        # files be, so the upload lands itself, never during a move, wherever uploads live now.
+        # Under the move lock, so the upload lands wherever a concurrent move left uploads.
         with _move_lock:
             final_path = uploads_dir() / upload_id
             if final_path.parent == tmp_path.parent:
@@ -269,8 +266,7 @@ def open_native_upload(lease: str):
     it, never the webview, and the grant is spent here before a byte is read."""
     grant = _verify_native(lease, consume = True)
     name = grant.canonical_path.name
-    # Opened once, and the file opened must be the one the grant checked: the name can be
-    # swapped for a link to outside the account's workspace in between.
+    # Open once: the name could be swapped for a link outside the workspace after the grant check.
     try:
         handle = _open_regular(str(grant.canonical_path))
     except LookupError:
@@ -309,14 +305,12 @@ def write_upload_text(
     if upload_path(upload_id) is None:
         return False
     data = text.encode(encoding)
-    # Under the move lock, so the folder found is where the note stays: a move finishing between
-    # would leave this write in the folder it left.
+    # Under the move lock, or a concurrent move would leave this write in the old folder.
     with _move_lock, _upload_lock:
         path = upload_path(upload_id)
         if library_db.get_upload(upload_id) is None:
             return False
-        # The old file stays on disk under a second name for the rollback, not in memory: an
-        # upload can be 512 MiB. Where links are not supported, it is held in memory as before.
+        # Old file kept on disk under a second name for rollback (uploads can be 512 MiB).
         kept, previous = None, None
         if path.exists():
             kept = path.with_name(f".{upload_id}.{uuid.uuid4().hex}.tmp")
@@ -382,11 +376,9 @@ def _upload_items() -> list[dict]:
     try:
         _sweep_leftovers()
     except relocations.LocationUnavailable:
-        pass  # Its drive is unplugged: the rows still list, and disk_usage reports it once.
+        pass
     except OSError:
         logger.debug("library.leftover_sweep_failed", exc_info = True)
-    # A row whose file is not in the folder in use (left in one reset while its drive was away)
-    # stays, so copying the files back brings it back, but is not listed or counted meanwhile.
     try:
         present = set(os.listdir(uploads_dir()))
     except OSError:
@@ -516,10 +508,10 @@ class _Gallery(NamedTuple):
     module: ModuleType
     records: Callable
     resolve: Callable
-    label: str  # what an item with no prompt is called
+    label: str
     extension: str
     content_type: str
-    folder: str  # the project folder Add to project copies into
+    folder: str
 
 
 _GALLERIES = {
@@ -555,8 +547,6 @@ def _gallery_items(kind: str) -> list[dict]:
     items = []
     for archived in (False, True):
         records = gallery.records(archived = archived)
-        # Looked up after the records, as each resolve was, so a folder moved meanwhile is the one
-        # sized; and only when there are some, so an unreadable folder still lists nothing.
         root = gallery.module.gallery_dir() if records else None
         for record in records:
             # An Edit's hidden Original: deleting it here would break that Edit.
@@ -573,7 +563,6 @@ def _gallery_items(kind: str) -> list[dict]:
                     sidecar = path.with_suffix(".json").stat().st_size
                 except OSError:
                     pass
-                # A conversion keeps the recording it converted as {id}.source.wav beside its clip.
                 if sidecar is not None and kind == "audio":
                     try:
                         sidecar += path.with_name(f"{path.stem}.source.wav").stat().st_size
@@ -1183,7 +1172,6 @@ class _Memo:
 
 _SANDBOX_TTL_SECONDS = 5.0
 _MODEL_TTL_SECONDS = 60.0
-# Bounded: sandboxes of chats and accounts nobody lists again would otherwise stay forever.
 _LISTING = _Memo(size = 1024)
 invalidate_listing = _LISTING.forget
 
@@ -1253,7 +1241,6 @@ def list_items() -> list[dict]:
         entry = overlay.get(item["id"])
         fingerprint = item.pop("_fingerprint", None)
         if fingerprint is not None:
-            # Sent back with a delete, so a stale card never deletes a file made at its path since.
             item["fingerprint"] = fingerprint
         if entry and fingerprint is not None and entry["fingerprint"] != fingerprint:
             if entry["fingerprint"] is None:
@@ -1692,7 +1679,7 @@ def locations() -> list[dict]:
                 "custom": relocations.chosen(key) is not None,
                 "available": available,
                 "disk": _disk(path) if available else None,
-                # A string: a device number can be wider than a JavaScript number is exact.
+                # A string: a device number can exceed JavaScript's exact integer range.
                 "device": None if device is None else str(device),
             }
         )
@@ -1700,8 +1687,7 @@ def locations() -> list[dict]:
 
 
 _OS_CLUTTER = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
-# Held for a whole move. A Library upload lands under it, in whichever folder the move leaves in use.
-# Reentrant: the first read of the chosen folders, made under it, can finish a move cut short.
+# Reentrant: the first read of the chosen folders can finish a move cut short.
 _move_lock = threading.RLock()
 
 
@@ -1718,8 +1704,7 @@ def _identity(path) -> Optional[tuple[int, int]]:
         info = os.stat(path)
     except (OSError, ValueError):
         return None
-    # FAT and some network shares give every entry file id 0, which would make every folder "the
-    # same": those compare by spelling instead.
+    # FAT and some shares give every entry file id 0; those compare by spelling instead.
     return (info.st_dev, info.st_ino) if info.st_ino else None
 
 
@@ -1771,7 +1756,7 @@ def _scratch_and_system_folders() -> list[str]:
             folders += ["/Applications", "/opt/homebrew"]
             folders += [str(home / "Library" / "Caches"), str(home / ".Trash")]
         elif str(home) != "/root":
-            folders.append("/root")  # Another account's home, where this one cannot keep files.
+            folders.append("/root")
     return [folder for folder in folders if folder]
 
 
@@ -1914,8 +1899,7 @@ def _discard(path: Path) -> None:
 
 
 def _in_use_error(path: Path, exc: OSError) -> OSError:
-    # ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION: Windows will not let go of an open file, and
-    # reports most other holds on one as access denied.
+    # ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION; Windows reports most other holds as access denied.
     if getattr(exc, "winerror", None) in (32, 33) or (
         os.name == "nt" and isinstance(exc, PermissionError)
     ):
@@ -1950,7 +1934,6 @@ def _move_file(entry: Path, dest: Path, log: _MoveLog) -> None:
     then the original removed; if the original cannot go (open in another program on Windows) the
     copy goes instead, so each file is only ever in one place."""
     if entry.name == _FLAGS_STORE and os.path.lexists(dest):
-        # Copied over before the switch and written there since: the one left behind is older.
         _unlink(entry)
         return
     kept = os.path.lexists(dest) and _same_bytes(entry, dest)
@@ -1959,8 +1942,7 @@ def _move_file(entry: Path, dest: Path, log: _MoveLog) -> None:
     if not kept:
         if _renamed(entry, dest, log) is not False:
             return
-        # Copied under a hidden name and renamed into place whole: a crash part way leaves no
-        # partial file under the real name, which the next pass would take for another file.
+        # Stage under a hidden name and rename: a crash leaves no partial file under the real name.
         staged = _staging_name(dest)
         try:
             shutil.copy2(entry, staged, follow_symlinks = False)
@@ -2035,7 +2017,7 @@ def _move_entry(entry: Path, dest: Path, log: _MoveLog) -> None:
     try:
         entry.rmdir()
     except OSError:
-        pass  # A save still writing in it, left for the next pass.
+        pass
 
 
 def _move_entries(
@@ -2066,11 +2048,10 @@ def _undo(log: _MoveLog) -> None:
         try:
             folder.rmdir()
         except OSError:
-            pass  # Something was saved into it meanwhile; the stray pass takes that back.
+            pass
 
 
-# How long a finished move waits for saves still writing to the old folder, and how recently a
-# save must have written to count as still writing (a crash's leftover does not hold a move up).
+# Settle window for saves still writing to the old folder; stale leftovers do not count.
 _SETTLE_SECONDS = 30.0
 _WRITING_SECONDS = 10.0
 
@@ -2133,8 +2114,7 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
             "These files stay where they are: training and chats remember them by path."
         )
     with _move_lock:
-        # A move cut short is finished first, now that its drives may be back: a new one started
-        # over it would forget the files still in the folder it was leaving.
+        # Finish an interrupted move first, or a new one forgets files left in the old folder.
         if relocations.moving_from(key) is not None:
             _resume_move(key)
         current = _location_path(key).resolve()
@@ -2152,8 +2132,7 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
         _refuse_while_waiting(key)
         _refuse_overlap(target, key, final = False)
         _refuse_short_space(current, target)
-        # Resolved again: the named subfolder can be a link to somewhere else entirely, or another
-        # kind's folder.
+        # Re-resolve: the subfolder may be a link elsewhere or another kind's folder.
         target = _prepare_target(target, key, current).resolve()
         if _same_folder(target, current):
             return _settle_waiting_move(key, current)
@@ -2163,14 +2142,12 @@ def move_location(key: str, path: Optional[str]) -> Optional[str]:
         before = {entry.name for entry in target.iterdir()}
         from core.inference import gallery_flags
 
-        # The pin/archive store is copied over first, under its lock: a flag set in the new folder
-        # before it arrived would start an empty store there, and Clear then deletes the archive.
-        # Only where a store is: the lock makes a lock file, which would then move as a file.
+        # Copy the flag store first, under its lock, or Clear deletes the archive.
+        # Only where a store exists: the lock creates a lock file that would then move.
         store = current / _FLAGS_STORE
         with gallery_flags.exclusive(current) if store.is_file() else contextlib.nullcontext():
             if store.is_file() and not os.path.lexists(target / _FLAGS_STORE):
                 shutil.copy2(store, target / _FLAGS_STORE)
-            # Recorded with the folder the files leave, so a crash part way is finished on restart.
             relocations.set_chosen(key, target, moving_from = current)
         log = _MoveLog()
         try:
@@ -2227,15 +2204,12 @@ def _resume_move(key: str) -> None:
             return
         target = relocations.chosen(key)
         if not relocations.chosen_available(key):
-            # What went there waits on that drive, so the move stays open: the folder the files
-            # were leaving takes new ones meanwhile, and the first start with the drive back
-            # finishes it.
+            # Move stays open until the drive returns; the old folder takes new files meanwhile.
             logger.warning("library.move_resume_unavailable: %s", target)
             relocations.wait_for_move(key)
             return
         if not relocations.moving_from_available(key):
-            # What is still on its drive waits for it: the move stays open, and is finished on the
-            # first start the drive is back. The chosen folder takes new files meanwhile.
+            # Move stays open until the source drive returns.
             logger.warning("library.move_resume_source_unavailable: %s", source)
             return
         try:
@@ -2279,8 +2253,7 @@ class ItemChanged(RuntimeError):
     """Another file now has the path the item was listed at; nothing was deleted."""
 
 
-# Held by a delete and by an open's check and write, so an open cannot land between a delete's
-# removal of the item and of its row, and bring the row back.
+# Prevents an open from re-creating a row between a delete's item and row removal.
 _overlay_lock = threading.Lock()
 
 
@@ -2302,7 +2275,6 @@ def delete_item(item_id: str, fingerprint: Optional[str] = None) -> bool:
     with _overlay_lock:
         deleted = _delete_item(item_id, fingerprint)
     if deleted and item_id.startswith("attachment:"):
-        # May have held the last reference to an original. Swept outside the lock.
         from core import chat_originals
         chat_originals.sweep()
     return deleted
@@ -2312,8 +2284,7 @@ def _delete_item(item_id: str, fingerprint: Optional[str]) -> bool:
     kind, _, ref = item_id.partition(":")
     deleted = False
     if kind == "upload":
-        # Under the move lock, as a note save: a move finishing between finding the file and
-        # setting it aside would leave it moved, and its row dropped as if it were gone.
+        # Under the move lock, or a concurrent move leaves the file moved and its row dropped.
         with _move_lock:
             path = upload_path(ref)
             if path is not None:
@@ -2326,8 +2297,7 @@ def _delete_item(item_id: str, fingerprint: Optional[str]) -> bool:
         from core.inference import video_gallery
         from routes.video import _forget_openai_job, _forget_terminal_video
         if video_gallery.get_record(ref) is not None:
-            # The job goes first, as the Video page's cleanup, so /v1/videos never keeps a ghost
-            # of the clip. Failing there leaves the clip listed, and deleting it again finishes.
+            # Forget the job first so /v1/videos keeps no ghost; a retry finishes a partial delete.
             if not _forget_openai_job(ref):
                 raise DeleteIncomplete("Could not delete the video job; try again.")
             deleted = video_gallery.delete(ref)

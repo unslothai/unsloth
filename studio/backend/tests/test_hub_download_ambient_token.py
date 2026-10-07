@@ -461,8 +461,7 @@ class _HttpxLike(Exception):
     """Stands in for httpx.ConnectError, which is not an OSError either."""
 
 
-# Everything hub's resolver can raise that is NOT an unreadable-file OSError/UnicodeError. The OIDC
-# rungs reach all of these whenever HF_OIDC_RESOURCE is set in the backend's environment.
+# Resolver failures other than unreadable-file errors; reachable when HF_OIDC_RESOURCE is set.
 _RESOLVER_FAILURES = [
     _OIDCLike("no OIDC id token is available"),
     _HttpxLike("all connection attempts failed"),

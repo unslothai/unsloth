@@ -54,9 +54,6 @@ from core.inference.llama_cpp import (  # noqa: E402
     LlamaCppBackend,
 )
 
-# Reuse the two existing mirrors rather than growing a third. Both stub the same
-# way this file does, so importing them costs no extra setup. Sibling imports need
-# the tests dir on the path: pytest inserts rootdir, not this package.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
@@ -119,13 +116,9 @@ def test_the_published_ui_ceiling_tracks_the_auto_offload_context():
 @pytest.mark.parametrize(
     "native, model_gib, gpus",
     [
-        # MiniMax-like: weights alone dwarf a single large card.
         (196608, 131, [(0, 97_000)]),
-        # Nothing fits even pooled across four cards.
         (131072, 400, [(0, 80_000), (1, 80_000), (2, 80_000), (3, 80_000)]),
-        # Mixed sizes, so the ranked-subset walk runs before giving up.
         (131072, 200, [(0, 48_000), (1, 24_000), (2, 8_000)]),
-        # Native below the fallback: both sides must land on native, not 8192.
         (2048, 200, [(0, 80_000)]),
     ],
 )

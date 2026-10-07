@@ -222,7 +222,7 @@ def test_one_setup_at_a_time_across_both_jobs(monkeypatch, env, tmp_path):
     try:
         assert job_mod.start(plan_mod.LINUX_INSTALL) is first
         with pytest.raises(job_mod.SetupUnavailable):
-            mxc_host_prep_job.start()  # a different run never stands in for the preparation
+            mxc_host_prep_job.start()
     finally:
         gate.write_text("")
     _settle(first)
@@ -404,14 +404,14 @@ def test_two_near_simultaneous_starts_never_run_two_helpers(monkeypatch, env, tm
         try:
             results["setup"] = job_mod.start(plan_mod.LINUX_INSTALL)
         except job_mod.SetupUnavailable as exc:
-            results["setup"] = exc  # host preparation won; a different operation is refused
+            results["setup"] = exc
 
     def prepare():
         barrier.wait()
         try:
             results["prepare"] = mxc_host_prep_job.start()
         except job_mod.SetupUnavailable as exc:
-            results["prepare"] = exc  # the install won; host preparation is refused
+            results["prepare"] = exc
 
     threads = [threading.Thread(target = setup), threading.Thread(target = prepare)]
     for thread in threads:

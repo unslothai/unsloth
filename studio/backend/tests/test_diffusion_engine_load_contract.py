@@ -33,9 +33,6 @@ from core.inference.diffusion import DiffusionBackend
 from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
 
-# ── What the route actually passes ─────────────────────────────────────────
-
-
 def _route_begin_load_keywords() -> list[str]:
     """The keyword names ``_start_engine_load`` hands ``engine.begin_load``, read off the route.
 
@@ -99,9 +96,6 @@ def test_the_two_begin_load_signatures_declare_local_files_only_alike():
     ), "a **kwargs catch-all would accept the flag and ignore it"
 
 
-# ── The route, driven onto the native engine ───────────────────────────────
-
-
 def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
     """Run ``POST /images/load``'s body with the NATIVE engine selected; return the mock engine.
 
@@ -124,7 +118,6 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
     monkeypatch.setattr(router_module, "select_and_activate_engine", lambda *a, **k: engine)
     monkeypatch.setattr(router_module, "begin_load_on", lambda _engine, start: start())
     monkeypatch.setattr(router_module, "annotate_status", lambda status: status)
-    # A CPU-only host is where the native engine is selected in the first place.
     monkeypatch.setattr(
         device_module,
         "resolve_diffusion_device_target",
@@ -152,16 +145,10 @@ def _drive_the_images_load(monkeypatch, *, user_initiated: bool):
 
 @pytest.mark.parametrize("user_initiated", [True, False])
 def test_the_images_page_can_load_on_the_native_engine(monkeypatch, user_initiated):
-    # The regression: this raised TypeError for BOTH values, so the Images page could not load a
-    # model at all on any host that selects sd.cpp. The parametrisation keeps the user-initiated
-    # case explicit, because that is the one nobody expects an offline flag to break.
     engine = _drive_the_images_load(monkeypatch, user_initiated = user_initiated)
 
     engine.begin_load.assert_called_once()
     assert engine.begin_load.call_args.kwargs["local_files_only"] is (not user_initiated)
-
-
-# ── The native loader honours it ───────────────────────────────────────────
 
 
 def _no_hub(monkeypatch):
@@ -219,8 +206,6 @@ def test_a_cache_only_native_load_makes_no_hub_call(monkeypatch):
         _load_token = 1,
     )
 
-    # Reached the fetch (so the probe and preflight were skipped, not merely tolerated) and the
-    # flag arrived there, which is the only call that can still pull bytes.
     assert fetched == [True]
 
 
@@ -269,8 +254,6 @@ def test_an_uncached_asset_fails_with_a_local_error_naming_it(monkeypatch):
         )
     message = str(caught.value)
     assert "ae.safetensors" in message
-    # The FETCH repo, which is where the bytes were looked for: the gated vendor base is swapped
-    # to its ungated mirror before the lookup, so naming the upstream id would misdirect.
     assert "unsloth/FLUX.1-dev" in message
 
 

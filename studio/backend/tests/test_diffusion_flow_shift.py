@@ -25,7 +25,7 @@ class _FakeScheduler:
         return cls(**{**config, **overrides})
 
 
-# Shipped configs (the fields that matter) of the Qwen-Image, Wan2.2-TI2V-5B and HunyuanVideo-1.5 720p repos.
+# Shipped scheduler configs of the Qwen-Image, Wan2.2-TI2V-5B and HunyuanVideo-1.5 720p repos.
 _QWEN = dict(
     shift = 1.0, use_dynamic_shifting = True, shift_terminal = 0.02, time_shift_type = "exponential"
 )
@@ -38,8 +38,8 @@ def test_flow_match_gets_a_static_shift_without_terminal_stretch():
     assert apply_comfy_flow_shift(pipe, 3.1) is True
     cfg = pipe.scheduler.config
     assert (cfg["shift"], cfg["use_dynamic_shifting"], cfg["shift_terminal"]) == (3.1, False, None)
-    assert cfg["time_shift_type"] == "exponential"  # untouched keys survive
-    assert apply_comfy_flow_shift(pipe, 3.1) is False  # idempotent
+    assert cfg["time_shift_type"] == "exponential"
+    assert apply_comfy_flow_shift(pipe, 3.1) is False
 
 
 def test_unipc_flow_shift_and_static_euler():
@@ -62,7 +62,6 @@ def test_family_shifts_match_comfy_defaults():
     assert detect_family("Qwen/Qwen-Image").comfy_flow_shift == 3.1
     assert detect_family("Qwen/Qwen-Image-Edit-2511").comfy_flow_shift == 3.1
     assert detect_family("Tongyi-MAI/Z-Image").comfy_flow_shift == 3.0
-    # Families whose shipped schedule already matches keep it.
     assert detect_family("black-forest-labs/FLUX.1-schnell").comfy_flow_shift is None
     assert detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").comfy_flow_shift == 8.0
     assert detect_video_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers").comfy_flow_shift == 5.0

@@ -42,7 +42,7 @@ class FlmFile:
     name: str
     url: str
     size: int
-    # sha256 of the content for LFS files, git's blob sha1 otherwise: what FastFlowLM checks.
+    # sha256 for LFS files, git blob sha1 otherwise: what FastFlowLM checks.
     digest: str
     lfs: bool
 
@@ -99,13 +99,12 @@ def read_model_files(
         entry = listing["models"][family][size]
         known = {row["path"]: row for row in hashes[checkpoint]}
         base = entry["url"].rstrip("/")
-        # FastFlowLM's own rule: a url naming a revision already ends in /resolve/<revision>.
         if "/resolve" not in base:
             base += "/resolve/main"
         files = []
         for name in entry["files"]:
             row = known.get(name)
-            if row is None:  # FastFlowLM skips a file its hash list does not name.
+            if row is None:
                 continue
             lfs = isinstance(row.get("lfs"), dict)
             files.append(
@@ -154,8 +153,8 @@ def download_files(
     owned = client is None
     client = client or httpx.Client(follow_redirects = True, timeout = httpx.Timeout(30.0, read = 120.0))
     total = model.total
-    completed = 0  # bytes of the files already in place
-    # One event per (file, percent): followers replay every event of a pull that can take hours.
+    completed = 0
+    # One event per (file, percent): followers replay every event.
     reported = None
     try:
         for file in model.files:

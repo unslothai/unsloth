@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 
 
-# "*" is a reserved character in a Windows filename, so only POSIX can hold one.
 _STAR_IN_NAME_IS_LEGAL = os.name != "nt"
 
 
@@ -69,8 +68,6 @@ def _hub_doubles(calls, seen):
             repo_type = None,
         ):
             calls.append("repo_exists")
-            # Default True: the interesting case is an existing repo, and a test that wants
-            # a fresh one says so.
             return seen.get("repo_exists", True)
 
         def file_exists(
@@ -746,7 +743,7 @@ def test_gguf_hub_export_uploads_a_modelfile_it_could_not_place_locally(tmp_path
             output = Path(f"{model_save_path}_gguf")
             output.mkdir(parents = True)
             (output / "model.Q4_K_M.gguf").write_bytes(b"GGUF")
-            # write_bytes, not write_text: text mode turns "\n" into "\r\n" on Windows.
+            # write_bytes: text mode turns "\n" into "\r\n" on Windows
             (output / "Modelfile").write_bytes(b"FROM ./model.Q4_K_M.gguf\n")
 
         def push_to_hub_gguf(self, *args, **kwargs):

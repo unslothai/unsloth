@@ -30,7 +30,7 @@ from core.inference.sd_cpp_server import SdCppServerUnsupported
 from core.inference.video import VideoBackend
 from core.inference import video_minimax_h3 as h3
 
-# Sibling imports need the tests dir on the path: pytest inserts rootdir, not this package.
+# pytest inserts rootdir, not this package, on the path.
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
@@ -70,9 +70,6 @@ def patched(monkeypatch):
     return monkeypatch
 
 
-# -- request / argv -----------------------------------------------------------------------------
-
-
 def test_vid_gen_request_mirrors_the_cli_argv():
     req = build_vid_gen_request(_params())
     assert req == {
@@ -87,7 +84,7 @@ def test_vid_gen_request_mirrors_the_cli_argv():
             "sample_steps": 20,
             "flow_shift": 12.0,
         },
-        # AVI: needs no WebM build, and is what the CUDA prebuilt sd-cli writes anyway.
+        # AVI needs no WebM build and is what the CUDA prebuilt sd-cli writes.
         "output_format": "avi",
         "output_compression": 90,
     }
@@ -118,9 +115,6 @@ def test_server_command_passes_the_audio_vae():
         "/b/sd-server", SdCppModelFiles(diffusion_model = "/m/z.gguf"), host = "h", port = 1
     )
     assert "--audio-vae" not in no_audio
-
-
-# -- SdCppServer.vid_gen ------------------------------------------------------------------------
 
 
 def test_vid_gen_returns_container_bytes(patched):
@@ -178,9 +172,6 @@ def test_vid_gen_failure_carries_the_log_cause(patched):
     )
     with pytest.raises(RuntimeError, match = "out of memory"):
         s.vid_gen({"prompt": "x"}, poll_interval = 0.0)
-
-
-# -- routing in the video backend ---------------------------------------------------------------
 
 
 class _FakeServer:
@@ -327,7 +318,7 @@ def test_no_slot_or_kill_switch_or_reference_video_uses_the_cli(tmp_path, monkey
     slot = _FakeSlot(_FakeServer())
     monkeypatch.setenv(h3.H3_NATIVE_SERVER_ENV, "0")
     assert _render(slot, tmp_path) is None
-    assert slot.stopped == 1  # a server left from before the switch is released
+    assert slot.stopped == 1
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV)
     server = _FakeServer()
     slot = _FakeSlot(server)
@@ -342,7 +333,6 @@ def test_start_failure_falls_back_and_stays_one_shot(tmp_path, monkeypatch):
     slot = _FakeSlot(start_exc = RuntimeError("sd-server failed to become ready"))
     assert _render(slot, tmp_path) is None
     assert "start failed" in slot.disabled_reason
-    # Disabled: the next render does not even try.
     slot.start_exc = AssertionError("must not start again")
     assert _render(slot, tmp_path) is None
 
@@ -367,7 +357,7 @@ def test_failed_job_on_a_live_server_raises_and_releases_it(tmp_path, monkeypatc
     with pytest.raises(RuntimeError, match = "out of memory"):
         _render(slot, tmp_path)
     assert slot.stopped == 1
-    assert slot.disabled_reason is None  # the next render respawns a server
+    assert slot.disabled_reason is None
 
 
 def test_cancel_is_a_cancellation_not_a_fallback(tmp_path, monkeypatch):
@@ -378,9 +368,6 @@ def test_cancel_is_a_cancellation_not_a_fallback(tmp_path, monkeypatch):
     with pytest.raises(SdCppCancelled):
         _render(slot, tmp_path, cancel = cancel)
     assert slot.disabled_reason is None
-
-
-# -- slot lifecycle -----------------------------------------------------------------------------
 
 
 def test_sibling_server_binary(tmp_path):
@@ -427,11 +414,11 @@ def test_slot_holds_the_managed_tree_while_its_server_lives(monkeypatch):
     )
     assert sd_cpp_backend._managed_tree_in_use() is False
     server = slot.get()
-    assert slot.get() is server  # reused, not respawned
+    assert slot.get() is server
     assert started == [(_FILES, ["--offload-to-cpu", "--diffusion-fa"], ["--rng", "cpu"])]
     assert sd_cpp_backend._managed_tree_in_use() is True
     with sd_cpp_backend._tree_claimed_for_install() as claimed:
-        assert claimed is False  # an install stands down for the resident server
+        assert claimed is False
     slot.stop()
     assert server.stopped is True
     assert sd_cpp_backend._managed_tree_in_use() is False
@@ -462,13 +449,10 @@ def test_slot_respawns_a_dead_server(monkeypatch):
     monkeypatch.setattr("core.inference.sd_cpp_engine.is_managed_binary", lambda b: False)
     slot = h3.H3NativeServerSlot("/x/sd-server", _FILES, ())
     first = slot.get()
-    first.alive = False  # crashed while idle
+    first.alive = False
     second = slot.get()
     assert second is not first and second.is_alive()
     slot.stop()
-
-
-# -- spawn signature, idle timeout, pressure and release ------------------------------------------
 
 
 class _LifeSrv:
@@ -528,7 +512,6 @@ def test_slot_spawns_with_the_render_flags_and_env(life):
     assert _LifeSrv.spawns == [
         {"offload": RESIDENT + ["--sage-attn"], "env": SAGE_ENV, "extra_args": ["--rng", "cpu"]}
     ]
-    # Same signature: reused, not respawned.
     assert slot.get(RESIDENT + ["--sage-attn"], dict(SAGE_ENV)) is server
     assert len(_LifeSrv.spawns) == 1
     assert slot.alive_signature()[2] == tuple(RESIDENT + ["--sage-attn"])
@@ -537,9 +520,9 @@ def test_slot_spawns_with_the_render_flags_and_env(life):
 @pytest.mark.parametrize(
     "first, second",
     [
-        ((RESIDENT, {}), (OFFLOAD, {})),  # memory decision changed
-        ((RESIDENT, {}), (RESIDENT + ["--sage-attn"], SAGE_ENV)),  # speed_mode=max switched on
-        ((RESIDENT + ["--sage-attn"], SAGE_ENV), (RESIDENT + ["--sage-attn"], {})),  # env differs
+        ((RESIDENT, {}), (OFFLOAD, {})),
+        ((RESIDENT, {}), (RESIDENT + ["--sage-attn"], SAGE_ENV)),
+        ((RESIDENT + ["--sage-attn"], SAGE_ENV), (RESIDENT + ["--sage-attn"], {})),
     ],
 )
 def test_slot_respawns_when_the_signature_changes(life, first, second):
@@ -547,7 +530,7 @@ def test_slot_respawns_when_the_signature_changes(life, first, second):
     old = slot.get(*first)
     new = slot.get(*second)
     assert new is not old
-    assert old.is_alive() is False  # never two resident copies
+    assert old.is_alive() is False
     assert [s["offload"] for s in _LifeSrv.spawns] == [first[0], second[0]]
     assert slot.last_release_reason == "signature changed"
 
@@ -588,11 +571,10 @@ def test_a_new_render_cancels_the_idle_timer(life, monkeypatch):
     server = slot.get(RESIDENT, {})
     slot.end_render()
     first = slot._timer
-    slot.begin_render()  # the next render starts before the window ends
+    slot.begin_render()
     assert slot._timer is None
     first.join(1.0)
     assert server.is_alive() is True
-    # A stale firing (the timer raced the cancel) is ignored too.
     slot._on_idle(slot._timer_token - 1)
     assert server.is_alive() is True
     slot.end_render()
@@ -657,14 +639,12 @@ def test_pressure_thresholds():
         vram_free = 40 * gib, vram_total = 80 * gib, host_available = 100 * gib, host_total = 200 * gib
     )
     assert h3.h3_native_server_pressure(**ok) is None
-    # 15% of an 80 GiB card is 12 GiB.
     assert "VRAM" in h3.h3_native_server_pressure(**{**ok, "vram_free": 11 * gib})
-    # A 16 GiB card: the 4 GiB floor wins over 15%.
+    # 16 GiB card: the 4 GiB floor wins over 15%.
     assert "VRAM" in h3.h3_native_server_pressure(
         **{**ok, "vram_free": 3 * gib, "vram_total": 16 * gib}
     )
     assert "host RAM" in h3.h3_native_server_pressure(**{**ok, "host_available": 29 * gib})
-    # Unknown readings decide nothing.
     assert (
         h3.h3_native_server_pressure(
             vram_free = None, vram_total = None, host_available = None, host_total = None
@@ -685,7 +665,6 @@ def test_release_stops_an_idle_server_and_defers_a_busy_one(life, monkeypatch):
     assert h3.release_h3_native_servers("export subprocess starting") >= 2
     assert idle_server.is_alive() is False and idle._timer is None
     assert idle.last_release_reason == "export subprocess starting"
-    # The render in flight finishes on its server; the server goes as it ends.
     assert busy_server.is_alive() is True
     assert busy.end_render() == "export subprocess starting"
     assert busy_server.is_alive() is False
@@ -701,7 +680,7 @@ def test_gpu_arbiter_releases_idle_video_servers_for_other_owners(monkeypatch):
     gpu_arbiter.acquire_for(gpu_arbiter.CHAT, account_id = "a")
     assert seen == ["GPU acquired for chat"]
     gpu_arbiter.acquire_for(gpu_arbiter.VIDEO, account_id = "a", allow_evict = True)
-    assert seen == ["GPU acquired for chat"]  # the video owner itself keeps its server
+    assert seen == ["GPU acquired for chat"]
 
 
 def test_render_hands_the_cli_flags_and_env_to_the_slot(tmp_path, monkeypatch):
@@ -728,9 +707,6 @@ def test_kill_switch_stops_a_live_server_and_uses_the_cli(tmp_path, monkeypatch,
     monkeypatch.setenv(h3.H3_NATIVE_SERVER_ENV, "0")
     assert _render(slot, tmp_path) is None
     assert server.is_alive() is False and slot._timer is None
-
-
-# -- through VideoBackend.generate ----------------------------------------------------------------
 
 
 def _generate_backend(
@@ -793,7 +769,6 @@ def test_a_live_resident_server_is_not_pushed_back_to_offload_by_its_own_usage(
     gib = 1024**3
     resident = tuple(f for f in AUTO_FLAGS if f not in ("--offload-to-cpu", "--stream-layers"))
     slot = _StartFailsSlot(live = ("/x/sd-server", (), resident, ()))
-    # The live server holds the 32 GiB bundle, so the card reads only 10 GiB free: enough for this clip's activations.
     monkeypatch.setattr(video, "_h3_card_free_bytes", lambda *_a: 10 * gib)
     backend, calls, _ = _generate_backend(monkeypatch, tmp_path, slot)
     result = backend.generate(prompt = "a fox", width = 960, height = 544)
@@ -812,7 +787,7 @@ def test_a_live_resident_server_does_not_hide_a_clip_too_large_for_the_card(monk
     slot = _StartFailsSlot(live = ("/x/sd-server", (), resident, ()))
     monkeypatch.setattr(video, "_h3_card_free_bytes", lambda *_a: 10 * gib)
     backend, calls, _ = _generate_backend(monkeypatch, tmp_path, slot)
-    # 8x the pixel volume: ~43 GiB of activations on top of the weights, more than the 10 GiB the card has left.
+    # 8x pixel volume: ~43 GiB of activations, more than the 10 GiB left.
     result = backend.generate(prompt = "a fox", width = 1920, height = 1088, num_frames = 241)
     assert "--offload-to-cpu" in slot.got[0][0]
     assert result["offload_policy"] == "group"
@@ -825,7 +800,7 @@ def test_release_does_not_wait_on_a_server_start(life, monkeypatch):
     server = slot.get(RESIDENT, {})
     holder_ready, done = threading.Event(), threading.Event()
 
-    def hold():  # stands in for a render spawning its server under the slot lock
+    def hold():
         with slot._lock:
             holder_ready.set()
             done.wait(5)
@@ -840,7 +815,6 @@ def test_release_does_not_wait_on_a_server_start(life, monkeypatch):
     assert _time.monotonic() - t0 < 2.0
     done.set()
     th.join(2)
-    # The pending release is honoured when that render ends.
     assert slot.end_render() == "chat load"
     assert server.is_alive() is False
 
@@ -886,7 +860,6 @@ def test_cancel_aborts_a_server_start_in_progress(monkeypatch):
         slot.get(RESIDENT, {}, cancel_event = cancel)
     assert loading.is_set() and _time.monotonic() - t0 < 5
     assert slot.alive_signature() is None and slot.disabled_reason is None
-    # Already cancelled: nothing is spawned at all.
     with pytest.raises(SdCppCancelled):
         slot.get(RESIDENT, {}, cancel_event = cancel)
 
@@ -913,12 +886,10 @@ def test_host_reserve_is_a_share_of_the_cgroup_limit(monkeypatch):
 
     gib_mib = 1024
     monkeypatch.setattr(video, "_h3_card_memory_bytes", lambda *_a: (None, None))
-    # A 32 GiB container on a 512 GiB host with 20 GiB still chargeable: 15% of 32 GiB is under 20 GiB.
     monkeypatch.setattr(dm, "_system_memory_mib", lambda: (512 * gib_mib, 400 * gib_mib))
     monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 20 * gib_mib)
     monkeypatch.setattr(dm, "_cgroup_memory_limit_mib", lambda: 32 * gib_mib)
     assert video._h3_native_server_pressure("cuda", None) is None
-    # Without a limit the physical total stands.
     monkeypatch.setattr(dm, "_cgroup_memory_limit_mib", lambda: None)
     assert "host RAM" in video._h3_native_server_pressure("cuda", None)
 
@@ -945,7 +916,6 @@ def test_the_tree_stays_held_until_the_server_has_exited(monkeypatch):
             return self.alive
 
         def stop(self):
-            # SIGTERM sent, process not reaped yet: an install must still stand down.
             seen.append(sd_cpp_backend._external_tree_holder_alive())
             self.alive = False
 

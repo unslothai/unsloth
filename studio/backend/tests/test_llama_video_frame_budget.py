@@ -153,7 +153,6 @@ def _clip(
         check = True,
     )
     if rotation:
-        # Match phone orientation metadata without re-encoding.
         rotated = tmp_path / f"rotated-{name}"
         subprocess.run(
             [
@@ -211,7 +210,6 @@ def test_a_720p_clip_is_shrunk_to_the_frame_budget(tmp_path):
     info = _probe(tmp_path, shrunk)
     assert info["width"] * info["height"] <= MAX_FRAME_PIXELS
     assert (info["width"], info["height"]) == (640, 360)
-    # Sampling stays llama-server's responsibility.
     assert info["duration"] == pytest.approx(2.0, abs = 0.2)
 
 
@@ -265,22 +263,19 @@ def _frame_count(tmp_path: Path, clip_b64: str, name: str) -> int:
 
 @needs_ffmpeg
 def test_frames_beyond_the_sampled_rate_are_not_re_encoded(tmp_path):
-    # Re-encoding at the source rate spends the byte budget on frames mtmd drops,
-    # which pushed a long clip over the cap and threw the conversion away.
+    # Re-encoding at source rate wastes the byte budget on frames mtmd drops.
     clip = _clip(tmp_path, "fast.mp4", "1280x720", rate = 30, seconds = 2)
     assert _frame_count(tmp_path, clip, "fast-source") == 60
 
     shrunk = shrink_video_for_llama(clip, _CAP)
 
     assert _frame_count(tmp_path, shrunk, "fast-shrunk") == MAX_FRAME_RATE * 2
-    # Same span, so llama-server samples the same moments it would have before.
     assert _probe(tmp_path, shrunk)["duration"] == pytest.approx(2.0, abs = 0.3)
 
 
 @needs_ffmpeg
 def test_a_clip_slower_than_the_cap_keeps_every_frame(tmp_path):
-    # `fps` DUPLICATES when asked for more than the source has, so a timelapse
-    # must not be padded up to the ceiling.
+    # fps duplicates frames when above the source rate.
     clip = _clip(tmp_path, "slow.mp4", "1280x720", rate = 2, seconds = 3)
     assert _frame_count(tmp_path, clip, "slow-source") == 6
 
@@ -291,8 +286,6 @@ def test_a_clip_slower_than_the_cap_keeps_every_frame(tmp_path):
 
 @needs_ffmpeg
 def test_a_long_clip_still_fits_the_cap_and_is_really_shrunk(tmp_path):
-    # The regression that motivated the cap: a source-rate re-encode outgrows
-    # max_bytes, so the guard forwarded the original after paying to convert it.
     clip = _clip(tmp_path, "long.mp4", "1280x720", rate = 30, seconds = 30)
 
     shrunk = shrink_video_for_llama(clip, _CAP)
@@ -306,8 +299,7 @@ def _frames_at(tmp_path: Path, clip_b64: str, name: str, fps: int) -> int:
     """Frames llama-server would actually get, via the same `-vf fps=` it runs."""
     path = tmp_path / name
     path.write_bytes(base64.b64decode(clip_b64))
-    # Dimensions only: a raw stream has no container duration, so _probe would
-    # KeyError before the frames could be counted.
+    # Raw stream has no container duration, so _probe would KeyError.
     dims = subprocess.run(
         [
             "ffprobe",
@@ -347,8 +339,7 @@ def _frames_at(tmp_path: Path, clip_b64: str, name: str, fps: int) -> int:
 @needs_ffmpeg
 @pytest.mark.parametrize("seconds", [0.1, 0.3, 0.4])
 def test_a_sub_second_clip_still_reaches_the_model(tmp_path, seconds):
-    # At the 1 fps Studio pins, anything under ~0.5s decodes to NOTHING. These
-    # worked at the old 4 fps default, so this is a regression guard.
+    # At 1 fps anything under ~0.5s decodes to nothing.
     clip = _clip(tmp_path, f"tiny{seconds}.mp4", "320x180", rate = 30, seconds = seconds)
     assert _frames_at(tmp_path, clip, f"tiny-src{seconds}", 1) == 0
 
@@ -366,8 +357,6 @@ def test_a_long_enough_clip_within_the_budget_is_still_left_alone(tmp_path):
 
 
 def test_a_probe_that_is_not_an_object_forwards_the_clip_untouched(monkeypatch):
-    # A build answering `-of json` with a non-object must fall back, not raise
-    # AttributeError past the caller's except.
     class _Result:
         returncode = 0
         stdout = b"[]"
@@ -412,9 +401,6 @@ def test_the_gguf_route_shrinks_the_clip_after_the_size_check_and_before_injecti
     )
     start = source.index('"Video provided but the current GGUF model cannot take video input. "')
     check = source.index("_video_b64_rejection(payload.video_base64)", start)
-    # The transcode moved into _shrink_clip_for_llama so the video_url parts can reuse it;
-    # anchor on the route's call to that helper, not on shrink_video_for_llama, which now
-    # only appears inside it (and earlier in the file).
     shrink = source.index("_shrink_clip_for_llama(video_b64, llama_backend)", start)
     inject = source.index("_inject_video_part(gguf_messages, video_b64)", start)
     assert check < shrink < inject
@@ -440,7 +426,6 @@ def test_the_conversions_result_is_what_gets_injected():
         call = node.value if isinstance(node, ast.Await) else node
         if not isinstance(call, ast.Call):
             return False
-        # Either spelling: the route calls the helper, and the helper calls the real thing.
         if isinstance(call.func, ast.Name) and call.func.id == "_shrink_clip_for_llama":
             return True
         return any(isinstance(a, ast.Name) and a.id == "shrink_video_for_llama" for a in call.args)
@@ -510,14 +495,11 @@ def test_the_requested_rate_is_read_from_the_extras_and_the_environment():
     assert requested_video_fps(None, env = {}) is None
     assert requested_video_fps(["--video-fps", "8"], env = {}) == 8
     assert requested_video_fps(["--video-fps=8"], env = {}) == 8
-    # llama.cpp resolves a repeated flag last-wins, so the encoder must agree.
+    # llama.cpp is last-wins on a repeated flag.
     assert requested_video_fps(["--video-fps", "8", "--video-fps", "2"], env = {}) == 2
-    # argv beats the environment: llama.cpp reads the env var when it registers
-    # the option, and argv overrides it afterwards (measured on b10976).
+    # argv beats the env var in llama.cpp.
     assert requested_video_fps(["--video-fps", "8"], env = {"LLAMA_ARG_VIDEO_FPS": "1"}) == 8
     assert requested_video_fps([], env = {"LLAMA_ARG_VIDEO_FPS": "8"}) == 8
-    # llama.cpp accepts the underscore spelling too, so an exact match on the
-    # hyphen would silently miss it.
     assert requested_video_fps(["--video_fps", "8"], env = {}) == 8
     assert requested_video_fps(["--video_fps=8"], env = {}) == 8
     assert requested_video_fps(["--video_fps", "8", "--video-fps", "2"], env = {}) == 2
@@ -527,8 +509,6 @@ def test_the_requested_rate_is_read_from_the_extras_and_the_environment():
 
 
 def test_a_higher_requested_rate_raises_the_encode_ceiling():
-    # The server samples AFTER this transcode, so a dropped rate can only come
-    # back as duplicates. Below the default the ceiling holds.
     chain = llama_video_input._filter_chain(MAX_FRAME_PIXELS, 30.0, 5.0, True, 8.0)
     assert "fps=8" in chain
     assert llama_video_input._rate_ceiling(None) == MAX_FRAME_RATE
@@ -550,9 +530,7 @@ def test_an_eight_fps_override_keeps_eight_fps_of_frames(tmp_path):
 
 @needs_ffmpeg
 def test_a_short_clip_with_no_container_duration_is_still_padded(tmp_path):
-    # A raw stream carries no format.duration, so the sub-second floor never
-    # fired. Annex B has no packet timestamps either, only durations, so the
-    # fallback has to sum those rather than read a presentation time.
+    # Annex B has no timestamps, only durations, so sum them.
     path = tmp_path / "raw.h264"
     subprocess.run(
         [
@@ -579,7 +557,6 @@ def test_a_short_clip_with_no_container_duration_is_still_padded(tmp_path):
 
 @needs_ffmpeg
 def test_the_packet_fallback_is_only_consulted_when_the_container_is_silent(tmp_path, monkeypatch):
-    # It reads packets, so a long ordinary clip must never reach it.
     called = []
     real = llama_video_input._packet_duration
     monkeypatch.setattr(

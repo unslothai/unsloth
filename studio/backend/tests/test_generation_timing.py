@@ -22,9 +22,7 @@ from core.inference.generation_timing import (
 from core.inference.presence_penalty import _make_presence_penalty_processor
 
 try:
-    # core.inference.inference imports unsloth at module scope, which requires
-    # unsloth_zoo. The dependency-light backend CI matrix job does not install it,
-    # so the _record_generation_stats check runs only when the stack is importable.
+    # core.inference.inference imports unsloth, absent from the dependency-light CI job.
     from core.inference.inference import InferenceBackend
 except ImportError:
     InferenceBackend = None
@@ -36,11 +34,11 @@ def test_windows_are_none_until_generation_is_measured():
     assert timer.predicted_ms is None
 
     timer.start()
-    assert timer.prompt_ms is None  # prefill has not produced logits yet
+    assert timer.prompt_ms is None
 
     timer.mark_prefill_end()
     assert timer.prompt_ms is not None
-    assert timer.predicted_ms is None  # generation has not returned yet
+    assert timer.predicted_ms is None
 
     timer.finish()
     assert timer.predicted_ms is not None
@@ -68,7 +66,7 @@ def test_both_stamps_wait_for_the_accelerator(monkeypatch):
     timer.start()
     timer.mark_prefill_end(cuda)
     assert synced == [cuda]
-    timer.finish()  # reuses the latched device: no tensor is in scope by then
+    timer.finish()  # reuses the latched device: no tensor in scope
     assert synced == [cuda, cuda]
 
 
@@ -105,7 +103,7 @@ def test_a_cpu_run_has_nothing_to_wait_for(monkeypatch):
 def test_a_run_that_never_reached_prefill_reports_no_prompt_window():
     timer = GenerationTimer()
     timer.start()
-    timer.finish()  # generate() raised before producing logits
+    timer.finish()
     assert timer.prompt_ms is None
     assert timer.predicted_ms is None
 
@@ -143,8 +141,8 @@ def test_unmeasured_split_reports_no_timings_at_all():
 @pytest.mark.parametrize(
     "prompt_n, prompt_ms",
     [
-        (0, 30.0),  # a run whose prompt length was never measured
-        (10, 0.0),  # a window too short to have a rate
+        (0, 30.0),
+        (10, 0.0),
     ],
 )
 def test_unratable_prompt_window_omits_the_rate_instead_of_reporting_zero(prompt_n, prompt_ms):
@@ -169,7 +167,6 @@ def test_processor_stamps_the_boundary_and_keeps_the_penalty_processor():
     input_ids = torch.tensor([[0, 1, 3]])
     scores = processors(input_ids, torch.zeros(1, 5))
     assert timer.prompt_ms is not None
-    # the wrapped penalty still ran: the one distinct completion token lost 1.0
     assert scores[0, 3].item() == pytest.approx(-1.0)
 
 
@@ -206,7 +203,7 @@ def test_boundary_lands_after_the_prompt_forward_pass_in_a_real_generate():
     )
     timer.finish()
 
-    assert seen_lengths[0] == prompt_len  # first call sees the prompt alone: prefill
+    assert seen_lengths[0] == prompt_len
     assert seen_lengths == list(range(prompt_len, prompt_len + 8))
     timings = build_generation_timings(
         prompt_n = prompt_len,

@@ -167,9 +167,6 @@ def _smi_inventory(monkeypatch, rows) -> None:
     monkeypatch.setattr(nvidia, "_query_gpu_inventory", lambda caller: rows)
 
 
-# ── the fault itself ─────────────────────────────────────────────────────────
-
-
 def test_a_readable_carve_out_total_is_widened_to_the_pool(monkeypatch):
     """The regression: 7.94 GiB published for a device that can allocate 45.39 GiB."""
     _cuda_host(monkeypatch, _N1XProps())
@@ -254,11 +251,7 @@ def test_llama_cpp_prices_the_gguf_fit_against_the_pool(monkeypatch):
     idx, free_mib, total_mib = gpus[0]
     assert idx == 0
     assert total_mib == N1X_POOL_MIB
-    # It was 2256 MiB. The drafter needed 7.9 GB.
     assert free_mib > 8 * 1024
-
-
-# ── the constraint: never shrink, never touch a discrete card ────────────────
 
 
 def test_a_discrete_card_is_byte_identical(monkeypatch):
@@ -359,9 +352,6 @@ def test_llama_cpp_free_never_shrinks(monkeypatch):
     assert free_mib >= 6000
 
 
-# ── the NPU, which must stay honestly unknown ────────────────────────────────
-
-
 def test_the_npu_row_is_left_unknown(monkeypatch):
     """nvidia-smi enumerates an "NVIDIA NPU" as GPU 1 on this machine.
 
@@ -404,9 +394,6 @@ def test_the_npu_cannot_drag_down_the_training_budget(monkeypatch):
     free = _free_vram_by_index(hw.get_visible_gpu_utilization()["devices"])
 
     assert set(free) == {0}
-
-
-# ── mixed hosts and index spaces ─────────────────────────────────────────────
 
 
 def test_only_the_integrated_device_is_widened_on_a_mixed_host(monkeypatch):
@@ -465,9 +452,6 @@ def test_a_uuid_mask_joins_on_the_visible_ordinal(monkeypatch):
     assert device["vram_total_gb"] == N1X_POOL_GB
 
 
-# ── cost: no primary context on a polling path ───────────────────────────────
-
-
 def test_the_poll_never_pins_a_cuda_context(monkeypatch):
     """mem_get_info attaches a primary context the process never gives back.
 
@@ -486,9 +470,6 @@ def test_the_poll_never_pins_a_cuda_context(monkeypatch):
     monkeypatch.setattr(hw, "_torch_get_per_device_info", _forbidden)
 
     assert hw.get_visible_gpu_utilization()["devices"][0]["vram_total_gb"] == N1X_POOL_GB
-
-
-# ── hosts that cannot answer at all ──────────────────────────────────────────
 
 
 def test_a_torch_that_cannot_answer_keeps_the_cli_rows(monkeypatch):
@@ -521,10 +502,7 @@ def test_a_host_memory_probe_failure_still_widens_the_total(monkeypatch):
     device = hw.get_visible_gpu_utilization()["devices"][0]
 
     assert device["vram_total_gb"] == N1X_POOL_GB
-    # memory.used is scoped to the carve-out, so pairing it with the POOL total would
-    # advertise the whole difference as free on no pool-scoped evidence. The capacity
-    # still widens, which is the half that decides whether a model is offered at all;
-    # the budget stays the one the CLI vouched for.
+    # memory.used is carve-out scoped; pairing it with the POOL total would invent free space.
     cli_free_gb = round(N1X_CARVE_OUT_GB - N1X_USED_GB, 2)
     assert device["vram_total_gb"] - device["vram_used_gb"] == pytest.approx(cli_free_gb, abs = 0.01)
 
@@ -535,17 +513,11 @@ def test_the_predicate_is_the_whole_rule():
     assert hw._integrated_total_is_understated(None, 121.0) is True
     # A carve-out: the N1X shape.
     assert hw._integrated_total_is_understated(N1X_CARVE_OUT_GB, N1X_POOL_GB) is True
-    # Equal, and within rounding of equal: nothing to do.
     assert hw._integrated_total_is_understated(45.39, 45.39) is False
     assert hw._integrated_total_is_understated(45.39, 45.40) is False
-    # Smaller: never adopted.
     assert hw._integrated_total_is_understated(45.39, 8.0) is False
-    # Nothing to adopt.
     assert hw._integrated_total_is_understated(8.0, None) is False
     assert hw._integrated_total_is_understated(8.0, 0) is False
-
-
-# ── llama.cpp host stubs ─────────────────────────────────────────────────────
 
 
 def _llama_common(monkeypatch, avail_mib):
@@ -561,9 +533,7 @@ def _llama_common(monkeypatch, avail_mib):
     monkeypatch.setattr(
         LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: None)
     )
-    # `_resolve_visible_physical_ids` returning None means NO MASK here, so the env has
-    # to say the same or the runner's own CUDA_VISIBLE_DEVICES is read as one. The
-    # ordering mirrors main.py:19, which sets PCI_BUS_ID on import.
+    # None means NO MASK, so clear the env too; ordering mirrors main.py (PCI_BUS_ID).
     for _var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
         monkeypatch.delenv(_var, raising = False)
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
@@ -623,10 +593,7 @@ def test_an_unmappable_mask_refuses_the_join_under_any_ordering(monkeypatch):
     would advertise a discrete card with a system-RAM-sized pool.
     """
     _llama_common(monkeypatch, avail_mib = 43000)
-    # A real UUID mask: `_resolve_visible_physical_ids` cannot parse it, and neither can
-    # `_visible_devices_mask`, so the CLI rows are never filtered to match. PCI_BUS_ID
-    # ordering does not help, and main.py sets it by default, so the refusal cannot be
-    # left to the ordering alone.
+    # A UUID mask cannot be parsed, so CLI rows are never filtered to match it.
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-deadbeef-0000-0000-0000-000000000003")
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     monkeypatch.setattr(LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {1}))
@@ -744,7 +711,6 @@ def test_the_nvml_fallback_is_widened_too(monkeypatch):
     raw rows reproduced the fit failure this change exists to remove.
     """
     _integrated_llama_host(monkeypatch)
-    # The nvidia-smi arm finds nothing, so the NVML arm answers.
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
         lambda *a, **k: types.SimpleNamespace(returncode = 1, stdout = "", stderr = "no smi"),

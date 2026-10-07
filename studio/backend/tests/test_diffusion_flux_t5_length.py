@@ -65,7 +65,6 @@ def test_negative_counts_only_under_true_cfg():
     kw = {"prompt": "a", "negative_prompt": _words(300)}
     assert flux_t5_kwarg("flux.1", pipe, params, kw) == 256
     assert flux_t5_kwarg("flux.1", pipe, params, {**kw, "true_cfg_scale": 4.0}) == 512
-    # prompt_2 is what FLUX.1 feeds T5 when given.
     assert flux_t5_kwarg("flux.1", pipe, params, {"prompt": "a", "prompt_2": _words(280)}) == 512
 
 

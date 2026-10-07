@@ -17,7 +17,6 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 DOWNLOAD_TRANSPORT_SETTING_KEY = "download_transport_mode"
-# Unchanged by this setting: an install nobody has touched still lets the backend pick.
 DEFAULT_DOWNLOAD_TRANSPORT = TRANSPORT_AUTO
 
 

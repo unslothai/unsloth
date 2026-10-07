@@ -163,7 +163,6 @@ def test_bytes_go_as_json_naming_a_temp_file_removed_after_success_or_error(fake
     with pytest.raises(stt.SttEngineUnavailableError):
         side.transcribe(wav_bytes(), QWEN3, "boom")
     assert not list(audio.parent.glob("*.wav"))
-    # A family that rejects the language is asked again without it.
     assert side.transcribe(wav_bytes(), QWEN3, "xx")["text"] == "Concord returned."
     assert fake.bodies[-2]["language"] == "xx" and "language" not in fake.bodies[-1]
 
@@ -172,14 +171,13 @@ def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side,
     result = side.transcribe_path(source, MOSS, None, timestamps = True)
     (body,) = fake.bodies
     assert body["audio"] == str(source) and "options" not in body
-    assert source.exists()  # the caller's file is not ours to remove
+    assert source.exists()
     assert result["text"] == "Hello there. General Kenobi." and result["duration"] == 2.0
     assert result["speakers"] == ["S01", "S02"]
     assert [(s["start"], s["end"], s["speaker"]) for s in result["segments"]] == [
         (0.12, 1.0, "S01"),
         (1.1, 2.0, "S02"),
     ]
-    # MOSS loads without the aligner whatever the request asked.
     assert ALIGNER_KEY not in json.dumps(fake.starts[0]["entry"])
     assert side.transcribe(wav_bytes(), MOSS, None)["text"] == "Hello there. General Kenobi."
 
@@ -196,7 +194,6 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
         network = True,
     ):
         if network:
-            # Stands in for the Hub listing: the files arrive with the download below.
             _add(hub, ALIGNER_FILE, "qwen3_forced_aligner")
         return real_resolve(model, companion, hf_token, network = False)
 

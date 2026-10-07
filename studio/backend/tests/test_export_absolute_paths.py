@@ -98,10 +98,8 @@ def _install_lightweight_backend_stubs(monkeypatch):
     auth_pkg = types.ModuleType("auth")
     auth_mod = types.ModuleType("auth.authentication")
     auth_mod.get_current_subject = lambda: None
-    # routes/models.py imports this alongside get_current_subject; a stub missing it
-    # fails the import with "unknown location", which reads like a path problem.
+    # routes/models.py imports this; a missing stub fails with a misleading "unknown location"
     auth_mod.allow_ambient_hf_token = lambda: True
-    # Same reason: the cached-model routes take the caller class.
     auth_mod.authenticated_via_api_key = lambda: False
     monkeypatch.setitem(sys.modules, "auth", auth_pkg)
     monkeypatch.setitem(sys.modules, "auth.authentication", auth_mod)
@@ -148,8 +146,6 @@ def _install_lightweight_backend_stubs(monkeypatch):
         _HTTPException(kwargs.get("status_code", 500), kwargs.get("detail"))
     )
     utils_utils.canonical_model_repo_id = lambda value: value
-    # routes/models.py refuses a forced-anonymous caller offline through this; the stub
-    # answers False so the export paths under test take their ordinary route.
     utils_utils.anonymous_and_offline = lambda _hf_token: False
     utils_utils.safe_error_detail = lambda value: str(value)
     monkeypatch.setitem(sys.modules, "utils.utils", utils_utils)
@@ -334,7 +330,6 @@ def test_gguf_export_keeps_a_gguf_it_could_not_relocate(tmp_path, monkeypatch):
     assert success is False
     assert "move failed" in message
     assert output_path is None
-    # Preserve a completed GGUF when relocation fails.
     roots = list(save_dir.glob("_tmp_model_*"))
     assert len(roots) == 1
     assert (roots[0] / "model_gguf" / "converted.gguf").read_bytes() == b"gguf"
@@ -403,7 +398,6 @@ def test_gguf_export_survives_real_owned_temp_cleanup_failure(tmp_path, monkeypa
             output_dir = Path(f"{model_save_path}_gguf")
             output_dir.mkdir(parents = True, exist_ok = True)
             (output_dir / "converted.gguf").write_bytes(b"gguf")
-            # A read-only model directory makes the real cleanup fail.
             merged = Path(model_save_path)
             merged.mkdir()
             (merged / "model.safetensors").write_bytes(b"weights")
@@ -424,7 +418,6 @@ def test_gguf_export_survives_real_owned_temp_cleanup_failure(tmp_path, monkeypa
     assert success is True, message
     assert output_path == str(save_dir.resolve())
     assert (save_dir / "converted.gguf").read_bytes() == b"gguf"
-    # The removable output is gone, but the locked model directory remains.
     assert len(locked_dirs) == 1
     model_tmp_root = locked_dirs[0].parent
     assert not (model_tmp_root / "model_gguf").exists()
@@ -432,7 +425,6 @@ def test_gguf_export_survives_real_owned_temp_cleanup_failure(tmp_path, monkeypa
     assert list(save_dir.glob("_tmp_model_*")) == [model_tmp_root]
 
 
-# Both PEFT and non-PEFT exports must preserve an existing checkpoint sibling.
 @pytest.mark.parametrize("merges_into_model_dir", [False, True], ids = ["non_peft", "peft"])
 def test_gguf_export_preserves_unowned_paths(tmp_path, monkeypatch, merges_into_model_dir):
     _install_export_backend_stubs(monkeypatch)
@@ -473,7 +465,6 @@ def test_gguf_export_preserves_unowned_paths(tmp_path, monkeypatch, merges_into_
             concurrent_dir.mkdir()
             (concurrent_dir / "notes.txt").write_text("keep", encoding = "utf-8")
             concurrent_cwd_gguf.write_bytes(b"unrelated")
-            # Reported files may also appear in the owned-root scan.
             return {
                 "gguf_directory": str(output_dir),
                 "gguf_files": [str(output_dir / "new.Q4_K_M.gguf")],
@@ -502,7 +493,6 @@ def test_gguf_export_preserves_unowned_paths(tmp_path, monkeypatch, merges_into_
 
 
 def test_gguf_export_relocates_gguf_written_into_the_model_path(tmp_path, monkeypatch):
-    # MLX writes into the save path and returns no manifest.
     _install_export_backend_stubs(monkeypatch)
     export_mod = _load_module(
         "test_core_export_backend_in_place_output", "core/export/export.py", monkeypatch
@@ -572,7 +562,6 @@ def test_gguf_export_rejects_symlink_inside_its_owned_temp_tree(tmp_path, monkey
 def test_gguf_export_relocates_only_reported_files_from_outside_the_owned_root(
     tmp_path, monkeypatch
 ):
-    # Relocate reported files without scanning their unowned directory.
     _install_export_backend_stubs(monkeypatch)
     export_mod = _load_module(
         "test_core_export_backend_unowned_report", "core/export/export.py", monkeypatch

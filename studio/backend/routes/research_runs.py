@@ -50,8 +50,7 @@ _SENSITIVE_KEY_SUFFIXES = (
     "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
-# Zero is the unlimited sentinel, so a finite value only has to cover the longest run anyone
-# would set: a year reads back in the 400, unlike a float-max ceiling.
+# Zero means unlimited; a year is plenty and reads back sanely in a 400.
 _MIN_FINITE_MODEL_TIMEOUT_SECONDS = 10
 _MAX_FINITE_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600
 _DELTA_ONLY_EVENTS = {
@@ -61,7 +60,6 @@ _DELTA_ONLY_EVENTS = {
     "phase.started",
     "phase.ended",
 }
-# Dedicated to the blocking event wait so open streams cannot exhaust the default executor.
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "research-events")
 
 
@@ -83,8 +81,7 @@ class CreateResearchRun(BaseModel):
     @field_validator("budgets", mode = "before")
     @classmethod
     def _reject_boolean_budgets(cls, value: Any) -> Any:
-        # bool is an int subclass, so False would coerce to the 0 "unlimited" sentinel and
-        # silently drop a deadline. Reject it here: by the time the field is typed it is 0.
+        # bool is an int subclass: False would coerce to the 0 unlimited sentinel.
         if isinstance(value, dict):
             for key, item in value.items():
                 if isinstance(item, bool):
@@ -179,7 +176,6 @@ def _sync_assistant(run: dict, text: str | None = None) -> None:
 
 
 def _is_sensitive_key(key: object) -> bool:
-    # Match after stripping separators/case so openaiApiKey, access_token, clientSecret all hit.
     normalized = re.sub(r"[^a-z0-9]", "", str(key).casefold())
     return normalized in _SENSITIVE_KEY_EXACT or normalized.endswith(_SENSITIVE_KEY_SUFFIXES)
 
@@ -238,8 +234,7 @@ def _sanitize_config(
         value is not None for value in (provider_type, provider_id, external_model)
     )
     if external_requested:
-        # A saved connection is still mandatory: the run is durable, so an inline key would have to be persisted, and
-        # _is_sensitive_key exists to stop exactly that. Only the provider-type allowlist is widened.
+        # Saved connection required: an inline key would be persisted with the durable run.
         if (
             not provider_runs_local_tools(provider_type)
             or not isinstance(provider_id, str)
@@ -254,9 +249,7 @@ def _sanitize_config(
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
-        # The saved row is the source of truth for routing, so validate against it rather than the type the client
-        # sent: a self-hosted connection is stored under the backend "openai" type but surfaced as "custom" / "vllm" /
-        # "ollama" / "llama_cpp", so comparing the two for equality 400s exactly the connections this path serves.
+        # Validate the saved type: self-hosted rows are stored as "openai" but surfaced otherwise.
         saved_provider_type = provider["provider_type"]
         if (
             not provider_runs_local_tools(saved_provider_type)
@@ -269,9 +262,7 @@ def _sanitize_config(
             )
         request["providerType"] = saved_provider_type
 
-    # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is stringified, so
-    # {"auth": "sk-..."} would slip past the sensitive-key scan (inner key unlisted) into the durable config as the
-    # model id.
+    # "model" is stringified, so a nested dict would evade the sensitive-key scan.
     if any(isinstance(value, (dict, list, tuple)) for value in request.values()):
         raise HTTPException(status_code = 400, detail = "Invalid inferenceRequest value")
     model = str(request.get("model") or thread.get("modelId") or "").strip()
@@ -292,8 +283,7 @@ def _sanitize_config(
             if not 1 <= request["maxTokens"] <= 8192:
                 raise ValueError
         if "maxOutputTokens" in request:
-            # Strict like the saved-connection schema: bool is an int subclass, and int()
-            # would truncate a float or raise OverflowError, turning a 400 into a 500.
+            # Strict: bool is an int subclass and int() can truncate or raise OverflowError.
             budget = request["maxOutputTokens"]
             if isinstance(budget, bool) or not isinstance(budget, int):
                 raise ValueError
@@ -341,9 +331,7 @@ def _sanitize_config(
             "whole_doc",
         }
         unknown_rag = set(rag_scope) - allowed_rag
-        # Every ragScope field is a scalar. A nested container evades the sensitive-key scan when its inner keys
-        # are unlisted (e.g. {"kb_id": {"auth": "sk-..."}}) and would reach retrieval code expecting a scalar scope
-        # id, so reject non-scalars outright.
+        # Nested containers evade the sensitive-key scan, so reject non-scalars.
         non_scalar = any(isinstance(value, (dict, list, tuple)) for value in rag_scope.values())
         if unknown_rag or non_scalar or _contains_sensitive_key(rag_scope):
             raise HTTPException(status_code = 400, detail = "Unsupported or sensitive ragScope field")
@@ -361,17 +349,14 @@ def _sanitize_config(
     limits = {
         "maxSteps": (1, _MAX_PLAN_STEPS),
         "maxSources": (1, 100),
-        # Zero disables the total wall-clock deadline. Per-output stall deadlines still apply.
         "modelTimeoutSeconds": (
             _MIN_FINITE_MODEL_TIMEOUT_SECONDS,
             _MAX_FINITE_MODEL_TIMEOUT_SECONDS,
         ),
         "toolTimeoutSeconds": (5, 600),
-        # Same range as its parent: slow CPU and offloaded models need minutes to first token.
         "firstOutputTimeoutSeconds": (10, 3600),
     }
     for key, (minimum, maximum) in limits.items():
-        # The sentinel is not a short timeout, so it skips the floor rather than lowering it.
         if key == "modelTimeoutSeconds" and budgets[key] == 0:
             continue
         if not minimum <= budgets[key] <= maximum:
@@ -379,8 +364,7 @@ def _sanitize_config(
             if key == "modelTimeoutSeconds":
                 allowed = f"0 (unlimited) or {allowed}"
             raise HTTPException(status_code = 400, detail = f"{key} must be {allowed}")
-    # Server-controlled, not client tunable. OFF unless UNSLOTH_RESEARCH_AUTO_SCRAPE=1, and
-    # injected only when enabled, so a default run's budgets stay byte-identical to legacy.
+    # Off unless UNSLOTH_RESEARCH_AUTO_SCRAPE=1 so default budgets stay byte-identical.
     from core.research_runs import _auto_scrape_default
 
     _auto_scrape = _auto_scrape_default()
@@ -397,7 +381,6 @@ def _sanitize_config(
         "budgets": budgets,
         "websitePolicy": website_policy,
         "instructions": (payload.instructions or "").strip(),
-        # stamped once so a run spanning midnight or a settings change keeps its starting date.
         "currentDate": current_date_prompt_line(request = http_request),
         "question": (payload.question or "").strip(),
     }
@@ -417,9 +400,7 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    # A handed-off question counts as the text. The worker researches config.question, so a multimodal turn that
-    # reads an image and calls deep_research passes the question it wrote, and refusing on the message's own empty
-    # text ends a complete handoff in a toast.
+    # A handed-off question counts as the text (multimodal turns may have empty text).
     if not message_text_with_pastes(user_message).strip() and not (payload.question or "").strip():
         raise HTTPException(
             status_code = 400,
@@ -428,8 +409,6 @@ def create_research_run(
     config = _sanitize_config(payload, thread, request)
     try:
         if db.has_thread_claim(payload.threadId):
-            # The thread's one run was stopped, so it is re-pointed at this question rather
-            # than refusing every later one in the chat.
             run = db.rebind_cancelled(
                 thread_id = payload.threadId,
                 user_message_id = payload.userMessageId,
@@ -453,8 +432,6 @@ def create_research_run(
     except db.ResearchConflictError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     except sqlite3.IntegrityError as exc:
-        # The thread can be deleted between the check above and this insert, and the foreign key
-        # then fails. Report it gone rather than as a server fault.
         raise HTTPException(status_code = 404, detail = "Thread not found") from exc
     if run is None:
         raise HTTPException(status_code = 404, detail = "Thread not found")
@@ -553,9 +530,9 @@ def retry_research_run(
     return run
 
 
-# POST too: proxies that stream /v1/chat/completions still buffer a streamed GET until it closes.
+# POST too: proxies buffer a streamed GET until it closes.
 @router.post("/{run_id}/events")
-# Separate registration, out of the schema: one api_route would give both verbs one operationId.
+# Separate registration: one api_route would give both verbs one operationId.
 @router.get("/{run_id}/events", include_in_schema = False)
 async def research_events(
     run_id: str,
@@ -572,7 +549,7 @@ async def research_events(
         nonlocal cursor
         loop = asyncio.get_running_loop()
         while True:
-            # off the default executor: parked followers there starved the run's own db writes.
+            # Off the default executor: parked followers starved the run's db writes.
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
                 run_as,
@@ -582,8 +559,7 @@ async def research_events(
                 cursor,
                 15,
             )
-            # Not the wait executor: this read is short, and queueing it behind parked waits
-            # would delay every follower once the pool is full.
+            # Not the wait executor: a short read must not queue behind parked waits.
             snapshot = await asyncio.to_thread(db.get_run, run_id)
             if snapshot is None:
                 return

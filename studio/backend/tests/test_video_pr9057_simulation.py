@@ -42,11 +42,6 @@ def _props_backend(props):
     return b
 
 
-# --------------------------------------------------------------------------
-# A. the base64 ceiling, measured against the real encoder
-# --------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("n", [0, 1, 2, 3, 4, 5, 6, 1023, 1024, 3000, 3001, 3002])
 def test_the_ceiling_formula_matches_what_base64_actually_produces(n):
     assert len(base64.b64encode(b"x" * n)) == 4 * math.ceil(n / 3)
@@ -61,8 +56,6 @@ def test_a_clip_of_exactly_the_composer_limit_is_admitted():
 
 
 def test_the_old_floor_expression_would_have_refused_it():
-    # What the review flagged: floor(64MiB * 4 / 3) == 89478485, three characters
-    # short, so the largest file the composer offers 413s.
     floored = (LIMIT * 4) // 3
     assert floored == 89478485
     assert floored < 4 * math.ceil(LIMIT / 3)
@@ -76,7 +69,6 @@ def test_one_character_over_the_ceiling_is_refused_413():
 
 
 def test_the_data_uri_header_is_not_counted_against_the_cap():
-    # A composer that sends a data URI must not lose bytes to its own header.
     payload = "A" * _MAX_VIDEO_B64_CHARS
     stripped, rejection = _video_b64_rejection(f"data:video/mp4;base64,{payload}")
     assert rejection is None
@@ -102,11 +94,6 @@ def test_a_bare_payload_with_no_header_is_passed_through_untouched():
     assert _video_b64_rejection("QUJD") == ("QUJD", None)
 
 
-# --------------------------------------------------------------------------
-# B. capability read: old builds, odd payloads, and swaps
-# --------------------------------------------------------------------------
-
-
 def test_a_build_too_old_to_declare_modalities_reports_no_video():
     """The key backwards-compat case: llama.cpp only grew `modalities` in /props
     recently, and every older build simply omits the key."""
@@ -124,7 +111,7 @@ def test_a_build_too_old_to_declare_modalities_reports_no_video():
         {"modalities": {"vision": True}},
         {"modalities": {"video": None}},
         {"modalities": {"video": 0}},
-        {"modalities": {"video": "false"}},  # a non-empty string is truthy: see below
+        {"modalities": {"video": "false"}},
         {},
     ],
 )
@@ -161,7 +148,6 @@ def test_an_unreachable_props_leaves_the_capability_off_rather_than_guessing():
     b = _props_backend(None)
     b._has_video_input = True
     assert b._query_server_n_ctx() is None
-    # Nothing clears it here, which is why the load path clears it explicitly:
     assert "self._has_video_input = False" in _llama_cpp_source()
 
 
@@ -265,11 +251,6 @@ def test_the_props_request_sends_no_auth_header_when_there_is_no_child_key(monke
     assert record.get("headers") is None
 
 
-# --------------------------------------------------------------------------
-# C. the wire shape old and new clients see
-# --------------------------------------------------------------------------
-
-
 def test_the_runtime_field_is_declared_and_defaults_off_for_every_non_gguf_model():
     """A transformers or MLX model never sets it, so the composer must read
     False and refuse video rather than offering it."""
@@ -323,11 +304,6 @@ def test_the_field_round_trips_through_json_unchanged():
     )
     assert req.video_base64 == payload
     assert req.model_dump()["video_base64"] == payload
-
-
-# --------------------------------------------------------------------------
-# D. injection, on every message shape a real session produces
-# --------------------------------------------------------------------------
 
 
 def test_an_empty_message_list_is_a_no_op():
@@ -397,11 +373,6 @@ def test_the_part_shape_is_exactly_what_llama_server_parses():
     assert part["input_video"]["data"] == "PAYLOAD"
 
 
-# --------------------------------------------------------------------------
-# E. the refusal paths, read off the handler
-# --------------------------------------------------------------------------
-
-
 def _routes_source() -> str:
     from pathlib import Path
     return (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
@@ -412,15 +383,10 @@ def _routes_source() -> str:
 @pytest.mark.parametrize(
     "needle",
     [
-        # external provider (OpenAI / Anthropic / any proxied backend)
         "raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)",
-        # local non-GGUF: served on a backend reporting video input, refused elsewhere
         "_video_clip = _local_video_clip(payload, model_info)",
-        # GGUF that cannot take video
         'if not getattr(llama_backend, "_has_video_input", False):',
-        # tool / guided-decoding passthrough
         '"Video input is not supported together with guided decoding or client-supplied tools yet."',
-        # token counting
         '"Cannot count tokens for messages containing video."',
     ],
 )

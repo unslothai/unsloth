@@ -70,12 +70,8 @@ _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 from core.training import trainer as tmod  # noqa: E402
 
-# Drop the stubs now that tmod is bound, because they outlive this module otherwise and the rest
-# of the suite then runs against them. utils.hardware.hardware._shared_policy branches on
-# `"unsloth" in sys.modules` and then reaches for unsloth.dataset_num_proc, which a spec-less
-# non-package stub cannot provide, so it returns None and every shared-policy case in
-# test_dataset_map_num_proc.py skips instead of running. A real install stubs nothing, so this is
-# a no-op there.
+# Drop the stubs once tmod is bound: _shared_policy branches on `"unsloth" in sys.modules`
+# and a stub would make test_dataset_map_num_proc.py skip.
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 

@@ -62,9 +62,6 @@ def _call_keyword_sets(module_path: str, function: str, callee: str) -> list[set
     return found
 
 
-# ── [A] the MiniMax-H3 hosted conditioner ────────────────────────────────────
-
-
 def _h3_te_module():
     from core.inference import video_minimax_h3_te as te_mod
     return te_mod
@@ -77,16 +74,13 @@ def _drive_h3_conditioner(monkeypatch, *, local_files_only):
     RECORD is the result: the artifact fetch and the config read are the only two calls that can
     leave the process, and a stub that raises after recording stops the 62 GB meta-init below.
     """
-    # The bare CI runners ship neither, and this driver reaches the real library rather than
-    # a stub, so the honest answer there is a skip.
+    # Bare CI runners lack these, and the driver needs the real library, so skip.
     transformers = pytest.importorskip("transformers")
 
     import utils.hf_xet_fallback as xet
 
     seen: dict = {}
-    # accelerate is imported at the top of the loader body, ahead of both Hub reads, and it is not
-    # a hard dependency of this backend; without the stub the whole function degrades to its
-    # best-effort None return before it asks for anything and the test would pass vacuously.
+    # Without the accelerate stub the loader returns None before any Hub read and the test is vacuous.
     monkeypatch.setitem(
         sys.modules, "accelerate", SimpleNamespace(init_empty_weights = lambda **_k: None)
     )
@@ -129,8 +123,7 @@ def test_the_h3_conditioner_is_opened_from_the_cache_on_a_load_nobody_asked_for(
     assert (repo, filename) == (te_mod.H3_TE_QUANT_REPO, te_mod.H3_TE_QUANT_FILES["int8"])
     assert kwargs["local_files_only"] is True
     assert kwargs["reuse_other_cache_root"] is True
-    # The component config is a hub read too: _base_local_dir is None on an offline load, because
-    # the scoped base predownload stands down, so `local_base or base` resolves the repo id.
+    # _base_local_dir is None offline, so the component config is a Hub read too.
     assert seen["config"]["local_files_only"] is True
 
 
@@ -142,17 +135,12 @@ def test_a_user_initiated_h3_load_still_fetches_the_conditioner(monkeypatch):
 
 
 def test_the_h3_modular_build_hands_the_flag_to_the_conditioner_loader():
-    # The flag protected load_components() on one side and load_prequantized_transformer() on the
-    # other; the conditioner load between them was the remaining multi-GB fetch on that path.
     for keywords in _call_keyword_sets(
         "core/inference/video.py",
         "_load_h3_modular_pipeline",
         "load_h3_quantized_text_encoder",
     ):
         assert "local_files_only" in keywords
-
-
-# ── [B] reopening the image checkpoint under the generation lock ─────────────
 
 
 def _drive_resolve_gguf(monkeypatch, *, cached_here, local_files_only):
@@ -209,9 +197,6 @@ def test_the_image_assembly_hands_the_flag_to_the_checkpoint_resolver():
         assert "local_files_only" in keywords
 
 
-# ── [C] the Krea 2 per-component assembler ───────────────────────────────────
-
-
 def _drive_krea(
     monkeypatch,
     tmp_path,
@@ -263,9 +248,7 @@ def _drive_krea(
             ),
         )
     load_krea2_pipeline(
-        # A hub id, not the local dir the other Krea tests use: the branch that reaches this passes
-        # ``fetch_base`` (or ``base_local_dir or base``, which is the id whenever nothing staged),
-        # and a local dir would resolve every component off disk and prove nothing.
+        # Use a hub id: a local dir would resolve every component off disk and prove nothing.
         "krea/Krea-2-Turbo",
         "bf16",
         with_transformer = with_transformer,
@@ -317,7 +300,6 @@ def test_the_krea_model_index_read_is_a_cache_lookup_offline(monkeypatch):
 
 
 def test_every_krea_call_site_hands_over_the_flag():
-    # Three: the full-pipeline branch, the transformer-only single-file branch, and _assemble_pipe.
     sites = _call_keyword_sets(
         "core/inference/diffusion.py", "load_pipeline", "load_krea2_pipeline"
     ) + _call_keyword_sets("core/inference/diffusion.py", "_assemble_pipe", "load_krea2_pipeline")
@@ -326,13 +308,10 @@ def test_every_krea_call_site_hands_over_the_flag():
         assert "local_files_only" in keywords
 
 
-# ── [D] the LTX 2.3 per-component assembler ──────────────────────────────────
-
-
 def test_the_ltx23_extras_fetch_is_a_cache_lookup_offline(monkeypatch):
     """The text projections, the video VAE and the audio VAE/vocoder: the switch's locality gate
     clears these three by name, so a miss here is a promise it cannot keep."""
-    # monkeypatched by dotted path below, which imports the module to patch it.
+    # Monkeypatched by dotted path below, which imports the module.
     pytest.importorskip("safetensors")
     import utils.hf_xet_fallback as xet
     from core.inference import video_ltx2
@@ -400,8 +379,7 @@ def _drive_ltx23(monkeypatch, *, local_files_only):
         )
     video_ltx2.load_ltx23_pipeline(
         "/models/ltx-2.3-dev-Q4_K_M.gguf",
-        # A repo id, which is what this branch always gets: the 2.3 snapshot lacks the base VAEs,
-        # so _run_load sets _base_local_dir to None for it deliberately.
+        # The 2.3 snapshot lacks the base VAEs, so _run_load sets _base_local_dir to None.
         base_repo = "Lightricks/LTX-Video-2",
         torch_dtype = "bf16",
         is_gguf = True,
@@ -436,16 +414,7 @@ def test_the_video_assembly_hands_the_flag_to_the_ltx23_assembler():
         assert "local_files_only" in keywords
 
 
-# ── the live cache root ──────────────────────────────────────────────────────────
-# Unsloth's HF cache folder is a SETTING (PUT /settings/hugging-face-cache), and changing it only
-# rewrites the DB: os.environ and huggingface_hub's import-time constant keep the startup value.
-# So after a change the live root and the import-time root differ, and an unset cache_dir resolves
-# through the stale one. That mismatch predates this PR and used to be survivable, because a miss
-# in the stale root just downloaded again. It is not survivable with local_files_only: the switch's
-# locality gate reads the LIVE root (media_locality passes cache_dir = hub_cache_dir()), so it
-# clears a model that is fully present, the resident pipeline is evicted, and the assembler then
-# raises LocalEntryNotFoundError against the other root. Pinning is what keeps the gate's verdict
-# and the load looking in the same place.
+# The HF cache setting changes only the DB, so pin cache_dir to the live root the gate checked.
 
 LIVE_ROOT = "/live-hub"
 
@@ -463,10 +432,7 @@ def test_the_krea_assembler_pins_every_component_to_the_live_cache(
     monkeypatch, tmp_path, live_cache_root
 ):
     seen = _drive_krea(monkeypatch, tmp_path, local_files_only = True)
-    # The direct loader calls. "tokenizer" and "text_encoder" are absent by design: those two tags
-    # record the kwargs handed to load_krea2_tokenizer / load_krea2_text_encoder, which are Unsloth
-    # helpers rather than hub calls, so they take no cache_dir and pin internally instead. The test
-    # below drives them for real.
+    # tokenizer and text_encoder are Unsloth helpers that pin internally, not hub calls.
     for tag in ("scheduler", "vae", "transformer", "model_index"):
         assert seen[tag].get("cache_dir") == live_cache_root, tag
 
@@ -506,7 +472,6 @@ def test_the_krea_tokenizer_and_encoder_helpers_pin_internally(monkeypatch, live
 
 def test_the_ltx23_assembler_pins_the_base_reads_to_the_live_cache(monkeypatch, live_cache_root):
     seen = _drive_ltx23(monkeypatch, local_files_only = True)
-    # The base-repo reads only: the companion loaders take a checkpoint path, not a hub id.
     assert seen["load_config"]["cache_dir"] == live_cache_root
     for name in ("scheduler", "tokenizer", "text_encoder"):
         assert seen[name]["cache_dir"] == live_cache_root, name
@@ -544,18 +509,8 @@ def test_the_hidream_external_encoder_is_pinned_to_the_live_cache(monkeypatch, l
         assert kwargs.get("local_files_only") is True, tag
 
 
-# ── [E] the transformer-only single-file build ───────────────────────────────
-# from_single_file(config = <repo id>, subfolder = "transformer") is not a local read: diffusers
-# forwards local_files_only into the load_config() that resolves that id (single_file_model.py in
-# 0.39 pops the kwarg and passes it on), and an unset flag is None, which is falsy, which permits
-# the network. The pipeline assembly after it was already guarded, so this one call was the last
-# unguarded Hub read on the GGUF/safetensors path -- and it runs AFTER eviction.
-#
-# The flag alone would not have been enough. transformer/config.json was deliberately excluded from
-# the staged base file set on both paths (the shards come from the checkpoint), so the locality gate
-# cleared picks that had never cached it and local_files_only would have turned a silent ~1 KB fetch
-# into a hard failure on essentially every API-initiated GGUF load. Admitting the config -- and only
-# the config -- is what makes the promise keepable, and lets the gate refuse up front instead.
+# from_single_file(config=<repo id>) resolves that id via load_config, which needs local_files_only;
+# it runs after eviction. transformer/config.json is staged so the locality gate can refuse up front.
 
 
 def test_the_image_base_file_set_stages_the_transformer_config_but_not_its_shards():
@@ -594,6 +549,5 @@ def _sf_kwargs_keys(module_path: str) -> list[set[str]]:
 def test_every_single_file_build_hands_over_the_flag(module_path):
     for keys in _sf_kwargs_keys(module_path):
         assert "local_files_only" in keys
-        # cache_dir is set here too, but diffusers does NOT forward it to the config lookup, so it
-        # pins only the checkpoint read. The flag is what keeps the config resolution off the Hub.
+        # diffusers does not forward cache_dir to the config lookup; local_files_only keeps it offline.
         assert "config" in keys

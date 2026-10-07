@@ -115,7 +115,6 @@ Do not assume the user's premise is correct. Do not answer the question or call 
 
 def _system_prompt_with_instructions(base: str, config: dict) -> str:
     prompt = base
-    # runs created before this field existed have no stamped date and keep their original prompts.
     current_date = str(config.get("currentDate") or "").strip()
     if current_date:
         prompt = f"{current_date}\n\n{prompt}"

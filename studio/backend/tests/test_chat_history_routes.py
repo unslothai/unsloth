@@ -374,11 +374,6 @@ def test_project_delete_cancels_research_before_workspace_cleanup(monkeypatch):
     assert cancelled == ["run-1"]
 
 
-# ---------------------------------------------------------------------------
-# /api/chat/settings
-# ---------------------------------------------------------------------------
-
-
 def test_chat_settings_payload_accepts_fast_mode_presets():
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
@@ -426,7 +421,6 @@ def test_chat_settings_payload_carries_per_model_params():
     assert dumped["inferenceParamsByModel"] == {
         "unsloth/Qwen3.5-9B-GGUF": {"temperature": 0.2, "maxTokens": 4096},
     }
-    # Nothing else is implied by the patch, so the merge cannot clobber it.
     assert "inferenceParams" not in dumped
 
 
@@ -498,8 +492,7 @@ def test_chat_settings_payload_accepts_preset_load_config():
 def test_chat_settings_payload_accepts_preset_batch_sizes():
     from pydantic import ValidationError
 
-    # extra="forbid" 400s the whole settings write, and the normalizer emits both keys on
-    # every preset (null included), so a preset that only pinned nParallel would stop saving.
+    # extra='forbid' 400s the whole write, and the normalizer emits both keys on every preset.
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
             "customPresets": [
@@ -515,7 +508,6 @@ def test_chat_settings_payload_accepts_preset_batch_sizes():
     assert dumped["customPresets"][0]["loadConfig"]["nBatch"] == 4096
     assert dumped["customPresets"][0]["loadConfig"]["nUbatch"] == 1024
 
-    # The unset shape the normalizer sends alongside an untouched knob.
     chat_history.ChatPresetLoadConfig.model_validate(
         {"nParallel": 4, "nBatch": None, "nUbatch": None}
     )
@@ -525,12 +517,7 @@ def test_chat_settings_payload_accepts_preset_batch_sizes():
 
 
 def test_chat_settings_payload_accepts_preset_server_tuning_and_vision():
-    # Same forbid trap as nBatch (#9879): normalizePresetLoadConfig always emits
-    # loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam / disableVision
-    # (null/false included). Without them on ChatPresetLoadConfig, saving a named
-    # system-prompt preset that carries any loadConfig 400s the whole customPresets
-    # write; the settings retry then drops customPresets and only the activePreset
-    # name survives -- which is why the toast fires and the entry vanishes on restart.
+    # normalizePresetLoadConfig always emits these keys; extra='forbid' would 400 the save.
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
             "customPresets": [
@@ -560,7 +547,6 @@ def test_chat_settings_payload_accepts_preset_server_tuning_and_vision():
     assert load["disableVision"] is False
     assert dumped["activePreset"] == "Test"
 
-    # A saved non-default shape must round-trip too.
     chat_history.ChatPresetLoadConfig.model_validate(
         {
             "loadMode": "mmap+mlock",
@@ -582,9 +568,7 @@ def test_chat_settings_payload_accepts_preset_server_tuning_and_vision():
 
 
 def test_chat_preset_load_config_covers_frontend_persisted_fields():
-    # Drift guard: every key normalizePresetLoadConfig / PresetLoadConfig persists
-    # must exist on ChatPresetLoadConfig, else extra="forbid" 400s the preset save
-    # the next time the UI grows a load knob (#9879, same shape as #5862).
+    # Drift guard: every persisted preset load key must exist on ChatPresetLoadConfig (forbid).
     preset_ts = os.path.join(
         _backend,
         "..",
@@ -617,7 +601,6 @@ def test_chat_preset_load_config_covers_frontend_persisted_fields():
 def test_chat_settings_payload_accepts_mlx_kv_quant():
     from pydantic import ValidationError
 
-    # extra="forbid" rejects the whole settings write on an undeclared key.
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
             "customPresets": [
@@ -635,15 +618,12 @@ def test_chat_settings_payload_accepts_mlx_kv_quant():
     chat_history.ChatPresetLoadConfig.model_validate({"mlxKvQuant": "auto"})
     for width in (4, None):
         chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": width})
-    # Only the widths MLX supports.
     with pytest.raises(ValidationError):
         chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": 7})
 
 
 def test_chat_settings_payload_accepts_nudge_tool_calls():
-    # extra="forbid" 400s PUT /api/chat/settings on unknown keys, so the
-    # frontend's persisted nudgeToolCalls needs a payload field (like
-    # autoHealToolCalls).
+    # extra='forbid' 400s unknown keys, so persisted nudgeToolCalls needs a payload field.
     payload = chat_history.ChatSettingsPayload.model_validate(
         {"autoHealToolCalls": True, "nudgeToolCalls": False}
     )
@@ -652,9 +632,7 @@ def test_chat_settings_payload_accepts_nudge_tool_calls():
 
 
 def test_chat_inference_settings_covers_frontend_persisted_fields():
-    # Drift guard: every InferenceParams field the UI persists (all but
-    # checkpoint) must exist on ChatInferenceSettings, else extra="forbid"
-    # 400s PUT /api/chat/settings on the next added field (issue #5862).
+    # Drift guard: UI-persisted InferenceParams fields must exist on ChatInferenceSettings.
     runtime_ts = os.path.join(
         _backend,
         "..",
@@ -686,11 +664,6 @@ def test_chat_inference_settings_covers_frontend_persisted_fields():
     ), f"schema drift: frontend-only {persisted - backend}, backend-only {backend - persisted}"
 
 
-# ---------------------------------------------------------------------------
-# /api/chat/import-ledger
-# ---------------------------------------------------------------------------
-
-
 def test_get_import_ledger_round_trips_through_storage(monkeypatch):
     seen: list[str] = []
 
@@ -712,7 +685,6 @@ def test_record_import_ledger_returns_accepted_and_inserted(monkeypatch):
 
     def fake_upsert(thread_ids):
         captured.append(list(thread_ids))
-        # Pretend two of the three were already in the ledger.
         return (len(thread_ids), max(0, len(thread_ids) - 2))
 
     monkeypatch.setattr(chat_history, "upsert_chat_legacy_imports", fake_upsert)
@@ -734,11 +706,6 @@ def test_record_import_ledger_rejects_oversize_payload():
         chat_history.ChatImportLedgerRecordRequest(
             threadIds = [f"id-{i}" for i in range(10_001)],
         )
-
-
-# ---------------------------------------------------------------------------
-# /api/chat/threads/{id}/fork
-# ---------------------------------------------------------------------------
 
 
 def test_fork_thread_404_when_source_missing(monkeypatch):
@@ -880,7 +847,6 @@ def test_fork_thread_allows_a_fork_of_another_generating_chat(monkeypatch):
                 ),
                 current_subject = "test-user",
             )
-    # Past the generation gate, refused later for the missing branch message.
     assert exc.value.status_code == 404
 
 
@@ -1072,8 +1038,6 @@ def test_a_clear_does_not_reap_an_image_registered_while_it_was_running(tmp_path
     late: dict[str, str] = {}
 
     async def remove_sandboxes(_thread_ids, _delete_files):
-        # Stands in for the concurrent client: another tab registers an image for a chat
-        # created after the transaction, while this slow cleanup is still running.
         entries = search_images.register_images(
             [
                 {
@@ -1155,7 +1119,6 @@ def test_replayed_clear_keeps_the_thumbnails_of_a_chat_it_did_not_delete(tmp_pat
     assert clear()["deletedThreadIds"] == ["before-clear"]
     assert reaped == ["reaped"], "the first clear has to reap: the thumbnails say what was searched"
 
-    # The image-bearing chat the delayed retry must not touch.
     studio_db.upsert_chat_thread(_clear_thread_row("after-clear"))
 
     replay = clear()
@@ -1204,8 +1167,7 @@ def test_the_replay_bit_comes_from_the_clear_transaction(monkeypatch, tmp_path):
 
     studio_db.upsert_chat_thread(_clear_thread_row("before-clear"))
 
-    # Released together, so both are past the point the old code decided `replayed` at
-    # before either transaction commits -- which is the whole race.
+    # Both threads must pass the point that decides `replayed` before either commits.
     start = threading.Barrier(2)
     failures: list[BaseException] = []
 
@@ -1289,8 +1251,6 @@ def test_a_chat_created_in_the_gap_after_the_clear_keeps_its_images(monkeypatch,
     monkeypatch.setattr(chat_history, "_cancel_research_runs", lambda _request, _ids: None)
     monkeypatch.setattr(chat_history, "_remove_thread_rag_data", lambda _ids, cutoff = None: None)
 
-    # The other tab's image, registered in the gap. Straight into the registry: this is about
-    # WHEN the id becomes visible to the snapshot, not about how it got there.
     late_image_id = "beefbeefbeef"
     hops = {"n": 0}
     # The route imports it inside the handler, so the patch has to land on the module it
@@ -1411,7 +1371,6 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
         clear()
     assert reaps == [{doomed_image_id}], "the first attempt got as far as its own reap"
 
-    # A chat started after the crash, whose images the replay must NOT take.
     studio_db.upsert_chat_thread(_clear_thread_row("after-crash"))
     later_image_id = "ddddeeeeffff"
     search_images._registry[later_image_id] = {
@@ -1429,7 +1388,6 @@ def test_a_replay_finishes_a_reap_the_original_clear_died_before_running(monkeyp
     }, "bounded to the original clear's own snapshot, so a chat created since keeps its images"
     assert later_image_id not in finished
 
-    # And a further retry has nothing left to do.
     clear()
     assert len(reaps) == 2, "the finished reap must be recorded, not repeated on every retry"
 
@@ -1586,7 +1544,6 @@ def test_fork_route_numbers_the_title_and_reports_the_boundary(tmp_path, monkeyp
         current_subject = "test-user",
     )
     assert forked.thread.title == "Research notes (3)"
-    # The anchor is this fork's own last inherited message, so the divider lands under it.
     assert forked.thread.forkBoundaryMessageId == forked.messages[-1].id
     assert forked.thread.forkBoundaryMessageId not in {"m1", "m2"}
 
@@ -1615,7 +1572,6 @@ def test_fork_title_comes_from_the_row_not_the_route_s_earlier_read(tmp_path, mo
             }
         ],
     )
-    # What the route saw before the lock: the name as it was, now stale.
     monkeypatch.setattr(
         chat_history,
         "get_chat_thread",

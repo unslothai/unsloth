@@ -120,7 +120,7 @@ def test_mode_leaves_fused_small_masked_and_causal_calls_alone(monkeypatch):
     mask = torch.ones(256, 256, dtype = torch.bool)
     with _math():
         ref = F.scaled_dot_product_attention(q, q, q)
-        # fused kernel available (the CPU answer, and NVIDIA's for head dim 512): the stock call, bit-identical
+        # fused kernel available (CPU, and NVIDIA at head dim 512): the stock call, bit-identical
         with C.chunked_attention_mode(big) as mode:
             assert torch.equal(F.scaled_dot_product_attention(q, q, q), ref)
         assert mode.chunked == 0
@@ -131,9 +131,7 @@ def test_mode_leaves_fused_small_masked_and_causal_calls_alone(monkeypatch):
             F.scaled_dot_product_attention(q, q, q, is_causal = True)
             F.scaled_dot_product_attention(q, q, q, dropout_p = 0.1)
         with C.chunked_attention_mode(256 * 256 * 4) as small:
-            assert torch.equal(
-                F.scaled_dot_product_attention(q, q, q), ref
-            )  # at the budget: unchunked
+            assert torch.equal(F.scaled_dot_product_attention(q, q, q), ref)
     assert mode.chunked == 0 and small.chunked == 0 and calls == []
 
 

@@ -167,7 +167,7 @@ def test_progress_stream_stays_open_while_training(monkeypatch):
         task = asyncio.create_task(pump())
         await asyncio.sleep(1.5)
         assert "complete" not in names, names
-        b._handle_event(dict(_DONE))  # run ends; worker still lingers
+        b._handle_event(dict(_DONE))
         for _ in range(100):
             if "complete" in names:
                 break
@@ -197,7 +197,6 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
     assert st.phase == "completed"
     assert st.message.startswith("Training completed!")
 
-    # ... and it survives the watchdog reaping the wedged worker.
     b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_1")
     st = asyncio.run(rt.get_training_status(current_subject = "t"))
     assert st.phase == "completed"
@@ -218,7 +217,7 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
     def stop_after_complete(save = True, expected_job_id = None):
         if not fired:
             fired.append(True)
-            b._handle_event(dict(_DONE))  # the pump wins the gap
+            b._handle_event(dict(_DONE))
         return real_stop(save = save, expected_job_id = expected_job_id)
 
     b.stop_training = stop_after_complete

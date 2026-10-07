@@ -16,7 +16,6 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# Stub the optional deps routes/__init__ pulls in, so this module imports standalone.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -171,8 +170,6 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
             },
         )
         monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
-        # Unrelated to the stamped settings, and it re-derives from the model card, which
-        # would put a Hub request in the middle of a status unit test.
         monkeypatch.setattr(
             inference_route, "_resolve_loaded_trust_remote_code", lambda *_a, **_k: False
         )

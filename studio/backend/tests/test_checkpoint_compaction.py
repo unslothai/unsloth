@@ -122,7 +122,6 @@ def test_the_standing_instruction_survives_the_reset_in_the_system_turn():
 
     assert "STATUS::ZQXVARA123-ALPHA" in fitted[0]["content"]
     assert "carried_forward" in fitted[0]["content"]
-    # And it is labelled as a record of the conversation rather than as new policy.
     assert "not new system policy" in fitted[0]["content"]
 
 
@@ -165,7 +164,6 @@ def test_a_stale_boundary_never_compacts_a_branch_that_now_fits():
     fitted, truncation = fit_checkpoint_context(messages, can_reset = True, **kwargs)
 
     assert count(messages) < 32_768 - 512, "the branch must comfortably fit for this test"
-    # Byte for byte what the rolling arm does, which is nothing at all.
     assert (rolling_truncation, len(rolling)) == (None, len(messages))
     assert truncation is None
     assert fitted is messages
@@ -322,8 +320,6 @@ def test_a_multiline_instruction_survives_being_read_back():
     ]
     assert checkpoint._block_items(checkpoint.render_checkpoint([nested])) == [nested]
 
-    # A flat block, no continuation indent, still reads line by line. It carries Unsloth's
-    # own header, which is what marks a block as ours; a foreign one is not read at all.
     flat = (
         checkpoint._OPEN
         + "\n"
@@ -349,10 +345,7 @@ def test_the_merged_block_is_re_capped_not_just_concatenated():
     )
 
     assert len(recapped) == checkpoint.MAX_ITEMS
-    # Newest kept, oldest dropped, still rendered oldest first so the header's
-    # supersession rule stays true.
     assert recapped == items[-checkpoint.MAX_ITEMS :]
-    # A repeat carried once and evicted again is one item, not two.
     assert checkpoint._recap(["same thing", "same thing"], max_tokens = 1024, max_items = 8) == [
         "same thing"
     ]
@@ -481,13 +474,8 @@ def test_the_task_statement_of_a_real_coding_session_survives_the_reset():
 
     assert "Create a Flappy Bird game in HTML" in items
     assert "Add music to the game" in items
-    # Oldest first, so the model reads the task before the amendment to it.
     assert items.index("Create a Flappy Bird game in HTML") < items.index("Add music to the game")
-    # "Continue work" rides along, and is left alone deliberately. `_CONTINUATIONS` holds
-    # the bare "continue"; the two-word forms are not in it and `is_thin_query` does not
-    # call them thin either. Teaching either helper to recognise them means guessing at
-    # phrasing, and the same guess would have to reject "fix it" and "keep the tests
-    # green" to be worth anything. One wasted slot out of eight is the cheaper error.
+    # 'Continue work' is deliberately not treated as thin; one wasted slot is cheaper.
 
 
 def test_at_most_max_items_instructions_are_carried():
@@ -682,7 +670,6 @@ def test_a_real_client_tool_loop_still_takes_the_passthrough():
     assert inference_route._only_studio_tool_history(payload) is False
     assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is True
 
-    # And a client catalog alongside Unsloth's own history is still the client's request.
     with_catalog = ChatCompletionRequest(
         model = "local",
         messages = _memory_tool_branch(),
@@ -843,7 +830,6 @@ def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeyp
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: True)
     messages = _thread() + [{"role": "user", "content": "continue"}]
 
-    # An epoch already in force: replayed, and X is rebuilt.
     _, replayed = llama_cpp._fit_context(
         messages,
         context_length = 1200,
@@ -856,7 +842,6 @@ def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeyp
     assert replayed["carried_forward_chars"] > 0
     assert replayed["checkpoint_started"] is False
 
-    # No epoch yet: none is started, and rolling still serves the request.
     _, fresh = llama_cpp._fit_context(
         messages,
         context_length = 1200,
@@ -901,13 +886,11 @@ def test_only_a_checkpoint_fitted_request_is_told_the_conversation_was_reset():
     tools = [{"function": {"name": "search_conversation"}}]
     assert routes_mod._checkpoint_needs_search() is True
 
-    # A non-fitting call site makes no claim of a reset.
     rolling = routes_mod._apply_compaction_nudge("base.", tools)
     assert "carried_forward" not in rolling
     assert routes_mod._CHECKPOINT_SESSION_NUDGE not in rolling
     assert routes_mod._COMPACTED_SESSION_NUDGE in rolling
 
-    # An exact-token GGUF or MLX call site really does fit through `_fit_context`.
     reset = routes_mod._apply_compaction_nudge("base.", tools, checkpoint_fitted = True)
     assert routes_mod._CHECKPOINT_SESSION_NUDGE in reset
 
@@ -958,8 +941,6 @@ def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop()
     assert body.count("tools_withheld = tools_withheld") == 2
 
     route = inspect.getsource(routes_mod.produce_openai_chat_completions)
-    # `_tool_loop_unusable` is `_client_disabled_tool_calls` plus the other two shapes that
-    # make the loop unusable once opened.
     assert "tools_withheld = _tool_loop_unusable" in route
     assert "_client_disabled_tool_calls" in route.split("_tool_loop_unusable = (", 1)[1]
 
@@ -978,7 +959,6 @@ def test_a_tool_loop_request_whose_catalogue_lacks_the_memory_tool_never_resets(
     assert llama_cpp._memory_tool_withheld("thread-1", other) is True
     assert llama_cpp._memory_tool_withheld("thread-1", search + other) is False
     assert llama_cpp._memory_tool_withheld("thread-1", []) is True
-    # No thread is the API-only case, which cannot reset for other reasons.
     assert llama_cpp._memory_tool_withheld(None, other) is False
 
 
@@ -1089,14 +1069,11 @@ def test_identical_retry_siblings_do_not_let_one_of_them_claim_the_branch(monkey
 
     branch = [{"role": "user", "content": "q"}, {"role": "assistant", "content": reply}]
 
-    # Only the abandoned sibling reset, so byte-identical rows of mixed policy make
-    # either policy refit.
     _install(_rows(True))
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
     assert llama_cpp._sticky_compaction_boundary("t1", branch) == 0
     assert llama_cpp._sticky_compaction_boundary("t1", branch, context_policy = "rolling") == 0
 
-    # Neither reset: unchanged, and still no loop.
     _install(_rows(False))
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
@@ -1147,7 +1124,6 @@ def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():
     ), "the reset must have dropped turns after the pinned one for this test to mean anything"
     boundary = _branch_boundary(fitted, branch)
 
-    # The next turn of the SAME epoch: one reply, one follow-up, same boundary replayed.
     later = branch + [
         {"role": "assistant", "content": "Carrying on."},
         {"role": "user", "content": "and now the second half"},
@@ -1182,7 +1158,6 @@ def test_the_final_answer_pass_never_starts_an_epoch_behind_the_tools_it_does_no
     assert (
         final_pass.count("tools_withheld = True") == 2
     ), "both final-pass fits (preflight and respawn refit) must declare the withheld loop"
-    # ...and the gate itself still refuses on that answer.
     assert llama_cpp._can_reset_epoch("thread-1", True, tools_withheld = True) is False
 
 
@@ -1207,7 +1182,6 @@ def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
 
     assert conversation_archive.message_text(stored) == "Section 3 noted."
     assert conversation_archive.content_on_branch(stored, branch) is True
-    # A reply that really is off-branch is still rejected.
     assert (
         conversation_archive.content_on_branch(
             [
@@ -1227,8 +1201,6 @@ def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_aw
     instruction gone entirely, one turn after the user was told it was searchable."""
     from core.inference import llama_cpp
 
-    # This is about what an epoch KEEPS, not archive health, and the reachability probe
-    # really starts the embedder, which no test host here has.
     monkeypatch.setattr("core.rag.conversation_archive.reachable", lambda: True)
 
     messages = _thread() + [{"role": "user", "content": "continue"}]
@@ -1286,7 +1258,6 @@ def test_the_loop_is_only_reopened_for_a_request_that_can_actually_compact():
     route = inspect.getsource(routes_mod.produce_openai_chat_completions)
     gate = route.split("if (\n            not use_tools", 1)[1].split("use_tools = True", 1)[0]
     assert "_checkpoint_recall_may_enable_tools(payload)" in gate
-    # And the request must be able to USE the loop once it opens, not merely open it.
     assert "_tool_loop_unusable" in gate
 
     helper = inspect.getsource(routes_mod._checkpoint_recall_may_enable_tools)
@@ -1313,14 +1284,9 @@ def test_a_request_that_could_never_call_the_tool_keeps_the_rolling_window():
     assert "_client_disabled_tool_calls" in predicate
     assert "payload.max_tool_calls_per_message == 0" in predicate
     assert "_wants_multiple_choices(payload)" in predicate
-    # And a confirmation gate with nowhere to ask. The first overflowing turn would open
-    # an epoch, and the next identical request would enter the checkpoint repair, enable
-    # the tool, and be refused 400 by the stream guard, permanently: the epoch is replayed
-    # from the boundary, so the thread never recovers on its own.
+    # Without the stream gate the epoch replays and every later request 400s.
     assert "_confirm_gate_needs_stream(payload)" in predicate
     assert "not payload.stream" in predicate
-    # And the epoch gate is what it feeds, so the reset is refused rather than the
-    # catalogue narrowed: it must never reach `_select_request_tools`.
     assert "tools_withheld = _tool_loop_unusable," in route
     assert "tools_on = _tool_loop_unusable" not in route
 
@@ -1477,7 +1443,6 @@ def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_noth
     assert checkpoint._NOT_SEARCHABLE in fitted[0]["content"]
     assert checkpoint._SEARCHABLE not in fitted[0]["content"]
 
-    # A healthy archive is unchanged: the turns really are retrievable, so say so.
     monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
     healthy, started = llama_cpp._fit_context(
         messages,
@@ -1603,7 +1568,6 @@ def test_parent_linked_identical_retry_siblings_keep_the_smaller_boundary(monkey
     rows = [
         {"id": "user-1", "parentId": None, "role": "user", "content": "Do the work."},
         _reply("assistant-live", 6),
-        # Newer in storage, but an abandoned Retry sibling indistinguishable on the wire.
         _reply("assistant-abandoned", 18),
     ]
     branch = [
@@ -1616,11 +1580,9 @@ def test_parent_linked_identical_retry_siblings_keep_the_smaller_boundary(monkey
     assert llama_cpp._sticky_compaction_state("t1", branch) == (6, True)
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
-    # Stopping at the shared user parent selects neither Retry reply.
     assert llama_cpp._sticky_compaction_state("t1", branch[:1]) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch[:1]) is False
 
-    # Text cannot identify the live sibling, so one non-checkpoint twin makes the claim unsafe.
     rows[2]["metadata"]["custom"]["contextTruncation"].pop("checkpoint")
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
@@ -1674,7 +1636,6 @@ def test_authoritative_ancestry_stops_before_an_unmatched_stored_descendant(monk
     _stub_studio_db(monkeypatch, rows)
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
-    # Archive callers retain their historical fallback; only authoritative reads trim.
     assert conversation_archive._active_chain(rows, branch) == rows
     assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
@@ -1791,7 +1752,6 @@ def test_a_cancelled_epoch_boundary_is_found_through_its_stored_descendant(monke
         },
         _row(id = "user-3", parentId = "assistant-2", content = "Continue after stopping."),
     ]
-    # The adapter omits an unfinished local card, but user-3 durably descends from its row.
     assert conversation_archive._as_wire([rows[3]]) == []
     branch = [
         {"role": "user", "content": "First question."},
@@ -2075,8 +2035,6 @@ def test_a_boundary_is_not_replayed_after_the_context_policy_changes(monkeypatch
         llama_cpp._sticky_compaction_boundary("t1") == 0
     ), "a reset-sized boundary was replayed under rolling, which rebuilds no block"
 
-    # A boundary rolling itself recorded is still restored: this is about provenance, not
-    # about distrusting every stored number.
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": True,
         "boundary_messages": 6,
@@ -2137,8 +2095,6 @@ def test_a_request_that_cannot_reset_still_replays_its_rolling_boundary(monkeypa
         llama_cpp._sticky_compaction_boundary("t1", can_reset = True) == 0
     ), "a fit that may reset must start a new epoch instead of reusing a rolling boundary"
 
-    # A reset-sized boundary is still refused under rolling whatever the request may do,
-    # because nothing rebuilds the block that made the depth affordable.
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": True,
         "boundary_messages": 18,
@@ -2189,7 +2145,6 @@ def test_a_rolling_boundary_never_reaches_the_checkpoint_replay(monkeypatch):
         bool(rolling_origin.get("checkpoint_started", True)) is True
     ), "a rolling boundary replayed as an epoch suppresses the inline recall"
 
-    # A real epoch still replays, block and all, and still reports no NEW reset.
     checkpoint_origin = _fit(True)
     assert checkpoint_origin.get("checkpoint") is True
     assert checkpoint_origin.get("checkpoint_started") is False
@@ -2218,7 +2173,6 @@ def test_the_boundary_reader_reports_which_fitter_recorded_it(monkeypatch):
     assert llama_cpp._sticky_compaction_state("t1", can_reset = False) == (18, True)
     assert llama_cpp._sticky_compaction_state("t1", can_reset = True) == (18, True)
 
-    # No thread, no row, no boundary: never a claim that a checkpoint recorded one.
     assert llama_cpp._sticky_compaction_state(None) == (0, False)
 
 
@@ -2259,20 +2213,14 @@ def test_changing_the_extra_trim_discards_the_old_boundary(monkeypatch):
         llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 0
     ), "no extra trim has to hand back what the 25% cut took"
 
-    # And the same the other way. Phase one stops as soon as the replayed cut fits, so a
-    # DEEPER setting is just as inert if the old boundary is allowed to stand: measured on
-    # a 121-message transcript at context_length 1600, a stored boundary of 86 gave
-    # `dropped 86` under 0.05 and under 0.25 alike.
+    # A deeper ratio is equally inert if the old boundary stands, so a ratio change refuses it.
     assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.5) == 0
 
-    # The ratio it was cut under still replays: this refuses a CHANGE, not every row.
     assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.25) == 12
 
-    # Rows saved before the ratio was recorded replay exactly as they did.
     del stored[1]["metadata"]["custom"]["contextTruncation"]["boundary_headroom_ratio"]
     assert llama_cpp._sticky_compaction_boundary("t1", compaction_headroom_ratio = 0.0) == 12
 
-    # A checkpoint reset ignores headroom, so its depth is never refused over the ratio.
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": True,
         "boundary_messages": 12,
@@ -2291,7 +2239,6 @@ def test_the_recorded_boundary_carries_the_ratio_that_cut_it():
 
     assert llama_cpp._boundary_metadata(fitted, before)["boundary_headroom_ratio"] == 0.25
     assert llama_cpp._boundary_metadata(fitted, before, 0.05)["boundary_headroom_ratio"] == 0.05
-    # Out-of-range values are clamped by the same gate the fit uses, never stored raw.
     assert llama_cpp._boundary_metadata(fitted, before, 5.0)["boundary_headroom_ratio"] == 0.9
 
 
@@ -2318,7 +2265,6 @@ def test_a_rescued_boundary_is_recorded_but_never_replayed(monkeypatch):
 
     assert llama_cpp._sticky_compaction_boundary("t1") == 6
 
-    # The same depth, from a fit that missed the reply reserve: not replayed.
     stored[1]["metadata"]["custom"]["contextTruncation"] = {
         "fits": False,
         "dropped_messages": 6,
@@ -2360,7 +2306,6 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     _thread({"fits": True, "dropped_messages": 12, "checkpoint": True})
     assert inference_routes._thread_has_checkpoint("t1") is True
 
-    # A refused fit records diagnostics, not an epoch that can be searched.
     _thread({"fits": False, "dropped_messages": 0, "checkpoint": True})
     assert inference_routes._thread_has_checkpoint("t1") is False
 
@@ -2369,9 +2314,7 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
 
     _thread({"fits": True, "dropped_messages": 12, "checkpoint": True})
 
-    # ...but only for the branch the request is on. A Retry that forked BEFORE the
-    # epoch-recording turn leaves it on an abandoned sibling, and a thread-wide scan would
-    # report a checkpoint for a branch that never reset.
+    # Only the request's branch counts; a thread-wide scan misreports a Retry sibling.
     on_branch = [
         {"role": "user", "content": "q"},
         {"role": "assistant", "content": "the epoch reply, written out in full"},
@@ -2383,25 +2326,19 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     assert inference_routes._thread_has_checkpoint("t1", on_branch) is True
     assert inference_routes._thread_has_checkpoint("t1", off_branch) is False
 
-    # A branch with no reply of its own is not an unscoped branch. Editing the FIRST user
-    # turn re-sends [system, user], whose assistant-only projection is empty and read as
-    # "no branch given", putting the scan back thread-wide while
-    # `_sticky_compaction_boundary` returns 0: no boundary replayed, yet the loop reopened.
+    # An empty assistant-only projection must not fall back to a thread-wide scan.
     user_only = [
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "a brand new question on a fresh branch"},
     ]
     assert inference_routes._thread_has_checkpoint("t1", user_only) is False
 
-    # And the branch check is textual, so a SHORT abandoned reply rides in on a longer live
-    # one. Without the sticky boundary's same preference for exact matches, a checkpoint
-    # recorded on a discarded sibling reopens the loop on the branch that never reset.
+    # The branch check is textual, so prefer exact matches like the sticky boundary.
     import sys as _sys
 
     siblings = types.SimpleNamespace(
         list_chat_messages = lambda thread_id: [
             {"role": "user", "content": "q"},
-            # The abandoned sibling, which is the one that reset.
             {
                 "role": "assistant",
                 "content": "Done",
@@ -2415,7 +2352,6 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
                     }
                 },
             },
-            # The live reply, which never did.
             {
                 "role": "assistant",
                 "content": "Not done yet, still working",
@@ -2435,11 +2371,9 @@ def test_the_tool_loop_reopens_only_where_an_epoch_actually_happened(monkeypatch
     ]
     assert inference_routes._thread_has_checkpoint("t1", swallowed) is False
 
-    # The same thread shape after a ROLLING compaction: archived, never reset.
     _thread({"fits": True, "dropped_messages": 12})
     assert inference_routes._thread_has_checkpoint("t1") is False
 
-    # And a thread that never compacted at all.
     _thread(None)
     assert inference_routes._thread_has_checkpoint("t1") is False
     assert inference_routes._thread_has_checkpoint(None) is False
@@ -2518,8 +2452,6 @@ def test_the_reachability_probe_encodes_rather_than_only_tokenizing(monkeypatch)
     # Not the empty string: an empty input is documented to upset the llama embed server.
     assert calls == [["x"]]
 
-    # And it is asked again every time: the caller memoises per fit, this does not memoise
-    # across them, or a yes outlives the moment it described.
     assert conversation_archive.reachable() is True
     assert len(calls) == 2
 
@@ -2584,7 +2516,6 @@ def test_the_archive_probe_is_not_paid_by_a_conversation_that_fits():
     assert truncation is None or truncation.get("fits")
     assert asked["n"] == 0, asked
 
-    # And it IS asked once the prompt overflows and a reset is on the table.
     long_thread = [{"role": "system", "content": "You are helpful."}] + [
         {"role": "user" if index % 2 == 0 else "assistant", "content": f"turn {index}"}
         for index in range(40)
@@ -2645,7 +2576,6 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
     ]
     assert any("Section 7" in str(message["content"]) for message in evicted)
 
-    # Exactly what the route persists on the assistant turn it just produced.
     recorded = llama_cpp._branch_boundary(fitted, branch)
     anchor = llama_cpp._branch_boundary_anchor(fitted, branch)
     reply = {"role": "assistant", "content": "Carrying on."}
@@ -2670,7 +2600,6 @@ def test_a_non_prefix_eviction_survives_being_persisted_and_replayed(monkeypatch
         ],
     )
 
-    # The next request of the same epoch, read back the way production reads it.
     later = branch + [reply, {"role": "user", "content": "and now the second half"}]
     replayed_boundary = llama_cpp._sticky_compaction_boundary("t1", later)
     assert (
@@ -2741,7 +2670,6 @@ def test_a_caller_owned_carried_forward_tag_is_left_alone():
     assert (
         "Escalate refunds over 500 dollars." in system
     ), "non-bullet lines of the caller's section were deleted"
-    # And Unsloth's own block is still appended, and still read back on the next reset.
     assert system.count("<carried_forward>") == 2
     assert "STATUS::ZQXVARA123-ALPHA" in system
     assert checkpoint._block_items(
@@ -2843,7 +2771,6 @@ def test_a_healthy_probe_is_not_trusted_on_the_next_request(monkeypatch):
 
     assert conversation_archive.reachable() is True
 
-    # The embedder dies a moment later, well inside any plausible cache window.
     def _broken_encode(*_args, **_kwargs):
         raise RuntimeError("CUDA error: out of memory")
 
@@ -2893,11 +2820,9 @@ def test_a_reset_that_no_longer_holds_stops_reopening_the_tool_loop(monkeypatch)
         {"role": "assistant", "content": "a later reply that fit"},
     ]
 
-    # Stored oldest first, as `list_chat_messages` returns them: the epoch is over.
     _install([_row("the compacted reply", True), _row("a later reply that fit", False)])
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
-    # And a thread still inside its epoch keeps saying so, since every fit records it.
     _install([_row("the compacted reply", True), _row("a later reply that fit", True)])
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
@@ -2921,7 +2846,6 @@ def test_a_restated_instruction_keeps_its_newest_position():
 
     items = carried_forward_items(messages, max_tokens = 4096)
 
-    # One copy of the repeated rule, and it is the LAST word.
     assert items.count("Use metric units") == 1
     assert items == ["Use imperial units", "Use metric units"]
 
@@ -2962,7 +2886,6 @@ def test_a_tight_cap_keeps_the_correction_not_the_abandoned_task():
     )
     assert only_one == ["Actually build Tetris instead"]
 
-    # With room for two, the opening task is still reserved, rendered oldest first.
     both = _select_items(
         messages,
         max_tokens = 4096,
@@ -3001,8 +2924,7 @@ def test_an_oversized_newest_turn_does_not_hand_the_budget_to_the_opening_task()
         messages.append({"role": "user", "content": text})
         messages.append({"role": "assistant", "content": "ok"})
 
-    # 153 = int(prompt_budget(2048, 1024) * checkpoint.MAX_FRACTION), the cap a 2048
-    # context actually hands this selection. Room for one of the two, not both.
+    # 153 = int(prompt_budget(2048, 1024) * checkpoint.MAX_FRACTION).
     items = carried_forward_items(messages, max_tokens = 153)
 
     assert items == [correction], "the newest usable direction must win the tight cap"
@@ -3101,7 +3023,6 @@ def test_a_correction_is_not_buried_by_the_increments_that_follow_it():
 
     assert "Actually build Tetris instead" in items, "the correction must survive"
     assert items.index("Build Flappy Bird") < items.index("Actually build Tetris instead")
-    # Paid for by the OLDEST turn, so the newest increments are all still there.
     assert items[-1] == "Add feature 7"
 
 
@@ -3135,9 +3056,7 @@ def test_the_opening_pair_is_taken_whole_or_not_at_all():
     two = carried_forward_items(messages, max_tokens = 4096, max_items = 2)
     three = carried_forward_items(messages, max_tokens = 4096, max_items = 3)
 
-    # Two slots: the plain newest-first walk decides. Nothing wrong, only missing.
     assert two == ["Add feature 1", "Add feature 2"]
-    # Three: the opening request and the correction to it, plus the newest turn.
     assert three == ["Build Flappy Bird", "Actually build Tetris instead", "Add feature 2"]
 
 
@@ -3157,7 +3076,6 @@ def test_a_token_budget_too_small_for_the_pair_keeps_the_correction():
     )
     messages = _user_turns(opening, correction, "add music")
 
-    # 45 tokens: the newest turn (10) plus either opening turn (34 or 30), never both.
     items = carried_forward_items(messages, max_tokens = 45)
 
     assert items == [correction, "add music"]
@@ -3327,7 +3245,6 @@ def test_the_carried_opening_pair_survives_the_next_compaction():
     assert truncation["fits"] is True
     assert correction in items, "the correction must not be dropped while the opening stays"
     assert items.index(opening) < items.index(correction)
-    # Paid by the OLDEST increment, as the fresh walk pays, so the newest direction stays.
     assert items[-1] == increments[-1]
     assert increments[0] not in items
 
@@ -3349,8 +3266,6 @@ def test_the_merged_recap_abandons_the_pair_the_same_way_the_fresh_walk_does():
 
     assert merged == [newest], "the abandoned opening must not outlive the correction"
     assert merged == carried_forward_items(_user_turns(opening, correction, newest), max_tokens = 40)
-    # Never at the cost of the newest direction: the pair is reserved BEHIND the newest
-    # affordable item, so the newest is taken before the pair is priced.
     assert newest in merged
 
 
@@ -3419,8 +3334,6 @@ def test_a_one_bullet_block_is_not_paired_with_a_turn_it_never_preceded():
     items = checkpoint._block_items(fitted[0]["content"])
 
     assert truncation["fits"] is True
-    # 358 tokens: the newest turn (94) and the carried bullet (75), never the 279-token
-    # spec. Pairing the bullet with the spec would drop it too.
     assert items == [carried, newest]
 
 
@@ -3470,7 +3383,6 @@ def test_a_correction_restated_out_of_order_is_not_dropped_by_the_merge():
     assert truncation["fits"] is True
     assert items == ["Dark theme", correction, "Add music!", "Add a timer"]
     assert opening not in items, "the abandoned request must not outlive its correction"
-    # Paid for by an older increment, never by the newest direction the user gave.
     assert items[-1] == "Add a timer"
 
 
@@ -3491,10 +3403,7 @@ def test_the_merge_never_states_the_abandoned_task_whichever_bullet_corrects_it(
 
     assert merged == ["Dark theme", correction, "Add music!", fresh[-1]]
     assert opening not in merged, "the abandoned request must not outlive its correction"
-    # Never at the cost of the newest direction, and never empty.
     assert merged[-1] == fresh[-1]
-    # The plain walk is no safe fallback: it states the abandoned task itself, so "stop
-    # reserving on the merged path" would not have fixed this.
     plain = checkpoint._recap(prior + fresh, max_tokens = 60, max_items = 8)
     assert opening in plain and correction not in plain
 
@@ -3600,8 +3509,6 @@ def test_storage_order_does_not_prove_ancestry_between_indistinguishable_rows(mo
     rows = [
         {"id": "u1", "role": "user", "content": "First question."},
         {"id": "sib", "role": "assistant", "content": twin, "metadata": _checkpoint_metadata(55)},
-        # The abandoned branch's own continuation separates the twins in storage, so an
-        # adjacent-only comparison misses them.
         {"id": "u2", "role": "user", "content": "An abandoned follow-up."},
         {"id": "live", "role": "assistant", "content": twin, "metadata": _checkpoint_metadata(7)},
     ]
@@ -3613,7 +3520,6 @@ def test_storage_order_does_not_prove_ancestry_between_indistinguishable_rows(mo
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
 
     assert llama_cpp._archive_branch_chain(rows, branch) is None
-    # The twin vote, not the row storage happened to put first.
     assert llama_cpp._sticky_compaction_state("t1", branch) == (7, True)
     assert inference_routes._thread_has_checkpoint("t1", branch) is True
 
@@ -3736,7 +3642,6 @@ def test_a_second_explicit_root_is_not_wired_onto_the_branch_before_it(monkeypat
             content = "An abandoned reply.",
             metadata = _checkpoint_metadata(44),
         ),
-        # The edit: a root of its own, not a child of the branch it replaced.
         {"id": "u2", "parentId": None, "role": "user", "content": "The second wording."},
         _pending_turn(id = "a2", parentId = "u2", content = "The live reply."),
     ]
@@ -3749,7 +3654,6 @@ def test_a_second_explicit_root_is_not_wired_onto_the_branch_before_it(monkeypat
 
     chain = llama_cpp._archive_branch_chain(rows, branch)
     assert chain is not None and [row["id"] for row in chain] == ["u2", "a2"]
-    # The live turn recorded nothing, so the epoch is over; 44 is the abandoned root's.
     assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
     assert inference_routes._thread_has_checkpoint("t1", branch) is False
 
@@ -3784,7 +3688,6 @@ def test_a_completed_reasoning_only_reply_is_replayed_so_it_must_match(monkeypat
 
     assert llama_cpp._archive_branch_chain(rows, branch) is None
     assert llama_cpp._sticky_compaction_state("t1", branch) == (0, False)
-    # A reply that STOPPED on reasoning carries nothing and is dropped, so it stays exempt.
     rows[2]["metadata"] = {"incomplete": {"reason": "cancelled"}, **_checkpoint_metadata(30)}
     assert llama_cpp._sticky_compaction_state("t1", branch) == (30, True)
 

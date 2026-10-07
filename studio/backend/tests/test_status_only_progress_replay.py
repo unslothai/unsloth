@@ -99,7 +99,6 @@ def test_the_same_step_with_a_new_measurement_is_still_published():
 
 
 def test_a_warning_mid_run_does_not_replot_either():
-    # _record_warning notifies the same callbacks with the metrics untouched.
     on_progress, published = _emitter()
     progress = _Progress(step = 12, total_steps = 100, loss = 1.5, grad_norm = 0.9)
     on_progress(progress)

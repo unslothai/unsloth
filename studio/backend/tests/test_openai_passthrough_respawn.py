@@ -56,7 +56,6 @@ class _Backend:
         self.mtp_calls = 0
         self._respawn_ok = respawn_ok
         self._mtp_handled = mtp_handled
-        # Models a relaunch that reports success but is not actually serving.
         self._stays_dead = stays_dead
 
     def count_chat_tokens(self, *_args, **_kwargs):
@@ -180,9 +179,6 @@ async def _run_stream(backend, lease = None):
     return "".join(chunks)
 
 
-# ── Helper ────────────────────────────────────────────────────
-
-
 def test_the_retry_url_is_shared_with_the_anthropic_surface():
     """Both passthroughs post to the same upstream route, so one helper serves both.
     A rename that leaves this surface behind is the bug being fixed."""
@@ -192,9 +188,6 @@ def test_the_retry_url_is_shared_with_the_anthropic_surface():
 
     assert url == f"{_FRESH}/v1/chat/completions"
     assert backend.respawn_calls == 1
-
-
-# ── Non-streaming ─────────────────────────────────────────────
 
 
 def test_non_streaming_retries_against_the_new_port(monkeypatch):
@@ -218,7 +211,7 @@ def test_non_streaming_still_502s_when_the_server_stays_dead(monkeypatch):
         asyncio.run(_run_non_streaming(backend))
 
     assert exc.value.status_code == 502
-    assert client.urls == [f"{_DEAD}/v1/chat/completions"]  # no blind retry
+    assert client.urls == [f"{_DEAD}/v1/chat/completions"]
 
 
 def test_non_streaming_does_not_retry_an_mtp_crash(monkeypatch):
@@ -248,9 +241,6 @@ def test_non_streaming_respawns_at_most_once(monkeypatch):
     assert client.urls == [f"{_DEAD}/v1/chat/completions"] * 2
 
 
-# ── Streaming ─────────────────────────────────────────────────
-
-
 def test_streaming_retries_against_the_new_port(monkeypatch):
     calls = []
     _install_stream_transport(monkeypatch, calls)
@@ -260,7 +250,6 @@ def test_streaming_retries_against_the_new_port(monkeypatch):
 
     assert backend.respawn_calls == 1
     assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
-    # The retried stream really produced the turn, not just a clean-looking stop.
     assert "hi" in blob
     assert "[DONE]" in blob
 
@@ -275,7 +264,7 @@ def test_streaming_still_502s_when_the_server_stays_dead(monkeypatch):
         asyncio.run(_run_stream(backend, lease))
 
     assert exc.value.status_code == 502
-    assert calls == [f"{_DEAD}/v1/chat/completions"]  # no blind retry
+    assert calls == [f"{_DEAD}/v1/chat/completions"]
     assert lease.released, "the failed dispatch kept its admission slot"
 
 
@@ -322,9 +311,6 @@ def test_a_backend_without_respawn_hooks_is_untouched(monkeypatch):
     assert client.urls == [f"{_DEAD}/v1/chat/completions"]
 
 
-# ── Only a lost connection may be replayed ────────────────────
-
-
 @pytest.mark.parametrize(
     "exc, retryable",
     [
@@ -368,8 +354,7 @@ class _TimingOutClient:
 def test_non_streaming_does_not_replay_a_slow_generation(monkeypatch):
     client = _TimingOutClient()
     monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
-    # A live server: _respawn_if_dead reports _healthy, so a retry would go back
-    # to the SAME port with the same prompt while the first copy is still decoding.
+    # A live server reports healthy, so a retry would duplicate the in-flight prompt.
     backend = _Backend(stays_dead = True)
 
     with pytest.raises(HTTPException) as exc:
@@ -378,9 +363,6 @@ def test_non_streaming_does_not_replay_a_slow_generation(monkeypatch):
     assert exc.value.status_code == 502
     assert backend.respawn_calls == 0, "a timeout respawned a healthy llama-server"
     assert client.urls == [f"{_DEAD}/v1/chat/completions"], "the slow generation was replayed"
-
-
-# ── The retry must follow the respawned server's new api key ──
 
 
 class _RotatingKeyBackend(_Backend):
@@ -466,9 +448,6 @@ def test_streaming_retry_uses_the_respawned_api_key(monkeypatch):
     assert seen[-1][1] == "Bearer key-after-the-respawn"
 
 
-# ── A crash after the pre-header status window ────────────────
-
-
 class _SlowDeadTransport(httpx.AsyncBaseTransport):
     """The dead port takes longer than the 100 ms pre-header window to fail.
 
@@ -516,7 +495,6 @@ def test_streaming_retries_a_crash_that_lands_after_the_status_window(monkeypatc
     assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
     assert backend.respawn_calls == 1
     assert "hi" in blob and "[DONE]" in blob
-    # No SSE error chunk leaked to the client before the recovery.
     assert "Lost connection" not in blob
 
 

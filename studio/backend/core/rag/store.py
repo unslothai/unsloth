@@ -68,7 +68,6 @@ def _now() -> str:
 
 
 _TOKEN = re.compile(r"\w+", re.UNICODE)
-# Quotes mark a word being named rather than used; non-greedy and single-line so an unclosed quote spans nothing.
 _QUOTED = re.compile(r"\"([^\"\n]+)\"|\u201c([^\u201d\n]+)\u201d|'([^'\n]+)'|`([^`\n]+)`")
 
 
@@ -79,9 +78,7 @@ def _match_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in toks)
 
 
-# A closed list of function words, so behaviour is identical on every install. no and not are
-# deliberately NOT here: they carry the whole difference in "what did I say not to delete?",
-# where dropping them leaves only terms BM25 floors at 1e-6.
+# Fixed list for reproducibility; 'no'/'not' deliberately excluded (they carry meaning).
 _ARCHIVE_STOPWORDS = frozenset(
     """
 a about all am an and any are as at be been being but by can could did do does doing
@@ -91,8 +88,6 @@ was we were what when where which who why will with would you your
 """.split()
 )
 
-# Identifier-ish tokens are how a person names one specific thing; a digit alone counts, since a
-# purely numeric subject has no other shape.
 _HAS_DIGIT = re.compile(r"\d", re.UNICODE)
 _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
@@ -113,7 +108,7 @@ def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
     if "_" in token:
         return True
     if _HAS_DIGIT.search(token):
-        # A bare number needs LENGTH to be a name, else "answer in 2 sentences" filters the archive on "2".
+        # A bare number must be long to count as a name, else '2 sentences' filters on '2'.
         return bool(_HAS_LETTER.search(token)) or len(token) >= 3
     return len(token) >= 3 and token.upper() in raw_tokens
 
@@ -143,13 +138,9 @@ def conversation_match_queries(query: str) -> list[str]:
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
         return []
-    # Identifier-ish: a token containing a digit (ZQXVARA123, 9134) or an underscore, or one in
-    # capitals and long enough not to be an "I" or an "OK". The capitals rule needs CONTRAST: in an
-    # all-caps line every word passes it and the filter filters nothing.
+    # All-caps queries disable the capitals rule: every word would pass it.
     raw_tokens = frozenset() if query == query.upper() else frozenset(_TOKEN.findall(query))
     identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
-    # A QUOTED word is the subject whatever the stopword list thinks; quoted tokens stay out of
-    # identifiers, so this widens only the permissive pass.
     quoted = frozenset(
         token
         for match in _QUOTED.findall(query.lower())
@@ -178,7 +169,7 @@ def lexical_matching_ids(conn: sqlite3.Connection, chunk_ids, expression: str) -
     if not ids or not expression:
         return set()
     found: set = set()
-    # Chunked to stay under SQLITE_MAX_VARIABLE_NUMBER, which is 999 on older builds.
+    # Chunked under SQLITE_MAX_VARIABLE_NUMBER (999 on older builds).
     for start in range(0, len(ids), 500):
         batch = ids[start : start + 500]
         placeholders = ",".join("?" * len(batch))
@@ -423,7 +414,6 @@ def reusable_document_by_hash(
 ) -> dict | None:
     """Newest completed, non-empty same-hash document in a live ``scope`` whose index can be
     copied. Extension must match (parsers branch on it) and so must the embedding identity."""
-    # rowid DESC is served by idx_documents_hash (no sort over every copy) and is newest-first.
     for row in conn.execute(
         "SELECT * FROM documents WHERE scope=? AND sha256=? AND status='completed' "
         "AND num_chunks > 0 AND NOT EXISTS "
@@ -570,8 +560,7 @@ def _copy_chunk_rows(
     return chunk_ids
 
 
-# chunks_vec rowids this process wrote, per (db, document): chunk_id is unindexed in vec0, and the next
-# copy's donor is usually the one just written. Verified on read.
+# vec0 does not index chunk_id; cache rowids we wrote, verified on read.
 _VEC_ROWIDS_MAX = 256
 _vec_rowids: OrderedDict[tuple[str, str], list[int]] = OrderedDict()
 _vec_rowids_lock = threading.Lock()
@@ -611,7 +600,7 @@ def _donor_vectors(conn: sqlite3.Connection, source: dict, chunk_ids) -> list:
     rows = _donor_vectors_by_rowid(conn, source, chunk_ids)
     if rows is not None:
         return rows
-    # One pass over the partition: chunk ids are "<document id>:<index>" and ';' sorts right after ':'.
+    # Chunk ids are '<doc id>:<index>' and ';' sorts right after ':'.
     rows = conn.execute(
         "SELECT scope, chunk_id, embedding FROM chunks_vec "
         "WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
@@ -647,7 +636,6 @@ def copy_document_index(
         rows is None
         or len(rows) != len(chunk_ids)
         or {r["chunk_id"] for r in rows} != chunk_ids.keys()
-        # chunks_vec may have been recreated at another width since the prefetch.
         or (rows and len(rows[0]["embedding"]) != 4 * (rag_db.vec_table_dim(conn) or 0))
     ):
         rows = _donor_vectors(conn, source, chunk_ids)
@@ -692,7 +680,6 @@ def copy_documents(
         )
         chunk_ids.update(_copy_chunk_rows(conn, source["id"], document_id, scope))
     if chunk_ids and rag_db.vec_table_exists(conn):
-        # vec0 scans the whole partition for any chunk filter, so read each source scope once.
         for source_scope in {source["scope"] for source, _ in documents}:
             conn.executemany(
                 "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
@@ -763,19 +750,14 @@ def search_lexical(
     if not scopes:
         return []
     placeholders = ",".join("?" * len(scopes))
-    # One snapshot for the gate and the read: WAL pins it at the transaction's first read, so a scope
-    # retired in between cannot land rows in a result the gate decided to run unfiltered.
+    # One snapshot for gate and read: WAL pins it at the first read.
     own_read_txn = not conn.in_transaction
-    # Read-only, but it has to end: an open snapshot blocks WAL checkpointing.
+    # Must end: an open snapshot blocks WAL checkpointing.
     if own_read_txn:
         conn.execute("BEGIN")
     try:
-        # The filtered form runs both subqueries for every matched row BEFORE the LIMIT, and with nothing
-        # linked that work is provably wasted (linked_folder_rows_exist).
         if oldest_first:
-            # `_conversation_order` component for component. The DOCUMENT rowid, not the
-            # chunk one: a re-embed rewrites the chunk rows and only the document's own
-            # rowid survives it (`create_document`'s `rowid`).
+            # Mirrors _conversation_order; uses document rowid since re-embeds rewrite chunk rows.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
@@ -785,7 +767,6 @@ def search_lexical(
                 f"d.created_at ASC, d.rowid ASC, c.chunk_index ASC LIMIT ?"
             )
         elif newest_first:
-            # The mirror of the clause above, so the two halves cut the run at opposite ends.
             sql = (
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
@@ -841,12 +822,9 @@ def search_dense(
         return []
     dim = rag_db.vec_table_dim(conn)
     if dim is not None and dim != len(vector):
-        # The stale table cannot answer new-model queries: vec0 errors on the MATCH.
+        # vec0 errors on MATCH against a table of another dimension.
         return []
-    # The pre-tag spelling of the same request, kept acceptable so an existing index keeps answering after an upgrade.
     untagged = config.embedding_identity_model(embedding_model) or embedding_model
-    # dict.fromkeys collapses a scope named twice: a repeat would multiply that scope's fetch and emit
-    # its hits twice into the merge.
     scopes = list(
         dict.fromkeys(
             s
@@ -856,10 +834,7 @@ def search_dense(
             ).fetchone()
         )
     )
-    # Stale-model hits come from another space and can fill every fetched slot, so widen until k
-    # compatible ones survive the filter.
-    # Per scope, not across the merge: vec0 constrains its partition key by equality, so each scope has
-    # its own stale prefix.
+    # Widen per scope until k same-model hits survive: vec0 partitions by scope equality.
     kept: dict[str, list[tuple[str, float]]] = {}
     fetches = dict.fromkeys(scopes, max(k * 3, k + 10))
     pending = list(scopes)
@@ -894,10 +869,9 @@ def search_dense(
     return out[:k]
 
 
-# Past this many nearest neighbours the scope is effectively another embedder's, and a re-upload is the answer.
-# 4096 is also vec0's own ceiling, so raising this errors the query instead of widening it.
+# 4096 is vec0's own ceiling; raising this errors the query.
 _MAX_DENSE_FETCH = 4096
-# One id per bound parameter, kept under the oldest SQLITE_MAX_VARIABLE_NUMBER.
+# Kept under the oldest SQLITE_MAX_VARIABLE_NUMBER (999).
 _ID_BATCH = 900
 
 

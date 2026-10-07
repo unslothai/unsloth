@@ -98,7 +98,7 @@ def test_audio_files_download_beside_the_manifest_preserving_structure(monkeypat
             "datasets/metadata.jsonl",
             "datasets/audio/a.wav",
             "datasets/audio/b.mp3",
-            "datasets/notes.txt",  # still unsupported, still skipped
+            "datasets/notes.txt",
         ],
         contents = {"datasets/metadata.jsonl": '{"audio": "audio/a.wav", "text": "hi"}\n'},
     )
@@ -140,13 +140,9 @@ def test_audio_with_no_manifest_names_whats_missing(monkeypatch, tmp_path):
 def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_path):
     manifest = "\n".join(
         [
-            # A prefix-relative key.
             json.dumps({"audio": "audio/a.wav", "text": "one"}),
-            # A full S3 URI to a downloaded key.
             json.dumps({"audio": "s3://my-bucket/datasets/audio/b.mp3", "text": "two"}),
-            # The HF undecoded-audio dict shape.
             json.dumps({"audio": {"path": "audio/a.wav"}, "text": "three"}),
-            # Unmatched references are somebody else's contract: left alone.
             json.dumps({"audio": "https://example.com/c.wav", "text": "four"}),
         ]
     )
@@ -212,12 +208,10 @@ def test_csv_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_path
         rows = list(csv.DictReader(f))
     assert rows[0]["audio"] == str(tmp_path / "audio" / "a.wav")
     assert rows[0]["text"] == "hello there"
-    # An unmatched reference stays; it may be absolute on the training host.
     assert rows[1]["audio"] == "missing.wav"
 
 
 def test_tabular_only_prefixes_keep_the_flat_layout(monkeypatch, tmp_path):
-    # #6222's flat, collision-renamed layout is unchanged without audio.
     _install(monkeypatch, ["datasets/sub/train.parquet", "datasets/other/train.parquet"])
     files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
     assert sorted(os.path.basename(f) for f in files) == ["train.parquet", "train_1.parquet"]

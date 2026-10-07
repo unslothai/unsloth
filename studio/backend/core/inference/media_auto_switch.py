@@ -77,10 +77,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# one end-to-end budget for the whole switch, under the ~100s tunnel window
+# One end-to-end budget for the whole switch, under the ~100s tunnel window
 _SWITCH_BUDGET_S = 90.0
 
-# a generation the caller cannot see is yielded to rather than cut short, capped inside the budget
 _DRAIN_WAIT_S = 30.0
 
 # how long the gates are kept for a load that has not reached begin_load yet
@@ -212,10 +211,8 @@ async def _await_loaded(
             raise RuntimeError(progress.get("error") or "The model failed to load.")
         if phase in (None, "ready"):
             status = await probe(asyncio.to_thread(backend.status))
-            # the landed check, not the skip check: this load is ours, so ambiguity is settled
             if resident_is_pick(status, name, pick):
                 return True
-            # loaded, but not this pick: a load that landed after ours replaced it
             raise RuntimeError(f"'{pick.model_id}' was replaced by another load before it served.")
         if time.monotonic() >= deadline:
             return False
@@ -348,16 +345,13 @@ async def _gated_start_load(
                 openai_errors = openai_errors,
                 hf_token = hf_token,
             )
-            # Given its own task and waited on with a cap: a first-run native install runs for minutes before
-            # begin_load, and holding both media gates and chat's that long blocks every unrelated request. On expiry
-            # the load keeps going without them.
+            # Own task with a cap: a first-run native install can hold the gates for minutes
             setup = asyncio.ensure_future(_start_load(owner, pick, current_subject, hf_token))
             setup.add_done_callback(_consume_detached_error)
             with contextlib.suppress(asyncio.TimeoutError):
                 try:
                     await asyncio.wait_for(asyncio.shield(setup), _SETUP_GRACE_S)
                 except HTTPException as exc:
-                    # The final arbiter check also covers a generation registered while load preparation was off the loop.
                     if isinstance(exc.detail, dict) and exc.detail.get("error") == "gpu_busy":
                         raise busy(
                             kind,
@@ -399,7 +393,6 @@ async def maybe_auto_switch_media_model(
     if not get_media_auto_switch_enabled():
         return
 
-    # started before resolution: the cold scan is part of the wait the caller experiences
     deadline = time.monotonic() + _SWITCH_BUDGET_S
     name = requested_model.strip()
     task = IMAGE_TASK if owner == DIFFUSION else VIDEO_TASK
@@ -408,7 +401,6 @@ async def maybe_auto_switch_media_model(
     if _resident_answers_exactly(await asyncio.to_thread(backend_for(owner).status), name):
         return
 
-    # off the loop: a cold index walks the model roots and reads gguf headers
     pick = await bounded(
         asyncio.to_thread(resolve_local_media_model, name, task = task),
         deadline,
@@ -441,7 +433,7 @@ async def maybe_auto_switch_media_model(
             code = "invalid_value",
         )
 
-    # re-read: the index build can run for the whole budget, and an idle unload can land in it
+    # Re-read: the index build can take the whole budget and an idle unload can land in it
     if satisfied_by(await asyncio.to_thread(backend_for(owner).status), name, pick):
         return
 
@@ -454,12 +446,10 @@ async def maybe_auto_switch_media_model(
         )
 
     lock = switch_lock(owner)
-    # held only when the load takes the gpu, since a cpu-only switch takes it from nobody
     takes_the_gpu = await asyncio.to_thread(load_takes_the_gpu)
     gpu_lock = gpu_switch_lock() if takes_the_gpu else None
     locks = [held for held in (gpu_lock, lock) if held is not None]
     with note_switcher(owner):
-        # the marker covers only the wait: once this request holds the lock it is real work
         with note_waiter(owner):
             await _acquire_all(locks, deadline, kind = kind, openai_errors = openai_errors)
         handed_over = False
@@ -479,13 +469,11 @@ async def maybe_auto_switch_media_model(
                 owner,
                 backend,
                 min(deadline, time.monotonic() + _DRAIN_WAIT_S),
-                # probes answer to the switch budget: only a spent budget is the slow-switch 503
                 probe_deadline = deadline,
                 kind = kind,
                 openai_errors = openai_errors,
             ):
                 raise busy(kind, openai_errors)
-            # its own task, so a timeout below frees the caller without unwinding gate or lock
             setup = asyncio.ensure_future(
                 _gated_start_load(
                     owner,
@@ -512,7 +500,6 @@ async def maybe_auto_switch_media_model(
                     held.release()
 
     try:
-        # re-resolved: an engine switch (diffusers <-> sd.cpp) replaces the object
         ready = await _await_loaded(
             backend_for(owner), name, pick, deadline, kind = kind, openai_errors = openai_errors
         )

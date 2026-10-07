@@ -36,16 +36,13 @@ from utils.host_policy import set_lan_connector_active
 
 logger = get_logger(__name__)
 
-# local socket work either way, so exceeding these means the event loop is wedged
 _START_TIMEOUT = 10.0
 # kept under the ~5s Windows console-close budget run.py's shutdown path works to
 _STOP_TIMEOUT = 3.0
 
-# a LAN request already accepted can run for minutes and stays a remote caller throughout; on expiry
-# the trust flag is left active rather than downgraded
+# accepted LAN requests stay remote callers; on expiry the trust flag stays active
 _DRAIN_TIMEOUT = 300.0
 
-# networking mode rarely changes, but a failed wslinfo probe must eventually recover
 _WSL_MODE_CACHE_TTL = 60.0
 
 # uvicorn's own default, so a burst queues on the LAN socket as it does on loopback
@@ -59,8 +56,7 @@ _serve_loop: Any = None
 _sockets: tuple[socket.socket, ...] = ()
 _port: Optional[int] = None
 _error: Optional[str] = None
-# stopped listeners whose accepted requests are still running remain remote callers, so the trust
-# flag stays up until every one has drained
+# the trust flag stays up until every stopped listener's accepted requests have drained
 _pending_drains = 0
 # rebound whole, never mutated: request_on_lan_listener reads it without the lock
 _bound_addresses: tuple[str, ...] = ()
@@ -72,8 +68,7 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
     public address is kept -- a cloud VM binding its own public IP is the same operation as a laptop binding its
     Wi-Fi address, and the caller decides whether that is wanted.
     """
-    # WSL's NAT-side address belongs to a private Hyper-V network a second device cannot open; mirrored
-    # mode is different, since WSL joins the host's network
+    # WSL NAT addresses sit on a private Hyper-V network other devices cannot reach
     if _wsl_networking_mode() not in (None, "mirrored"):
         return []
 
@@ -104,7 +99,6 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
         if normalized not in addresses:
             addresses.append(normalized)
 
-    # a UDP connect only fixes the local end of the socket; nothing is sent to the target
     probe = None
     try:
         probe = socket.socket(socket_family, socket.SOCK_DGRAM)
@@ -116,8 +110,6 @@ def detect_lan_addresses(ip_version: int = 4) -> list[str]:
         if probe is not None:
             probe.close()
 
-    # a route probe picks one source address and an isolated LAN has no route at all, so neither it nor
-    # the hostname enumerates the other adapters
     for address in _interface_addresses(ip_version):
         _add(address)
     return addresses
@@ -307,14 +299,12 @@ def start_lan_listener(
             logger.info("LAN access skipped unbindable addresses: %s", "; ".join(failures))
 
         server = uvicorn.Server(_listener_config(app, bound[0], port))
-        # published before the socket can accept: a request served in between would still read the loopback-
-        # only trust defaults
+        # published before accept, else a request in between reads loopback-only trust
         set_lan_connector_active(True)
         serving = server.serve(sockets = sockets)
         try:
             future = asyncio.run_coroutine_threadsafe(serving, loop)
         except RuntimeError as exc:
-            # the loop can close between _server_loop validating it and this call
             serving.close()
             _fail_start(sockets, port, exc)
             raise RuntimeError(_error) from exc
@@ -385,7 +375,6 @@ def _clear_trust_after_drain(server) -> None:
         time.sleep(0.05)
     with _lock:
         if state is not None and state.connections:
-            # ownership is never given up: a request that never ended is still remote
             logger.warning("LAN access kept the trust flag on: connections did not drain")
             return
         _pending_drains -= 1
@@ -409,8 +398,7 @@ def stop_lan_listener() -> bool:
     """
     global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
 
-    # a start holds _lock while waiting for this loop to run serve(), so a stop arriving on the loop
-    # itself must not block on it
+    # a stop on the loop itself must not block on _lock held by a waiting start
     if not _lock.acquire(blocking = not _running_on_event_loop()):
         logger.info("LAN access stop deferred: a listener change is in flight")
         return False
@@ -418,7 +406,7 @@ def stop_lan_listener() -> bool:
     try:
         server, loop, sockets = _server, _serve_loop, _sockets
         port = _port
-        # closed before the wait so a request landing mid-teardown already reads as off
+        # cleared before the wait so a request landing mid-teardown already reads as off
         _bound_addresses = ()
 
         if server is None:
@@ -426,13 +414,10 @@ def stop_lan_listener() -> bool:
             return True
         server.should_exit = True
         if _running_on_event_loop():
-            # /api/shutdown tears down from a task on this very loop, so waiting would deadlock; ownership is kept
-            # because uvicorn cannot close the sockets until the loop is free again, and _graceful_shutdown blocks it
-            # for seconds stopping subprocesses
+            # /api/shutdown runs on this loop, so waiting would deadlock; ownership is kept
             logger.info("LAN access stopping")
             return True
         if loop is None or loop.is_closed() or not loop.is_running():
-            # nothing is left to run uvicorn's shutdown, so release the sockets here
             _close_sockets(sockets)
             _release_listener_state()
             logger.info("LAN access stopped with its server loop")
@@ -443,8 +428,7 @@ def stop_lan_listener() -> bool:
             _release_listener_state()
             logger.info("LAN access stopped")
             return True
-        # ownership is kept so a retry waits on these same sockets, and so a second stop cannot report
-        # success while the port may still be accepting
+        # ownership kept: a retry waits on these sockets and a second stop cannot report success
         _error = "stop_timed_out"
         logger.warning("LAN access did not release port %s within %ss", port, _STOP_TIMEOUT)
         return False

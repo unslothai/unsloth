@@ -8,8 +8,7 @@ from __future__ import annotations
 import re
 
 
-# Provenance-bearing controls: they must survive decoding so the parser can tell a native
-# call from markerless prose. Everything else stays suppressed as skip_special_tokens=True.
+# Must survive decoding so the parser can tell a native call from prose
 NATIVE_TOOL_CONTROL_TOKENS = frozenset(
     {
         "<tool_call>",
@@ -23,13 +22,11 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<param=",
         '<param name="',
         "</param>",
-        # GLM argument markup.
         "<arg_key>",
         "</arg_key>",
         "<arg_value>",
         "</arg_value>",
         "<|python_tag|>",
-        # Gemma native wrapper and quoted-string delimiter.
         "<|tool_call>",
         "<tool_call|>",
         '<|"|>',
@@ -51,12 +48,10 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
         "<|tool_call_begin|>",
         "<|tool_call_argument_begin|>",
         "<|tool_call_end|>",
-        # TML Inkling's role opener is absent on purpose: nothing consumes a standalone one,
-        # so it would prefix every reply with raw markup. The marker below identifies the call.
+        # Inkling's role opener omitted on purpose: alone it would prefix replies with raw markup
         "<|content_invoke_tool_json|>",
         "<|end_message|>",
-        # The parser skips a call rehearsed inside one, so dropping these would make
-        # ``[THINK][TOOL_CALLS]terminal[ARGS]{..}[/THINK]`` a real call.
+        # The parser skips calls rehearsed inside these; dropping them makes a thought a real call
         "<think>",
         "</think>",
         "[THINK]",
@@ -65,8 +60,7 @@ NATIVE_TOOL_CONTROL_TOKENS = frozenset(
 )
 
 
-# Which openers make a CLOSER load-bearing. "Mentions some tool signal" is too broad: an
-# answer that merely says ``[ARGS]`` would keep an orphan ``<|end_message|>``.
+# Openers that make a closer load-bearing; a bare tool-signal mention is too broad
 _NATIVE_CONTROL_OPENERS = {
     "</tool_call>": ("<tool_call>",),
     "<tool_call|>": ("<|tool_call>",),
@@ -86,17 +80,13 @@ _NATIVE_CONTROL_OPENERS = {
     "<｜tool▁call▁end｜>": ("<｜tool▁call▁begin｜>",),
     "<|tool_calls_section_end|>": ("<|tool_calls_section_begin|>",),
     "<|tool_call_end|>": ("<|tool_call_begin|>", "<|tool_call_argument_begin|>"),
-    # Call marker only: ``_TC_JSON_START_RE`` reads a TML call at
-    # ``<|content_invoke_tool_json|>{``, so the role opener leaves the closer inert.
     "<|end_message|>": ("<|content_invoke_tool_json|>",),
     "</think>": ("<think>",),
     "[/THINK]": ("[THINK]",),
 }
 
 
-# Openers the parser honors only with a body behind them, so a bare mention opens nothing.
-# Not applied to ``<tool_call>``: it legitimately holds ``<function=..>`` markup rather than
-# an object, and demanding a brace would drop a closer a real call needs.
+# Openers honored only with a body; not <tool_call>, which holds <function=..> markup
 _OPENER_REQUIRES_BODY = {"<|content_invoke_tool_json|>": re.compile(r"\s*\{")}
 
 
@@ -154,7 +144,6 @@ def _token_is_preserved(token, preserved_tokens) -> bool:
         return False
     if token in NATIVE_TOOL_CONTROL_TOKENS or token in preserved_tokens:
         return True
-    # A marker may combine a special token with text (``<|channel>thought``): keep the token.
     return any(token in marker or marker in token for marker in preserved_tokens)
 
 
@@ -269,8 +258,6 @@ class NativeToolTokenDecoder:
         if not self._special_ids:
             return False
         for token_id in self._tool_ids:
-            # The two steps `_special_token_sets` retained the id by; some adapters answer
-            # only the second.
             for lookup in (
                 lambda: self._tokenizer.convert_ids_to_tokens(token_id),
                 lambda: _decode_without_special_spacing(

@@ -14,7 +14,6 @@ NVFP4_BACKENDS = ("auto", "torchao", "flashinfer")
 BACKEND_TORCHAO = "torchao"
 BACKEND_FLASHINFER = "flashinfer"
 
-# Restores the full M x N memset in the GEMM op. Strictly slower and no safer; see ``_mm_impl``.
 NVFP4_ZERO_BUFFER_ENV = "UNSLOTH_NVFP4_ZERO_BUFFER"
 
 # Necessary condition only: sm_120 is listed but routinely fails the preflight on CUDA 12.8.
@@ -31,7 +30,6 @@ _REGISTER_LOCK = threading.Lock()
 _REGISTERED = False
 _PREFLIGHT_LOCK = threading.Lock()
 _PREFLIGHT: dict[int, dict] = {}
-# Last transient preflight failure per device index: reporting only, never used to pick a backend.
 _PREFLIGHT_TRANSIENT: dict[int, dict] = {}
 _WARNED: set = set()
 
@@ -130,7 +128,6 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
             _fire_barrier(xq.device)
         if _claim_first_call_tune(m, xq.shape[1] * 2, n):
-            # Before the dispatch plan, which caches whatever tactic FlashInfer holds on its first build.
             try:
                 with flashinfer.autotune(True):
                     return flashinfer.mm_fp4(
@@ -322,7 +319,6 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
     from .diffusion_nvfp4_flag import nvfp4_diffusion_enabled
 
     if not nvfp4_diffusion_enabled():
-        # Not memoised: turning the switch on must not inherit a verdict nobody measured.
         return {
             "ok": False,
             "reason": "NVFP4 is disabled in this build",
@@ -379,7 +375,6 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
     except Exception as exc:  # noqa: BLE001 - every failure mode here means "use torchao"
         rec["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         if _transient_preflight_failure(exc):
-            # Not memoised: a model about to be evicted may own the card, so OOM means "not now".
             with _PREFLIGHT_LOCK:
                 _PREFLIGHT_TRANSIENT[index] = dict(rec)
             return dict(rec)

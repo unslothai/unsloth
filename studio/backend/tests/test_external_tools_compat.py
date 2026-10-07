@@ -33,9 +33,6 @@ from core.inference.providers import (
 )
 
 
-# ── helpers ──────────────────────────────────────────────────────────
-
-
 def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
@@ -61,12 +58,10 @@ def _capturing_handler(captured: dict):
     return handler
 
 
-# The four self-hosted presets. They are ``hidden`` in the registry and are
-# surfaced by the UI through CUSTOM_PROVIDER_PRESETS rather than the dropdown.
+# hidden in the registry; the UI surfaces them via CUSTOM_PROVIDER_PRESETS
 SELF_HOSTED_PRESETS = ("custom", "vllm", "ollama", "llama_cpp")
 
-# Keys the pre-change bundle already read off every registry row. Dropping or
-# renaming any of them breaks a cached bundle even though the server is new.
+# keys old cached frontends read off every registry row; do not drop or rename
 LEGACY_REGISTRY_KEYS = frozenset(
     {
         "provider_type",
@@ -83,9 +78,6 @@ LEGACY_REGISTRY_KEYS = frozenset(
         "model_ids_editable",
     }
 )
-
-
-# ── 1a. old frontend + new backend ───────────────────────────────────
 
 
 def test_registry_default_still_hides_self_hosted_presets():
@@ -210,9 +202,6 @@ def test_registry_rows_keep_every_pre_change_key():
         assert not missing, f"{entry['provider_type']} lost legacy keys {missing}"
 
 
-# ── 1b. new frontend + old backend ───────────────────────────────────
-
-
 def test_registry_entry_schema_tolerates_a_pre_change_payload():
     """A new bundle against an old backend gets no ``supports_studio_tools``.
 
@@ -234,9 +223,6 @@ def test_registry_entry_schema_tolerates_a_pre_change_payload():
     entry = ProviderRegistryEntry(**legacy_payload)
     assert entry.supports_studio_tools is False
     assert entry.hidden is False
-
-
-# ── capability allowlist ─────────────────────────────────────────────
 
 
 def test_anthropic_is_studio_tools_capable():
@@ -267,9 +253,6 @@ def test_capability_flag_agrees_with_the_registry_entry():
         assert entry["supports_studio_tools"] is provider_runs_local_tools(entry["provider_type"])
 
 
-# ── 1c. no DB migration ──────────────────────────────────────────────
-
-
 def test_llm_providers_schema_gains_no_column():
     """Existing sqlite rows need no migration; the capability is not persisted.
 
@@ -291,7 +274,6 @@ def test_llm_providers_schema_gains_no_column():
     finally:
         conn.close()
 
-    # Every column a pre-change row was written with must still be readable.
     assert columns >= {
         "id",
         "provider_type",
@@ -303,17 +285,12 @@ def test_llm_providers_schema_gains_no_column():
         "models_json",
         "available_models_json",
     }
-    # The capability must stay registry-derived. A column here would mean saved
-    # connections carry their own copy, which needs a migration story this
-    # change deliberately does not have.
+    # the capability must stay registry-derived; a column would need a migration
     assert not [
         column
         for column in columns
         if "studio_tool" in column or "local_tool" in column or "tool_execution" in column
     ]
-
-
-# ── 4. response_format stays opt-in ──────────────────────────────────
 
 
 def test_response_format_is_omitted_when_the_caller_does_not_ask(monkeypatch):
@@ -373,9 +350,6 @@ def test_response_format_is_forwarded_verbatim_when_requested(monkeypatch):
 
     _drive(run())
     assert captured["body"]["response_format"] == {"type": "json_object"}
-
-
-# ── 5. response_format reaches the native provider shapes ────────────
 
 
 def test_gemini_translates_response_format_to_a_response_mime_type(monkeypatch):

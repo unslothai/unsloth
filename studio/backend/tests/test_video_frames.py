@@ -27,7 +27,6 @@ def _clip(
 ):
     g = torch.Generator().manual_seed(seed)
     video = torch.rand((1, 3, frames, height, width), generator = g)
-    # Exact rounding boundaries (k + 0.5) / 255 plus range ends.
     edge = (
         (torch.arange(height * width) % 256)
         .float()
@@ -45,7 +44,6 @@ def _clip(
 
 
 def _encode_video_uint8(np_frames):
-    # diffusers.utils.export_utils.encode_video's np branch.
     return (np_frames * 255).round().astype("uint8")
 
 

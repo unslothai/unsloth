@@ -115,8 +115,6 @@ async def test_sweep_does_not_cancel_another_accounts_run_with_the_same_id(
         )
         policy.invalidate_account_cache()
 
-        # Alice's row committed but her producer was never registered (supervisor.start
-        # never ran, or the process restarted), so nothing live holds the id.
         run_as(alice, lambda: _running_run("alice"))
         clock.advance_ms(11 * _MINUTE_MS)
 
@@ -135,8 +133,6 @@ async def test_sweep_does_not_cancel_another_accounts_run_with_the_same_id(
 
         monkeypatch.setattr(supervisor, "_produce", _produce)
 
-        # Bob may reuse the client-chosen id: the route only refuses ids held by a LIVE
-        # registration, and Alice's stale row has none.
         assert [e for e in active_generations.snapshot() if e["run_id"] == "run-1"] == []
 
         def _start_bob():

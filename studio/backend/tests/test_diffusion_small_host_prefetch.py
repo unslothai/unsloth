@@ -25,14 +25,13 @@ def _clean_env(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", raising = False)
 
 
-# ------------------------------------------------------------------------------------------------ fused int8 dequant
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
 def test_int8_dequant_is_one_pass_and_bit_identical(dtype):
     from torch.utils._python_dispatch import TorchDispatchMode
 
     torch.manual_seed(0)
     lin = torch.nn.Linear(256, 512).to(torch.bfloat16)
-    # the same per-row absmax quantisation quantize_int8_weight_ applies (this layer is below its size threshold)
+    # same per-row absmax as quantize_int8_weight_ (this layer is below its size threshold)
     w = lin.weight.detach().float()
     scale = w.abs().amax(dim = 1, keepdim = True).clamp_min(1e-12) / 127.0
     q = torch.round(w / scale).clamp_(-127, 127).to(torch.int8)
@@ -56,7 +55,6 @@ def test_int8_dequant_is_one_pass_and_bit_identical(dtype):
 
     with Ops() as rec:
         out = layer(x)
-    # the int8 weight is read once: no separate cast of the full weight before the scale multiply
     passes = [o for o in rec.ops if "_to_copy" in o or "mul" in o]
     assert passes == ["aten.mul.Tensor"], rec.ops
     want = torch.nn.functional.linear(x, q.to(dtype) * scale.to(dtype), lin.bias.detach().to(dtype))
@@ -73,7 +71,6 @@ def test_int8_dequant_other_input_dtype_still_casts():
     assert torch.equal(out, torch.nn.functional.linear(x, q.float() * scale.float()))
 
 
-# ------------------------------------------------------------------------------------------------ prefetch logic (CPU)
 class _FakeGroup:
     def __init__(self, name: str, nbytes: int):
         self.name = name
@@ -133,7 +130,7 @@ def test_prefetch_records_the_order_then_copies_ahead_on_a_worker():
     groups = [_FakeGroup(f"g{i}", 10) for i in range(12)]
     pf = _FakePrefetcher(groups)
     _forward(pf, groups)
-    # first forward: no order yet, every group copied on the calling thread
+    # first forward has no recorded order, so every group copies on the calling thread
     assert (pf.stats["prefetched"], pf.stats["sync"], pf.stats["passes"]) == (0, 12, 1)
     assert all(main for _n, main in pf.copies)
     pf.copies.clear()
@@ -153,12 +150,11 @@ def test_prefetch_stays_within_the_byte_budget():
     pf.begin()
     try:
         for g in groups:
-            time.sleep(0.01)  # a slow consumer: the worker must wait for the budget, not run away
+            time.sleep(0.01)
             pf.onload(g)
     finally:
         pf.end()
     assert pf.stats["prefetched"] == 16
-    # at most one group past the budget is ever in flight
     assert pf.peak_inflight <= pf.budget + sh._PREFETCH_MIN_BYTES // 4
 
 
@@ -176,7 +172,7 @@ def test_prefetch_off_order_falls_back_and_rerecords():
     _forward(pf, groups)
     swapped = groups[:2] + [groups[3], groups[2]] + groups[4:]
     _forward(pf, swapped)
-    # g0, g1 prefetched; g3 is off the recorded order, so it and everything after it copy synchronously
+    # g3 is off the recorded order, so it and everything after copy synchronously
     assert pf.stats["prefetched"] == 2
     assert pf.attached[-6:] == [g.name for g in swapped]
     assert pf.order == [id(g) for g in swapped]
@@ -199,7 +195,7 @@ def test_prefetch_exception_in_forward_stops_the_worker():
     _forward(pf, groups)
     pf.begin()
     pf.onload(groups[0])
-    pf.end()  # the forward hook runs with always_call=True on an exception
+    pf.end()
     assert pf.worker is None and not pf.ready and pf.inflight == 0
 
 
@@ -242,7 +238,6 @@ def test_group_offload_installs_prefetch_only_on_small_host_pipes(monkeypatch):
     assert calls == [te]
 
 
-# ------------------------------------------------------------------------------------------------ end to end (CUDA)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_prefetched_encoder_is_bit_identical_to_diffusers_stream(tmp_path):
     from diffusers.hooks import apply_group_offloading
@@ -295,7 +290,6 @@ def test_prefetched_encoder_is_bit_identical_to_diffusers_stream(tmp_path):
         return enc
 
     ref_enc = build()
-    # the small-host load: the encoder's weights view a safetensors file mapping
     enc = build(tmp_path / "enc.safetensors")
 
     n = sh.install_encoder_prefetch(enc, "cuda")
@@ -308,10 +302,8 @@ def test_prefetched_encoder_is_bit_identical_to_diffusers_stream(tmp_path):
             got = enc(ids)
             torch.cuda.synchronize()
             assert torch.equal(got, want)
-    # the first forward records the order; every later one copies every group ahead on the worker
     assert pf.error is None
     assert pf.stats["prefetched"] == 3 * len(pf.order) and pf.stats["sync"] == len(pf.order)
-    # weights are back on their host storage between forwards
     assert enc.blocks[0].wi.weight.device.type == "cpu"
     assert enc.blocks[0].wi.weight.dtype == torch.bfloat16
 
@@ -376,7 +368,7 @@ def test_failed_ring_pin_keeps_diffusers_onload(tmp_path, monkeypatch):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_prefetch_runs_under_inference_mode(tmp_path):
-    # Studio renders under torch.inference_mode(); the worker thread is outside it and must still fill the ring.
+    # Studio renders under inference_mode; the worker thread is outside it and must still fill the ring
     def build():
         torch.manual_seed(0)
         return (
@@ -400,7 +392,7 @@ def test_prefetch_runs_under_inference_mode(tmp_path):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 @pytest.mark.parametrize("drop", ["exception", "prefix"])
 def test_dropped_prefetch_never_lands_in_a_reused_block(tmp_path, drop):
-    # Groups copied ahead but never onloaded are freed while their copy may still be queued on the side stream.
+    # copied-ahead groups never onloaded are freed while their copy may still be queued
     H = 4096
 
     class Enc(torch.nn.Module):
@@ -431,7 +423,7 @@ def test_dropped_prefetch_never_lands_in_a_reused_block(tmp_path, drop):
     assert sh.install_encoder_prefetch(enc, "cuda") > 0
     x = torch.zeros(1, H, dtype = torch.bfloat16, device = "cuda")
     with torch.no_grad():
-        enc(x)  # records the full order
+        enc(x)
         for _ in range(10):
             try:
                 enc(x, tail = False, boom = drop == "exception")
@@ -443,14 +435,13 @@ def test_dropped_prefetch_never_lands_in_a_reused_block(tmp_path, drop):
             torch.cuda.synchronize()
             assert all(bool((o == -2.0).all()) for o in outs)
             del outs
-            enc(x)  # back to the full order
+            enc(x)
             torch.cuda.synchronize()
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_released_resident_groups_are_fenced():
-    # release_resident_groups hands resident encoder groups back to diffusers' onload_, whose copy runs on diffusers'
-    # stream next to groups this prefetcher onloads.
+    # resident groups go back to diffusers' onload_, whose copy runs on diffusers' own stream
     pytest.importorskip("diffusers")
     import copy
 

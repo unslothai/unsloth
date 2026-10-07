@@ -39,8 +39,6 @@ _CONTAINER_INHERIT = 0x2
 _INHERIT_ONLY = 0x8
 _INHERITED = 0x10
 _lock = threading.Lock()
-# Root -> folder identity whose whole tree passed the credential scan in this process; a folder
-# replaced at the same path, or a new process, scans again.
 _scanned: dict[str, dict[str, int] | None] = {}
 
 
@@ -85,7 +83,6 @@ def _transaction():
                 f"another Studio process holds the MXC read-grant record: {exc}"
             ) from exc
         except OSError as exc:
-            # No lock file means no process can be granting through this record either.
             logger.warning("Could not lock the MXC read-grant record: %s", exc)
             yield None
             return
@@ -168,7 +165,7 @@ def _tree_problem(root: str, *, deep: bool) -> str | None:
                         return f"it holds a credential file ({entry.path})"
                     if _is_reparse(entry):
                         if _links_within(entry.path, real_root):
-                            continue  # e.g. setup-python's python3.exe -> python.exe; the target is scanned anyway
+                            continue
                         return f"it contains a reparse point ({entry.path})"
                     if deep and entry.is_dir(follow_symlinks = False):
                         pending.append(entry.path)
@@ -186,7 +183,6 @@ def ineligible_reason(root: str, *, deep: bool = True) -> str | None:
     if system_root and _within(root, system_root):
         return "inside the Windows directory"
     for protected in _protected_paths():
-        # Only a grant ABOVE protected state exposes it; a runtime folder below the Studio home is fine.
         if _within(protected, root):
             return f"it contains {protected}"
     return _tree_problem(root, deep = deep)
@@ -432,7 +428,6 @@ def _ensure_root(record: dict, root: str) -> bool:
             )
             return False
         if current != entry.get("identity"):
-            # Another folder now sits at this path; Studio's claim is void and its ACL is not Studio's.
             record.pop(key)
             _save_quietly(record)
             entry, pending = None, False
@@ -441,7 +436,6 @@ def _ensure_root(record: dict, root: str) -> bool:
     if reason is not None:
         _scanned.pop(key, None)
         if entry is not None:
-            # A folder Studio granted gained a credential file or a link: take the grant back.
             outcome = _revoke_recorded_root(record, key)
             _save_quietly(record)
             if outcome == "failed":
@@ -495,12 +489,10 @@ def _ensure_root(record: dict, root: str) -> bool:
     ok, output = _grant(root)
     if ok:
         record[key] = {"state": "complete", "identity": identity}
-        # On a failed write the pending entry stays on disk, so the next launch redoes the grant.
         _save_quietly(record)
         logger.info("Granted ALL APPLICATION PACKAGES read access to %s once", root)
         return True
-    # A partly propagated grant would let wxc-exec skip files the container cannot read. The pending
-    # entry stays on disk until the rollback is known to have hit the folder Studio granted.
+    # A partial grant lets wxc-exec skip unreadable files; pending entry stays until rollback lands
     if _identity(root) != identity:
         raise ReadGrantError(
             f"the MXC read grant on {root} failed ({output}) and the folder changed"
@@ -649,7 +641,6 @@ def revoke_recorded() -> tuple[str, ...]:
         transaction = _transaction()
         record = transaction.__enter__()
     except ReadGrantError as exc:
-        # Cleanup never blocks a launch; the entries stay and the next check retries.
         logger.warning("Deferring the MXC read-grant cleanup: %s", exc)
         return ()
     with contextlib.ExitStack() as stack:
@@ -665,6 +656,5 @@ def revoke_recorded() -> tuple[str, ...]:
         for key in list(record):
             if _revoke_recorded_root(record, key) == "revoked":
                 restored.append(key)
-        # A failed revoke keeps its entry, so the next launch or capability check retries it.
         _save_quietly(record)
     return tuple(restored)

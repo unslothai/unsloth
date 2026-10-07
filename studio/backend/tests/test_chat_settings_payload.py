@@ -145,7 +145,6 @@ def test_max_tool_calls_off_survives_the_payload():
 @pytest.mark.parametrize(
     "payload",
     [
-        # Full access disables the sandbox, so it is re-accepted each session.
         {"permissionMode": "full"},
         {"sandboxLevel": "medium"},
         {"ragTopK": 0},
@@ -176,13 +175,7 @@ def test_out_of_contract_values_are_rejected(payload):
         ChatSettingsPayload.model_validate(payload)
 
 
-# ---------------------------------------------------------------------------
-# Non-finite numbers
-# ---------------------------------------------------------------------------
-#
-# json.loads accepts bare NaN and Infinity, so both reach the payload from any
-# client that is not a browser (JSON.stringify emits null for them). Two things
-# then went wrong, and each needs its own guard.
+# json.loads accepts bare NaN/Infinity, so non-browser clients can send them.
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])

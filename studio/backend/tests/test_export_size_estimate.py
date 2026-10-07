@@ -19,7 +19,7 @@ from utils.hardware.hardware import _get_local_weight_size_bytes
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
-# Real Qwen3.6-35B-A3B: 35.95B params -> ~67 GiB bf16 (UI wrongly showed Q8 ~8.2 GB).
+# real Qwen3.6-35B-A3B: 35.95B params -> ~67 GiB bf16
 _QWEN35_PARAMS = 35_951_822_704
 _QWEN35_FP16_BYTES = _QWEN35_PARAMS * 2
 
@@ -65,7 +65,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(resp.model, "unsloth/Qwen3.6-35B-A3B")
 
     def test_moe_via_config_fallback(self):
-        # MoE sized via the sizer's config path -> source "config".
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (67 * (1024**3), "config"),
@@ -114,7 +113,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(mock_sizer.call_count, 1)
 
     def test_failures_are_not_cached(self):
-        # A transient failure must not poison the cache; a later call recovers.
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             side_effect = [(None, "unavailable"), (_QWEN35_FP16_BYTES, "safetensors")],
@@ -144,7 +142,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(mock_sizer.call_args.kwargs.get("hf_token"), "secret-token")
 
     def test_arbitrary_local_path_is_not_scanned(self):
-        # Unsafe local paths must not be scanned -> unavailable.
         with (
             patch.object(self.models_route, "is_local_path", return_value = True),
             patch.object(self.models_route, "_is_sizable_local_path", return_value = False),
@@ -183,8 +180,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(resp.source, "local")
 
     def test_local_adapter_base_escaping_roots_is_rejected(self):
-        # A local adapter under a root whose resolved base points outside the
-        # roots (e.g. "/") must not be sized: the resolved base is re-validated.
         adapter = "/root/.unsloth/studio/outputs/adapter"
         with (
             patch.object(self.models_route, "is_local_path", return_value = True),
@@ -207,7 +202,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         mock_sizer.assert_not_called()
 
     def test_is_sizable_local_path_containment(self):
-        # Only paths under a trusted root are sizable; '..' can't escape.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "outputs"
             inside = root / "run-1"
@@ -224,14 +218,11 @@ class TestExportSizeEndpoint(unittest.TestCase):
                 self.assertFalse(is_sizable(str(root / "missing")))
                 self.assertFalse(is_sizable("/etc"))
                 self.assertFalse(is_sizable(str(root / ".." / "etc")))
-                # A symlink inside a root pointing outside it cannot escape.
                 escape = root / "escape"
                 os.symlink(tmp, escape)
                 self.assertFalse(is_sizable(str(escape)))
 
     def test_local_weight_size_skips_nested_checkpoints(self):
-        # A run dir's intermediate checkpoint-*/global_step* snapshots must not
-        # be counted; only the model files at the root are summed.
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)
             (run / "model.safetensors").write_bytes(b"\0" * 1000)
@@ -392,7 +383,7 @@ def test_variant_after_the_shard_counter_is_the_same_archive(tmp_path):
 
 
 def test_diffusers_sharded_component_is_charged_by_its_index_once(tmp_path):
-    # genmo/mochi-1-preview: sharded denoiser with bf16 twins, components with variants and .bin.
+    # genmo/mochi-1-preview: sharded denoiser with bf16 twins, variants and .bin
     shards = {
         "diffusion_pytorch_model-00001-of-00002.safetensors": 3000,
         "diffusion_pytorch_model-00002-of-00002.safetensors": 2000,
@@ -483,8 +474,7 @@ def test_a_declared_diffusers_component_never_opens_a_stray_model_safetensors(tm
 
 
 def test_a_declared_transformers_component_never_opens_a_stray_diffusion_file(tmp_path):
-    # linyq/kiwi-edit-5b-instruct-only-diffusers/mllm_encoder: a transformers archive with a
-    # 35 MB diffusion_pytorch_model.safetensors beside it.
+    # layout of linyq/kiwi-edit-5b mllm_encoder: transformers archive plus a stray diffusers file
     component = tmp_path / "mllm_encoder"
     component.mkdir()
     (component / "config.json").write_text('{"architectures": ["Qwen2ForCausalLM"]}')
@@ -545,7 +535,6 @@ def test_root_bookkeeping_beside_component_archives_is_dropped(tmp_path):
 
 
 def test_trainer_state_beside_a_freely_named_payload_alone_still_counts(tmp_path):
-    # No loadable archive marks weights.pth the model or optimizer.pt its state, so both count.
     _write(tmp_path / "weights.pth", 4000)
     _write(tmp_path / "optimizer.pt", 8000)
     assert _get_local_weight_size_bytes(str(tmp_path)) == 12000
@@ -591,14 +580,12 @@ def test_adapter_dual_format_charges_one_copy(tmp_path):
 
 
 def test_an_adapter_is_charged_on_top_of_the_base_model_it_adapts(tmp_path):
-    # peft loads the adapter onto a base already resident, so both are needed.
     _write(tmp_path / "model.safetensors", 1000)
     _write(tmp_path / "adapter_model.safetensors", 50)
     assert _get_local_weight_size_bytes(str(tmp_path)) == 1050
 
 
 def test_an_adapter_never_stands_in_for_bare_shards_beside_it(tmp_path):
-    # Nothing opens the bare shards by name; charging the adapter alone reports 50 bytes for 1000.
     _write(tmp_path / "model-00001-of-00002.safetensors", 600)
     _write(tmp_path / "model-00002-of-00002.safetensors", 400)
     _write(tmp_path / "adapter_model.safetensors", 50)
@@ -660,8 +647,7 @@ def test_a_direct_safetensors_file_outranks_a_stale_index(tmp_path):
 
 
 def test_an_index_that_names_the_direct_file_is_not_stale(tmp_path):
-    # unsloth/Qwen3.8-27B-NVFP4 ships model.safetensors beside an 0.85 GB MTP head its index
-    # names too, so reading the direct file as the whole archive would drop the head.
+    # unsloth/Qwen3.8-27B-NVFP4 ships model.safetensors plus an MTP head its index also names
     _write(tmp_path / "model.safetensors", 1000)
     _write(tmp_path / "model_mtp.safetensors", 50)
     (tmp_path / "model.safetensors.index.json").write_text(
@@ -724,7 +710,6 @@ def test_a_projector_beside_indexed_weights_is_counted(tmp_path):
 
 
 def test_a_subfolder_only_a_losing_index_names_is_charged_anyway(tmp_path):
-    # Nothing tells this folder from a component that is loaded, and hiding a real one is worse.
     _write(tmp_path / "sf" / "model-00001-of-00001.safetensors", 1000)
     _write(tmp_path / "pk" / "pytorch_model-00001-of-00001.bin", 1500)
     (tmp_path / "model.safetensors.index.json").write_text(
@@ -880,7 +865,7 @@ def test_the_directory_a_weight_index_sits_in_is_tried_before_the_vendor_copy(tm
 
 
 def test_a_weight_index_names_its_shards_in_utf8(tmp_path):
-    # Under the operator's locale the name stops matching; U+00DF cannot normalise away.
+    # U+00DF cannot normalise away under the operator's locale
     _write(tmp_path / "model\u00df.safetensors", 1000)
     _write(tmp_path / "model-00001-of-00001.safetensors", 7777)
     (tmp_path / "model.safetensors.index.json").write_bytes(

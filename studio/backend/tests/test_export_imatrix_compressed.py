@@ -32,9 +32,6 @@ def _func_src(rel, name):
     return ast.get_source_segment(src, node)
 
 
-# -- schema -------------------------------------------------------------------------------------
-
-
 def test_gguf_request_imatrix_defaults_and_set():
     assert ExportGGUFRequest(save_directory = "/tmp/x").imatrix is False
     assert ExportGGUFRequest(save_directory = "/tmp/x").imatrix_path is None
@@ -58,22 +55,16 @@ def test_merged_request_rejects_unknown_format():
         ExportMergedModelRequest(save_directory = "/tmp/x", format_type = "bogus")
 
 
-# -- threading (ast) ----------------------------------------------------------------------------
-
-
 def test_export_gguf_threads_imatrix_to_save_and_push():
-    # imatrix_file must reach both save paths, but only via the conditional **imatrix_kw.
     g = _func_src("core/export/export.py", "export_gguf")
     assert g.count("**imatrix_kw") >= 2
-    # Truthiness, not `is not None`: a disabled imatrix must not reach an exporter without the kwarg.
+    # truthiness: a disabled imatrix must not reach an exporter without the kwarg
     assert 'imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file else {}' in g
-    # Unconditional pass-through (the old wiring) must be gone.
     assert "imatrix_file = imatrix_file" not in g
 
 
 def test_export_gguf_guards_unsupported_imatrix_build():
-    # A build that cannot apply an imatrix gets a clean error, not a TypeError or a silent drop.
-    # The kwarg probe is not enough here: the MLX binding takes **kwargs and filters them.
+    # the kwarg probe is not enough: the MLX binding takes **kwargs and filters them
     g = _func_src("core/export/export.py", "export_gguf")
     assert "_imatrix_export_supported(" in g
 
@@ -84,7 +75,7 @@ def test_export_merged_guards_unsupported_compressed_build():
 
 
 def test_supports_kwarg_helper():
-    # exec just the helper source so the test stays free of export.py's heavy import chain.
+    # exec just the helper to avoid export.py's heavy import chain
     ns = {}
     for helper in ("_accepts_by_keyword", "_supports_kwarg"):
         exec(_func_src("core/export/export.py", helper), ns)
@@ -99,7 +90,7 @@ def test_supports_kwarg_helper():
     def via_kwargs(a, **kw):
         pass
 
-    # Named but unusable: every call site passes the keyword, so this is not support.
+    # every call site passes the keyword, so positional-only is not support
     positional_only = {}
     exec("def f(a, imatrix_file = None, /): pass", positional_only)
 
@@ -124,18 +115,13 @@ def test_export_merged_maps_compressed_to_save_method():
 
 
 def test_compressed_hub_push_uploads_local_dir_without_recompressing():
-    # A compressed / torchao Hub push must upload the built output_path, not re-quantize.
     m = _func_src("core/export/export.py", "export_merged_model")
     assert "if output_path and Path(output_path).is_dir():" in m
     assert "if not (is_compressed or is_torchao or save_dir_was_empty):" in m
     assert "hf_api.upload_folder(" in m and "folder_path = upload_dir" in m
 
 
-# -- torchao portable FP8/INT8 (device-agnostic, no NVIDIA GPU) ---------------------------------
-
-
 def test_merged_request_accepts_torchao_aliases():
-    # Portable torchao aliases pass through compressed_method (validated in the backend registry).
     for alias in ("torchao_fp8", "torchao_int8"):
         r = ExportMergedModelRequest(save_directory = "/tmp/x", compressed_method = alias)
         assert r.compressed_method == alias
@@ -143,13 +129,10 @@ def test_merged_request_accepts_torchao_aliases():
 
 def test_export_merged_routes_torchao_and_skips_nvidia_guard():
     m = _func_src("core/export/export.py", "export_merged_model")
-    # torchao is classified separately and its suffix comes from the torchao normalizer.
     assert "_normalize_torchao_method(compressed_alias)" in m
     assert "is_torchao = torchao_info is not None" in m
     assert "is_compressed = compressed_alias is not None and not is_torchao" in m
-    # The NVIDIA guard applies to compressed-tensors only, not torchao.
     assert "_has_nvidia_gpu()" in m
-    # torchao routes through save_method just like compressed.
     assert "elif is_compressed or is_torchao:" in m
 
 
@@ -164,26 +147,23 @@ def test_has_nvidia_gpu_helper_reads_hardware_module():
 
 
 def test_export_merged_relaxes_is_peft_guard():
-    # Non-PEFT (Local/HF base) models can now export merged; the old hard block must be gone.
     m = _func_src("core/export/export.py", "export_merged_model")
     assert "Use 'Export Base Model' instead." not in m
 
 
 def test_unsloth_save_has_torchao_registry_and_path():
-    # Read unsloth/save.py as text (not import) so this runs in the CPU suite without unsloth.
+    # read as text so this runs in the CPU suite without unsloth
     save_py = (_BACKEND.parent.parent / "unsloth" / "save.py").read_text(encoding = "utf-8")
     assert "def _normalize_torchao_method" in save_py
     assert "def _unsloth_save_torchao" in save_py
     assert "TORCHAO_EXPORT_SCHEMES = {" in save_py
-    # torchao aliases must map to (scheme, suffix) so the backend routes to the torchao path.
     assert '"torchao_fp8": ("fp8", "torchao-fp8")' in save_py
     assert '"torchao_int8": ("int8", "torchao-int8")' in save_py
 
 
 @pytest.mark.parametrize("wrapper_name", ["_save_pretrained_gguf", "_push_to_hub_gguf"])
 def test_sentence_transformer_gguf_wrappers_forward_imatrix(wrapper_name):
-    # Both take **kwargs, so the probe reads them as supported once unsloth_zoo can resolve an
-    # imatrix; they must therefore forward the argument rather than swallow it.
+    # both take **kwargs, so they must forward imatrix rather than swallow it
     st = (_BACKEND.parent.parent / "unsloth" / "models" / "sentence_transformer.py").read_text(
         encoding = "utf-8"
     )
@@ -194,8 +174,7 @@ def test_sentence_transformer_gguf_wrappers_forward_imatrix(wrapper_name):
 
 
 def test_gguf_export_request_falls_back_to_the_load_token():
-    # A local imatrix export resolves from a Hub repo, but the UI only sets `token` for a hub push,
-    # so the GGUF payload has to fall back the way the LoRA payload already does.
+    # a local imatrix export resolves from a Hub repo, but the UI sets `token` only for a push
     store = (
         _BACKEND.parent
         / "frontend"
@@ -210,9 +189,6 @@ def test_gguf_export_request_falls_back_to_the_load_token():
     assert "hf_token: params.token ?? params.loadToken ?? null," in gguf
 
 
-# -- GGUF multi-quant list ----------------------------------------------------------------------
-
-
 def test_gguf_request_accepts_list_of_quants():
     r = ExportGGUFRequest(save_directory = "/tmp/x", quantization_method = ["Q4_K_M", "Q8_0"])
     assert r.quantization_method == ["Q4_K_M", "Q8_0"]
@@ -224,9 +200,6 @@ def test_export_gguf_normalizes_quant_list():
     g = _func_src("core/export/export.py", "export_gguf")
     assert "isinstance(quantization_method, (list, tuple))" in g
     assert "quant_methods" in g
-
-
-# -- GGUF LoRA adapter export -------------------------------------------------------------------
 
 
 def test_lora_request_has_gguf_fields():
@@ -263,11 +236,7 @@ def test_route_passes_lora_gguf():
     assert "gguf = request.gguf" in r and "gguf_outtype = request.gguf_outtype" in r
 
 
-# -- compressed_method ("all formats" dropdown) -------------------------------------------------
-
-
 def test_merged_request_accepts_compressed_method():
-    # Defaults to None; any scheme alias is accepted (validation happens in the backend registry).
     assert ExportMergedModelRequest(save_directory = "/tmp/x").compressed_method is None
     for alias in ("fp8", "fp8_static", "w8a8", "w8a16", "w4a16", "mxfp4", "mxfp8", "nvfp4"):
         r = ExportMergedModelRequest(save_directory = "/tmp/x", compressed_method = alias)
@@ -275,7 +244,6 @@ def test_merged_request_accepts_compressed_method():
 
 
 def test_export_merged_resolves_alias_via_registry():
-    # The scheme + suffix must come from unsloth.save's registry normalizer, not a hardcoded dict.
     m = _func_src("core/export/export.py", "export_merged_model")
     assert "compressed_method" in m
     assert "_normalize_compressed_method(compressed_alias)" in m

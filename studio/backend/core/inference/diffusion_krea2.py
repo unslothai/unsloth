@@ -124,8 +124,7 @@ def load_krea2_text_encoder(
 def _read_model_index(path: Path, source: str) -> dict[str, Any]:
     try:
         model_index = json.loads(path.read_text(encoding = "utf-8-sig"))
-    # A nesting bomb raises RecursionError, not a ValueError, so it needs naming separately or it stays the one raw
-    # traceback left. diffusion_families.pipeline_class_from_index does the same.
+    # RecursionError (nesting bomb) is not a ValueError.
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ValueError(
             f"Unable to read valid model_index.json from {source} at {path}: {exc}"
@@ -151,8 +150,6 @@ def _load_model_index(
     except OSError:
         pass
     if is_local_dir:
-        # A local checkpoint dir without the file must fail clearly here, else hf_hub_download dies with an opaque
-        # HFValidationError.
         raise FileNotFoundError(f"model_index.json not found in local model dir {repo_id}")
     from huggingface_hub import hf_hub_download
 
@@ -196,8 +193,6 @@ def load_krea2_pipeline(
     check_cancelled()
     import diffusers
 
-    # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare
-    # AttributeError, so fail first with the fix.
     if not hasattr(diffusers, "Krea2Pipeline"):
         from .diffusion_families import DIFFUSERS_UPDATE_REMEDY
         raise RuntimeError(
@@ -208,8 +203,6 @@ def load_krea2_pipeline(
 
     token = hf_token or None
     cache_dir = _live_cache_dir()
-    # A few KB, and it configures the components, so it is read before them: read last, a corrupt index only surfaced
-    # after the encoder, the VAE and the 26 GB transformer were already built.
     model_index = _load_model_index(repo_id, hf_token = token, local_files_only = local_files_only)
     check_cancelled()
     tokenizer = load_krea2_tokenizer(

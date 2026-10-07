@@ -20,12 +20,9 @@ from utils.paths import is_local_path
 
 logger = get_logger(__name__)
 
-# Orgs we auto-enable remote code for.
 TRUSTED_ORGS: frozenset[str] = frozenset({"unsloth", "nvidia"})
 
-# Keyed on (name, verify_remote, token) so an unauthenticated failure cannot poison a later
-# authenticated lookup; the token is hashed, never stored raw. And on the endpoint, which
-# decides who owns the name.
+# Keyed on token hash and endpoint so an unauthenticated failure cannot poison later lookups.
 _verdict_cache: dict[tuple[str, bool, str, str], bool] = {}
 
 
@@ -92,7 +89,6 @@ def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool, endpoint:
     if ns is None or ns not in TRUSTED_ORGS:
         return False
 
-    # Offline: trust the shape (Hub intentionally unreachable).
     if not verify_remote or _env_offline():
         return True
 

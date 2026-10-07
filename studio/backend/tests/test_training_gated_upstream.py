@@ -24,7 +24,6 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    # Stub training dependencies absent from the backend pytest environment.
     if name in sys.modules:
         return
     try:
@@ -47,9 +46,7 @@ _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat1
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
-# core.training.trainer imports torch at module scope. A runner without it errored the whole
-# module out, which reads as a red CI leg rather than as "this runner cannot answer": skip
-# honestly instead. The staging legs install torch so the skip does not make them vacuous.
+# core.training.trainer imports torch at module scope; skip rather than error.
 pytest.importorskip("torch", reason = "core.training.trainer imports torch at module scope")
 
 import core.training.trainer as trainer_mod  # noqa: E402
@@ -78,9 +75,8 @@ _TABLES = (
 
 @pytest.fixture(autouse = True)
 def _clear_mirror_caches():
-    # Both lookups are lru_cached and several tests point them at a tmp_path package, so a
-    # stale entry would otherwise decide the next test's answer. getattr, because the mapper
-    # fixture swaps _mapper_tables for a plain lambda that has no cache to clear.
+    # Both lookups are lru_cached; clear between tests. getattr: the mapper fixture swaps
+    # _mapper_tables for an uncached lambda.
     def clear():
         for lookup in (unsloth_mirror._mapper_tables, unsloth_mirror._bad_mappings):
             getattr(lookup, "cache_clear", lambda: None)()
@@ -92,18 +88,11 @@ def _clear_mirror_caches():
 
 @pytest.fixture(autouse = True)
 def _torch_trainer(monkeypatch):
-    # UnslothTrainer.__new__ hands back _MLXTrainerAdapter when should_use_mlx_training_backend()
-    # is true, and that adapter has no pre_detect_and_load_tokenizer at all. On a real Apple
-    # Silicon runner every test here that builds a trainer therefore exercised the MLX adapter
-    # and died with AttributeError, which the Linux and Windows legs could never show. These
-    # tests are about the Torch path by construction; the MLX path has its own tests below,
-    # which patch core.training.training and so are unaffected by this.
+    # On Apple Silicon UnslothTrainer.__new__ returns _MLXTrainerAdapter; these tests target
+    # the Torch path.
     import core.training.training as training_mod
 
-    # Patch the definition AND trainer.py's module-scope copy of the name. The route resolves
-    # it from core.training.training at call time, trainer.py bound it at import, and
-    # trainer._metadata_lookup_name re-imports it inside the function; a single patch leaves
-    # one of the three on the real answer, which on Apple Silicon is True.
+    # Patch the definition AND trainer.py's copy; a single patch leaves one on the real answer.
     for module in (training_mod, trainer_mod):
         monkeypatch.setattr(
             module, "should_use_mlx_training_backend", lambda *a, **kw: False, raising = False
@@ -126,9 +115,7 @@ def mapper(monkeypatch):
         ("meta-llama/Meta-Llama-3-70B-Instruct", False, None),
         ("google/gemma-4-26B-A4B", False, "unsloth/gemma-4-26B-A4B"),
         ("google/gemma-4-26B-A4B", True, None),
-        # A public Unsloth repo is not automatically a fixed point: see
-        # test_an_unsloth_id_is_not_a_fixed_point. get_model_name resolves this one back
-        # through INT_TO_FLOAT_MAPPER for a 16-bit load.
+        # get_model_name maps this back through INT_TO_FLOAT_MAPPER for a 16-bit load.
         ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", False, "unsloth/gemma-3-270m-it"),
         ("google/gemma-2-2b-jpn-it", True, None),
         ("google/gemma-2-2b-jpn-it", False, None),
@@ -144,8 +131,7 @@ def test_mirror_is_the_repo_the_loader_substitutes(mapper, name, load_in_4bit, m
 @pytest.mark.parametrize(
     "name,mirror",
     [
-        # get_model_name corrects these after the table lookup. The uncorrected name
-        # unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit does not exist on the Hub at all.
+        # get_model_name corrects these; the uncorrected name does not exist on the Hub.
         ("Qwen/Qwen3-30B-A3B", "unsloth/Qwen3-30B-A3B"),
         ("Qwen/Qwen3-30B-A3B-Base", "unsloth/Qwen3-30B-A3B-Base"),
         ("Qwen/Qwen3-32B", "unsloth/Qwen3-32B-bnb-4bit"),
@@ -172,8 +158,7 @@ def test_corrections_are_read_from_the_real_loader_source():
     ],
 )
 def test_unreadable_corrections_redirect_nothing(mapper, monkeypatch, tmp_path, source):
-    # None, not {}: an uncorrected lookup can name a repo that does not exist, so the mirror
-    # has to fall back to the name the caller picked rather than to a repo Unsloth never loads.
+    # None, not {}: an uncorrected lookup can name a nonexistent repo.
     (tmp_path / "loader_utils.py").write_text(source)
     monkeypatch.setattr(unsloth_mirror, "_unsloth_models_dir", lambda: tmp_path)
     unsloth_mirror._bad_mappings.cache_clear()
@@ -193,7 +178,6 @@ def test_mapper_is_read_from_the_file_without_importing_unsloth(monkeypatch, tmp
         "FLOAT_TO_INT_MAPPER = {}\n"
         "MAP_TO_UNSLOTH_16bit = {'google/gemma-3-270m-it': 'unsloth/gemma-3-270m-it'}\n"
     )
-    # Ships beside mapper.py in every real install, and the corrections are read from it.
     (package / "models" / "loader_utils.py").write_text("BAD_MAPPINGS = {}\n")
     spec = importlib.util.spec_from_file_location(
         "unsloth", package / "__init__.py", submodule_search_locations = [str(package)]
@@ -360,8 +344,7 @@ def test_gated_check_admits_what_the_worker_can_load(mapper, monkeypatch, model,
 
 
 def test_a_transient_auth_check_failure_is_retried_then_fails_open(mapper, monkeypatch):
-    # A single timeout used to admit the run, which then died in the worker with the raw Hub
-    # error. The model_info probe above it already retries on two timeouts.
+    # A single timeout must not admit the run.
     class _Flaky(_Session):
         def get(self, url, **kwargs):
             self.urls.append(url)
@@ -414,10 +397,8 @@ def test_a_4bit_public_copy_admits_a_gated_upstream(mapper, monkeypatch):
 
 
 def test_a_mirror_in_either_load_mode_admits_the_model(mapper, monkeypatch):
-    # Llama-3-70B-Instruct maps for 4-bit only, gemma-4-26B-A4B for 16-bit only. This process
-    # cannot tell which mode the worker lands in (full finetune, latest-transformers sidecar
-    # and an unusable bitsandbytes all force 16-bit, and the last needs torch to detect), so
-    # either mapping admits. The alternative refuses models the worker would have trained.
+    # Mapping exists in only one mode; this process cannot tell which mode the worker uses,
+    # so either mapping admits.
     session = _Session(_http_error(401))
     _route(monkeypatch, gated = "manual", session = session)
 
@@ -427,7 +408,6 @@ def test_a_mirror_in_either_load_mode_admits_the_model(mapper, monkeypatch):
 
 
 def test_a_gated_model_with_no_mirror_in_any_mode_is_still_refused(mapper, monkeypatch):
-    # The widening above must not reach the PR's headline case.
     session = _Session(_http_error(401))
     _route(monkeypatch, gated = "manual", session = session)
 
@@ -438,8 +418,7 @@ def test_a_gated_model_with_no_mirror_in_any_mode_is_still_refused(mapper, monke
 
 
 def test_the_start_route_does_not_pass_a_guessed_load_mode(mapper, monkeypatch):
-    # Regression guard for the signature: a 4th positional argument here broke stubs in
-    # test_account_cached_resource_paths and test_training_ambient_hf_token.
+    # Signature guard: a 4th positional argument broke stubs in other tests.
     import inspect
 
     params = list(inspect.signature(tr._remote_untrainable_model_format).parameters)
@@ -471,10 +450,8 @@ def test_the_start_route_does_not_pass_a_guessed_load_mode(mapper, monkeypatch):
 
 
 def test_a_full_finetune_of_a_gated_unmirrored_model_is_still_refused(mapper, monkeypatch):
-    # Full Finetuning is forced to 16-bit by _build_training_worker_config. The route no longer
-    # derives that, because it cannot derive the other two flips (sidecar, unusable
-    # bitsandbytes) without importing torch; a model with no mirror in EITHER mode is refused
-    # regardless, which is what this path has to keep doing.
+    # The route cannot derive the 16-bit flips without torch; a model with no mirror in
+    # EITHER mode is refused regardless.
     session = _Session(_http_error(401))
     _route(monkeypatch, gated = "manual", session = session)
     monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
@@ -497,8 +474,7 @@ def test_a_full_finetune_of_a_gated_unmirrored_model_is_still_refused(mapper, mo
     "config_4bit,sidecar,expected",
     [
         (True, False, True),
-        # The load is flipped to 16-bit by _effective_training_load_in_4bit, so pre-detect has
-        # to read the 16-bit mirror or it inspects a repo the loader never fetches.
+        # Load flipped to 16-bit, so pre-detect must read the 16-bit mirror.
         (True, True, False),
         (False, False, False),
         (False, True, False),
@@ -514,7 +490,6 @@ def test_pre_detect_follows_the_sidecar_flip_like_the_load_does(
     config = {"load_in_4bit": config_4bit}
     assert worker_mod._pre_detect_load_in_4bit(config, "google/gemma-3-270m-it", None) is expected
 
-    # and it agrees with the mode the real load uses, for every case the load does not refuse
     from core.training.provenance import effective_training_load_in_4bit
 
     assert effective_training_load_in_4bit(config, "google/gemma-3-270m-it", None) is expected
@@ -525,8 +500,7 @@ def test_pre_detect_follows_the_sidecar_flip_like_the_load_does(
     [(True, "unsloth/gemma-3-270m-it-unsloth-bnb-4bit"), (False, "unsloth/gemma-3-270m-it")],
 )
 def test_pre_detect_follows_the_bitsandbytes_fallback(mapper, monkeypatch, bnb_ok, expected):
-    # from_pretrained clears load_in_4bit when bitsandbytes is unusable, BEFORE it calls
-    # get_model_name, so a 4-bit request resolves the 16-bit mapping on a Mac or CPU install.
+    # from_pretrained clears load_in_4bit when bitsandbytes is unusable, before get_model_name.
     monkeypatch.setattr(trainer_mod, "_bitsandbytes_allows_4bit", lambda: bnb_ok)
     assert (
         trainer_mod._metadata_lookup_name(
@@ -558,10 +532,7 @@ def test_load_model_gate_checks_the_repo_the_loader_fetches(mapper, monkeypatch)
 
 
 def test_mlx_has_no_mirror_so_the_check_still_runs(mapper, monkeypatch):
-    # unsloth_zoo/mlx/loader.py only remaps ids already under unsloth/ (stripping bnb
-    # suffixes); it never consults the upstream-to-Unsloth mapper. _run_mlx_training hands
-    # model_load_name straight to FastMLXModel.from_pretrained, so on Apple Silicon the worker
-    # fetches the gated upstream and a Torch mapping proves nothing.
+    # The MLX loader never consults the Torch mapper, so a Torch mapping proves nothing there.
     import core.training.training as training_mod
 
     session = _Session(_http_error(401))
@@ -586,10 +557,7 @@ def test_mlx_pre_detect_reads_the_repo_the_mlx_loader_fetches(mapper, monkeypatc
 
 
 def test_an_unreadable_mapper_admits_instead_of_refusing(monkeypatch):
-    # The tables live in the installed unsloth package and find_spec can land on a directory
-    # with no models/mapper.py under it, which is how this was found: a real Studio install
-    # answered None for every lookup and refused google/gemma-3-270m-it, a model it trains.
-    # Unknown must admit, the same way an unanswered auth-check does.
+    # find_spec can find no models/mapper.py; unknown must admit, like an unanswered auth check.
     monkeypatch.setattr(unsloth_mirror.importlib.util, "find_spec", lambda name: None)
     unsloth_mirror._mapper_tables.cache_clear()
     unsloth_mirror._bad_mappings.cache_clear()
@@ -605,9 +573,7 @@ def test_an_unreadable_mapper_admits_instead_of_refusing(monkeypatch):
 
 
 def test_an_embedding_run_has_no_mirror_so_the_check_still_runs(mapper, monkeypatch):
-    # _run_embedding_training's primary path is SentenceTransformer(model_name, ...) with the
-    # name as given (unsloth/models/sentence_transformer.py), so the mapper never runs and a
-    # Torch mapping says nothing about what that backend fetches.
+    # Embedding training loads the name as given, so the mapper never runs.
     session = _Session(_http_error(401))
     _route(monkeypatch, gated = "manual", session = session)
 
@@ -645,9 +611,7 @@ def test_the_start_route_passes_the_embedding_flag(mapper, monkeypatch):
 
 
 def test_the_security_scan_covers_the_repo_the_loader_substitutes(mapper, monkeypatch):
-    # The mapper can send the download somewhere other than the picked name; scanning only the
-    # picked name would let the bytes actually fetched past the malware scan and the consent
-    # fingerprint.
+    # Scan the mapped download target, not just the picked name.
     import core.training.worker as worker_mod
 
     scanned: list[str] = []
@@ -679,10 +643,7 @@ def test_the_security_scan_covers_the_repo_the_loader_substitutes(mapper, monkey
 
 
 def test_the_security_scan_covers_both_load_modes(mapper, monkeypatch):
-    # The sidecar and the bitsandbytes fallback both change which mirror a run fetches, and
-    # neither can be read here: this runs before the torchao stub and before the MLX path's
-    # first torch import, so it must not reach ALLOW_BITSANDBYTES or core.training.trainer.
-    # Scanning both candidates is a superset of whichever the run picks.
+    # The sidecar and bnb fallback cannot be read here (runs before torch); scan both candidates.
     import core.training.worker as worker_mod
     import utils.security as security_mod
 
@@ -720,16 +681,13 @@ def test_the_security_scan_covers_both_load_modes(mapper, monkeypatch):
 
 
 def test_the_security_scan_imports_nothing_heavy():
-    # It runs before the Windows ROCm torchao stub and after the MLX path's "no torch yet"
-    # guarantee, so reaching core.training.trainer (which imports unsloth at module scope)
-    # would initialise torch ahead of the patches those paths depend on.
+    # Must not import core.training.trainer: it would initialise torch before the patches.
     import ast
     import pathlib as _pathlib
 
     import core.training.worker as worker_mod
 
-    # From the module, not a relative path: pytest is run from the repo root in CI and from
-    # studio/backend locally, and a relative path only resolves in the second.
+    # From the module, not a relative path: pytest runs from different cwds.
     src = _pathlib.Path(worker_mod.__file__).read_text()
     fn = next(
         node
@@ -750,11 +708,9 @@ def test_the_security_scan_imports_nothing_heavy():
 @pytest.mark.parametrize(
     "name,load_in_4bit,mirror",
     [
-        # Verified against unsloth.models.loader_utils.get_model_name. A 16-bit load of an
-        # explicit dynamic-quant id resolves back through INT_TO_FLOAT_MAPPER...
+        # Verified against get_model_name: 16-bit resolves through INT_TO_FLOAT_MAPPER...
         ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", False, "unsloth/gemma-3-270m-it"),
-        # ...while a 4-bit load keeps it, so the tables resolve nothing and BAD_MAPPINGS is
-        # applied to the input name instead, landing on a DIFFERENT repo.
+        # ...while 4-bit keeps it, and BAD_MAPPINGS lands on a different repo.
         ("unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit", True, "unsloth/Qwen3-30B-A3B"),
         # An id the loader really does leave alone still answers None.
         ("unsloth/gemma-3-270m-it-unsloth-bnb-4bit", True, None),
@@ -762,18 +718,12 @@ def test_the_security_scan_imports_nothing_heavy():
     ],
 )
 def test_an_unsloth_id_is_not_a_fixed_point(mapper, name, load_in_4bit, mirror):
-    # These used to return None from an early "starts with unsloth/" branch, which let the
-    # security scan check a repo the loader never fetches while the one it does fetch went
-    # unscanned.
     assert unsloth_mirror.unsloth_public_mirror(name, load_in_4bit) == mirror
 
 
 @pytest.mark.parametrize("config_key", ["is_embedding", "mlx"])
 def test_the_scan_does_not_expand_mirrors_off_the_torch_path(mapper, monkeypatch, config_key):
-    # _run_mlx_training and _run_embedding_training never consult this mapper, so a mirror
-    # there is a repo that will never be fetched: scanning it can block a valid run on an
-    # unrelated repo's files and fingerprints remote-code consent against something that is
-    # never loaded.
+    # MLX and embedding runs never use this mapper, so scanning a mirror there is wrong.
     import core.training.training as training_mod
     import core.training.worker as worker_mod
     import utils.security as security_mod
@@ -848,10 +798,8 @@ def test_a_configured_16bit_load_does_not_scan_the_4bit_mirror(mapper, monkeypat
 
 
 def test_the_scan_covers_the_repo_left_after_the_4bit_suffix_is_stripped(mapper, monkeypatch):
-    # Where ALLOW_PREQUANTIZED_MODELS is false (ROCm Instinct on bitsandbytes < 0.49.2)
-    # loader.py:581 strips the suffix off the name the mapper produced and downloads that
-    # repo. Meta-Llama-3-70B-Instruct maps only in the 4-bit direction, so the stripped repo
-    # is the one that actually gets fetched there.
+    # Without ALLOW_PREQUANTIZED_MODELS (ROCm, bnb < 0.49.2) loader.py strips the suffix off
+    # the mapped name and downloads that repo.
     import core.training.worker as worker_mod
     import utils.security as security_mod
 
@@ -879,8 +827,7 @@ def test_the_scan_covers_the_repo_left_after_the_4bit_suffix_is_stripped(mapper,
         )
         is None
     )
-    # Lower case: that is how the mapper stores this value, and the strip preserves whatever
-    # case it is handed (HF cache directories are case sensitive).
+    # Lower case as the mapper stores it; HF cache dirs are case sensitive.
     assert "unsloth/llama-3-70b-instruct-bnb-4bit" in scanned
     assert "unsloth/llama-3-70b-instruct" in scanned
 
@@ -917,9 +864,7 @@ def test_the_suffix_strip_matches_the_loader(name, stripped):
 
 @pytest.mark.parametrize("backend", ["mlx", "embedding"])
 def test_an_unreadable_mapper_does_not_admit_a_non_torch_backend(monkeypatch, backend):
-    # The fail-open for an unreadable mapper is about the Torch loader, whose target the
-    # mapper decides. MLX and embedding runs fetch the picked repo directly, so there the
-    # auth-check is the only thing between an inaccessible gated model and a worker failure.
+    # MLX and embedding fetch the picked repo, so the auth check is the only guard there.
     import core.training.training as training_mod
     import utils.models.unsloth_mirror as mirror_mod
 
@@ -940,8 +885,7 @@ def test_an_unreadable_mapper_does_not_admit_a_non_torch_backend(monkeypatch, ba
 
 
 def test_a_lora_adapter_base_gets_its_own_mirror_scanned(mapper, monkeypatch):
-    # loader.py:756-765 runs get_model_name over peft_config.base_model_name_or_path, so the
-    # adapter's BASE has a mirror of its own and that mirror is what gets downloaded.
+    # loader.py maps the adapter's base_model_name_or_path, so the base's mirror is fetched.
     import core.training.worker as worker_mod
     import utils.models.model_config as model_config_mod
     import utils.security as security_mod

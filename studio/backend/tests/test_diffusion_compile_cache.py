@@ -35,7 +35,6 @@ _BEGIN_KW = dict(
 )
 
 
-# --------------------------------------------------------------------------- fingerprint
 def test_environment_fingerprint_has_hard_dimensions():
     fp = cc.environment_fingerprint()
     for k in ("torch", "torch_cuda", "triton", "diffusers", "gpu_name", "gpu_capability"):
@@ -146,7 +145,6 @@ def test_repeated_blocks_change_key():
     assert k1 != k2
 
 
-# ----------------------------------------------------------------------------- env knobs
 @pytest.mark.parametrize(
     "raw,expected",
     [
@@ -169,7 +167,6 @@ def test_cache_mode_default_auto(monkeypatch):
     assert cc.cache_mode() == "auto"
 
 
-# ------------------------------------------------------------------------------ disabled
 def test_begin_returns_none_when_disabled(monkeypatch):
     monkeypatch.setenv(cc._ENV_MODE, "0")
     assert cc.begin(transformer = _transformer(), **_BEGIN_KW) is None
@@ -178,12 +175,11 @@ def test_begin_returns_none_when_disabled(monkeypatch):
 def test_begin_returns_none_without_megacache_api(monkeypatch):
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     fake_torch = types.ModuleType("torch")
-    fake_torch.compiler = types.SimpleNamespace()  # no save/load attrs
+    fake_torch.compiler = types.SimpleNamespace()
     monkeypatch.setitem(__import__("sys").modules, "torch", fake_torch)
     assert cc.begin(transformer = _transformer(), **_BEGIN_KW) is None
 
 
-# ----------------------------------------------------------------- megacache fake + flow
 @pytest.fixture
 def fake_megacache(monkeypatch):
     """Patch torch.compiler save/load with deterministic in-memory behaviour."""
@@ -204,16 +200,14 @@ def fake_megacache(monkeypatch):
 
 
 def test_save_then_load_roundtrip(monkeypatch, tmp_path, fake_megacache):
-    monkeypatch.setenv(cc._ENV_MODE, "on")  # load + save
+    monkeypatch.setenv(cc._ENV_MODE, "on")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
 
-    # First load: cold (no bundle yet).
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx is not None and ctx.hit is False
     assert cc.save(ctx) is True
     assert ctx.bundle.exists() and ctx.manifest_path.exists()
 
-    # Second load with the SAME fingerprint: warm hit.
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2 is not None and ctx2.hit is True
     assert fake_megacache["loaded_with"] == b"ARTIFACT-BYTES"
@@ -225,13 +219,11 @@ def test_auto_mode_saves_by_default(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    assert cc.save(ctx) is True  # first-run warm: auto saves the bundle
+    assert cc.save(ctx) is True
     assert ctx.bundle.exists() and ctx.manifest_path.exists()
 
-    # The next load with the same fingerprint hits the just-saved bundle...
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
-    # ...and does NOT rewrite it under auto (the artifacts on disk are the ones loaded).
     before = ctx2.bundle.stat().st_mtime_ns
     assert cc.save(ctx2) is False
     assert ctx2.bundle.stat().st_mtime_ns == before
@@ -242,7 +234,7 @@ def test_save_env_zero_disables_auto_save(monkeypatch, tmp_path, fake_megacache)
     monkeypatch.setenv(cc._ENV_SAVE, "0")
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    assert cc.save(ctx) is False  # explicit load-only override
+    assert cc.save(ctx) is False
     assert not ctx.bundle.exists()
 
 
@@ -253,7 +245,6 @@ def test_on_mode_resaves_after_hit(monkeypatch, tmp_path, fake_megacache):
     assert cc.save(ctx) is True
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
-    # Distributor mode refreshes the bundle even on a hit (new variants get captured).
     assert cc.save(ctx2) is True
 
 
@@ -262,20 +253,17 @@ def test_new_static_shape_redirties_a_hit(monkeypatch, tmp_path, fake_megacache)
     monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
 
-    # Cold session at 1024: the save records the shape coverage in the manifest.
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.register_shape(ctx, (1024, 1024, 1), static = True)
     assert cc.save(ctx) is True
     manifest = json.loads(ctx.manifest_path.read_text())
     assert manifest["shapes"] == [[1024, 1024, 1]]
 
-    # Warm session: the covered shape does not dirty the context...
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True and ctx2.saved is True
     assert ctx2.shapes == {(1024, 1024, 1)}
     cc.register_shape(ctx2, (1024, 1024, 1), static = True)
     assert cc.save(ctx2) is False
-    # ...but a NEW static shape (its compile just produced new artifacts) does, and the rewritten manifest covers both.
     cc.register_shape(ctx2, (768, 768, 1), static = True)
     assert ctx2.saved is False
     assert cc.save(ctx2) is True
@@ -284,7 +272,6 @@ def test_new_static_shape_redirties_a_hit(monkeypatch, tmp_path, fake_megacache)
 
 
 def test_new_batch_size_is_its_own_static_shape(monkeypatch, tmp_path, fake_megacache):
-    # A static compile produces one artifact PER (w, h, batch): an unseen batch size (incl. an OOM-backoff half) must re-dirty it, a covered one must not.
     monkeypatch.setenv(cc._ENV_MODE, "auto")
     monkeypatch.delenv(cc._ENV_SAVE, raising = False)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
@@ -295,16 +282,15 @@ def test_new_batch_size_is_its_own_static_shape(monkeypatch, tmp_path, fake_mega
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
     cc.register_shape(ctx2, (1024, 1024, 8), static = True)
-    assert cc.save(ctx2) is False  # covered batch: nothing new
+    assert cc.save(ctx2) is False
     cc.register_shape(ctx2, (1024, 1024, 32), static = True)
-    assert ctx2.saved is False  # new batch size: new artifacts to persist
+    assert ctx2.saved is False
     assert cc.save(ctx2) is True
     manifest = json.loads(ctx2.manifest_path.read_text())
     assert manifest["shapes"] == [[1024, 1024, 8], [1024, 1024, 32]]
 
 
 def test_gguf_quant_keys_apart_from_dense():
-    # A GGUF transformer compiles a different graph (the dequant chain), so the load path fingerprints it quant="gguf" and bundles never cross-hit.
     efp = cc.environment_fingerprint()
     base = dict(
         family = "flux.1",
@@ -326,10 +312,9 @@ def test_dynamic_compile_never_dirties(monkeypatch, tmp_path, fake_megacache):
     cc.save(ctx)
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True
-    # A dynamic-shape compile reuses one artifact across shapes: no re-save.
     cc.register_shape(ctx2, (768, 768, 1), static = False)
     assert cc.save(ctx2) is False
-    cc.register_shape(None, (768, 768, 1), static = True)  # no context: no-op
+    cc.register_shape(None, (768, 768, 1), static = True)
 
 
 def test_fingerprint_mismatch_falls_back(monkeypatch, tmp_path, fake_megacache):
@@ -338,13 +323,12 @@ def test_fingerprint_mismatch_falls_back(monkeypatch, tmp_path, fake_megacache):
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.save(ctx)
 
-    # Tamper the manifest's env fingerprint: the exact-match guard must reject the bundle.
     manifest = json.loads(ctx.manifest_path.read_text())
     manifest["env"]["torch"] = "0.0.0-other"
     ctx.manifest_path.write_text(json.dumps(manifest))
 
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    assert ctx2.hit is False  # mismatch -> local compile, non-fatal
+    assert ctx2.hit is False
 
 
 def test_corrupt_bundle_rejected(monkeypatch, tmp_path, fake_megacache):
@@ -352,13 +336,12 @@ def test_corrupt_bundle_rejected(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.save(ctx)
-    ctx.bundle.write_bytes(b"CORRUPTED")  # manifest sha256 no longer matches
+    ctx.bundle.write_bytes(b"CORRUPTED")
 
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is False
 
 
-# ------------------------------------------------------------------------------- restore
 def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     import os
 
@@ -366,9 +349,9 @@ def test_restore_inductor_dir(monkeypatch, tmp_path, fake_megacache):
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path))
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "/tmp/prior-inductor")
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
-    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] != "/tmp/prior-inductor"  # redirected
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] != "/tmp/prior-inductor"
     cc.restore(ctx)
-    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"  # restored
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == "/tmp/prior-inductor"
 
 
 def test_the_import_fallback_matches_the_resolver(monkeypatch):
@@ -431,7 +414,6 @@ def test_an_unparseable_cache_root_never_pins_the_unparseable_path(
     if published is not None:
         assert not cc._toolchain_path_unparseable(published)
         assert not published.startswith(str(root))
-    # The bundle is unaffected either way: only the Inductor pin moves.
     assert ctx.dir.is_dir() and ctx.dir.is_relative_to(root)
 
 
@@ -456,7 +438,6 @@ def test_two_models_under_an_unparseable_root_do_not_share_one_inductor_cache(
     assert one and two and one != two
 
 
-# -------------------------------------------------------------------------- legacy root
 def _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache) -> tuple:
     """Write a bundle under a fake pre-relocation root, then hand back an upgraded install:
     ``(legacy_root, studio_home, legacy_bundle)``, with the environment already pointing at a
@@ -481,18 +462,15 @@ def _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache) -> tuple:
 def test_legacy_bundle_is_read_but_the_new_root_takes_the_writes(
     monkeypatch, tmp_path, fake_megacache
 ):
-    # An upgraded install stays warm without the home directory becoming the write root:
-    # begin() points TORCHINDUCTOR_CACHE_DIR at ctx.dir and save() writes every later bundle.
     legacy, studio_home, legacy_bundle = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
     import os
 
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
 
-    assert ctx.hit is True  # warm: the legacy bundle still counts
+    assert ctx.hit is True
     assert str(ctx.dir).startswith(str(studio_home))
     assert str(os.environ["TORCHINDUCTOR_CACHE_DIR"]).startswith(str(studio_home))
     assert legacy not in ctx.dir.parents
-    # The read fallback migrates: the pair now lives in the write root, byte-identical.
     assert ctx.bundle.read_bytes() == legacy_bundle.read_bytes()
     assert ctx.bundle.parent == ctx.dir
     assert ctx.manifest_path.exists()
@@ -516,7 +494,6 @@ def test_an_interrupted_migration_leaves_no_partial_pair(monkeypatch, tmp_path, 
     def exploding_copyfile(src, dst, *args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
-            # Half a manifest on disk, then death, exactly as interpreter exit kills the thread.
             Path(dst).write_bytes(Path(src).read_bytes()[:3])
             raise OSError("interrupted")
         return real_copyfile(src, dst, *args, **kwargs)
@@ -525,10 +502,7 @@ def test_an_interrupted_migration_leaves_no_partial_pair(monkeypatch, tmp_path, 
 
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
 
-    # The read still served this run from the legacy pair.
     assert ctx.hit is True
-    # Nothing partial is published under a name a later run reads: the temp file the copy died
-    # inside is not the live manifest.
     if ctx.manifest_path.exists():
         assert ctx.manifest_path.read_bytes() == (legacy / ctx.key / cc._MANIFEST_NAME).read_bytes()
     leftovers = [q.name for q in ctx.dir.iterdir() if q.name.endswith(cc._TEMP_SUFFIX)]
@@ -543,7 +517,7 @@ def test_migrated_bundle_serves_the_next_run_without_the_legacy_root(
 
     import shutil
 
-    shutil.rmtree(legacy)  # the old cache gets cleaned up: the warm start must survive
+    shutil.rmtree(legacy)
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx.hit is True
 
@@ -555,14 +529,11 @@ def test_load_only_mode_reads_legacy_without_writing_to_it(monkeypatch, tmp_path
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
 
     assert ctx.hit is True
-    assert not (
-        ctx.dir / legacy_bundle.name
-    ).exists()  # a read-only cache stays read-only, both roots
+    assert not (ctx.dir / legacy_bundle.name).exists()
     assert legacy_bundle.exists()
 
 
 def test_key_absent_from_legacy_never_writes_into_it(monkeypatch, tmp_path, fake_megacache):
-    # The old fallback swapped the WHOLE root, so even an unheld key wrote into the home dir.
     legacy, studio_home, legacy_bundle = _seed_legacy_bundle(monkeypatch, tmp_path, fake_megacache)
     before = {p.name for p in legacy.iterdir()}
 
@@ -576,8 +547,7 @@ def test_key_absent_from_legacy_never_writes_into_it(monkeypatch, tmp_path, fake
 
 
 def test_portable_mode_never_falls_back_to_the_home_directory(monkeypatch, tmp_path):
-    # begin() points TORCHINDUCTOR_CACHE_DIR inside this root, so a fallback here would write
-    # GBs into the host machine's home directory.
+    # begin() points TORCHINDUCTOR_CACHE_DIR inside this root; a fallback here writes GBs into home.
     monkeypatch.delenv(cc._ENV_DIR, raising = False)
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
@@ -589,7 +559,7 @@ def test_portable_mode_never_falls_back_to_the_home_directory(monkeypatch, tmp_p
 
     assert root != legacy
     assert str(root).startswith(str(tmp_path / "portable"))
-    assert cc.legacy_cache_root() is None  # not even read: not part of the install
+    assert cc.legacy_cache_root() is None
 
 
 def test_explicit_dir_override_ignores_the_legacy_root(monkeypatch, tmp_path):
@@ -603,7 +573,6 @@ def test_explicit_dir_override_ignores_the_legacy_root(monkeypatch, tmp_path):
 
 
 def test_an_unreadable_legacy_root_is_a_miss_not_a_failure(monkeypatch, tmp_path):
-    # The legacy root is the HOST's home, so it can be on a mount the new cache does not need.
     # Path.exists raises for EACCES and EIO before 3.14, and begin() does not catch around here.
     monkeypatch.delenv(cc._ENV_DIR, raising = False)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -677,9 +646,7 @@ def test_an_unreadable_write_root_falls_back_to_legacy(monkeypatch, tmp_path, fa
     assert ctx.hit is True
 
 
-# ------------------------------------------------------------------ background save worker
-# save_async hands the write to a single module-level daemon worker so a generation stops paying for it. These drive
-# the worker directly, gating the fake save_cache_artifacts on Events so ordering is asserted, never slept on.
+# save_async hands writes to one daemon worker; these gate the fake save on Events, never sleep.
 @pytest.fixture
 def drained():
     """Leave the shared worker idle for the next test whatever this one did."""
@@ -720,7 +687,6 @@ def test_async_save_writes_the_same_bytes_as_sync(monkeypatch, tmp_path, fake_me
     assert async_ctx.bundle.read_bytes() == sync_ctx.bundle.read_bytes()
     a = json.loads(async_ctx.manifest_path.read_text())
     b = json.loads(sync_ctx.manifest_path.read_text())
-    # "created" is a wall clock, everything else must match byte for byte.
     a.pop("created"), b.pop("created")
     assert a == b
     assert async_ctx.saved is True
@@ -735,7 +701,7 @@ def test_async_save_is_a_noop_on_a_clean_context(monkeypatch, tmp_path, fake_meg
     assert cc.wait_for_saves(timeout = 10.0) is True
     ctx2 = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert ctx2.hit is True and ctx2.saved is True
-    assert cc.save_async(ctx2) is False  # a hit has nothing to write
+    assert cc.save_async(ctx2) is False
 
 
 def test_worker_serialises_two_queued_saves(monkeypatch, tmp_path, fake_megacache, drained):
@@ -766,7 +732,6 @@ def test_worker_serialises_two_queued_saves(monkeypatch, tmp_path, fake_megacach
     assert cc.save_async(ctx1) is True
     assert started.wait(10) is True
     assert cc.save_async(ctx2) is True
-    # Deterministic, no sleeping: ctx1 holds the worker and ctx2 is still queued behind it.
     assert cc._worker_active is ctx1
     assert [c is ctx2 for c, _ in cc._worker_queue] == [True]
     assert len(calls) == 1
@@ -806,15 +771,13 @@ def test_redirtied_context_queues_a_second_save(monkeypatch, tmp_path, fake_mega
     assert cc.save_async(ctx) is True
     assert started.wait(10) is True
 
-    # Second generation, new static shape, while the first save is mid-flight.
     cc.register_shape(ctx, (768, 768, 1), static = True)
     assert ctx.saved is False
-    assert cc.save_async(ctx) is True  # queued behind the running one, not dropped
+    assert cc.save_async(ctx) is True
 
     release.set()
     assert cc.wait_for_saves(timeout = 10.0) is True
     assert len(saves) == 2
-    # The in-flight save must NOT have claimed the context clean, and the rewritten manifest covers both shapes.
     assert ctx.saved is True
     assert json.loads(ctx.manifest_path.read_text())["shapes"] == [[768, 768, 1], [1024, 1024, 1]]
 
@@ -827,7 +790,6 @@ def test_sync_env_switch_writes_inline(monkeypatch, tmp_path, fake_megacache, dr
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.register_shape(ctx, (1024, 1024, 1), static = True)
     assert cc.save_async(ctx) is True
-    # No worker involved: the bundle is on disk the moment save_async returns, as it was before the worker existed.
     assert ctx.bundle.exists() and ctx.manifest_path.exists()
     assert ctx.saved is True
     assert cc._worker_active is None and not cc._worker_queue
@@ -847,13 +809,12 @@ def test_worker_failure_is_swallowed_and_logged(monkeypatch, tmp_path, fake_mega
     log = _fake_logger()
     ctx = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     cc.register_shape(ctx, (1024, 1024, 1), static = True)
-    assert cc.save_async(ctx, logger = log) is True  # queuing succeeds; the failure is the worker's
+    assert cc.save_async(ctx, logger = log) is True
     assert cc.wait_for_saves(timeout = 10.0) is True
     assert not ctx.bundle.exists()
     assert ctx.saved is False
     assert any("inductor exploded" in w for w in log.warnings)
 
-    # The worker survives its own failure and takes the next save.
     monkeypatch.setattr(
         torch.compiler, "save_cache_artifacts", lambda: (b"ARTIFACT-BYTES", None), raising = False
     )
@@ -871,7 +832,6 @@ def test_atomic_write_never_publishes_a_partial_file(monkeypatch, tmp_path, fake
     assert cc.save(ctx) is True
     good = ctx.bundle.read_bytes()
 
-    # Fail at the exact moment the finished temp file would be published.
     def exploding_replace(src, dst):
         raise OSError("killed mid-write")
 
@@ -880,7 +840,7 @@ def test_atomic_write_never_publishes_a_partial_file(monkeypatch, tmp_path, fake
     assert cc.save(ctx) is False
     monkeypatch.undo()
 
-    assert ctx.bundle.read_bytes() == good  # the old bundle is still whole and still loadable
+    assert ctx.bundle.read_bytes() == good
     assert [p.name for p in ctx.dir.iterdir() if p.name.endswith(".tmp")] == []
 
 
@@ -889,12 +849,11 @@ def test_atomic_write_replaces_in_place(tmp_path):
     cc._atomic_write(target, b"first")
     cc._atomic_write(target, b"second")
     assert target.read_bytes() == b"second"
-    assert list(tmp_path.iterdir()) == [target]  # no temp files left behind
+    assert list(tmp_path.iterdir()) == [target]
 
 
-# ------------------------------------------------- interrupted saves and bundle collection
-# The manifest is the single commit point and the bundle is content-addressed, so whatever a save is killed in the
-# middle of, what is left on disk is a MATCHING pair. These drive each window of that directly.
+# The manifest is the single commit point and bundles are content-addressed, so a killed save
+# always leaves a MATCHING pair.
 @pytest.fixture
 def mutable_megacache(monkeypatch):
     """Like ``fake_megacache`` but the artifact bytes can change between saves."""
@@ -932,7 +891,6 @@ def test_bundles_are_content_addressed_and_named_by_the_manifest(
     manifest = json.loads(ctx.manifest_path.read_text())
     assert manifest["bundle"] == ctx.bundle.name
     assert manifest["sha256"] == digest
-    # The fixed legacy name is never written any more.
     assert not (ctx.dir / cc._BUNDLE_NAME).exists()
 
 
@@ -955,10 +913,8 @@ def test_an_interrupted_bundle_write_leaves_the_previous_pair_loadable(
     assert cc.save(ctx) is False
     monkeypatch.setattr(cc.os, "replace", real_replace)  # not undo(): the env must survive
 
-    # Nothing half written is visible under a name anything reads, and no temp file is left over.
     assert not doomed.exists()
     assert [p.name for p in ctx.dir.iterdir() if p.name.endswith(".tmp")] == []
-    # The previous pair is untouched and still a real warm start.
     assert live.read_bytes() == live_bytes
     reopened = cc.begin(transformer = _transformer(), **_BEGIN_KW)
     assert reopened.hit is True
@@ -990,7 +946,6 @@ def test_a_bundle_published_without_its_manifest_leaves_the_previous_pair_loadab
     assert cc.save(ctx) is False
     monkeypatch.setattr(cc, "_atomic_write", real_atomic)
 
-    # The new bundle is on disk but nothing names it; the committed manifest still names the old one, intact.
     assert orphan.exists() and orphan.read_bytes() == b"ARTIFACT-TWO-IS-A-DIFFERENT-LENGTH"
     assert live.read_bytes() == live_bytes
     assert json.loads(ctx.manifest_path.read_text())["bundle"] == live.name
@@ -998,15 +953,12 @@ def test_a_bundle_published_without_its_manifest_leaves_the_previous_pair_loadab
     assert reopened.hit is True
     assert reopened.bundle == live
 
-    # And orphans do not accumulate. A save of the SAME artifacts adopts the orphan rather than rewriting it
-    # (that is what content addressing buys), retiring the old bundle instead...
     monkeypatch.setattr(cc, "_GC_GRACE_SECONDS", -1.0)
     reopened.saved = False
     assert cc.save(reopened) is True
     assert reopened.bundle == orphan and orphan.exists()
     assert not live.exists()
 
-    # ...and a save of DIFFERENT artifacts collects it like any other superseded bundle.
     mutable_megacache["bytes"] = b"ARTIFACT-THREE"
     reopened.saved = False
     assert cc.save(reopened) is True
@@ -1046,19 +998,16 @@ def test_collection_never_removes_the_live_bundle_or_one_a_racing_process_just_w
 
     ctx = _cold_pair(monkeypatch, tmp_path)
 
-    # A bundle another process has written but not yet committed a manifest for is named by nothing. Deleting it
-    # there would hand that process the broken pair this layout exists to prevent, so the grace window spares it.
+    # An uncommitted bundle from another process is named by nothing; the grace window spares it.
     stray = ctx.dir / cc._bundle_name("f" * 64)
     stray.write_bytes(b"written by another process, manifest still pending")
     assert cc._collect_superseded(ctx.dir, None) == []
     assert stray.exists()
 
-    # Once it is old enough to not be anybody's in-flight save, it goes.
     _os.utime(stray, (0, 0))
     assert cc._collect_superseded(ctx.dir, None) == [stray.name]
     assert not stray.exists()
 
-    # The bundle the manifest ON DISK names is never a candidate, however old it is.
     _os.utime(ctx.bundle, (0, 0))
     assert cc._collect_superseded(ctx.dir, None) == []
     assert ctx.bundle.exists()
@@ -1080,7 +1029,6 @@ def test_a_manifest_from_before_content_addressing_still_hits(
     assert reopened.hit is True
     assert reopened.bundle == legacy
 
-    # And the legacy file is collected only once a new pair supersedes it.
     monkeypatch.setattr(cc, "_GC_GRACE_SECONDS", -1.0)
     mutable_megacache["bytes"] = b"ARTIFACT-TWO-IS-A-DIFFERENT-LENGTH"
     reopened.saved = False
@@ -1092,9 +1040,6 @@ def test_a_manifest_from_before_content_addressing_still_hits(
 def test_a_bundle_spared_by_the_grace_window_is_collected_when_the_key_is_opened_again(
     monkeypatch, tmp_path, mutable_megacache
 ):
-    # Two saves for one key inside the grace window: the first bundle is superseded but too young
-    # to collect, and the second save is the last thing that would ever have looked at it. Opening
-    # the key again is what collects it, so the window costs a delay rather than the disk.
     ctx = _cold_pair(monkeypatch, tmp_path)
     first = ctx.bundle
 
@@ -1104,11 +1049,9 @@ def test_a_bundle_spared_by_the_grace_window_is_collected_when_the_key_is_opened
     assert cc.save(ctx) is True
     second = ctx.bundle
 
-    # Still there: inside an hour-long grace, the save left it alone.
     assert second != first
     assert first.exists()
 
-    # Next open of the same key, with that grace expired, takes it.
     monkeypatch.setattr(cc, "_GC_GRACE_SECONDS", 60.0)
     import os as _os
 
@@ -1123,10 +1066,7 @@ def test_a_bundle_spared_by_the_grace_window_is_collected_when_the_key_is_opened
 def test_a_bundle_rejected_on_its_checksum_is_rewritten_rather_than_kept(
     monkeypatch, tmp_path, mutable_megacache
 ):
-    # Corruption on disk gives a load that fails the checksum. The recompile that follows produces
-    # the same artifacts and therefore the same content-addressed NAME, so the exists() shortcut
-    # would leave the corrupt bytes in place under a manifest that names them and the cache could
-    # never come back. The rejection is remembered and the file overwritten.
+    # A recompile yields the same content-addressed name, so a rejected bundle must be overwritten.
     ctx = _cold_pair(monkeypatch, tmp_path)
     good = ctx.bundle.read_bytes()
     ctx.bundle.write_bytes(b"CORRUPT" + good[7:])
@@ -1139,21 +1079,17 @@ def test_a_bundle_rejected_on_its_checksum_is_rewritten_rather_than_kept(
     assert cc.save(reopened) is True
     assert reopened.bundle.read_bytes() == good
 
-    # And the next start hits again, which is the whole point: the cache healed itself.
     assert cc.begin(transformer = _transformer(), **_BEGIN_KW).hit is True
 
 
 def test_a_temp_file_left_by_a_killed_save_is_collected(monkeypatch, tmp_path, mutable_megacache):
-    # _atomic_write's finally does not run when the interpreter tears the daemon save thread down
-    # inside fh.write, so its temp file survives, and it is as large as the bundle. Collection now
-    # recognises it, under the same grace window that protects a write actually in flight.
+    # _atomic_write's finally does not run when the interpreter kills the daemon thread mid-write.
     import os as _os
 
     ctx = _cold_pair(monkeypatch, tmp_path)
     stranded = ctx.dir / f".{ctx.bundle.name}.abcd1234{cc._TEMP_SUFFIX}"
     stranded.write_bytes(b"half of a multi-GB bundle")
 
-    # Fresh, so it could still be somebody's in-flight write.
     assert cc._collect_superseded(ctx.dir, None) == []
     assert stranded.exists()
 
@@ -1164,8 +1100,7 @@ def test_a_temp_file_left_by_a_killed_save_is_collected(monkeypatch, tmp_path, m
 
 
 def test_mark_recompiled_dirties_a_context_whose_shape_is_already_registered(tmp_path):
-    # Automatic dynamic recompiles on the first new text length at an unchanged (width, height, batch); register_shape
-    # sees no new key, so the recompiled graphs only reach disk if the context is re-dirtied explicitly.
+    # Automatic dynamic recompiles at an unchanged key, so the context must be re-dirtied explicitly.
     ctx = cc.CacheContext(
         key = "abc",
         dir = tmp_path / "abc",
@@ -1182,11 +1117,10 @@ def test_mark_recompiled_dirties_a_context_whose_shape_is_already_registered(tmp
     assert ctx.saved is True and ctx.dirty_seq == seq
     cc.mark_recompiled(ctx)
     assert ctx.saved is False and ctx.dirty_seq == seq + 1
-    cc.mark_recompiled(None)  # no context, no error
+    cc.mark_recompiled(None)
 
 
 def test_a_failed_or_cancelled_render_still_dirties_the_bundle_after_a_recompile():
-    # The exception path marks the context too: a later render reusing the generalised graph compiles nothing.
     import inspect
 
     from core.inference import diffusion
@@ -1198,7 +1132,6 @@ def test_a_failed_or_cancelled_render_still_dirties_the_bundle_after_a_recompile
     assert "compile_cache.mark_recompiled(state.compile_cache_ctx)" in src[handler:reraise]
 
 
-# ---------------------------------------------------------------------------- eviction
 def _key_dir(root: Path, name: str, size: int, age_s: float) -> Path:
     import os
     import time

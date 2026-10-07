@@ -29,8 +29,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-# llama-server's table (tools/server/server.cpp) minus /props, so the set is complete
-# rather than growing per complaint. Bare only, so it cannot shadow /api/ or /v1/.
+# llama-server's route table (tools/server/server.cpp) minus /props; bare paths only.
 _ENGINE_PROBE_PATHS = frozenset(
     {
         "apply-template",
@@ -61,11 +60,9 @@ _ENGINE_PROBE_PATHS = frozenset(
     }
 )
 
-# /slots/:id_slot is the one dynamic entry in that table, and Studio calls it itself.
 _ENGINE_PROBE_PREFIXES = ("slots/",)
 
-# The /v1 entries Studio does not implement. A test asserts each is really absent from
-# the assembled app, so implementing one fails CI instead of being shadowed by a 404.
+# A test asserts each is absent from the app, so implementing one fails CI.
 _UNSERVED_V1_PROBE_PATHS = frozenset(
     {
         "v1/chat/completions/control",
@@ -98,7 +95,6 @@ def _studio_version() -> str:
     """The version string, resolved once: get_studio_version() shells out to git twice
     on a source checkout, and uncached that lands on the event loop per probe."""
     try:
-        # Inside the guard: an ImportError here would 500 a probe about something else.
         from utils.studio_version import get_studio_version
         return get_studio_version()
     except Exception:  # noqa: BLE001 -- discovery must not 500 on a version lookup
@@ -111,7 +107,7 @@ def _loaded_public_model_id() -> Optional[str]:
     llama_backend = inf.get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
         return inf._llama_public_model_id(llama_backend)
-    # peek, not get: the orchestrator's cold build waits on hardware detection.
+    # peek, not get: the cold build waits on hardware detection.
     orchestrator = inf._peek_inference_backend()
     if orchestrator is not None and getattr(orchestrator, "active_model_name", None):
         return inf._orchestrator_public_model_id(orchestrator)
@@ -126,7 +122,6 @@ def _server_props() -> dict:
     llama_loaded = bool(getattr(llama_backend, "is_loaded", False))
     props: dict[str, Any] = {}
     if llama_loaded:
-        # Documented not to raise, but a probe is the wrong place to find out it does.
         try:
             upstream = llama_backend._query_server_props()
         except Exception:  # noqa: BLE001
@@ -138,17 +133,14 @@ def _server_props() -> dict:
     if public_id:
         props["model_path"] = public_id
 
-    # These describe the CHILD's route table and web UI, not ours: Studio launches with --metrics, so
-    # endpoint_metrics arrives true while public /metrics 404s here (tools/server/server-context.cpp puts all three
-    # flags in the payload).
+    # These describe the child's routes/UI, not ours (Studio passes --metrics).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
     props["endpoint_slots"] = False
     props["endpoint_props"] = False
     props["endpoint_metrics"] = False
 
-    # Only when llama-server owns the resident model: with MLX loaded, reading the
-    # unloaded llama backend describes a serving model as having no context or slots.
+    # With MLX loaded, the unloaded llama backend would report no context or slots.
     if llama_loaded:
         props.setdefault("default_generation_settings", {})
         settings = props["default_generation_settings"]
@@ -168,8 +160,7 @@ def _server_props() -> dict:
     return props
 
 
-# Slash forms too: FastAPI's redirect never fires. The catch-all fully matches "/props/" and returns
-# index.html; routes/inference.py registers "/v1/models/" likewise.
+# Slash forms too: the catch-all would serve index.html for "/props/".
 @router.get("/props", include_in_schema = False)
 @router.get("/props/", include_in_schema = False)
 @router.get("/v1/props", include_in_schema = False)
@@ -201,7 +192,6 @@ def _resident_hidden_from_caller() -> bool:
 async def studio_version(current_subject: str = Depends(get_current_subject)):
     """Bare /version only: Ollama spells it /api/version, and answering there is part
     of claiming to be Ollama."""
-    # Threaded like /props: the first call resolves the version.
     return {"version": await asyncio.to_thread(_studio_version)}
 
 
@@ -209,13 +199,11 @@ async def _probe_not_found():
     raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
 
-# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists, wrong method". HEAD is
-# here because Starlette does not admit it on a GET route (measured, fastapi 0.141.1); GET stays with the catch-all
-# so its asset lookup wins, and OPTIONS is untouched for CORS preflight.
+# Else POST hits the GET-only catch-all and 405s. HEAD isn't admitted on GET routes;
+# OPTIONS is left for CORS preflight.
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 
-# Both forms of every path: no redirect rescues "POST /completion/"
 def _both_forms(path: str) -> tuple:
     return (path, path + "/")
 

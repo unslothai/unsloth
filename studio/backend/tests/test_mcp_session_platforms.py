@@ -136,7 +136,6 @@ def test_a_forked_child_does_not_inherit_a_usable_session():
 def _child_checks_inherited_thread_is_dead():
     import threading
 
-    # The parent's mcp-session thread does not exist here; anything that waits on
-    # it would block forever, so the child must be able to see that.
+    # The parent's mcp-session thread does not exist in the child; waiting on it would hang.
     names = [t.name for t in threading.enumerate()]
     sys.exit(0 if "mcp-session" not in names else 1)

@@ -25,7 +25,6 @@ import threading
 import weakref
 from typing import Optional
 
-# not an owner: the key the cross-backend gpu switch lock is stored under
 _GPU_SWITCH_KEY = "gpu-switch"
 
 _switch_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()

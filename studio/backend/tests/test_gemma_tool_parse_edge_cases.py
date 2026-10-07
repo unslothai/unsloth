@@ -45,7 +45,7 @@ def test_normal_multi_key_arguments_still_split():
 
 
 def test_empty_bare_value_becomes_empty_string_not_dropped():
-    # An empty bare value (``{query:}``) must serialise as ``""`` (``{"query":}`` is invalid JSON and dropped the call).
+    # Empty bare value must serialize as ""; {"query":} is invalid JSON and drops the call.
     calls = parse_tool_calls_from_text("<|tool_call>call:search{query:,unit:celsius}<tool_call|>")
     assert len(calls) == 1, calls
     assert _args(calls[0]) == {"query": "", "unit": "celsius"}
@@ -56,7 +56,7 @@ def test_empty_bare_value_becomes_empty_string_not_dropped():
 
 
 def test_bare_value_with_timestamps_after_comma_is_kept():
-    # A comma before digits-then-colon (timestamp/ratio) is value text, not a key.
+    # A comma before digits-then-colon (timestamp) is value text, not a key.
     calls = parse_tool_calls_from_text(
         "<|tool_call>call:remind{query:meet at 10:00, 11:00 tomorrow,priority:high}<tool_call|>"
     )
@@ -65,8 +65,7 @@ def test_bare_value_with_timestamps_after_comma_is_kept():
 
 
 def test_wrapperless_bare_value_with_timestamps_after_comma_is_kept():
-    # The wrapper-less Gemma form (no <|tool_call> markers) goes through the
-    # _gemma_parse_stripped_body scanner and its _GEMMA_KEY_RE.
+    # No-marker form goes through _gemma_parse_stripped_body / _GEMMA_KEY_RE.
     calls = parse_tool_calls_from_text("call:web_search{query:meet at 10:00, 11:00 tomorrow}")
     assert len(calls) == 1, calls
     assert calls[0]["function"]["name"] == "web_search"
@@ -110,8 +109,7 @@ def test_json_marker_inside_gemma_argument_is_not_a_second_call():
 
 
 def test_nested_gemma_marker_in_unquoted_arg_does_not_run_inner_call():
-    # An UNQUOTED Gemma value containing a literal marker: the marker is nested in the outer
-    # candidate span, so it must not be promoted to a standalone `terminal` call (no tool call).
+    # A marker nested in an unquoted value must not become a standalone call.
     content = "<|tool_call>call:python{code:<|tool_call>call:terminal{command:ls}<tool_call|>}<tool_call|>"
     calls = parse_tool_calls_from_text(content)
     assert "terminal" not in [c["function"]["name"] for c in calls], calls
@@ -165,21 +163,19 @@ def test_json_marker_inside_xml_parameter_is_not_a_second_call():
 
 
 def test_unclosed_think_literal_inside_tool_argument_does_not_hide_later_call():
-    # A literal <think> inside a completed call's arguments is argument data; both calls must parse.
     text = '[TOOL_CALLS]a{"x":"literal <think> marker"} b[ARGS]{"y":2}'
     calls = parse_tool_calls_from_text(text)
     assert [c["function"]["name"] for c in calls] == ["a", "b"], calls
 
 
 def test_real_think_block_with_rehearsal_inside_still_skips_only_the_rehearsal():
-    # A genuine reasoning block still hides its rehearsal while a real call after it parses.
     text = '<think>web_search[ARGS]{"q":"draft"}</think>real[ARGS]{"q":"go"}'
     calls = parse_tool_calls_from_text(text)
     assert [c["function"]["name"] for c in calls] == ["real"], calls
 
 
 def test_wrapperless_nested_object_argument_is_parsed():
-    # skip_special_tokens stream: wrapper and <|"|> markers stripped, so a nested object arrives bare.
+    # skip_special_tokens strips wrapper and <|"|> markers, so nested objects arrive bare.
     calls = parse_tool_calls_from_text("call:f{loc:{city:NYC},n:3}")
     assert len(calls) == 1
     assert _args(calls[0]) == {"loc": {"city": "NYC"}, "n": 3}
@@ -192,8 +188,6 @@ def test_wrapperless_array_argument_is_parsed():
 
 
 def test_wrapperless_deeply_nested_object_and_array_are_preserved():
-    # The single-pass parser must keep multi-level nesting (objects inside
-    # objects, arrays inside arrays) intact, not flatten or drop it.
     calls = parse_tool_calls_from_text(
         "call:f{loc:{city:NYC,geo:{lat:1,lng:2}},tags:[a,b,[c,d]],n:3}"
     )
@@ -206,17 +200,15 @@ def test_wrapperless_deeply_nested_object_and_array_are_preserved():
 
 
 def test_gemma_parse_array_advances_on_stray_brace():
-    # Regression: a stray '}' / ']' / ',' where an array element is expected must
-    # not stall _gemma_parse_value at the same index (it looped forever before).
+    # A stray '}' ']' ',' must still advance the index, or _gemma_parse_value loops forever.
     from core.inference.tool_call_parser import _gemma_parse_array
 
     items, end, closed = _gemma_parse_array("[a,}]", 0)
-    assert end == 5 and closed is True  # consumed through the closing ']'
+    assert end == 5 and closed is True
     assert items[0] == "a"
 
 
 def test_gemma_close_marker_inside_quoted_arg_is_not_leaked_when_stripping():
-    # Parse keeps the quoted close marker as data; strip removes the whole span.
     text = '<|tool_call>call:python{code:<|"|>print("<tool_call|>")<|"|>}<tool_call|>'
     calls = parse_tool_calls_from_text(text)
     assert len(calls) == 1, calls
@@ -226,7 +218,6 @@ def test_gemma_close_marker_inside_quoted_arg_is_not_leaked_when_stripping():
 
 
 def test_nested_xml_in_malformed_gemma_call_does_not_execute():
-    # The failed Gemma candidate's span still covers its nested <function=>.
     text = (
         "<|tool_call>call:outer{code:<function=terminal><parameter=command>id"
         "</parameter></function></tool_call>, broken:{x}}<tool_call|>"
@@ -237,7 +228,6 @@ def test_nested_xml_in_malformed_gemma_call_does_not_execute():
 
 
 def test_unbalanced_gemma_call_with_xml_does_not_execute():
-    # Unclosed braces cover to EOF, so the trailing <function=> is excluded.
     text = (
         "<|tool_call>call:outer{code:<function=terminal>"
         "<parameter=command>id</parameter></function>"
@@ -254,7 +244,6 @@ def test_standalone_function_xml_still_parses():
 
 
 def test_xml_between_braces_and_close_marker_does_not_execute():
-    # Coverage runs to the close marker, so <function=> in the gap is data.
     text = (
         "<|tool_call>call:outer{broken:{x}}<function=terminal>"
         "<parameter=command>id</parameter></function><tool_call|>"
@@ -272,7 +261,6 @@ def test_balanced_inner_call_inside_unclosed_outer_does_not_execute():
 
 
 def test_strip_preserves_text_after_malformed_gemma_close():
-    # Junk before the close is a malformed span: strip through it, keep the tail.
     text = "pre <|tool_call>call:t{a:1} note <tool_call|> post"
     assert strip_tool_call_markup(text) == "pre  post"
     assert strip_tool_call_markup(text, final = True) == "pre  post"
@@ -286,7 +274,6 @@ def test_malformed_closed_gemma_span_is_stripped():
 
 
 def test_valid_call_after_missing_close_is_recovered():
-    # A close-less call covers only its braces, so the later call is recovered.
     text = "<|tool_call>call:a{x:1} <|tool_call>call:b{y:2}<tool_call|>"
     names_inc = [
         c["function"]["name"] for c in parse_tool_calls_from_text(text, allow_incomplete = True)
@@ -305,7 +292,6 @@ def test_strip_non_final_keeps_incomplete_gemma_block():
 
 
 def test_json_call_between_gemma_braces_and_close_does_not_execute():
-    # A JSON call between the outer's braces and its close is covered data.
     text = (
         "<|tool_call>call:outer{broken:{x}}"
         '<tool_call>{"name":"terminal","arguments":{"command":"id"}}</tool_call>'
@@ -317,7 +303,6 @@ def test_json_call_between_gemma_braces_and_close_does_not_execute():
 
 
 def test_gemma_call_between_gemma_braces_and_close_does_not_execute():
-    # Same escape with a Gemma-native inner marker.
     text = "<|tool_call>call:outer{broken:{x}}<|tool_call>call:terminal{command:id}<tool_call|><tool_call|>"
     for allow_incomplete in (True, False):
         calls = parse_tool_calls_from_text(text, allow_incomplete = allow_incomplete)
@@ -325,7 +310,6 @@ def test_gemma_call_between_gemma_braces_and_close_does_not_execute():
 
 
 def test_strip_final_keeps_text_after_closed_xml_with_inner_gemma_opener():
-    # The to-EOF Gemma sweep must not eat visible text after </function>.
     text = (
         'before <function=python><parameter=code>print("<|tool_call>")</parameter></function> after'
     )
@@ -334,7 +318,6 @@ def test_strip_final_keeps_text_after_closed_xml_with_inner_gemma_opener():
 
 
 def test_strip_final_keeps_text_after_closed_block_with_call_form_gemma_opener():
-    # A call-form Gemma opener quoted in a closed block must not truncate it.
     xml = "<function=python><parameter=code><|tool_call>call:t{</parameter></function>"
     json_block = (
         '<tool_call>{"name":"python","arguments":{"code":"<|tool_call>call:t{"}}</tool_call>'
@@ -346,7 +329,6 @@ def test_strip_final_keeps_text_after_closed_block_with_call_form_gemma_opener()
 
 
 def test_function_sibling_after_close_less_gemma_marker_is_recovered():
-    # The close-less marker covers only its braces; the XML sibling is recovered.
     text = (
         "<|tool_call>call:bad{broken:{x}} "
         "<function=terminal><parameter=command>id</parameter></function>"
@@ -357,8 +339,6 @@ def test_function_sibling_after_close_less_gemma_marker_is_recovered():
 
 
 def test_valid_call_after_close_less_marker_with_quoted_close_token_is_recovered():
-    # A close token quoted in the later call must not extend the earlier
-    # close-less marker's coverage over that call.
     gemma = '<|tool_call>call:a{x:1} <|tool_call>call:b{note:<|"|></tool_call><|"|>}<tool_call|>'
     names = [
         c["function"]["name"] for c in parse_tool_calls_from_text(gemma, allow_incomplete = False)
@@ -375,8 +355,7 @@ def test_valid_call_after_close_less_marker_with_quoted_close_token_is_recovered
 
 
 def test_gemma_parse_value_always_advances_on_stray_delimiter():
-    # A stray delimiter (`,`, `}`, `]`) at the primitive position must still advance the
-    # index by at least one, or a caller looping on it spins forever at 100% CPU (DoS).
+    # Stray delimiters must advance the index by at least one, or callers spin at 100% CPU.
     for delim in (",", "}", "]"):
         text = delim + "rest"
         value, nxt, _explicit = _gemma_parse_value(text, 0)
@@ -384,9 +363,7 @@ def test_gemma_parse_value_always_advances_on_stray_delimiter():
 
 
 def test_malformed_gemma_array_does_not_hang():
-    # ``[},]`` puts a stray ``}`` at the primitive position inside a list body.
-    # On the buggy parser this hangs the server; guard with a wall-clock timeout
-    # so the regression fails loudly instead of blocking CI forever.
+    # Wall-clock timeout so a hang fails loudly instead of blocking CI.
     import threading
 
     result: dict = {}
@@ -401,7 +378,6 @@ def test_malformed_gemma_array_does_not_hang():
 
 
 def test_malformed_gemma_mapping_value_does_not_hang():
-    # A stray ``}`` where a mapping value is expected must also terminate.
     import threading
 
     result: dict = {}
@@ -415,8 +391,7 @@ def test_malformed_gemma_mapping_value_does_not_hang():
     assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed mapping input"
 
 
-# ── Wrapper-less ``call:NAME{...}``: the display strip removes only a call that OWNS
-# its position. The parser is unchanged, so a promoted call is never erased silently.
+# Display strip removes only a wrapper-less call that owns its position; the parser is unchanged.
 
 
 def _strip(text: str, enabled = None) -> str:
@@ -437,20 +412,16 @@ def test_wrapperless_call_in_mid_sentence_prose_is_kept_by_every_display_strip()
 
 def test_anchored_wrapperless_calls_are_still_stripped():
     en = {"web_search"}
-    # Content start, line start, after a reasoning close, and back-to-back calls.
     assert _strip("call:web_search{query:cats}", en) == ""
     assert _strip("Sure!\ncall:web_search{query:cats}", en) == "Sure!"
     assert "call:web_search" not in _strip("<think>plan</think>call:web_search{query:cats}", en)
     assert _strip("call:web_search{query:hi} call:web_search{query:yo}", en) == ""
-    # A leading JSON answer is data; the call after it still owns its line.
     assert "call:web_search" not in _strip('{"summary":"done"}\ncall:web_search{query:cats}', en)
 
 
 def test_unclosed_wrapperless_call_strip_follows_the_same_anchor_rule():
     en = {"web_search"}
-    # Anchored + enabled: a truncated call is still dropped to EOS (streaming heal).
     assert _strip("Sure!\ncall:web_search{query:weath", en) == "Sure!"
-    # Mid-sentence: prose, kept as written.
     inline = "You can run call:web_search{query:weath"
     assert _strip(inline, en) == inline
 

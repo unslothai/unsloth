@@ -66,7 +66,6 @@ def test_a_failed_row_delete_leaves_the_artifacts_intact(outputs):
     assert outcome == "deleted"
     assert original is not None and staged is not None
 
-    # The DB delete blows up; the endpoint rolls the staging back.
     training_history._restore_staged_output_dir(original, staged)
 
     assert run_dir.is_dir(), (

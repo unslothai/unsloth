@@ -36,11 +36,9 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
-# A shared preview link is a public bearer capability; cap per-request generation so a
-# single call can't tie up the (serialized) preview GPU indefinitely.
+# Public bearer link: cap generation so one call cannot hold the serialized GPU.
 _PREVIEW_MAX_OUTPUT_TOKENS = 1024
 
-# One model loads at a time, so serialize load+generate.
 _preview_lock = asyncio.Lock()
 
 
@@ -65,7 +63,7 @@ def _verify_or_404(run: str, checkpoint: str | None, request: Request):
     return account
 
 
-# The public routes carry no credential, so the capability decides whose outputs the ref resolves in.
+# No credential on public routes: the capability decides whose outputs the ref resolves in.
 async def _latest_account(run: str, request: Request):
     account = _verify_or_404(run, None, request)
     token = bind_account(account)
@@ -98,8 +96,7 @@ def _resolve_or_4xx(run: str, checkpoint: str | None):
     try:
         return resolve_preview_checkpoint(run, checkpoint)
     except ValueError as exc:
-        # Detail can carry the absolute install path on a symlink escape; log it,
-        # return a generic message on this public route.
+        # Detail can carry the absolute install path; never return it on this public route.
         logger.warning("preview path rejected: %s", exc)
         raise HTTPException(status_code = 400, detail = "Invalid run or checkpoint")
     except FileNotFoundError as exc:
@@ -162,7 +159,6 @@ async def _serve_chat(
 ):
     path = _resolve_or_4xx(run, checkpoint)
     _reject_unsupported_content_parts(payload)
-    # A checkpoint cannot read a clip: refuse before the load the refusal would otherwise follow.
     if _request_has_video(payload):
         raise HTTPException(
             status_code = 400,
@@ -187,8 +183,7 @@ async def _serve_chat(
         if serializer_waiting:
             await resume_preview_after_serializer(scope)
             serializer_waiting = False
-        # The in-process coroutine, not the /load route: the route's padding returns a StreamingResponse while the
-        # checkpoint is still loading, so the chat below would run against the previous model (or none).
+        # Not the /load route: it returns while still loading, so chat would hit the old model.
         await load_model_for_preview(
             LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME
         )
@@ -258,8 +253,6 @@ def _models_response(run: str, checkpoint: str | None):
     }
 
 
-# The models/page GET routes only stat the checkpoint dir (no GPU), so they are
-# token-gated but not rate-limited; only the GPU-backed chat path is throttled.
 @router.get("/{run}/v1/models", dependencies = [Depends(_latest_account)])
 async def preview_models_latest(run: str, request: Request):
     return _models_response(run, None)
@@ -270,7 +263,7 @@ async def preview_models_checkpoint(run: str, checkpoint: str, request: Request)
     return _models_response(run, checkpoint)
 
 
-# Serve logo/fonts here too: the SPA static mount is absent in --api-only (Tauri).
+# The SPA static mount is absent in --api-only (Tauri).
 _FRONTEND_DIST = (Path(__file__).resolve().parents[2] / "frontend" / "dist").resolve()
 _PREVIEW_ASSET_MEDIA_TYPES = {
     ".png": "image/png",
@@ -288,7 +281,6 @@ async def preview_asset(asset_path: str):
     return FileResponse(target, media_type = media_type)
 
 
-# Self-contained public page; only the title is interpolated.
 _PREVIEW_PAGE_HTML = (
     Path(__file__).resolve().parent.parent / "assets" / "preview_page.html"
 ).read_text(encoding = "utf-8")
@@ -303,8 +295,7 @@ def _preview_page(run: str, checkpoint: str | None) -> HTMLResponse:
     _resolve_or_4xx(run, checkpoint)
     title = run if not checkpoint else f"{run}/{checkpoint}"
     page = _PREVIEW_PAGE_HTML.replace("__TITLE__", html.escape(title))
-    # no-referrer: the capability token rides in the query string, so keep it out
-    # of the Referer header on any outbound navigation.
+    # no-referrer: the capability token is in the query string.
     return HTMLResponse(
         page,
         headers = {

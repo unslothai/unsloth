@@ -50,14 +50,12 @@ def _tiny_model(device = "cpu"):
         image_embed_dim = _IMAGE_DIM,
         rope_axes_dim = (4, 6, 6),
     )
-    # Random (non-zero-init) weights everywhere, so no path is trivially zero.
     with torch.no_grad():
         for p in model.parameters():
             p.copy_(torch.randn_like(p) * 0.2)
     return model.to(device).eval()
 
 
-# (mllm mask rows, byt5 mask rows): right-padded, interleaved, fully valid, byt5 fully padded.
 _MASKS = {
     "b1_right_padded": ([[1, 1, 1, 0, 0, 0, 0]], [[1, 1, 0, 0, 0]]),
     "b2_interleaved": (
@@ -190,7 +188,7 @@ def test_hv15_merge_is_the_stock_permutation_bitwise(image_len, image_valid, dty
     e1 = torch.randn(2, 7, 6, generator = gen).to(dtype)
     e2 = torch.randn(2, 5, 6, generator = gen).to(dtype)
     e3 = torch.randn(2, image_len, 6, generator = gen).to(dtype)
-    e2[0, 0, 0] = -0.0  # a padded byt5 row holding -0.0 / NaN must come out +0.0 like zeros_like
+    e2[0, 0, 0] = -0.0
     e1[0, 1, 1] = float("nan")
     want = _stock_merge(e1, m1, e2, m2, e3, m3)
     got = cs.hv15_merge_streams(e1, m1, e2, m2, e3, m3)
@@ -202,7 +200,6 @@ def test_hv15_merge_is_the_stock_permutation_bitwise(image_len, image_valid, dty
     assert torch.equal(want[1], got[1])
 
 
-# Ops that read a device value on the host (a sync, illegal during capture) or size an output by one.
 _HOST_READS = (
     "aten.index.Tensor",
     "aten.nonzero",
@@ -302,7 +299,6 @@ def test_hv15_rewritten_forward_captures_and_replays_bit_identical(fresh_cache, 
     kw = _inputs(_MASKS["b2_interleaved"], image, device = "cuda")
     graph, static, out = _capture(lambda **k: safe(model, **k), kw)
     for seed in (2, 3):
-        # New values in the SAME buffers (t2v stays all-zero / empty, i2v gets new embeds).
         fresh = _inputs(_MASKS["b2_interleaved"], image, device = "cuda", seed = seed)
         for k, v in fresh.items():
             if torch.is_tensor(v):
@@ -326,11 +322,9 @@ def test_hv15_stock_forward_does_not_capture(fresh_cache):
     pool = torch.cuda.graph_pool_handle()
     with pytest.raises(RuntimeError):
         _capture(lambda **k: _CLS.forward(model, **k), kw, pool = pool)
-    # torch.cuda.graph's __exit__ raises in capture_end before it leaves its capture stream: without this every later
-    # test in the process ran on that stream (a prefetch test then saw its copies on a "compute" stream)
+    # capture_end raises before leaving the capture stream, so restore the stream for later tests.
     torch.cuda.set_stream(stream)
     # torch leaves the CUDA generators in capture mode after an invalidated capture; later tests draw from them
     cg._heal_generators()
-    # and the allocator still allocating to the dead capture's pool: every later empty_cache then freed nothing (a
-    # later test's reserved-memory check failed only when it ran after this file)
+    # Also stop allocating into the dead capture's pool, or later empty_cache frees nothing.
     cg._abandon_capture_pool(pool)

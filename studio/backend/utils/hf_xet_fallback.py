@@ -27,27 +27,21 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-# Defaults mirror unsloth_zoo.hf_xet_fallback; plain literals so they resolve without importing
-# unsloth_zoo/transformers.
+# Mirror unsloth_zoo.hf_xet_fallback; literals avoid importing zoo/transformers.
 DEFAULT_GRACE_PERIOD = 10.0
 DEFAULT_HEARTBEAT_INTERVAL = 30.0
-# Xet gets 30s of zero progress before the HTTP retry; HTTP, the last resort, keeps 180s. The
-# wrappers pass None so the shared layer picks per transport; these literals are for callers
-# wanting an explicit value without the heavy import.
+# Xet gets 30s of no progress before HTTP retry; HTTP (last resort) keeps 180s.
 DEFAULT_STALL_TIMEOUT = 30.0
 DEFAULT_CONNECT_TIMEOUT = 90.0
 DEFAULT_HTTP_STALL_TIMEOUT = 180.0
-# Xet workers spent per download before the transport changes. A wedged transfer usually clears on
-# a fresh process, and the retry replays only the in-flight file.
-# The worker runs snapshot_download(max_workers=1), so every finished shard is already a blob and is skipped.
+# Xet worker attempts per download; finished shards are skipped on retry.
 DEFAULT_XET_ATTEMPTS = 2
 
 _shared: Any = None
 _shared_available: Optional[bool] = None
 _shared_import_error: Optional[BaseException] = None
-# Guards _shared_available AND every UNSLOTH_ZOO_DISABLE_GPU_INIT save/set/restore here.
-# Two locks would still allow A-saves-unset / B-saves-"1" / A-restores-unset / B-restores-"1", leaving it set for the
-# life of the process. RLock because child_environment_for_spawn holds it across a spawn and legitimately nests.
+# One RLock for loading and every UNSLOTH_ZOO_DISABLE_GPU_INIT save/set/restore,
+# so interleaved restores cannot leave it set; reentrant across spawns.
 _load_lock = threading.RLock()
 
 
@@ -90,7 +84,7 @@ def _load_shared() -> bool:
     global _shared, _shared_available, _shared_import_error
     if _shared_available is not None:
         return _shared_available
-    # Outside _load_lock: a thread waiting on the warm must not hold up the env-var bookkeeping.
+    # Outside _load_lock so waiting on the warm does not block env-var bookkeeping.
     _gate_torch_stack("unsloth_zoo.hf_xet_fallback import")
     with _load_lock:
         if _shared_available is not None:
@@ -103,14 +97,11 @@ def _load_shared() -> bool:
             _shared_import_error = None
             return True
         except Exception as exc:  # noqa: BLE001 - any import failure must degrade, not crash
-            # unsloth_zoo's __init__ runs torch/GPU detection, which raises on a torch-less/GPU-less
-            # host. The download helper needs none of it, so retry via UNSLOTH_ZOO_DISABLE_GPU_INIT.
+            # zoo __init__ raises on torch-less/GPU-less hosts; retry with UNSLOTH_ZOO_DISABLE_GPU_INIT.
             _shared_import_error = exc
             import os as _os
 
-            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take its MLX/CPU path,
-            # injecting triton and bitsandbytes STUBS into sys.modules for the process. On a working GPU box those stubs
-            # raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
+            # Only without an accelerator: the flag injects triton/bnb stubs that break a real GPU.
             if _gpu_present():
                 _shared_available = False
                 import logging as _logging
@@ -156,11 +147,7 @@ def _load_shared() -> bool:
                 _gpu_init_override_depth -= _ours
 
 
-# Memoising the FAILURE is the point: on a zoo predating these modules the import can never start
-# succeeding, so without this every call re-ran the GPU-init retry and reopened the process-wide
-# env window on every download.
-# The calls are xet_health / record_xet_outcome / xet_env_overrides, and with this the window opens once per module per
-# process.
+# Memoize failure too, so an old zoo does not reopen the GPU-init env window every call.
 _UNTRIED = object()
 _optional_modules: "dict[str, Any]" = {}
 
@@ -195,8 +182,7 @@ def _load_optional(module_name: str) -> Any:
     except Exception as exc:  # noqa: BLE001 - an older/absent unsloth_zoo must degrade, not crash
         first_error = exc
 
-    # Deliberately the SAME lock _load_shared uses: interleaved save/set/restore would leave
-    # UNSLOTH_ZOO_DISABLE_GPU_INIT set for the life of the process (see _load_lock).
+    # Same lock as _load_shared so save/set/restore cannot interleave.
     with _load_lock:
         cached = _optional_modules.get(module_name, _UNTRIED)
         if cached is not _UNTRIED:
@@ -204,7 +190,7 @@ def _load_optional(module_name: str) -> Any:
         global _gpu_init_override_depth
         previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         ours = previous != "1"
-        # Claim BEFORE the write, release AFTER the restore.
+        # Claim before the write, release after the restore.
         _gpu_init_override_depth += ours
         try:
             _os.environ["UNSLOTH_ZOO_DISABLE_GPU_INIT"] = "1"
@@ -334,11 +320,8 @@ def apply_xet_env(env: dict, cache_dir: "Optional[str]" = None) -> "Optional[dic
     return clamp_to_available_ram(env, sized, cache_dir = cache_dir, module = module)
 
 
-# Share of free RAM a download may turn into buffers. A quarter of AVAILABLE always exceeds the
-# zoo's eighth of TOTAL on an idle machine, so the clamp is unreachable unless RAM is held.
+# Share of available RAM a download may use for buffers.
 _AVAILABLE_RAM_SHARE = 4
-# Integer arithmetic converges in one or two passes; the bound only guards a future non-monotonic
-# zoo.
 _CLAMP_MAX_PASSES = 3
 _BUFFER_LIMIT_KEY = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"
 
@@ -351,19 +334,16 @@ def _as_int(value: str) -> "Optional[int]":
         return None
 
 
-# A worker allocates inside the child, after Popen returns, so four downloads starting together
-# would each read the same untouched `available` and promise the whole machine. Reservations bridge
-# that window, counting only the unmaterialized remainder: once buffers are resident `available` has
-# already dropped by them, and charging the promise again would double-count for the worker's life.
+# Reservations cover the gap before a child allocates, counting only unmaterialized bytes.
 _budget_lock = threading.RLock()
 # token -> [bytes, pid or None, monotonic stamp]
 _budget_reservations: "dict[int, list]" = {}
 _budget_token_seq = 0
-# A reservation never bound to a pid means the spawn died between sizing and Popen.
+# Never bound to a pid means the spawn died between sizing and Popen.
 _UNBOUND_RESERVATION_TTL = 60.0
-# Backstop against pid reuse keeping a dead reservation alive; no download worker outlives this.
+# Backstop against pid reuse keeping a dead reservation alive.
 _BOUND_RESERVATION_TTL = 12 * 60 * 60.0
-# Set by the sizing call, consumed by the spawn that follows it on the SAME thread.
+# Set by the sizing call, consumed by the spawn that follows it on the same thread.
 _pending_reservation = threading.local()
 
 
@@ -381,8 +361,7 @@ def _pid_alive(pid: int) -> bool:
     except Exception:  # noqa: BLE001 - fall through to the POSIX probe below
         pass
     if os.name == "nt":
-        # No platform probe available: assume alive rather than reach for os.kill, so a reservation
-        # is at worst held too long instead of a running download being terminated.
+        # Assume alive: holding a reservation too long beats killing a download.
         return True
     try:
         os.kill(pid, 0)
@@ -511,17 +490,16 @@ def clamp_to_available_ram(
             return sized
         floor = int(getattr(module, "_MIN_BUFFER_LIMIT", 1_000_000_000))
         limit = int(sized[_BUFFER_LIMIT_KEY])
-        # Reading the ledger and reserving against it is ONE decision.
+        # Reading the ledger and reserving against it must be one atomic decision.
         with _budget_lock:
             unclaimed = max(0, available - _live_reserved_locked())
             budget = max(floor, unclaimed // _AVAILABLE_RAM_SHARE)
             if limit <= budget:
-                # Still reserved: four unclamped workers would otherwise promise four full budgets.
+                # Reserve even unclamped, or parallel workers each promise a full budget.
                 _reserve_worker_budget(limit)
                 return sized
 
-            # Re-ask the zoo about a machine the download can afford, so buffer, per-file and file
-            # count all scale together instead of the limit moving on its own.
+            # Re-ask the zoo with a synthetic RAM so all derived limits scale together.
             fraction = int(getattr(module, "_RAM_FRACTION", 8)) or 8
             synthetic = max(floor, budget * fraction)
             clamped = sized
@@ -540,12 +518,9 @@ def clamp_to_available_ram(
                 new_limit = int(candidate[_BUFFER_LIMIT_KEY])
                 if new_limit <= budget:
                     break
-                # Monotonic in total RAM, so scaling by the overshoot converges.
                 synthetic = max(floor, synthetic * budget // new_limit)
 
-            # Reduce-only: keep a value the recompute would RAISE.
-            # `xet_env_overrides` is called raw here, without the throttled flag `apply_xet_env` threads through after a
-            # 429, and every derived number is monotonic in total RAM, so the smaller of the two is always coherent.
+            # Reduce-only: never raise a value; derived numbers are monotonic in RAM.
             written = {}
             for key, value in clamped.items():
                 if key not in sized:
@@ -671,7 +646,7 @@ class _DegradedDownloadStallError(RuntimeError):
 
 
 def _degraded_get_hf_download_state(*args: Any, **kwargs: Any) -> None:
-    return None  # unmeasurable -> the (absent) watchdog never fires
+    return None
 
 
 def _degraded_start_watchdog(
@@ -681,8 +656,7 @@ def _degraded_start_watchdog(
     xet_disabled: bool = False,
     **kwargs: Any,
 ) -> "threading.Event":
-    # No stall detection, but keep emitting heartbeats so the orchestrator's inactivity deadline
-    # is not tripped during a long download.
+    # Keep heartbeats so the orchestrator's inactivity deadline is not tripped.
     stop = threading.Event()
     if on_heartbeat is None:
         return stop
@@ -719,7 +693,6 @@ def _degraded_hf_hub_download_with_xet_fallback(
     cancel_event: "Optional[threading.Event]" = None,
     **_ignored: Any,
 ) -> str:
-    # Keep the cancellation contract: do not start or return a download once cancelled.
     if _degraded_cancelled(cancel_event):
         raise RuntimeError("Cancelled")
 
@@ -772,21 +745,15 @@ def _degraded_snapshot_download_with_xet_fallback(
     return path
 
 
-# ``DownloadStallError`` (class identity matters for ``except``), ``start_watchdog`` and
-# ``get_hf_download_state`` come from the shared backend when available, else the degraded stubs.
-# Resolved via PEP 562 so importing them triggers the heavy load and the light names do not.
-# The light names, `child_should_disable_xet` / `DEFAULT_*`, are importable from utils.hf_xet_fallback without
-# triggering the load.
+# Resolved lazily via PEP 562 so only these names trigger the heavy load.
 _DEGRADED_ATTRS = {
     "DownloadStallError": _DegradedDownloadStallError,
     "get_hf_download_state": _degraded_get_hf_download_state,
 }
 
 
-# Nonzero while a loader has UNSLOTH_ZOO_DISABLE_GPU_INIT set process-wide for its retry. Read by
-# Only counted when the loader introduced the value; an operator who exported it keeps it.
-# utf8_child_env so a child does not inherit it: the zoo injects triton and bitsandbytes STUBS when
-# it is set, so a training child would silently run against no-ops.
+# Nonzero while a loader set UNSLOTH_ZOO_DISABLE_GPU_INIT (only if it introduced the value);
+# utf8_child_env then strips it from children.
 _gpu_init_override_depth = 0
 
 
@@ -845,9 +812,7 @@ def start_watchdog(**kwargs: Any) -> Any:
     return impl(**_supported_kwargs(impl, kwargs))
 
 
-# Annotation-only declarations for the three names above: they bind NO value, so lookup still misses
-# and PEP 562 ``__getattr__`` resolves them lazily -- but ruff/pyflakes see them as defined, so listing
-# them in ``__all__`` does not trip F822 (while F822 still catches a real typo elsewhere in the list).
+# Annotation-only so ruff sees these in __all__ while PEP 562 still resolves them lazily.
 DownloadStallError: type
 get_hf_download_state: Any
 
@@ -860,8 +825,7 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-# Indirection seam the public wrappers call (and tests monkeypatch): lazy-load the shared backend,
-# then dispatch to it or the degraded stub. The ``_shared_*`` names preserve the pre-refactor contract.
+# Seam the public wrappers call and tests monkeypatch.
 def _shared_hf_hub_download_with_xet_fallback(*args: Any, **kwargs: Any) -> str:
     impl = (
         _shared.hf_hub_download_with_xet_fallback
@@ -992,8 +956,7 @@ def hf_hub_download_with_xet_fallback(
         except Exception:  # noqa: BLE001 - a cache we cannot read just keeps the live root
             pass
     if local_files_only:
-        # Straight to huggingface_hub after the root switch, which is what lets an offline caller reach a file under the
-        # import-time root. ``force_download`` is not forwarded: hub rejects the pair.
+        # force_download is not forwarded: hub rejects the pair.
         from huggingface_hub import hf_hub_download
 
         if cancel_event is not None and cancel_event.is_set():
@@ -1010,7 +973,7 @@ def hf_hub_download_with_xet_fallback(
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Cancelled")
         return path
-    # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait()
+    # Omit rather than forward None: older unsloth_zoo passes `interval` to Event.wait().
     optional: dict[str, Any] = {}
     if stall_timeout is not None:
         optional["stall_timeout"] = stall_timeout

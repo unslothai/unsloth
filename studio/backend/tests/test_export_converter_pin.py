@@ -24,7 +24,6 @@ _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
-# Reuse the absolute-paths stub harness: loads core/export/export.py without torch/unsloth.
 from test_export_absolute_paths import (  # noqa: E402
     _install_export_backend_stubs,
     _load_module,
@@ -41,8 +40,7 @@ def _export_mod(monkeypatch, *, mlx = False):
     mod = _load_module(
         "test_core_export_backend_converter_pin", "core/export/export.py", monkeypatch
     )
-    # The stub unsloth is MLX, so say which host each case is about: Studio pins on a
-    # GPU host, and leaves the pinning to unsloth_zoo's MLX save path on a Mac.
+    # the stub unsloth is MLX; Studio pins on GPU hosts and leaves it to unsloth_zoo on Mac
     monkeypatch.setattr(mod, "_IS_MLX", mlx)
     return mod
 
@@ -57,9 +55,7 @@ def _zoo(
     llama_cpp = sys.modules["unsloth_zoo.llama_cpp"]
     calls = {"internal": [], "incomplete": []}
 
-    # Not reentrant, exactly like the real one: it holds a plain threading.Lock for the
-    # whole conversion, so a second entry on the same thread hangs rather than raising.
-    # Raising here turns that hang into a test failure.
+    # the real lock is not reentrant and would hang; raising turns that into a failure
     held = threading.Lock()
 
     @contextlib.contextmanager
@@ -102,8 +98,6 @@ def test_pin_is_scoped_to_the_conversion(monkeypatch):
 
     with mod._llama_cpp_scripts_pin():
         assert os.environ[_SCRIPTS_DIR] == llama_cpp.LLAMA_CPP_DEFAULT_DIR
-    # The leak is the bug: every later export, and the MLX path's own internal pin,
-    # read a variable nobody set deliberately.
     assert _SCRIPTS_DIR not in os.environ
     assert calls["internal"] == [llama_cpp.LLAMA_CPP_DEFAULT_DIR]
 
@@ -193,7 +187,7 @@ def test_mlx_export_does_not_nest_the_pin(monkeypatch):
     llama_cpp, _calls = _zoo(monkeypatch)
 
     with mod._llama_cpp_scripts_pin():
-        # What unsloth_zoo/mlx/utils.py:save_pretrained_gguf does inside the call above.
+        # mirrors unsloth_zoo/mlx/utils.py:save_pretrained_gguf
         with llama_cpp.internal_scripts_dir_pin(llama_cpp.LLAMA_CPP_DEFAULT_DIR):
             pass
     assert _SCRIPTS_DIR not in os.environ

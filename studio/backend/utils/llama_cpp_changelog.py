@@ -29,14 +29,13 @@ from utils.prebuilt.freshness_flow import (
 logger = structlog.get_logger(__name__)
 
 MAX_CHANGES = 50
-# The only repo whose notes this module can read: generated, cumulative, one bullet per carried PR. --published-repo can point elsewhere, and a per-release body says nothing about what is still carried.
+# The only repo with cumulative generated notes this module can parse.
 CUMULATIVE_NOTES_REPO = "unslothai/llama.cpp"
-# A release body is a few KB; the cap only bounds a far side that misbehaves.
 MAX_RELEASE_BYTES = 4 * 1024 * 1024
 # Without a floor, a held-down Retry is two uncached GitHub calls per click.
 FORCE_REFRESH_MIN_INTERVAL_SECONDS = 30.0
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
-# "." is in _REPO's class, so "owner/.." walks out of /repos/ on a normalizing proxy.
+# "." is in _REPO's class, so "owner/.." could escape /repos/ via a proxy.
 _DOT_SEGMENT = re.compile(r"^\.+$")
 _BULLET = re.compile(r"^ {0,3}[-*+]\s+(.+?)\s*$")
 _LINK = re.compile(r"\[([^\]]+)]\((https://github\.com/[^\s)]+)\)")
@@ -99,7 +98,7 @@ def _fetch_release_blocking(repo: str, tag: str, timeout: float) -> Optional[dic
     )
     try:
         with auth_safe_open(request, timeout = timeout) as response:
-            # One byte past the cap: reject an oversized body without buffering it.
+            # Read one byte past the cap to detect oversize without buffering.
             raw = response.read(MAX_RELEASE_BYTES + 1)
         if len(raw) > MAX_RELEASE_BYTES:
             logger.debug("llama changelog release too large", repo = repo, tag = tag)
@@ -133,9 +132,9 @@ def _release_for_tag(
 ) -> Optional[dict]:
     """Exact release with 24h success and 60s failure memoization."""
     key = (repo, tag)
-    # Memory-only, so monotonic throughout: a backward clock step must not be able to extend the TTL. freshness_flow uses wall time because it persists to disk.
+    # Monotonic so a backward clock step cannot extend the TTL.
     now = time.monotonic()
-    # Retrying into a rate limit only delays the reset; checked before the debounce so the slot is not burnt.
+    # Checked before the debounce so a rate-limited retry does not burn the slot.
     if github_rate_limit_remaining() > 0:
         force_refresh = False
     if force_refresh:
@@ -149,14 +148,13 @@ def _release_for_tag(
         cached = _release_memo.get(key)
         fresh = cached is not None and now - cached[0] < RELEASE_CACHE_TTL_SECONDS
         if failed_at is not None and now - failed_at < RELEASE_FAILURE_CACHE_TTL_SECONDS:
-            # Suppress the retry, but never resurrect an entry past its TTL.
             return cached[1] if fresh else None
         if fresh:
             return cached[1]
     release = _fetch_release(repo, tag)
     if release is None:
         _release_failed_at[key] = time.monotonic()
-        # Last-good fallback only within the TTL, or an unreachable release keeps answering stale and the panel presents that as matched.
+        # Last-good fallback only within the TTL, or stale data reads as matched.
         cached = _release_memo.get(key)
         if cached and time.monotonic() - cached[0] < RELEASE_CACHE_TTL_SECONDS:
             return cached[1]
@@ -168,13 +166,12 @@ def _release_for_tag(
 
 def _plain_text(markdown: str) -> str:
     text = _LINK.sub(lambda match: match.group(1), markdown)
-    # Underscores in ROCm_Host / GGML_CUDA_ENABLE_UNIFIED_MEMORY are text, not emphasis.
     text = text.replace("`", "").replace("**", "")
     return re.sub(r"\s+", " ", text).strip()
 
 
 def _entry(markdown: str) -> dict:
-    # Metadata starts at " ([", so a title keeps its parens: GLM-5-Next (GLM-5.3-Flash). rfind, not find: metadata is the LAST parenthesised group, and a title may contain " ([" as in "vulkan: handle ([a],[b]) tuples ([#5](...))".
+    # Metadata is the last " ([" group; rfind keeps titles with parens intact.
     metadata_at = markdown.rfind(" ([")
     summary_markdown = markdown[:metadata_at] if metadata_at >= 0 else markdown
     links = []
@@ -189,13 +186,13 @@ def _entry(markdown: str) -> dict:
 def _identities(markdown: str) -> set[str]:
     """Stable aliases for one carried change: a patch migrated to an Unsloth carry PR links that PR but still says ``ggml-org#24423``, and both must match."""
     identities = set()
-    # One namespace: GitHub numbers issues and PRs together, so ``/issues/900``, ``/pull/900`` and ``repo#900`` are the same object. Separate prefixes only miss.
+    # GitHub numbers issues and PRs together, so all forms are one key.
     for _label, url in _LINK.findall(markdown):
         match = _PR_URL.match(url) or _ISSUE_URL.match(url)
         if match:
             identities.add(f"ref:{match.group(1).lower()}#{match.group(2)}")
     for repo, number in _TEXT_REFERENCE.findall(_plain_text(markdown)):
-        # Shorthand omits the repo: ``ggml-org#24423`` is ``ggml-org/llama.cpp#24423``.
+        # Shorthand omits the repo: ggml-org#N is ggml-org/llama.cpp#N.
         if "/" not in repo:
             repo = f"{repo}/llama.cpp"
         identities.add(f"ref:{repo.lower()}#{number}")
@@ -223,11 +220,10 @@ def unavailable_reason(repo: str, installed_tag: str, latest_tag: str) -> str:
         return "release_notes_unavailable"
     if not _is_cumulative_repo(repo):
         return "notes_not_comparable"
-    # Memoized, so this re-read costs nothing after the comparison's own lookups.
     installed = _release_for_tag(repo, installed_tag)
     if installed is None:
         return "release_notes_unavailable"
-    # Only the INSTALLED side is permanent: it shipped before the bullet format and will never gain one. A bad target is the newest release, so it may yet be fixed.
+    # Only the installed side is permanent; the latest release may yet gain bullets.
     if not _bullets(installed.get("body")):
         return "notes_not_itemised"
     return "release_notes_unavailable"
@@ -250,11 +246,10 @@ def changelog_for_update(
     if installed is None or latest is None:
         return None
 
-    # Releases before b9625-mix-2d6bd50 (2026-06-14) name carries in prose, so no bullets means unknown, not "carries nothing".
+    # Older releases name carries in prose, so no bullets means unknown.
     installed_bullets = _bullets(installed.get("body"))
     if not installed_bullets:
         return None
-    # A prose-only target says "carries nothing"; a missing or blank one says nothing at all, and "no new changes" would claim a comparison never made.
     latest_body = latest.get("body")
     if not isinstance(latest_body, str) or not latest_body.strip():
         return None
@@ -268,7 +263,7 @@ def changelog_for_update(
             continue
         parsed = _entry(item)
         if not parsed["summary"]:
-            # A bullet that is never shown must not suppress a later one via `seen`.
+            # A bullet never shown must not suppress a later one via `seen`.
             continue
         seen.update(identities)
         new_items.append(parsed)

@@ -29,7 +29,6 @@ from hub.services.models.common import (
 
 logger = get_logger(__name__)
 
-# llama.cpp's split naming, e.g. Model-00001-of-00005.gguf.
 _SPLIT_PART = re.compile(r"-(\d{5})-of-(\d{5})\.gguf$")
 
 
@@ -56,8 +55,7 @@ def staged_gguf_files(hermes_dir: Path) -> List[Path]:
     names = {p.name for p in files}
     staged: List[Path] = []
     for path in files:
-        # mmproj/drafter companions belong under assets/, but a hand-dropped one
-        # at the top level is still not something to serve.
+        # A hand-dropped companion at top level is not servable.
         if not _is_main_gguf_filename(path.name):
             continue
         part = _SPLIT_PART.search(path.name)
@@ -94,8 +92,7 @@ def scan_hermes_dir(hermes_dir: Path, *, limit: Optional[int] = None) -> List[Lo
             display_name = staged_model_id(path),
             updated_at = updated_at,
         )
-        # The row points at part one and the classifier sizes the one file it was handed;
-        # the download is the whole set.
+        # Row points at part one; the download is the whole set.
         shards, _complete = colocated_split_shards(path)
         if len(shards) > 1:
             size_bytes = _sum_file_sizes(shards)

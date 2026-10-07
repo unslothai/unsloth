@@ -146,9 +146,6 @@ def _run(transport, *, tool_choice = None):
     return asyncio.run(asyncio.wait_for(_collect(), timeout = 30))
 
 
-# ── tool_choice: "none" is enforced, not just advertised ─────────────
-
-
 def test_tool_choice_none_refuses_a_call_the_provider_sent_anyway(executed):
     """The Deep Research containment case.
 
@@ -172,9 +169,6 @@ def test_tool_choice_auto_still_executes(executed):
     transport = FakeTransport([[_call_line(), _finish("tool_calls")], [_DONE]])
     _run(transport, tool_choice = "auto")
     assert executed == ["web_search"]
-
-
-# ── a turn that ended early is described, not run ────────────────────
 
 
 @pytest.mark.parametrize("reason", ["length", "content_filter"])

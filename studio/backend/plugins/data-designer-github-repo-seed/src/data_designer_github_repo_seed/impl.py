@@ -16,8 +16,7 @@ from .config import GitHubRepoSeedSource
 from .scraper import ScrapeConfig, materialize_to_jsonl
 
 
-# Memoize seed materialization so a recipe job does not re-scrape GitHub on every call; the key
-# uses a short SHA-256 of the token, so the raw value never hits memory twice.
+# Keyed on a short SHA-256 of the token, never the raw value.
 _SCRAPE_CACHE: dict[tuple, str] = {}
 _SCRAPE_CACHE_LOCK = threading.Lock()
 
@@ -41,7 +40,6 @@ def _lookup_cached_scrape(key: tuple) -> Optional[str]:
         path = _SCRAPE_CACHE.get(key)
     if path and Path(path).exists():
         return path
-    # Stale entry (tmp cleanup/restart); drop it so the caller re-materializes.
     if path:
         with _SCRAPE_CACHE_LOCK:
             _SCRAPE_CACHE.pop(key, None)

@@ -30,9 +30,6 @@ from core.inference.llama_cpp import LlamaCppBackend
 from state.tool_policy import get_tool_policy, reset_tool_policy, set_tool_policy
 
 
-# ── Fake llama-server stream (mirrors test_llama_cpp_tool_loop.py) ──
-
-
 def _sse(delta: dict) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
 
@@ -136,21 +133,16 @@ def _reset_policy():
     reset_tool_policy()
 
 
-# ── Real tool execution under the loop ──
-
-
 def test_python_tool_counts_to_100(monkeypatch):
-    # "Use the python tool to count from 1 to 100."
     expected = " ".join(str(i) for i in range(1, 101))
     result = _run_one_tool(
         monkeypatch, "python", {"code": "print(' '.join(str(i) for i in range(1, 101)))"}
     )
-    assert expected in result, result  # real subprocess produced the full sequence
+    assert expected in result, result
 
 
 def test_bash_tool_returns_current_datetime(monkeypatch):
-    # "Use the bash tool to provide today's datetime." Bound the parsed UTC time
-    # to the call window rather than a hard-coded date (survives midnight/TZ).
+    # Bound the parsed UTC time to the call window, not a fixed date.
     before = datetime.now(timezone.utc) - timedelta(seconds = 5)
     result = _run_one_tool(monkeypatch, "terminal", {"command": "date -u +%Y-%m-%dT%H:%M:%SZ"})
     after = datetime.now(timezone.utc) + timedelta(seconds = 5)
@@ -162,8 +154,6 @@ def test_bash_tool_returns_current_datetime(monkeypatch):
 
 
 def test_web_search_tool_runs_with_mocked_fetch(monkeypatch):
-    # "Web search for the weather for San Francisco's weather." Mock only the
-    # ddgs network boundary; real _web_search formats the canned hit.
     class _FakeDDGS:
         def __init__(self, *a, **k):
             pass
@@ -188,9 +178,6 @@ def test_web_search_tool_runs_with_mocked_fetch(monkeypatch):
     assert "https://example.test/sf" in result
 
 
-# ── Policy tie-in: the post-fix `--secure` path keeps tools reachable ──
-
-
 class _Payload:
     def __init__(self, enable_tools):
         self.enable_tools = enable_tools
@@ -199,13 +186,11 @@ class _Payload:
 def test_effective_enable_tools_honors_secure_policy():
     from routes.inference import _effective_enable_tools
 
-    # Post-fix --secure leaves policy None, so the request's flag is honored.
     set_tool_policy(None)
     assert _effective_enable_tools(_Payload(True)) is True
     assert _effective_enable_tools(_Payload(False)) is False
     assert get_tool_policy() is None
 
-    # --enable-tools forces on; the old --secure (forced off) suppresses tools.
     set_tool_policy(True)
     assert _effective_enable_tools(_Payload(False)) is True
     set_tool_policy(False)

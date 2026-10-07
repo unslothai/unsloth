@@ -99,15 +99,7 @@ class _RefitSpy:
         return False
 
 
-# The shared fixture the platform cells run on: a load that does not fit at the
-# asked slot count but does fit at a reduced one, so the re-fit has something to do.
-# Named because whether it still sits in that band depends on _FIT_MIN_CTX, and
-# test_the_fixture_still_reaches_the_refit_at_this_fit_floor reports it by name when
-# a floor change moves it out. This weight was picked by sweeping the band at
-# _FIT_MIN_CTX 4096, 8192 and 16384 and taking a value reducible at all three, so
-# the next floor change is less likely to move it out again: at 10_200 only 4096
-# reduced, and the 4096 -> 8192 raise left the load fitting whole at the floor
-# with --fit on, which is the planner's other answer and not this file's subject.
+# Reducible at _FIT_MIN_CTX 4096, 8192 and 16384, so a floor change keeps it in the refit band.
 _FIXTURE_WEIGHTS_MIB = 8_800
 _FIXTURE_SLOTS = 4
 
@@ -153,8 +145,7 @@ def _plan(
 
         backend._read_gguf_metadata = read
         backend._get_gguf_size_bytes = lambda _path: weights_mib * MIB
-        del backend._can_estimate_kv  # the real one, now that the dims are set
-        # The per-slot cost the re-fit trades against (see the helper).
+        del backend._can_estimate_kv
         _install_slot_scaled_compute(backend)
         backend.probe_server_capabilities = lambda _binary = None: {
             "mtp_token": "draft-mtp",
@@ -228,7 +219,7 @@ class TestWhoTheRefitIsAllowedToTouch:
         """No enumerated GPU means the Apple arm owns the plan, untouched."""
         got, entries = _plan(tmp_path, os_key = os_key, vendor = "nvidia")
         assert entries == 0
-        assert got["ngl"] is None  # never pinned to a device that does not exist
+        assert got["ngl"] is None
 
     def test_tensor_parallel_is_excluded(self, tmp_path):
         """The tensor arm has no --fit valve, so the re-fit must stay out."""
@@ -260,7 +251,6 @@ class TestWindowsPlansLikeLinux:
         win, win_entries = _plan(tmp_path, os_key = "windows", vendor = "nvidia")
         linux, linux_entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia")
         assert win_entries == linux_entries > 0
-        # Same plan either way; only the Windows-only thread pin differs.
         assert (win["ctx"], win["slots"], win["fit"]) == (
             linux["ctx"],
             linux["slots"],

@@ -9,10 +9,10 @@ import ipaddress
 import os
 import socket
 
-# Only the exact aliases the rest of the stack hard-codes for loopback (health checks, banner URLs and run.py all hard-code 127.0.0.1); other 127.0.0.0/8 addresses are deliberately left out, since they are not supported launch hosts.
+# Only the loopback aliases the stack hard-codes; other 127.0.0.0/8 hosts are unsupported.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
-# Whether a loopback launch in THIS process auto-enabled the gate. run_server normally runs once per process, but if it is reused with a different host (embedders, tests) we only ever take back a value we set ourselves.
+# Whether we auto-enabled the gate; only ever take back a value we set.
 _auto_enabled = False
 _remote_connector_active = False
 _lan_connector_active = False
@@ -177,7 +177,7 @@ def dial_host(host: str) -> str:
     return f"[{host}]" if ":" in host else host
 
 
-# Self-call address resolution. A `--host` other than a wildcard binds one interface only, so loopback is not served and a hardcoded `127.0.0.1` self-call cannot connect.
+# A non-wildcard --host binds one interface, so a 127.0.0.1 self-call may not connect.
 LOOPBACK_FALLBACK_HOST = "127.0.0.1"
 
 
@@ -211,7 +211,6 @@ def self_request_host(app_state, server = None) -> str:
     return scope_request_host(server) or LOOPBACK_FALLBACK_HOST
 
 
-# Tauri desktop webview origins. api-only serving (the desktop app calling a local backend) locks CORS to these.
 _TAURI_CORS_ORIGINS = (
     "tauri://localhost",
     "http://tauri.localhost",
@@ -254,10 +253,10 @@ def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> No
     """Default stdio MCP servers on when bound to loopback. A loopback bind is the user's own machine, the same trust boundary the Tauri desktop app relies on (see main.py, which uses this same helper). Colab is excluded: even its loopback is a hosted VM reachable through Colab's proxy, so it stays off unless opted in. An explicit operator value wins: a pre-set `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=0` force-disables and `=1` opts in, including on a network bind. We only ever set or clear a default we applied ourselves, so reusing run_server with a public host after a loopback one does not leave the gate on."""
     global _auto_enabled
     current = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
-    # If our prior auto-default was changed out from under us, relinquish ownership: an explicit =0 is then a sticky force-disable, while a cleared var falls back to the host default.
+    # Our auto-default was changed externally: relinquish ownership.
     if _auto_enabled and current != "1":
         _auto_enabled = False
-    # An explicit operator value is one we did not set; never touch it.
+    # Never touch an operator-set value.
     if current is not None and not _auto_enabled:
         return
     if is_colab or is_external_host(host):

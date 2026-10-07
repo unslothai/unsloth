@@ -59,9 +59,6 @@ def _discrete(free_mib, total_mib = None):
     return DeviceMemory("cuda", "cuda", "discrete_vram", free_mib, total_mib or free_mib)
 
 
-# ── mode normalisation ────────────────────────────────────────────────────────
-
-
 def test_normalize_memory_mode_accepts_and_rejects():
     assert normalize_memory_mode(None) is None
     assert normalize_memory_mode("  ") is None
@@ -289,12 +286,8 @@ def test_host_memory_reclaimer_reports_an_unsupported_allocator_once(monkeypatch
     assert "haiku" in messages[0]
 
 
-# ── filename / size estimates ─────────────────────────────────────────────────
-
-
 def test_estimate_gguf_resident_mib_matches_packed_size():
-    # GGUF weights stay packed (uint8) on device and diffusers dequantises per-matmul, so the resident footprint is about the
-    # on-disk size at any quant level (measured on Z-Image-Turbo); a small margin covers allocator overhead.
+    # GGUF stays packed on device and dequantises per matmul, so resident ~= on-disk size plus margin.
     assert estimate_gguf_resident_mib(1000) == 1050
     assert estimate_gguf_resident_mib(7220) == 7581
     assert estimate_gguf_resident_mib(None) is None
@@ -304,14 +297,10 @@ def test_estimate_image_runtime_scales_with_pixels_and_family():
     base = estimate_image_runtime_mib(width = DEFAULT_IMAGE_WIDTH, height = DEFAULT_IMAGE_HEIGHT)
     bigger = estimate_image_runtime_mib(width = 2048, height = 2048)
     assert bigger > base
-    # Distilled / turbo families get a discount.
     turbo = estimate_image_runtime_mib(
         width = DEFAULT_IMAGE_WIDTH, height = DEFAULT_IMAGE_HEIGHT, family = "z-image-turbo"
     )
     assert turbo < base
-
-
-# ── planner: device classes ───────────────────────────────────────────────────
 
 
 def test_cpu_target_never_offloads_but_tiles():
@@ -322,7 +311,7 @@ def test_cpu_target_never_offloads_but_tiles():
         runtime_headroom_mib = 2000,
     )
     assert plan.offload_policy == OFFLOAD_NONE
-    # CPU/MPS have no separate device pool, so VAE tiling is on to cap the spike.
+    # CPU/MPS have no separate device pool, so VAE tiling caps the spike.
     assert plan.vae_tiling and plan.vae_slicing
 
 
@@ -338,7 +327,7 @@ def test_mps_unified_never_auto_offloads():
 
 
 def test_unified_cuda_skips_offload_even_if_offload_capable():
-    # An integrated CUDA SoC reports unified memory; CPU offload would free nothing.
+    # An integrated CUDA SoC has unified memory; CPU offload would free nothing.
     plan = plan_diffusion_memory(
         target = _target(device = "cuda", backend = "cuda", supports_offload = True),
         device_memory = DeviceMemory("cuda", "cuda", "unified_memory", 2000, 16000),
@@ -348,11 +337,7 @@ def test_unified_cuda_skips_offload_even_if_offload_capable():
     assert plan.offload_policy == OFFLOAD_NONE
 
 
-# ── planner: auto budget tiers on a discrete GPU ──────────────────────────────
-
-
 def test_auto_resident_when_roomy():
-    # 80 GB card, ~16 GB model: fits with headroom, so stay resident (bit-identical).
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(80000),
@@ -360,11 +345,11 @@ def test_auto_resident_when_roomy():
         runtime_headroom_mib = 4000,
     )
     assert plan.offload_policy == OFFLOAD_NONE
-    assert plan.vae_tiling is False and plan.vae_slicing is False  # roomy -> no tiling
+    assert plan.vae_tiling is False and plan.vae_slicing is False
 
 
 def test_auto_model_offload_on_tight_fit():
-    # 24 GB free -> reserve 2400 -> budget 21600, 0.85*budget = 18360. required 21000 is over that but under budget, so whole-module offload.
+    # 24 GB free -> reserve 2400 -> budget 21600, 0.85*budget = 18360; 21000 lands between.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(24000, 24000),
@@ -373,11 +358,10 @@ def test_auto_model_offload_on_tight_fit():
         base_overhead_mib = 1000,
     )
     assert plan.offload_policy == OFFLOAD_MODEL
-    assert plan.vae_tiling is True  # offloading -> device is tight -> tile
+    assert plan.vae_tiling is True
 
 
 def test_auto_group_offload_when_transformer_overflows_but_companions_fit():
-    # A big transformer pushes the resident total over budget while the companions still fit, so stream the transformer.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(8000, 8000),
@@ -387,12 +371,11 @@ def test_auto_group_offload_when_transformer_overflows_but_companions_fit():
         base_overhead_mib = 1000,
     )
     assert plan.offload_policy == OFFLOAD_GROUP
-    # Group keeps the VAE resident, so balanced uses exact slicing but NOT lossy tiling and stays bit-identical.
+    # Group keeps the VAE resident, so slicing (exact) but not tiling (lossy).
     assert plan.vae_slicing is True and plan.vae_tiling is False
 
 
 def test_auto_model_offload_when_companions_exceed_budget():
-    # The text encoder itself is too big to stay resident -> offload everything.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(8000, 8000),
@@ -404,7 +387,7 @@ def test_auto_model_offload_when_companions_exceed_budget():
 
 
 def test_auto_model_offload_when_companion_size_unknown():
-    # Without a companion estimate the planner can't prove group fits, so it takes the safest cut.
+    # Without a companion estimate group cannot be proven to fit, so take the safest cut.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(8000, 8000),
@@ -423,9 +406,6 @@ def test_auto_stays_resident_when_budget_unknown():
     )
     assert plan.offload_policy == OFFLOAD_NONE
     assert any("unknown" in r for r in plan.reasons)
-
-
-# ── planner: explicit modes + cpu_offload override ────────────────────────────
 
 
 def test_explicit_modes_force_policy_regardless_of_budget():
@@ -474,7 +454,6 @@ def test_fast_falls_back_to_model_offload_when_it_does_not_fit():
 
 
 def test_explicit_cpu_offload_overrides_resident_auto_choice():
-    # A roomy GPU would stay resident under auto, but cpu_offload=True forces offload.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(80000),
@@ -487,7 +466,7 @@ def test_explicit_cpu_offload_overrides_resident_auto_choice():
 
 
 def test_explicit_memory_mode_wins_over_legacy_cpu_offload():
-    # memory_mode is documented to override cpu_offload, so fast + the legacy flag stays resident instead of downgrading to offload.
+    # memory_mode is documented to override cpu_offload.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(80000),
@@ -509,9 +488,6 @@ def test_explicit_cpu_offload_ignored_on_cpu_target():
         explicit_offload = True,
     )
     assert plan.offload_policy == OFFLOAD_NONE
-
-
-# ── snapshot ──────────────────────────────────────────────────────────────────
 
 
 def test_snapshot_cpu_target_uses_system_memory(monkeypatch):
@@ -549,9 +525,6 @@ def test_snapshot_never_raises_on_probe_failure(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     snap = snapshot_device_memory(_target())
     assert snap.free_mib is None and snap.total_mib is None
-
-
-# ── applier ───────────────────────────────────────────────────────────────────
 
 
 class _RecordingPipe:
@@ -607,7 +580,7 @@ def _manual_plan(policy, *, tiling):
 def test_apply_none_places_resident():
     pipe = _RecordingPipe()
     effective, tiled = apply_memory_plan(pipe, _plan(OFFLOAD_NONE, tiling = False), device = "cuda")
-    assert pipe.calls == ["to:cuda"]  # no tiling on a roomy resident run
+    assert pipe.calls == ["to:cuda"]
     assert effective == OFFLOAD_NONE and tiled is False
 
 
@@ -615,14 +588,14 @@ def test_apply_model_offload_engages_offload_and_tiling():
     pipe = _RecordingPipe()
     effective, tiled = apply_memory_plan(pipe, _plan(OFFLOAD_MODEL, tiling = True), device = "cuda")
     assert "model_offload" in pipe.calls
-    assert "to:cuda" not in pipe.calls  # offload owns placement; never both
+    assert "to:cuda" not in pipe.calls
     assert "vae_tiling" in pipe.calls and "vae_slicing" in pipe.calls
     assert effective == OFFLOAD_MODEL and tiled is True
-    assert pipe.offload_device == "cuda"  # device threaded to enable_model_cpu_offload
+    assert pipe.offload_device == "cuda"
 
 
 def test_apply_model_offload_passes_target_device():
-    # enable_model_cpu_offload defaults to CUDA, so a non-CUDA accelerator (e.g. Intel XPU) must have its device forwarded.
+    # enable_model_cpu_offload defaults to CUDA, so XPU and others need the device forwarded.
     pipe = _RecordingPipe()
     apply_memory_plan(pipe, _plan(OFFLOAD_MODEL, tiling = False), device = "xpu")
     assert pipe.offload_device == "xpu"
@@ -654,7 +627,7 @@ def test_apply_vae_tiling_falls_back_to_vae_submodule():
 
 
 def test_apply_group_falls_back_to_model_without_transformer():
-    # The recording pipe has no .transformer, so group offload cannot engage and the applier falls back to whole-module offload.
+    # No .transformer, so group offload cannot engage and the applier falls back to whole-module.
     pipe = _RecordingPipe()
     effective, _ = apply_memory_plan(pipe, _plan(OFFLOAD_GROUP, tiling = True), device = "cuda")
     assert effective == OFFLOAD_MODEL and "model_offload" in pipe.calls
@@ -664,7 +637,7 @@ def _install_fake_torch_and_hooks(monkeypatch, apply_group_offloading):
     """Fake torch.nn.Module + diffusers.hooks.apply_group_offloading for _apply_group_offload."""
     import sys
 
-    class _Mod:  # stands in for a torch.nn.Module instance (a streamed transformer)
+    class _Mod:
         pass
 
     fake_torch = types.ModuleType("torch")
@@ -680,8 +653,7 @@ def _install_fake_torch_and_hooks(monkeypatch, apply_group_offloading):
 
 
 def test_apply_group_partial_hooks_propagates_not_crash_fallback(monkeypatch):
-    # A dual-DiT pipe whose second transformer fails group offload AFTER the first installed hooks is left partial, which
-    # enable_model_cpu_offload rejects, so the applier must PROPAGATE the failure instead of letting the fallback crash.
+    # A partially hooked pipe is rejected by enable_model_cpu_offload, so the failure must propagate.
     import core.inference.diffusion_memory as mem
 
     calls = {"n": 0}
@@ -700,11 +672,10 @@ def test_apply_group_partial_hooks_propagates_not_crash_fallback(monkeypatch):
 
     with pytest.raises(RuntimeError, match = "OOM on second DiT"):
         mem._apply_group_offload(_DualPipe(), "cuda", logger = None)
-    assert calls["n"] == 2  # first installed hooks, second failed -> propagated
+    assert calls["n"] == 2
 
 
 def test_apply_group_single_transformer_failure_falls_back(monkeypatch):
-    # A single-DiT pipe whose group offload fails with NO hooks installed returns False so the caller falls back cleanly.
     import core.inference.diffusion_memory as mem
 
     def _apply(module, **kw):
@@ -720,9 +691,9 @@ def test_apply_group_single_transformer_failure_falls_back(monkeypatch):
 
 
 def test_apply_group_fallback_enables_vae_tiling():
-    # A balanced/group plan keeps the VAE resident (tiling off), so when group offload cannot engage and we drop to whole-module offload the applier must turn tiling ON.
+    # A group plan leaves tiling off; falling back to whole-module offload must turn it on.
     plan = _plan(OFFLOAD_GROUP, tiling = True)
-    assert plan.vae_tiling is False  # group plan leaves tiling off by design
+    assert plan.vae_tiling is False
     pipe = _RecordingPipe()  # no .transformer -> group offload falls back to model
     effective, tiled = apply_memory_plan(pipe, plan, device = "cuda")
     assert effective == OFFLOAD_MODEL
@@ -859,7 +830,7 @@ def test_refine_keeps_model_offload_when_streaming_cannot_help(monkeypatch):
     )
     assert refine_memory_plan_for_components(fat_vae, plan) is plan
 
-    # Each component fits, but streaming holds every unstreamed one at once: 3000 + 3500 > 6000.
+    # Streaming holds every unstreamed component at once: 3000 + 3500 > 6000.
     transformer = Module(2000)
     fat_resident = types.SimpleNamespace(
         transformer = transformer,
@@ -872,7 +843,6 @@ def test_refine_keeps_model_offload_when_streaming_cannot_help(monkeypatch):
     )
     assert refine_memory_plan_for_components(fat_resident, plan) is plan
 
-    # Same shape with a resident set that fits still streams, and reports what stays behind.
     transformer = Module(2000)
     slim_resident = types.SimpleNamespace(
         transformer = transformer,
@@ -937,8 +907,7 @@ def test_apply_streaming_uses_block_and_leaf_hooks_with_bounded_cpu_memory(monke
     )
     import core.inference.diffusion_memory as mem
 
-    # no pinnable host RAM: every streamed module stays unpinned (bounded CPU memory), and record_stream keeps the
-    # offload from draining the compute stream
+    # No pinnable host RAM: streamed modules stay unpinned; record_stream keeps the compute stream undrained.
     monkeypatch.delenv(mem.STREAMING_PREFETCH_ENV, raising = False)
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 0)
@@ -1021,12 +990,10 @@ def _streaming_apply_kwargs(
 
 
 def test_streaming_pins_the_transformer_within_the_host_budget(monkeypatch):
-    # An unpinned host copy is re-pinned on the CPU at every onload, and record_stream=False synchronises the compute
-    # stream after every group, so that pinning ran with the GPU idle (Wan2.2-5B streamed on an L4: see the PR).
+    # Unpinned copies are re-pinned per onload, and record_stream=False syncs the compute stream per group.
     seen, deferred = _streaming_apply_kwargs(monkeypatch, 6000)
     assert seen["transformer"]["low_cpu_mem_usage"] is False
     assert seen["transformer"]["record_stream"] is True
-    # the encoder does not fit beside the transformer: it stays unpinned, still overlapped
     assert seen["text_encoder"]["low_cpu_mem_usage"] is True
     assert seen["text_encoder"]["record_stream"] is True
     assert deferred == []
@@ -1039,7 +1006,6 @@ def test_streaming_pins_everything_on_a_ram_rich_host(monkeypatch):
 
 def test_streaming_pins_off_the_load_path_when_asked(monkeypatch):
     seen, deferred = _streaming_apply_kwargs(monkeypatch, 6000, request_background = True)
-    # applied unpinned, then handed to the background pinner; the encoder is outside the budget so never pinned
     assert seen["transformer"]["low_cpu_mem_usage"] is True
     assert seen["transformer"]["record_stream"] is True
     assert deferred == ["transformer"]
@@ -1073,11 +1039,11 @@ def test_apply_sequential_offload():
     )
     assert "sequential_offload" in pipe.calls and "to:cuda" not in pipe.calls
     assert effective == OFFLOAD_SEQUENTIAL
-    assert pipe.offload_device == "cuda"  # device threaded to sequential offload too
+    assert pipe.offload_device == "cuda"
 
 
 def test_apply_sequential_falls_back_to_model_offload_when_unsupported():
-    # Sequential offload is unreliable for GGUF on some diffusers versions, so the applier falls back to whole-module and reports what ran.
+    # Sequential offload is unreliable for GGUF on some diffusers versions.
     class _NoSeqPipe(_RecordingPipe):
         def enable_sequential_cpu_offload(self, device = None):
             raise RuntimeError("sequential offload not supported for this transformer")
@@ -1091,7 +1057,6 @@ def test_apply_sequential_falls_back_to_model_offload_when_unsupported():
 
 
 def test_apply_tolerates_pipe_without_vae_savers():
-    # A pipeline missing enable_vae_* must not crash the applier.
     class _Bare:
         def __init__(self):
             self.moved = None
@@ -1104,11 +1069,8 @@ def test_apply_tolerates_pipe_without_vae_savers():
     assert bare.moved == "cpu" and tiled is False
 
 
-# ── settled snapshot + capacity-fit retry helpers ────────────────────────────
-
-
 def test_settled_snapshot_takes_max_free_over_reads(monkeypatch):
-    # A transient foreign allocation can only SHRINK free, so the settled snapshot keeps the max free across reads (60 GB on an idle 183 GB card).
+    # A transient foreign allocation can only shrink free, so keep the max across reads.
     from core.inference import diffusion_memory as dm
 
     reads = [
@@ -1122,7 +1084,6 @@ def test_settled_snapshot_takes_max_free_over_reads(monkeypatch):
 
 
 def test_settled_snapshot_stops_early_when_device_already_idle(monkeypatch):
-    # First read already within the reserve of total: no transient to wait out, one read only.
     from core.inference import diffusion_memory as dm
 
     calls = []
@@ -1150,9 +1111,8 @@ def _fake_torch_allocator(monkeypatch, *, reserved: int, allocated: int):
 
 
 def test_reclaimable_snapshot_credits_cached_blocks_without_flushing(monkeypatch):
-    # mem_get_info counts every block the caching allocator holds for reuse as USED, so a warm
-    # card reads as nearly full. The generate-time guard must not mistake that for a shortfall,
-    # and must not pay empty_cache() per image to find out.
+    # mem_get_info counts the caching allocator's reusable blocks as used, so a warm card looks full.
+    # The guard must not mistake that for a shortfall or pay empty_cache() per image.
     from core.inference import diffusion_memory as dm
 
     monkeypatch.setattr(
@@ -1162,15 +1122,13 @@ def test_reclaimable_snapshot_credits_cached_blocks_without_flushing(monkeypatch
             "cuda", "cuda", "discrete_vram", free_mib = 2_000, total_mib = 16_302
         ),
     )
-    # 6 GiB reserved, 2 GiB in live tensors: 4 GiB is cached and reclaimable.
     _fake_torch_allocator(monkeypatch, reserved = 6 * 1024**3, allocated = 2 * 1024**3)
     snap = dm.reclaimable_snapshot_device_memory(_target(device = "cuda"))
     assert snap.free_mib == 2_000 + 4 * 1024
 
 
 def test_reclaimable_snapshot_does_not_credit_a_live_cuda_graph_pool(monkeypatch):
-    # A captured graph's pool is reserved but not allocated, and nothing else can allocate into it while the
-    # graph lives (under block offload it also holds the prefetch window): the guard must see it as used.
+    # A captured graph's pool is reserved but unusable by others while it lives, so it counts as used.
     from core.inference import diffusion_cuda_graph as cg
     from core.inference import diffusion_memory as dm
 
@@ -1184,15 +1142,12 @@ def test_reclaimable_snapshot_does_not_credit_a_live_cuda_graph_pool(monkeypatch
     _fake_torch_allocator(monkeypatch, reserved = 6 * 1024**3, allocated = 2 * 1024**3)
     monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 3 * 1024**3)
     assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 2_000 + 1024
-    monkeypatch.setattr(
-        cg, "live_pool_free_bytes", lambda: 5 * 1024**3
-    )  # the pool is all of the cached bytes
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 5 * 1024**3)
     assert dm.reclaimable_snapshot_device_memory(_target(device = "cuda")).free_mib == 2_000
 
 
 def test_reclaimable_snapshot_never_claims_more_than_the_card(monkeypatch):
-    # The credit is arithmetic, so a bogus allocator reading must not invent memory the card
-    # does not have and talk the guard out of a real refusal.
+    # The credit is arithmetic: a bogus allocator reading must not invent memory.
     from core.inference import diffusion_memory as dm
 
     monkeypatch.setattr(
@@ -1207,7 +1162,6 @@ def test_reclaimable_snapshot_never_claims_more_than_the_card(monkeypatch):
 
 
 def test_reclaimable_snapshot_falls_back_when_the_allocator_is_unreadable(monkeypatch):
-    # No allocator reading: the plain driver-level snapshot still stands, unchanged.
     from core.inference import diffusion_memory as dm
     import sys
 
@@ -1229,7 +1183,6 @@ def test_reclaimable_snapshot_falls_back_when_the_allocator_is_unreadable(monkey
 
 
 def test_reclaimable_snapshot_passthrough_off_cuda(monkeypatch):
-    # Only the CUDA caching allocator is modelled here; every other device keeps its plain read.
     from core.inference import diffusion_memory as dm
 
     monkeypatch.setattr(
@@ -1244,7 +1197,6 @@ def test_reclaimable_snapshot_passthrough_off_cuda(monkeypatch):
 
 
 def test_settled_snapshot_passthrough_off_cuda(monkeypatch):
-    # Non-cuda targets keep the single-read behaviour (no settle loop).
     from core.inference import diffusion_memory as dm
 
     calls = []
@@ -1260,7 +1212,7 @@ def test_settled_snapshot_passthrough_off_cuda(monkeypatch):
 
 
 def test_plan_fits_total_capacity():
-    # True exactly when required fits (total - reserve) * 0.85: the decline can then only come from the instantaneous free reading, so a settled retry helps.
+    # True when required fits (total - reserve) * 0.85: only then can a settled retry help.
     from core.inference.diffusion_memory import plan_fits_total_capacity
 
     def plan(
@@ -1273,24 +1225,19 @@ def test_plan_fits_total_capacity():
             device_memory = DeviceMemory("cuda", "cuda", kind, free_mib = 1, total_mib = total),
         )
 
-    # FLUX.2-dev int8 incident numbers: 90,228 required on a 183,359 MiB card, so it fits.
     assert plan_fits_total_capacity(plan(90_228, 183_359)) is True
-    # Larger than the capacity margin (0.85 * (183,359 - 18,335) = 140,270), so no retry.
+    # 0.85 * (183,359 - 18,335) = 140,270
     assert plan_fits_total_capacity(plan(150_000, 183_359)) is False
-    # Unknown sizes keep today's behaviour (no retry).
     assert plan_fits_total_capacity(plan(None, 183_359)) is False
     assert plan_fits_total_capacity(plan(90_228, None)) is False
     assert plan_fits_total_capacity(types.SimpleNamespace()) is False
 
 
-# ── the unified-memory oversize refusal ───────────────────────────────────────
-# Apple Silicon shares one CPU/GPU pool, so the planner's OFFLOAD_NONE there is a placement
-# with no fallback tier, and PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 removes the allocator's hard
-# limit: an oversized load is killed by the OS with no Python exception. These cover the
-# load-time refusal that replaces that SIGKILL with a message.
+# Apple Silicon shares one pool and PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0 lifts the allocator limit,
+# so an oversized load is SIGKILLed by the OS; the load-time refusal replaces that with a message.
 
 _MPS_TOTAL_MIB = 16 * 1024
-_MPS_FREE_MIB = int(_MPS_TOTAL_MIB * 0.80)  # RAM free once macOS + a browser + Unsloth are up
+_MPS_FREE_MIB = int(_MPS_TOTAL_MIB * 0.80)
 
 
 def _unified_plan(
@@ -1315,17 +1262,15 @@ def _unified_plan(
 def test_unified_oversize_refuses_and_names_family_and_both_numbers():
     from core.inference.diffusion_memory import unified_memory_shortfall_message
 
-    # 16 GiB Mac, 12.8 GiB free, 20% unified reserve, so about 9.5 GiB of budget. 24 GiB cannot fit.
+    # 16 GiB Mac, 12.8 GiB free, 20% unified reserve: ~9.5 GiB budget.
     plan = _unified_plan(model_dense_mib = 24 * 1024)
-    assert plan.offload_policy == OFFLOAD_NONE  # the planner still has no fallback to offer
+    assert plan.offload_policy == OFFLOAD_NONE
     message = unified_memory_shortfall_message(plan, family = "wan2.2-ti2v-5b")
     assert message is not None
     assert "wan2.2-ti2v-5b" in message
-    # Weights + the flat base overhead, and the safe budget, both rendered in GB.
     assert "about 26 GB of memory for its weights" in message  # 24 GiB weights + 2 GiB overhead
     assert "about 10 GB is usable" in message  # 12.8 GiB free, less 20% of 16 GiB
     assert "13 GB currently free" in message
-    # The most useful thing the user can change, and the escape hatch.
     assert "smaller or more quantized model" in message
     assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD=1" in message
 
@@ -1341,7 +1286,6 @@ def test_unified_oversize_ignores_the_soft_runtime_headroom():
     plan = _unified_plan(model_dense_mib = weights, runtime_headroom_mib = 8192)
     assert plan.estimates["resident_required_mib"] > budget  # refused if headroom counted
     assert unified_memory_shortfall_message(plan) is None
-    # One MiB more of weights does tip it over.
     assert unified_memory_shortfall_message(_unified_plan(model_dense_mib = weights + 1)) is not None
 
 
@@ -1361,7 +1305,7 @@ def test_unified_oversize_never_refuses_discrete_vram():
 
 
 def test_unified_oversize_never_refuses_plain_cpu_system_memory():
-    # A CPU target reports system_memory, has swap, and is an opt-in fringe path: unchanged.
+    # A CPU target has swap and is an opt-in fringe path: unchanged.
     from core.inference.diffusion_memory import unified_memory_shortfall_message
     plan = _unified_plan(model_dense_mib = 80 * 1024, kind = "system_memory", device = "cpu")
     assert unified_memory_shortfall_message(plan) is None
@@ -1370,8 +1314,8 @@ def test_unified_oversize_never_refuses_plain_cpu_system_memory():
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"free_mib": None},  # psutil unavailable: budget unknown
-        {"model_dense_mib": None},  # unscannable checkpoint: size unknown
+        {"free_mib": None},
+        {"model_dense_mib": None},
     ],
 )
 def test_unified_oversize_fails_open_on_unknown_inputs(kwargs):
@@ -1395,7 +1339,7 @@ def test_unified_oversize_env_override_attempts_the_load_anyway(monkeypatch):
     for value in ("1", "true", "YES", "on"):
         monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, value)
         assert unified_memory_shortfall_message(plan) is None
-        raise_on_unified_memory_shortfall(plan)  # must not raise
+        raise_on_unified_memory_shortfall(plan)
     monkeypatch.setenv(UNIFIED_OVERSIZE_ENV, "0")
     assert unified_memory_shortfall_message(plan) is not None
 
@@ -1418,7 +1362,6 @@ def test_raise_on_unified_memory_shortfall_raises_runtime_error_with_the_message
     with pytest.raises(RuntimeError) as excinfo:
         raise_on_unified_memory_shortfall(plan, family = "ltx-2")
     assert str(excinfo.value) == unified_memory_shortfall_message(plan, family = "ltx-2")
-    # A plan that fits is a silent no-op.
     raise_on_unified_memory_shortfall(_unified_plan(model_dense_mib = 1024))
 
 
@@ -1437,12 +1380,9 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
     )
 
     mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)  # the tables are DECIMAL GB
-    # family: the RAM sizes (GiB) at which the load must be REFUSED.
+    # family: RAM sizes (GiB) at which the load must be refused.
     expected_refusals = {
-        # 144.2 GB of bf16 weights, the largest video family by a wide margin: refused at every
-        # size in this matrix, 128 GiB included. That is the correct answer rather than a gap in
-        # the table -- the dense pipeline cannot fit any Mac modelled here, and a user on one
-        # reaches H3 through the GGUF or prequantized artifacts instead.
+        # 144.2 GB bf16: refused on every Mac here by design; users reach H3 via GGUF or prequant artifacts.
         "minimax-h3": {16, 24, 32, 64, 96, 128},
         "ltx-2": {16, 24, 32, 64, 96},
         "wan2.2-ti2v-5b": {16, 24, 32},
@@ -1467,7 +1407,6 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
                 free_mib = int(total * 0.80),
                 total_mib = total,
             )
-            # The planner never has an alternative to offer on unified memory: that is the bug.
             assert plan.offload_policy == OFFLOAD_NONE
             refused = unified_memory_shortfall_message(plan, family = fam.name) is not None
             assert refused is (ram_gib in expected_refusals[fam.name]), (
@@ -1475,9 +1414,6 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
                 f"weights+overhead={dense + DEFAULT_BASE_OVERHEAD_MIB} MiB, "
                 f"budget={plan.estimates['safe_device_budget_mib']} MiB"
             )
-
-
-# -- the unified refusal is judged on resident sizes, not download sizes --------
 
 
 def test_unified_memory_policy_cannot_express_a_misfit():
@@ -1496,36 +1432,29 @@ def test_unified_memory_policy_cannot_express_a_misfit():
     plan = plan_diffusion_memory(
         target = target,
         device_memory = memory,
-        model_dense_mib = 90_000,  # wildly oversized
+        model_dense_mib = 90_000,
         runtime_headroom_mib = 1_000,
     )
     assert plan.offload_policy == OFFLOAD_NONE
-    # ... but the explicit sizing check does see the shortfall.
     assert unified_memory_shortfall_message(plan, family = "flux.1") is not None
 
 
-# ── the streamed-text-encoder group tier ──────────────────────────────────────
-# A text encoder runs ONCE, before step 0, but group offload places every non-streamed component
-# resident, so its bytes are reserved for the whole denoise. Where that is the only thing pushing
-# the group floor over budget, streaming the encoders too keeps the tier instead of dropping to
-# whole-module offload (measured 48m25s for a 20-step 1024x1024 image on a 16 GB card).
+# Text encoders run once before step 0, yet group offload keeps them resident all denoise;
+# streaming them keeps the group tier instead of dropping to whole-module offload.
 
-# The 16 GB card from the report: free 15,870 of 16,305 MiB, reserve max(2048, 10%) = 2048, so the
-# safe budget is exactly the 13,822 MiB the failing plan was measured against.
+# Free 15,870 of 16,305 MiB, reserve max(2048, 10%) = 2048: budget is exactly 13,822 MiB.
 _16G_FREE_MIB = 15_870
 _16G_TOTAL_MIB = 16_305
 _16G_BUDGET_MIB = 13_822
 
-# Z-Image at int8, straight from the report: transformer 6451 + companions 7820 = 14,271 resident,
-# of which the text encoders are 7629 (8.0 of the 8.2 GB companion table) and the VAE is the rest.
+# Z-Image int8: transformer 6451 + companions 7820 (text encoders 7629, VAE the rest).
 _ZIMAGE_MODEL_DENSE_MIB = 14_271
 _ZIMAGE_COMPANION_MIB = 7_820
 _ZIMAGE_TEXT_ENCODER_MIB = 7_629
 
 
 def test_safe_budget_matches_the_reported_16g_card():
-    # Anchors every number below: if the reserve rule changes, this fails first rather than
-    # silently moving the floors the rest of this section is calibrated against.
+    # Anchors every number below: fails first if the reserve rule changes.
     from core.inference.diffusion_memory import _safe_device_budget_mib
     assert _safe_device_budget_mib(_discrete(_16G_FREE_MIB, _16G_TOTAL_MIB)) == _16G_BUDGET_MIB
 
@@ -1543,9 +1472,7 @@ def _zimage_plan(text_encoder_dense_mib):
 
 
 def test_streamed_text_encoders_rescue_the_48_minute_plan():
-    # required 14,271 + 8192 + 2048 = 24,511 against a 13,822 budget: not resident either way.
-    # group floor 7820 + 8192 + 2048 = 18,060 > 13,822, which is what dropped this to whole-module
-    # offload. With the encoders streamed the floor is 191 + 8192 + 2048 = 10,431 and fits.
+    # Group floor 7820 + 8192 + 2048 = 18,060 > 13,822; streamed encoders give 10,431, which fits.
     before = _zimage_plan(None)
     assert before.offload_policy == OFFLOAD_MODEL
     assert before.stream_text_encoders is False
@@ -1558,19 +1485,15 @@ def test_streamed_text_encoders_rescue_the_48_minute_plan():
     assert after.estimates["group_floor_mib"] == 18_060
     assert after.estimates["group_floor_streamed_te_mib"] == 10_431
     assert any("text encoders" in reason for reason in after.reasons)
-    # Group keeps the VAE resident, so the decode stays bit-identical (sliced, not tiled).
     assert after.vae_slicing is True and after.vae_tiling is False
-    # The flag has to reach the applier, which reads the public dict in status/logging too.
+    # The applier and status/logging read the public dict.
     assert after.as_public_dict()["stream_text_encoders"] is True
 
 
 @pytest.mark.parametrize("mode", [None, MEMORY_MODE_FAST])
 def test_plain_group_is_preferred_over_streaming_the_text_encoders(mode):
-    # Where the companions fit as they are, the encoders stay resident: streaming them is a small
-    # loss for no gain, so the new tier must only engage as a rescue from whole-module offload.
-    # Both branches that pick a tier have to agree on that order, hence both modes here: auto has
-    # its own if/elif chain and `fast` goes through _offload_tier, so covering one leaves the
-    # other free to prefer the wrong tier.
+    # The tier must only engage as a rescue from whole-module offload.
+    # auto and fast pick tiers via separate branches, so both are covered.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
@@ -1586,7 +1509,6 @@ def test_plain_group_is_preferred_over_streaming_the_text_encoders(mode):
 
 
 def test_streamed_text_encoders_still_fall_through_when_even_that_floor_is_over():
-    # A VAE alone over budget has nothing left to give up, so whole-module offload still wins.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
@@ -1601,8 +1523,7 @@ def test_streamed_text_encoders_still_fall_through_when_even_that_floor_is_over(
 
 
 def test_fast_mode_also_reaches_the_streamed_text_encoder_tier():
-    # `fast` has its own does-not-fit branch; it must offer the same ladder as auto, or an explicit
-    # fast request on a 16 GB card lands on the 48-minute tier the auto path now avoids.
+    # fast has its own does-not-fit branch; it must offer the same ladder as auto.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
@@ -1618,8 +1539,7 @@ def test_fast_mode_also_reaches_the_streamed_text_encoder_tier():
 
 
 def test_text_encoder_split_larger_than_the_companions_clamps_at_zero():
-    # The two terms can come from different sources (a cache walk and a family table), so a split
-    # that exceeds the total must floor at 0 rather than produce a negative resident requirement.
+    # The terms come from different sources, so a split exceeding the total must floor at 0.
     plan = plan_diffusion_memory(
         target = _target(),
         device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
@@ -1648,9 +1568,7 @@ def _legacy_offload_policy(
 
 
 def test_no_text_encoder_split_reproduces_the_previous_decision():
-    # The back-compat fence. Every existing caller passes no split (the keyword defaults to None),
-    # so across the size matrix the planner must land exactly where it did before, and must never
-    # report the new tier.
+    # Back-compat: with no split the planner must land exactly where it did before.
     from core.inference.diffusion_memory import _safe_device_budget_mib
     for free, total in ((6_000, 8_192), (11_000, 12_288), (15_870, 16_305), (80_000, 81_920)):
         for model_dense in (2_000, 14_271, 40_000):
@@ -1713,7 +1631,6 @@ def _stream_te_pipe(monkeypatch):
 
 
 def test_apply_group_offload_leaves_text_encoders_resident_by_default(monkeypatch):
-    # The unchanged path: only the transformer streams, every other component is placed resident.
     import core.inference.diffusion_memory as mem
 
     pipe, applied, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
@@ -1723,15 +1640,14 @@ def test_apply_group_offload_leaves_text_encoders_resident_by_default(monkeypatc
 
 
 def test_apply_group_offload_streams_text_encoders_when_asked(monkeypatch):
-    # With the flag on, every text_encoder* module gets group-offload hooks and is NOT placed
-    # resident. Placing them would defeat the whole point: their bytes are what did not fit.
+    # Placing text encoders resident would defeat the tier: their bytes are what did not fit.
     import core.inference.diffusion_memory as mem
 
     pipe, applied, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
     assert mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
     assert applied == [transformer, te, te2]
     assert te.placed is None and te2.placed is None
-    assert vae.placed is not None  # the VAE is the companion the tier keeps resident
+    assert vae.placed is not None
 
 
 def _stream_te_kwargs(monkeypatch, **call_kw):
@@ -1766,25 +1682,20 @@ def _stream_te_kwargs(monkeypatch, **call_kw):
     import core.inference.diffusion_memory as mem
 
     pipe, _applied, *_ = _stream_te_pipe(monkeypatch)
-    # SWAP, never re-install: a second _install_fake_torch_and_hooks mints a fresh stand-in Module
-    # class, and the components built by the first call then fail isinstance -- so only the
-    # transformer (which is taken unconditionally) reached diffusers and every assertion here was
-    # silently checking one module instead of four.
+    # Swap, never re-install: a second install mints a new Module class and isinstance checks
+    # silently fail, leaving only the transformer checked.
     _swap_group_offloading(monkeypatch, _apply)
     assert mem._apply_group_offload(pipe, "cuda", logger = None, **call_kw) is True
     return seen
 
 
 def test_the_split_leaves_the_weights_only_estimate_terms_untouched():
-    # The unified-memory load refusal sizes a load from `model_dense_mib + base_overhead_mib`
-    # against `safe_device_budget_mib`, and deliberately excludes the soft runtime headroom. The
-    # text-encoder split adds a NEW term and a new floor; it must not move any of those three, or
-    # a refusal calibrated against them would silently change meaning.
+    # The unified refusal uses model_dense_mib, base_overhead_mib and safe_device_budget_mib;
+    # the split must not move any of them.
     without = _zimage_plan(None).estimates
     with_split = _zimage_plan(_ZIMAGE_TEXT_ENCODER_MIB).estimates
     for key in ("safe_device_budget_mib", "model_dense_mib", "base_overhead_mib"):
         assert without[key] == with_split[key], key
-    # The split itself is additive: it is visible, and the pre-existing floor is unchanged.
     assert without["group_floor_mib"] == with_split["group_floor_mib"]
     assert without["text_encoder_dense_mib"] is None
     assert with_split["text_encoder_dense_mib"] == _ZIMAGE_TEXT_ENCODER_MIB
@@ -1792,11 +1703,8 @@ def test_the_split_leaves_the_weights_only_estimate_terms_untouched():
 
 
 def test_streaming_the_text_encoders_does_not_pin_host_memory(monkeypatch):
-    # diffusers pins EVERY offloaded parameter in host RAM on the copy-stream path. That is a fair
-    # trade when group offload was already the plan, but this tier is only ever a rescue FROM
-    # whole-module offload, which pins nothing, on a card too small to hold the companions. Those
-    # hosts are not reliably RAM-rich, and #8188's machine got into trouble precisely by turning a
-    # device shortfall into unswappable host memory. The encoders run once per call, so the slower
+    # This tier rescues small cards from whole-module offload (which pins nothing);
+    # hosts may lack RAM, so encoders must not be pinned.
     import core.inference.diffusion_memory as mem
 
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
@@ -1807,12 +1715,10 @@ def test_streaming_the_text_encoders_does_not_pin_host_memory(monkeypatch):
 
 
 def test_the_unchanged_group_tier_still_pins_for_speed(monkeypatch):
-    # The existing group plan is untouched: it was chosen because the companions FIT, so the host
-    # is not being rescued and the pinned fast copy is the right default.
+    # The existing group plan was chosen because companions fit, so pinning stays the default.
     seen = _stream_te_kwargs(monkeypatch)
     assert seen, "the applier never reached diffusers"
     assert all(kw["low_cpu_mem_usage"] is False for kw in seen.values()), seen
-    # ... and the CUDA copy-stream overlap is still requested, which is what makes pinning matter.
     assert all(kw["use_stream"] and kw["non_blocking"] for kw in seen.values()), seen
 
 
@@ -1828,11 +1734,8 @@ def _swap_group_offloading(monkeypatch, apply_group_offloading):
 
 
 def test_a_text_encoder_that_refuses_group_offload_stays_resident(monkeypatch):
-    # A text encoder is a far less well-trodden target for block-level group offloading than a
-    # DiT. Before this tier existed the encoders were simply resident, so a refusal must degrade
-    # back to that, not fail the load: by the time the encoders are reached the transformer already
-    # carries hooks, and whole-module offload is no longer available as a fallback, so joining the
-    # all-or-nothing DiT loop would turn a slow-but-working load into a hard failure.
+    # By the encoder stage the transformer is hooked and whole-module fallback is gone,
+    # so an encoder offload refusal must degrade to resident, not fail the load.
     import core.inference.diffusion_memory as mem
 
     applied: list[Any] = []
@@ -1843,21 +1746,16 @@ def test_a_text_encoder_that_refuses_group_offload_stays_resident(monkeypatch):
         applied.append(module)
 
     pipe, _unused, transformer, te, te2, vae = _stream_te_pipe(monkeypatch)
-    # Swap only the hook: re-installing the fake torch would mint a NEW Module class and every
-    # isinstance check against the already-built components would go false.
     _swap_group_offloading(monkeypatch, _apply)
 
     assert mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
-    # The transformer still streams, and the refusing encoders are placed resident instead.
     assert applied == [transformer]
     assert te.placed is not None and te2.placed is not None
     assert vae.placed is not None
 
 
 def test_one_refusing_text_encoder_does_not_cost_the_other_its_streaming(monkeypatch):
-    # Each encoder is decided on its own: a family where one encoder refuses and another does not
-    # must still stream the one that works, or a single awkward component silently reverts the
-    # whole rescue.
+    # Each encoder is decided alone, so one refusing encoder must not revert the whole rescue.
     import core.inference.diffusion_memory as mem
 
     applied: list[Any] = []
@@ -1872,14 +1770,12 @@ def test_one_refusing_text_encoder_does_not_cost_the_other_its_streaming(monkeyp
 
     assert mem._apply_group_offload(pipe, "cuda", logger = None, stream_text_encoders = True) is True
     assert applied == [transformer, te2]
-    assert te.placed is not None  # the refusing one is resident
-    assert te2.placed is None  # the working one still streams
+    assert te.placed is not None
+    assert te2.placed is None
 
 
 def test_a_failing_dit_keeps_its_all_or_nothing_semantics(monkeypatch):
-    # The tolerance is scoped to the encoders. A DiT that fails AFTER another installed hooks
-    # still propagates, because a partially hooked denoiser is not something the pipeline can run
-    # or fall back from. This is the pre-existing contract and the new tier must not soften it.
+    # Encoder tolerance only: a DiT failing after another hooked still propagates (partial denoiser).
     import core.inference.diffusion_memory as mem
 
     calls = {"n": 0}
@@ -1904,8 +1800,7 @@ def test_a_failing_dit_keeps_its_all_or_nothing_semantics(monkeypatch):
 
 
 def test_apply_memory_plan_threads_the_stream_flag_to_the_group_applier(monkeypatch):
-    # End of the wire: the planner's decision has to reach _apply_group_offload, or the plan says
-    # group-with-streamed-encoders while the pipeline still places them resident and OOMs.
+    # The flag must reach _apply_group_offload, else the encoders are placed resident and OOM.
     import core.inference.diffusion_memory as mem
 
     seen = {}
@@ -1927,15 +1822,10 @@ def test_apply_memory_plan_threads_the_stream_flag_to_the_group_applier(monkeypa
     assert seen["stream_text_encoders"] is False
 
 
-# ── the generate-time activation guard ────────────────────────────────────────
-# The load-time plan budgets the 1024x1024 default because load time cannot know the request, so a
-# much larger frame was never compared against anything: at 1088x1920 the plan reserved half the
-# working memory the pass needs. On Linux that raises OutOfMemoryError; on Windows WDDM the driver
-# serves the overflow from system RAM instead, so ~27 GB lands on a 16 GB card with no exception
-# and the desktop stops responding. These cover the pre-sampling refusal that replaces that.
+# Load-time plans budget 1024x1024; larger frames OOM on Linux, and on Windows WDDM spill
+# into system RAM silently and freeze the desktop. This guard refuses before sampling.
 
-# The Z-Image-Turbo GGUF hint from the report: the base repo carries the distilled marker, so the
-# estimate here is the discounted one (0.85), which is the honest 13,872 MiB the issue measured.
+# The base repo carries the distilled marker, so the estimate is the discounted one (0.85).
 _TURBO_HINT = (
     "z-image Z-Image-Turbo-Q4_K_S.gguf unsloth/Z-Image-Turbo-GGUF Tongyi-MAI/Z-Image-Turbo"
 )
@@ -1958,77 +1848,61 @@ def _shortfall(
 
 
 def test_estimate_image_runtime_scales_with_the_real_dimensions():
-    # The regression fence for the estimator itself: it already scales, it was simply never called
-    # with anything. 1088x1920 is 1.99x the area of 1024x1024, so the headroom must be ~2x.
+    # 1088x1920 is 1.99x the area of 1024x1024, so the headroom must be ~2x.
     base = estimate_image_runtime_mib(width = 1024, height = 1024)
     tall = estimate_image_runtime_mib(width = 1088, height = 1920)
     assert base == 8192
     assert tall == 16_320
     assert 1.95 < tall / base < 2.05
-    # And with the distilled discount that the base repo now contributes, the report's number.
     assert estimate_image_runtime_mib(width = 1088, height = 1920, family = _TURBO_HINT) == 13_872
 
 
 def test_guard_refuses_the_oversized_frame_and_passes_the_default_one():
-    # 13,872 MiB of working memory against a 13,822 MiB budget on the reported card: refuse.
+    # 13,872 MiB of working memory against a 13,822 MiB budget: refuse.
     message = _shortfall(1088, 1920)
     assert message is not None
-    # Everything the user needs to act: what they asked for, what it costs, what they have.
     assert "1088x1920" in message
-    # The TOTAL the decision compared, not the activations alone: 13,872 MiB of activations plus
-    # the 2,048 MiB of fixed overhead. Quoting 13.55 GB against a 13.50 GB budget was a refusal
-    # whose own numbers were close enough to read as a bug, and on the 15.92 GiB card in the
-    # report (14,254 MiB usable) it read as an outright contradiction.
+    # Quote the total compared (activations + 2,048 MiB overhead), not activations alone.
     assert "15.55 GB" in message  # needed, overhead included
     assert "2.00 GB of fixed overhead" in message
-    assert "13.50 GB" in message  # usable
-    assert "15.50 GB" in message  # currently free
+    assert "13.50 GB" in message
+    assert "15.50 GB" in message
     assert "smaller resolution" in message
     assert "UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_GENERATE" in message
-    # The same card at the default resolution needs 6963 MiB and must go straight through.
     assert _shortfall(1024, 1024) is None
 
 
 def test_guard_counts_the_base_overhead_alongside_the_activations():
-    # The CUDA context, scheduler state and fragmentation allowance have to coexist with this
-    # pass's tensors, and the load-time plan already sums them additively. Leaving the overhead
-    # out left the guard silent by a few hundred MiB on the exact card #8188 was reported from:
-    # a 15.92 GiB card gives a 14,254 MiB budget, which 13,872 MiB of activations fits and
-    # 13,872 + 2048 does not.
+    # The overhead coexists with the pass's tensors; without it a 15.92 GiB card (14,254 MiB budget)
+    # fits 13,872 MiB of activations and the guard stays silent.
     from core.inference.diffusion_memory import _safe_device_budget_mib
 
-    reported_card = _discrete(16_302, 16_302)  # idle 15.92 GiB card
+    reported_card = _discrete(16_302, 16_302)
     assert _safe_device_budget_mib(reported_card) == 14_254
     assert _shortfall(1088, 1920, memory = reported_card) is not None
-    # ... and setting the overhead to zero is exactly what makes it silent again, so the term is
-    # load-bearing rather than decorative.
+    # Zeroing the overhead makes it silent again, so the term is load-bearing.
     assert _shortfall(1088, 1920, memory = reported_card, base_overhead_mib = 0) is None
 
 
 def test_guard_never_refuses_at_or_below_the_resolution_the_load_planned_for():
-    # The load's flat headroom is a PLANNING figure: it picks an offload tier, and the tier it
-    # picks runs 1024x1024 on cards whose entire budget is below that figure. Treating it as a
-    # hard limit there would refuse generations that complete today, so the guard is confined to
-    # requests LARGER than what was planned. An 8 GB card is the case that proves it.
+    # The flat headroom is a planning figure; small cards run 1024x1024 below it,
+    # so the guard only applies to requests larger than planned.
     small = _discrete(
         int(8 * 1024 * 0.97), 8 * 1024
     )  # safe budget 5898 MiB, under the 6963 default
     assert _shortfall(1024, 1024, memory = small) is None
     assert _shortfall(512, 512, memory = small) is None
-    # It still refuses the genuinely oversized frame on that same card.
     assert _shortfall(1088, 1920, memory = small) is not None
 
 
 def test_guard_scales_with_batch_size():
-    # Batch multiplies the activations exactly as area does, so the same overrun must be caught.
     assert _shortfall(1024, 1024, batch_size = 1) is None
     assert _shortfall(1024, 1024, batch_size = 4) is not None
     assert "at a batch of 4" in _shortfall(1024, 1024, batch_size = 4)
 
 
 def test_guard_is_skipped_on_unified_memory():
-    # Offload means something different where the CPU and GPU share one pool, "free" is a moving
-    # target shared with the OS, and the load-time unified refusal already owns that device class.
+    # On unified memory the load-time unified refusal owns this device class.
     unified = DeviceMemory("cuda", "cuda", "unified_memory", _16G_FREE_MIB, _16G_TOTAL_MIB)
     assert _shortfall(1088, 1920, memory = unified) is None
     mps = DeviceMemory("mps", "mps", "unified_memory", _16G_FREE_MIB, _16G_TOTAL_MIB)
@@ -2036,14 +1910,12 @@ def test_guard_is_skipped_on_unified_memory():
 
 
 def test_guard_is_skipped_when_free_memory_is_unknown():
-    # No reading, no verdict: the planner's own rule for an unknown budget is to stay out of it.
     blind = DeviceMemory("cuda", "cuda", "discrete_vram", None, _16G_TOTAL_MIB)
     assert _shortfall(1088, 1920, memory = blind) is None
 
 
 def test_guard_is_skipped_off_cuda_and_rocm():
-    # ROCm reports device "cuda", so that stays covered. XPU / CPU keep today's behaviour: their
-    # allocators differ and this estimate was measured against a discrete VRAM pool.
+    # ROCm reports device "cuda" so stays covered; XPU / CPU allocators differ and are untouched.
     xpu = DeviceMemory("xpu", "xpu", "discrete_vram", _16G_FREE_MIB, _16G_TOTAL_MIB)
     assert _shortfall(1088, 1920, memory = xpu) is None
     cpu = DeviceMemory("cpu", "cpu", "system_memory", _16G_FREE_MIB, _16G_TOTAL_MIB)
@@ -2055,14 +1927,13 @@ def test_guard_env_override_lets_an_oversized_generation_through(monkeypatch):
     for value in ("1", "true", "YES", " on "):
         monkeypatch.setenv(OVERSIZED_GENERATE_ENV, value)
         assert _shortfall(1088, 1920) is None, value
-    # Anything else is not an override, so the refusal stands.
     for value in ("0", "false", "", "maybe"):
         monkeypatch.setenv(OVERSIZED_GENERATE_ENV, value)
         assert _shortfall(1088, 1920) is not None, value
 
 
 def test_guard_fails_open_when_the_probe_raises():
-    # A broken probe must never cost a user a generation that would have worked.
+    # A broken probe must never cost a generation that would have worked.
     class _Exploding:
         device = "cuda"
         memory_kind = "discrete_vram"
@@ -2077,9 +1948,8 @@ def test_guard_fails_open_when_the_probe_raises():
 
 
 def test_raiser_raises_valueerror_so_the_route_answers_400():
-    # ValueError, not RuntimeError: /images/generate maps ValueError to a 400 carrying the reason,
-    # while RuntimeError there is reserved for the not-loaded / cancelled sentinels and otherwise
-    # becomes an opaque 500 with the reason stripped.
+    # ValueError, not RuntimeError: the route maps ValueError to a 400 with the reason;
+    # RuntimeError is reserved for sentinels and otherwise becomes an opaque 500.
     from core.inference.diffusion_memory import raise_on_image_activation_shortfall
     with pytest.raises(ValueError, match = "1088x1920"):
         raise_on_image_activation_shortfall(
@@ -2088,7 +1958,6 @@ def test_raiser_raises_valueerror_so_the_route_answers_400():
             height = 1920,
             family = _TURBO_HINT,
         )
-    # And it is a no-op wherever the message function declines to produce a verdict.
     raise_on_image_activation_shortfall(
         device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
         width = 1024,
@@ -2110,9 +1979,7 @@ def _zimage_plan_on(memory, text_encoder_dense_mib):
 
 
 def test_default_resolution_plans_identically_across_card_sizes():
-    # The cross-check between the two fixes: at the default resolution the guard is silent on every
-    # card, and the plan a discrete CUDA target reaches with no text-encoder split is the plan it
-    # reached before either change. Neither fix leaks into the other's territory.
+    # At the default resolution the guard is silent and the no-split plan is unchanged.
     from core.inference.diffusion_memory import _safe_device_budget_mib
     for gigabytes in (8, 12, 16, 24, 32, 48, 80):
         total = gigabytes * 1024
@@ -2136,10 +2003,8 @@ def test_the_refusal_reports_the_number_it_compared():
 
     message = _shortfall(1088, 1920, base_overhead_mib = 1_024)
     assert message is not None
-    # 13,872 MiB of activations + 1,024 MiB of overhead.
     assert "14.55 GB of working memory" in message
     assert "1.00 GB of fixed overhead" in message
-    # And with no overhead at all the two numbers are the activations, unchanged.
     assert "13.55 GB of working memory" in _shortfall(1088, 1920, base_overhead_mib = 0)
     assert DEFAULT_BASE_OVERHEAD_MIB > 0
 
@@ -2163,7 +2028,6 @@ def test_the_activation_refusal_is_its_own_error_type():
             height = 1920,
             family = _TURBO_HINT,
         )
-    # A request the guard passes still raises nothing at all.
     raise_on_image_activation_shortfall(
         device_memory = _discrete(_16G_FREE_MIB, _16G_TOTAL_MIB),
         width = 1024,
@@ -2173,11 +2037,7 @@ def test_the_activation_refusal_is_its_own_error_type():
 
 
 def test_the_streamed_encoders_are_hooked_leaf_by_leaf(monkeypatch):
-    # A text encoder is not a stack of uniform blocks, which is why _streamable_components and
-    # _apply_streaming_offload both classify every text_encoder* as leaf_level. Handing this path
-    # the DiTs' block_level kwargs made the plan and the application disagree: block level on an
-    # encoder with no top-level ModuleList groups the whole thing as one unit, which is the
-    # residency the streamed-encoder floor was picked to avoid.
+    # Text encoders are not uniform block stacks, so they must use leaf_level, not the DiTs' block_level.
     seen = _stream_te_kwargs(monkeypatch, stream_text_encoders = True)
     assert seen, "the applier never reached diffusers"
     encoders = {name: kw for name, kw in seen.items() if str(name).startswith("text_encoder")}
@@ -2185,7 +2045,7 @@ def test_the_streamed_encoders_are_hooked_leaf_by_leaf(monkeypatch):
     assert encoders and denoisers, seen
     for name, kw in encoders.items():
         assert kw["offload_type"] == "leaf_level", name
-        # leaf level has no blocks; diffusers only requires the count for block_level.
+        # diffusers only requires num_blocks_per_group for block_level.
         assert kw["num_blocks_per_group"] is None, name
     for name, kw in denoisers.items():
         assert kw["offload_type"] == "block_level", name
@@ -2207,9 +2067,8 @@ def test_the_batch_remedy_appears_only_when_a_batch_was_budgeted():
 
 
 def test_cpu_offload_hooks_take_the_indexed_card_not_a_bare_cuda():
-    # diffusers reads the index off this device and, finding none, falls back to _offload_gpu_id 0
-    # and onloads to cuda:0 (pipeline_utils.py, 0.39). A load pinned elsewhere generates there, so
-    # the modules would page onto the wrong GPU: a cross-device failure, or the small card filling.
+    # Without an index diffusers falls back to _offload_gpu_id 0 and onloads to cuda:0 (0.39),
+    # so a load pinned to another GPU would page onto the wrong one.
     for build, policy, call in (
         (_plan, OFFLOAD_MODEL, "model_offload"),
         (_manual_plan, OFFLOAD_SEQUENTIAL, "sequential_offload"),
@@ -2231,8 +2090,6 @@ def test_the_resident_placement_follows_the_selected_card_too():
 
 
 def test_an_automatic_load_still_hands_over_a_bare_device():
-    # No selection: every call receives exactly the string it did before, resolved against the
-    # current device as always.
     for policy, expected in (
         (OFFLOAD_NONE, ["to:cuda"]),
         (OFFLOAD_MODEL, ["model_offload"]),
@@ -2254,9 +2111,7 @@ def _offloadable():
 
 
 def test_a_pipeline_load_without_a_companion_split_says_unknown_not_over_budget():
-    # Both group tiers are `... is not None and ...`, so an unknown split fails them by
-    # construction rather than on arithmetic. Reporting that as "companions exceed budget" sends
-    # someone on a 40 GB card looking for a bigger card.
+    # An unknown split fails both group tiers by construction; it must not be reported as over budget.
     plan = diffusion_memory.plan_diffusion_memory(
         target = _offloadable(),
         device_memory = _a100_40gb(),
@@ -2272,13 +2127,7 @@ def test_a_pipeline_load_without_a_companion_split_says_unknown_not_over_budget(
 
 
 def test_the_same_load_reaches_group_offload_once_the_split_is_known():
-    # The CONTROL for the case above, and it passes before the fix too: the planner could always
-    # reach this tier, the pipeline branch just never handed it a split to reach it with. Pinned so
-    # the two halves of the decision stay visible side by side.
-    #
-    # Qwen-Image-2.1 on a 40 GB card: 31,566 MiB of weights do not fit resident, but the 28,264 MiB
-    # group floor does. Whole-module offload pages every component per step and drags VAE tiling on
-    # with it, so losing this tier costs speed and decode quality at once.
+    # Control: Qwen-Image-2.1 on 40 GB, 31,566 MiB weights do not fit but the 28,264 MiB group floor does.
     plan = diffusion_memory.plan_diffusion_memory(
         target = _offloadable(),
         device_memory = _a100_40gb(),
@@ -2507,8 +2356,7 @@ _BG_SIZES = {"transformer": 7000, "text_encoder": 8000, "text_encoder_2": 500}
 
 
 def test_a_video_load_defers_every_planned_pin_off_the_load_path(monkeypatch):
-    # Pinning at load read every streamed byte from disk first: 125-139 s of LTX-2.3's DiT on Colab. The apply goes
-    # unpinned and a pinner takes the same modules, so what gets pinned is unchanged, only when.
+    # Pinning at load reads every streamed byte first (125-139 s for LTX-2.3); pinning is deferred, not reduced.
     usage, deferred = _background_pin_calls(
         monkeypatch, _BG_SIZES, 40_000, stream_text_encoders = True, background_pin = True
     )
@@ -2557,7 +2405,7 @@ def test_the_background_pin_env_restores_eager_pinning(monkeypatch):
 
 
 def test_a_pipe_request_turns_background_pinning_on(monkeypatch):
-    # video asks through the pipe, so apply_memory_plan (and every stub of it) keeps its signature
+    # Video asks through the pipe, so apply_memory_plan and its stubs keep their signature.
     import core.inference.diffusion_memory as mem
 
     usage, deferred = _background_pin_calls(
@@ -2599,9 +2447,7 @@ def test_windows_and_wsl_never_pin_the_streamed_tiers(monkeypatch, stream_transf
         stream_text_encoders = True,
         stream_transformer = stream_transformer,
     )
-    assert all(
-        kw["low_cpu_mem_usage"] is False for kw in seen.values()
-    ), seen  # control: RAM-rich Linux pins
+    assert all(kw["low_cpu_mem_usage"] is False for kw in seen.values()), seen
     monkeypatch.delattr(mem, "_pinned_memory_capped", raising = False)
     monkeypatch.undo()
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
@@ -2711,7 +2557,7 @@ def test_the_pin_budget_leaves_the_reserve_free(monkeypatch):
     monkeypatch.setattr(mem, "_system_memory_mib", lambda: (65_536, 30_000))
     monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 30_000)
     assert mem._pin_budget_mib() == 30_000 - int(65_536 * 0.15)
-    # A 64 GiB container on a 512 GiB host: the reserve comes from the container, as _pin_host_weights does.
+    # 64 GiB container on a 512 GiB host: the reserve comes from the container cgroup.
     monkeypatch.setattr(mem, "_cgroup_memory_limit_mib", lambda: 65_536)
     monkeypatch.setattr(mem, "_system_memory_mib", lambda: (524_288, 60_000))
     monkeypatch.setattr(mem, "_available_system_memory_mib", lambda: 60_000)
@@ -2785,7 +2631,6 @@ def test_only_resident_and_encoder_only_plans_keep_the_transformer_in_place():
     assert keeps(SimpleNamespace(offload_policy = OFFLOAD_NONE)) is True
     assert keeps(SimpleNamespace(offload_policy = OFFLOAD_GROUP, stream_transformer = False)) is True
     assert keeps(SimpleNamespace(offload_policy = OFFLOAD_GROUP, stream_transformer = True)) is False
-    # Plans built before the field existed stream the transformer.
     assert keeps(SimpleNamespace(offload_policy = OFFLOAD_GROUP)) is False
     for policy in (OFFLOAD_MODEL, mem.OFFLOAD_STREAMING, mem.OFFLOAD_SEQUENTIAL):
         assert keeps(SimpleNamespace(offload_policy = policy, stream_transformer = False)) is False
@@ -2971,7 +2816,7 @@ def test_top_level_group_respects_the_pinned_allocator_rounding(monkeypatch):
     monkeypatch.delenv(mem.PIN_TOP_GROUP_ENV, raising = False)
     monkeypatch.delenv(mem.GROUP_OFFLOAD_PIN_ENV, raising = False)
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)
-    # a 3 MiB weight pins as a 4 MiB block: a 3 MiB budget must refuse it
+    # A 3 MiB weight pins as a 4 MiB block, so a 3 MiB budget must refuse it.
     group.modules = [
         types.SimpleNamespace(
             parameters = lambda: [__import__("torch").empty(3 << 18)], buffers = lambda: []
@@ -2995,11 +2840,9 @@ def test_top_level_group_counts_against_the_running_pin_total(monkeypatch):
         )
     ]
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 8)
-    # What is under test is the running-total accounting, not page locking: a plain host copy
-    # stands in for pin_memory, which raises on a host with no CUDA device (the CPU CI runners).
+    # pin_memory raises on a host with no CUDA device (CPU CI), so a plain copy stands in.
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(torch.Tensor, "pin_memory", lambda self: self.clone())
-    # 8 MiB budget, 8 MiB of encoders already pinned: the 1 MiB top group no longer fits
     assert mem._pin_top_level_group(module, None, [8]) is False
     assert group.onload_ == "diffusers"
     total = [4]
@@ -3062,7 +2905,7 @@ def test_top_level_weights_onload_from_one_pinned_copy_on_a_real_gpu(monkeypatch
     with torch.no_grad():
         got = [net(x.cuda()).cpu() for _ in range(3)]
     torch.cuda.synchronize()
-    # offloaded between forwards onto the same pinned host copy: no device-to-host copy into a fresh host buffer
+    # Offloaded onto the same pinned host copy: no device-to-host copy into a fresh buffer.
     ptr = net.proj_out.weight.data_ptr()
     assert net.proj_out.weight.device.type == "cpu" and net.proj_out.weight.is_pinned()
     with torch.no_grad():
@@ -3106,7 +2949,6 @@ def test_top_level_weights_replaced_while_offloaded_are_picked_up(monkeypatch):
         for _ in range(2):
             net(x.cuda())
         torch.cuda.synchronize()
-        # e.g. a .to() conversion or an adapter fused on the host while the weights sit offloaded
         net.proj_out.weight.data = net.proj_out.weight.data * 2
         ref.proj_out.weight.data = ref.proj_out.weight.data * 2
         got = net(x.cuda()).cpu()
@@ -3115,8 +2957,7 @@ def test_top_level_weights_replaced_while_offloaded_are_picked_up(monkeypatch):
 
 
 def test_streaming_counts_pinned_encoders_before_a_torchao_denoiser_pins(monkeypatch):
-    # The torchao denoiser pins within a running total; encoders the plan pins must already be on it (as on the group
-    # tier), or the two together exceed the pinnable host budget.
+    # The torchao denoiser pins within a running total that must include plan-pinned encoders.
     import core.inference.diffusion_memory as mem
 
     seen_totals: dict = {}
@@ -3132,7 +2973,7 @@ def test_streaming_counts_pinned_encoders_before_a_torchao_denoiser_pins(monkeyp
 
     monkeypatch.setattr(mem, "_torchao_group_offload_kwargs", _spy)
     _streaming_apply_kwargs(monkeypatch, 40_000)
-    # the 7500 MiB encoder, rounded up to a power of two like the pinned allocator
+    # The 7500 MiB encoder, rounded up to a power of two like the pinned allocator.
     assert seen_totals["transformer"] == 8192
 
 
@@ -3184,7 +3025,6 @@ def test_top_level_weights_never_copied_back_when_the_pin_budget_is_spent(monkey
         with torch.no_grad():
             got.append(net(x.cuda()).cpu())
         torch.cuda.synchronize()
-        # offloaded onto the very host tensor it was loaded from: no device-to-host copy into a fresh buffer
         assert net.proj_out.weight.device.type == "cpu"
         assert net.proj_out.weight.data_ptr() == ptr
     assert all(torch.equal(g, got[0]) for g in got)
@@ -3199,7 +3039,6 @@ def test_top_level_copy_back_skip_kill_switch_and_scope(monkeypatch):
     assert mem._skip_top_level_copy_back(module) is False
     assert group.onload_ == "diffusers" and group.offload_ == "diffusers"
     monkeypatch.delenv(mem.PIN_TOP_GROUP_ENV, raising = False)
-    # a streamed group or torchao weights are not the streamless top group this replaces
     for kind in ("streamed_group", "torchao"):
         module, group = _top_group_module(
             monkeypatch,
@@ -3208,7 +3047,6 @@ def test_top_level_copy_back_skip_kill_switch_and_scope(monkeypatch):
         )
         assert mem._skip_top_level_copy_back(module) is False
         assert group.onload_ == "diffusers"
-    # the plain top group: offload re-points, it does not copy
     module, group = _top_group_module(monkeypatch)
     weight = group.modules[0].weight
     host_ptr = weight.data_ptr()
@@ -3216,7 +3054,6 @@ def test_top_level_copy_back_skip_kill_switch_and_scope(monkeypatch):
     assert group.onload_ != "diffusers" and group._unsloth_top_no_copy_back is True
     group.offload_()
     assert weight.data_ptr() == host_ptr
-    # idempotent, and the pinned path no longer claims a group that already re-points
     assert mem._skip_top_level_copy_back(module) is False
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: 1 << 20)
     monkeypatch.setattr(mem, "_pinned_memory_capped", lambda: False)

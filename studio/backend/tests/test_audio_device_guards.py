@@ -54,7 +54,6 @@ def test_an_auto_gguf_audio_load_on_a_cpu_only_runtime_counts_as_cpu(monkeypatch
     gguf_tts = _audio(audio_type = "audiocpp_tts")
     monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: True)
     assert ri._native_audio_cpu_load(gguf_tts, _request("auto"))
-    # Only the GGUF runtime's own backend decides this; other native audio still needs "cpu".
     assert not ri._native_audio_cpu_load(_audio(), _request("auto"))
     monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
     assert not ri._native_audio_cpu_load(gguf_tts, _request("auto"))
@@ -291,7 +290,6 @@ def _inference_source() -> str:
     import pathlib
 
     # Explicit encoding: read_text() defaults to the locale one, cp1252 on Windows,
-    # and this file is UTF-8.
     return pathlib.Path(ri.__file__).read_text(encoding = "utf-8")
 
 
@@ -314,8 +312,7 @@ def test_a_cpu_audio_worker_hides_cuda_and_hip():
     env = {"CUDA_VISIBLE_DEVICES": "0,1", "HIP_VISIBLE_DEVICES": "0"}
     mask_accelerators_for_cpu_audio(env)
     assert env["CUDA_VISIBLE_DEVICES"] == ""
-    # HIP reads the CUDA variable only when its own is unset, so blanking one is
-    # not enough; -1 is the sentinel the CPU embed server already uses.
+    # HIP reads the CUDA var only when its own is unset; -1 is the CPU sentinel.
     assert env["HIP_VISIBLE_DEVICES"] == "-1"
 
 
@@ -388,8 +385,6 @@ def test_every_http_device_field_pins_the_three_canonical_values():
         (TranscribeRequest, "device"),
     ):
         assert model.model_fields[field].annotation == expected, f"{model.__name__}.{field}"
-    # The raw endpoint takes it as a query param, so it is annotated rather than
-    # declared on a model; it must not be the odd one out.
     assert inspect.signature(ri.transcribe_audio_raw).parameters["device"].annotation == expected
 
 
@@ -488,7 +483,6 @@ def test_decoding_happens_where_the_codec_actually_is():
     mgr._snac_model = _FakeSnac()
     mgr._codec_devices["snac"] = "cpu"
 
-    # 128257 opens the speech section; the seven codes after it make one frame.
     token_ids = [128257] + [128266 + i for i in range(7)]
     mgr.decode("snac", "cuda", token_ids = token_ids)
 
@@ -533,8 +527,6 @@ def test_the_chat_claim_outlives_the_worker_that_earned_it():
     sig = inspect.signature(InferenceOrchestrator.load_model)
     assert "on_prior_worker_released" in sig.parameters
 
-    # After both bail-outs: either one means the card is still busy, so the claim is
-    # still true.
     load_src = inspect.getsource(InferenceOrchestrator.load_model)
     hook = load_src.index("on_prior_worker_released()")
     assert load_src.index("did not exit and still holds GPU") < hook

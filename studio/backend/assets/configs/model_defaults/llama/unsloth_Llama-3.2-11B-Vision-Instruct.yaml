@@ -1,11 +1,7 @@
-# Model defaults for unsloth/Llama-3.2-11B-Vision-Instruct
-# Based on Llama3.2_(11B)-Vision.ipynb
 # Also applies to: unsloth/Llama-3.2-11B-Vision-Instruct-unsloth-bnb-4bit, meta-llama/Llama-3.2-11B-Vision-Instruct, unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit
-# added inference parameters from unsloth notebook
 
 training:
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

@@ -95,11 +95,7 @@ def test_manual_unload_releases_chat_ownership(chat_resident, accounts):
     response = bob_status(accounts)
     assert response.status_code == 200, response.text
     body = response.json()
-    # "yours" is the load-bearing assertion, not "loaded". This route's mask is
-    # hidden_chat_status_response(), {"loaded": [], "loading": [], "yours": False}, so an
-    # empty "loaded" is what BOTH answers report here and only the "yours" key tells a real
-    # empty GPU from a hidden resident. test_only_the_yours_key_separates_the_two_answers
-    # pins that, so neither assertion can be dropped as redundant.
+    # 'yours' is the load-bearing key: the hidden mask also has an empty 'loaded'.
     assert "yours" not in body, f"phantom resident after unload: {body}"
     assert body.get("loaded") == [], f"phantom resident after unload: {body}"
     assert body.get("active_model") is None, body
@@ -166,7 +162,6 @@ def test_a_torn_down_backend_does_not_yet_mean_a_released_claim(
                 break
         assert reached_release.is_set(), "the loop never reached the claim release"
 
-        # Inside the window now, and it stays open until may_release is set.
         assert chat_resident.unloaded, "the backend should already be down here"
         assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
         assert bob_status(accounts).json() == {"loaded": [], "loading": [], "yours": False}
@@ -184,7 +179,6 @@ def test_a_torn_down_backend_does_not_yet_mean_a_released_claim(
 
     asyncio.run(tick())
 
-    # And once it closes, the claim is gone and bob gets the real answer.
     assert gpu_arbiter.current_owner() is None
     assert "yours" not in bob_status(accounts).json()
 
@@ -196,15 +190,7 @@ def test_idle_auto_unload_releases_chat_ownership(chat_resident, accounts, monke
         task = asyncio.ensure_future(llama_keepwarm.idle_unload_loop(poll_seconds = 0.01))
         for _ in range(500):
             await asyncio.sleep(0.01)
-            # Not chat_resident.unloaded on its own. The loop tears the backend down several
-            # awaits before it drops the claim: unload_model, then the reload stash, then
-            # clear_resident and release_chat_gpu_claim. Breaking on the teardown lands the
-            # status query inside that window, where the claim is still held and bob is
-            # correctly handed the masked answer, and the test then reports the mask as a
-            # phantom. That is what failed on main in Backend CI (Python 3.13, rest) with the
-            # body {"loaded": [], "loading": [], "yours": False}, which is exactly
-            # account_access.hidden_chat_status_response(). The release is what this test is
-            # about, so the release is what the wait watches.
+            # Wait for the claim release, not just unloaded: the claim is dropped several awaits later.
             if chat_resident.unloaded and gpu_arbiter.current_owner() is None:
                 break
         task.cancel()
@@ -219,11 +205,7 @@ def test_idle_auto_unload_releases_chat_ownership(chat_resident, accounts, monke
     response = bob_status(accounts)
     assert response.status_code == 200, response.text
     body = response.json()
-    # "yours" is the load-bearing assertion, not "loaded". This route's mask is
-    # hidden_chat_status_response(), {"loaded": [], "loading": [], "yours": False}, so an
-    # empty "loaded" is what BOTH answers report here and only the "yours" key tells a real
-    # empty GPU from a hidden resident. test_only_the_yours_key_separates_the_two_answers
-    # pins that, so neither assertion can be dropped as redundant.
+    # 'yours' is the load-bearing key: the hidden mask also has an empty 'loaded'.
     assert "yours" not in body, f"phantom resident after idle unload: {body}"
     assert body.get("loaded") == [], f"phantom resident after idle unload: {body}"
     assert body.get("active_model") is None, body

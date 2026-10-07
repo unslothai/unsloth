@@ -28,7 +28,7 @@ class McpServerCreate(BaseModel):
 class McpServerUpdate(BaseModel):
     display_name: Optional[str] = None
     url: Optional[str] = None
-    # Absent in request body = leave as-is; null = drop all headers; dict = set.
+    # Absent = leave as-is; null = drop all headers; dict = set.
     headers: Optional[dict[str, str]] = None
     is_enabled: Optional[bool] = None
     use_oauth: Optional[bool] = None
@@ -48,7 +48,6 @@ class McpServerResponse(BaseModel):
     oauth_client_id: Optional[str] = None
     has_oauth_client_secret: bool = False
     image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list)
-    # False when no mapping matches a cached tool schema any more; true while the tools are unknown.
     image_mappings_active: bool = False
     created_at: str
     updated_at: str
@@ -60,7 +59,7 @@ class McpServerTestRequest(BaseModel):
     use_oauth: bool = False
     oauth_client_id: Optional[str] = None
     oauth_client_secret: Optional[str] = None
-    # Edit form: reuse this server's stored secret when the secret field is left blank.
+    # Edit form: reuse this server's stored secret when the secret field is blank.
     server_id: Optional[str] = None
 
 
@@ -112,7 +111,6 @@ class McpServerProbeResult(BaseModel):
 
 
 class McpServerImportRequest(BaseModel):
-    # A standard mcpServers JSON config (Claude Desktop / Cursor / Cline / VS Code).
     config: dict
 
 
@@ -126,7 +124,6 @@ class McpUiResourceResponse(BaseModel):
     uri: str
     mime_type: str
     text: str
-    # Base64, only for a resource that is not UTF-8 text.
     blob: Optional[str] = None
     ui: dict = Field(default_factory = dict)
     contents: list[dict] = Field(default_factory = list)

@@ -121,7 +121,6 @@ def test_delete_raises_when_response_lacks_deleted_true(monkeypatch):
     failure instead of false success."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # 200 but no deleted flag — unexpected payload shape.
         return httpx.Response(200, json = {"id": "cntr_x", "object": "container"})
 
     _mock_http_client(monkeypatch, handler)
@@ -425,5 +424,5 @@ def test_list_route_filters_expired_containers(monkeypatch):
     response = _drive(inf_mod.list_openai_containers(body, request, current_subject = "u"))
     ids = [c.id for c in response.containers]
     assert "cntr_active" in ids
-    assert "cntr_unknown" in ids  # missing status is treated as usable
+    assert "cntr_unknown" in ids
     assert "cntr_dead" not in ids

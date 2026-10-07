@@ -262,17 +262,11 @@ assert seen["api_key"] == "sk_restart"
     )
 
 
-# ── API key transport envelope ──────────────────────────────────────
-#
-# Keys reach the backend as "v1.<RSA-wrapped AES key>.<nonce>.<ciphertext||tag>", each part
-# base64. Builds predating the envelope send bare RSA ciphertext instead.
-
 # The reported OVH key length, and the last length bare RSA-OAEP-SHA256 could carry.
 OVH_KEY_LENGTH = 238
 LEGACY_MAX_LENGTH = 190
 
-# Spelled out rather than imported: this is the contract encryptProviderApiKey writes, so
-# reading it from the module would let both sides drift together.
+# Spelled out, not imported: the contract encryptProviderApiKey writes must not drift with it.
 ENVELOPE_VERSION = "v1"
 ENVELOPE_AAD = b"unsloth-studio-provider-key-v1"
 

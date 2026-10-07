@@ -21,7 +21,7 @@ from ..service import build_config_builder, create_data_designer, install_public
 from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
 
-# Fresh spawned interpreter: re-apply main.py's process-wide network injections.
+# Spawned interpreter: re-apply main.py's process-wide network injections.
 from utils.native_tls import activate_native_tls
 from utils.happy_eyeballs import activate_happy_eyeballs
 from utils.paths.path_utils import drop_appledouble_metadata
@@ -132,8 +132,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
 
-        # DataDesigner resets root logging in __init__; attach the queue handler to the named loggers so
-        # parser events survive.
+        # DataDesigner resets root logging; attach to the named loggers.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
         for logger_name in (
@@ -206,7 +205,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
 
 def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     parquet_dir = base_dataset_path / "parquet-files"
-    # Counted, so a companion would make a single-batch job take the merge path and rewrite a dataset that needed none.
+    # AppleDouble companions would push a single-batch job onto the merge path.
     parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
     if len(parquet_files) <= 1:
         return

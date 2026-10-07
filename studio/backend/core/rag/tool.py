@@ -147,12 +147,8 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 "page": None,
                 "text": text,
                 "turn": int(ordinal) + 1 if ordinal is not None else None,
-                # createdAt is the tie-breaker _conversation_order needs: pre-ordinal rows have turn None and
-                # ordinals are not UNIQUE.
                 "chunkIndex": _row_value(r, "chunk_index"),
                 "createdAt": _row_value(r, "created_at"),
-                # And insertion order under that, for archives whose rows share a timestamp
-                # the clock was too coarse to separate; without it the merge key runs out.
                 "documentRowid": _row_value(r, "document_rowid"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
             }
@@ -327,15 +323,12 @@ def whole_document_context(
     chunks, or the total exceeds ``max_tokens``."""
     if not scope_thread_id:
         return None
-    # A non-positive budget means "never inject" (disable whole-doc via RAG_THREAD_WHOLE_DOC=0), not
-    # "inject the whole corpus unbounded".
+    # Non-positive budget means never inject, not unbounded.
     if max_tokens <= 0:
         return None
     scope = thread_scope(scope_thread_id)
     conn = rag_db.get_connection()
     try:
-        # Cheap SUM pre-check so an oversized attachment is rejected before the whole corpus is hydrated;
-        # all_chunks_for_scope runs only once it fits.
         if scope_token_estimate(conn, scope) > max_tokens:
             return None
         rows = all_chunks_for_scope(conn, scope)

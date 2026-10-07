@@ -25,8 +25,7 @@ auth_safe_open = auth_safe.auth_safe_open
 logger = get_logger(__name__)
 
 
-# ── Offline / HF-cache helpers ──────────────────────────────────
-# An offline load must never touch the network (a DNS-dead session hangs on hub retries); these read the local HF cache.
+# Offline loads must never touch the network (DNS-dead sessions hang on hub retries).
 _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
 
@@ -54,12 +53,9 @@ def anonymous_and_offline(hf_token, *, repo_id: Optional[str] = None) -> bool:
     if not is_anonymous(hf_token):
         return False
     if not hf_env_offline():
-        # The per-reader gates answer the online question; this guard is the offline one.
         return False
     if repo_id is None:
         return True
-    # is_cached is True because these routes read whatever the cache holds; only authorization
-    # is left, and offline that resolves against the disk.
     return cached_read_refused(
         hf_token,
         repo_id = repo_id,
@@ -119,7 +115,6 @@ def hf_proxy_for_endpoint(endpoint: Optional[str] = None) -> Optional[str]:
         from requests.utils import get_environ_proxies, select_proxy
         return select_proxy(url, get_environ_proxies(url))
     except ImportError:
-        # No requests (huggingface_hub 1.x); fall back rather than go blind.
         pass
     except Exception:
         return None
@@ -154,7 +149,7 @@ def call_with_deadline(
     import contextvars
 
     outcome: dict = {}
-    # Log context is per-thread: without the copy, fn()'s own logging loses the request fields it carries when the same call runs inline.
+    # Copy the context so fn()'s logging keeps the per-thread request fields.
     context = contextvars.copy_context()
 
     def _run() -> None:
@@ -202,7 +197,6 @@ def hf_connect_target(endpoint: Optional[str] = None):
         proxy = hf_proxy_for_endpoint(url)
         if proxy:
             p = urlparse(proxy if "://" in proxy else "http://" + proxy)
-            # An https:// proxy with no explicit port listens on 443, not 80.
             return p.hostname, p.port or (443 if p.scheme == "https" else 80)
     except Exception:
         pass
@@ -234,7 +228,7 @@ def hf_dns_dead(timeout: float = 2.0) -> bool:
     return dns_host_dead(hf_endpoint_host(), timeout)
 
 
-# One load makes many hub calls, so the verdict is shared briefly. Kept short in BOTH directions: a stale "reachable" misses the plug being pulled, and a stale "unreachable" sends a load to the cache after the user reconnected.
+# Short TTL both ways: stale reachable misses unplugging, stale unreachable misses reconnects.
 _HF_REACHABILITY_TTL_S = 5.0
 _hf_reachability: Optional[tuple] = None
 _hf_reachability_lock = threading.Lock()
@@ -255,7 +249,7 @@ def hf_probe_disabled() -> bool:
     }
 
 
-# The memo above expires on wall-clock, right between requests and wrong inside one: a slow request outlives the TTL, so its later guards re-probe and can disagree with the first.
+# Pin the verdict per request: a slow request outlives the TTL and later guards could disagree.
 _hf_reachability_pin: "ContextVar[Optional[list]]" = ContextVar("hf_reachability_pin", default = None)
 
 
@@ -285,7 +279,6 @@ def hf_reachability_memo() -> Optional[bool]:
     cached = _hf_reachability
     if not _reachability_fresh(cached):
         return None
-    # Answering from the memo produces a verdict, and a warm memo is the usual first one.
     return _pin_reachability(cached[1])
 
 
@@ -299,7 +292,7 @@ def reset_hf_reachability_cache() -> None:
 def hf_unreachable(timeout: int = 3) -> bool:
     """True when the HF endpoint is unreachable, memoised for _HF_REACHABILITY_TTL_S. DNS resolving does not mean the Hub is reachable: a live router with the WAN down, a captive portal or a stale DNS cache all answer lookups while every request then burns huggingface_hub's retry backoff. Bounded and proxy-aware, as the export path already does; UNSLOTH_OFFLINE_PROBE=0 disables it. Fails open, so an unavailable probe reports reachable and the load decides as it does today."""
     if hf_probe_disabled():
-        # A declination, not a verdict, so it does not pin. UNSLOTH_OFFLINE_PROBE turns off the TCP probe and not DNS, and pinning here answers for the DNS shortcut too: guards 2..N would read "reachable" and never look again. Leaving it open costs no lookup, since a dead one returns above this.
+        # Declining does not pin: the probe opt-out skips TCP only, and a pin would answer DNS too.
         return False
 
     pinned = _hf_reachability_pin.get()
@@ -318,7 +311,7 @@ def hf_unreachable(timeout: int = 3) -> bool:
         try:
             from utils.transformers_version import hf_endpoint_unreachable
 
-            # Both flags off for the same reason: an ambiguous answer must not force offline.
+            # An ambiguous answer must not force offline.
             unreachable = hf_endpoint_unreachable(
                 timeout,
                 gateway_errors_offline = False,
@@ -346,7 +339,7 @@ def _reset_hf_sessions() -> None:
         pass
 
 
-# Process-global, so nested/concurrent loads refcount rather than restore out from under each other.
+# Process-global refcount so nested/concurrent loads do not restore under each other.
 _force_offline_depth = 0
 _force_offline_saved: list = []
 _force_offline_saved_env: dict = {}
@@ -433,7 +426,7 @@ def force_hf_offline():
         if _force_offline_depth == 0:
             saved: list = []
             saved_env: dict = {}
-            # Snapshot constants BEFORE forcing the env, else a module imported inside the window reads the "1".
+            # Snapshot constants BEFORE forcing the env, else a module imported inside reads the "1".
             for mod_name, attrs in _OFFLINE_CONSTANTS:
                 try:
                     mod = importlib.import_module(mod_name)
@@ -540,7 +533,7 @@ def is_st_weight_name(basename: str) -> bool:
 def cached_st_source(model_name: str) -> Optional[tuple]:
     """``(repo id, snapshot dir)`` whose cache holds ST-loadable weights, complete. Alias-aware, and it reports WHICH candidate matched: a slashless name caches under ``sentence-transformers/``, so the literal id names a repo that usually does not exist, and a stale literal cache entry is not the directory that supplied the weights. Completeness comes from ``hf_cache_snapshot_is_loadable`` on that same candidate: ST weights alone are satisfied by the first finalized shard of a transfer still in flight."""
     for candidate in st_repo_id_candidates(model_name):
-        # Exactly this candidate: the alias-expanding lookup answers a literal slashless name with the namespaced snapshot, pairing a directory with a repo id that supplied nothing.
+        # Exact candidate only: the alias-expanding lookup maps a slashless name to a namespaced snapshot.
         snapshot = hf_cache_snapshot_dir_for_repo(candidate)
         if snapshot is None:
             continue
@@ -549,7 +542,7 @@ def cached_st_source(model_name: str) -> Optional[tuple]:
                 continue
         except OSError:
             continue
-        # This snapshot, not whatever the alias-expanding lookup would find: with several cache roots those differ, and a complete namespaced copy in one would vouch for the partial literal copy in another that gets loaded.
+        # Check this snapshot itself: with several cache roots, another root's complete copy could vouch for it.
         if snapshot_is_loadable(snapshot, candidate):
             return (candidate, snapshot)
     return None
@@ -586,7 +579,7 @@ def _snapshot_in_repo_dir(repo_dir: Path) -> Optional[Path]:
             return None
         snapshot = repo_dir / "snapshots" / commit
         return snapshot if snapshot.is_dir() else None
-    # UnicodeDecodeError is a ValueError, not an OSError: a torn refs file must keep meaning "not cached here".
+    # UnicodeDecodeError is a ValueError: a torn refs file must still mean "not cached".
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -618,7 +611,7 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
     return None
 
 
-# A weight file plus a config distinguishes a real cached model from a metadata-only partial cache.
+# Weights plus config separate a real cached model from a metadata-only partial.
 _LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"})
 
 
@@ -634,7 +627,7 @@ def checkpoint_directory_is_complete(root: Path, weights = None) -> bool:
             and path.is_file()
             and not is_appledouble_metadata(path)
         ]
-    # SentenceTransformer modules may keep their own transformer checkpoint below 0_Transformer/. Validate every module subtree that carries weights; config-only modules such as Pooling need no weight family of their own.
+    # SentenceTransformer modules may hold their own checkpoint; validate each weight-bearing subtree.
     if (root / "modules.json").is_file():
         import json
         from pathlib import PurePosixPath
@@ -652,7 +645,7 @@ def checkpoint_directory_is_complete(root: Path, weights = None) -> bool:
             if relative.is_absolute() or ".." in relative.parts:
                 continue
             module_root = root.joinpath(*relative.parts)
-            # A declared module the directory lacks entirely is a torn checkpoint whatever the others hold; existence is the whole test, since config-only modules have no weight family.
+            # A declared module dir that is missing means a torn checkpoint.
             if module_root != root and not module_root.is_dir():
                 return False
             if any(path == module_root or module_root in path.parents for path in weights):
@@ -696,8 +689,7 @@ def active_hf_cache_repo_spelling(repo_id: str) -> Optional[str]:
         for repo_dir in _expand_path(active_hf_hub_cache()).iterdir():
             if repo_dir.name.lower() != wanted or repo_dir.name == exact:
                 continue
-            # Repo ids cannot contain '--' (huggingface_hub.utils.validate_repo_id), so
-            # the directory name maps back to exactly one id.
+            # Repo ids cannot contain '--', so the dir name maps back to exactly one id.
             variant = repo_dir.name[prefix:].replace("--", "/")
             snapshot = _snapshot_in_repo_dir(repo_dir)
             if snapshot is not None and snapshot_is_loadable(snapshot, variant):
@@ -723,7 +715,7 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
         if not weights:
             return False
 
-        # A managed full-snapshot transfer records its exact expected files before downloading. A cancel marker or unfinished blob is conclusive even when config.json and the first finalized shard already exist.
+        # A cancel marker or unfinished blob is conclusive even if config and a shard already exist.
         repo_dir = snapshot.parent.parent
         hub_cache = repo_dir.parent
         repo_id = model_name
@@ -742,9 +734,8 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
             return False
         manifest = download_manifest.read_manifest("model", repo_id, None, hub_cache = hub_cache)
         if manifest is not None:
-            # This exact full-snapshot plan is stronger evidence than an unrelated .incomplete blob left under the repository by another revision or scoped GGUF job.
             return download_manifest.verify_against_disk(manifest, snapshot).ok
-        # Judge THIS snapshot's own links, not every blob in the shared cache directory, or a stray .incomplete from another revision condemns a model that is fully present.
+        # Check this snapshot's own links: a stray .incomplete from another revision must not condemn it.
         if snapshot_has_broken_symlinks(snapshot):
             return False
 
@@ -752,11 +743,10 @@ def snapshot_is_loadable(snapshot, model_name: str) -> bool:
     except OSError:
         return False
     except Exception:
-        # Completeness is a safety property here: an unprovable partial must keep the pending marker so the loader cannot silently reach the network.
+        # An unprovable partial keeps the pending marker so the loader cannot silently go online.
         return False
 
 
-# ── Client-safe error helpers ───────────────────────────────────
 _METAL_QUEUE_DEAD_MARKERS = ("gpu timeout", "submissionsignored")
 
 
@@ -770,13 +760,12 @@ def is_metal_queue_dead(error: Union[Exception, str]) -> bool:
 # Never return raw exception text to clients; log server-side, return generic.
 def safe_error_detail(error: Exception, fallback: str = "An internal error occurred") -> str:
     """Map an exception to a generic, client-safe message (never raw ``str(error)``, which can leak paths). Log the real exception server-side."""
-    # A mid-stream llama-server failure carries a message that was written to be shown; without this the non-streaming paths reduced it to the fallback while streaming clients got the cause. Imported lazily: utils is low level and must not depend on core.inference at import time.
+    # llama-server mid-stream errors are user-facing; lazy import keeps utils free of core at import.
     try:
         from core.inference.stream_errors import LlamaStreamError  # noqa: PLC0415
 
         if isinstance(error, LlamaStreamError) and error.friendly:
             return error.friendly
-        # Same reason: a context refusal is built for the user and names what to change.
         from core.inference.context_refusal import ContextBudgetExceeded  # noqa: PLC0415
 
         if isinstance(error, ContextBudgetExceeded):
@@ -827,7 +816,7 @@ def log_and_http_error(
     """
     from fastapi import HTTPException
 
-    # A 4xx is a normal outcome the caller handles. One warning line and no traceback: at error with exc_info, one generation buried the log under 54 rejected saves. 5xx keeps the traceback, and exc_info works for structlog too.
+    # 4xx: one warning, no traceback (rejected saves flooded the log); 5xx keeps the traceback.
     emitter = log or logger
     if 400 <= status_code < 500:
         emitter.warning(f"{event}: {error}")
@@ -970,7 +959,7 @@ def format_error_message(error: Exception, model_name: str) -> str:
         or isinstance(error, MemoryError)
         or ("mlx" in error_str and ("memory" in error_str or "allocate" in error_str))
     ):
-        # Resolve get_device() at call time so tests that monkey-patch it after import see the patch.
+        # Resolved at call time so tests that monkey-patch get_device see the patch.
         from utils.hardware import get_device
 
         device = get_device()

@@ -32,7 +32,6 @@ logger = get_logger(__name__)
 _SCHEMA_VERSION = 1
 _lock = threading.RLock()
 
-# Re-exported so the gate can compare a stored approval's ruleset to the live one.
 SCANNER_VERSION = SCAN_RULES_VERSION
 
 
@@ -75,8 +74,7 @@ def _load() -> dict:
     try:
         with open(_store_path(), encoding = "utf-8-sig") as f:
             data = json.load(f)
-        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a dict would
-        # crash lookup/record instead of failing safe.
+        # Validate the shape too: a hand-edited non-dict ``subjects`` must fail safe, not crash.
         if (
             isinstance(data, dict)
             and data.get("version") == _SCHEMA_VERSION

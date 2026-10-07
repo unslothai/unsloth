@@ -69,12 +69,9 @@ _AUTO_FILES = ("configuration_auto.py", "auto_mappings.py")
 
 _FETCH_TIMEOUT_SECONDS = 5.0
 _FETCH_RETRIES = 1
-# urlopen's timeout bounds each individual read, never the whole transfer.
-# Measured: 12 chunks 1s apart read in 12.0s under timeout=5.0. The transfer gets its own wall-clock budget instead, one
-# for the connect and one for the body.
+# urlopen's timeout bounds each read, not the transfer, so the transfer gets its own budget.
 _FETCH_DEADLINE_SECONDS = 2 * _FETCH_TIMEOUT_SECONDS
-# One attempt's true worst case: the budget, plus the single socket read already blocking
-# when it runs out (the deadline is only tested between reads).
+# Worst case: the budget plus one blocking read (deadline is only checked between reads).
 _FETCH_ATTEMPT_SECONDS = _FETCH_DEADLINE_SECONDS + _FETCH_TIMEOUT_SECONDS
 _READ_CHUNK_BYTES = 1 << 16
 _CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -83,20 +80,15 @@ _FAILURE_BACKOFF_SECONDS = 300
 _CACHE_FILE_NAME = "transformers_latest_check.json"
 _SNAPSHOT_SCHEMA = 1
 
-# Snapshot: {"schema", "fetched_at", "pypi_version", "pypi_model_types", "main_model_types"}.
-# Install-in-progress state lives in utils.transformers_version (the sidecar swap reservation).
+# Install-in-progress state lives in utils.transformers_version (sidecar swap reservation).
 _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
 _is_fetching: bool = False
-# Set whenever no refresh is in flight; a concurrent caller waits on it for the running
-# fetch's answer instead of reporting "no answer" (see _get_snapshot).
+# Set when no refresh is in flight; concurrent callers wait on it for the running fetch.
 _fetch_done: threading.Event = threading.Event()
 _fetch_done.set()
-# Derived rather than a literal, so tuning a timeout or retry cannot silently shrink the backstop below what it bounds;
-# giving up early reads as "no upgrade needed" at the Start button.
-# Bounded by the refresh's OWN worst case: the PyPI version plus both auto files at each of the two refs, each allowed
-# its retry at _FETCH_ATTEMPT_SECONDS. The waiter re-waits while the refresh is genuinely in flight (_get_snapshot).
+# Derived from the refresh's own worst case so tuning cannot shrink the backstop below it.
 _REFRESH_URL_COUNT = 1 + 2 * len(_AUTO_FILES)
 _INFLIGHT_WAIT_SECONDS = _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_ATTEMPT_SECONDS + 5.0
 
@@ -114,7 +106,6 @@ def _cache_file() -> Path:
     return _studio_root() / "cache" / _CACHE_FILE_NAME
 
 
-# Sentinel for HTTP 404 (absent at ref), distinct from transient failures.
 _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
@@ -128,7 +119,6 @@ def _read_within(resp, deadline: float) -> str | None:
     """
     read1 = getattr(resp, "read1", None)
     if read1 is None:
-        # A file-like that hands back the whole body in one go has nothing to dribble.
         return resp.read().decode("utf-8", "replace")
     chunks: list[bytes] = []
     while True:
@@ -311,8 +301,7 @@ def _get_snapshot() -> dict | None:
             _is_fetching = True
             _fetch_done = done = threading.Event()
     if in_flight is not None:
-        # Wait for the refresh's actual completion, not a clock: an expiry here means "still being fetched", which the
-        # callers above cannot tell from "no upgrade needed".
+        # Wait for completion, not a clock: an expiry would read as "no upgrade needed".
         while not in_flight.wait(_INFLIGHT_WAIT_SECONDS):
             with _lock:
                 if not _is_fetching or _fetch_done is not in_flight:
@@ -427,7 +416,6 @@ def latest_transformers_supports(model_type: str) -> dict | None:
     }
 
 
-# model_types the hardcoded tier tables already route; never remote-check these.
 def _hardcoded_model_types() -> frozenset[str]:
     return frozenset(
         _TRANSFORMERS_530_MODEL_TYPES
@@ -462,7 +450,7 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         candidates = _model_types_from_config(cfg)
         if not candidates:
             return None
-        # Without a readable base mapping every type looks brand new; bail out.
+        # Without a readable base mapping every type looks new; bail out.
         if not _config_model_types("default"):
             return None
         hardcoded = _hardcoded_model_types()
@@ -474,15 +462,13 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         ]
         if not missing:
             return None
-        # Latest must load EVERY missing type (wrappers build nested sub-configs through CONFIG_MAPPING) or the load
-        # still fails.
+        # Latest must load EVERY missing type (wrappers build nested sub-configs) or the load fails.
         supports = [latest_transformers_supports(candidate) for candidate in missing]
         if any(
             s is None or not (s["supported_in_pypi"] or s["supported_in_main"]) for s in supports
         ):
             return None
-        # Offer the PyPI install only if the release ships every missing type; a
-        # main-only type in the mix surfaces as dev-only.
+        # Offer PyPI only if it ships every missing type; a main-only type means dev-only.
         model_type = missing[0]
         supported_in_pypi = all(s["supported_in_pypi"] for s in supports)
         supported_in_main = all(s["supported_in_pypi"] or s["supported_in_main"] for s in supports)
@@ -506,12 +492,9 @@ def check_upgrade_for_model(model_name: str, hf_token: str | None = None) -> dic
         return None
 
 
-# Sidecars install transformers --no-deps atop the base env. Before installing, compare
-# requires_dist: unsatisfied shadowable deps become exact --target pins, anything else blocks.
+# Sidecars install --no-deps: unmet shadowable deps become --target pins, others block.
 _SHADOWABLE_DEPS = frozenset({"tokenizers", "safetensors"})
-# Provided by the sidecar recipe; checked against its pin, not the base env.
 _SIDECAR_PROVIDED = {"huggingface-hub": "1.8.0", "hf-xet": "1.4.2"}
-# CLI-only; never imported at runtime in Unsloth's workers.
 _IGNORED_DEPS = frozenset({"typer"})
 
 
@@ -664,8 +647,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "version": version,
             "message": "Cannot install: Unsloth is in offline mode.",
         }
-    # Re-verify against a LIVE snapshot (a release may land inside the cache TTL);
-    # fall back to the cached one on fetch failure.
+    # Re-verify against a live snapshot (a release may land within the TTL).
     global _memory_snapshot
     snapshot = _refresh_snapshot()
     if snapshot is not None:
@@ -686,8 +668,7 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "version": version,
             "message": f"Requested version {version!r} is not the latest transformers "
             f"release ({snapshot['pypi_version']}).",
-            # Lets the consent dialog retry with the release that superseded the
-            # one /validate saw, instead of re-sending the stale version forever.
+            # Lets the consent dialog retry with the newer release instead of a stale one forever.
             "latest_version": snapshot["pypi_version"],
         }
     extra_packages, blockers = compat_plan(version)

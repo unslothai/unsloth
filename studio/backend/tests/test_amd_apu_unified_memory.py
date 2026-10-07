@@ -67,10 +67,8 @@ def test_apu_guard_scopes_to_selected_gpu(monkeypatch):
     for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(_m, raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1100", "gfx1151"]))
-    # Selecting only the dGPU, or an empty selection, must not be unified-memory.
     assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is False
     assert LlamaCppBackend._amd_apu_wants_unified_memory([]) is False
-    # Selecting the APU, or no selection, does.
     assert LlamaCppBackend._amd_apu_wants_unified_memory([1]) is True
     assert LlamaCppBackend._amd_apu_wants_unified_memory() is True
 
@@ -109,21 +107,18 @@ class TestApuRamShortfall:
     not left to OOM-kill the Unsloth process."""
 
     def test_field_case_wsl_cap_refuses(self):
-        # 64.6 GB weights, ~46 GB available (WSL VM): refuse with guidance.
         msg = _shortfall(int(64.6 * _GB), 46 * _MIB_PER_GB)
         assert msg is not None
         assert "65 GB" in msg and "46 GB" in msg
         assert ".wslconfig" in msg
 
     def test_bare_metal_fits_allows(self):
-        # Same model, ~92 GB available (no WSL cap): allow.
         assert _shortfall(int(64.6 * _GB), 92 * _MIB_PER_GB) is None
 
     def test_unknown_available_never_refuses(self):
         assert _shortfall(int(64.6 * _GB), None) is None
 
     def test_boundary_at_headroom(self):
-        # 20 GB weights, headroom 2 GB. avail 23 GB -> fits; 21 GB -> refuse.
         assert _shortfall(20 * _GB, 23 * _MIB_PER_GB) is None
         assert _shortfall(20 * _GB, 21 * _MIB_PER_GB) is not None
 
@@ -132,10 +127,7 @@ class TestApuRamShortfall:
         assert v is None or (isinstance(v, int) and v > 0)
 
 
-# The local B200's real profile, so the spoofed APU is sized like a machine we
-# actually have rather than an invented one. A large shared pool is exactly where
-# the missing host reserve mattered: 3% of 179 GiB is 5.4 GiB, but the reserve is
-# an absolute 1 GiB off free, and the "total" must not become a VRAM budget.
+# Real B200 profile; the host reserve is an absolute 1 GiB off free, not a percent of total.
 _B200_TOTAL_MIB = 183359
 _B200_FREE_MIB = 181928
 _MIB = 1024 * 1024
@@ -167,11 +159,9 @@ def _probe(
     monkeypatch.setitem(
         sys.modules, "torch", _fake_torch_with_memory(hip, archs, free_mib, total_mib)
     )
-    # Force the torch branch: no Vulkan build, and nvidia-smi must not answer.
     monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "x"))
-    # Pin host availability: the shared path caps by it, so a runner with less RAM
-    # than the spoofed profile would otherwise change every expectation below.
+    # Pin host RAM: the shared path caps by it.
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 1 << 30)
     )
@@ -252,8 +242,8 @@ class TestAmdSdkWheelsCountAsRocm:
         ("hip", "version", "expected"),
         [
             ("6.2.0", "2.5.0+rocm6.2", True),
-            (None, "2.11.0+rocm7.13", True),  # AMD SDK wheel
-            (None, "2.5.0+ROCm7.0", True),  # case-insensitive
+            (None, "2.11.0+rocm7.13", True),
+            (None, "2.5.0+ROCm7.0", True),
             (None, "2.5.0+cu124", False),
             (None, "2.5.0", False),
         ],
@@ -318,9 +308,9 @@ class TestRadeonWheelsWithoutAnArchName:
         ("props", "expected"),
         [
             ({"gcnArchName": "gfx1151"}, True),
-            ({"gcn_arch_name": "gfx1150"}, True),  # variant spelling
-            ({"name": "AMD Radeon 8060S Graphics"}, True),  # Strix Halo by name
-            ({"name": "AMD Radeon 860M"}, True),  # Krackan by name
+            ({"gcn_arch_name": "gfx1150"}, True),
+            ({"name": "AMD Radeon 8060S Graphics"}, True),
+            ({"name": "AMD Radeon 860M"}, True),
             ({"is_integrated": True, "name": "AMD Radeon Graphics"}, True),
             ({"gcnArchName": "gfx1100"}, False),
             ({"name": "AMD Radeon RX 7900 XTX"}, False),
@@ -361,19 +351,18 @@ class TestTheOptOutHelper:
     @pytest.mark.parametrize(
         "env,expected",
         [
-            ({}, False),  # nothing set: the default decides
+            ({}, False),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}, False),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "2"}, False),  # any value is ON to ggml
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "true"}, False),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "0"}, True),  # the reported trap
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": ""}, True),
-            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": " Off "}, True),  # trimmed, folded
+            ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": " Off "}, True),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "no"}, True),
             ({"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "false"}, True),
             ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "1"}, True),
-            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"}, False),  # exact "1", like the DC switch
+            ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "0"}, False),
             ({"UNSLOTH_DISABLE_UNIFIED_MEMORY": "yes"}, False),
-            # The switch has to beat a truthy value.
             (
                 {
                     "UNSLOTH_DISABLE_UNIFIED_MEMORY": "1",

@@ -42,8 +42,7 @@ def _load_worker_module():
         sys.modules["loggers"] = loggers
 
         utils = types.ModuleType("utils")
-        # An empty __path__ shadows the real package and breaks the worker's own
-        # imports; only the stubs below replace it.
+        # Keep the real __path__: an empty one shadows the package and breaks the worker's imports.
         utils.__path__ = [str(Path(__file__).resolve().parents[1] / "utils")]
         sys.modules["utils"] = utils
 
@@ -65,9 +64,7 @@ def _load_worker_module():
         hf_dataset_options.hf_dataset_split_instruction_names = lambda *_args, **_kwargs: ()
         sys.modules["utils.hf_dataset_options"] = hf_dataset_options
 
-        # worker.py calls this at import time. Without the stub the module only loads when
-        # some other test happened to import the real utils.native_tls first, so this file
-        # passed in a full run and failed on its own.
+        # worker.py calls this at import time; without the stub this file fails when run alone.
         native_tls = types.ModuleType("utils.native_tls")
         native_tls.activate_native_tls = lambda *_args, **_kwargs: None
         sys.modules["utils.native_tls"] = native_tls
@@ -145,8 +142,7 @@ def test_mlx_studio_rejects_unknown_scheduler():
 
 
 def test_mlx_dora_requires_the_named_use_dora_parameter():
-    # A **kwargs catch-all absorbs use_dora and trains plain LoRA, so accepting the
-    # keyword is not support.
+    # A **kwargs catch-all absorbs use_dora, so accepting the keyword is not support.
     def old_zoo(
         model,
         r = 16,
@@ -188,8 +184,6 @@ def test_mlx_dora_requires_the_named_use_dora_parameter():
             _mlx_dora_peft_kwargs({"use_dora": True}, unusable)
     with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
         _mlx_dora_peft_kwargs({"use_dora": True}, object())
-    # An image-bearing dataset is not proof of a vision model; a text
-    # model can still train language-only DoRA.
     assert _mlx_dora_peft_kwargs(
         {
             "use_dora": True,
@@ -212,8 +206,7 @@ def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
 
 
 def test_mlx_wandb_run_config_excludes_subject_and_secrets():
-    # The MLX W&B run config uploads everything minus a sensitive set. The owner's subject must be
-    # filtered alongside the secrets, or it lands in W&B even though DB history strips it.
+    # The owner's subject must be filtered with the secrets or it lands in W&B.
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
         encoding = "utf-8"
     )
@@ -354,9 +347,6 @@ def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
     assert adapted[0]["messages"][0]["content"][0] == {"type": "image"}
 
 
-# ---- issue #6103: MLX transformers-version activation must not fail silently ----
-
-
 def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
     """A failed activation in the MLX fast-path must be logged, not swallowed.
 
@@ -375,7 +365,6 @@ def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
 
     monkeypatch.setattr(_worker, "_activate_transformers_version", _boom)
 
-    # Non-fatal: the MLX path falls through, so this must not raise.
     _worker._activate_transformers_version_or_warn("google/gemma-4-12b")
 
     assert len(warnings_logged) == 1, "activation failure was not logged"
@@ -479,7 +468,7 @@ def _run_masking(
     return events, namespace.get("masking_applied")
 
 
-try:  # the block imports this lazily; skip the behaviour tests where it cannot load
+try:
     import utils.datasets.completion_masking  # noqa: F401
     _MASKING_IMPORTABLE = True
 except Exception:  # pragma: no cover

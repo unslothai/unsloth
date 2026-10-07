@@ -107,7 +107,7 @@ def test_mlx_loop_reports_an_unknown_command(monkeypatch):
 
 def test_whisper_on_a_backend_without_asr_explains_itself(monkeypatch):
     """The bare AttributeError names an internal method; the user needs the reason."""
-    backend = SimpleNamespace()  # no generate_whisper_response
+    backend = SimpleNamespace()
     resp = _RespQueue()
 
     worker._handle_generate_audio_input(

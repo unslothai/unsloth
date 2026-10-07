@@ -16,7 +16,7 @@ from typing import Any, Optional
 VAE_ATTN_CHUNK_ENV = "UNSLOTH_VAE_ATTN_CHUNKED"
 VAE_ATTN_CHUNK_MB_ENV = "UNSLOTH_VAE_ATTN_CHUNK_MB"
 _FALSE = ("0", "false", "no", "off")
-# fp32 score bytes per chunk; a full matrix at or under this runs unchunked (FLUX.1 1024x1024 is exactly 1 GiB).
+# fp32 score bytes per chunk; a full matrix at or under this runs unchunked.
 DEFAULT_SCORE_BUDGET_MB = 1024
 _PATCHED = "_unsloth_vae_attn_chunked"
 
@@ -159,7 +159,6 @@ def chunked_attention_mode(budget: Optional[int] = None) -> Any:
 
 def _is_attention_module(module: Any) -> bool:
     name = type(module).__name__
-    # diffusers Attention (AutoencoderKL, FLUX.2) and the single-head blocks of Wan / Qwen-Image / HunyuanImage VAEs
     return name == "Attention" or name.endswith(("AttentionBlock", "AttnBlock"))
 
 

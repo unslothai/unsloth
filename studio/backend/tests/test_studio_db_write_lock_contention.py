@@ -94,9 +94,6 @@ def _hold_writer_lock(conn) -> None:
     )
 
 
-# --- synchronous=NORMAL, but only where WAL makes it safe -------------------------------
-
-
 def test_wal_database_drops_to_normal(db):
     """synchronous=FULL fsyncs under the writer lock; NORMAL is the WAL-safe pairing."""
     assert _journal_mode(db) == "wal"
@@ -236,9 +233,6 @@ def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
     assert not errors, errors
     assert gate.entered >= 2 * len(factories)
     assert gate.maximum == 1
-
-
-# --- the attachment inventory is dirtied by attachments, not by bookkeeping -------------
 
 
 @pytest.mark.parametrize(
@@ -532,9 +526,6 @@ def test_downgrade_still_sees_attachment_changes(db):
         conn.close()
 
 
-# --- claim_next: cheap when idle, unchanged when there is work --------------------------
-
-
 def _make_run(
     run_id = "r1",
     thread = "t1",
@@ -654,9 +645,6 @@ def test_concurrent_workers_claim_a_run_exactly_once(db):
     assert len(claims) == 1, f"the read-first probe must not let two workers claim: {claims}"
 
 
-# --- the busy predicate and the supervisor's error ladder -------------------------------
-
-
 @pytest.mark.parametrize(
     "message, busy",
     [
@@ -750,9 +738,6 @@ def test_cancellation_still_propagates():
     logger = logging.getLogger("test.supervisor.cancel")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(_Ladder([asyncio.CancelledError()], logger).run())
-
-
-# --- expected client errors are not server faults ---------------------------------------
 
 
 class _RecordingLogger:

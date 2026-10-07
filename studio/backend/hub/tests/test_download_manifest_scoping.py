@@ -85,10 +85,8 @@ def test_purge_state_preserves_active_legacy_when_deleting_inactive_cache(monkey
         lambda: SimpleNamespace(hub_cache = str(active)),
     )
 
-    # Unowned legacy manifest -> belongs to the active cache.
     legacy = state_dir.manifest_path("model", "Org/Model")
     _write_manifest(legacy, {"version": 1})
-    # The inactive cache's own scoped copy is the one being deleted.
     scoped = state_dir.manifest_path("model", "Org/Model", hub_cache = str(previous))
     _write_manifest(scoped, {"version": 1, "hub_cache": str(previous)})
 
@@ -317,7 +315,6 @@ def test_windows_shaped_copy_cache_scope_survives_a_restart(monkeypatch, tmp_pat
         hub_cache = hub_cache,
     )
 
-    # Second run: the same directory reached as the parent of a scanned entry.
     entry = next(path for path in hub_cache.iterdir() if path.name.startswith("models--"))
     manifest = download_manifest.read_manifest(
         "model",
@@ -414,14 +411,12 @@ def test_repo_delete_clears_legacy_scope_when_handed_a_RESOLVED_root(monkeypatch
     _shared_setup_1(monkeypatch, spelled, tmp_path)
     legacy = _legacy_scoped_manifest(tmp_path, spelled, resolved, "Org/Model", "Q4_K_M")
 
-    # The resolved spelling, as resolve_delete_target_root would hand it over.
     removed = download_manifest.purge_all_state_for_repo(
         "model", "Org/Model", hub_cache = str(resolved)
     )
 
     assert removed > 0
     assert not legacy.is_file()
-    # ...and the read path agrees it is gone, rather than resurrecting it.
     assert download_manifest.read_manifest("model", "Org/Model", "Q4_K_M") is None
 
 
@@ -482,7 +477,6 @@ def test_the_configured_spelling_is_only_borrowed_for_the_SAME_directory(monkeyp
     victim = state_dir.manifest_path("model", "Org/Model", "Q8_0", hub_cache = str(other))
     _write_manifest(victim, _manifest_payload("Org/Model", "Q8_0", str(other)))
 
-    # Deleting the repo out of the OTHER cache must not touch the active one.
     download_manifest.purge_all_state_for_repo("model", "Org/Model", hub_cache = str(other))
 
     assert not victim.is_file()
@@ -529,7 +523,6 @@ def test_disagreeing_manifests_across_caches_are_refused(monkeypatch, tmp_path):
 
     assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is None
 
-    # Agreement is still answered: the point is the ambiguity, not the multiplicity.
     served[second.parent] = old
     assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is old
 
@@ -563,7 +556,6 @@ def test_a_stale_active_manifest_is_compared_rather_than_returned(monkeypatch, t
     monkeypatch.setattr(
         download_manifest,
         "read_manifest",
-        # hub_cache omitted is the ACTIVE cache lookup.
         lambda repo_type, repo_id, variant = None, *, hub_cache = None: (
             stale if hub_cache is None else current
         ),
@@ -632,7 +624,6 @@ def test_a_scanned_cache_with_no_manifest_refuses_the_others(monkeypatch, tmp_pa
 
     assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is None
 
-    # ...and once that cache has its own agreeing manifest, the answer comes back.
     served[second.parent] = only
     assert downloads._variant_manifest_in_any_cache("unsloth/Model-GGUF", "Q4_K_M") is only
 
@@ -666,7 +657,6 @@ def test_the_active_cache_must_have_a_manifest_when_it_is_scanned(monkeypatch, t
     monkeypatch.setattr(
         download_manifest,
         "read_manifest",
-        # The active cache (hub_cache=None) has none; the remembered one does.
         lambda repo_type, repo_id, variant = None, *, hub_cache = None: (
             None if hub_cache is None else other
         ),
@@ -696,7 +686,6 @@ def test_an_unreadable_cache_root_is_unknown_rather_than_absent(monkeypatch, tmp
     monkeypatch.setattr(hf_cache_state, "hf_cache_root", lambda root = None, **kw: None)
     monkeypatch.setattr(type(unreadable), "iterdir", _explode)
 
-    # The enumeration reports the skip rather than only swallowing it...
     errors: list = []
     assert (
         hf_cache_state.preferred_repo_cache_dirs("model", "unsloth/Model-GGUF", scan_errors = errors)
@@ -704,7 +693,6 @@ def test_an_unreadable_cache_root_is_unknown_rather_than_absent(monkeypatch, tmp
     )
     assert errors and isinstance(errors[0], OSError)
 
-    # ...and the reading built on it says unknown by omitting cache_path entirely.
     class _Registry:
         def get_job(self, key):
             return SimpleNamespace(state = "idle")
@@ -719,14 +707,10 @@ def test_an_unreadable_cache_root_is_unknown_rather_than_absent(monkeypatch, tmp
         metadata_resolver = lambda *a, **k: (33_000_000_000, frozenset()),
     )
     assert "cache_path" not in reading
-    # And it survives DownloadProgressResponse, which defaults cache_path to None and would otherwise reinstate
-    # the omission as an explicit "absent" before the frontend saw it.
     assert reading["cache_measured"] is False
     from hub.schemas.downloads import DownloadProgressResponse
 
-    # DECLARED on the response model, or FastAPI drops it before the frontend sees it: these readings
-    # serialize through DownloadProgressResponse, whose cache_path defaults to None, so the omission
-    # alone was reinstated as an explicit "absent".
+    # Must be declared on DownloadProgressResponse or FastAPI drops it.
     assert "cache_measured" in DownloadProgressResponse.__annotations__
     assert reading["downloaded_bytes"] == 0
 
@@ -768,7 +752,6 @@ def test_a_scope_whose_payload_is_lost_reads_back_as_a_digest(monkeypatch, tmp_p
         assert state_dir.variant_is_hashed_fragment(recovered)
         target.unlink()
 
-    # A real quant label is never mistaken for one.
     for quant in ("Q4_K_M", "UD-Q4_K_XL", "sha256-short"):
         assert not state_dir.variant_is_hashed_fragment(quant)
 
@@ -806,17 +789,13 @@ def test_a_variant_with_nothing_of_its_own_says_so(monkeypatch, tmp_path):
     assert ours["downloaded_bytes"] == 0
     assert ours["cache_path"] is not None, "the sibling keeps the directory alive"
     assert ours["target_present"] is False
-    # Through the response model, or FastAPI drops the field and the frontend never sees it.
     from hub.schemas.downloads import DownloadProgressResponse
 
-    # Declared on the response model too, else FastAPI drops it on the way out.
     assert "target_present" in DownloadProgressResponse.__annotations__
 
-    # Unresolvable file set: nothing was established, so nothing is claimed either.
     unknown = _reading("Q4_K_M", frozenset())
     assert unknown["target_present"] is None
 
-    # And a whole-repo job owns the directory, so the repo-level answer already covers it.
     assert _reading(None, frozenset())["target_present"] is None
 
 
@@ -840,7 +819,6 @@ def test_a_root_that_cannot_even_be_stat_ed_is_unknown(monkeypatch, tmp_path):
     real_stat = _os.stat
 
     def _explode(path, *args, **kwargs):
-        # ELOOP, which is one of the errnos Path.is_dir() answers False for rather than raising.
         if str(path) == str(root):
             raise OSError(errno.ELOOP, "Too many levels of symbolic links")
         return real_stat(path, *args, **kwargs)

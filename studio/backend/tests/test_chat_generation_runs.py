@@ -612,7 +612,6 @@ def test_a_stale_tab_sync_cannot_prune_an_edited_generated_assistant(chat_home):
 
     survivor = studio_db.get_chat_message("thread-1", "assistant-1")
     assert survivor is not None, "the stale tab's sync deleted the user's edited message"
-    # Kept, but still not writable by the stale copy.
     assert survivor["content"] == [{"type": "text", "text": "edited by hand"}]
 
 
@@ -740,10 +739,7 @@ def test_request_sanitization_accepts_empty_optional_routing(overrides):
     assert _sanitize_request(_model(**overrides))["stream"] is True
 
 
-# A tool-enabled turn is durable now: the run persists every decoded frame, so a call that parks on an approval
-# survives the tab closing instead of being cancelled by it. The refusal these tests used to pin still exists - it is
-# what UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 restores - so both halves are pinned here: admitted by default, refused
-# under the toggle, and nothing in between.
+# Tool turns are durable by default; UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 restores refusal.
 
 
 def test_request_sanitization_admits_a_tool_enabled_turn_by_default():
@@ -873,9 +869,6 @@ class TestEmbeddedImagesStayOffTheDurablePath:
 
         assert _messages_have_embedded_image([ChatMessage(role = "user", content = "hello")]) is False
 
-
-# The admission half of TestEmbeddedImagesStayOffTheDurablePath: the helper returning True is not
-# the claim, the route refusing the run is.
 
 _INLINE_PNG_PART = {
     "type": "image_url",

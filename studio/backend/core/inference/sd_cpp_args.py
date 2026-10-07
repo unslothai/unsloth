@@ -24,8 +24,6 @@ from core.inference.diffusion_memory import (
     OFFLOAD_SEQUENTIAL,
 )
 
-# Per-family text-encoder flags, in supply order. Keyed by ``DiffusionFamily.name`` so the family registry need not
-# import sd.cpp specifics.
 _TE_FLAGS_BY_FAMILY: dict[str, tuple[str, ...]] = {
     "z-image": ("--llm",),
     "flux.2-klein": ("--llm",),
@@ -47,8 +45,7 @@ def text_encoder_flags_for_family(family_name: str) -> tuple[str, ...]:
     return _TE_FLAGS_BY_FAMILY.get(family_name, ())
 
 
-# sd-cli's image-gen mode (``img_gen``; older ``txt2img``). img2img is the same mode with --init-img, so one token
-# covers both.
+# sd-cli image-gen mode (older txt2img); img2img is the same mode with --init-img.
 DEFAULT_MODE = "img_gen"
 
 
@@ -135,9 +132,7 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed. off: nothing. default: --diffusion-fa +
-# --diffusion-conv-direct (numerically exact; direct conv took z-image Q8_0 sampling 56.1 -> 51.3 s). max keeps it
-# (profiles chain).
+# Native speed profiles: default adds --diffusion-fa + --diffusion-conv-direct (exact).
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -155,7 +150,6 @@ def native_speed_flags(speed_mode: Optional[str]) -> list[str]:
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
 
 
-# Kill switch for the Metal text-encoder placement below (1/true keeps the encoder on Metal).
 _METAL_TE_ON_GPU_ENV = "UNSLOTH_DIFFUSION_SD_CPP_METAL_TE_GPU"
 
 
@@ -182,18 +176,13 @@ def metal_text_encoder_flags() -> list[str]:
     return ["--clip-on-cpu"]
 
 
-# Everything on the CPU backend. sd.cpp prefers GPU -> integrated GPU -> CPU and only `--backend` changes which
-# backend EXECUTES the graph (`--offload-to-cpu` moves parameters, not compute), so this is the one flag that removes
-# ggml-metal entirely.
+# Only --backend changes compute placement (--offload-to-cpu moves params), removing Metal.
 CPU_BACKEND_FLAGS: tuple[str, ...] = ("--backend", "cpu")
 
-# Graph-cut segmented execution; a negative --max-vram auto-detects free VRAM per device, sparing that many GiB. It
-# segments on its own, so it stands alone.
+# Negative --max-vram auto-detects free VRAM per device; segments on its own.
 GRAPH_CUT_VRAM_FLAGS: tuple[str, ...] = ("--max-vram", "-1")
-# Upstream only honours --stream-layers when the diffusion params backend is CPU, i.e. under --offload-to-cpu; otherwise
-# it warns and ignores the flag.
+# Upstream honours --stream-layers only under --offload-to-cpu.
 GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
-# The full set, for callers that already offload to CPU.
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
 
@@ -246,9 +235,7 @@ def without_device_backend_flags(flags: Sequence[str]) -> list[str]:
     return out
 
 
-# The ggml signature for "this graph cannot run on this backend at all": ggml-metal calls GGML_ABORT when
-# ggml_metal_device_supports_op() returns false, since a single-backend graph has nowhere else to put the node. The
-# SIGABRT takes sd-server down mid-generation.
+# ggml-metal GGML_ABORTs on an unsupported op, killing sd-server mid-generation.
 _GGML_UNSUPPORTED_OP_MARKERS = ("unsupported op", "ggml_abort")
 
 
@@ -295,7 +282,6 @@ def offload_flags(
         flags.append("--diffusion-fa")
     if tile:
         flags.append("--vae-tiling")
-    # Stable order, de-duplicated (a forced flag can coincide with a policy one).
     seen: set[str] = set()
     out: list[str] = []
     for f in flags:
@@ -325,8 +311,6 @@ def build_sd_cpp_command(
         raise ValueError("diffusion_model path is required")
     if not (params.prompt or "").strip():
         raise ValueError("prompt is required")
-    # sd-cli inpaint needs the source image: a --mask with no --init-img is invalid, so reject it rather than fail deep
-    # in sd-cli.
     if params.mask and not params.init_img:
         raise ValueError("init_img is required when mask is set (inpaint needs a source image)")
 
@@ -361,8 +345,6 @@ def build_sd_cpp_command(
         cmd += ["--lora-model-dir", params.lora_dir]
     if params.lora_apply_mode:
         cmd += ["--lora-apply-mode", params.lora_apply_mode]
-    # Emit explicit dims when given. An image-conditioned run leaving them unset omits the flags so sd.cpp derives the
-    # size from the input; a plain txt2img keeps the 1024 default.
     if params.width is not None or params.height is not None:
         w = int(params.width) if params.width is not None else 1024
         h = int(params.height) if params.height is not None else 1024
@@ -380,8 +362,7 @@ def build_sd_cpp_command(
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     if params.batch_count and params.batch_count != 1:
-        # sd-cli names extra batch images itself (output_2.png, ...) but the runner collects only --output, so a CLI
-        # batch drops all but the first. Batches use the sdcpp server API.
+        # The runner collects only --output, so a CLI batch drops images; use the server API.
         raise ValueError(
             "sd-cli runs are single-image; use the sdcpp server API for batch generation."
         )
@@ -436,7 +417,6 @@ def build_sd_cpp_video_command(
     cmd += ["--llm", files.llm]
     if files.llm_vision:
         cmd += ["--llm_vision", files.llm_vision]
-    # Reject incompatible partitions before loading the model.
     if (params.init_img or params.end_img) and (
         params.ref_images or params.ref_videos or params.ref_audios
     ):
@@ -588,7 +568,6 @@ def build_sd_cpp_server_command(
     offload = list(offload or [])
     if offload:
         cmd += offload
-    # De-dup speed flags against offload (may already include --diffusion-fa).
     cmd += [f for f in native_speed_flags(native_speed) if f not in offload]
     cmd += [f for f in metal_text_encoder_flags() if f not in offload]
     if verbose:
@@ -653,8 +632,7 @@ def build_img_gen_request(
         req["seed"] = int(seed)
     if sample_params:
         req["sample_params"] = sample_params
-    # Structured LoRA list: the API resolves each ``path`` against the server's ``--lora-model-dir`` (prompt-embedded
-    # ``<lora:>`` tags are unsupported server-side), so LoRAs are staged here.
+    # The server resolves lora paths against --lora-model-dir; prompt tags unsupported there.
     if lora:
         req["lora"] = lora
     # Base64 PNGs in model order; no init_image/strength/mask: this is reference conditioning, not img2img.

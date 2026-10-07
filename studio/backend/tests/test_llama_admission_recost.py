@@ -97,7 +97,6 @@ class TestTheLeaseSide:
         lease = _lease(queue, tokens = 1000, budget = 8192)
         assert lease.recost(2500) is True
         assert queue.snapshot().committed == 2500
-        # Release must hand back the NEW figure, not the one it was admitted on.
         lease.release()
         assert queue.snapshot().committed == 0
 
@@ -168,9 +167,7 @@ class TestFourToolChatsTogether:
         share = budget // 4
         leases = [_lease(queue, tokens = share, budget = budget) for _ in range(4)]
         assert queue.snapshot().committed == budget, "all four tool chats admitted at once"
-        # The cache is exactly full, so nobody may grow at anyone else's expense.
         assert leases[0].recost(share + 1000) is False
-        # ... until someone finishes.
         leases[3].release()
         assert leases[0].recost(share + 1000) is True
 
@@ -206,10 +203,8 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
 
         thread = threading.Thread(target = grow, daemon = True)
         thread.start()
-        # It cannot proceed: 2000 is still held by `first` and 3500 does not fit beside it.
         thread.join(0.2)
         assert thread.is_alive(), "expected the growth to wait, not to be refused"
-        # Yielding first is what makes this resolvable at all.
         assert queue.snapshot().committed == 2000
         first.release()
         thread.join(5)
@@ -234,7 +229,6 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
             ok = lease.recost_waiting(budget // 2, poll_s = 0.01)
             with lock:
                 results.append(ok)
-            # Finishing is what lets the next one in.
             lease.release()
 
         threads = [threading.Thread(target = grow, args = (lease,), daemon = True) for lease in leases]
@@ -320,8 +314,6 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
         thread.start()
         thread.join(0.2)
         assert thread.is_alive()
-        # A newcomer arrives while the reparker waits, and must not be granted the room
-        # the reparker just gave up.
         newcomer = queue.reserve(
             capacity = 4, config = LlamaAdmissionConfig(), tokens = 1000, budget = 4096
         )
@@ -329,10 +321,7 @@ class TestWaitingForRoomInsteadOfRunningOverIt:
         first.release()
         thread.join(5)
         assert not thread.is_alive()
-        # Behind the reparker, not instead of it. The reclaim brings the barrier down and
-        # is the last thing to touch the queue, so if it does not run admission itself a
-        # request that fits in the room left over waits out the whole grown run -- and
-        # since a queued waiter shuts reserve()'s fast path, so does every later arrival.
+        # the reclaim must run admission itself, else the newcomer waits out the grown run
         for _ in range(100):
             await asyncio.sleep(0.01)
             if newcomer.lease_nowait() is not None:
@@ -369,8 +358,6 @@ class TestGivingUpTheWait:
         thread.start()
         while queue.snapshot().committed != 1024:
             await asyncio.sleep(0.005)
-        # The other run takes the whole cache while this one is parked, leaving no room
-        # for the restore to ask for.
         assert winner.recost(4096) is True
         assert queue.snapshot().committed == 4096
 
@@ -378,8 +365,7 @@ class TestGivingUpTheWait:
         thread.join(5)
         assert out == [False]
         assert queue._reparking == 0
-        # Both leases really hold their figures at llama-server, so the pool says so even
-        # over the budget: that is what is genuinely resident.
+        # both figures are really resident at llama-server, so record them even over budget
         assert (
             queue.snapshot().committed == 4096 + 1024
         ), "a restore the cache could not fit was dropped instead of recorded"
@@ -388,7 +374,6 @@ class TestGivingUpTheWait:
         assert (
             queue.snapshot().committed == 4096
         ), "release subtracted a commitment that was never restored"
-        # And the phantom room that leak created must not admit anyone.
         newcomer = queue.reserve(
             capacity = 4, config = LlamaAdmissionConfig(), tokens = 1000, budget = 4096
         )

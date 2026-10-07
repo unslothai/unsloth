@@ -34,7 +34,7 @@ _TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named
 _TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
 _TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
 
-# The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
+# The copy hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the source.
 _TORCHAO_SAFE_INT_MM_MARKERS = (
     "input.__repr__()",
     "dynamo_is_compiling()",
@@ -70,7 +70,6 @@ def _make_safe_int_mm(mod, original):
     def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
         if dynamo_is_compiling() or _is_fake_tensor(input):
             if input.device.type == "cpu":
-                # Matmul in int32 is slow on CPU and not supported well by Inductor cpp backend
                 return out_dtype(
                     torch.ops.aten.mm.default, torch.int32, input.float(), mat2.float()
                 )
@@ -91,9 +90,7 @@ def _make_safe_int_mm(mod, original):
 
         if not mat2.is_contiguous():  # silently gives incorrect result without this
             mat2 = mat2.contiguous()
-        if (not input.is_contiguous()) and (
-            input.shape[0] % 8 != 0
-        ):  # gives cryptic error without this
+        if (not input.is_contiguous()) and (input.shape[0] % 8 != 0):
             input = input.contiguous()
         try:
             return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
@@ -113,7 +110,7 @@ def _patch_torchao_intmm_module(mod):
         return False
     if getattr(original, "__unsloth_patched__", False):
         return False
-    # Off the module, never imported here, so this fails closed rather than borrowing our own operators.
+    # Never imported here, so this fails closed rather than borrowing our own operators.
     if not hasattr(mod, "out_dtype") or not hasattr(mod, "dynamo_is_compiling"):
         return False
     try:
@@ -135,7 +132,7 @@ def _patch_torchao_intmm_module(mod):
         mod.safe_int_mm = patched
     except Exception:
         return False
-    # `torchao.kernel` and `torchao.quantization` re-export the function OBJECT, so they need a sweep.
+    # `torchao.kernel` and `torchao.quantization` re-export the function OBJECT: sweep them.
     for name, other in tuple(sys.modules.items()):
         if other is None or not (name == "torchao" or name.startswith("torchao.")):
             continue
@@ -199,7 +196,7 @@ class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
         if spec is None or spec.loader is None:
             return None
         if not hasattr(spec.loader, "exec_module"):
-            return None  # a loader from before PEP 451; leave the import entirely alone
+            return None  # a loader from before PEP 451; leave the import alone
         try:
             spec.loader = _TorchaoIntmmLoader(spec.loader)
         except Exception:
@@ -211,8 +208,7 @@ def install_torchao_int_mm_patch():
     """Install the capture-safe ``safe_int_mm`` if torchao is present; idempotent, so several modules may each
     ask for it. ``UNSLOTH_TORCHAO_INT_MM_FIX=0`` keeps upstream's behaviour. True when patched or the finder was
     installed, False when there is nothing to do, None when torchao is absent or the fix is off."""
-    # Every diffusion, video and diffusion-training entry point calls this, so it also carries the
-    # peft LoRA guard, which is independent of the int_mm switch.
+    # Every diffusion entry point calls this, so it also carries the peft LoRA guard (independent of the switch).
     try:
         install_peft_torchao_dispatch_guard()
     except Exception:
@@ -234,7 +230,7 @@ def install_torchao_int_mm_patch():
         except Exception:
             pass
     if all(name in sys.modules for name in _TORCHAO_INTMM_MODULES):
-        return patched_now  # nothing left for a finder to catch
+        return patched_now
     for finder in sys.meta_path:
         if getattr(finder, _TORCHAO_INTMM_SENTINEL, False):
             return patched_now
@@ -242,14 +238,8 @@ def install_torchao_int_mm_patch():
     return True
 
 
-# Studio's copy of ``unsloth/import_fixes.py::fix_peft_torchao_missing_tensor_subclass`` (#11168), for the
-# same reason as the int_mm copy above: the diffusion process never runs ``unsloth/__init__``, so the
-# original never reaches ``pipe.load_lora_weights``. peft <= 0.18 imports LinearActivationQuantizedTensor
-# inside ``dispatch_torchao`` for every LoRA target, torchao 0.18 deleted it, and Studio installs torchao
-# 0.18 on torch >= 2.12, so every diffusion LoRA load raised. Both copies mark their wrapper
-# ``__unsloth_patched__``, so whichever runs second leaves the first in place.
-# The spellings a torchao removal produces (class, its old module, the whole ``torchao.dtypes`` package on main).
-# Only these, so a BROKEN torchao still raises.
+# Copy of unsloth/import_fixes.py::fix_peft_torchao_missing_tensor_subclass: diffusion never
+# runs unsloth/__init__. Both mark ``__unsloth_patched__``; only torchao-removal errors match.
 _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
     r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor"
     r"|no module named '?torchao\.dtypes'?(?![.\w])",
@@ -257,7 +247,6 @@ _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
 )
 
 
-# The two imports `dispatch_torchao` performs, in upstream's order.
 _PEFT_TORCHAO_TENSOR_SUBCLASSES = (
     ("torchao.dtypes", "AffineQuantizedTensor"),
     ("torchao.quantization", "LinearActivationQuantizedTensor"),
@@ -288,8 +277,7 @@ def _guard_peft_torchao_dispatcher(original):
     remain, so an AffineQuantizedTensor weight still gets a TorchaoLoraLinear.
     """
     warned = [False]
-    # The defining module's own globals, so the degraded path uses the very objects upstream would
-    # have, including an is_torchao_available already patched by the sibling fix.
+    # Defining module's globals, incl. an is_torchao_available patched by the sibling fix.
     namespace = getattr(original, "__globals__", None)
     if not isinstance(namespace, dict):
         namespace = {}
@@ -341,7 +329,7 @@ def _guard_peft_torchao_dispatcher(original):
         if is_torchao_available is not None and not is_torchao_available():
             return None
         if not classes or not isinstance(target_base_layer.weight, classes):
-            return None  # upstream's answer for an unrecognised weight: the loop moves on
+            return None
         torchao_lora_linear = _upstream("TorchaoLoraLinear", "peft.tuners.lora.torchao")
         if torchao_lora_linear is None:
             return None
@@ -357,9 +345,7 @@ def _guard_peft_torchao_dispatcher(original):
                 raise
             classes, missing = _peft_torchao_tensor_subclasses()
             if not missing:
-                # The message named one of the two classes but both are there, so this came from
-                # somewhere else in the dispatcher and is a real failure. Redoing the dispatch
-                # would swallow it and re-run whatever construction already happened.
+                # Both classes exist, so this is a real failure; redoing the dispatch would hide it.
                 raise
         if not warned[0]:
             warned[0] = True

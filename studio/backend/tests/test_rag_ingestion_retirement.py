@@ -83,7 +83,6 @@ def test_deleting_an_account_reaps_its_blocked_ingestion_worker(alice_home, monk
     worker.join(60)
     assert not worker.is_alive()
 
-    # With the worker gone, retirement completes and the roots move with nothing left writing.
     retire_account_roots(ALICE)
     tombstones = [p for p in alice_home.parent.iterdir() if "-deleted-" in p.name]
     assert tombstones and not alice_home.exists()

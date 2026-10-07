@@ -56,14 +56,13 @@ def get_existing_cache_dirs() -> List[Path]:
     return found
 
 
-# Written when Unsloth creates the directory, so "we made this" is a fact rather than an inference from the contents.
+# Written when Unsloth creates the directory, proving ownership.
 CACHE_MARKER = ".unsloth_compiled_cache"
 
-# Names only the compiler produces, so a cache Unsloth did not create is still recognised once it has been written into.
 import re as _re
 
 _GENERATED_NAME_RE = _re.compile(r"\A(unsloth_compiled_module_.+|Unsloth.+Trainer)\.py\Z")
-# What may be deleted from a directory we do not own. Unsloth*Trainer.py is a convention a user's own subclass can match, and there the marker is the only thing that would say we wrote it.
+# Unsloth*Trainer.py can match a user subclass, so only compiled modules are deletable.
 _OWNED_DELETE_RE = _re.compile(r"\Aunsloth_compiled_module_.+\.py\Z")
 
 
@@ -112,7 +111,7 @@ def _cleanable_cache_dirs() -> "List[tuple]":
     builtin = _builtin_cache_paths()
     cleanable: "List[tuple]" = []
     for cache_dir in get_existing_cache_dirs():
-        # A built-in path is ours by construction only while it IS the directory. Through a link, the marker on the target is the only proof, since the clearing below resolves it and would take whatever it points at.
+        # Through a symlink, only the marker on the target proves ownership.
         owned_by_path = str(cache_dir) in builtin and not cache_dir.is_symlink()
         if owned_by_path or _is_dedicated_cache(cache_dir):
             cleanable.append((cache_dir, True))
@@ -136,7 +135,8 @@ def register_compiled_cache_on_path() -> None:
     pypath = os.environ.get("PYTHONPATH", "")
     pypath_entries = [p for p in pypath.split(os.pathsep) if p]
 
-    # Iterate in reverse so earlier _CACHE_DIRS entries (higher priority) are inserted last and thus end up first in sys.path / PYTHONPATH. Same ownership test as cleanup: a directory in the launch dir needs a file only the compiler writes, since Unsloth*Trainer.py is a name a user's own subclass can carry and that directory goes on sys.path.
+    # Reverse so earlier _CACHE_DIRS entries end up first on sys.path. _OWNED_DELETE_RE, not
+    # _GENERATED_NAME_RE: a user's Unsloth*Trainer.py must not put its dir on sys.path.
     trusted = _trusted_cache_paths()
     registrable = [
         d
@@ -161,16 +161,16 @@ def cache_coordination_dir() -> Path:
     return studio_root()
 
 
-# Held: we may probe and clear. Busy: someone else is in that critical section. Unavailable means no lock could be taken at all, which must not mean "never clear the cache again", so the caller falls back to the unserialized probe it used before this lock.
+# Unavailable must not mean never clear; caller falls back to the unserialized probe.
 LOCK_HELD = "held"
 LOCK_BUSY = "busy"
 LOCK_UNAVAILABLE = "unavailable"
 
-# Long enough to outlast a real clear (an rmtree of a few dozen files), short enough that a wedged holder cannot stall lifespan startup behind it.
+# Outlasts a real clear, but a wedged holder cannot stall startup.
 _LOCK_TIMEOUT = 10.0
 
 
-# flock/msvcrt report contention through these; anything else is the lock being unsupported (ENOSYS, or EOPNOTSUPP on a network mount), and retrying for ten seconds to answer "busy" pins the cache forever, since busy proves a sibling.
+# Other errnos mean locking is unsupported; treating them as busy pins the cache.
 _CONTENTION_ERRNOS = frozenset(
     code
     for code in (
@@ -215,7 +215,6 @@ def compiled_cache_lock(timeout: float = _LOCK_TIMEOUT):
         lock_dir.mkdir(parents = True, exist_ok = True)
         fd = os.open(str(lock_dir / "compiled-cache.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     except Exception as exc:  # noqa: BLE001
-        # Resolving or opening it is part of taking it, so it degrades the same way rather than aborting a startup that only wanted to know about siblings.
         logger.debug(f"Could not open the compiled-cache lock ({exc})")
         yield LOCK_UNAVAILABLE
         return
@@ -231,7 +230,6 @@ def compiled_cache_lock(timeout: float = _LOCK_TIMEOUT):
                 break
             except OSError as exc:
                 if exc.errno not in _CONTENTION_ERRNOS:
-                    # Not contention: the filesystem cannot lock at all.
                     logger.debug(f"Compiled-cache locking unavailable ({exc})")
                     with contextlib.suppress(OSError):
                         os.close(fd)
@@ -262,7 +260,6 @@ def clear_compiled_cache_unless_shared(sibling_probe = None) -> None:
         return
     with compiled_cache_lock() as lock_state:
         if lock_state == LOCK_BUSY:
-            # Somebody is inside the critical section, so there is a sibling by definition; that is already the answer, no probe needed.
             logger.info(
                 "Keeping the compiled cache: another backend of this install holds the cache lock"
             )
@@ -280,7 +277,6 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
     """Remove compiled files from the cache directory (idempotent). ``preserve_patterns`` are glob patterns for files to keep (e.g. ["Unsloth*Trainer.py"]); None or empty deletes the entire cache directory (legacy behavior)."""
     for cache_dir, dedicated in _cleanable_cache_dirs():
         if not dedicated:
-            # A shared directory we only ever wrote generated modules into, so they are the only thing here that may be removed.
             logger.info(f"Cleaning generated modules from shared directory: {cache_dir}")
             for item in cache_dir.iterdir():
                 if not item.is_file() or not _OWNED_DELETE_RE.match(item.name):
@@ -308,10 +304,10 @@ def clear_unsloth_compiled_cache(preserve_patterns: Optional[List[str]] = None) 
                 elif item.is_dir():
                     shutil.rmtree(item, ignore_errors = True)
         else:
-            # Legacy: remove the entire directory. Resolved first: rmtree refuses a symlink, and ignore_errors would leave the whole cache in place.
+            # Resolved first: rmtree refuses a symlink.
             logger.info(f"Removing unsloth compiled cache: {cache_dir}")
             shutil.rmtree(Path(os.path.realpath(cache_dir)), ignore_errors = True)
-        # The marker goes with whatever was cleared and nothing rewrites it, so the next cleanup would demote our own cache to "shared". A built-in path needs none unless it is a dangling link. setup_cache_env writes the marker only when it first sets the variable.
+        # Rewrite the marker, or the next cleanup would treat our cache as shared.
         if dedicated and (str(cache_dir) not in _builtin_cache_paths() or cache_dir.is_symlink()):
             try:
                 restored = Path(os.path.realpath(cache_dir))

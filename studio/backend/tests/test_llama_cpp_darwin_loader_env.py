@@ -27,7 +27,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Match sibling tests' stubbing so the module imports without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -86,20 +85,15 @@ class TestDarwin:
         assert entries == [str(binary.parent), "/opt/inherited"]
 
     def test_an_inherited_ld_library_path_is_left_alone(self, monkeypatch, binary):
-        # Repurposing it would be pointless (dyld ignores it) and would leak a
-        # llama.cpp dir into anything the user set it for.
+        # dyld ignores LD_LIBRARY_PATH, so it must not be repurposed on macOS.
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/sentinel")
         _no_linux_discovery(monkeypatch)
         assert _env_for(binary)["LD_LIBRARY_PATH"] == "/opt/sentinel"
 
     def test_a_wrapper_entrypoint_resolves_to_the_real_bin_dir(self, monkeypatch, tmp_path):
-        # The managed install can put a shell entrypoint in front of the real
-        # binary; the dylibs sit next to the target, not next to the wrapper.
-        # The env dict alone is not enough on a Mac: SIP purges DYLD_* while
-        # starting the protected /bin/sh a wrapper runs under, so load_model
-        # launches the resolved target instead (see
-        # TestDarwinSpawnsTheResolvedBinary).
+        # Dylibs sit next to the wrapper's target; SIP purges DYLD_* under /bin/sh,
+        # so the env dict alone is not enough on macOS.
         real_dir = tmp_path / "llama.cpp" / "build" / "bin"
         real_dir.mkdir(parents = True)
         (real_dir / "llama-server-real").write_text("")
@@ -128,9 +122,7 @@ class TestLinuxUnchanged:
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
         monkeypatch.setattr(llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: [])
         env = _env_for(binary)
-        # startswith, not split(":")[0]: the Linux branch joins with a literal
-        # ":" and this test simulates Linux on whatever host runs it, so on a
-        # Windows runner the first entry is "C:\..." and splitting yields "C".
+        # startswith, not split(':'): on a Windows host the first entry is 'C:\...'.
         assert env["LD_LIBRARY_PATH"].startswith(str(binary.parent))
         assert "DYLD_LIBRARY_PATH" not in env
 
@@ -151,7 +143,6 @@ class TestLinuxUnchanged:
         assert env.get("HSA_ENABLE_DXG_DETECTION") == "1"
 
     def test_use_system_rocm_false_skips_native_linux_prepend(self, monkeypatch, binary):
-        # The retry keeps the CUDA and bundle dirs, drops the system ROCm one.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
@@ -167,9 +158,7 @@ class TestLinuxUnchanged:
         assert bundle_only["LD_LIBRARY_PATH"].startswith(str(binary.parent))
 
     def test_a_proved_bundle_only_host_stops_prepending_for_every_child(self, monkeypatch, binary):
-        # The retry fixes one launch. Without the latch the STT sidecar, which
-        # builds its env through this same helper, would keep crashing into the
-        # prepend that was already proved wrong on this host.
+        # Latch so the STT sidecar (same helper) stops reusing the disproved prepend.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
@@ -184,7 +173,6 @@ class TestLinuxUnchanged:
 
         after = LlamaCppBackend._llama_server_env_for_binary(str(binary))
         assert "/opt/rocm/lib" not in after["LD_LIBRARY_PATH"].split(":")
-        # The sidecar reaches the same helper, so it inherits the correction.
         from core.inference.stt_mtmd_sidecar import _llama_server_child_env
 
         sidecar = _llama_server_child_env(str(binary))
@@ -193,8 +181,7 @@ class TestLinuxUnchanged:
     def test_a_replaced_runtime_retests_the_system_rocm_prepend(
         self, monkeypatch, binary, tmp_path
     ):
-        # The in-app updater swaps a new install into the same path. A proof
-        # from the old binary must not force the new runtime to stay bundle-only.
+        # The updater swaps a new install into the same path; old proof must not stick.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
@@ -214,7 +201,6 @@ class TestLinuxUnchanged:
         assert env["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
 
     def test_a_different_build_dir_still_gets_the_prepend(self, monkeypatch, binary, tmp_path):
-        # The proof is about one install tree, not about the host in general.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
@@ -230,8 +216,7 @@ class TestLinuxUnchanged:
         assert env["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
 
     def test_use_system_rocm_false_keeps_the_wsl_prepend(self, monkeypatch, binary):
-        # librocdxg is a different mix (WSL). The native-Linux flag must not
-        # drop it.
+        # librocdxg is WSL; the native-Linux flag must not drop it.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: ["/wsl/rocm"])
@@ -303,7 +288,7 @@ class TestExecPathForLaunch:
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(path_settings, "custom_llama_cpp_path_source", lambda: "studio")
         wrapper, target = self._wrapper(tmp_path)
-        # Simulate the LF-only installer template even on a Windows test host.
+        # LF-only template even on a Windows host.
         wrapper.write_bytes(b'#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n')
 
         assert LlamaCppBackend._is_unsloth_managed_binary(str(wrapper)) is False
@@ -364,7 +349,7 @@ class TestBinaryRevisionPathSpace:
         backend._launch_binary_revision = LlamaCppBackend._binary_revision(
             LlamaCppBackend._exec_path_for_launch(str(wrapper))
         )
-        assert backend._launch_binary_revision  # the stamp is readable
+        assert backend._launch_binary_revision
         assert backend._binary_changed_since_launch() is False
 
     def test_a_real_update_is_still_detected(self, monkeypatch, tmp_path):
@@ -602,7 +587,6 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
         monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
         monkeypatch.setattr(sys, "platform", "darwin")
-        # It really does read as managed; the exemption is the wrapper shape.
         assert LlamaCppBackend._is_unsloth_managed_binary(str(entry)) is True
         assert LlamaCppBackend._exec_path_for_launch(str(entry)) == str(entry)
 
@@ -615,8 +599,6 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
         assert got == str((root / "build" / "bin" / "llama-server").resolve())
 
     def test_the_library_dir_still_comes_from_the_target(self, monkeypatch, tmp_path):
-        # _llama_lib_dir must keep resolving ANY wrapper: the dylibs sit beside
-        # the target whoever wrote the script.
         root, entry = self._tree(tmp_path, self._USERS)
         assert llama_module._llama_lib_dir(str(entry)) == (root / "build" / "bin").resolve()
 

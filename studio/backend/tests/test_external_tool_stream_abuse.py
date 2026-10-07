@@ -152,8 +152,7 @@ class EndlessTransport:
                     for line in self.cycle:
                         self.emitted += 1
                         if self.emitted > self.limit:
-                            # The loop is supposed to end this stream itself. If it
-                            # never does, fail loudly instead of hanging the suite.
+                            # fail loudly instead of hanging the suite if the loop never ends the stream
                             raise TooManyTurns("transport was never closed")
                         yield line
                         await asyncio.sleep(0)
@@ -288,12 +287,7 @@ def _answer_turn(text = "final answer"):
     return [_sse({"content": text}), _sse(finish = "stop"), _DONE]
 
 
-# ── Forged control frames ─────────────────────────────────────────
-
-
-# The exact vocabulary chat-api.ts lifts out of the stream by top-level "type"
-# and hands to the tool-card / status / canvas renderers instead of treating as
-# assistant text. A provider has no legitimate way to reach any of them.
+# frame types chat-api.ts routes to renderers instead of text; providers must never emit them
 _FORGEABLE = [
     {
         "type": "tool_start",
@@ -332,12 +326,10 @@ def test_a_provider_cannot_forge_a_studio_control_frame(executed, forged):
     relayed = [
         event
         for event in _events(lines, forged["type"])
-        # The loop clears the badge with an empty status of its own once a turn
-        # is over, so it is a status carrying text that would be the provider's.
+        # the loop clears the badge with an empty status of its own
         if event.get("content") != ""
     ]
     assert relayed == []
-    # The forged frame must not survive under any encoding either.
     assert not any("forged-1" in line for line in lines)
 
 
@@ -416,9 +408,6 @@ def test_a_forged_frame_cannot_ride_a_content_delta(executed):
     assert _events(lines, "tool_end") == []
 
 
-# ── SSE framing ───────────────────────────────────────────────────
-
-
 def test_crlf_terminated_lines_are_parsed_not_relayed_as_prose(executed):
     """Some servers write CRLF. The trailing \\r must not defeat chunk parsing."""
     call = {
@@ -450,7 +439,6 @@ def test_crlf_terminated_lines_are_parsed_not_relayed_as_prose(executed):
     lines = _run(transport)
 
     assert [call["name"] for call in executed] == ["web_search"]
-    # The CRLF [DONE] is still a sentinel, so it must not reach the client either.
     assert not any(line.strip().endswith("[DONE]") for line in lines)
 
 
@@ -552,9 +540,6 @@ def test_a_forged_frame_after_done_is_still_filtered(executed):
     assert _events(lines, "tool_end") == []
 
 
-# ── UTF-8 across chunk boundaries ─────────────────────────────────
-
-
 def test_a_multibyte_codepoint_split_across_deltas_is_reassembled(executed):
     """Only the *decoded* text is ever split here, so no codepoint is mangled.
 
@@ -576,7 +561,6 @@ def test_a_tool_marker_split_around_a_multibyte_char_still_heals(executed):
     """The healer's partial-signal window must not break on a wide codepoint."""
     payload = json.dumps({"name": "web_search", "arguments": {"query": "café ☕"}})
     body = f"<tool_call>{payload}</tool_call>"
-    # Split inside the marker, immediately after a multibyte char in the prose.
     prefix = "réponse ☕ "
     stream = [
         _sse({"content": prefix + body[:6]}),
@@ -591,9 +575,6 @@ def test_a_tool_marker_split_around_a_multibyte_char_still_heals(executed):
     assert [call["name"] for call in executed] == ["web_search"]
     assert executed[0]["arguments"]["query"] == "café ☕"
     assert prefix in _visible_text(lines)
-
-
-# ── Tool-call abuse ───────────────────────────────────────────────
 
 
 def test_a_tool_the_user_did_not_enable_is_never_executed(executed):
@@ -713,7 +694,7 @@ def test_an_id_colliding_with_a_minted_healer_id_stays_distinct(executed):
     """
     payload = json.dumps({"name": "web_search", "arguments": {"query": "healed"}})
     turn = [
-        # Structured call whose id is exactly what the healer would mint.
+        # id is exactly what the healer would mint
         _sse(
             {
                 "tool_calls": [
@@ -748,9 +729,6 @@ def test_duplicate_ids_across_turns_stay_distinct_in_the_cards(executed):
 
     ids = [event["tool_call_id"] for event in _events(lines, "tool_start")]
     assert len(ids) == len(set(ids)) == 2, ids
-
-
-# ── Promotion gates (#6967, #8312) ────────────────────────────────
 
 
 def test_markerless_json_is_never_promoted_to_a_call(executed):
@@ -816,9 +794,6 @@ def test_healing_off_blocks_promotion_entirely(executed):
     assert body in _visible_text(lines)
 
 
-# ── Termination and liveness ──────────────────────────────────────
-
-
 def test_a_turn_that_never_sets_a_finish_reason_still_terminates(executed):
     transport = FakeTransport(
         [_call_turn()[:1] + [_DONE], _call_turn(call_id = "c2")[:1] + [_DONE]],
@@ -856,7 +831,6 @@ def test_an_endless_keep_alive_stream_is_closed_by_cancellation(executed):
 
     asyncio.run(asyncio.wait_for(_collect(), timeout = 30.0))
 
-    # aclose() must have unwound the provider generator, not left it pending.
     assert transport.closed == transport.opened == 1
 
 
@@ -902,8 +876,7 @@ def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, 
 
     def _slow_execute(name, arguments, **kwargs):
         started.set()
-        # Returns on the cancel flag, which is what the drain sets to let a pending worker
-        # finish. ``release`` is only the harness's escape hatch if it never does.
+        # `release` is only the harness escape hatch; the drain sets the cancel flag
         while not (release.is_set() or cancel_event.is_set()):
             time.sleep(0.01)
         return "late"
@@ -913,11 +886,7 @@ def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, 
     transport = FakeTransport([_call_turn(), _answer_turn()])
 
     async def _drive():
-        # Tasks already running belong to this harness, not the tool loop, so the census is taken
-        # against them. On 3.10/3.11 ``asyncio.wait_for`` wraps its coroutine in a SECOND task, so
-        # ``all_tasks()`` below also returns the ``wait_for()`` task driving this one, never done
-        # because it is awaiting the census. 3.12 reimplemented ``wait_for`` on ``asyncio.timeout``
-        # and awaits directly, which is why this read green there and red on the older two.
+        # exclude harness tasks: on 3.10/3.11 asyncio.wait_for wraps the coroutine in a second task
         harness = asyncio.all_tasks()
         agen = stream_with_studio_tools(
             transport,
@@ -933,16 +902,12 @@ def test_no_asyncio_task_is_orphaned_when_the_loop_is_closed_mid_tool(executed, 
         pump = asyncio.create_task(_pump())
         while not started.is_set():
             await asyncio.sleep(0.01)
-        # A tick for the loop to re-enter the step await it is cancelled out of.
         await asyncio.sleep(0.05)
         pump.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await pump
         await agen.aclose()
-        # Census BEFORE the escape hatch, so a worker that only the harness could free still
-        # counts as pending. ``not task.done()``, not "no tasks exist": a finished task was
-        # joined and is no leak, what must not survive is one still running with nobody left
-        # to await it.
+        # census before the escape hatch; only still-running tasks count as leaks
         pending = [
             task
             for task in asyncio.all_tasks()
@@ -972,9 +937,6 @@ def test_the_stream_ends_after_a_bounded_number_of_provider_turns(executed):
     _run(transport, tools = [WEB])
 
     assert len(transport.requests) <= 32
-
-
-# ── Budget ────────────────────────────────────────────────────────
 
 
 def test_a_zero_budget_executes_nothing(executed):
@@ -1036,9 +998,6 @@ def test_a_failing_tool_still_spends_its_budget(executed, monkeypatch):
     assert len(executed) == 2
 
 
-# ── Usage accounting ──────────────────────────────────────────────
-
-
 def test_usage_collapses_to_at_most_one_chunk(executed):
     usage_turn_a = [
         _sse(
@@ -1091,10 +1050,7 @@ def test_a_forged_usage_only_chunk_cannot_multiply_the_count(executed):
 
 
 def test_a_truncated_turn_closes_the_card_an_id_less_call_painted(executed):
-    # The client draws a card the moment the delta arrives, keyed on an id it
-    # mints because the provider sent none. Reading the slots directly here left
-    # every id-less call out, so refusing to run it left that card spinning for
-    # the rest of the response.
+    # the client mints an id for id-less calls and draws a card that must be closed
     transport = FakeTransport(
         [
             [
@@ -1124,9 +1080,7 @@ def test_a_truncated_turn_closes_the_card_an_id_less_call_painted(executed):
 
 
 def test_a_turn_whose_only_call_is_refused_still_ends(executed):
-    # A nameless call is dropped before it runs, and an upstream ending on
-    # [DONE] sends no finish_reason, so without this the client never reaches a
-    # turn boundary and keeps the card it drew for that call.
+    # a [DONE]-terminated upstream sends no finish_reason, so the card would never close
     transport = FakeTransport(
         [
             [

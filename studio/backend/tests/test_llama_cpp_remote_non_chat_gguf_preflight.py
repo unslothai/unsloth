@@ -47,7 +47,7 @@ def _gguf_bytes(
         key = b"general.architecture"
         val = arch.encode()
         body += struct.pack("<Q", len(key)) + key
-        body += struct.pack("<I", 8)  # STRING
+        body += struct.pack("<I", 8)
         body += struct.pack("<Q", len(val)) + val
         kv_count = 1
     if declared_kv is not None:
@@ -74,8 +74,6 @@ def _probe(
     monkeypatch.setattr(
         llama_cpp_module, "_resolve_variant_gguf_files", lambda *_a, **_k: (filename, [])
     )
-    # The verified cache lookup is the only way a local copy enters the probe; a test with
-    # its own stub for it passes patch_cache = False.
     if patch_cache:
         monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: local)
     monkeypatch.setattr(diffusion_compat, "_read_gguf_header", _fake_remote)
@@ -88,9 +86,6 @@ def _probe(
     return message, requests
 
 
-# ── the verdict itself ────────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "arch, page",
     [
@@ -101,7 +96,6 @@ def _probe(
     ],
 )
 def test_a_media_repo_gguf_is_refused_from_its_header_alone(monkeypatch, arch, page):
-    # 144-145 bytes on the Hub for every one of these: three KV pairs and no vocabulary.
     message, requests = _probe(monkeypatch, header = _gguf_bytes(arch = arch))
     assert message is not None
     assert page in message
@@ -109,8 +103,7 @@ def test_a_media_repo_gguf_is_refused_from_its_header_alone(monkeypatch, arch, p
 
 
 def test_a_placeholder_arch_repo_gguf_is_refused(monkeypatch):
-    # gguf-connector writes a literal "pig"; the probe must normalise it like the on-disk
-    # check does, or a 20 GB flux2 download still costs the resident model.
+    # gguf-connector writes a literal 'pig'; the probe must normalise it like the disk check.
     message, _ = _probe(
         monkeypatch,
         header = _gguf_bytes(arch = "pig"),
@@ -122,8 +115,6 @@ def test_a_placeholder_arch_repo_gguf_is_refused(monkeypatch):
 
 
 def test_the_filename_survives_into_the_verdict(monkeypatch):
-    # With no general.architecture the page is named off the file name, so the prefix is
-    # spooled under the REAL name and not a temp one.
     message, _ = _probe(
         monkeypatch,
         header = _gguf_bytes(arch = None),
@@ -134,8 +125,6 @@ def test_the_filename_survives_into_the_verdict(monkeypatch):
 
 
 def test_an_ambiguous_arch_is_resolved_from_the_real_filename(monkeypatch):
-    # A shared architecture is resolved from the repo id and the FILE NAME: the other reason
-    # the prefix is spooled under its real name.
     if not getattr(LlamaCppBackend, "_AMBIGUOUS_IMAGE_ARCHES", None):
         pytest.skip("no ambiguous image archs on this build")
     message, _ = _probe(
@@ -153,20 +142,13 @@ def test_a_chat_repo_gguf_is_not_refused(monkeypatch):
     assert message is None
 
 
-# ── fail-open, in every direction ─────────────────────────────────────────────────
-
-
 def test_a_prefix_cut_mid_kv_yields_no_verdict(monkeypatch):
-    # The chat-model case for real: 256 KiB of a 5.9 MB KV block. The counts promise 32
-    # pairs, one arrives, the buffer ends. _gguf_header_parsed stays False, so "declares no
-    # architecture" must not be read out of a read that simply stopped early.
+    # A truncated KV read must not be taken as 'declares no architecture'.
     message, _ = _probe(monkeypatch, header = _gguf_bytes(arch = "llama", declared_kv = 32))
     assert message is None
 
 
 def test_an_unreachable_hub_yields_no_verdict(monkeypatch):
-    # _read_gguf_header returns b"" for offline, a 401, a deadline, or a proxy that
-    # answered 200 instead of 206.
     message, _ = _probe(monkeypatch, header = b"")
     assert message is None
 
@@ -185,7 +167,6 @@ def test_an_unresolvable_filename_yields_no_verdict(monkeypatch):
         )
         is None
     )
-    # No filename means no request either: there is nothing to ask for.
     assert called == []
 
 
@@ -210,13 +191,11 @@ def test_a_probe_that_raises_yields_no_verdict(monkeypatch):
 
 
 def test_a_cached_copy_is_read_off_disk_instead_of_the_hub(monkeypatch, tmp_path):
-    # A cached file answers this with no request, the only way the verdict survives an
-    # unreachable Hub.
     cached = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
     message, requests = _probe(
         monkeypatch,
-        header = b"",  # would fail open if the probe went to the network
+        header = b"",
         filename = "ltx-2-19b-dev-Q4_K_M.gguf",
         local = str(cached),
     )
@@ -224,12 +203,7 @@ def test_a_cached_copy_is_read_off_disk_instead_of_the_hub(monkeypatch, tmp_path
     assert requests == []
 
 
-# ── the invariant the whole item is about ─────────────────────────────────────────
-
-
 def test_the_remote_probe_agrees_with_the_other_two_entry_points(tmp_path, monkeypatch):
-    # Three entry points, one verdict: otherwise a load is refused on one path and launched
-    # on another.
     for arch, name in (("llama", "chat.gguf"), ("flux", "flux.gguf"), ("ltxv", "ltx.gguf")):
         header = _gguf_bytes(arch = arch)
         gguf = tmp_path / name
@@ -248,7 +222,6 @@ def test_the_repo_refusal_sits_above_the_teardown_in_source():
     remote = src.index("self._remote_non_chat_gguf_refusal(")
     teardown = src.index("# ── Phase 1: kill old process")
     assert remote < teardown
-    # And the post-download check stays as the backstop for what the probe fails open on.
     assert src.index("non_chat = self._non_chat_gguf_refusal(model_path)") > teardown
 
 
@@ -268,8 +241,6 @@ def _repo_load(monkeypatch, backend, order):
 
 
 def test_a_media_repo_load_keeps_the_resident_model_and_never_downloads(monkeypatch):
-    # The regression. Before the fix this killed the live server, downloaded the whole
-    # media GGUF, and only then raised.
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
@@ -289,12 +260,10 @@ def test_a_media_repo_load_keeps_the_resident_model_and_never_downloads(monkeypa
             )
         )
 
-    # Neither the teardown nor the multi-GB download happened.
     assert order == []
 
 
 def test_a_chat_repo_load_still_proceeds_past_the_teardown(monkeypatch):
-    # A prefix the probe cannot finish must not become a refusal: the load carries on.
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
@@ -323,8 +292,6 @@ def test_a_chat_repo_load_still_proceeds_past_the_teardown(monkeypatch):
 
 
 def test_a_preflighted_file_is_judged_without_a_second_request(monkeypatch, tmp_path):
-    # When a GPU-pin preflight already fetched the file the verdict is free, and that path
-    # used to skip the refusal entirely.
     media = tmp_path / "flux1-dev-Q4_K_S.gguf"
     media.write_bytes(_gguf_bytes(arch = "flux"))
     backend = LlamaCppBackend()
@@ -357,10 +324,7 @@ def test_a_preflighted_file_is_judged_without_a_second_request(monkeypatch, tmp_
 
 
 def test_the_cached_file_the_load_will_open_is_the_one_judged(monkeypatch, tmp_path):
-    # _download_gguf resolves its local copy through cached_gguf_for_load, which walks the
-    # cached variant candidates rather than the current listing's filename. The probe follows
-    # it, or a repo that renamed the file for a quant would let the probe judge one GGUF and
-    # the load open another. The listing name here is deliberately not the cached one.
+    # Probe must follow cached_gguf_for_load's candidates, not the listing filename.
     cached = tmp_path / "renamed-ltx-2-19b-dev-Q4_K_M.gguf"
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
     monkeypatch.setattr(llama_cpp_module, "cached_gguf_for_load", lambda *_a, **_k: str(cached))
@@ -375,8 +339,6 @@ def test_the_cached_file_the_load_will_open_is_the_one_judged(monkeypatch, tmp_p
 
 
 def test_nothing_cached_means_the_hub_is_asked(monkeypatch, tmp_path):
-    # With no verified cache hit the probe range-reads the Hub rather than an unverified
-    # path: a candidate the verified lookup rejected is one _download_gguf will skip anyway.
     message, requests = _probe(
         monkeypatch,
         header = _gguf_bytes(arch = "ltxv"),
@@ -388,10 +350,7 @@ def test_nothing_cached_means_the_hub_is_asked(monkeypatch, tmp_path):
 
 
 def test_a_refused_load_leaves_the_resident_process_state_alone(monkeypatch):
-    # The refusal spares the resident server, so it has to spare what describes it. Resetting
-    # the launch revision would say the live process launched from the binary installed NOW,
-    # so an Apply after `unsloth studio update` would dedupe against it instead of
-    # relaunching; clearing the DFlash verdict loses a retry the same way.
+    # Refusal must keep launch revision and DFlash verdict so a later Apply still relaunches.
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
@@ -426,9 +385,7 @@ def test_the_per_load_resets_sit_below_the_teardown_in_source():
 
 
 def test_the_cached_probe_is_verified_the_way_the_loader_verifies_it(monkeypatch, tmp_path):
-    # cached_gguf_for_load(verify_sizes = True) is what _download_gguf uses, so a snapshot
-    # truncated after its header is skipped there. Judging it here would classify bytes the
-    # load never opens, refusing a valid chat repo off a stale snapshot.
+    # A truncated cached snapshot is skipped by _download_gguf, so it must not be judged here.
     cached = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
     cached.write_bytes(_gguf_bytes(arch = "ltxv"))
     seen: list[bool] = []
@@ -453,15 +410,11 @@ def test_the_cached_probe_is_verified_the_way_the_loader_verifies_it(monkeypatch
 
 
 def test_a_declared_media_arch_is_acted_on_before_the_walk_finishes(monkeypatch, tmp_path):
-    # general.architecture is KV #0 in every GGUF measured, so a repo with bulky later
-    # metadata can declare a media arch inside the 256 KiB prefix and still leave the KV walk
-    # unfinished. Discarding that verdict put the teardown and the full download back.
+    # general.architecture is KV #0, so a partial walk can still yield a media-arch verdict.
     header = _gguf_bytes(arch = "flux", declared_kv = 4096)
     message, _requests = _probe(monkeypatch, header = header, filename = "flux1-dev-Q4_K_M.gguf")
     assert message is not None and "Images page" in message
 
-    # The no-architecture fallback still needs the complete walk: an unfinished read is
-    # indistinguishable from a file that declares nothing.
     quiet = _probe(
         monkeypatch, header = _gguf_bytes(arch = None, declared_kv = 4096), filename = "mystery-Q4_K_M.gguf"
     )[0]
@@ -469,10 +422,7 @@ def test_a_declared_media_arch_is_acted_on_before_the_walk_finishes(monkeypatch,
 
 
 def test_the_probe_runs_under_the_same_offline_guard_as_the_download(monkeypatch):
-    # With the Hub unreachable and the model cached, the probe's two Hub calls (the file
-    # listing, then the cached candidate's revision sizes) would each wait out their retry
-    # backoff before any local header is read. The download has always run under the guard;
-    # the probe has to as well, or a cached load pays two timeouts for a free verdict.
+    # The probe must run under the offline guard or a cached load pays two Hub timeouts.
     backend = LlamaCppBackend()
     order: list[str] = []
     _repo_load(monkeypatch, backend, order)
@@ -488,7 +438,7 @@ def test_the_probe_runs_under_the_same_offline_guard_as_the_download(monkeypatch
     guarded: list[bool] = []
 
     def _probe_call(**_kwargs):
-        # Recorded, not asserted: an assert here would be swallowed by the raises() below.
+        # Recorded, not asserted: an assert here would be swallowed by raises() below.
         guarded.append(bool(entered))
         return None
 
@@ -515,8 +465,6 @@ def test_the_probe_guard_sits_above_the_teardown_in_source():
 
 
 def test_the_route_entry_point_judges_an_intent_before_the_arbiter(monkeypatch, tmp_path):
-    # What the route calls. load_model's own copy runs before ITS teardown but after
-    # acquire_for has evicted a resident pipeline and cancelled the running chats.
     media = tmp_path / "ltx-2-19b-dev-Q4_K_M.gguf"
     media.write_bytes(_gguf_bytes(arch = "ltxv"))
     intent = GgufLoadIntent(
@@ -537,7 +485,6 @@ def test_the_route_entry_point_judges_an_intent_before_the_arbiter(monkeypatch, 
 
 
 def test_the_route_entry_point_fails_open(monkeypatch, tmp_path):
-    # A probe that raises is not a verdict: the load proceeds, its own checks back it up.
     def _boom(*_a, **_k):
         raise RuntimeError("hub down")
 
@@ -551,7 +498,6 @@ def test_the_route_entry_point_fails_open(monkeypatch, tmp_path):
 
 
 def test_the_route_asks_before_it_takes_the_gpu():
-    # Source order, since the eviction it protects is the arbiter's, not the loader's.
     import inspect as _inspect
 
     from routes import inference as inference_routes
@@ -563,8 +509,6 @@ def test_the_route_asks_before_it_takes_the_gpu():
 
 
 def test_the_route_hands_its_verdict_to_the_load(monkeypatch, tmp_path):
-    # The route and the loader ask for the same intent seconds apart, and each ask is a
-    # listing, a cache verification and a range request. The second takes the first's answer.
     calls: list[str] = []
 
     def _verdict(**kwargs):
@@ -581,7 +525,6 @@ def test_the_route_hands_its_verdict_to_the_load(monkeypatch, tmp_path):
     assert LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent) is not None
     assert calls == ["unsloth/LTX-2-GGUF"]
 
-    # The load that follows reuses it...
     reused = LlamaCppBackend._remote_non_chat_gguf_refusal(
         hf_repo = "unsloth/LTX-2-GGUF",
         hf_variant = "Q4_K_M",
@@ -591,7 +534,6 @@ def test_the_route_hands_its_verdict_to_the_load(monkeypatch, tmp_path):
     assert reused is not None
     assert calls == ["unsloth/LTX-2-GGUF"]
 
-    # ...exactly once. A second load probes for itself rather than trusting a stale answer.
     LlamaCppBackend._remote_non_chat_gguf_refusal(
         hf_repo = "unsloth/LTX-2-GGUF",
         hf_variant = "Q4_K_M",
@@ -617,14 +559,10 @@ def test_a_handoff_for_another_model_is_not_taken(monkeypatch):
         hf_repo = "owner/b", hf_variant = "Q4_K_M", hf_token = None, model_identifier = "owner/b"
     )
     assert calls == ["owner/a", "owner/b"]
-    # A different variant of the same repo is a different file, so it is not taken either.
     LlamaCppBackend._remote_non_chat_gguf_refusal(
         hf_repo = "owner/a", hf_variant = "Q8_0", hf_token = None, model_identifier = "owner/a"
     )
     assert calls == ["owner/a", "owner/b", "owner/a"]
-
-
-# Cached GGUF reuse
 
 
 def _intent(**changes) -> GgufLoadIntent:
@@ -689,7 +627,6 @@ def test_a_verified_cached_file_is_judged_without_resolving_it_again(monkeypatch
     verdict = LlamaCppBackend.non_chat_gguf_refusal_for_intent(intent)
     assert verdict is not None and "Video page" in verdict
 
-    # The verdict is also handed to the in-load probe.
     assert (
         LlamaCppBackend._remote_non_chat_gguf_refusal(
             hf_repo = "owner/model",
@@ -725,16 +662,13 @@ def test_a_carried_path_is_only_used_for_the_repo_and_variant_it_was_verified_fo
     take = LlamaCppBackend._verified_cached_gguf
 
     assert take(_intent(verified_gguf = verified), "owner/model", "Q4_K_M") == str(cached)
-    # Repo and variant matching is case-insensitive.
     assert take(_intent(verified_gguf = verified), "Owner/Model", "Q4_K_M") == str(cached)
     assert take(_intent(verified_gguf = verified), "owner/model", "q4_k_m") == str(cached)
 
-    # Other repos and variants fall back to normal resolution.
     assert take(_intent(verified_gguf = verified), "owner/model", "Q8_0") is None
     assert take(_intent(verified_gguf = verified), "other/model", "Q4_K_M") is None
     assert take(_intent(verified_gguf = verified), "owner/model", None) is None
 
-    # Missing or malformed values are ignored.
     assert take(_intent(), "owner/model", "Q4_K_M") is None
     assert take(_intent(verified_gguf = ("owner/model",)), "owner/model", "Q4_K_M") is None
     assert (
@@ -758,7 +692,6 @@ def test_a_file_deleted_between_the_request_and_the_launch_is_not_reused(monkeyp
     cached.unlink()
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
 
-    # A directory at the path is not a model either.
     cached.mkdir()
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
 
@@ -810,7 +743,6 @@ def test_a_shard_truncated_after_config_resolution_is_not_reused(monkeypatch, tm
 
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
 
-    # A shard that grows past its recorded size is a different set too.
     second.write_bytes(b"second shard and more")
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
 
@@ -847,7 +779,6 @@ def test_the_launch_reuses_the_carried_file_instead_of_resolving_it_again():
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend.load_model)
     teardown = src.index("# ── Phase 1: kill old process")
     reuse = src.index("self._verified_cached_gguf(intent, hf_repo, hf_variant)")
-    # Search after teardown to skip the placement preflight download.
     download = src.index("model_path = self._download_gguf(", teardown)
     assert teardown < reuse < download, "the carried file is not consulted before the download"
 
@@ -861,17 +792,14 @@ def test_a_carried_path_outside_the_active_cache_is_not_reused(monkeypatch, tmp_
 
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(cached)
 
-    # Moving the cache leaves the old file readable but no longer active.
     new_root.mkdir()
     _hub_cache(monkeypatch, new_root)
     assert cached.is_file()
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") is None
 
-    # Restoring the cache root makes the file valid again.
     _hub_cache(monkeypatch, old_root)
     assert LlamaCppBackend._verified_cached_gguf(intent, "owner/model", "Q4_K_M") == str(cached)
 
-    # Reject paths outside the cache and unreadable cache settings.
     loose = tmp_path / "loose-Q4_K_M.gguf"
     loose.write_bytes(b"GGUF")
     loose_intent = _intent(verified_gguf = _verified(loose))
@@ -922,7 +850,6 @@ def test_the_launch_opens_the_carried_file_instead_of_resolving_it(monkeypatch, 
     def _load(verified) -> list[str]:
         order: list[str] = []
         backend = LlamaCppBackend()
-        # A route ask no load came for is still handed over for this key.
         monkeypatch.setattr(LlamaCppBackend, "_route_verdict_handoff", None)
         _repo_load(monkeypatch, backend, order)
         monkeypatch.setattr(
@@ -935,7 +862,7 @@ def test_the_launch_opens_the_carried_file_instead_of_resolving_it(monkeypatch, 
         def _stop(**_kwargs):
             raise RuntimeError("stop here")
 
-        # The first companion fetch past the download decision, so the load stops there.
+        # _download_mtp is the first fetch past the download decision.
         monkeypatch.setattr(backend, "_download_mtp", _stop)
         with pytest.raises(RuntimeError, match = "stop here"):
             backend.load_model(_intent(verified_gguf = verified))
@@ -999,5 +926,4 @@ def test_the_snapshot_kept_for_a_respawn_carries_no_verified_file(monkeypatch, t
 
     backend = _launchable_backend(monkeypatch)
     assert backend.load_model(intent) is True
-    # Only the hint is dropped; everything else the replay needs survives.
     assert backend.last_load_intent == replace(intent, verified_gguf = None)

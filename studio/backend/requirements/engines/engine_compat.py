@@ -129,7 +129,7 @@ def build(stem: str) -> dict:
     return {
         "lock_sha256": hashlib.sha256(lock.read_bytes()).hexdigest(),
         "requires": {name: sorted(specs) for name, specs in sorted(requires.items())},
-        # Bytes of the wheel installed on CPython 3.13 manylinux x86_64; null when only an sdist fits.
+        # Wheel bytes on CPython 3.13 manylinux x86_64; null when only an sdist fits.
         "sizes": dict(sorted(sizes.items())),
     }
 

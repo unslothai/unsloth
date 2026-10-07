@@ -25,7 +25,7 @@ _HIDDEN_DATASET_FILES = {"dataset_infos.json"}
 _TREE_PAGE = 500
 _TREE_MAX_PAGES = 200
 
-# HF ids ModelScope hosts under another org; only copies whose files all match (LFS sha256, else size).
+# HF ids ModelScope hosts elsewhere; only copies whose files all match.
 _ALIASES = {
     "model": {
         "unslothai/Qwen3-ASR-0.6B-GGUF": "ggml-org/Qwen3-ASR-0.6B-GGUF",
@@ -60,7 +60,7 @@ def upstream_id(kind: str, repo: str) -> str:
     return _ALIAS_INDEX[kind].get(repo.casefold(), repo)
 
 
-# HF pins missing from ModelScope history -> matching ModelScope commit; unlisted pins miss (a pin guards remote code).
+# HF pin -> ModelScope commit; unlisted pins miss (a pin guards remote code).
 _PINNED_COMMITS = {
     (
         "model",
@@ -201,7 +201,6 @@ def parse_ref_advertisement(body: bytes) -> dict[str, str]:
 
 @_cached(60)
 async def _refs(kind: str, repo: str) -> dict[str, str]:
-    # The REST API names no commit for a branch; git does.
     prefix = "/datasets" if kind == "dataset" else ""
     response = await _get(
         f"{prefix}/{upstream_id(kind, repo)}.git/info/refs",

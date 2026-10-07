@@ -16,7 +16,7 @@ import struct
 from pathlib import Path
 from typing import Any, Optional
 
-# Keys whose string value can carry base64 audio, matching ``_audio_candidates`` in the backend.
+# Must match ``_audio_candidates`` in the backend.
 _AUDIO_KEYS = ("audio", "wav", "data", "audio_base64", "b64_json")
 _AUDIO_KEY_RE = re.compile(rb'(?<!\\)"(' + "|".join(_AUDIO_KEYS).encode() + rb')"\s*:\s*"')
 _PLACEHOLDER = "\u0000span"
@@ -175,7 +175,7 @@ def riff_info(path: Path) -> dict[str, Any]:
             elif name == b"data":
                 if fmt is None:
                     raise ValueError("data before fmt")
-                # A streamed writer leaves the size at 0 or 0xFFFFFFFF; the file length is the truth.
+                # A streamed writer leaves the size at 0 or 0xFFFFFFFF.
                 available = size - f.tell()
                 if length == 0 or length > available:
                     length = available

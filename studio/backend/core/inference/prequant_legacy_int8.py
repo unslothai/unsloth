@@ -76,7 +76,6 @@ def legacy_int8_decode_supported() -> bool:
         torch_ok = (int(parts[0]), int(parts[1])) >= (2, 6)
         api = _int8_tensor_api()
         if torch_ok and api is not None and legacy_int8_classes_missing():
-            # Probe the constructor now, not after a plan has dropped the dense shards.
             _to_int8_tensor(
                 torch.zeros(2, 4, dtype = torch.int8),
                 torch.ones(2, dtype = torch.bfloat16),
@@ -107,7 +106,7 @@ def _standins() -> dict:
             return _STANDINS[1]
 
         class _Inert(torch.Tensor):
-            # _rebuild_wrapper_subclass needs a dispatch hook to exist; any op reaching one is a bug.
+            # _rebuild_wrapper_subclass needs a dispatch hook; any op reaching one is a bug.
             __torch_function__ = torch._C._disabled_torch_function_impl
 
             @classmethod

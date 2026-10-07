@@ -41,7 +41,7 @@ LISTED_MODELS_TTL = 300.0
 
 router = APIRouter()
 
-# typing.Union, not `|`: this alias is evaluated at import, and Studio still starts on Python 3.9.
+# typing.Union, not `|`: evaluated at import and Studio still runs on Python 3.9.
 JSONContent = Union[str, dict[str, Any], list[Any]]
 
 
@@ -54,7 +54,7 @@ class QuestionIn(BaseModel):
 
 
 class SystemOneRequest(BaseModel):
-    # Unknown fields refused, not dropped: an ignored OpenJev extension (`images`) answers a different question.
+    # "allow" so system_one can refuse extras by name; silently dropping `images` changes the question.
     model_config = ConfigDict(extra = "allow")
 
     state: JSONContent
@@ -129,7 +129,6 @@ async def system_one(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    # Settings and key checks read SQLite: keep them off the event loop.
     await asyncio.to_thread(_require_enabled)
     if payload.model_extra:
         raise _error(
@@ -212,8 +211,7 @@ async def _decide(
 async def _connection_decide(
     connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
 ) -> dict:
-    # The connection and its key are the owner's; the URL check and the request run as the caller,
-    # so a managed account keeps its egress policy.
+    # Connection and key are the owner's; the URL check and request run as the caller (egress policy).
     provider_id = connection.provider_id
     config = await asyncio.to_thread(run_as, OWNER, providers_db.get_provider, provider_id)
     if config is None or catalog.decision_models(config) is None:
@@ -222,7 +220,6 @@ async def _connection_decide(
             "api_usage_error",
             "The Decision API connection was removed. Pick another model in Settings > API.",
         )
-    # OpenRouter's list is a cache, empty until refreshed; a decision connection's saved models are authoritative.
     if (
         answers_decisions_only(config["provider_type"], config.get("api_type"))
         and connection.model not in config["models"]

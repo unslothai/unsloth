@@ -150,10 +150,8 @@ def test_the_polled_route_never_imports_the_ml_stack():
     """
     reader = _src("_dense_quant_supported")
     assert '"torch" in sys.modules' in reader and '"torchao" in sys.modules' in reader
-    # The reader itself must not reach the importing probe except behind that guard.
     assert "_probe_dense_quant_supported" not in reader
     src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
-    # ...and something off the polled path has to resolve it, or the label never appears.
     assert "_refresh_dense_quant_capability()" in _src("_post_warm_background_work")
 
 
@@ -269,7 +267,6 @@ def test_the_warm_refresh_honours_the_torch_kill_switch():
     refresh = body.index("_refresh_dense_quant_capability()")
     guard = body.rindex('"torch" in sys.modules', 0, refresh)
     assert guard != -1
-    # The guard must not swallow the rest of the worker.
     assert "_start_linked_folder_auto_sync" in body[refresh:]
 
 
@@ -290,7 +287,6 @@ def test_the_polled_ladder_never_runs_the_allocating_smoke_probe(monkeypatch):
     monkeypatch.setattr(tq, "_capability", lambda ordinal = None: (8, 9))
     monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda _device, ordinal = None: "cuda:0")
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {("fp8", "cuda:0"): False})
-    # An unprobed scheme counts as usable; a probed failure does not.
     assert tq.auto_scheme_candidates_cached(object()) == ("int8",)
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
     assert tq.auto_scheme_candidates_cached(object()) == ("int8", "fp8")

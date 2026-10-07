@@ -77,11 +77,9 @@ def test_a_user_site_install_is_not_told_to_isolate_itself(auth, monkeypatch, wi
 
     assert " -I " not in command
     assert "-m unsloth_cli" not in command
-    # The bootstrap unsloth_cli/__main__.py documents for exactly this case.
     assert auth._CLI_BOOTSTRAP in command
     assert command.endswith(" studio reset-password")
-    # One pair of double quotes wraps it for cmd and PowerShell alike, which
-    # only holds while the bootstrap itself carries no double quote.
+    # One pair of double quotes wraps it for cmd and PowerShell, so the bootstrap must have none.
     assert '"' not in auth._CLI_BOOTSTRAP
     assert command.count('"') == 2
     assert "unsloth.exe" not in command
@@ -194,7 +192,6 @@ def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_
     (bin_dir / "unsloth").write_text("", encoding = "utf-8")
     monkeypatch.setattr(auth.sys, "executable", str(bin_dir / "python"))
 
-    # The console form is unchanged: that is the one the person at the machine reads.
     assert str(bin_dir) in auth._reset_password_command()
 
     for multi_user in (False, True):
@@ -202,5 +199,4 @@ def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_
         detail = auth._login_failure_detail()
         assert str(bin_dir) not in detail, multi_user
         assert "alice" not in detail, multi_user
-        # Still actionable, which is the whole point of the hint.
         assert "unsloth studio reset-password" in detail, multi_user

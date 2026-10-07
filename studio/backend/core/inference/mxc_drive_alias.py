@@ -29,10 +29,8 @@ DDD_REMOVE_DEFINITION = 0x2
 DDD_EXACT_MATCH_ON_REMOVE = 0x4
 
 _lock = threading.Lock()
-# normcase(target) -> [letter, target, lease count]; the leases this process holds.
 _active: dict[str, list] = {}
-# (letter, target) -> [letter, target, lease count]: held mappings another definition now covers. Still removed, by
-# exact match, when their last lease ends, so ours never resurfaces once the other one goes.
+# Mappings shadowed by another definition, removed by exact match on last lease
 _shadowed: dict[tuple[str, str], list] = {}
 _host = None
 
@@ -166,7 +164,6 @@ def _save_record(aliases: dict[str, dict]) -> bool:
         try:
             temporary.unlink(missing_ok = True)
         except OSError as exc:
-            # Raising here would skip the caller's removal of the mapping it just made.
             logger.info("Could not remove %s: %s", temporary, exc)
 
 
@@ -202,7 +199,7 @@ def _reclaim(host, aliases: dict[str, dict], own_pid: int) -> None:
             continue
         target = entry["target"]
         if _expected(target) in host.definitions(letter) and not host.remove(letter, target):
-            continue  # still defined, even under another definition, and not removable: keep the record
+            continue
         aliases.pop(letter)
 
 
@@ -235,7 +232,7 @@ class AliasLease:
             if not host.remove(self.letter, self.target) and _expected(
                 self.target
             ) in host.definitions(self.letter):
-                return  # still mapped: keep the record so a later acquire can reclaim it
+                return
             with _transaction() as aliases:
                 if aliases is not None and self.letter in aliases:
                     aliases.pop(self.letter)
@@ -256,7 +253,6 @@ def acquire(workdir: str) -> AliasLease | None:
                 if host.query(entry[0]) == _expected(entry[1]):
                     entry[2] += 1
                     return AliasLease(entry[0], entry[1])
-                # Covered by another definition: never touch that one; ours is removed when its leases end.
                 _shadowed[(entry[0], key)] = _active.pop(key)
             with _transaction() as aliases:
                 if aliases is None:

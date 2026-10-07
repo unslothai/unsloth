@@ -614,8 +614,6 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     ]
     assert any(e.get("type") == "tool_end" and e.get("tool_name") == "render_html" for e in events)
 
-    # The second llama-server request should include the assistant preface
-    # plus the structured tool call, preserving OpenAI-compatible ordering.
     assert len(payloads) == 2
     assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
     assert assistant_messages[-1]["content"] == "Here is the canvas.\n\n"
@@ -640,11 +638,8 @@ def test_streamed_reasoning_answer_emits_backend_summary(monkeypatch):
     )
 
     content_texts = [e["text"] for e in events if e["type"] == "content"]
-    # Reasoning streams live during BUFFERING instead of arriving as one block:
-    # each reasoning delta is emitted immediately, wrapped in <think>.
     assert content_texts[0] == "<think>I am thinking."
     assert content_texts[1] == "<think>I am thinking. Still thinking."
-    # The final event closes the block and appends the answer.
     assert content_texts[-1] == "<think>I am thinking. Still thinking.</think>Final answer."
 
     summary_index = next(
@@ -656,9 +651,6 @@ def test_streamed_reasoning_answer_emits_backend_summary(monkeypatch):
 
 
 def test_reasoning_streams_incrementally_with_tools(monkeypatch):
-    # Regression (DeepSeek "thinking doesn't stream"): with a tool/pill active the
-    # tool-loop generator must stream reasoning token-by-token like the no-tool
-    # path, not accumulate it and dump one buffered <think> block.
     stream = [
         _sse({"reasoning_content": "Step one."}),
         _sse({"reasoning_content": " Step two."}),
@@ -682,7 +674,6 @@ def test_reasoning_streams_incrementally_with_tools(monkeypatch):
         and e["text"].startswith("<think>")
         and "</think>" not in e["text"]
     ]
-    # One live emission per reasoning delta -- not a single dump.
     assert reasoning_stage == [
         "<think>Step one.",
         "<think>Step one. Step two.",
@@ -693,10 +684,6 @@ def test_reasoning_streams_incrementally_with_tools(monkeypatch):
 
 
 def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
-    # A reasoning-only turn (whole answer in reasoning_content, no content, no
-    # tool) with a tool active streams the reasoning live, then resolves to the
-    # same text on the visible channel. The final cumulative snapshot stays
-    # append-only so route suffix extraction cannot drop that fallback.
     stream = [
         _sse({"reasoning_content": "The capital of France is Paris."}),
         _done(),
@@ -711,7 +698,6 @@ def test_reasoning_only_reply_matches_no_tool_path_with_tools(monkeypatch):
     )
 
     content_texts = [e["text"] for e in events if e["type"] == "content"]
-    # Reasoning streamed live during BUFFERING (the fix).
     assert content_texts[0] == "<think>The capital of France is Paris."
     assert content_texts[-1] == (
         "<think>The capital of France is Paris.</think>The capital of France is Paris."
@@ -757,10 +743,6 @@ def test_reasoning_only_raw_consumer_with_tools_gets_one_balanced_think_block(mo
 
 
 def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
-    # Regression: reasoning streamed live during BUFFERING must be closed with
-    # </think> before a structured tool_call drains, so consumers without a
-    # reasoning extractor (Anthropic /v1/messages) never receive an unclosed
-    # <think>. Mirrors the is_match (XML tool signal) path.
     tool_stream = [
         _sse({"reasoning_content": "Let me search."}),
         *_structured_tool_call("web_search", {"query": "weather"}, "call_1"),
@@ -784,7 +766,6 @@ def test_reasoning_before_structured_tool_closes_think_block(monkeypatch):
 
     tool_start_index = next(i for i, e in enumerate(events) if e["type"] == "tool_start")
     content_before_tool = [e["text"] for e in events[:tool_start_index] if e["type"] == "content"]
-    # Reasoning streamed live, then closed before the tool -- balanced block.
     assert content_before_tool[0] == "<think>Let me search."
     assert content_before_tool[-1] == "<think>Let me search.</think>"
 
@@ -818,10 +799,7 @@ def _replay_route_reasoning_extractor(cumulatives: list[str]) -> tuple[str, str]
 
 
 def test_reasoning_only_route_output_matches_no_tool_path(monkeypatch):
-    # Parity contract: a reasoning-only reply must reach the client identically
-    # whether tools are on or off. Both generators stream <think> live then
-    # append a balanced close plus visible fallback; the route's suffix-diff +
-    # extractor must therefore produce the same split for both.
+    # Parity: a reasoning-only reply must reach the client identically with tools on or off.
     stream = [
         _sse({"reasoning_content": "The capital"}),
         _sse({"reasoning_content": " of France is Paris."}),
@@ -849,15 +827,11 @@ def test_reasoning_only_route_output_matches_no_tool_path(monkeypatch):
         if isinstance(y, str)
     ]
 
-    # Both paths stream the reasoning live with the same leading shape. (Raw
-    # yield lists aren't compared verbatim: the tool path emits a pre-existing
-    # duplicate trailing event that the route's suffix-diff dedupes.)
+    # Raw yields differ: the tool path emits a duplicate trailing event the route dedupes.
     assert tool_cumulatives[:3] == no_tool_cumulatives[:3]
-    # The contract that matters: identical route-level output.
     tool_out = _replay_route_reasoning_extractor(tool_cumulatives)
     no_tool_out = _replay_route_reasoning_extractor(no_tool_cumulatives)
     assert tool_out == no_tool_out
-    # Pin the shared contract so a change to either path shows up here.
     visible, reasoning = tool_out
     assert visible == "The capital of France is Paris."
     assert reasoning == "The capital of France is Paris."
@@ -890,9 +864,6 @@ def test_length_truncated_reasoning_stays_append_only_without_visible_promotion(
 
 
 def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
-    # _drain_silently sibling of the structured-tool close: a bare-JSON tool call
-    # with a live reasoning prefix must also close </think> before draining, and
-    # must never leak the drained call text as content.
     tool_stream = [
         _sse({"reasoning_content": "Searching now."}),
         _sse({"content": '{"name":"web_search","arguments":{"query":"weather"}}'}),
@@ -919,7 +890,6 @@ def test_reasoning_before_bare_json_tool_closes_think_block(monkeypatch):
     content_before_tool = [e["text"] for e in events[:tool_start_index] if e["type"] == "content"]
     assert content_before_tool[0] == "<think>Searching now."
     assert content_before_tool[-1] == "<think>Searching now.</think>"
-    # The bare-JSON call text was drained, never surfaced as content.
     assert not any('"name"' in t for t in content_before_tool)
 
 
@@ -1798,9 +1768,6 @@ def test_same_turn_duplicate_web_search_is_internal_noop(monkeypatch):
 
 
 def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
-    # One batch: search(a), search(a) [duplicate], search(b). The duplicate is an
-    # internal no-op, but the distinct search(b) after it must still run, and the
-    # no-op nudge must land after the tool results rather than splitting them.
     batch = [
         _sse(
             {
@@ -1846,17 +1813,12 @@ def test_same_turn_duplicate_does_not_drop_later_parallel_call(monkeypatch):
         max_tool_iterations = 3,
     )
 
-    # Both distinct calls ran; the duplicate did not (old `break` dropped search(b)).
     assert calls == [{"query": "a"}, {"query": "b"}]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a1",
         "call_b",
     ]
 
-    # The next generation's conversation must be well-formed: the assistant lists
-    # only the executed calls (no orphan for the duplicate), and the two tool results
-    # follow contiguously. Hidden feedback is attached to the final result so it does
-    # not create a newer user turn that can suppress this assistant's reasoning.
     conv = payloads[1]["messages"]
     asst = next(m for m in conv if m["role"] == "assistant" and m.get("tool_calls"))
     assert [tc.get("id") for tc in asst["tool_calls"]] == ["call_a1", "call_b"]
@@ -2023,7 +1985,6 @@ def test_render_html_success_does_not_reprompt_render_html_intent(monkeypatch):
 def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
     """No-tool re-prompt attempts should not concatenate into the UI."""
 
-    # One initial response plus one stream per re-prompt; derive the count from the shared cap.
     streams = [[_sse({"content": "I will use render_html now."}), _done()]]
     streams += [
         [_sse({"content": "Understood. I will use render_html now."}), _done()]
@@ -2041,7 +2002,6 @@ def test_internal_reprompt_attempts_do_not_duplicate_visible_text(monkeypatch):
 
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts == ["I will use render_html now."]
-    # Each retry restates the last, so the loop gives up: initial + 2 re-prompts.
     assert len(payloads) == 3 < _MAX_REPROMPTS + 1
 
 
@@ -2178,23 +2138,17 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         "I have to run the search first",
         "I should call web_search now",
         "I should use render_html now",
-        # Plain modals take a bare infinitive, not the need|have|ought "to" group.
         "I must call web_search now",
         "I must use render_html now",
         "I must run the search first",
-        # Subjectless plans open a new sentence just as often as a new line.
         "Okay. Need to call web_search now.",
         "Understood. Going to search now.",
-        # Subjectless modals, not just subjectless semi-modals.
         "Must call web_search now.",
         "Should search the web now.",
-        # A missing answer is not a final answer: the plan behind it is still a stall.
         "I should call web_search because the answer is not in the provided context",
         "I must run the search since the answer is unknown so far",
-        # A pivot with nothing behind it answers nothing.
         "I should call web_search, though.",
         "I need to run the search, but",
-        # A purpose clause is part of the plan, not a summary of results.
         "I need to call web_search to summarize the results",
     ):
         assert suppress(stall), f"leaked {stall!r}"
@@ -2205,17 +2159,13 @@ def test_forced_turn_suppression_covers_obligation_phrasing():
         "Here is the summary of what I found.",
         "Run `pip install unsloth` to get started.",
         "I should mention that the square is red.",
-        # Obligation phrasing mid-sentence is prose that happens to name a tool.
         "The API I should invoke is foo() because it supports streaming.",
         "The tool I need to use is documented here.",
-        # "invoke"/"query" read as technical prose far more often than as a stall.
         "I should invoke foo() because it supports streaming.",
         "I should query the cache first for a faster path.",
         "You should call your bank about the charge.",
-        # Second person is the user's obligation, not the model's plan.
         "You must call your bank about the charge.",
         "I must admit the square is red.",
-        # A plan that pivots to an answer must ship the answer with it.
         "I should call web_search, but the answer is Tokyo.",
         "I need to call web_search. The answer is Tokyo.",
         "I should call web_search to confirm, but Tokyo is the capital of Japan.",
@@ -2233,15 +2183,11 @@ def test_forced_turn_intent_lead_in_needs_a_restatement_to_be_dropped():
     stall = "I will summarize the results now"
     answer = "Now I have the search results. The capital of Japan is Tokyo."
 
-    # Restating the nudged text is still a stall.
     assert suppress(stall, stall)
     assert suppress("Understood. " + stall, "Understood, " + stall)
-    # Progress past the nudged text keeps the answer, lead-in and all.
     assert not suppress(answer, stall)
     assert not suppress("Step 3: done. Tokyo is the capital.", stall)
-    # Near-repeat is enough to stop nudging, never enough to drop the turn.
     assert not suppress(stall + ": Tokyo.", stall)
-    # An obligation plan is a stall on its own, no previous text needed.
     assert suppress("I must call web_search now", answer)
 
 
@@ -2311,7 +2257,6 @@ def test_forced_turn_answer_with_an_intent_lead_in_survives_pre_tool(monkeypatch
         nudge_tool_calls = True,
     )
 
-    # Initial turn plus the three pre-tool nudges.
     assert len(payloads) == _MAX_REPROMPTS + 1
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts[-1] == answer
@@ -2381,8 +2326,6 @@ def test_internal_reprompt_disabled_when_auto_heal_disabled(monkeypatch):
 
 
 def test_internal_reprompt_disabled_when_nudge_tool_calls_false(monkeypatch):
-    # Explicit nudge_tool_calls=False disables the plan-without-action
-    # re-prompt even with Auto-Heal on (None keeps the default-on behavior).
     streams = [[_sse({"content": "I will use render_html now."}), _done()]]
     backend, payloads = _backend_and_payloads(monkeypatch, streams)
 
@@ -2433,8 +2376,6 @@ def test_auto_heal_disabled_parses_well_formed_xml_when_tools_enabled(monkeypatc
 
 
 def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch):
-    # Textual Mistral ``[TOOL_CALLS]`` inline with visible preface: the DRAINING flush must use the
-    # shared parser patterns (which know ``[TOOL_CALLS]``); the legacy set leaked the marker to clients.
     streams = [
         [_sse({"content": 'Let me search. [TOOL_CALLS]web_search{"query":"cats"}'}), _done()],
         [_sse({"content": "done"}), _done()],
@@ -2455,16 +2396,11 @@ def test_textual_mistral_marker_not_leaked_when_inline_with_preface(monkeypatch)
 
 
 def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
-    # A textual Mistral-style call with an explicit ``id`` must reconcile onto the
-    # open provisional TEXT card (keyed "call_0"), not spawn a duplicate under the
-    # explicit id (which the parser keeps for execution).
-    big_query = "cats " * 80  # push the drained call past the provisional floor
+    big_query = "cats " * 80
     call = "[TOOL_CALLS]" + json.dumps(
         [{"name": "web_search", "arguments": {"query": big_query}, "id": "explicit-42"}]
     )
     assert len(call) > 256
-    # Small chunks so the provisional card opens mid-generation (a single-shot
-    # delta parses instantly and never shows a provisional to exercise).
     chunks = [call[i : i + 24] for i in range(0, len(call), 24)]
     streams = [
         [_sse({"content": c}) for c in chunks] + [_done()],
@@ -2481,25 +2417,20 @@ def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
 
     assert calls == [("web_search", {"query": big_query.strip()})]
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
-    # Empty-args card = provisional open; full-args card = reconciled real start.
     provisional = [e for e in tool_starts if not e.get("arguments")]
     real = [e for e in tool_starts if e.get("arguments", {}).get("query")]
-    assert len(provisional) == 1, tool_starts  # provisional actually opened
+    assert len(provisional) == 1, tool_starts
     prov_id = provisional[0]["tool_call_id"]
-    # Exactly one real card, sharing the provisional id, not a duplicate under
-    # the explicit "explicit-42" id.
     assert len(real) == 1, tool_starts
     assert real[0]["tool_call_id"] == prov_id
     assert real[0]["tool_name"] == "web_search"
     assert {e["tool_call_id"] for e in tool_starts} == {prov_id}
-    # A single tool_end reconciles the card; no stale empty-result close.
     ends = [e for e in events if e.get("type") == "tool_end"]
     assert [e["tool_call_id"] for e in ends] == [prov_id]
     assert ends[0]["result"] == "result"
 
 
 def test_textual_llama_python_tag_marker_not_leaked(monkeypatch):
-    # Same leak class for the Llama-3 built-in ``<|python_tag|>NAME.call(...)`` form.
     streams = [
         [_sse({"content": '<|python_tag|>web_search.call(query="cats")'}), _done()],
         [_sse({"content": "done"}), _done()],
@@ -2665,7 +2596,6 @@ def test_clarification_request_is_not_nudged(monkeypatch):
     )
 
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
-    # one payload: a second would be the wasted re-prompted generation.
     assert len(payloads) == 1
     content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
     assert content_texts and content_texts[-1] == clarification
@@ -2725,7 +2655,7 @@ def test_confirm_tool_calls_allow_executes_gguf_tool(monkeypatch):
             tools = [{"type": "function", "function": {"name": "python"}}],
             max_tool_iterations = 1,
             confirm_tool_calls = True,
-            # Unset defaults to "auto", which would not prompt this safe print(1).
+            # Unset defaults to 'auto', which would not prompt this safe print(1).
             permission_mode = "ask",
             session_id = "sess",
         )
@@ -2758,7 +2688,7 @@ def test_confirm_tool_calls_close_after_prompt_cleans_gguf_slot(monkeypatch):
         tools = [{"type": "function", "function": {"name": "python"}}],
         max_tool_iterations = 1,
         confirm_tool_calls = True,
-        # Unset defaults to "auto", which would not prompt this safe print(1).
+        # Unset defaults to 'auto', which would not prompt this safe print(1).
         permission_mode = "ask",
         session_id = "sess",
     )
@@ -2792,8 +2722,7 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
             tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
             max_tool_iterations = 1,
             confirm_tool_calls = True,
-            # "ask" gates every call so autoinject waits; unset defaults to
-            # "auto", where this safe retrieval never gates.
+            # 'ask' gates every call so autoinject waits; 'auto' never gates this retrieval.
             permission_mode = "ask",
             session_id = "sess",
             rag_scope = {"thread_id": "t1"},
@@ -2835,7 +2764,6 @@ def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
         rag_scope = {"thread_id": "t1"},
     )
 
-    # Initial turn plus one retry; read as pre-tool it would spend the full budget.
     assert len(payloads) == 2, payloads
     nudges = [
         message
@@ -2925,7 +2853,7 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
             tool_choice = {"type": "function", "function": {"name": "python"}},
             max_tool_iterations = 2,
             confirm_tool_calls = True,
-            # Unset defaults to "auto", which would not prompt this safe print(1).
+            # Unset defaults to 'auto', which would not prompt this safe print(1).
             permission_mode = "ask",
             session_id = "sess",
         )
@@ -2996,15 +2924,12 @@ def test_large_python_tool_call_emits_early_provisional_start(monkeypatch):
     provisional = [e for e in tool_starts if not e.get("arguments")]
     real = [e for e in tool_starts if e.get("arguments", {}).get("code")]
 
-    # Exactly one provisional (empty args) and one real (full args), same id so
-    # the frontend reconciles them into a single card.
     assert len(provisional) == 1, tool_starts
     assert provisional[0]["tool_name"] == "python"
     assert provisional[0]["tool_call_id"] == "call_py_big"
     assert provisional[0]["provenance"].get("provisional") is True
     assert len(real) == 1
     assert real[0]["tool_call_id"] == "call_py_big"
-    # The provisional card appears before the real (completed) tool_start.
     assert events.index(provisional[0]) < events.index(real[0])
 
     assert calls == [("python", {"code": big_code})]
@@ -3046,7 +2971,6 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
     assert args_events, "gated call streamed no arguments"
     assert "total += 119" in "".join(e["text"] for e in args_events)
 
-    # The approval prompt still fires, and it comes after the code is on screen.
     gated = [e for e in tool_starts if e.get("awaiting_confirmation")]
     assert gated, tool_starts
     assert events.index(provisional[0]) < events.index(gated[0])
@@ -3097,11 +3021,9 @@ def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeyp
 
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
     provisional = [e for e in tool_starts if not e.get("arguments")]
-    # The confirm gate now suppresses the early provisional card for render_html.
     assert provisional == [], tool_starts
     real = [e for e in tool_starts if e.get("arguments")]
     assert real and real[0]["tool_name"] == "render_html"
-    # A static canvas is classified safe, so it still runs without an approval gate.
     assert real[0].get("awaiting_confirmation") in (False, None)
 
 
@@ -3191,7 +3113,6 @@ def test_parallel_large_tool_calls_each_emit_provisional_start(monkeypatch):
     provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert sorted(e["tool_call_id"] for e in provisional) == ["call_py", "call_term"]
     assert all(e["provenance"].get("provisional") is True for e in provisional)
-    # Both calls actually executed (parallel tool use is enabled by default).
     assert sorted(name for name, _ in calls) == ["python", "terminal"]
 
 
@@ -3228,9 +3149,7 @@ def test_parallel_disabled_suppresses_provisional_for_later_calls(monkeypatch):
 
     provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert [e["tool_call_id"] for e in provisional] == ["call_py"]
-    # Only the first call executes when parallel use is disabled.
     assert calls == [("python", {"code": big_code})]
-    # The lone provisional is closed exactly once (no dangling card).
     closing = [
         e for e in events if e.get("type") == "tool_end" and e.get("tool_call_id") == "call_py"
     ]
@@ -3243,8 +3162,6 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
     tool spinning forever."""
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     fragments = _streamed_structured_tool_call("python", {"code": big_code}, "call_py_err")
-    # Drop the trailing [DONE]; raise a connection error after the fragments
-    # stream (and after the provisional card has been emitted).
     fragments = fragments[:-1]
 
     def raising_stream():
@@ -3280,15 +3197,12 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
     provisional = [e for e in collected if e.get("type") == "tool_start" and not e.get("arguments")]
     assert len(provisional) == 1
     assert provisional[0]["tool_call_id"] == "call_py_err"
-    # The provisional card is closed before the error propagates.
     closing = [
         e
         for e in collected
         if e.get("type") == "tool_end" and e.get("tool_call_id") == "call_py_err"
     ]
     assert len(closing) == 1
-    # The closing card is marked as an error, not an empty success, so the UI
-    # renders it as failed.
     assert "Error" in (closing[0].get("result") or "")
     assert respawn_calls == []
 
@@ -3336,11 +3250,7 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
             ],
             payloads,
         )
-        # Sized so each window overflows by roughly one turn-group. Compaction trims a
-        # headroom margin BELOW the budget and the turn-picking estimator is coarser than
-        # the exact count, so single-group steps would evict the whole history in one pass
-        # and leave the second preflight nothing to refit. The property under test is that
-        # BOTH preflight paths refit against the window they were given.
+        # Each window overflows by about one turn-group so both preflight paths must refit.
         backend._effective_context_length = 2000
         monkeypatch.setattr(
             backend,
@@ -3612,16 +3522,10 @@ def test_a_respawn_refit_that_misses_its_target_still_archives_and_reports(monke
         notices = [event for event in events if event.get("type") == "context_truncated"]
         assert [notice["context_length"] for notice in notices] == [2000, 1000]
         refit = notices[1]
-        # The rescued refusal reports what it evicted, boundary included: the client reads
-        # that depth to place the compaction notice, so recording nothing would compact
-        # silently. Reported is not REPLAYED, which `_sticky_compaction_boundary` still
-        # declines for any `fits` false record.
         assert refit["fits"] is False
         assert refit["dropped_messages"] == 2
         assert refit["prompt_tokens_after"] == 900 < refit["prompt_tokens_before"]
-        # 4, not the 2 of `dropped_messages`: the boundary counts against the REQUEST's
-        # own leading messages, which the next request replays it against, while the drop
-        # count is what this one fit removed.
+        # 4, not dropped_messages' 2: the boundary counts the request's own leading messages.
         assert refit["boundary_messages"] == 4
         assert "boundary_anchor" in refit
         assert archived[-1] == (3, 1)
@@ -3836,7 +3740,6 @@ def test_a_respawn_refit_archives_what_it_evicts(monkeypatch):
         )
     )
 
-    # More than one archiving pass, and the respawn's own evictions are among them.
     assert len(archived) >= 2
     assert any(batch for batch in archived[1:])
 
@@ -3888,7 +3791,6 @@ def test_the_respawn_retry_keeps_the_thread(monkeypatch):
         )
     )
 
-    # Both fits, the original and the one the retry runs, know which thread they are on.
     assert len(seen) == 2
     assert seen == ["t-respawn", "t-respawn"]
 
@@ -3901,11 +3803,7 @@ def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeyp
         [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
         payloads,
     )
-    # Sized so each window overflows by roughly one turn-group. Compaction trims a
-    # headroom margin BELOW the budget and the turn-picking estimator is coarser than
-    # the exact count, so single-group steps would evict the whole history in one pass
-    # and leave the second preflight nothing to refit. The property under test is that
-    # BOTH preflight paths refit against the window they were given.
+    # Each window overflows by about one turn-group so both preflight paths must refit.
     backend._effective_context_length = 2000
     monkeypatch.setattr(
         backend,
@@ -4046,7 +3944,7 @@ def test_a_not_yet_reaped_child_does_not_burn_the_retry(monkeypatch):
     single retry is spent on the corpse rather than on a replacement."""
 
     class _Dying:
-        # reapable only from the 4th poll, mimicking teardown lagging the socket close
+        # Reapable only from the 4th poll, mimicking teardown lagging the socket close.
         def __init__(self):
             self.polls = 0
             self.returncode = None
@@ -4171,7 +4069,6 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     assert len(json.dumps({"code": big_code})) > _PROVISIONAL_ARGS_MIN_CHARS
 
-    # Same large streamed call as the provisional test, but with an empty id.
     first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "")
     final_stream = [_sse({"content": "Done."}), _done()]
     backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
@@ -4184,10 +4081,8 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
         [{"type": "function", "function": {"name": "python"}}],
     )
 
-    # No provisional card (empty-args tool_start) was surfaced for the empty id.
     provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert provisional == []
-    # The real call still executes despite the missing id.
     assert calls == [("python", {"code": big_code})]
 
 
@@ -4214,18 +4109,15 @@ def test_bare_json_tool_call_streamed_is_not_leaked_and_executes(monkeypatch):
         [{"type": "function", "function": {"name": "web_search"}}],
     )
 
-    # The tool ran with the parsed arguments.
     assert calls == [("web_search", {"query": "weather in Sydney"})]
     assert any(
         event.get("type") == "tool_end" and event.get("tool_name") == "web_search"
         for event in events
     )
 
-    # The bare JSON never leaked to the user-visible stream.
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert all('"name"' not in t for t in content_texts), content_texts
     assert all("web_search" not in t for t in content_texts), content_texts
-    # The post-tool synthesis is still streamed.
     assert any("sunny in Sydney" in t for t in content_texts), content_texts
 
 
@@ -4357,7 +4249,7 @@ def test_gguf_oversized_disabled_name_json_is_preserved(monkeypatch):
 
     cap = 16384
     big = "A" * (cap + 5000)
-    answer = '{"name":"Alice","parameters":{"bio":"' + big  # never closes
+    answer = '{"name":"Alice","parameters":{"bio":"' + big
     first_stream = [_sse({"content": answer[i : i + 2000]}) for i in range(0, len(answer), 2000)]
     first_stream.append(_done())
     backend, payloads = _backend_and_payloads(monkeypatch, [first_stream])
@@ -4471,7 +4363,6 @@ def test_gemma_wrapperless_execution_call_streams_instead_of_draining(monkeypatc
     assert calls == []
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert gemma_call in content_texts[-1], content_texts
-    # Reached the user mid-turn: a drain would only release it with the tail.
     assert any(gemma_call in t and "did not run" not in t for t in content_texts), content_texts
 
 
@@ -4814,12 +4705,9 @@ def test_gguf_inactive_name_args_in_prose_is_not_drained(monkeypatch):
         max_tool_iterations = 2,
     )
 
-    # No tool executed for the inactive name; a spurious no-op re-prompt would exhaust the
-    # single supplied stream and error.
     assert calls == [], calls
     assert not any(e.get("type") in ("tool_start", "tool_end") for e in events), events
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
-    # The inactive ``foo[ARGS]{...}`` is prose: the name-gated strip keeps the whole sentence.
     assert any('foo[ARGS]{"x":1} is just syntax.' in t for t in content_texts), content_texts
 
 
@@ -4846,17 +4734,13 @@ def test_gguf_inactive_rehearsal_before_active_call_executes_and_keeps_prose(mon
         [{"type": "function", "function": {"name": "web_search"}}],
     )
 
-    # The real call runs; ``foo`` is not executed as a phantom disabled call.
     assert calls == [("web_search", {"query": "cats"})], calls
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
-    # The inactive rehearsal is preserved as prose; the active one is stripped.
     assert any('foo[ARGS]{"a":1}' in t for t in content_texts), content_texts
     assert all("web_search[ARGS]" not in t for t in content_texts), content_texts
 
 
 def test_gguf_rehearsal_detection_recognises_spent_one_shot_with_original_tools():
-    # Rehearsal detection is fed the ORIGINAL tool list, so a spent one-shot's re-emitted
-    # repeat is still detected (matching the strip gate) instead of blanking the turn.
     from core.inference.llama_cpp import _gguf_has_genuine_tool_signal
     from core.inference.tool_call_parser import TOOL_XML_SIGNALS
 
@@ -4868,8 +4752,6 @@ def test_gguf_rehearsal_detection_recognises_spent_one_shot_with_original_tools(
 
 
 def test_gguf_rehearsal_prefix_and_tail_hold_recognise_spent_one_shot():
-    # The BUFFERING prefix check and STREAMING/flush tail-holds use the ORIGINAL tool list,
-    # so a spent one-shot's split repeat is held rather than leaked as visible text.
     from core.inference.llama_cpp import _held_rehearsal_tail_len, _is_rehearsal_prefix
 
     active_only = [{"type": "function", "function": {"name": "web_search"}}]
@@ -4966,7 +4848,6 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     )
 
     assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
-    # The cap keeps the first calls in order (no reordering / drop of leading ones).
     assert [c[0] for c in calls] == [f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN)]
     (notice,) = [
         m for m in payloads[1]["messages"] if "more tool call(s)" in (m.get("content") or "")
@@ -5125,11 +5006,8 @@ def test_gguf_over_cap_does_not_ask_for_a_retry_when_the_range_check_ends_the_lo
     def _call(q):
         return '<tool_call>{"name":"web_search","arguments":{"query":"%s"}}</tool_call>' % q
 
-    # Six real calls, then five no-op turns each re-issuing a DIFFERENT already-successful
-    # key (repeating one key twice trips the duplicate limit and forces the final answer
-    # through another exit), then a turn that overflows the cap. The no-ops burn the range
-    # without advancing the executed-tool count, so at max_tool_iterations = 3 the loop stops
-    # on the range check with only 2 executed-tool turns behind it.
+    # No-op turns burn the range without raising the executed-tool count; distinct keys
+    # avoid the duplicate limit.
     streams = [[_sse({"content": "".join(_call("q%d" % i) for i in range(6))}), _done()]]
     streams += [[_sse({"content": _call("q%d" % i)}), _done()] for i in range(5)]
     streams.append([_sse({"content": "".join(_call("z%d" % i) for i in range(10))}), _done()])
@@ -5145,8 +5023,7 @@ def test_gguf_over_cap_does_not_ask_for_a_retry_when_the_range_check_ends_the_lo
         )
     )
 
-    # Assert the scenario really happened rather than letting the check pass vacuously: the
-    # loop ended without offering tools again, and it did produce exactly one notice.
+    # Guard against a vacuous pass.
     assert not payloads[-1].get("tools")
     messages = payloads[-1]["messages"]
     notices = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
@@ -5211,8 +5088,6 @@ def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disable
 
 def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     """Re-prompt slots must not extend the tool budget: stop after ``max_tool_iterations`` executed rounds."""
-    # More tool-call streams than the budget: if re-prompt slots leaked into the budget (the bug) the
-    # loop would run 2+3=5 rounds; honouring it stops after 2, then a tool-less final-answer pass.
     streams = [
         _structured_tool_call("web_search", {"query": f"q{i}"}, f"call_{i}") for i in range(6)
     ]
@@ -5232,19 +5107,13 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
         )
     )
 
-    # Exactly two executed tool rounds, then one final-answer pass.
     assert len(calls) == 2, calls
     assert len(payloads) == 3, len(payloads)
-    # The final pass carries no tool schemas. Its controller feedback stays in
-    # the latest tool result rather than opening a newer user turn.
     assert _tool_names(payloads[2]) == [], _tool_names(payloads[2])
     assert any(
         m.get("role") == "tool" and "used all available tool calls" in m.get("content", "")
         for m in payloads[2]["messages"]
     ), payloads[2]["messages"]
-
-
-# ── Live tool-call argument streaming (tool_args events) ─────────────────────
 
 
 def _python_tool_schema() -> list[dict]:
@@ -5312,16 +5181,13 @@ def test_structured_tool_args_stream_to_provisional_card(monkeypatch):
     args_events = [e for e in events if e.get("type") == "tool_args"]
     assert args_events, "no tool_args events were streamed"
     assert all(e["tool_call_id"] == call_id for e in args_events)
-    # First event is the backlog, the rest raw fragments; together the args JSON.
     assert args_events[0]["text"] == frag1
     assert "".join(e["text"] for e in args_events) == args_json
 
-    # The streamed display path must not perturb execution or the model view.
     assert executed == [("python", {"code": code})]
     assistant_messages = [m for m in payloads[1]["messages"] if m.get("role") == "assistant"]
     tc = assistant_messages[-1]["tool_calls"][0]
     assert tc["id"] == call_id
-    # Controller re-serializes args (normalized JSON); parsed payload unchanged.
     assert json.loads(tc["function"]["arguments"]) == {"code": code}
 
 
@@ -5350,7 +5216,6 @@ def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
 
     starts = [e for e in events if e.get("type") == "tool_start"]
     assert starts, "no tool_start emitted"
-    # Provisional card first (parser's first-call id), then the reconciling start.
     assert starts[0]["tool_call_id"] == "call_0"
     assert starts[0]["arguments"] == {}
     assert starts[-1]["tool_call_id"] == "call_0"
@@ -5359,8 +5224,6 @@ def test_text_tool_call_streams_args_and_reconciles_card(monkeypatch):
     assert args_events, "no tool_args events for the text call"
     assert all(e["tool_call_id"] == "call_0" for e in args_events)
     streamed = "".join(e["text"] for e in args_events)
-    # Streamed text is the drained call (display only); it must never leak into
-    # content events.
     assert '"name": "python"' in streamed
     assert executed == [("python", {"code": code})]
     content_events = [e for e in events if e.get("type") == "content"]
@@ -5392,7 +5255,6 @@ def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
     DRAINING false-positive path must close the card with a tool_end instead of
     leaving it spinning forever."""
 
-    # Truncated mid-arguments and never closed: unparseable without healing.
     call_text = '<tool_call>{"name": "python", "arguments": {"code": "' + "x" * (
         _PROVISIONAL_ARGS_MIN_CHARS + 64
     )
@@ -5418,7 +5280,7 @@ def test_provisional_text_card_closed_when_parse_fails(monkeypatch):
     starts = [e for e in events if e.get("type") == "tool_start"]
     ends = [e for e in events if e.get("type") == "tool_end"]
     assert starts and starts[0]["tool_call_id"] == "call_0"
-    assert executed == []  # nothing parsed, nothing ran
+    assert executed == []
     assert ends, "provisional card left dangling (no tool_end)"
     assert ends[-1]["tool_call_id"] == "call_0"
 
@@ -5550,7 +5412,6 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
         "call_b",
     ]
 
-    # The replayed conversation must list both calls with their own arguments.
     asst = next(m for m in payloads[1]["messages"] if m.get("tool_calls"))
     assert [tc["id"] for tc in asst["tool_calls"]] == ["call_a", "call_b"]
     assert [tc["function"]["arguments"] for tc in asst["tool_calls"]] == [
@@ -5776,8 +5637,6 @@ def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
         payloads,
     )
     backend._effective_context_length = 4096
-    # What llama-server would really return: the messages, plus a catalogue that on its
-    # own fills most of the window. The estimator counts the messages and nothing else.
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
@@ -5813,8 +5672,6 @@ def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
 
     budget = seen.get("conversation_budget_tokens")
     assert budget is not None
-    # 2,800 of the 3,584-token budget is catalogue and framing the estimator cannot see,
-    # so what is left is hundreds of tokens, not the thousands it would have claimed.
     assert 0 <= budget < 1000
 
 
@@ -5865,8 +5722,7 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     )
 
     branch = [
-        # Unsloth always prepends one and a fit never evicts it, so counting it as the
-        # front of the branch reported zero on every compaction.
+        # Never evicted, so not counted as the front of the branch.
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "u" * 1200},
         {"role": "assistant", "content": "a" * 1200},
@@ -5887,11 +5743,8 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
         event for event in events if event.get("type") == "context_truncated" and event.get("fits")
     ]
     assert len(notices) > 1, "the fixture must refit more than once"
-    # Summed, this passes the number of evictable messages the branch ever had.
     assert sum(notice["dropped_messages"] for notice in notices) > len(branch)
-    # The boundary does not: it says where the branch was cut, so it never passes what the
-    # branch had to give (4; the system prompt and the latest turn are neither evictable
-    # nor counted) and it only ever moves forward.
+    # 4: the system prompt and latest turn are neither evictable nor counted.
     boundaries = [notice["boundary_messages"] for notice in notices]
     assert max(boundaries) == 4
     assert boundaries == sorted(boundaries)
@@ -5933,8 +5786,6 @@ def test_conversation_search_budget_is_exact_when_nothing_was_truncated(monkeypa
         payloads,
     )
     backend._effective_context_length = 4096
-    # Most of the window is catalogue and template framing, which no character estimate
-    # can see. The messages themselves are short, so the fit drops nothing at all.
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
@@ -5962,8 +5813,6 @@ def test_conversation_search_budget_is_exact_when_nothing_was_truncated(monkeypa
 
     budget = seen.get("conversation_budget_tokens")
     assert budget is not None
-    # 3,584 of budget against a real prompt of roughly 2,800: hundreds of tokens of room,
-    # not the thousands the estimate claimed from a handful of short messages.
     assert 0 <= budget < 1000, budget
 
 
@@ -6030,7 +5879,6 @@ def test_the_exact_recall_budget_is_recomputed_after_an_intervening_tool(monkeyp
         if name == "search_conversation":
             budgets.append(kwargs.get("conversation_budget_tokens"))
             return "an earlier turn"
-        # A big result, which the loop appends before the search runs.
         return "x" * 12000
 
     monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
@@ -6048,8 +5896,6 @@ def test_the_exact_recall_budget_is_recomputed_after_an_intervening_tool(monkeyp
     )
 
     assert budgets and budgets[0] is not None
-    # The 12,000-character tool result is roughly 1,200 tokens of the 3,584-token budget,
-    # and the count taken before it cannot see them.
     assert budgets[0] < 1400, budgets
 
 
@@ -6092,9 +5938,6 @@ def test_an_unservable_tool_call_is_refused_before_it_runs(monkeypatch):
     truncation reads that as "cut hard", so the tool used to run, the result was cut to
     its notice, and the next request was refused with the file written.
     """
-    # The bulk is in the USER turn, which no receipt can replace, so running the call and
-    # compacting its arguments cannot rescue this one either -- which is what makes it the
-    # case that still earns a refusal.
     immovable = "please read all of this: " + "u" * 40000
     streams = [
         _structured_tool_call(
@@ -6178,7 +6021,6 @@ def test_compacting_an_earlier_call_lets_the_next_one_run(monkeypatch):
 
     def fake_execute_tool(name, arguments, **_kwargs):
         executed.append(name)
-        # The tool still receives real arguments, never a receipt.
         assert arguments.get("new_string") == "<title>b</title>"
         return "Edited page.html"
 
@@ -6198,9 +6040,6 @@ def test_compacting_an_earlier_call_lets_the_next_one_run(monkeypatch):
         for event in events
         if event.get("type") == "tool_end" and "Nothing was written" in str(event.get("result", ""))
     ]
-    # The assertions above hold with no gate at all -- an ungated loop runs every tool it
-    # is handed. What distinguishes the fix is the prompt SENT after the tool returned:
-    # the earlier call's 30 KB argument must have become a receipt, and only there.
     assert len(payloads) >= 2, "the loop never made a second request"
     replayed = json.dumps(payloads[-1]["messages"], default = str)
     assert earlier not in replayed, "the earlier 30 KB argument was replayed verbatim"
@@ -6217,8 +6056,6 @@ def test_refusing_a_call_also_stops_it_costing_the_window(monkeypatch):
     follows is rejected anyway -- with nothing written, but also nothing the user can do.
     The refused arguments are the one case with no replay value at all.
     """
-    # Again the bulk is immovable: a refusal is the only outcome left, and the point here
-    # is that refusing must not ALSO leave the arguments costing the window.
     immovable = "please read all of this: " + "u" * 40000
     oversized = "<!DOCTYPE html>" + "x" * 8000
     streams = [
@@ -6250,10 +6087,8 @@ def test_refusing_a_call_also_stops_it_costing_the_window(monkeypatch):
     assert executed == []
     assert len(payloads) >= 2, "the loop never got to a follow-up generation"
     replayed = json.dumps(payloads[-1]["messages"], default = str)
-    # The prompt that follows the refusal must not carry what was refused.
     assert oversized not in replayed
     assert "refused before it ran" in replayed
-    # And must not claim a file exists to go and read.
     assert "re-read the file" not in replayed
 
 
@@ -6289,7 +6124,6 @@ def test_reply_room_is_reclaimed_before_generating(monkeypatch):
         {"role": "user", "content": "Now tell me what you did"},
     ]
     payloads: list[dict] = []
-    # No tool call this turn: the model just answers, so only the reply-room pass can act.
     backend = _make_backend(monkeypatch, [[_sse({"content": "Done."}), _done()]], payloads)
     monkeypatch.setattr(backend, "count_chat_tokens", _count_from_size)
     monkeypatch.setattr(
@@ -6337,7 +6171,6 @@ def test_an_oversized_call_is_run_and_compacted_rather_than_refused(monkeypatch)
 
     def fake_execute_tool(name, arguments, **_kwargs):
         executed.append(name)
-        # The tool still receives the real content -- the file must actually be written.
         assert oversized in json.dumps(arguments)
         return "Created flappy-bird.html"
 
@@ -6426,7 +6259,6 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
         payloads,
     )
 
-    # Price the turn off the replayed JSON: the big call does not fit, the receipt does.
     def fake_count_chat_tokens(messages, *_args, **_kwargs):
         return len(json.dumps(messages, default = str)) // 2
 
@@ -6455,7 +6287,6 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
 
     assert answered, "no tool result reached the model at all"
     assert answered <= announced, f"results with no visible call: {answered - announced}"
-    # And the compaction still happened: the body is not replayed.
     assert _BIG_BODY not in json.dumps(sent)
 
 
@@ -6474,7 +6305,6 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
     backend, payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
     monkeypatch.setattr(
         "core.inference.tools.execute_tool",
-        # Long enough that skipping it is a real under-count, not a rounding error.
         lambda name, arguments, **_kwargs: "Linux kernel 6.10. " * 400,
     )
 
@@ -6492,7 +6322,6 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
                     },
                 }
             ],
-            # One round, so the loop breaks on the cap mid-round rather than at the top.
             max_tool_iterations = 1,
             permission_mode = "off",
             on_conversation_grew = lambda conversation: seen.append(copy.deepcopy(conversation)),
@@ -6645,7 +6474,6 @@ def test_only_the_tool_loop_flushes_held_text_on_cancel():
     assert (
         len(flushing) == 1
     ), f"exactly one cancel arm may flush held text; flushing arms: {flushing}"
-    # The last arm is the synthesized final pass, which owns none of those buffers.
     assert flushing[0] != len(arms) - 1, "the final pass must not flush the tool loop's buffers"
 
 

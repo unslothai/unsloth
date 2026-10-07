@@ -39,7 +39,7 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(name, raising = False)
 
 
-class QwenImage21KVLayerCache:  # the diffusers class's shape: k / v set by store(), read by get()
+class QwenImage21KVLayerCache:
     def __init__(self):
         self.k = None
         self.v = None
@@ -100,9 +100,6 @@ class Net(torch.nn.Module):
         return self.proj_out(x)
 
 
-# --- call trees and keys ---------------------------------------------------------------------------------------
-
-
 def test_kv_layer_cache_flattens_to_its_two_tensors_and_rebuilds_a_fresh_cache():
     cache = QwenImage21KVLayerCache()
     cache.store(torch.ones(2, 3), torch.zeros(2, 3))
@@ -116,7 +113,7 @@ def test_kv_layer_cache_flattens_to_its_two_tensors_and_rebuilds_a_fresh_cache()
     rebuilt = kwargs["layer_cache"]
     assert type(rebuilt) is QwenImage21KVLayerCache and rebuilt is not cache
     assert rebuilt.k is statics[1] and rebuilt.v is statics[2]
-    assert cache.k is not statics[1]  # the caller's cache is never touched
+    assert cache.k is not statics[1]
 
 
 def test_kv_cache_is_recordable_only_on_a_cached_step():
@@ -166,7 +163,7 @@ def test_a_host_tensor_input_is_never_recorded():
     x = torch.randn(4, width, device = "cuda")
     with torch.inference_mode():
         for i in range(4):
-            temb = torch.tensor(float(i))  # a 0-dim host scalar a CUDA op reads at launch
+            temb = torch.tensor(float(i))
             assert torch.equal(graph(x, temb = temb), graph.compute(x, temb = temb))
     assert graph.stats["refused_host_input"] == 4 and graph.stats["captures"] == 0
     handle.free()
@@ -200,9 +197,6 @@ def test_grad_mode_runs_the_compute():
     assert graph.stats["refused_grad"] == 1
 
 
-# --- installation ----------------------------------------------------------------------------------------------
-
-
 def _hooked_net(blocks = 4):
     pytest.importorskip("diffusers.hooks")
     from diffusers.hooks import apply_group_offloading
@@ -233,7 +227,6 @@ def test_install_sits_below_the_group_offload_hook_and_free_restores_it():
     x = torch.randn(3, 16)
     with torch.no_grad():
         got = net(x)
-    # the hook chain still runs (onload / offload) and the compute is the block's own forward
     assert all(g.stats["refused_host_weight"] == 1 for g in handle.graphs)
     handle.free()
     assert not any(isinstance(r.forward, bg.BlockGraph) for r in refs)
@@ -256,7 +249,6 @@ def test_compile_moves_below_the_offload_hook_and_the_kill_switch_keeps_it_trace
         assert b._compiled_call_impl is None
         refs = b._diffusers_hook._fn_refs
         assert not any(bg._is_original_forward(r.forward, b) for r in refs)
-    # idempotent, and the block graph layer still finds the (now compiled) compute below the hook
     assert bg.compile_below_offload_hooks(net) == 0
     handle, reason = bg.install_block_graphs(net, slots = False)
     assert reason == "armed" and len(handle.graphs) == 2
@@ -326,9 +318,6 @@ def test_kill_switches(monkeypatch):
         speed_mode = "default",
     )
     assert not ok and cg.CUDA_GRAPHS_ENV in why
-
-
-# --- arming per placement --------------------------------------------------------------------------------------
 
 
 def _pipe_with(net):
@@ -478,7 +467,7 @@ def test_the_master_switch_turns_block_graphs_off_with_its_name(monkeypatch):
 def test_status_says_why_armed_blocks_never_replayed():
     net = Net(blocks = 2)
     handle, _ = bg.install_block_graphs(net, slots = False)
-    assert cg.never_engaged((handle,)) is None  # nothing ran yet
+    assert cg.never_engaged((handle,)) is None
     with torch.no_grad():
         net(torch.randn(2, 16))
     why = cg.never_engaged((handle,))
@@ -488,9 +477,6 @@ def test_status_says_why_armed_blocks_never_replayed():
     handle.graphs[0].churned = True
     assert "new address every call" in handle.why_off()
     handle.free()
-
-
-# --- slot ring -------------------------------------------------------------------------------------------------
 
 
 class _G:
@@ -524,11 +510,9 @@ def _slot_prefetcher(shapes, depth = 2):
 def test_slots_are_shared_round_robin_and_sized_like_the_prefetch_window():
     pf, groups, _ = _slot_prefetcher([(4, 4)] * 5 + [(8, 4)] * 2, depth = 2)
     pf.enable_slots()
-    # every layout shares the same depth + 1 slots, in block order
     assert [pf.slot_of[id(g)] for g in groups] == [0, 1, 2, 0, 1, 2, 0]
-    # each slot holds the largest packed group (an (8, 4) float32 = 128 bytes): the ring is the prefetch window
     assert pf.slot_size == 128 and pf.slot_bytes_planned == 3 * 128
-    assert pf.slot_streamed == 7 and pf.slot_bytes == 0  # planned, allocated on first fill
+    assert pf.slot_streamed == 7 and pf.slot_bytes == 0
 
 
 def test_a_pinned_denoiser_counts_no_streamed_slot_groups():
@@ -549,22 +533,19 @@ def test_slot_views_pack_leaves_aligned_and_mirror_the_sources():
     for v, src in zip(views, srcs):
         op._copy_into(v, src)
         assert torch.equal(v, src)
-    assert op._packed_bytes([torch.zeros(4, 4).t()]) is None  # a strided leaf cannot be viewed in
+    assert op._packed_bytes([torch.zeros(4, 4).t()]) is None
 
 
 def test_a_slot_held_by_a_group_on_the_device_is_never_refilled_ahead():
     pf, groups, released = _slot_prefetcher([(4, 4)] * 4, depth = 2)
     pf.enable_slots()
-    a, d = groups[0], groups[3]  # same slot
+    a, d = groups[0], groups[3]
     pf.slot_owner[pf.slot_of[id(a)]] = id(a)
-    pf.ready[id(a)] = None  # onloaded, compute in flight
+    pf.ready[id(a)] = None
     assert pf._slot_free(d, must = False) is False
-    # a forced onload of d copies to fresh memory instead (the block then runs ungraphed once)
     assert pf._slot_free(d, must = True) is None and pf.stats["slot_fallbacks"] == 1
-    # copied ahead but not run yet: a forced onload drops it and takes the slot
     pf.ready[id(a)] = object()
     assert pf._slot_free(d, must = True) is True and released == ["0"]
-    # released (no longer on the device): free
     pf.ready.clear()
     assert pf._slot_free(d, must = False) is True
 
@@ -574,9 +555,6 @@ def test_the_top_level_group_keeps_fresh_copies():
     groups[0].offload_leader = pf.module
     pf.enable_slots()
     assert id(groups[0]) not in pf.slot_of and len(pf.slot_of) == 2
-
-
-# --- memory guard ----------------------------------------------------------------------------------------------
 
 
 def test_pool_bytes_count_only_the_target_card(monkeypatch):
@@ -596,9 +574,6 @@ def test_block_graph_pools_are_not_credited_as_reclaimable(monkeypatch):
     assert dm.reclaimable_snapshot_device_memory(target).free_mib == 1500
     monkeypatch.setattr(bg, "pool_bytes", lambda device = None: 300 << 20)
     assert dm.reclaimable_snapshot_device_memory(target).free_mib == 1200
-
-
-# --- CUDA ------------------------------------------------------------------------------------------------------
 
 
 def _cuda():
@@ -657,14 +632,12 @@ def test_streamed_blocks_replay_from_the_slot_ring_bit_identically(resident_mib)
             assert torch.equal(got, want), i
             if i >= 2:
                 assert syncs == 0
-        # a different input is copied into the same static buffers and replays the same recordings
         x2 = torch.randn(4, 16, device = "cuda")
         captures = handle.stats["captures"]
         assert torch.equal(net(x2, temb = temb), ref(x2, temb = temb))
         assert handle.stats["captures"] == captures
     s = handle.stats
     assert s["replays"] >= 8 and s["fallbacks"] == 0 and s["refused_host_weight"] == 0
-    # one recording per block (weights at their slot), each made once
     assert s["captures"] == 8 and s["recaptures"] == 0
     assert pf.stats["slot_fills"] > 0 and pf.stats.get("slot_fallbacks", 0) == 0
     assert net.blocks[-1].lin.weight.device.type == "cpu"
@@ -681,9 +654,7 @@ class SlowBlock(Block):
         layer_cache = None,
         kv_cache_mode = None,
     ):
-        torch.cuda._sleep(
-            200_000
-        )  # a slow GPU: the host queues later copies long before this block reads
+        torch.cuda._sleep(200_000)
         return super().forward(x, temb = temb)
 
 
@@ -735,10 +706,8 @@ def test_compiled_streamed_blocks_record_below_their_hooks_with_no_graph_break()
             torch.testing.assert_close(got, want, rtol = 1e-4, atol = 1e-4)
         first = got.clone()
         for _ in range(2):
-            assert torch.equal(net(x), first)  # replays are deterministic
-    assert (
-        sum(du.counters["graph_break"].values()) == breaks
-    )  # the hooks stay outside the compiled region
+            assert torch.equal(net(x), first)
+    assert sum(du.counters["graph_break"].values()) == breaks
     s = handle.stats
     assert s["replays"] > 0 and s["fallbacks"] == 0 and s["captures"] == 6
     handle.free()
@@ -769,7 +738,7 @@ def test_evicted_layouts_free_their_static_buffers():
         g.max_graphs = 2
     shared = handle.graphs[0].shared
     with torch.inference_mode():
-        for rows in range(3, 11):  # a new layout per render, as a new prompt length is
+        for rows in range(3, 11):
             x = torch.randn(rows, 16, device = "cuda")
             for _ in range(3):
                 assert torch.equal(net(x), ref(x))
@@ -811,12 +780,10 @@ def test_a_block_whose_weights_moved_records_again_at_the_new_addresses():
         for _ in range(3):
             assert torch.equal(net(x), want)
         assert handle.stats["captures"] == 3
-        # the 12 GB tier's encode release / restore and model offload's re-upload land weights elsewhere
         for block in net.blocks:
             block.lin.weight.data = block.lin.weight.data.clone()
         for _ in range(3):
             assert torch.equal(net(x), want)
-        # the moved weights change the result if a stale recording replayed them: perturb and compare
         net.blocks[1].lin.weight.data = net.blocks[1].lin.weight.data * 2
         ref.blocks[1].lin.weight.data = ref.blocks[1].lin.weight.data * 2
         for _ in range(3):
@@ -840,7 +807,6 @@ def test_prefix_kv_cache_blocks_replay_on_cached_steps():
         want = ref(x, caches = caches)
         for _ in range(4):
             assert torch.equal(net(x, caches = caches), want)
-        # new prefix values (a new prompt) are copied in; the recordings stay
         for c in caches:
             c.store(torch.randn(5, 256, device = "cuda"), torch.randn(5, 256, device = "cuda"))
         captures = handle.stats["captures"]

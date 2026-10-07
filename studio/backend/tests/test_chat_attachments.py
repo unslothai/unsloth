@@ -110,11 +110,6 @@ def _raw_attachments_json(message_id: str):
         conn.close()
 
 
-# ---------------------------------------------------------------------------
-# Storage: list_chat_attachments
-# ---------------------------------------------------------------------------
-
-
 def test_list_chat_attachments_empty_db(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     assert studio_db.list_chat_attachments() == []
@@ -133,7 +128,7 @@ def test_list_chat_attachments_round_trip(tmp_path, monkeypatch):
     assert record["type"] == "image"
     assert record["contentType"] == "image/png"
     assert record["createdAt"] == 1_700_000_000_000
-    # Base64 length estimate is within padding error of the decoded size.
+    # Base64 length estimate is within padding error.
     assert abs(record["sizeBytes"] - len(PNG_BYTES)) <= 2
 
 
@@ -242,11 +237,6 @@ def test_list_chat_attachments_gone_after_thread_delete(tmp_path, monkeypatch):
     assert studio_db.list_chat_attachments() == []
 
 
-# ---------------------------------------------------------------------------
-# Storage: get_chat_attachment / delete_chat_attachment
-# ---------------------------------------------------------------------------
-
-
 def test_get_chat_attachment_found_and_missing(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_image_attachment()])
     attachment = studio_db.get_chat_attachment("msg-1", "att-1")
@@ -271,12 +261,9 @@ def test_delete_chat_attachment_keeps_others(tmp_path, monkeypatch):
 def test_delete_last_chat_attachment_stores_empty_list(tmp_path, monkeypatch):
     _seed(tmp_path, monkeypatch, [_image_attachment()])
     assert studio_db.delete_chat_attachment("msg-1", "att-1") is True
-    # '[]' rather than NULL: a NULL attachments field reads back as missing
-    # and triggers the legacy IndexedDB backfill, resurrecting the deleted
-    # attachment on the next chat load.
+    # '[]' not NULL: NULL triggers the legacy IndexedDB backfill and resurrects the attachment.
     assert _raw_attachments_json("msg-1") == "[]"
     assert studio_db.list_chat_attachments() == []
-    # The message itself must survive with its content intact.
     message = studio_db.get_chat_message("thread-1", "msg-1")
     assert message is not None
     assert message["content"] == [{"type": "text", "text": "hello"}]
@@ -289,11 +276,6 @@ def test_delete_chat_attachment_missing_targets(tmp_path, monkeypatch):
     assert studio_db.delete_chat_attachment("msg-1", "att-missing") is False
     _set_raw_attachments_json("msg-1", "not json")
     assert studio_db.delete_chat_attachment("msg-1", "att-1") is False
-
-
-# ---------------------------------------------------------------------------
-# Routes: /attachments endpoints (real storage, direct calls)
-# ---------------------------------------------------------------------------
 
 
 def test_list_attachments_route(tmp_path, monkeypatch):
@@ -329,7 +311,7 @@ def test_attachment_file_corrupt_base64_is_422(tmp_path, monkeypatch):
 
 
 def test_attachment_file_accepts_urlsafe_base64(tmp_path, monkeypatch):
-    data = bytes(range(251, 256)) * 3  # encodes to characters remapped by urlsafe
+    data = bytes(range(251, 256)) * 3
     payload = base64.urlsafe_b64encode(data).decode("ascii")
     assert "-" in payload or "_" in payload
     attachment = _image_attachment()
@@ -446,10 +428,6 @@ def test_delete_attachment_route_then_404(tmp_path, monkeypatch):
     assert excinfo.value.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# Audio attachments (adapter {data, format} and compare-chat bare base64)
-# ---------------------------------------------------------------------------
-
 WAV_BYTES = b"RIFF$\x00\x00\x00WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00"
 WAV_B64 = base64.b64encode(WAV_BYTES).decode("ascii")
 
@@ -527,11 +505,6 @@ def test_audio_attachment_corrupt_payload_is_422(tmp_path, monkeypatch):
     assert excinfo.value.status_code == 422
 
 
-# ---------------------------------------------------------------------------
-# Compare-chat uploads stored as message content parts
-# ---------------------------------------------------------------------------
-
-
 def _compare_message(message_id: str = "msg-cmp") -> dict:
     return {
         "id": message_id,
@@ -572,7 +545,6 @@ def _content_part_id_for(message_id: str, kind: str) -> str:
 def test_content_part_uploads_are_listed(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
     records = studio_db.list_chat_attachments()
-    # Ids are stable content hashes, not array indices.
     assert all(r["id"].startswith(_CONTENT_PART_PREFIX) for r in records)
     assert {r["type"] for r in records} == {"image", "audio"}
     image = next(r for r in records if r["type"] == "image")
@@ -597,7 +569,6 @@ def test_content_part_delete_keeps_text(tmp_path, monkeypatch):
     message = studio_db.get_chat_message("thread-1", "msg-cmp")
     types = [p["type"] for p in message["content"]]
     assert types == ["audio", "text"]
-    # The surviving audio blob keeps its own stable hash id after the delete.
     remaining = studio_db.list_chat_attachments()
     assert [r["type"] for r in remaining] == ["audio"]
     assert remaining[0]["id"].startswith(_CONTENT_PART_PREFIX)
@@ -606,10 +577,7 @@ def test_content_part_delete_keeps_text(tmp_path, monkeypatch):
 
 def test_content_part_delete_rejects_non_blob(tmp_path, monkeypatch):
     _seed_compare(tmp_path, monkeypatch)
-    # The text part is not a stored upload, so it never gets an id: only the
-    # image and audio blobs are addressable.
     assert len(studio_db.list_chat_attachments()) == 2
-    # A well-formed but unknown content-hash id, and malformed ids, all no-op.
     assert studio_db.delete_chat_attachment("msg-cmp", _CONTENT_PART_PREFIX + "0" * 64) is False
     assert studio_db.delete_chat_attachment("msg-cmp", "content-part-99") is False
     assert studio_db.delete_chat_attachment("msg-cmp", "content-part-x") is False
@@ -618,7 +586,6 @@ def test_content_part_delete_rejects_non_blob(tmp_path, monkeypatch):
 def test_text_only_messages_not_listed_as_uploads(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
-    # The word "image" inside text must not create phantom upload rows.
     message = _message("msg-txt")
     message["content"] = [{"type": "text", "text": 'discussing an "image" and "audio" here'}]
     studio_db.upsert_chat_message(message)
@@ -634,7 +601,6 @@ def test_remote_image_urls_are_not_listed_as_uploads(tmp_path, monkeypatch):
         {"type": "text", "text": "look at this"},
     ]
     studio_db.upsert_chat_message(message)
-    # No stored bytes: nothing to list, open, or delete.
     assert studio_db.list_chat_attachments() == []
     assert studio_db.get_chat_attachment("msg-remote", "content-part-0") is None
     assert studio_db.delete_chat_attachment("msg-remote", "content-part-0") is False

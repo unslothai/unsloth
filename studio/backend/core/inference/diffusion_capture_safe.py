@@ -62,8 +62,6 @@ CAPTURE_SAFE_ENV = "UNSLOTH_DIFFUSION_CAPTURE_SAFE"
 
 _HUNYUANIMAGE_CLS = "HunyuanImageTransformer2DModel"
 
-# The stock merge block, stripped line by line (blank lines dropped). Order of the four pieces is
-# what the permutation reproduces, so the match is exact rather than a needle search.
 _HUNYUANIMAGE_MERGE_BLOCK: tuple[str, ...] = (
     "# reorder and combine text tokens: combine valid tokens first, then padding",
     "new_encoder_hidden_states = []",
@@ -127,8 +125,7 @@ def merge_text_streams(
 
     states = torch.cat([encoder_hidden_states_2, encoder_hidden_states], dim = 1)
     mask = torch.cat([encoder_attention_mask_2, encoder_attention_mask], dim = 1)
-    # Key 0 for a valid token, 1 for padding; a STABLE sort keeps byt5 ahead of mllm and each
-    # stream's own order within both groups.
+    # Stable sort keeps byt5 ahead of mllm and each stream's order.
     order = torch.argsort((~mask).to(torch.uint8), dim = 1, stable = True)
     states = torch.gather(states, 1, order.unsqueeze(-1).expand(-1, -1, states.shape[-1]))
     mask = torch.gather(mask, 1, order)
@@ -137,9 +134,6 @@ def merge_text_streams(
 
 _HUNYUANVIDEO15_CLS = "HunyuanVideo15Transformer3DModel"
 
-# HunyuanVideo-1.5 (diffusers 0.36.0 through 0.40.0, unchanged): ``is_t2v`` is a 0-d device bool that
-# ``if`` reads on the host, then the per-batch merge of [image ; byt5 ; mllm] uses boolean-mask
-# indexing like HunyuanImage's, with the padded byt5/mllm rows replaced by zeros.
 _HV15_T2V_BLOCK: tuple[str, ...] = (
     "is_t2v = torch.all(image_embeds == 0)",
     "if is_t2v:",
@@ -334,24 +328,19 @@ def _rebuild_forward(
     for (prev, _), (nxt, _) in zip(spans, spans[1:]):
         if nxt[0] < prev[1]:
             raise RuntimeError("the rewritten blocks overlap")
-    # Splice from the bottom so earlier spans keep their line indices.
     for (start, end), replacement in reversed(spans):
         indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
         lines = lines[:start] + [indent + replacement] + lines[end:]
-    # A source-level decorator (``@apply_lora_scale`` from 0.37) re-applies when the def executes,
-    # so the rebuilt function carries the installed version's LoRA handling unchanged.
     new_source = "\n".join(lines) + "\n"
     filename = f"<unsloth capture-safe {getattr(target, '__qualname__', 'forward')}>"
     namespace = dict(vars(module))
     namespace.update(helpers)
-    # dont_inherit: this module's ``from __future__ import annotations`` must not stringify the
-    # rebuilt forward's annotations.
+    # dont_inherit: this module's __future__ annotations must not stringify the rebuilt forward.
     code = compile(new_source, filename, "exec", dont_inherit = True)
     exec(code, namespace)  # noqa: S102 - the installed diffusers' own source with known blocks replaced
     rebuilt = namespace.get(target.__name__)
     if not callable(rebuilt):
         raise RuntimeError("the rebuilt source did not define the forward")
-    # Tracebacks and inspect.getsource resolve through linecache.
     linecache.cache[filename] = (len(new_source), None, new_source.splitlines(True), filename)
     if _signature_key(rebuilt) != _signature_key(forward):
         raise RuntimeError("the rebuilt forward's signature differs from the stock one")
@@ -383,7 +372,6 @@ def _rewrite_hunyuanvideo15(forward: Callable) -> Callable:
     )
 
 
-# class name -> (why the stock forward cannot be captured, rewriter)
 _REWRITES: dict[str, tuple[str, Callable[[Callable], Callable]]] = {
     _HUNYUANIMAGE_CLS: (
         "boolean-mask indexing in its text-stream merge syncs the host",
@@ -396,8 +384,6 @@ _REWRITES: dict[str, tuple[str, Callable[[Callable], Callable]]] = {
     ),
 }
 
-# Declined at load so status says "off" instead of arming a wrapper that refuses every step. Qwen-Image-2.1 only
-# lands here when its fast step (diffusion_qwenimage21, which plans tensors-only decode calls) is not installed.
 _UNCAPTURABLE: dict[str, str] = {
     "QwenImage21Transformer2DModel": "its pipeline passes the prefix KV cache as a Python object "
     "on every step; the Studio fast step that replays decode steps from tensors is not installed",
@@ -424,7 +410,6 @@ def resolve(cls: type) -> tuple[Optional[Callable], Optional[str]]:
     owner = _defining_class(cls)
     planned = vars(owner).get("forward") if owner is not None else None
     if getattr(planned, "__unsloth_graph_plan__", None) is not None:
-        # A Studio forward that plans its own capture-safe calls (Qwen-Image-2.1's fast step).
         if capture_safe_disabled():
             return (
                 None,

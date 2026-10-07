@@ -151,7 +151,6 @@ class VLMDataCollator:
 
         labels = inputs["input_ids"].clone()
 
-        # Mask padding.
         if hasattr(self.processor, "tokenizer"):
             pad_token_id = self.processor.tokenizer.pad_token_id
         else:

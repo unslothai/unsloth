@@ -69,7 +69,6 @@ def test_the_environment_supplies_the_default_for_a_request_that_names_none(monk
     assert audio_device_default() == "cpu"
     assert audio_device_forces_cpu(None)
 
-    # An explicit request still outranks it, in both directions.
     assert not audio_device_forces_cpu("auto")
     assert audio_device_forces_cpu("cpu")
 
@@ -139,7 +138,6 @@ def test_a_resident_model_on_the_other_device_is_reloaded_not_reused(monkeypatch
         sidecar,
         "_ensure_model_downloaded",
         lambda model_id, use_resident = True: stt_sidecar._CachedSttSnapshot(
-            # The resident shortcut answers with no path; a replacement load needs one.
             path = None if use_resident else "/snapshots/small",
             is_multilingual = True,
         ),
@@ -279,9 +277,9 @@ def test_a_caller_that_sends_no_device_leaves_the_placement_alone(monkeypatch):
         ),
     )
 
-    sidecar.load("small", device = "cpu")  # Voice settings: the user picked CPU
-    sidecar.load("small", device = None)  # OpenAI-compatible route: no opinion
-    sidecar.load("small", device = "cpu")  # the next dictation
+    sidecar.load("small", device = "cpu")
+    sidecar.load("small", device = None)
+    sidecar.load("small", device = "cpu")
 
     assert builds == ["cpu"], "only the first load should have built anything"
     assert sidecar._device == "cpu"
@@ -354,7 +352,5 @@ def test_stt_unload_can_skip_a_sidecar_that_is_mid_transcription():
 
     assert "wait" in inspect.signature(ri.stt_unload).parameters
     assert inspect.signature(ri.stt_unload).parameters["wait"].default is True
-    # Both halves of _stt_lifecycle have to take it, or the route raises TypeError
-    # for whichever one is live.
     assert "wait" in inspect.signature(InferenceOrchestrator.unload_stt_model).parameters
     assert "wait" in inspect.signature(stt_registry.unload).parameters

@@ -70,11 +70,7 @@ def notice_already_dismissed(current_gb: Optional[float]) -> bool:
         return False
     if current_gb is None:
         return True
-    # A tenth of a GB of slack: the driver-reported byte count need not be identical
-    # across boots (95.83 against a 96.00 setting here), and a rounding redisplay would
-    # look like the notice ignoring the dismissal. Compared in TENTHS because binary
-    # floats miss that grid: 95.8 + 0.1 is 95.89999999999999, so a 95.9 reading -- one
-    # tenth away, the case this slack exists for -- read as not dismissed.
+    # Tenth-of-GB slack for driver jitter; compare in integer tenths to avoid float error.
     return round(float(current_gb) * 10) <= round(dismissed_at * 10) + 1
 
 

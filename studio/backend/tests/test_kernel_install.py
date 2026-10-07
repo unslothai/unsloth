@@ -162,7 +162,6 @@ def test_pip_reinstalls_the_matched_wheel_without_deps(uv):
 
 
 def test_uv_reinstalls_into_the_system_interpreter_on_colab(uv):
-    # The check failed, so the installed copy is broken: reinstall even at the same version.
     uv(True, outside_venv = True)
     run = _Runner([False, True])
     assert kernel_install.install_kernel("xformers", _COLAB, run = run, exists = lambda url: True) == 0

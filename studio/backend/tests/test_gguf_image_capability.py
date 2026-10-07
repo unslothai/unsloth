@@ -68,7 +68,7 @@ def _backend():
 )
 def test_projector_modality_decides_reported_image_input(accepts_image, expected):
     backend = _backend()
-    backend._is_vision = True  # a projector is attached, which is what the launch asks
+    backend._is_vision = True
     backend._mmproj_accepts_image = accepts_image
     assert backend.is_vision is expected
 

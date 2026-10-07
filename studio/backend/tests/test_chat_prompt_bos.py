@@ -126,7 +126,6 @@ def test_rendered_prompt_carries_exactly_one_bos(template_emits_bos, auto_adds_b
 
 
 def test_template_that_omits_bos_keeps_the_tokenizer_one():
-    # Blanket add_special_tokens = False regressed exactly this shape.
     tokenizer = _tokenizer(auto_adds_bos = True)
     prompt = "user hello world"
 

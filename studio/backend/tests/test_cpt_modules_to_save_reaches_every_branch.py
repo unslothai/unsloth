@@ -34,7 +34,6 @@ def _peft_calls():
         name = getattr(node.func, "attr", None)
         if name == "get_peft_model" or (name is None and getattr(node.func, "id", None) == "dict"):
             kwargs = {k.arg for k in node.keywords if k.arg}
-            # Only the dicts that actually build an adapter.
             if name == "get_peft_model" or "target_modules" in kwargs:
                 calls.append((node.lineno, kwargs))
     return calls

@@ -21,7 +21,7 @@ from core.inference import llama_cpp as mod
 from core.inference.llama_cpp import LlamaCppBackend
 from core.rag import embed_llama_server as embed_mod
 
-# Captured before the autouse fixture stubs it, for the one test that exercises the real finder.
+# Captured before the autouse fixture stubs it.
 _REAL_FINDER = LlamaCppBackend.__dict__["_find_llama_server_binary"]
 
 
@@ -113,14 +113,12 @@ class TestTheMemoryProbeFallsBackToNvml:
         probe_script(
             _payload([_row(0, 8000, uuid = "GPU-aaaa1111-0"), _row(1, 20000, uuid = "GPU-bbbb2222-1")])
         )
-        # A full uuid, a prefix, mask order, and a mixed index + uuid mask, as the CUDA runtime reads them.
         for mask, expected in (
             ("GPU-bbbb2222-1", [(1, 20000, 24576)]),
             ("GPU-aaaa", [(0, 8000, 24576)]),
             ("GPU-bbbb,GPU-aaaa", [(0, 8000, 24576), (1, 20000, 24576)]),
             ("1,GPU-aaaa", [(0, 8000, 24576), (1, 20000, 24576)]),
-            # An entry naming no single device ends the mask there, as CUDA documents
-            # for "0,2,-1,1": the devices before it stay visible, nothing after it does.
+            # Per CUDA, an entry naming no device ends the mask there.
             ("nope", []),
             ("GPU-", []),
             ("1,-1,0", [(1, 20000, 24576)]),
@@ -136,8 +134,7 @@ class TestTheMemoryProbeFallsBackToNvml:
         probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), slice_row]))
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-cccc")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
-        # An index, a GPU- entry and no mask at all name the parent, and CUDA exposes its
-        # first slice then, not the whole card: the slice's memory is what the model gets.
+        # CUDA exposes a MIG parent as its first slice, not the whole card.
         for mask in ("0", "GPU-aaaa"):
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
             assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)], mask
@@ -145,16 +142,12 @@ class TestTheMemoryProbeFallsBackToNvml:
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
-        # A slice the probe does not list hides every GPU rather than exposing the parent.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-dddd")
         assert LlamaCppBackend._get_gpu_memory() == []
-        # A second slice named by the mask is that slice, not the parent's first.
         second = dict(_row(0, 4000, 10240, uuid = "MIG-dddd4444-0"), mig = "1")
         probe_script(_payload([_row(0, 60000, 81920, uuid = "GPU-aaaa1111-0"), slice_row, second]))
         assert LlamaCppBackend._get_gpu_memory() == [(0, 4000, 10240)]
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-dddd4444-0"
-        # Two slices of one card: one row per physical index, the first named, and the
-        # child is pinned to that one so the budget and the launch agree.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-dddd,MIG-cccc")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 4000, 10240)]
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-dddd4444-0"
@@ -186,13 +179,10 @@ class TestTheMemoryProbeFallsBackToNvml:
 
         monkeypatch.setattr(mod.subprocess, "run", smi_ok)
         assert LlamaCppBackend._get_gpu_memory() == [(0, 60000, 81920), (1, 20000, 24576)]
-        # The inherited uuid mask is still what the child gets, a MIG parent still its slice.
         assert LlamaCppBackend._child_visibility_for([1, 0]) == "GPU-bbbb2222-1,MIG-cccc3333-0"
-        # The mask changing underneath is read as it is now, not as it was at the probe.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
         assert LlamaCppBackend._child_visibility_for([1]) == "1"
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
-        # No NVML inventory at all: indices as before.
         monkeypatch.setattr(LlamaCppBackend, "_NVML_ROWS", [])
         assert LlamaCppBackend._child_visibility_for([0, 1]) == "0,1"
 
@@ -210,14 +200,10 @@ class TestTheMemoryProbeFallsBackToNvml:
         )
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "MIG-cccc")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480)]
-        # The launch must not turn the slice into its parent's index.
         assert LlamaCppBackend._child_visibility_for([0]) == "MIG-cccc3333-0"
-        # The GPU- entry names the MIG parent, which CUDA exposes as its first slice.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-bbbb,GPU-aaaa")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480), (1, 20000, 24576)]
         assert LlamaCppBackend._child_visibility_for([1, 0]) == "GPU-bbbb2222-1,MIG-cccc3333-0"
-        # A numeric or absent mask re-emits indices as before; only a slice standing in
-        # for its MIG parent is named by uuid, and a selection mixing both stays numeric.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
         assert LlamaCppBackend._get_gpu_memory() == [(0, 9000, 20480), (1, 20000, 24576)]
         assert LlamaCppBackend._child_visibility_for([1]) == "1"
@@ -232,8 +218,6 @@ class TestTheMemoryProbeFallsBackToNvml:
         assert LlamaCppBackend._get_gpu_memory() == []
         probe_script(_payload([_row(0, 0, 0)]))
         assert LlamaCppBackend._get_gpu_memory() == []
-        # One visible GPU without a reading voids the answer rather than shrinking the host;
-        # a full card (free 0, a total) is a reading and stays listed.
         probe_script(_payload([_row(0, 8000), _row(1, 0, 0)]))
         assert LlamaCppBackend._get_gpu_memory() == []
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
@@ -277,7 +261,7 @@ class TestTheEmbeddingServerKeepsTheGpu:
         probe_script(_payload([_row(0, 8000)]))
         import utils.hardware as hardware
 
-        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)  # Metal answers on a Mac
+        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
         monkeypatch.setattr(embed_mod.config, "embed_device_preference", lambda: "auto")
         monkeypatch.setattr(
             LlamaCppBackend, "_arch_gate_survivors", staticmethod(lambda binary: []), raising = False
@@ -287,7 +271,6 @@ class TestTheEmbeddingServerKeepsTheGpu:
         assert server._use_gpu() is True
         cmd = server._build_cmd("/opt/llama-server", "m.gguf", 9999, use_gpu = True)
         assert cmd[-2:] == ["-ngl", "-1"]
-        # And the misread this closes: nothing answering pins the server to the CPU.
         probe_script(_payload([]))
         assert server._use_gpu() is False
 
@@ -344,7 +327,7 @@ class TestAGpuCapableBuildIsPreferred:
     ):
         from utils import llama_cpp_path_settings as ps
 
-        monkeypatch.setattr(ps, "host_gpu_vendors", lambda: None)  # not this host's vendors
+        monkeypatch.setattr(ps, "host_gpu_vendors", lambda: None)
         so = ".dll" if platform == "win32" else ".so"
         pre = "" if platform == "win32" else "lib"
         made = self._tree(
@@ -383,7 +366,6 @@ class TestAGpuCapableBuildIsPreferred:
             assert (
                 ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made[winner]
             ), vendors
-        # A vendor no build targets still gets the vendor-agnostic Vulkan build.
         monkeypatch.setattr(ps, "host_gpu_vendors", lambda: {"intel"})
         assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build-vulkan"]
 
@@ -402,19 +384,16 @@ class TestAGpuCapableBuildIsPreferred:
             (tmp_path / card / "device").mkdir(parents = True)
             (tmp_path / card / "device" / "vendor").write_text(vendor + "\n", encoding = "utf-8")
         assert ps.host_gpu_vendors() == {"amd", "nvidia"}
-        # A container exposing only the AMD device node, or a mask hiding NVIDIA: not runnable.
         nodes.discard("/dev/nvidiactl")
         assert ps.host_gpu_vendors() == {"amd"}
         nodes.add("/dev/nvidiactl")
-        # HIP reads CUDA_VISIBLE_DEVICES when neither HIP_ nor ROCR_ is set, so an empty one
-        # hides both vendors: detected but nothing reachable is an empty set, not unknown,
-        # and only Vulkan fits then. A set HIP_ mask outranks it.
+        # HIP reads CUDA_VISIBLE_DEVICES when HIP_/ROCR_ are unset; a set HIP_ mask outranks it.
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         assert ps.host_gpu_vendors() == set()
         assert ps._fits_host({"cuda"}, set()) is False and ps._fits_host({"vulkan"}, set()) is True
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
         assert ps.host_gpu_vendors() == {"amd"}
-        # The two ROCm masks stack: an empty ROCR_ under a set HIP_ still hides every agent.
+        # The ROCm masks stack: empty ROCR_ under set HIP_ still hides every agent.
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "")
         assert ps.host_gpu_vendors() == set()
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0")
@@ -446,7 +425,6 @@ class TestAGpuCapableBuildIsPreferred:
         wsl_lib.mkdir()
         (wsl_lib / "libcuda.so.1.1").write_bytes(b"")
         assert ps.host_gpu_vendors() == {"amd", "nvidia"}
-        # The masks still apply, and without /dev/dxg the runtimes prove nothing.
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "")
         assert ps.host_gpu_vendors() == {"nvidia"}
         nodes.discard("/dev/dxg")
@@ -455,13 +433,11 @@ class TestAGpuCapableBuildIsPreferred:
     def test_a_gpu_first_hit_for_another_vendor_yields_too(self, tmp_path, monkeypatch):
         from utils import llama_cpp_path_settings as ps
 
-        # No build/ at all: a stale build-cuda/ is the first hit on an AMD box.
         made = self._tree(
             tmp_path, "linux", {"build-cuda": ["libggml-cuda.so"], "build-hip": ["libggml-hip.so"]}
         )
         monkeypatch.setattr(ps, "host_gpu_vendors", lambda: {"amd"})
         assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build-hip"]
-        # On the NVIDIA box, or an unknown host, the first hit stands.
         for vendors in ({"nvidia"}, None):
             monkeypatch.setattr(ps, "host_gpu_vendors", lambda v = vendors: v)
             assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build-cuda"]
@@ -469,7 +445,6 @@ class TestAGpuCapableBuildIsPreferred:
     def test_a_first_hit_of_unknown_layout_keeps_its_place(self, tmp_path):
         from utils import llama_cpp_path_settings as ps
         made = self._tree(tmp_path, "linux", {"build": [], "build-cuda": ["libggml-cuda.so"]})
-        # A static build or the installer's wrapper: not proven CPU-only, so search order holds.
         assert ps.resolve_llama_server_binary(tmp_path, platform = "linux") == made["build"]
 
     @pytest.mark.skipif(
@@ -486,7 +461,6 @@ class TestAGpuCapableBuildIsPreferred:
         monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
         monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(tmp_path))
-        # An in-flight replace or an ACL: the pinned layout's build/ cannot be read at all.
         (tmp_path / "build" / "bin").chmod(0)
         try:
             assert LlamaCppBackend._find_llama_server_binary() is None
@@ -553,7 +527,6 @@ class TestTheLinuxLibrarySearchPath:
         embed_mod.LlamaServerBackend._add_linux_cuda_libs(env, "/opt/llama")
         parts = env["LD_LIBRARY_PATH"].split(":")
         assert str(cu) in parts and str(torch_lib) in parts
-        # The chat server's builder reads the same prefix the same way.
         monkeypatch.setattr(mod.sys, "platform", "linux")
         monkeypatch.setattr(mod.sys, "prefix", str(prefix))
         monkeypatch.setattr(mod, "_llama_lib_dir", lambda binary: Path("/opt/llama"))

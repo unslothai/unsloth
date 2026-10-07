@@ -39,7 +39,6 @@ def test_a_subscript_result_is_rewritten_too():
 
 
 def test_a_chain_of_numeric_lookups_is_rewritten_whole():
-    # Repairing only the head leaves "[0].1", which llama-server still throws on.
     assert repair_numeric_member_access("{{ rows.0.1 }}") == "{{ rows[0][1] }}"
     assert repair_numeric_member_access("{{ a.0.b.10 }}") == "{{ a[0].b[10] }}"
 
@@ -67,8 +66,7 @@ def test_a_raw_block_keeps_the_braces_it_prints():
 
 
 def test_a_raw_body_is_literal_all_the_way_to_its_terminator():
-    # Jinja interprets nothing inside raw, so the "{#" here is text and the {% endraw %}
-    # it appears to wrap really does close the block.
+    # Jinja interprets nothing inside raw, so the {% endraw %} here closes the block.
     assert repair_numeric_member_access("{% raw %}{# {% endraw %} #}{{ m.content.0 }}") == (
         "{% raw %}{# {% endraw %} #}{{ m.content[0] }}"
     )
@@ -79,8 +77,6 @@ def test_a_raw_block_that_never_closes_repairs_nothing_after_it():
 
 
 def test_raw_tags_that_are_only_comment_text_do_not_open_a_raw_block():
-    # Matching the tags in the source would read the middle expression as verbatim and
-    # leave llama-server the numeric member it rejects.
     assert repair_numeric_member_access("{# {% raw %} #}{{ m.content.0 }}{# {% endraw %} #}") == (
         "{# {% raw %} #}{{ m.content[0] }}{# {% endraw %} #}"
     )
@@ -94,7 +90,6 @@ def test_a_real_site_outside_a_raw_block_is_still_repaired():
 
 
 def test_jinja_syntax_a_template_prints_as_an_example_is_left_alone():
-    # The quoted "}}" ends the literal, not the expression, so example.0 is prompt text.
     assert repair_numeric_member_access('{{ "{{ example.0 }}" }}') is None
     assert repair_numeric_member_access("{{ '{% if x.0 %}' }}") is None
 
@@ -106,8 +101,6 @@ def test_a_literal_brace_does_not_hide_a_later_real_site():
 
 
 def test_a_comment_is_not_worth_a_relaunch():
-    # Nothing in a comment is rendered, so repairing it would only force the model through
-    # --chat-template-file for a template that needed nothing.
     assert repair_numeric_member_access("{# {{ a.0 }} #}") is None
 
 

@@ -50,8 +50,7 @@ def _toolchain_ok() -> bool:
         return True
 
 
-# Loop-bound-only args are not specialized (else ~70 JIT variants on a tiled Wan decode); strides and C stay
-# specialized so channel-contiguous loads vectorize.
+# Loop-bound args not specialized (avoids ~70 JIT variants); strides and C stay specialized.
 _SHAPE_ARGS = {
     "_rms_act": ("T", "H", "W", "Ho", "Wo", "ph", "pw", "To", "front", "n_cache"),
     "_bias_residual": ("P", "T", "HW", "W"),
@@ -238,10 +237,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             if NORM:
                 ss = tl.sum(v * v, axis = 1)
                 if MEAN_SQ:
-                    # LTX PerChannelRMSNorm: x / sqrt(mean(x^2) + eps), no affine
                     v = v / tl.sqrt(ss / C + eps)[:, None]
                 else:
-                    # Wan-lineage RMS_norm: F.normalize(x) * sqrt(C) * gamma (+ bias)
                     inv = 1.0 / tl.maximum(tl.sqrt(ss), 1e-12)
                     gw = tl.load(w_ptr + c, mask = cmask, other = 0.0).to(tl.float32) * scale
                     v = v * inv[:, None] * gw[None, :]
@@ -301,7 +298,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         wo = p - ho * Wo
         hh = ho // 2
         ww = wo // 2
-        ph = (ho - hh * 2) * 2 + (wo - ww * 2)  # r2i * 2 + r3i
+        ph = (ho - hh * 2) * 2 + (wo - ww * 2)
         ci = pid_c * BLOCK_C + tl.arange(0, BLOCK_C)
         cm = ci < c
         m = pm[:, None] & cm[None, :]
@@ -403,7 +400,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         x_ptr, out_ptr, C, T_o, H, W, xsb, xsc, xst, xsh, xsw,
         INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
     ):  # fmt: skip
-        # INTERLEAVE: x is Wan time_conv output (B, 2C, T_o/2, H, W); frame 2t+j takes channels [jC, (j+1)C).
+        # x is Wan time_conv output (B, 2C, T_o/2, H, W); frame 2t+j takes channels [jC, (j+1)C).
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
         pid_c = tl.program_id(2)
@@ -462,7 +459,7 @@ def _as5d(x: Any) -> tuple:
     """(tensor viewed as B,C,T,H,W, was_4d)."""
     if x.dim() == 4:
         return x.unsqueeze(2), True
-    if x.dim() == 3:  # (B, C, L): attention's GroupNorm input
+    if x.dim() == 3:
         return x.unsqueeze(2).unsqueeze(2), True
     return x, False
 
@@ -518,7 +515,7 @@ def group_norm_act(
     ndim = x.dim()
     x5, _ = _as5d(x)
     b, c, t, h, w = x5.shape
-    # nn.GroupNorm pools the whole (T, H, W) extent: flatten T into H when strides allow, else fall back
+    # nn.GroupNorm pools the whole (T, H, W) extent: flatten T into H when strides allow
     if t > 1:
         if x5.stride(2) == h * x5.stride(3):
             x5 = x5.as_strided(
@@ -556,13 +553,13 @@ def group_norm_act(
         CPG = cpg, ACT = bool(act), HAS_IN_BIAS = in_bias is not None, BLOCK_P = block_p2, BLOCK_C = block_c,
         num_warps = 4,
     )  # fmt: skip
-    out = out.permute(0, 4, 1, 2, 3)  # B, C, T', H', W'
+    out = out.permute(0, 4, 1, 2, 3)
     shape = x.shape
     if ndim == 5:
         return out.reshape(b, c, *shape[2:]) if out.shape != shape else out
     if ndim == 4:
         return out[:, :, 0]
-    return out[:, :, 0].reshape(shape)  # (B, C, L) view over the (B, L, C) buffer
+    return out[:, :, 0].reshape(shape)
 
 
 def rms_norm_reference(
@@ -728,7 +725,7 @@ def causal_conv(
 
     kind = _conv_kind(conv)
     bias = conv.bias if with_bias else None
-    if kind == "2d":  # Qwen-Image-2.1: the one-frame specialisation, never cached
+    if kind == "2d":
         if cache is not None:
             raise ValueError("2D causal conv takes no cache")
         y = (
@@ -768,7 +765,7 @@ def causal_conv(
     return out, (new_cache if p.shape[2] <= 2 else new_cache.clone())
 
 
-# Single-head VAE attention: head_dim > 256 has no flash / cuDNN kernel, so two GEMMs + fp32 softmax beat SDPA.
+# head_dim > 256 has no flash / cuDNN kernel, so two GEMMs + fp32 softmax beat SDPA.
 
 _ATTN_SCORE_BYTES = 256 * 2**20
 
@@ -779,7 +776,7 @@ def single_head_attention(q: Any, k: Any, v: Any) -> Any:
     b, length, d = q.shape
     s_len = k.shape[1]
     scale = d**-0.5
-    # keys padded to a multiple of 64 (cuBLAS slow path on odd extents); padded keys get probability exactly 0
+    # keys padded to a multiple of 64 (cuBLAS slow path); padded keys get probability 0
     s_pad = (s_len + 63) // 64 * 64
     if s_pad != s_len:
         kp = torch.zeros((b, s_pad, d), dtype = k.dtype, device = k.device)
@@ -833,7 +830,7 @@ class FusedSingleHeadProcessor:
         try:
             return self._fused(attn, hidden_states)
         except Exception as exc:  # noqa: BLE001
-            # OOM falls back for this call only; anything else for good. Outside the handler so failed tensors are freed.
+            # OOM falls back for this call only; anything else for good. Outside handler to free tensors.
             if not _is_oom(exc):
                 attn._unsloth_vae_fused_failed = True
         return self.fallback(attn, hidden_states, encoder_hidden_states, attention_mask, temb)
@@ -884,16 +881,14 @@ def _fast_wan_attention(block: Any) -> Any:
     def fast(x: Any) -> Any:
         identity = x
         b, c, t, h, w = x.shape
-        y = rms_norm_act(
-            x, block.norm, False
-        )  # (b, c, t, h, w) channels-last_3d: (b, t, h, w, c) in memory
-        y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)  # a channels-last view, no copy
+        y = rms_norm_act(x, block.norm, False)
+        y = y.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
         qkv = F.conv2d(y, block.to_qkv.weight, block.to_qkv.bias)
         qkv = qkv.permute(0, 2, 3, 1).reshape(b * t, h * w, 3 * c)
         q, k, v = qkv[..., :c], qkv[..., c : 2 * c], qkv[..., 2 * c :]
         if not _mm_attention_ok(q):
             return _stock_forward(block)(x)
-        o = single_head_attention(q, k, v)  # (b*t, hw, c)
+        o = single_head_attention(q, k, v)
         o = F.linear(o, block.proj.weight.view(c, c), block.proj.bias)
         o = o.view(b, t, h, w, c).permute(0, 4, 1, 2, 3)
         return add_bias_residual(
@@ -1021,7 +1016,6 @@ def _resnet2d_fusable(block: Any) -> bool:
         and getattr(block, "upsample", None) is None
         and getattr(block, "downsample", None) is None
         and getattr(block, "time_emb_proj", None) is None
-        # "group" / "spatial" name the temb norm; without temb (a VAE) both run plain norm2 like "default"
         and getattr(block, "time_embedding_norm", "default") in ("default", "group")
         and isinstance(getattr(block, "conv1", None), torch.nn.Conv2d)
         and isinstance(getattr(block, "conv2", None), torch.nn.Conv2d)
@@ -1367,7 +1361,7 @@ def install_wan_vae(vae: Any, logger: Any = None) -> int:
             n += 1
         for module in part.modules():
             if "forward" in module.__dict__:
-                continue  # already patched (by us or another speed path)
+                continue
             name = type(module).__name__
             if name.endswith("ResidualBlock") and _wan_resblock_fusable(module):
                 _guard(
@@ -1446,7 +1440,6 @@ def _fast_upsample(mod: Any) -> Any:
 
 TILE_BATCH_ENV = "UNSLOTH_VAE_TILE_BATCH"
 _TILE_BATCH_MAX = 4
-# measured decode peak per 256 px Wan-2.1 tile (fp16, 4 frames, 96 full-res channels) ~= 1 GiB = 24x one activation
 _TILE_PEAK_FACTOR = 24
 
 
@@ -1470,7 +1463,7 @@ def _tile_batch_cap(vae: Any, z: Any) -> int:
 
 def _blend_weights(extent: int, device: Any) -> tuple:
     torch = _torch()
-    # stock python-scalar blend weights as fp32 opmath, built on device: a host list is a sync H2D copy per seam
+    # blend weights built on device: a host list is a sync H2D copy per seam
     y = torch.arange(extent, dtype = torch.float64, device = device) / extent
     wb = y.float()
     wa = (1 - y).float()
@@ -1584,9 +1577,7 @@ def _wan_batched_tiled_decode(
     if patch is not None:
         from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
         dec = unpatchify(dec, patch_size = patch)
-    if (
-        clamp
-    ):  # as the class's stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
+    if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
         dec = torch.clamp(dec, min = -1.0, max = 1.0)
     if not return_dict:
         return (dec,)
@@ -1960,7 +1951,7 @@ def install_ltx2_vae(vae: Any, logger: Any = None) -> int:
     if vae is None or not runtime_ok():
         return 0
     n = 0
-    # decoder only: the causal one-frame encode (i2v conditioning) measured 33 -> 35 ms fused, so it stays stock
+    # decoder only: the causal one-frame encode measured slower fused
     for part_name in ("decoder",):
         part = getattr(vae, part_name, None)
         if part is None:
@@ -2081,9 +2072,9 @@ def install(
         return 0
     done = getattr(vae, "_unsloth_vae_fused_installed", 0)
     if done:
-        return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
+        return done  # idempotent: a dual-DiT family runs this once per expert over the same VAE
     n = _install(vae, logger)
-    # Only where measured faster, and only when a fused pass feeds a conv (relaid weights alone slow LTX-2's decode).
+    # Only where measured faster and a fused pass feeds a conv (relaid weights alone are slower).
     if (
         n
         and type(vae).__name__ in _CL_WEIGHT_VAES

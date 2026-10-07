@@ -71,7 +71,6 @@ def chat_busy(count_pending: bool = True) -> bool:
     except Exception:  # noqa: BLE001 -- no chat stack means no chat work
         return False
     try:
-        # chat's counter covers media requests too, and none of those is using chat
         parked = switcher_count()
         counted = other_inference_request_count(
             current_request_counted = True, include_pending = count_pending
@@ -158,7 +157,6 @@ async def drain(
                 raise_if_other_accounts_active()
             except GpuBusyForAnotherAccountError as exc:
                 raise busy(kind, openai_errors, retry_after = exc.retry_after) from exc
-        # this request is itself tracked and itself a waiter, so it counts as neither
         others = other_request_count(
             owner, current_request_counted = True, count_pending = count_pending
         )

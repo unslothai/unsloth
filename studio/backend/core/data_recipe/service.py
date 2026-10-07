@@ -52,7 +52,6 @@ def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None)
         for candidate in candidates:
             if not candidate.exists() or not candidate.is_file():
                 continue
-            # The cwd fallback is a different file from the one checked above.
             try:
                 account_path(candidate)
             except HTTPException:
@@ -157,7 +156,7 @@ def _allow_empty_prompt(_rendered_text: str) -> None:
     return None
 
 
-# Filters that stringify their input before finalize runs, so a missing cell would still render "None" / "nan".
+# These stringify input before finalize, so a missing cell would render "None"/"nan".
 _STRINGIFYING_FILTERS = (
     "capitalize",
     "escape",
@@ -202,7 +201,7 @@ def _apply_data_designer_prompt_blank_patch() -> None:
     original_prepare = RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer
 
     def _patched_prepare(self: Any, template_name: str, *args: Any, **kwargs: Any) -> None:
-        # render() prepares on every record; only patch the env this call creates, else filter wrappers nest per row.
+        # Only patch envs this call creates, else filter wrappers nest per row.
         already_prepared = self._template_prepared_in_multi_template_renderer(template_name)
         original_prepare(self, template_name, *args, **kwargs)
         if already_prepared:
@@ -239,8 +238,7 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
     url = str(endpoint or "")
     if get_managed_private_provider_urls_allowed():
         try:
-            # The switch lifts HTTPS-only and public-only, not http(s)-only: everywhere else a
-            # provider URL is one of those two schemes, and this gate has no validator behind it.
+            # The switch lifts HTTPS-only and public-only, not http(s)-only.
             if urlsplit(url).scheme not in ("http", "https"):
                 raise ValueError("Provider endpoints must use http or https.")
             provider_address_excluding_metadata(url)
@@ -282,7 +280,7 @@ def install_public_egress_guard() -> None:
     resolve = socket.getaddrinfo
 
     def guarded_getaddrinfo(host, port, *args, **kwargs):
-        # Per lookup, not captured at install: a worker outlives the switch it started under.
+        # Per lookup: a worker outlives the switch it started under.
         private_allowed = get_managed_private_provider_urls_allowed()
         infos = resolve(host, port, *args, **kwargs)
         for info in infos:
@@ -371,8 +369,7 @@ def _require_confinable_mcp_transport(provider_type: str) -> None:
 def build_mcp_providers(recipe: dict[str, Any]) -> list:
     from data_designer.config.mcp import LocalStdioMCPProvider, MCPProvider  # pyright: ignore[reportMissingImports]
 
-    # Same gate as the chat MCP path: stdio providers spawn a local subprocess, so build
-    # them only when this host allows it (desktop loopback default / explicit opt-in).
+    # stdio providers spawn a local subprocess; same gate as chat MCP.
     from core.inference.mcp_client import stdio_mcp_enabled
 
     stdio_allowed = stdio_mcp_enabled()
@@ -467,8 +464,7 @@ def build_config_builder(recipe: dict[str, Any]):
         specs = text_format_specs,
     )
 
-    # DataDesignerConfigBuilder.from_config skips processors; re-attach so drop_columns/schema_transform
-    # survive the API payload.
+    # from_config skips processors; re-attach them.
     for processor in recipe_core.get("processors") or []:
         if not isinstance(processor, dict):
             continue
@@ -492,8 +488,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:
-        # DataDesigner defaults to cwd/artifacts and packaged Unsloth can run with cwd=/, so pin the
-        # writable recipe artifact root.
+        # Packaged Unsloth can run with cwd=/, so pin the artifact root.
         artifact_path = str(recipe_datasets_root())
 
     recipe = _strip_frontend_model_config_metadata(recipe)

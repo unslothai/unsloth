@@ -98,7 +98,6 @@ def install(transformer: Any, logger: Any = None) -> bool:
         if getattr(compiled, _MARK, False):
             return True
         restride = wrap(compiled)
-        # Keep the guard's identity visible: guard_compiled_blocks skips modules already wrapped.
         guard = getattr(compiled, "_unsloth_compile_guard", None)
         if guard is not None:
             restride._unsloth_compile_guard = guard  # type: ignore[attr-defined]

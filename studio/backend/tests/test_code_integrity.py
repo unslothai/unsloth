@@ -34,7 +34,6 @@ def test_win32_error_numbers_are_recognised(winerror: int):
 
 @pytest.mark.parametrize("status", [0xC0E90002, 0xC0000428, 0xC0000602])
 def test_ntstatus_return_codes_are_recognised(status: int):
-    # Popen reports the same status as a negative int, read as signed.
     assert code_integrity_block_reason(status) is not None
     assert code_integrity_block_reason(status - (1 << 32)) is not None
 

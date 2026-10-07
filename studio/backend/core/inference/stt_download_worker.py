@@ -31,7 +31,6 @@ activate_native_tls()
 activate_happy_eyeballs()
 
 
-# How long a cancelled worker gets to exit on SIGTERM before it is killed.
 TERMINATE_GRACE_SECONDS = 15.0
 
 
@@ -59,11 +58,9 @@ def spawn_download(
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     # Xet's out-of-order chunks do not provide steady partial-file progress.
     env["HF_HUB_DISABLE_XET"] = "1"
-    # Parallel Range chunks leave sparse partials a resumed sequential writer
-    # cannot reuse, which defeats the point of cancelling.
+    # Parallel Range chunks leave sparse partials a resumed download cannot reuse.
     env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    # `None` keeps the ambient login (the parent planned the download with it); `False`
-    # must be scrubbed, or the child downloads a repo the caller only had to name.
+    # None keeps the ambient login; False must be scrubbed from the child env.
     apply_token_to_child_env(env, hf_token)
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
@@ -75,11 +72,10 @@ def spawn_download(
         cwd = str(cwd),
         stdout = subprocess.DEVNULL,
         stderr = subprocess.PIPE,
-        # Die with Unsloth: a detached worker would keep pulling gigabytes after
-        # the app closed, with nothing left able to stop it.
+        # Die with Unsloth so a detached worker cannot keep downloading after exit.
         **child_popen_kwargs(),
     )
-    adopt_pid(process.pid)  # terminate_all backstop for graceful exits
+    adopt_pid(process.pid)
     return process
 
 

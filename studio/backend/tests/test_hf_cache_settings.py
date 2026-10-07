@@ -289,12 +289,11 @@ def test_inactive_cache_model_loads_from_snapshot_path(tmp_path):
 
 
 def test_diffusion_cache_root_follows_a_live_switch(settings_store, tmp_path):
-    # The image/video backends used huggingface_hub's import-time HF_HUB_CACHE constant, which set_hf_cache_home does not
-    # update, so the download wrote to the new root while progress counted the old one and a load could split across both.
+    # The diffusion backends must not use hub's import-time HF_HUB_CACHE constant, which goes stale.
     import core.inference.diffusion as diffusion
 
     moved = tmp_path / "external-c" / "huggingface"
-    # Write the setting straight into the store: set_hf_cache_home's folder validation is not under test and it rejects the pytest tmp root on macOS.
+    # Bypass set_hf_cache_home: its folder validation rejects the pytest tmp root on macOS.
     settings_store[hf_cache_settings.CACHE_HOME_SETTING_KEY] = str(moved)
 
     assert diffusion.hub_cache_dir() == str(moved / "hub")
@@ -304,7 +303,6 @@ def test_diffusion_cache_root_follows_a_live_switch(settings_store, tmp_path):
 
 
 def test_diffusion_loader_calls_pin_the_cache_dir():
-    # Every from_pretrained / from_single_file must carry cache_dir, else diffusers resolves it through the stale constant.
     for rel in ("core/inference/diffusion.py", "core/inference/video.py"):
         source = (Path(_BACKEND_DIR) / rel).read_text(encoding = "utf-8")
         for call in ("from_pretrained(", "from_single_file("):
@@ -319,9 +317,8 @@ def test_diffusion_loader_calls_pin_the_cache_dir():
                 ), f"{rel}:{index} calls {call} without a pinned cache_dir"
 
 
-# _stored_cache_home skips the database read when nothing uses one, so `unsloth train` does not
-# build a studio.db on a machine that never opened Studio. Only a positively observed absence may
-# license that skip. Driven in a subprocess: the skip needs storage.studio_db out of sys.modules.
+# Skipping the DB read avoids creating studio.db for `unsloth train`; runs in a subprocess
+# because the skip needs storage.studio_db out of sys.modules.
 _GUARD_PROBE = """
 import json, os, sys
 
@@ -387,8 +384,6 @@ def _run_guard_probe(
 
 
 def test_absent_studio_db_skips_the_database_read(tmp_path):
-    # The skip 912024e84 added must survive the tightening below: no studio.db answers None
-    # WITHOUT a connection, which is what stops the CLI creating a 250 KB database.
     studio_home = tmp_path / "root" / "studio"
     studio_home.mkdir(parents = True)
 
@@ -400,8 +395,7 @@ def test_absent_studio_db_skips_the_database_read(tmp_path):
 
 @pytest.mark.parametrize("fixture", ["not_a_directory", "symlink_loop", "unreadable_parent"])
 def test_uninspectable_studio_db_keeps_the_stored_cache_home(tmp_path, fixture):
-    # Path.exists reports ENOTDIR and ELOOP as absence on every release, and swallows EACCES
-    # from 3.14. Reading any as "no database" discards the cache home chosen in Settings.
+    # Path.exists reports ENOTDIR/ELOOP (and EACCES from 3.14) as absence; that must not count.
     chosen = tmp_path / "chosen"
     studio_home = tmp_path / "root" / "studio"
     if fixture == "not_a_directory":
@@ -421,7 +415,6 @@ def test_uninspectable_studio_db_keeps_the_stored_cache_home(tmp_path, fixture):
         if fixture == "unreadable_parent":
             os.chmod(studio_home, 0o755)
 
-    # unreadable_parent is the case 3.14 newly breaks; the other two hold on every release.
     assert was_read, "a database we could not inspect must still be read"
     assert answer == str(chosen)
 

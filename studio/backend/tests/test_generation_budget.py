@@ -36,7 +36,6 @@ def test_an_unset_budget_becomes_the_free_context():
 
 
 def test_an_explicit_budget_is_never_reduced():
-    # A request that does not fit must raise, not come back shortened.
     assert generation_budget_within_context(_model(), _PROMPT_LEN, 512) == 512
     assert generation_budget_within_context(_model(), _PROMPT_LEN, _WINDOW) == _WINDOW
     wide = SimpleNamespace(
@@ -46,7 +45,6 @@ def test_an_explicit_budget_is_never_reduced():
 
 
 def test_a_prompt_with_no_room_left_gets_the_default_not_a_token():
-    # A floor of 1 clears a native 32768 guard on a 1024 load and returns one token.
     assert generation_budget_within_context(_model(window = 32), 64, None) == UNSET_GENERATION_BUDGET
     narrow = SimpleNamespace(
         max_seq_length = 1024, config = SimpleNamespace(max_position_embeddings = 32768)
@@ -56,8 +54,7 @@ def test_a_prompt_with_no_room_left_gets_the_default_not_a_token():
 
 
 def test_the_selected_window_wins_over_a_wider_checkpoint():
-    # from_pretrained keeps config.max_position_embeddings at max(requested, native), so the
-    # config alone would serve a --max-seq-length 1024 load the whole 32768.
+    # from_pretrained sets max_position_embeddings to max(requested, native), so config overstates it.
     model = SimpleNamespace(
         max_seq_length = 1024,
         config = SimpleNamespace(max_position_embeddings = 32768),
@@ -82,7 +79,7 @@ def test_a_zero_budget_is_a_value_not_an_absence():
     assert generation_budget_within_context(_model(), _PROMPT_LEN, 0) == 0
 
 
-# The call-site tests below import the backend, which pulls unsloth/unsloth_zoo: absent on CPU CI.
+# Call-site tests import unsloth/unsloth_zoo, absent on CPU CI.
 
 
 class _FakeTensor:
@@ -152,8 +149,7 @@ def _streaming_backend(monkeypatch, window = _WINDOW):
     try:
         from core.inference.inference import InferenceBackend
     except (ImportError, RuntimeError) as exc:  # pragma: no cover - env-dependent
-        # Skips because the CPU job installs no unsloth; the helper tests above cover
-        # the same bound, so the budget itself is never left unasserted.
+        # CPU job has no unsloth; the helper tests above still cover the bound.
         pytest.skip(f"full inference backend unavailable ({type(exc).__name__}: {exc})")
 
     backend = InferenceBackend.__new__(InferenceBackend)

@@ -321,7 +321,6 @@ def account_process_spec(module: str, target: str, env: dict, kwargs: dict):
     }
 
 
-# Model provider credentials the recipe engine reads straight from the environment.
 _PROVIDER_SECRET_ENV_VARS = frozenset(
     {
         "OPENAI_API_KEY",

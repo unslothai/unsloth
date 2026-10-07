@@ -36,7 +36,7 @@ def linux(monkeypatch, tmp_path):
     monkeypatch.setattr(plan_mod, "_APPARMOR_PROFILE", str(tmp_path / "bwrap-userns-restrict"))
     monkeypatch.setattr(plan_mod, "_is_wsl", lambda: state["wsl"])
     monkeypatch.setattr(plan_mod, "_running_as_root", lambda: state["root"])
-    state["bwrap"] = None  # None: follow PATH, as a trusted copy would
+    state["bwrap"] = None
 
     def bwrap_state():
         if state["bwrap"] is not None:
@@ -140,7 +140,7 @@ def test_a_profile_that_is_there_but_not_in_force_is_only_loaded(linux):
 
 def test_an_untrusted_bwrap_on_path_still_gets_the_install(linux):
     linux["tool"]("apt-get", "bwrap")
-    linux["bwrap"] = "missing"  # e.g. ~/.local/bin/bwrap and no system copy
+    linux["bwrap"] = "missing"
     plan = plan_mod.detect(False)
     assert plan.action == plan_mod.LINUX_INSTALL
     assert "bubblewrap" in plan.manual_command

@@ -28,8 +28,6 @@ if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
 
-# Slice of a wide-ladder template: reasoning_effort only (no enable_thinking
-# gate), branching on the whole 'none'..'max' scale.
 WIDE_LADDER_TEMPLATE = """
 {%- if reasoning_effort == 'none' -%}{{- 'N' -}}
 {%- elif reasoning_effort == 'minimal' -%}{{- 'm' -}}
@@ -42,8 +40,7 @@ WIDE_LADDER_TEMPLATE = """
 """
 
 
-# gpt-oss-style: reasoning_effort only, low/medium/high named in prose rather
-# than compared as literals, so detection publishes no level list.
+# gpt-oss-style: levels named in prose, not literals, so detection publishes none.
 GPT_OSS_TEMPLATE = """
 {%- set effort = reasoning_effort or 'medium' -%}
 {{- 'Reasoning: ' + effort -}}
@@ -87,19 +84,15 @@ def test_wide_ladder_is_published_by_detection():
     ],
 )
 def test_every_advertised_level_reaches_the_template(effort, expected):
-    # The Think menu sends the level alone, with no enable_thinking alongside.
     assert _shim(WIDE_LEVELS)._request_reasoning_kwargs(None, effort, None) == {
         "reasoning_effort": expected
     }
-    # An API caller may pair it with enable_thinking; the level still wins.
     assert _shim(WIDE_LEVELS)._request_reasoning_kwargs(True, effort, None) == {
         "reasoning_effort": expected
     }
 
 
 def test_wide_ladder_still_disables_on_the_off_path():
-    # The retry/off call sites pass (False, None): no level, so the fallback
-    # runs and thinking goes off at the ladder's low end.
     assert _shim(WIDE_LEVELS)._request_reasoning_kwargs(False, None, None) == {
         "reasoning_effort": 0.2
     }
@@ -117,7 +110,6 @@ def test_a_model_advertising_no_levels_keeps_the_four_level_behaviour():
     assert backend._request_reasoning_kwargs(None, "medium", None) == {"reasoning_effort": "medium"}
     assert backend._request_reasoning_kwargs(None, "high", None) == {"reasoning_effort": "high"}
     assert backend._request_reasoning_kwargs(None, "none", None) == {"reasoning_effort": "none"}
-    # Not on the ladder: downgraded, exactly as before.
     assert backend._request_reasoning_kwargs(None, "minimal", None) == {"reasoning_effort": "low"}
     assert backend._request_reasoning_kwargs(True, "max", None) == {"reasoning_effort": "high"}
     assert backend._request_reasoning_kwargs(None, "max", None) is None
@@ -135,7 +127,6 @@ def test_a_narrow_ladder_does_not_lose_the_gpt_oss_levels():
 
 
 def test_missing_levels_attribute_is_tolerated():
-    # Duck-typed engine stand-ins bind this method without the attribute.
     backend = _shim(WIDE_LEVELS)
     del backend._reasoning_effort_levels
     assert backend._request_reasoning_kwargs(None, "high", None) == {"reasoning_effort": 0.9}

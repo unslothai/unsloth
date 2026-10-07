@@ -151,7 +151,6 @@ class TestTheTensorPlanPricesTheLaunch:
         assert _flash_attn_in(cmd), "the launch emits flash attention"
         planned = _ctx_of(cmd)
 
-        # The gap is the defect, so assert the side of it rather than a magic number.
         pessimistic = backend._plan_tensor_parallel(
             [(0, 12000), (1, 12000)],
             4 * GB,
@@ -238,7 +237,6 @@ def test_the_state_is_still_named_planned_flash_attn():
     import inspect
 
     source = inspect.getsource(inspect.unwrap(LlamaCppBackend.load_model))
-    # Through the reserve wrapper now, which only holds a reading DOWN.
     assert "planned_flash_attn = _reserved_flash_attn_state(" in source
     assert "_planned_flash_attn_state(" in source
     assert "planned_flash_attn = False" not in source
@@ -252,7 +250,6 @@ class TestAutoIsNotAnAnswer:
         assert _planned_flash_attn_state(["--flash-attn", "auto"]) is False
         assert _planned_flash_attn_state(["-fa", "auto"]) is False
         assert _planned_flash_attn_state(["-fa=auto"]) is False
-        # llama.cpp's numeric spelling of the same value.
         assert _planned_flash_attn_state(["-fa", "-1"]) is False
 
     def test_an_inherited_auto_is_overridden_by_the_managed_flag(self):
@@ -280,7 +277,6 @@ class TestAutoIsNotAnAnswer:
     def test_tensor_split_decides_auto_rather_than_leaving_it_open(self):
         """llama.cpp upgrades AUTO to ENABLED under SPLIT_MODE_TENSOR, so pricing the
         padded V there charges a cache the child never allocates."""
-        # The three ways the launch decides the mode: toggle, extras, inherited env.
         assert _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = True) is True
         assert _planned_flash_attn_state(["-fa", "auto", "--split-mode", "tensor"], env = {}) is True
         assert (
@@ -295,7 +291,6 @@ class TestAutoIsNotAnAnswer:
             is False
         )
         assert _planned_flash_attn_state(["-fa", "auto"], env = {}) is False
-        # A user OFF is not silently flipped on: refusing the pair is the launch's job.
         assert _planned_flash_attn_state(["-fa", "off"], tensor_parallel = True) is False
 
     def test_the_managed_launch_is_unaffected(self):
@@ -420,7 +415,6 @@ class TestTheDowngradesRePlanTheAttention:
             if isinstance(default, ast.Name) and default.id == "planned_flash_attn"
         ]
         assert frozen == [], frozen
-        # And the term is still priced, rather than dropped to silence the pin.
         mtp = next(
             node
             for node in ast.walk(func)
@@ -443,14 +437,11 @@ class TestTheReserveWhenTheFitterIsOff:
     def test_a_user_fit_off_keeps_the_conservative_reserve(self):
         from core.inference.llama_cpp import _reserved_flash_attn_state
 
-        # The ordinary managed launch is unchanged: fitting is on, so the respawn re-places.
         assert _reserved_flash_attn_state(True, None, env = {}) is True
         assert _reserved_flash_attn_state(True, ["--ctx-size", "4096"], env = {}) is True
-        # With the fitter off, the respawn lands on the placement this reserve chose.
         assert _reserved_flash_attn_state(True, ["--fit", "off"], env = {}) is False
         assert _reserved_flash_attn_state(True, ["--fit=off"], env = {}) is False
         assert _reserved_flash_attn_state(True, None, env = {"LLAMA_ARG_FIT": "off"}) is False
-        # Last-wins, like every other flag: a later --fit on is the state that runs.
         assert _reserved_flash_attn_state(True, ["--fit", "off", "--fit", "on"], env = {}) is True
         assert (
             _reserved_flash_attn_state(True, ["--fit", "on"], env = {"LLAMA_ARG_FIT": "off"}) is True
@@ -483,7 +474,6 @@ class TestTheReserveWhenTheFitterIsOff:
 
         body = inspect.getsource(module.LlamaCppBackend.load_model)
         assert "_reserved_flash_attn_state(" in body
-        # Both the first plan and every re-plan, or a downgrade would put the raw reading back.
         assert body.count("_reserved_flash_attn_state(") == 2, body.count(
             "_reserved_flash_attn_state("
         )
@@ -537,7 +527,6 @@ class TestTheReplanIsAuthoritative:
         from core.inference.llama_cpp import _planned_flash_attn_state
 
         inherited = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
-        # The state the re-plan used to resolve: a downgraded toggle, a tensor environment.
         assert (
             _planned_flash_attn_state(["-fa", "auto"], tensor_parallel = False, env = inherited) is True
         )

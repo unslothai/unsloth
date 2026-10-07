@@ -23,8 +23,7 @@ from core.inference.llama_server_args import (
 GIB = 1024**3
 MIB = 1024**2
 
-# unsloth/Qwen3.8-27B-GGUF, read from the shipped file: arch qwen35, 65 blocks,
-# full_attention_interval 4, ssm.inner_size 6144, state_size 128, group_count 16, conv_kernel 4.
+# unsloth/Qwen3.8-27B-GGUF metadata, read from the shipped file.
 QWEN38_27B = {
     "_n_layers": 65,
     "_n_kv_heads": 4,
@@ -64,9 +63,6 @@ def _plain_attention_backend():
     )
 
 
-# --------------------------------------------------------------- the per-snapshot cost
-
-
 def test_one_snapshot_is_the_whole_recurrent_state():
     """Cross-check the helper against the model metadata."""
     b = _backend()
@@ -81,9 +77,6 @@ def test_one_snapshot_is_the_whole_recurrent_state():
 
 def test_a_plain_attention_model_pays_nothing_per_snapshot():
     assert _plain_attention_backend()._rollback_state_bytes(1) == 0
-
-
-# --------------------------------------------------------------- the budget arithmetic
 
 
 def test_the_default_stands_where_a_snapshot_costs_nothing():
@@ -116,9 +109,6 @@ def test_more_slots_buy_fewer_snapshots_each():
     four = ctx_checkpoints_within_host_budget(int(149.625 * MIB), 4, 94 * GIB)
     assert one == LLAMA_CTX_CHECKPOINTS_DEFAULT
     assert four == 8
-
-
-# --------------------------------------------------------------- what the launcher emits
 
 
 def _caps(flag = "--ctx-checkpoints"):
@@ -156,9 +146,6 @@ def test_an_unreadable_host_leaves_the_launch_alone(monkeypatch):
     assert _backend()._bounded_ctx_checkpoints(4, _caps()) is None
 
 
-# --------------------------------------------------------------- what the estimate prices
-
-
 def test_the_estimator_charges_the_snapshots_on_the_hybrid_path():
     b = _backend()
     without = b._estimate_kv_cache_bytes(159744, "q4_0", n_parallel = 4, ctx_checkpoints = 0)
@@ -188,9 +175,6 @@ def test_a_plain_attention_model_is_unchanged_by_the_new_term():
     without = b._estimate_kv_cache_bytes(32768, "f16", n_parallel = 4, ctx_checkpoints = 0)
     with_32 = b._estimate_kv_cache_bytes(32768, "f16", n_parallel = 4, ctx_checkpoints = 32)
     assert with_32 == without
-
-
-# --------------------------------------------------------------- blank is 32, not 0
 
 
 def test_a_blank_field_prices_llama_cpps_own_default():
@@ -240,14 +224,9 @@ def test_a_build_without_the_flag_allocates_none():
     assert effective_ctx_checkpoints(None, 32, supports_flag = False) == 0
 
 
-# --------------------------------------------------------------- the probe's third state
-
-
 class TestAnInconclusiveProbeIsNotProofOfAbsence:
     """An unanswered help probe is not proof that checkpoints are absent."""
 
-    # A real successful parse always yields a catalogue, so every "the help ran" case
-    # here carries one; an empty catalogue is silence, covered separately below.
     _PARSED = {"--flash-attn": "...", "--cache-ram": "..."}
 
     def test_a_help_that_ran_and_named_neither_alias_is_zero(self):
@@ -425,9 +404,6 @@ class TestAnInconclusiveProbeIsNotProofOfAbsence:
             assert "supports_flag = " not in source
 
 
-# --------------------------------------------------------------- and never against VRAM
-
-
 class TestCheckpointsNeverReachAVramFigure:
     """Checkpoint storage must not be charged to VRAM."""
 
@@ -435,7 +411,6 @@ class TestCheckpointsNeverReachAVramFigure:
         import inspect
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        # One rule, re-asked wherever the slot count changes, never a second spelling.
         assert source.count("def _decide_auto_ctx_checkpoints(") == 1
         compact = "".join(source.split())
         sized = (
@@ -496,7 +471,6 @@ class TestCheckpointsNeverReachAVramFigure:
         source = inspect.getsource(inference_routes._estimate_gguf_kv_gb)
         assert "runtime.kv_bytes - runtime.kv_checkpoint_bytes" in source
         assert "runtime.kv_bytes + runtime.compute_bytes" not in source
-        # ...but only against a pool that is really separate from host RAM.
         assert "if shared_memory_pool" in source
 
 
@@ -527,9 +501,6 @@ def test_a_kda_hybrid_is_priced_wherever_it_is_bounded():
     without = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 2, ctx_checkpoints = 0)
     with_8 = b._estimate_kv_cache_bytes(8192, "f16", n_parallel = 2, ctx_checkpoints = 8)
     assert with_8 - without == 2 * 8 * b._rollback_state_bytes(1)
-
-
-# --------------------------------------------------------------- inside a memory-limited container
 
 
 class TestTheBudgetIsWhatThisProcessMayCharge:
@@ -606,9 +577,6 @@ class TestTheBudgetIsWhatThisProcessMayCharge:
             assert "_total_system_memory_mib" not in source
 
 
-# --------------------------------------------------------------- across the arch-crash retry
-
-
 class TestTheCapSurvivesAWindowsDeviceRetry:
     """The retry re-decides the Windows cache tuning; the automatic cap must follow it."""
 
@@ -635,11 +603,8 @@ class TestTheCapSurvivesAWindowsDeviceRetry:
         import inspect
 
         source = inspect.getsource(LlamaCppBackend.load_model)
-        # One emission rule for the launch and every respawn, not a spelling each.
         assert source.count("def _emit_auto_ctx_checkpoints(") == 1
-        # The launch, the arch-crash respawn, and the single-sequence retry.
         assert source.count("_emit_auto_ctx_checkpoints(cmd)") == 3
-        # Every respawn that re-emits first takes back the pair it is replacing.
         assert source.count("self._without_flag_pairs(cmd, _auto_ckpt_emitted)") == 2
         tuning = source.index("_retry_cache_tuning_flags(")
         strip = source.index("self._without_flag_pairs(cmd, _auto_ckpt_emitted)")
@@ -657,9 +622,6 @@ class TestTheCapSurvivesAWindowsDeviceRetry:
         emit = source.index("_emit_auto_ctx_checkpoints(cmd)", clamp)
         spawn = source.index('_spawn_and_wait(cmd, label = "-single-seq")')
         assert clamp < strip < decide < emit < spawn, "re-decide for one slot before spawning"
-
-
-# --------------------------------------------------------------- what THIS build defaults to
 
 
 class TestTheCapNeverRaisesTheBuildsOwnDefault:
@@ -780,9 +742,6 @@ class TestTheCapNeverRaisesTheBuildsOwnDefault:
         )
 
 
-# --------------------------------------------------------------- an inherited env setting
-
-
 class TestAnInheritedEnvCountIsTheOperatorsSetting:
     """llama.cpp applies LLAMA_ARG_CTX_CHECKPOINTS before argv, so an emitted flag overrules it."""
 
@@ -847,7 +806,6 @@ class TestAnInheritedEnvCountIsTheOperatorsSetting:
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "_ctx_checkpoints_owned = (" in source
         assert "else _env_ctx_checkpoints_override()" in source
-        # The tuning's zero and the arch-crash retry both read the combined value.
         assert "if _ctx_checkpoints_owned is not None:" in source
         assert "ctx_checkpoints = _ctx_checkpoints_owned," in source
         owned = source.index("_ctx_checkpoints_owned = (")
@@ -863,7 +821,6 @@ class TestAnInheritedEnvCountIsTheOperatorsSetting:
         assert LlamaCppBackend._retry_cache_tuning_flags(
             cmd, cache_ram = None, ctx_checkpoints = None, server_caps = caps
         ) == ["--cache-ram", "0", "--ctx-checkpoints", "0"]
-        # What load_model now passes when LLAMA_ARG_CTX_CHECKPOINTS is set.
         assert LlamaCppBackend._retry_cache_tuning_flags(
             cmd, cache_ram = None, ctx_checkpoints = 256, server_caps = caps
         ) == ["--cache-ram", "0"]
@@ -891,9 +848,6 @@ class TestAnInheritedEnvCountIsTheOperatorsSetting:
         )
 
 
-# --------------------------------------------------------------- after the fit picks the slots
-
-
 class TestTheCapFollowsTheSlotCountTheChildGets:
     """The fit can cut n_parallel below the request; a cap sized for the request is wrong."""
 
@@ -903,7 +857,6 @@ class TestTheCapFollowsTheSlotCountTheChildGets:
         )
         backend = _backend()
         assert backend._bounded_ctx_checkpoints(32, _caps()) == CTX_CHECKPOINTS_MIN_USEFUL
-        # One slot affords the whole default, so nothing is emitted and nothing is lost.
         assert backend._bounded_ctx_checkpoints(1, _caps()) is None
 
     def test_both_counts_are_decided_after_the_fit_rebinds_the_slots(self):
@@ -943,9 +896,6 @@ class TestTheCapFollowsTheSlotCountTheChildGets:
         assert min(decisions) > max(fit_rebinds), (decisions, fit_rebinds)
 
 
-# --------------------------------------------------------------- one pool or two
-
-
 class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
     """On an iGPU or an APU the driver's free VRAM IS the host heap, so nothing may leave."""
 
@@ -954,7 +904,6 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
         return inference_routes._admission_pool_shares_host_ram(**kwargs)
 
     def test_an_integrated_vulkan_device_shares(self):
-        # Vulkan reports total 0 only for an integrated GPU.
         assert self._shares(is_vulkan_backend = True, vulkan_gpu_memory = [(0, 8192, 0)]) is True
 
     def test_a_discrete_vulkan_device_does_not(self):
@@ -1051,7 +1000,6 @@ class TestTheGuardOnlyDropsHostBytesFromADiscretePool:
         self._rocm(monkeypatch, answered = True, unified = {0})
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [0]) is True
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = None) is True
-        # A discrete sibling that is explicitly pinned is its own pool.
         assert self._shares(is_vulkan_backend = False, requested_gpu_ids = [1]) is False
 
     def test_a_rocm_host_with_no_apu_is_discrete(self, monkeypatch):

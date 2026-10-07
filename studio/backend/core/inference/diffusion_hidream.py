@@ -23,7 +23,6 @@ logger = get_logger(__name__)
 
 HIDREAM_FAMILY_NAME = "hidream-i1"
 
-# Open mirror of the gated meta-llama/Meta-Llama-3.1-8B-Instruct the pipeline expects.
 HIDREAM_LLAMA_REPO = "unsloth/Meta-Llama-3.1-8B-Instruct"
 HIDREAM_LLAMA_BF16_BYTES = 16_060_556_376
 
@@ -53,9 +52,7 @@ def hidream_te4_kwargs(
     import torch  # noqa: F401 -- dtype values are torch dtypes; import keeps parity with callers
     from transformers import AutoTokenizer, LlamaForCausalLM
 
-    # Pinned to the LIVE hub root: ``encoder_repo_complete`` verifies these assets there, so an unpinned lookup after
-    # a mid-session cache-folder change searches huggingface_hub's import-time root instead and fails under
-    # local_files_only for a 16 GB encoder that is present, after the resident image pipeline was evicted.
+    # Live hub root: an unpinned lookup after a cache-folder change misses the cached encoder.
     from utils.hf_cache_settings import active_hf_hub_cache
 
     cache_dir = active_hf_hub_cache()
@@ -109,8 +106,6 @@ def hidream_te4_kwargs(
                 hf_token = hf_token,
                 scheme = "fp8",
                 logger = logger,
-                # The Llama TE4 lives in its own standalone repo (config at the root), and the pipeline needs hidden
-                # states/attentions from its forward.
                 config_subfolder = "",
                 config_overrides = {
                     "output_hidden_states": True,
@@ -143,8 +138,7 @@ def hidream_te4_kwargs(
             _cast_fp8(text_encoder_4, cast_target)
             logger.info("diffusion.hidream: TE4 layerwise fp8 cast engaged")
         except Exception as exc:  # noqa: BLE001 -- best-effort like the generic TE pass
-            # A mid-pass failure can leave fp8 storage / upcast hooks behind, and a half-cast encoder cannot run dense,
-            # so rebuild it fresh.
+            # A half-cast encoder cannot run dense, so rebuild it fresh.
             logger.warning("diffusion.hidream: TE4 fp8 cast failed, reloading dense: %s", exc)
             text_encoder_4 = LlamaForCausalLM.from_pretrained(
                 HIDREAM_LLAMA_REPO,

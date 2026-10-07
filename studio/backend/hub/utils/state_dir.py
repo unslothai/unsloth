@@ -41,13 +41,11 @@ _WORKERS_SUBDIR = "workers"
 _SAFE_VARIANT_FRAGMENT = re.compile(r"^[a-z0-9._-]{1,64}$")
 _MAX_STATE_BASENAME_BYTES = 255
 _STATE_EXTENSION = ".json"
-# _atomic_write_json writes ".<target>.tmp-<8hex>" beside the final file.
 _ATOMIC_WRITE_TMP_OVERHEAD = len(".") + len(".tmp-") + 8
 _MAX_VARIANT_FRAGMENT_LENGTH = 64
 _CACHE_SCOPE_DIGEST_LENGTH = 32
 _HASH_PREFIXES = ("sha256-", "@sha256-")
 _LEGACY_HASH_FRAGMENT = re.compile(r"sha256-[0-9a-f]{32}")
-# Either tag _variant_fragment stamps, so a reader can spot a digest handed to it in place of a variant name.
 _HASHED_FRAGMENT = re.compile(r"@?sha256-[0-9a-f]{32}")
 
 
@@ -80,7 +78,6 @@ def _subdir(name: str, *, create: bool = False) -> Optional[Path]:
 
 
 def repo_cache_basename(repo_type: RepoType, repo_id: str) -> str:
-    # Reject a bad repo_type at runtime: the Literal only guards statically, and dynamic/JSON-sourced values slip past it into a wrong filename and a misclassified scanner row.
     if repo_type not in _VALID_REPO_TYPES:
         raise ValueError(f"repo_type must be one of {_VALID_REPO_TYPES}, got {repo_type!r}")
     return f"{repo_type}s--{repo_id.replace('/', '--')}".lower()
@@ -231,7 +228,7 @@ def normalize_hub_cache(hub_cache: str | Path) -> str:
     try:
         resolved = str(Path(hub_cache).expanduser().resolve(strict = False))
     except (OSError, RuntimeError, ValueError):
-        # Windows can refuse to resolve a path it can still open (OneDrive placeholders, a locked junction), so degrade to the expanded spelling; it has to be exactly what legacy_cache_scope_name builds or the read side cannot recover this state.
+        # Windows may refuse resolve (OneDrive, locked junction); must equal legacy_cache_scope_name.
         try:
             resolved = str(Path(hub_cache).expanduser())
         except (OSError, RuntimeError, ValueError):
@@ -253,7 +250,6 @@ def legacy_cache_scope_name(hub_cache: str | Path) -> str:
     try:
         normalized = os.path.normcase(str(Path(hub_cache).expanduser()))
     except (OSError, RuntimeError, ValueError):
-        # Guarded like normalize_hub_cache: this is fed the caller's raw spelling, so a homeless "~" that expanduser refuses would otherwise escape a plain read as a RuntimeError.
         normalized = os.path.normcase(str(hub_cache))
     return _cache_scope_digest(normalized)
 
@@ -274,7 +270,6 @@ def _cache_scope(
 ) -> Optional[Path]:
     if hub_cache is None:
         return parent
-    # A precomputed scope skips re-deriving the digest, and the resolve inside it, once per probe.
     scoped = parent / (cache_scope or cache_scope_name(hub_cache))
     if not create:
         return scoped

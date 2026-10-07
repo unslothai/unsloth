@@ -34,15 +34,13 @@ from typing import Any, Optional
 
 NATIVE_REBUILD_ENV = "UNSLOTH_PREQUANT_NATIVE_REBUILD"
 
-# Header keys the converter adds beside torchao's. Namespaced like the other unsloth_* keys, so torchao's
-# ``is_metadata_torchao`` (which walks ``tensor_names`` only) and every released Studio build ignore them.
+# Namespaced unsloth_* so torchao's is_metadata_torchao and released Studio builds ignore them.
 QUANT_LAYOUT_KEY = "unsloth_quant_layout"
 SOURCE_KEY = "unsloth_source"
 QUANT_LAYOUT_VERSION = 1
 INT8_SOURCE_V1 = "torchao_v1"
 
-# What a torchao v1 int8 pre-quant checkpoint holds, as validated by prequant_legacy_int8._rebuild_weight
-# and recorded by the converter. A file declaring anything else is not rebuilt as v1.
+# Must match what prequant_legacy_int8._rebuild_weight validates; anything else is not rebuilt as v1.
 INT8_V1_FACTS = {
     "act_quant": "_int8_symm_per_token_reduced_range_quant",
     "quant_kwargs": {},
@@ -54,7 +52,7 @@ INT8_V1_FACTS = {
     "layout": "PlainLayout",
 }
 
-# Unknown fields carrying one of these are behaviourally absent (same rule as prequant_safetensors).
+# Same rule as prequant_safetensors._INERT_FIELD_VALUES.
 _INERT = (False, None, 0)
 
 _DTYPES = ("bfloat16", "float16", "float32", "float8_e4m3fn", "float8_e5m2", "int8")
@@ -219,8 +217,7 @@ def _rebuild_int8(
         )
     qdata, scale = tensors[keys["qdata"]], tensors[keys["scale"]]
     zero_point = tensors.get(keys["zero_point"]) if "zero_point" in keys else None
-    # Only the layout Unsloth ships is modelled here (2-D, symmetric, one scale per output row). Any other valid
-    # torchao int8 weight (per-tensor, 3-D experts) goes to torchao's own reader rather than being refused.
+    # Only Unsloth's layout (2-D, per-row scale); other int8 weights go to torchao's reader.
     if qdata.dtype != torch.int8 or qdata.dim() != 2:
         raise _Unsupported(f"{name}: int8 qdata {qdata.dtype} {tuple(qdata.shape)}")
     n, k = qdata.shape
@@ -251,7 +248,6 @@ def _rebuild_int8(
         used.add(d)
 
     if v1 is not None and act_fields is not None and not reduce_range:
-        # Exactly the objects torchao <= 0.17 unpickles from the hosted .pt (see INT8_V1_FACTS).
         impl = v1["PlainAQTTensorImpl"](qdata, scale.reshape(n), None, v1["PlainLayout"]())
         aqt = v1["AffineQuantizedTensor"](
             impl,
@@ -297,7 +293,6 @@ def _rebuild_fp8(name: str, entry: dict, tensors: dict, used: set, api: dict) ->
             f"fp8 weight {name!r}: missing {missing[0]!r}; the checkpoint is incomplete"
         )
     qdata, scale = tensors[keys["qdata"]], tensors[keys["scale"]]
-    # As for int8: anything but a 2-D per-row or per-tensor weight is torchao's to read.
     if qdata.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2) or qdata.dim() != 2:
         raise _Unsupported(f"{name}: fp8 qdata {qdata.dtype} {tuple(qdata.shape)}")
     n, k = qdata.shape

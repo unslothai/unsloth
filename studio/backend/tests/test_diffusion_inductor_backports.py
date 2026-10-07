@@ -18,7 +18,7 @@ sizevars = pytest.importorskip("torch._inductor.sizevars")
 def _restore(monkeypatch):
     monkeypatch.delenv(bp.BACKPORTS_ENV, raising = False)
     bp.uninstall()
-    # Exercise the patched method on every torch, including ones whose stock check already proves the probe.
+    # Force the patched path even on torches whose stock check already proves the probe.
     monkeypatch.setattr(bp, "_stock_proves", lambda _cls: False)
     yield
     bp.uninstall()
@@ -35,10 +35,9 @@ def _proves(num, den) -> bool:
 def test_proves_the_qwen21_and_flux_cantsplit_expressions():
     a, b = _syms()
     bp.install()
-    # Qwen-Image-2.1 torchao (text + target attention output) and FLUX.1 single-block (attn + mlp cat) shapes.
     assert _proves(4096 * a - 4096 * b, a - b)
     assert _proves(15360 * a + 15360 * b, a + b)
-    assert _proves(4096 * a - 4096 * b, b - a)  # sign of the group does not matter for divisibility
+    assert _proves(4096 * a - 4096 * b, b - a)
 
 
 def test_never_proves_a_non_multiple():
@@ -47,7 +46,7 @@ def test_never_proves_a_non_multiple():
     assert not _proves(4096 * a - 4095 * b, a - b)
     assert not _proves(4096 * a, a + b)
     assert not _proves(a * b + 1, a)
-    # Asked of the backport, not torch 2.14 (whose own check says True for rational forms inductor never emits).
+    # Tests the backport, not torch 2.14's own check (True for forms inductor never emits).
     allocator = sizevars.SizeVarAllocator()
     assert not bp._gcd_proves_multiple(allocator, (a + b) / 2, a + b)
     assert not bp._gcd_proves_multiple(allocator, sympy.Rational(8, 3) * a * b, a * b)
@@ -128,7 +127,7 @@ def test_regional_compile_and_vae_compile_install_the_backport(monkeypatch):
     monkeypatch.setattr(ds_mod, "_inductor_config", lambda: None)
     monkeypatch.setattr(ds_mod, "guard_compiled_blocks", lambda transformer, logger = None: 0)
     assert ds_mod._compile_repeated_blocks(pipe, None) is True
-    # Installed BEFORE the (lazy) compile is requested, so the first forward already lowers with it.
+    # Must install before the lazy compile so the first forward lowers with it.
     compiles = [c for c in calls if c != "install"]
     assert calls[0] == "install" and len(compiles) == 1 and compiles[0][0] == "compile"
 

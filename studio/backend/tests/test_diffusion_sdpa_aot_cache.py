@@ -66,7 +66,7 @@ class _Dit(torch.nn.Module):
 
 
 def test_regional_compile_marks_the_sdpa_helpers_cacheable(_restore_cacheable, monkeypatch):
-    # Every regional compile goes through _compile_repeated_blocks; that is where the helpers must become cacheable.
+    # every regional compile goes through _compile_repeated_blocks, where helpers become cacheable
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SDPA_AOT_CACHE", raising = False)
     torch._inductor.config.unsafe_marked_cacheable_functions = {}
     pipe = types.SimpleNamespace(transformer = _Dit())
@@ -93,7 +93,7 @@ def test_sdpa_aot_cache_key_carries_the_priority_order(_restore_cacheable, monke
     torch._inductor.config.unsafe_marked_cacheable_functions = {"user.fn": "1"}
     assert diffusion_aot_cache.install() is True
     marked = dict(torch._inductor.config.unsafe_marked_cacheable_functions)
-    assert marked["user.fn"] == "1"  # a user's own entries survive
+    assert marked["user.fn"] == "1"
     priority = tuple(int(b) for b in torch._C._get_sdp_priority_order())
     assert f"sdp_priority={priority}" in marked[HELPERS[0]]
 
@@ -101,7 +101,7 @@ def test_sdpa_aot_cache_key_carries_the_priority_order(_restore_cacheable, monke
 def test_sdpa_kernel_graph_hits_the_aot_cache_after_a_restart(
     _restore_cacheable, monkeypatch, tmp_path
 ):
-    # A dynamo reset is a fresh process for dynamo; the second compile must be served by AOTAutogradCache, not bypass it.
+    # after a dynamo reset the second compile must be served by AOTAutogradCache
     from torch._dynamo.utils import counters
     from core.inference import diffusion_aot_cache
 
@@ -123,6 +123,5 @@ def test_sdpa_kernel_graph_hits_the_aot_cache_after_a_restart(
         second = torch.compile(block, backend = "inductor")(x)
     assert counters["aot_autograd"]["autograd_cache_hit"] >= 1
     assert counters["aot_autograd"]["autograd_cache_bypass"] == 0
-    # The cache hit must serve the artifact the first compile built.
     assert torch.equal(second, first)
     torch.testing.assert_close(first, ref)

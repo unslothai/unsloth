@@ -15,32 +15,21 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 SENTINEL = "__MCP_IMAGES__:"
-# Stamped by mcp_client on every tool it registers; the provenance the envelope
-# is trusted on, on the replay side as well as the live one.
+# Provenance the envelope is trusted on (live and replay).
 MCP_TOOL_PREFIX = "mcp__"
 IMAGE_TURN_TEXT = "Images returned by the tool call above:"
-# The same pictures where the turn cannot sit beside the result that produced them.
-# The local client-tool passthrough flattens every content part to text before the
-# markers are rebuilt, so they come back as one block rather than at the positions
-# they were taken from, and "above" would name whatever turn happens to precede it.
 DETACHED_IMAGE_TURN_TEXT = "Images returned by earlier tool calls in this conversation:"
 
 MAX_MODEL_IMAGES = 4
 MAX_TOTAL_MODEL_IMAGES = 8
-# Safetensors and MLX require one image per message, including promoted tool
-# batches. GGUF uses image_url parts and is exempt from this marker-path cap.
+# Safetensors and MLX allow one image per message; GGUF is exempt.
 LOCAL_MAX_IMAGES_PER_TURN = 1
-# Candidates carried past the cap when choosing what to decode, because which
-# entries a decoder accepts is not known until it has tried. Mirrors
-# DECODE_FAILURE_ALLOWANCE in studio/frontend/src/features/chat/api/mcp-images.ts.
+# Mirrors DECODE_FAILURE_ALLOWANCE in studio/frontend/src/features/chat/api/mcp-images.ts.
 DECODE_FAILURE_ALLOWANCE = 4
-# The entry's other field. A token subtype has no length bound, and an entry's
-# metadata must not be where megabytes hide from the byte budgets on both sides.
 # Mirrors MAX_MCP_IMAGE_MIME_CHARS in studio/frontend/src/features/chat/api/mcp-images.ts.
 MAX_MCP_IMAGE_MIME_CHARS = 256
 MAX_IMAGE_EDGE = 1024
-# A PNG stays small while its raster does not: 12 MB of encoded payload can hold
-# tens of gigapixels. Bounded off the header, before a pixel is allocated.
+# Bounded off the header: a small PNG can hold tens of gigapixels.
 MAX_IMAGE_PIXELS = 40_000_000
 
 
@@ -72,9 +61,7 @@ def _is_image(image: Any) -> bool:
     )
 
 
-# Deny known non-image markup. An image-format allowlist could miss formats
-# Pillow supports and under-reserve KV for images promotion actually sends;
-# false positives here only over-reserve.
+# Denylist, not allowlist: false positives only over-reserve KV.
 _UNDECODABLE_PREFIXES = (
     b"<svg",
     b"<?xml",
@@ -167,8 +154,6 @@ def _decoded_urls(
         if not _mime_is_bounded(image):
             continue
         data = image.get("data", "")
-        # *cache* is one request's decodes, keyed by the payload: a route that
-        # promotes the same history twice must not pay Pillow twice for it.
         if cache is not None and data in cache:
             url = cache[data]
         else:
@@ -195,9 +180,7 @@ def _decoded_urls_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
     """
     chosen: list[list[str]] = []
     room = MAX_TOTAL_MODEL_IMAGES
-    # One budget for the whole batch, not one per result: room only falls on a
-    # SUCCESSFUL decode, so results that fail late in Pillow never close the loop
-    # and a parallel turn could pay for the allowance again on every call it made.
+    # One attempt budget per batch, so failing decodes cannot multiply the allowance.
     attempts = [MAX_TOTAL_MODEL_IMAGES + DECODE_FAILURE_ALLOWANCE]
     for images in reversed(results):
         if room <= 0 or attempts[0] <= 0:
@@ -205,8 +188,6 @@ def _decoded_urls_per_result(results: Sequence[Sequence[dict]]) -> list[str]:
         urls = _decoded_urls(images, min(MAX_MODEL_IMAGES, room), attempts = attempts)
         room -= len(urls)
         chosen.append(urls)
-    # Back into document order: the parts are positional and a batch's own results
-    # must still read in the order the model made the calls.
     return [url for urls in reversed(chosen) for url in urls]
 
 
@@ -238,12 +219,8 @@ def eligible_replay_images(
     sends and dropped older batches that still had room.
     """
     eligible: dict = {}
-    # Keep fallback candidates because header-only selection cannot know which
-    # images decode. With no image budget, failures cannot free room for spares.
     spare = DECODE_FAILURE_ALLOWANCE if budget > 0 else 0
     per_result = LOCAL_MAX_IMAGES_PER_TURN if local else MAX_MODEL_IMAGES
-    # Use promotion's provenance rules so unnamed non-MCP results cannot consume
-    # the replay allowance ahead of genuine MCP results.
     call_names = resolve_tool_names(messages)
 
     def _is_tool(position: int) -> bool:
@@ -269,7 +246,6 @@ def eligible_replay_images(
         if local:
             while start > 0 and _is_tool(start - 1):
                 start -= 1
-        # Newest first within the batch, the order the local decoder tries them.
         batch = [position for position in range(index, start - 1, -1)]
         index = start - 1
         room = min(budget, per_result)
@@ -310,9 +286,6 @@ def png_payloads_per_result(
     """For the local marker paths: at most LOCAL_MAX_IMAGES_PER_TURN pictures, taken
     from the NEWEST result that decodes, since a batch lands as one turn and a
     non-GGUF message takes one image."""
-    # One attempt budget across the batch, as _decoded_urls_per_result keeps: reset
-    # per result, a 25-call turn of malformed results bought 25 allowances of Pillow
-    # decodes for a path that keeps a single picture.
     attempts = [LOCAL_MAX_IMAGES_PER_TURN + DECODE_FAILURE_ALLOWANCE]
     for images in reversed(list(results)):
         if attempts[0] <= 0:
@@ -333,22 +306,18 @@ def flattened_rgb(image, background = None):
     """
     from PIL import Image, ImageChops, ImageStat
 
-    # Match routes/inference.py's _image_bytes_to_png_b64: scale declared I;16
-    # values to 8-bit before RGB conversion clips them. I;16B/I;16L must pass
-    # through "I" because they reject point().
+    # Match routes/inference.py _image_bytes_to_png_b64; I;16B/L reject point(), go through 'I'.
     if image.mode.startswith("I;16"):
         if image.mode != "I;16":
             image = image.convert("I")
         image = image.point(lambda v: v * (1.0 / 257), mode = "L")
         # A 16-bit tRNS key would match the wrong 8-bit samples; drop it, as convert("RGB") did.
         image.info.pop("transparency", None)
-    # "transparency" also keys a colour out of L / RGB PNGs (tRNS), not just P.
     has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
     if not has_alpha:
         return image.convert("RGB")
     rgba = image if image.mode == "RGBA" else image.convert("RGBA")
     alpha = rgba.getchannel("A")
-    # Browser canvas exports are RGBA even when opaque; skip the composite (same pixels).
     if alpha.getextrema()[0] == 255:
         return rgba.convert("RGB")
     if background is None:
@@ -362,8 +331,7 @@ def flattened_rgb(image, background = None):
 
 
 def _png_data_url(data: str) -> str | None:
-    # PNG regardless of what the server sent: llama-server's stb_image reads only
-    # a few formats, and MCP servers commonly answer with WebP.
+    # PNG always: llama-server's stb_image reads few formats (MCP servers often send WebP).
     try:
         raw = base64.b64decode(data, validate = True)
     except (binascii.Error, ValueError, TypeError):
@@ -372,18 +340,14 @@ def _png_data_url(data: str) -> str | None:
     try:
         from PIL import Image
 
-        # open() parses the header only, so the size is known before the raster
-        # exists. load() below is what allocates it.
         image = Image.open(io.BytesIO(raw))
         width, height = image.size
         if width * height > MAX_IMAGE_PIXELS:
             logger.debug("MCP image is %dx%d, past the pixel budget", width, height)
             return None
-        # JPEG decodes straight to a smaller raster; a no-op for every other format.
         image.draft("RGB", (MAX_IMAGE_EDGE, MAX_IMAGE_EDGE))
         image.load()
-        # A camera JPEG carries its display orientation in EXIF; re-encoded as PNG
-        # without applying it, the model was shown the picture sideways.
+        # Apply EXIF orientation, or the model sees camera JPEGs sideways.
         from PIL import ImageOps
 
         image = ImageOps.exif_transpose(image) or image
@@ -408,8 +372,6 @@ def _turn_text(
     total: int,
     lead: str = IMAGE_TURN_TEXT,
 ) -> str:
-    # The tool result's own note counts every image it returned, so a turn that
-    # carries fewer has to say so rather than let the model wait for the rest.
     if total > shown:
         # Report counts: batches keep newest results and trims remove oldest parts,
         # so a positional label could identify images the model never saw.
@@ -622,8 +584,7 @@ def trim_image_turns(
     _drop_image_parts_at(conversation, set(drop), "image")
     for index in reversed(drop):
         del payloads[index]
-    # Rebase protected positions after deletion; callers reuse them on later
-    # trims, where stale indices could leave the attachment unprotected.
+    # Rebase protected positions; callers reuse them on later trims.
     dropped = set(drop)
     return tuple(index - sum(1 for gone in dropped if gone < index) for index in protected)
 
@@ -644,8 +605,7 @@ def trim_image_url_turns(
     never deleted by it.
     """
     if only is not None:
-        # Prune before counting: the rolling-context fitter may have evicted whole
-        # turns, and stale parts would cause surviving images to be over-trimmed.
+        # Prune first: the context fitter may have evicted turns.
         present = {id(part) for part in _all_image_url_parts(conversation)}
         only[:] = [part for part in only if id(part) in present]
     counted = len(only) if only is not None else count_image_parts(conversation, "image_url")
@@ -654,8 +614,6 @@ def trim_image_url_turns(
         return
     _drop_oldest_image_parts(conversation, excess, "image_url", only = only)
     if only is not None:
-        # Drop what the trim removed, or the next call counts parts that are no
-        # longer in the conversation and cuts far more than the cap asks for.
         still_present = {id(part) for part in _all_image_url_parts(conversation)}
         only[:] = [part for part in only if id(part) in still_present]
 
@@ -696,22 +654,14 @@ def append_image_turn(
     parts = content_parts_per_result(images) if per_result else content_parts(images)
     if not parts:
         return
-    # What the TOOL returned. The caller passes it when the candidates it hands over
-    # have already been sliced by admission, since counting those would describe the
-    # admission pass rather than the result the note sits beside.
+    # Count what the TOOL returned, not the admission-sliced candidates.
     total = (
         returned
         if returned is not None
         else (sum(len(result) for result in images) if per_result else len(images))
     )
     if owned is not None:
-        # Everything this loop has appended, across turns. The cap counts what the
-        # tools returned and never a caller's own attachments, which admission has
-        # already charged for and which are not this cap's business.
         owned.extend(parts)
-    # The note rides along on the merge too: merged bare into a deferred no-op nudge,
-    # the pictures read as attachments to that nudge rather than as the tool's output,
-    # and the next turn misattributes them.
     note = {"type": "text", "text": _turn_text(len(parts), total, lead)}
     if not _merge_into_trailing_user_turn(conversation, [*parts, note]):
         conversation.append(
@@ -725,9 +675,7 @@ def append_image_turn(
         )
     if limit is not None:
         if reserve_caller_images:
-            # Remote providers cap all images in document order, so reserve attachment
-            # slots or their cap may drop the newest tool result. Replay does the same.
-            # This is opt-in: local loops use a context window instead of a provider cap.
+            # Providers cap images in document order; reserve attachment slots so the newest survive.
             limit = max(0, limit - (len(_all_image_url_parts(conversation)) - len(owned or ())))
         trim_image_url_turns(conversation, limit, only = owned)
 
@@ -815,8 +763,6 @@ def top_up_image_markers(
         return out
     markers = [{"type": "image"} for _ in range(missing)]
     if ordinal is not None:
-        # The turn that supplied the attachment, which need not be the newest: a
-        # later text-only question would otherwise be shown as carrying it.
         seen = 0
         for index, message in enumerate(out):
             if not isinstance(message, dict) or message.get("role") != "user":
@@ -827,8 +773,6 @@ def top_up_image_markers(
                 out[index] = _with_attachment_markers(message, markers, after_text = True)
                 return out
             seen += 1
-    # The legacy top-level image has no ordinal; use the newest real user turn.
-    # Displace any replay marker there to preserve the non-GGUF one-image limit.
     candidates = [
         index
         for index in range(len(out) - 1, -1, -1)
@@ -860,21 +804,14 @@ def pixels_in_marker_order(
     when the attachment came with an earlier question and a tool returned pictures
     after it, so the order is read off the conversation rather than assumed.
     """
-    # Each history payload rides with ITS marker, by identity. Popping from the front
-    # let a displaced marker's payload slide onto the marker after it, which is the
-    # off-by-one the whole positional scheme exists to prevent.
+    # Pair payloads with markers by identity; popping from the front caused an off-by-one.
     by_marker = {id(part): payload for part, payload in zip(prior_markers, prior_payloads)}
     ordered = []
     placed_new = False
     for part in image_marker_parts(conversation):
-        # A marker that predates the top-up belongs to history when history has a
-        # pixel for it. A pre-existing marker with none is the attachment's own --
-        # the client may have marked it before the request ever reached this path.
         if id(part) in by_marker:
             ordered.append(by_marker[id(part)])
         elif not placed_new:
-            # Where the attachment landed, so the loop's cap can leave it alone: it
-            # is not always last, and the sink's positions are all that name it.
             if placed_at is not None:
                 placed_at.append(len(ordered))
             ordered.append(new_payload)
@@ -894,10 +831,6 @@ def is_synthetic_image_turn(message) -> bool:
     content = message.get("content")
     if not isinstance(content, list):
         return False
-    # Both leads: a detached block is promotion's turn just as much, and counting it
-    # as a real user turn put the attachment's marker on it instead of the question.
-    # ALL of its text, though: a replay merged into the user's question carries the
-    # note beside the question's own text, and that turn is still the user's.
     texts = [
         part.get("text")
         for part in content
@@ -968,8 +901,6 @@ def mark_last_user_turn(
     if ordinal is not None:
         seen = 0
         for index, message in enumerate(out):
-            # Promotion inserts its own user turns ahead of this, and the ordinal was
-            # counted before they existed.
             if message.get("role") != "user" or is_synthetic_image_turn(message):
                 continue
             if seen == ordinal:
@@ -1081,20 +1012,9 @@ def _promote(
     caller_payloads = (
         dict(zip(map(id, image_marker_parts(messages)), caller_images)) if caller_images else {}
     )
-    # Resolved once for the whole conversation, so the provenance gate below works on
-    # every wire format rather than only the ones that happen to send ``name``.
     call_names = resolve_tool_names(messages)
-    # Set while an image result waits for its turn and a LATER, image-free result of
-    # the same batch is appended after it: "the tool call above" would then name the
-    # wrong call, so the turn takes the wording that claims no adjacency.
     interrupted = [False]
-    # Resolved before a single decode runs: the trim at the bottom keeps the newest
-    # eight, and decoding a whole replayed history to throw nearly all of it away is
-    # work a caller's own message list gets to choose the size of.
-    # The caller's room is reserved HERE, ahead of the decodes, not only by the trim
-    # at the bottom: with eight attachments every replay candidate was decoded and
-    # re-encoded -- a permitted raster is 40 megapixels -- to be dropped whole.
-    # Before promotion every image_url part in the list is the caller's own.
+    # Reserve the caller's room before decoding so replay candidates are not decoded just to be dropped.
     _reserved = (
         len(caller_payloads)
         if local
@@ -1107,15 +1027,10 @@ def _promote(
         if vision
         else {}
     )
-    # One entry per tool result, not flattened: two parallel calls each returning
-    # four images would otherwise share a single result's quota and replay only the
-    # first call's four.
+    # One entry per tool result so parallel calls do not share one quota.
     pending: list[list[dict]] = []
-    # One per entry in *pending*: how many that result really returned.
     returned_totals: list[int] = []
     payloads: list[str] = []
-    # The exact part objects promotion creates, so the cap below can leave a
-    # caller's own attachments alone.
     promoted: list[dict] = []
 
     def flush(into: "dict | None" = None) -> "dict | None":
@@ -1124,14 +1039,10 @@ def _promote(
             returned_totals.clear()
             return into
         returned = sum(returned_totals) or sum(len(result) for result in pending)
-        # Detached wording for a batch of several results too, not only an interrupted
-        # one: two parallel calls both returning pictures share the turn, and "the tool
-        # call above" would hand every picture to whichever ran last. The loops apply
-        # the same rule to a live batch.
+        # Detached wording for multi-result batches too: 'the tool call above' would be wrong.
         lead = DETACHED_IMAGE_TURN_TEXT if interrupted[0] or len(pending) > 1 else IMAGE_TURN_TEXT
         interrupted[0] = False
         if local:
-            # the caller's attachment takes the single image slot on its turn.
             if into is not None and any(
                 id(part) in caller_payloads for part in image_marker_parts([into])
             ):
@@ -1148,9 +1059,6 @@ def _promote(
             if into is None:
                 out.append(placeholder_turn(len(encoded), returned, lead))
                 return None
-            # The note rides along on the merge: merged bare into the question, the
-            # markers read as pictures the user attached, and with a result of another
-            # tool between, as that tool's output.
             note = {"type": "text", "text": _turn_text(len(encoded), returned, lead)}
             return _with_parts(into, [*markers, note])
         results = list(pending)
@@ -1174,14 +1082,9 @@ def _promote(
         content = message.get("content")
         if message.get("role") == "tool" and isinstance(content, str):
             text, images = split_images(content)
-            # The suffix always comes off -- it is megabytes of base64 and the model
-            # must never read it as text. Provenance decides only whether it becomes
-            # IMAGE input: a named non-MCP tool that happens to end in a valid
-            # envelope is not one an MCP server served.
+            # The suffix always comes off; provenance decides only whether it becomes image input.
             name = message.get("name") or call_names.get(position)
             if isinstance(name, str) and name and not is_image_tool(name):
-                # A non-MCP result sitting between the images and their turn makes
-                # "the tool call above" name web_search or read_file.
                 if pending:
                     interrupted[0] = True
                 out.append(
@@ -1189,35 +1092,21 @@ def _promote(
                 )
                 continue
             if images:
-                # Only the entries the cap can still admit. The suffix comes off the
-                # text either way, above; this decides how many are decoded.
                 admitted = images[: eligible.get(position, len(images))]
                 if admitted:
                     pending.append(admitted)
-                # What the TOOL returned, which the slice above has already lost.
-                # Summing the admitted candidates instead made a 100-image result
-                # read "(4 of 8)" beside a tool result saying 100 -- the note
-                # describing the admission pass rather than the tool. The frontend
-                # bounds the envelope before it ever gets here and records the
-                # count it started from on the first entry; honour that too.
-                # Counted whether or not anything of it was admitted: a result the
-                # allowance left nothing of is still part of what the batch returned,
-                # and leaving it out read "(1 of 6)" for three results of three.
                 returned_totals.append(_returned_count(images))
             elif pending:
                 interrupted[0] = True
             out.append({**message, "content": text or "[image returned]"} if images else message)
             continue
         if pending and vision and message.get("role") == "user":
-            # Merged, not inserted ahead of it: two user turns in a row is what
-            # a strict template rejects.
+            # Merged: two consecutive user turns break strict templates.
             out.append(flush(message))
             continue
         flush()
         out.append(message)
     flush()
-    # A replay carries every image turn the conversation ever had; the cap has to
-    # hold here too or the whole history is re-sent on every later turn.
     if local:
         protected = ()
         if caller_payloads:
@@ -1232,17 +1121,7 @@ def _promote(
             )
         trim_image_turns(out, payloads, keep = protected)
     else:
-        # The cap says attachments are never counted against it, which is right for
-        # what THIS cap protects, and llama-server is bounded by its context window
-        # rather than a fixed image count: a GGUF replay keeps the full allowance
-        # beside the caller's picture, as its live loop did.
-        #
-        # A provider is different. It applies its own per-request cap in document
-        # order, and promotion prepends the replay to the user turn: on Gemini (8
-        # images, later ones dropped silently) eight replayed screenshots evicted the
-        # picture the current question was about, and the model answered it from
-        # stale tool output. So the external caller reserves the attachment's room,
-        # the way the local route reserves its slot before interleaving it.
+        # Providers cap images in document order (Gemini: 8, rest dropped), so reserve the attachment's room.
         _caller_parts = len(_all_image_url_parts(out)) - len(promoted) if reserve_for_caller else 0
         trim_image_url_turns(
             out,

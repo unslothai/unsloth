@@ -22,7 +22,7 @@ _PATCH_MODULE = Path(patches.__file__)
 
 _REMOVED = "cannot import name 'LinearActivationQuantizedTensor' from 'torchao.quantization'"
 
-# The Studio copy differs from unsloth's only in who the warning says is speaking.
+# the Studio copy differs from unsloth's only in the warning's speaker
 _WORDING = (("Unsloth Studio: ", "Unsloth: "), ("Studio now runs", "Unsloth now runs"))
 
 
@@ -123,12 +123,11 @@ def test_a_plain_linear_gets_no_torchao_layer_instead_of_an_import_error(fake_pe
         original(types.SimpleNamespace(weight = object()), "default", None)
 
     assert patches._patch_peft_torchao_dispatchers() is True
-    # Both bindings point at one wrapper, so the list peft actually walks is the patched one.
+    # both bindings share one wrapper, so the list peft walks is patched
     assert lora_model.dispatch_torchao is lora_torchao.dispatch_torchao is not original
     assert (
         lora_model.dispatch_torchao(types.SimpleNamespace(weight = object()), "default", None) is None
     )
-    # Idempotent: a second pass finds nothing left to wrap.
     assert patches._patch_peft_torchao_dispatchers() is False
 
 
@@ -162,13 +161,13 @@ def test_a_torchao_without_the_dtypes_package_gets_a_plain_lora_layer(monkeypatc
     lora_torchao, lora_model = fake_peft
     monkeypatch.delitem(
         sys.modules, "torchao.dtypes"
-    )  # the fake torchao has no __path__: the import fails
+    )  # fake torchao has no __path__, so the import fails
     monkeypatch.delattr(sys.modules["torchao"], "dtypes")
     monkeypatch.setattr(
         sys.modules["torchao"], "__spec__", importlib.machinery.ModuleSpec("torchao", None)
     )
 
-    # peft <= 0.18's first torchao import, defined in the fake peft module so the guard reads its globals.
+    # peft <= 0.18 torchao import, defined in the fake peft so the guard reads its globals
     namespace = dict(lora_torchao.__dict__)
     exec(
         "def dispatch_torchao(target, adapter_name, lora_config, **kwargs):\n"
@@ -221,7 +220,7 @@ def test_the_guard_waits_for_peft_instead_of_importing_it(monkeypatch):
     assert patches._PEFT_LORA_DISPATCH_MODULE not in sys.modules
     finders = [f for f in sys.meta_path if getattr(f, patches._PEFT_TORCHAO_GUARD_SENTINEL, False)]
     assert len(finders) == 1 and sys.meta_path[0] is finders[0]
-    assert patches.install_peft_torchao_dispatch_guard() is False  # no second finder
+    assert patches.install_peft_torchao_dispatch_guard() is False
 
 
 def test_every_diffusion_entry_point_installs_the_guard(monkeypatch):

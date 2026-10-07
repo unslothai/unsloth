@@ -33,7 +33,6 @@ VALID_AUDIO_TYPES = (
     "audio_vlm",
 )
 
-# Emit speech; a chat turn sent to one comes back as audio, never as text.
 TTS_AUDIO_TYPES = frozenset({"snac", "csm", "bicodec", "dac"})
 GGUF_TTS_AUDIO_TYPES = frozenset({"snac", "bicodec", "dac"})
 OUTPUT_AUDIO_TYPES = TTS_AUDIO_TYPES | NATIVE_OUTPUT_AUDIO_TYPES
@@ -51,8 +50,7 @@ def _count_prefix_exceeds(tokens, prefix: str, threshold: int) -> bool:
     return False
 
 
-# ORDER MATTERS: first match wins, so codec fingerprints precede the generic audio_vlm marker. Orpheus carries 28k
-# <custom_token_N> SNAC codes AND a stray <|audio|>, and audio_vlm first typed it as audio-input.
+# ORDER MATTERS: first match wins, so codec fingerprints precede generic audio_vlm.
 AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
@@ -64,14 +62,11 @@ AUDIO_TOKEN_PATTERNS = {
         and "<|text_end|>" in tokens
     ),
     "snac": lambda tokens: _count_prefix_exceeds(tokens, "<custom_token_", 10000),
-    # Generic, so last. Gemma 3n <audio_soft_token>; Gemma 4 <|audio|>, not csm's <|AUDIO|>.
+    # Generic, so last. Gemma 4 uses <|audio|>, not csm's <|AUDIO|>.
     "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
 
-# Every substring a pattern needs, so text holding none is settled without a parse. The patterns are lambdas, so a codec
-# added there without its marker here silently stops being detected.
-# json.loads of an ordinary large tokenizer_config was the bulk of a cold /loras scan, and test_audio_token_detection.py
-# fails when the two drift.
+# Every substring a pattern needs; keep in sync with AUDIO_TOKEN_PATTERNS (tested).
 AUDIO_TOKEN_MARKERS = (
     "<|AUDIO|>",
     "<|startoftranscript|>",
@@ -87,7 +82,6 @@ AUDIO_TOKENIZER_CONFIG_PATHS = (
     "LLM/tokenizer_config.json",
 )
 
-# A codebook tokenizer runs to a few MB, and the inventory scan reads one per repo.
 _MAX_TOKENIZER_CONFIG_BYTES = 32 * 1024 * 1024
 
 

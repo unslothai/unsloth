@@ -148,7 +148,6 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
     }
 
 
-# Normalise any format-specific role to canonical chatml (user/assistant/system)
 _TO_CHATML = {
     "user": "user",
     "human": "user",
@@ -249,7 +248,7 @@ def _apply_template_mapping(
 ):
     """Apply advisor-driven mapping for non-conversational datasets: groups columns by assigned role (user/assistant), concatenates values within each role into one message, and injects an optional system prompt. Label mapping converts integer labels to human-readable strings. Returns a dataset with a single 'conversations' column."""
     system_prompt = meta.get("__system_prompt", "")
-    label_mapping = meta.get("__label_mapping", {})  # {col: {int_str: label_str}}
+    label_mapping = meta.get("__label_mapping", {})
 
     role_groups: dict[str, list[str]] = {"user": [], "assistant": []}
     for col, role in column_roles.items():
@@ -407,7 +406,6 @@ def format_dataset(
                 final_format = "alpaca"
                 chat_column = None
             else:
-                # auto / chatml / sharegpt / conversational all produce chatml conversations (sharegpt standardized to role/content internally)
                 mapped_dataset = _apply_user_mapping(dataset, custom_format_mapping, batch_size)
                 final_format = "chatml_conversations"
                 chat_column = "conversations"
@@ -1089,7 +1087,6 @@ def format_and_template_dataset(
             progress_callback(
                 status_message = f"Applying chat template to {detected} ({n_rows:,} rows)..."
             )
-        # Gemma emits a leading <bos>, stripped for text-only chatml/sharegpt.
         is_alpaca = format_type == "alpaca" or (
             format_type == "auto" and dataset_info["detected_format"] == "alpaca"
         )
@@ -1115,12 +1112,11 @@ def format_and_template_dataset(
         all_warnings = dataset_info.get("warnings", []) + template_result.get("warnings", [])
         all_errors = template_result.get("errors", [])
 
-        # If apply_chat_template rescued an "unknown" format, update final_format.
         final_format = dataset_info["final_format"]
         requires_manual = dataset_info.get("requires_manual_mapping", False)
         if final_format == "unknown" and template_result["success"]:
             out_ds = template_result["dataset"]
-            # IterableDataset.column_names can be None after .map() loses features; guard to avoid `"text" in None` -> TypeError on streaming datasets.
+            # column_names can be None on IterableDataset after .map() drops features.
             out_columns = getattr(out_ds, "column_names", None)
             if out_columns is not None and "text" in out_columns:
                 final_format = "chatml_conversations"

@@ -36,7 +36,6 @@ if _TESTS_DIR not in sys.path:
 
 import pytest  # noqa: E402
 
-# Reuse the module's dependency stubs, fixtures and launch harness.
 from test_llama_cpp_placement import _hybrid_mtp_backend, _launch  # noqa: E402
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
@@ -132,9 +131,6 @@ def test_a_concrete_partial_layer_count_still_stands_mtp_down():
     assert backend.spec_fallback_reason == "mtp_partial_offload"
 
 
-# ─────────────── the platform x accelerator product ───────────────
-
-# (id, sys.platform value, extra marker so WSL is distinguishable from Linux)
 PLATFORMS = [
     ("linux", "linux"),
     ("wsl", "linux"),
@@ -192,7 +188,6 @@ def test_partial_layer_count_stands_mtp_down_everywhere(
 
     cmd = result["cmd"]
     if acc_id == "cpu_only" and not device:
-        # No GPU anywhere: keep the CPU MTP policy (llama_cpp.py:15530 guard).
         assert not _mtp_is_engaged(cmd) or _spec_of(cmd) != "none"
     else:
         assert _spec_of(cmd) == "none", f"{plat_id}/{acc_id} did not stand MTP down"
@@ -361,9 +356,6 @@ def test_an_empty_probe_with_a_hand_pinned_device_keeps_mtp(tmp_path, plat_id, p
     )
 
 
-# ───────────────────── binary + GGUF vintage ─────────────────────
-
-
 def test_a_build_without_mtp_reports_the_binary_not_the_placement(tmp_path):
     """An old llama.cpp with no MTP spelling must not claim a placement policy.
 
@@ -413,7 +405,6 @@ def test_an_old_gguf_without_ssm_group_count_is_priced_as_before(tmp_path):
 
     assert b._mamba_recurrent_state_bytes() == 0
     assert b._mamba_recurrent_state_bytes(n_parallel = 4, n_rs_seq = 2) == 0
-    # And the KV estimate is still the plain attention number.
     assert b._estimate_kv_cache_bytes(4096, "f16") == 16 * 4096 * 4 * (256 + 256) * 2
 
 
@@ -497,7 +488,6 @@ def test_zero_full_attention_interval_does_not_divide_by_zero():
     }.items():
         setattr(b, k, v)
 
-    # fai == 0 means every layer is attention, so nothing is recurrent.
     assert b._mamba_recurrent_state_bytes(n_parallel = 4) == 0
 
 

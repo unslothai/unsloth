@@ -90,8 +90,7 @@ def _resume_blocked_reason(row: dict) -> Optional[str]:
     from core.training.resume import has_resume_state, training_run_config
 
     try:
-        # A row whose checkpoint is gone is refused for that reason, not provenance: asking the gate
-        # anyway hands the client a provenance sentence for a missing checkpoint.
+        # A missing checkpoint is refused for that reason, not provenance.
         if not has_resume_state(row.get("output_dir")):
             return None
         return resource_provenance_resume_blocker(training_run_config(row))
@@ -151,9 +150,7 @@ def _delete_run_output_dir(run_id: str, output_dir: str) -> Union[Path, bool]:
 
     staged = resolved.with_name(f".{resolved.name}.deleting-{uuid.uuid4().hex}")
     try:
-        # A same-parent rename, not an rmtree: the run is logically gone immediately but the bytes survive until the
-        # database row is committed, so a failed row delete can roll the whole operation back.
-        # _purge_staged_output_dir does the destructive half.
+        # Rename, not rmtree, so a failed row delete can roll back.
         resolved.rename(staged)
         return staged
     except OSError:
@@ -285,8 +282,6 @@ async def list_training_runs(
         result["runs"],
         sharing_on,
     )
-    # A run persists the resolved path as `model_name`, and this route answers days later with
-    # no handle left in context.
     from hub.utils.host_paths import redact_host_paths
 
     return redact_host_paths(
@@ -308,7 +303,7 @@ async def get_training_run_detail(
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
 
     try:
-        # An older install may have stored `Infinity` / `NaN`, which Starlette refuses to render.
+        # Older installs may have stored Infinity/NaN, which Starlette refuses to render.
         config = drop_non_finite(json.loads(run.get("config_json", "{}")))
     except (json.JSONDecodeError, TypeError):
         logger.debug("Failed to parse config_json for run %s", run_id)
@@ -321,8 +316,6 @@ async def get_training_run_detail(
         run,
         get_preview_sharing_enabled() and not no_credential,
     )
-    # The same persisted path, in the summary as `model_name` and again inside `config_json`,
-    # so the WHOLE response goes through.
     from hub.utils.host_paths import redact_host_paths
 
     return redact_host_paths(
@@ -436,14 +429,12 @@ async def delete_training_run(
     try:
         delete_run(run_id)
     except Exception as delete_error:
-        # The artifacts are only staged, so the whole operation rolls back.
         if staged_original is not None and staged_path is not None:
             restored = await asyncio.to_thread(
                 _restore_staged_output_dir, staged_original, staged_path
             )
             if not restored:
-                # Both halves failed: the row survives pointing at a directory that is no longer
-                # there. Name the staged path, or the artifacts are unreachable.
+                # Both halves failed: name the staged path or the artifacts are unreachable.
                 raise HTTPException(
                     status_code = 500,
                     detail = {

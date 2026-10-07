@@ -203,7 +203,7 @@ def parse_adapter_features(
     }
 
 
-# Both probe every outputs folder, so an unreadable one is skipped, not fatal to the scan.
+# An unreadable outputs folder is skipped, not fatal to the scan.
 def _has_own_model(path: Path) -> bool:
     try:
         return own_entry(path / "config.json") or own_entry(path / "adapter_config.json")
@@ -259,7 +259,7 @@ def scan_checkpoints(
 
             has_root_model = _has_own_model(item)
             valid_checkpoints = _checkpoint_dirs(item)
-            # A cancelled or crashed run has no final save but can still have checkpoints.
+            # A cancelled or crashed run can still have checkpoints.
             if not has_root_model and not valid_checkpoints:
                 continue
 
@@ -267,7 +267,6 @@ def scan_checkpoints(
             config_file = meta_dir / "config.json"
             adapter_config = meta_dir / "adapter_config.json"
 
-            # Training metadata from adapter_config.json / config.json
             metadata: dict = {}
             try:
                 if own_entry(adapter_config):
@@ -282,7 +281,6 @@ def scan_checkpoints(
                     cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
                     metadata["base_model"] = cfg.get("_name_or_path")
 
-                # Detect BNB quantization from config.json
                 if own_entry(config_file):
                     if "cfg" not in dir():
                         cfg = json.loads(config_file.read_text(encoding = "utf-8-sig"))
@@ -296,8 +294,7 @@ def scan_checkpoints(
             except Exception:
                 pass
 
-            # Fallback: extract base model name from the folder name, e.g.
-            # "unsloth_Llama-3.2-3B-Instruct_1771227800" → "unsloth/Llama-3.2-3B-Instruct"
+            # Fallback: "unsloth_Llama-3.2-3B-Instruct_1771227800" -> "unsloth/Llama-3.2-3B-Instruct".
             if not metadata.get("base_model"):
                 metadata["base_model"] = _infer_base_model_from_history(item)
 
@@ -320,7 +317,6 @@ def scan_checkpoints(
             models.append((item.name, checkpoints, metadata))
             logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
 
-        # Sort by modification time (newest first)
         models.sort(key = lambda x: Path(x[1][0][1]).stat().st_mtime, reverse = True)
 
         logger.debug(f"Found {len(models)} training runs in {outputs_dir}")
@@ -351,7 +347,7 @@ def _hub_model_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
     try:
         from huggingface_hub import file_exists, hf_hub_download
 
-        # An adapter repo carries a base config.json too, so a remote LoRA would read as a full model.
+        # An adapter repo also has a config.json, so check adapter_config.json first.
         if file_exists(repo_id, "adapter_config.json", token = hf_token):
             return None
         path = hf_hub_download(repo_id, "config.json", token = hf_token)
@@ -378,8 +374,7 @@ def is_full_finetune_output(path: Optional[str]) -> bool:
     if not path:
         return False
     try:
-        # Below 3.13 a symlink loop comes back as RuntimeError, not OSError, whatever
-        # `strict` says, and both callers run this outside any handler.
+        # Below 3.13 a symlink loop raises RuntimeError, not OSError.
         Path(path).resolve().relative_to(outputs_root().resolve())
     except (OSError, RuntimeError, ValueError):
         return False

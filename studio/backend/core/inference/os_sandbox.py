@@ -30,7 +30,6 @@ PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
-# tools.py re-adds this only to an UNISOLATED launch, and only if it already exists.
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 
@@ -40,9 +39,8 @@ def with_session_packages(env: dict, workdir: str) -> dict:
     if not os.path.isdir(packages):
         return env
     updated = dict(env)
-    # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
+    # Block a planted usercustomize.py; the trusted sitecustomize shim stays first.
     updated["PYTHONNOUSERSITE"] = "1"
-    # pip --target puts console scripts in Scripts on Windows and bin elsewhere.
     scripts = "Scripts" if os.name == "nt" else "bin"
     for key, value in (
         ("PYTHONPATH", packages),
@@ -224,7 +222,6 @@ def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) 
     return proc
 
 
-# `auto` launches on this, `required` refuses; one name so both readers agree.
 WORKDIR_SCAN_INCOMPLETE = "workdir_scan_incomplete"
 WORKDIR_SCAN_ENTRIES = 50_000
 WORKDIR_SCAN_SECONDS = 5.0
@@ -286,7 +283,7 @@ def _host_channel_hazard(
                 info = os.lstat(path)
             except OSError:
                 return f"changed during its safety scan: {path}"
-            # Windows only: MXC grants the workdir by path, so a junction or symlink inside it widens the grant.
+            # Windows: MXC grants by path, so a junction or symlink inside widens the grant.
             if getattr(info, "st_file_attributes", 0) & 0x400:
                 return f"contains a reparse point: {path}"
             if stat.S_ISLNK(info.st_mode):
@@ -310,7 +307,6 @@ def _host_channel_hazard(
 
 
 _scan_lock = threading.Lock()
-# root -> (worker, answer, budget, deadline) of the walk in flight, so a concurrent launch shares it.
 _scan_pending: "dict[str, tuple[threading.Thread, list, list, float]]" = {}
 
 
@@ -346,16 +342,13 @@ def _hazard_within_wall_clock(
                     budget.append(f"could not be checked for host channels: {exc}")
 
             worker = threading.Thread(target = inspect, name = "unsloth-workdir-scan", daemon = True)
-            # Register under the lock, or a concurrent caller starts a second walk.
             pending = (worker, answer, budget, deadline)
             _scan_pending[root] = pending
             worker.start()
     worker, answer, budget, deadline = pending
 
-    # Waits only out the walk's own budget: a walk a previous launch gave up on is past it already.
     worker.join(max(0.0, deadline + _SCAN_JOIN_GRACE_SECONDS - time.monotonic()))
     with _scan_lock:
-        # By identity: another caller may already have replaced the entry.
         if not worker.is_alive() and _scan_pending.get(root) is pending:
             del _scan_pending[root]
     if budget:
@@ -444,7 +437,7 @@ def clear_stale_tool_ipc(workdir: str, deadline: "float | None" = None) -> tuple
                 if not stat.S_ISSOCK(mode):
                     continue
                 if entry.st_nlink > 1:
-                    # Another link exists: removing this name would hide the walk's hard-link finding.
+                    # Removing this name would hide the walk's hard-link finding.
                     continue
                 if not _ipc_endpoint_is_dead(path):
                     logger.info(
@@ -573,12 +566,11 @@ def model_library_roots() -> tuple[str, ...]:
         if not path or not os.path.isabs(path):
             continue
         real = os.path.realpath(path)
-        # Refuse a registered folder that is a root, a home, the homes parent, or a system directory.
         if _is_filesystem_root(real) or not os.path.isdir(real):
             continue
         if os.path.normcase(real) in forbidden:
             continue
-        # The approval gate still asks for a credential inside a model folder; a whole-folder grant would not.
+        # A whole-folder grant would skip the gate's credential prompt inside it.
         if tool_path_approval._references_sensitive_path(real + os.sep):
             continue
         if any(_paths_overlap(real, root) for root in state):
@@ -731,7 +723,7 @@ def _importable_entries(
     return tuple(found)
 
 
-# Measured on Ubuntu 24.04: apparmor-profiles ships this profile disabled, under extra-profiles.
+# Ubuntu 24.04 ships this profile disabled under extra-profiles.
 _BWRAP_APPARMOR_FIX = (
     "sudo apt-get install -y apparmor-profiles && sudo install -m 644 "
     "/usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/ && "
@@ -760,7 +752,7 @@ def linux_unavailable_remediation() -> str:
     missing = [name for name in _LINUX_REQUIRED_BINARIES if shutil.which(name) is None]
     if missing:
         command = bwrap_install_command()
-        # Installing bwrap alone leaves it blocked on Ubuntu 23.10+; keep it one copy-paste.
+        # Installing bwrap alone leaves it blocked on Ubuntu 23.10+.
         if command and "apt-get" in command and _linux_userns_blocked_by_apparmor():
             command = f"{command} && {_BWRAP_APPARMOR_FIX}"
         how = (
@@ -880,20 +872,17 @@ def capability_snapshot(
     )
 
 
-# Last answer per tool; the "off" permission gate reads it on every call without probing.
 _TOOL_ISOLATION_TTL_SECONDS = 60.0
 ISOLATED_TOOLS = ("python", "terminal")
 _tool_isolation_lock = threading.Lock()
 _tool_isolation: dict[str, tuple[float, bool, str, str]] = {}
 _tool_isolation_refreshing: set[str] = set()
-# Every check takes a number when it starts; a reset raises the floor. An answer from a check that
-# started before the reset, or before the one already recorded for that tool, is dropped.
+# A reset raises the generation floor; answers from older checks are dropped.
 _tool_isolation_generation = 0
 _tool_isolation_floor = 0
 _tool_isolation_noted: dict[str, int] = {}
 
 
-# Set to 1: no startup or background probes; only real launches update the answer.
 WARMUP_DISABLE_ENV = "UNSLOTH_DISABLE_SANDBOX_WARMUP"
 
 
@@ -1187,7 +1176,7 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         if plan.requested_mode == "required" and WORKDIR_SCAN_INCOMPLETE in (
             prepared.launch_limitations
         ):
-            # `auto` degrades on an overrun scan; `required` fails closed, since the unvisited part may hold a hazard.
+            # `required` fails closed: the unvisited part may hold a hazard.
             prepared.cleanup()
             raise WorkdirUnsafeError(
                 "the session workdir is too large to check for host channels, "
@@ -1195,15 +1184,14 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
                 "Start a new chat, or use `auto` to run with software safeguards."
             )
     except (WorkdirUnsafeError, SandboxBuildError):
-        raise  # can be tool-induced; says nothing about the backend itself
+        raise
     except SandboxUnavailableError:
-        # The cached pass is stale (bwrap removed or no longer trusted): the next call checks again,
-        # so "off" asks instead of skipping the prompt and failing until the cache expires.
+        # Cached pass is stale: reset so "off" asks instead of failing until expiry.
         from .sandbox_probe import reset_probe_cache
         reset_probe_cache()
         raise
     except OSError as exc:
-        # Must be typed: raw, tools.py's general except would fall back to software safeguards.
+        # Must be typed: tools.py's general except would fall back to software safeguards.
         raise SandboxBuildError(f"the sandbox could not be built on this host: {exc}") from exc
     prepared.execution_record = _record(
         plan,

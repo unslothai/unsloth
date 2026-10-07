@@ -23,11 +23,7 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stand-ins ONLY when the real modules are missing: a stub in
-# ``sys.modules["loggers"]`` breaks every later ``from loggers.handlers
-# import ...``. structlog goes first and ``exc.name`` is checked because
-# ``loggers.handlers`` imports structlog, so a missing structlog would
-# otherwise be mistaken for a missing ``loggers``.
+# Stub only when real modules are missing; structlog first since loggers.handlers imports it.
 try:  # noqa: E402
     import structlog  # type: ignore
 except ModuleNotFoundError:
@@ -52,9 +48,6 @@ from core.inference.llama_cpp import (  # noqa: E402
 )
 from core.inference.tool_call_parser import INTENT_SIGNAL as _INTENT_SIGNAL  # noqa: E402
 import time
-
-
-# ── _INTENT_SIGNAL still matches plan-only stalls ──────────────────
 
 
 def test_intent_signal_matches_plan_only_phrases():
@@ -84,9 +77,6 @@ def test_intent_signal_ignores_direct_answers():
     ]
     for s in direct_samples:
         assert not _INTENT_SIGNAL.search(s), f"_INTENT_SIGNAL must not match {s!r}"
-
-
-# ── Code fence artifact detection ──────────────────────────────────
 
 
 def test_artifact_regex_detects_closed_code_fence():
@@ -143,9 +133,6 @@ def test_artifact_regex_ignores_plain_text():
     assert not _has_answer_artifact(text)
 
 
-# ── HTML artifact detection ────────────────────────────────────────
-
-
 def test_artifact_regex_detects_html_page():
     """Complete HTML pages (doctype optional, </html> required) match."""
     text_a = "<!doctype html><html><body><script>fetch('...')</script></body></html>"
@@ -168,9 +155,6 @@ def test_artifact_regex_ignores_incomplete_html_mention():
         assert not _has_answer_artifact(s), s
 
 
-# ── SVG artifact detection ─────────────────────────────────────────
-
-
 def test_artifact_regex_detects_complete_svg():
     """A complete <svg>...</svg> is an answer artifact."""
     text = (
@@ -188,16 +172,12 @@ def test_artifact_regex_ignores_incomplete_svg():
     assert not _has_answer_artifact(text)
 
 
-# ── Blockquoted fences ─────────────────────────────────────────────
-
-
 def test_artifact_regex_detects_blockquoted_code_fence():
     """The closed-fence patterns must agree with ``_has_unclosed_code_fence``
     on a quoted block, or a complete answer is read as mid-stream and wiped."""
     samples = [
         "First, let me show it.\n> ```python\n> x = 1\n> ```",
         "Let me quote it.\n> ~~~bash\n> echo hi\n> ~~~",
-        # A quoted fence keeps the multi-token info strings column 0 allows.
         'First, let me show it.\n> ```python linenums="1"\n> x = 1\n> ```',
         "First, let me show it.\n>> ```python title=demo.py\n>> x = 1\n>> ```",
     ]
@@ -226,7 +206,6 @@ def test_quoted_closer_does_not_close_an_unquoted_fence():
     text = "First, let me show it.\n```markdown\nExample:\n> ```"
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
-    # ... and the same output, actually closed, is a complete answer.
     assert _has_answer_artifact(text + "\n```")
 
 
@@ -250,8 +229,6 @@ def test_bare_delimiter_in_prose_after_a_closed_block():
     for text in samples:
         assert _has_answer_artifact(text), text
         assert not _would_reprompt(text), text
-    # Nothing has closed yet, so the same delimiter still opens a block,
-    # which is what keeps an info-string-less inline opener working.
     assert _would_reprompt("First, let me show it. Wrap it in ```")
     assert _has_answer_artifact("First, here is code: ```\nx = 1\n```")
 
@@ -262,7 +239,6 @@ def test_fence_body_indented_four_spaces_is_not_a_closer():
     text = "First, let me show it.\n```markdown\n    ```\nstill going"
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
-    # Three columns or fewer still closes.
     assert _has_answer_artifact("First, let me show:\n```python\nx = 1\n  ```")
 
 
@@ -278,7 +254,6 @@ def test_fence_indentation_is_measured_from_its_container():
         assert _has_answer_artifact(text), text
         assert not _would_reprompt(text), text
 
-    # No container: the opener's own 3 columns do not buy the closer 3 more.
     assert not _has_answer_artifact("First, let me show it.\n   ```python\n   x = 1\n      ```")
     assert _has_answer_artifact("First, let me show it.\n   ```python\n   x = 1\n   ```")
 
@@ -328,13 +303,9 @@ def test_closing_tag_in_prose_does_not_eat_a_fence_closer():
     for text in samples:
         assert _has_answer_artifact(text), text
         assert not _would_reprompt(text), text
-    # Markup outside any fence is still stripped, so backticks inside a
-    # finished page do not read as fence delimiters.
     assert _has_answer_artifact(
         "First, let me show it.\n<html><body><script>const s = `hi`;</script></body></html>"
     )
-    # A page that ENCLOSES a fence is one block and goes whole, so a later literal
-    # delimiter inside it is removed with it rather than left looking unclosed.
     enclosing = "First, let me show it.\n<html>\n```python\nx = 1\n```\n<pre>\n```\n</pre>\n</html>"
     assert _has_answer_artifact(enclosing)
     assert not _would_reprompt(enclosing)
@@ -360,7 +331,6 @@ def test_a_sentence_word_is_not_an_info_string():
     text = "First, let me show it.\n<html><body>hi</body></html>\nUse ```html``` here."
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
-    # A real mid-line opener still opens.
     assert _would_reprompt("First, let me write it. ```text\n1. Install deps\n2. Run it")
 
 
@@ -372,13 +342,11 @@ def test_markup_tags_named_in_a_plan_are_not_a_page():
         "First, I'll draw <svg width='10' and then close with </svg>",
         "First, I'll add the <html> element, search for the content, and finish with </html>.",
         "First, I'll open <svg>, search for the data, and finish with </svg>.",
-        # A comparison operator is not child markup.
         "First, I'll wrap the results in <html>, filter values < 3, then finish with </html>.",
     ]
     for text in samples:
         assert not _has_answer_artifact(text), text
         assert _would_reprompt(text), text
-    # A real opening tag with attributes is still a page.
     assert _has_answer_artifact("First, let me show it.\n<html lang='en'><body>hi</body></html>")
 
 
@@ -388,7 +356,6 @@ def test_dedented_delimiter_does_not_close_a_list_fence():
     text = "First, let me show it.\n- ```python\n  x = 1\n```"
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
-    # A fence opened mid-sentence has no container, so its column is not a floor.
     assert _has_answer_artifact(
         "First, let me explain: use ``` for fences; here is code: ```python\nx = 1\n```"
     )
@@ -403,7 +370,6 @@ def test_list_marker_line_opens_a_block_level_fence():
     assert not _has_answer_artifact(unfinished)
     assert _would_reprompt(unfinished)
     assert _has_answer_artifact("First, let me show it.\n- ```python linenums=1\n  x = 1\n  ```")
-    # Prose is unchanged: a mid-sentence delimiter with words after it stays prose.
     assert _has_answer_artifact(
         "First, let me show it.\n```python\nx=1\n```\nUse ``` for markdown."
     )
@@ -419,7 +385,6 @@ def test_markup_closing_tag_tolerates_whitespace():
     for text in samples:
         assert _has_answer_artifact(text), text
         assert not _would_reprompt(text), text
-    # An empty skeleton stays a plan-only mention with the same spacing.
     assert _would_reprompt("First, I'll search the web for current data, then <svg></svg >.")
 
 
@@ -429,9 +394,6 @@ def test_blockquote_marker_does_not_close_an_open_fence_early():
     text = "First, let me write it.\n```python\nimport sys\n> ``` is the delimiter"
     assert not _has_answer_artifact(text)
     assert _would_reprompt(text)
-
-
-# ── Numbered lists are not artifacts ───────────────────────────────
 
 
 def test_numbered_list_is_not_an_answer_artifact():
@@ -456,9 +418,6 @@ def test_numbered_list_is_not_an_answer_artifact():
     ]
     for content in answers_without_intent:
         assert not _would_reprompt(content), content
-
-
-# ── End-to-end guard semantics on realistic responses ──────────────
 
 
 def _would_reprompt(content: str) -> bool:
@@ -614,9 +573,6 @@ def test_no_reprompt_on_here_is_the_plan_prose_answer():
         assert not _would_reprompt(s), s
 
 
-# ── Cross-platform line endings ────────────────────────────────────
-
-
 def test_artifact_regex_handles_crlf_code_fence():
     """Windows / CRLF-converted content still detects a closed fence."""
     content = "First, let me code.\r\n```python\r\nimport sys\r\nprint('hi')\r\n```"
@@ -644,17 +600,7 @@ def test_no_reprompt_on_crlf_complete_python_game():
     assert not _would_reprompt(content)
 
 
-# ── ReDoS guards ───────────────────────────────────────────────────
-
-# What these guards are looking for is catastrophic backtracking, which costs seconds or
-# minutes, not a few extra milliseconds. A wall clock cannot tell a regressed quantifier from a
-# shared runner descheduling the process mid-match: the tilde case below measures about 11ms of
-# work and has been seen at 60.9ms on CI for that reason alone. The quantity the budget is about
-# is the regex's own CPU time, so measure that directly with process_time, which does not run
-# while this process is off the CPU. Best of several runs on top, for the contention
-# process_time cannot see: cache and memory pressure from a neighbour are real work here. A
-# genuine blow-up survives both, since every repeat pays it in full. Same pairing as
-# test_tool_loop_controller.py.
+# Measure regex CPU time (process_time, best of N), not wall clock, to avoid CI noise.
 _REDOS_BUDGET_MS = 50
 
 
@@ -709,9 +655,6 @@ def test_no_backtrack_on_tilde_fence_spam():
     assert elapsed_ms < _REDOS_BUDGET_MS, f"guard took {elapsed_ms:.1f}ms on ~~~ spam"
 
 
-# ── Closing-fence-must-end-line edge cases ────────────────────────
-
-
 def test_artifact_regex_rejects_backtick_close_with_trailing_text():
     """``\\n```not actually closed`` must NOT match a closed fence.
 
@@ -736,12 +679,6 @@ def test_artifact_regex_rejects_tilde_close_with_trailing_text():
     assert _would_reprompt(text)
 
 
-# ── Freshness-gated find / check / verify lookup plans ────────────
-
-
-# ── CommonMark fences with 4+ delimiters ──────────────────────────
-
-
 def test_artifact_regex_detects_four_or_more_backticks():
     """CommonMark allows opening fences of 3+ backticks. Models use
     4+ delimiters when the body itself contains a triple fence."""
@@ -759,15 +696,6 @@ def test_artifact_regex_detects_four_or_more_tildes():
     text = "First, let me show.\n~~~~python\nprint('hi')\n~~~~"
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
-
-
-# ── Query / consult online sources ────────────────────────────────
-
-
-# ── Delayed numbered tool action ──────────────────────────────────
-
-
-# ── Reasoning-only visible-output path ────────────────────────────
 
 
 def test_reasoning_only_visible_artifact_suppresses_reprompt():
@@ -1060,7 +988,7 @@ def test_hidden_reasoning_artifact_still_reprompts():
 
     content_accum = ""
     reasoning_accum = "First, let me draft it.\n```python\nprint('hidden answer')\n```"
-    has_content_tokens = True  # content existed but was stripped
+    has_content_tokens = True
 
     assert _gate_would_reprompt(content_accum, reasoning_accum, has_content_tokens)
 
@@ -1102,7 +1030,6 @@ def test_content_channel_think_block_is_not_an_answer():
     think_only = "<think>First, let me write it.\n```python\nx = 1\n```\nDone.</think>"
     assert _gate_would_reprompt(think_only, "", True)
 
-    # An answer after ``</think>`` is a real answer and still suppresses it.
     with_answer = "<think>First, let me plan.</think>Here you go.\n```python\nx = 1\n```"
     assert not _gate_would_reprompt(with_answer, "", True)
 
@@ -1114,9 +1041,7 @@ def test_prefilled_reasoning_closes_without_an_opener():
     for closer in ("</think>", "[/THINK]", "</thinking>"):
         text = f"First, I will search the web.{closer}The answer is Paris."
         assert not _gate_would_reprompt(text, "", True), closer
-        # Nothing after the closer is still the stall.
         assert _gate_would_reprompt(f"First, I will search the web.{closer}", "", True), closer
-    # A complete pair the shared splitter does not know, opening the turn.
     assert not _gate_would_reprompt(
         "<thinking>First, I will search.</thinking>The answer is Paris.", "", True
     )
@@ -1129,14 +1054,10 @@ def test_whitespace_only_fence_is_not_an_answer():
         text = f"First, I'll run it.\n```bash\n{body}\n```"
         assert not _has_answer_artifact(text), body
         assert _would_reprompt(text), body
-    # A quote marker is the container, not content, so a quoted blank block is blank.
     quoted = "First, I will run it.\n> ```bash\n>   \n> ```"
     assert not _has_answer_artifact(quoted)
     assert _would_reprompt(quoted)
-    # Only the container's own depth is the container. A marker deeper than the
-    # closing line's is content, and content is an answer.
     assert _has_answer_artifact("First, let me show it.\n> ```text\n> >\n> ```")
-    # A blank first line with real code after it is still an answer.
     assert _has_answer_artifact("First, let me show it.\n```bash\n \necho hi\n```")
 
 
@@ -1147,7 +1068,6 @@ def test_reasoning_artifact_counts_only_when_the_loop_promotes_it():
     reasoning = "First, let me draft it.\n```python\nprint('hi')\n```"
     assert not _gate_would_reprompt("", reasoning, False, promote_reasoning_only = True)
     assert _gate_would_reprompt("", reasoning, False, promote_reasoning_only = False)
-    # Promoted but cut off by the window: nothing is yielded, so it is a stall too.
     assert _gate_would_reprompt("", reasoning, False, finish_reason = "length")
 
 
@@ -1165,8 +1085,6 @@ def test_unclosed_leading_reasoning_is_all_hidden():
     for opener in ("<think>", "<thinking>", "<think id=1>"):
         turn = f"{opener}First, let me draft it.\n```python\nx = 1\n```"
         assert _gate_would_reprompt(turn, "", True), opener
-    # The opener ends at a tag boundary: an element that merely starts with the same
-    # letters is part of the answer.
     answer = "<think-card>First, I will show it.</think-card>\n```python\nx = 1\n```"
     assert _has_answer_artifact(answer)
     assert not _gate_would_reprompt(answer, "", True)
@@ -1178,7 +1096,6 @@ def test_reasoning_marker_inside_an_example_is_not_reasoning():
     text = "First, let me show.\n```xml\n</think>\n```\nI will explain the token."
     assert _has_answer_artifact(text)
     assert not _gate_would_reprompt(text, "", True)
-    # A real prefilled closer, outside any artifact, is still where reasoning ends.
     assert not _gate_would_reprompt("First, I will search.</think>The answer is Paris.", "", True)
 
 
@@ -1257,9 +1174,7 @@ def test_intent_inside_a_think_block_is_not_an_announcement():
     assert not _gate_would_reprompt(
         "<think>First, I will search the web.</think>The answer is Paris.", "", True
     )
-    # With nothing outside the block the turn showed nothing, which IS the stall.
     assert _gate_would_reprompt("<think>First, I will search the web.</think>", "", True)
-    # No think block: the plan is on screen and still earns the nudge.
     assert _gate_would_reprompt("First, I will search the web.", "", True)
 
 
@@ -1278,8 +1193,6 @@ def test_a_deeper_delimiter_line_is_the_quoted_block_s_content():
     text = "First, I will run it.\n> ```text\n> \n> > ```\n> ```"
     assert _has_answer_artifact(text)
     assert not _would_reprompt(text)
-    # The same shape with nothing but whitespace between the markers is still blank,
-    # at either depth: the container is the opener's, not whatever the match ended on.
     for quoted in (
         "First, I will run it.\n> ```bash\n>   \n> ```",
         "First, I will run it.\n> > ```bash\n> >   \n> > ```",

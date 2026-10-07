@@ -163,7 +163,7 @@ def _hub_dataset_snapshot_count(path: Path) -> int:
         return 0
 
 
-# anything not named here counts as payload, so unknown formats are never read as an empty snapshot. the windows names are spelled out because huggingface_hub only added them after 0.36; the data-file names come from local_options so this and the resolver cannot drift apart.
+# unknown names count as payload; windows names spelled out since hf_hub added them after 0.36.
 _DATASET_NON_PAYLOAD_FILENAMES = (
     frozenset(
         {
@@ -182,17 +182,16 @@ _DATASET_NON_PAYLOAD_FILENAMES = (
 )
 
 
-# suffixes no loader can turn into rows; a script also needs trust_remote_code, which no load path here passes and datasets>=4 dropped.
+# a script needs trust_remote_code, which no load path passes (datasets>=4 dropped it).
 _DATASET_NON_PAYLOAD_SUFFIXES = frozenset({".cff", ".md", ".py", ".pyc"})
 
 
 def _is_payload_dir(name: str) -> bool:
-    # the only rule datasets applies to a directory, which also covers a Mac zip's __MACOSX. the metadata FILE names must not be applied here: license/train.parquet loads fine, and pruning that subtree hid the dataset from On Device.
+    # metadata FILE names must not prune dirs: license/train.parquet loads fine.
     return not name.startswith(".") and not name.startswith("__")
 
 
 def _is_payload_name(name: str) -> bool:
-    # as above, plus the metadata names: AppleDouble sidecars, every dotfile the list does not enumerate, and the cards a cancelled download leaves behind.
     if not _is_payload_dir(name):
         return False
     return name.lower() not in _DATASET_NON_PAYLOAD_FILENAMES
@@ -201,18 +200,18 @@ def _is_payload_name(name: str) -> bool:
 def _is_payload_file(name: str) -> bool:
     if not _is_payload_name(name):
         return False
-    # the resolver's suffix rule drops a trailing compression suffix: train.parquet.backup is still parquet, data.py.gz is still a script.
+    # drop a trailing compression suffix: data.py.gz is still a script.
     suffix = local_options._data_suffix(name)
     return suffix is None or suffix.lower() not in _DATASET_NON_PAYLOAD_SUFFIXES
 
 
 def _is_present_payload_file(path: Path) -> bool:
-    # existence is not enough: _empty_payload covers both shapes that look like payload and are not, a zero-byte file and a blobs/ link whose blob was pruned.
+    # covers zero-byte files and blobs/ links whose blob was pruned.
     if not _is_payload_file(path.name):
         return False
     if local_options._empty_payload(path):
         return False
-    # bytes are not rows: a header-only csv or a [] json drops the file, not the snapshot, as datasets does.
+    # a header-only csv or [] json drops the file, not the snapshot, as datasets does.
     module = local_options._file_module(path.name)
     return module is None or not local_options._rowless(path, path.name, module)
 
@@ -225,7 +224,7 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
         nonlocal unreadable
         unreadable = True
 
-    # a junction pointing at its own ancestor resolves back inside the snapshot, so containment alone leaves data/loop/loop/... descending until the path length gives out.
+    # a junction to its own ancestor would loop forever.
     seen: set[Path] = set()
     pending: list[Path] = []
 
@@ -254,24 +253,23 @@ def _snapshot_holds_payload(snapshot: Path) -> Optional[bool]:
                 base = Path(directory)
                 kept = []
                 for name in dirnames:
-                    # nothing under a hidden or __-prefixed dir can supply rows, so .hidden/notes.txt must not clear partial.
                     if not _is_payload_dir(name):
                         continue
                     entry = base / name
-                    # containment, not a link-type test: is_symlink() is false for a Windows junction and is_junction() postdates 3.12, so only comparing resolved paths catches every redirect.
+                    # compare resolved paths: is_symlink() is false for Windows junctions.
                     try:
                         redirected = not entry.resolve(strict = True).is_relative_to(root)
                         linked = entry.is_symlink()
                     except (OSError, RuntimeError, ValueError):
                         unreadable = True
                         continue
-                    # walked as a root of its own, not taken as proof: migrated caches keep their data behind a redirect, and a stale one holds nothing.
+                    # migrated caches keep data behind a redirect, so walk it as its own root.
                     if redirected:
                         target = _book(entry)
                         if target is not None:
                             pending.append(target)
                         continue
-                    # a symlink back inside this root is skipped, since booking its target would prune the real directory whenever alias is listed before data; a junction reports False here.
+                    # skip in-root symlinks, else booking the target prunes the real directory.
                     if linked:
                         continue
                     if _book(entry) is None:
@@ -290,7 +288,7 @@ def _raw_dataset_cache_has_data(repo_id: str, cache_path: Path) -> bool:
     snapshot = dataset_snapshot_from_cache_path(str(cache_path), repo_id)
     if snapshot is None:
         return False
-    # True, or unreadable -- and an uninspectable cache is not an empty one.
+    # unreadable is not empty.
     return _snapshot_holds_payload(snapshot) is not False
 
 
@@ -323,7 +321,6 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                 "repo_id": repo_id,
                 "size_bytes": size_bytes,
                 "cache_path": str(entry.resolve()),
-                # blobs-but-no-snapshot, then row state, then a card-only snapshot.
                 "partial": snapshot_partial,
                 "partial_transport": (
                     hf_cache_scan.partial_transport_for(
@@ -480,12 +477,12 @@ def _scan_hf_dataset_caches() -> list[dict]:
         for repo_info in hf_cache.repos:
             inspected += 1
             try:
-                # str(...) guards against the library switching repo_type to an Enum.
+                # str() guards against repo_type becoming an Enum.
                 if str(repo_info.repo_type) != "dataset":
                     continue
                 from hub.services.models.cache_inventory import repo_unique_size_bytes
 
-                # repo_info.size_on_disk counts a hard-linked revision (snapshot reuse) twice.
+                # size_on_disk counts hard-linked revisions twice.
                 total_size = repo_unique_size_bytes(repo_info) or int(
                     getattr(repo_info, "size_on_disk", 0) or 0
                 )
@@ -552,7 +549,6 @@ def _scan_hf_dataset_caches() -> list[dict]:
                 and row.get("partial_transport")
             ):
                 existing["partial_transport"] = row["partial_transport"]
-                # The resume verdict belongs to the transport it was measured against.
                 existing["partial_resumable"] = bool(row.get("partial_resumable"))
     for row in _scan_processed_dataset_caches():
         key = row["repo_id"].lower()
@@ -562,11 +558,10 @@ def _scan_hf_dataset_caches() -> list[dict]:
             continue
         existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
         _merge_last_modified(existing, row)
-        # Preserve the raw path for scoped deletion and expose the processed Arrow path separately.
+        # Annotate, never replace: scoped deletion needs the hub cache_path.
         if row.get("processed_cache"):
             existing["processed_cache"] = True
             existing["load_cache_path"] = row.get("cache_path")
-        # annotating rather than replacing keeps the hub cache_path that scoped deletion needs.
         if existing.get("partial") and not row.get("partial"):
             existing["partial"] = False
             existing["partial_transport"] = None
@@ -641,7 +636,6 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
     scans, _seen_roots = _collect_hf_cache_scans()
     app_entry = app_processed_dataset_cache_from_path(repo_id, cache_path) if cache_path else None
 
-    # Group this dataset's copies by owning cache root, then target exactly one cache.
     owners: dict = {}
     for hf_cache in scans:
         for repo_info in hf_cache.repos:
@@ -656,7 +650,7 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
             owners.setdefault(owner, []).append((hf_cache, repo_info))
 
     target_root = resolve_delete_target_root("dataset", repo_id, cache_path, owners.keys())
-    # A processed-only dataset row sends its Arrow cache path, which is not a Hub datasets-- dir, so resolve_delete_target_root returns None.
+    # A processed-only row's Arrow path is not a Hub dir, so target_root is None.
     if target_root is None and not (
         cache_path
         and (_is_processed_dataset_cache_path(repo_id, cache_path) or app_entry is not None)
@@ -688,7 +682,6 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
                 exc_info = True,
             )
 
-    # A processed cache_path scopes to its own root, a Hub target to the datasets root sharing its cache home, and an unspecified one stays global.
     processed_roots: Optional[set[Path]]
     if not cache_path:
         processed_roots = None
@@ -726,7 +719,7 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
             ),
         )
 
-    # scan_cache_dir() skips blob-only or corrupt repos the revision delete cannot touch, yet the fallback scanner shows them, so purge the whole dir. Hub cache targets only.
+    # scan_cache_dir() skips blob-only/corrupt repos the fallback shows, so purge the dir.
     cache_purged = partial_purged = state_purged = False
     if target_root is not None:
         cache_purged = purge_repo_cache_dirs("dataset", repo_id, root = target_root)
@@ -757,7 +750,6 @@ def _delete_processed_dataset_cache(
     deleted = False
     failures: list[str] = []
     for root in _hf_datasets_cache_roots():
-        # Scope to the selected cache's datasets root(s) so copies under other cache homes survive.
         if only_roots is not None and root.resolve(strict = False) not in only_roots:
             continue
         try:

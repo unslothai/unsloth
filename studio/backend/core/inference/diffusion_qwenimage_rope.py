@@ -55,7 +55,6 @@ def _patch_table(index: int, logger: Any = None) -> bool:
             if logger is not None:
                 logger.info("diffusion.qwenimage_rope: complex RoPE kept: RoPE table entry differs")
             return False
-        # Per device, even once the table is patched: the wrapper keeps the complex path on an unprobed index.
         if index not in q21._FUSION:
             q21._FUSION[index] = q21.probe_fusion(torch.device("cuda", index))
         if q21._FUSION[index] is None:

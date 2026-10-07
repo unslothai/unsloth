@@ -39,10 +39,8 @@ _PREVIEW_CHARS = 360
 _MAX_STREAM_TOOL_CALLS = 64
 _MAX_STREAM_TOOL_FIELD_CHARS = 501
 _MAX_DECODE_MS = 24 * 60 * 60 * 1000
-# Far above any real context window; larger means a broken upstream payload.
 _MAX_TOKEN_COUNT = 1 << 40
 
-# Opt-in startup kill switch for Unsloth's in-memory API monitor.
 _DISABLE_ENV = "UNSLOTH_STUDIO_DISABLE_API_MONITOR"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
@@ -56,7 +54,6 @@ def _token_count_or_none(value: Any) -> Optional[int]:
         count = int(value)
     except (TypeError, ValueError, OverflowError):
         return None
-    # snapshot() divides by these; an unbounded int makes that division raise too.
     if count < 0 or count > _MAX_TOKEN_COUNT:
         return None
     return count
@@ -81,7 +78,6 @@ def _trim(text: Optional[str], limit: int) -> str:
         return ""
     if len(text) <= limit:
         return text
-    # Guard against limit < 3 (slice would underflow).
     if limit <= 3:
         return "..."[:limit]
     return text[: limit - 3] + "..."
@@ -181,13 +177,10 @@ class ApiMonitorEntry:
     status: str
     started_at: float
     updated_at: float
-    # Who this row is attributed to; on a shared row it does not restrict visibility.
     subject: Optional[str] = None
-    # Usernames are reusable and these in-memory rows outlive the account, so the immutable account id fences a replacement off its predecessor's traffic.
+    # Usernames are reusable, so the immutable account id fences off a predecessor's traffic.
     account_id: str = field(default_factory = current_account_id)
-    # True for sk-unsloth callers only: the panel auto-opens on these, not Unsloth's chat.
     via_api_key: bool = False
-    # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
     finished_monotonic: Optional[float] = None
     reply: str = ""
@@ -198,33 +191,26 @@ class ApiMonitorEntry:
     total_tokens: Optional[int] = None
     total_tokens_authoritative: bool = False
     error: Optional[str] = None
-    # "request" (HTTP call) or "lifecycle" (model load/unload: event/reason, not a prompt; shared)
     kind: str = "request"
     event: Optional[str] = None
     reason: Optional[str] = None
     shared: bool = False
-    # 0-100 for a running download row; None when not applicable.
     progress: Optional[float] = None
     running_phase: Optional[str] = None
     prompt_progress_total: Optional[int] = None
     prompt_progress_processed: Optional[int] = None
     prompt_progress_cached: Optional[int] = None
     prompt_progress_time_ms: Optional[float] = None
-    # Stamped on the first reply text; snapshot() prefers it over engine timings.
     first_token_monotonic: Optional[float] = None
-    # The same instant, but only for output the model decoded. A tool card is client output that TTFT should count and
-    # the token-rate clock must not: the tool run between it and the first token is not decoding.
+    # Tool cards count for TTFT but not the token-rate clock.
     first_decode_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
     prompt_tok_per_sec: Optional[float] = None
-    # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
     decode_ms: Optional[float] = None
     stop_reason: Optional[str] = None
-    # Every finish reason seen so far. An n > 1 stream reports each choice in its own chunk, so agreement can only be
-    # judged across the whole request. Not serialized.
+    # An n > 1 stream reports each choice in its own chunk. Not serialized.
     stop_reasons_seen: set[str] = field(default_factory = set)
-    # request-local preview state, omitted from snapshots and cleared on terminal paths.
     openai_stream_tool_calls: list[_OpenAIStreamToolCall] = field(default_factory = list)
     openai_stream_last_tool_indexes: dict[int, int] = field(default_factory = dict)
     openai_stream_last_segment_was_tool: bool = False
@@ -250,8 +236,7 @@ class ApiMonitorEntry:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
         ttft_ms = None
         if self.first_token_monotonic is not None:
-            # Preferred over the prompt_ms fallback: that is prefill only, so it misses the admission-queue wait before
-            # llama-server sees the request.
+            # Preferred over prompt_ms, which misses the admission-queue wait.
             ttft_ms = max(0, int((self.first_token_monotonic - self.started_monotonic) * 1000))
         elif self.prompt_ms is not None:
             ttft_ms = max(0, int(self.prompt_ms))
@@ -259,8 +244,6 @@ class ApiMonitorEntry:
         if (
             tok_per_sec is None
             and self.completion_tokens
-            # The clock starts at the first token, so it spans only the gaps that followed it: one token has no gap to
-            # measure, hence no rate at all.
             and self.completion_tokens > 1
             and self.finished_monotonic is not None
             and self.first_decode_monotonic is not None
@@ -295,8 +278,6 @@ class ApiMonitorEntry:
             "endpoint": self.endpoint,
             "method": self.method,
             "model": self.model,
-            # A shared row reaches subjects with nothing to do with it, and the overlay auto-opens on this flag, so
-            # report it only to the attributed caller.
             "via_api_key": self.via_api_key and attributed,
             "prompt_preview": _trim(self.prompt, _PREVIEW_CHARS),
             "reply_preview": _trim(self.reply, _PREVIEW_CHARS),
@@ -324,8 +305,7 @@ class ApiMonitorEntry:
             "prompt_tok_per_sec": (
                 round(self.prompt_tok_per_sec, 2) if self.prompt_tok_per_sec is not None else None
             ),
-            # The engine's decode span, not the streamed window: an unknowable first-chunk token count and reasoning
-            # tokens both inflate a streamed rate. Absent rather than guessed.
+            # Engine decode span, not the streamed window, which reasoning tokens inflate.
             "decode_ms": int(self.decode_ms) if self.decode_ms is not None else None,
             "stop_reason": self.stop_reason,
         }
@@ -345,7 +325,6 @@ class ApiMonitor:
         terminal_callback: Optional[TerminalCallback] = None,
     ):
         self._entries: deque[ApiMonitorEntry] = deque()
-        # Shared rows one subject cleared: deleting would erase another caller's history.
         self._hidden_shared: dict[tuple[str, str], set[str]] = {}
         self._max_entries = max(0, max_entries)
         self._lock = threading.Lock()
@@ -382,8 +361,6 @@ class ApiMonitor:
         """Remove only the terminal callback registration owned by ``lease``."""
         with self._callback_condition:
             self._terminal_callback_leases.pop(lease, None)
-            # A notification may already have captured this callback. Let its fast enqueue finish before the owner
-            # drains/stops the writer.
             while self._terminal_callbacks_inflight.get(lease, 0):
                 self._callback_condition.wait()
 
@@ -411,7 +388,6 @@ class ApiMonitor:
             id = f"apireq_{uuid.uuid4().hex}",
             endpoint = endpoint,
             method = method,
-            # str(): a raw JSON body can carry any type, and a non-string breaks the UI.
             model = str(model) if model else "default",
             prompt = prompt or "",
             status = "running",
@@ -476,9 +452,6 @@ class ApiMonitor:
             event = event,
             reason = reason,
             shared = True,
-            # The overlay opens on API-key traffic only, and a refused switch never reaches api_monitor.start, so this
-            # row is its whole trace: without the attribution the monitor stayed shut on the failures it exists to
-            # surface.
             via_api_key = via_api_key,
             subject = subject,
         )
@@ -587,7 +560,6 @@ class ApiMonitor:
                 if entry.reply and not entry.reply.endswith("\n"):
                     text = "\n" + text
                 entry.openai_stream_last_segment_was_tool = False
-            # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
                 entry.running_phase = "token_generation"
                 now = time.monotonic()
@@ -595,9 +567,7 @@ class ApiMonitor:
                     entry.first_token_monotonic = now
                 if entry.first_decode_monotonic is None:
                     entry.first_decode_monotonic = now
-            # Preview is capped: once the "..." marker is present the head is frozen, so skip the per-chunk re-concat
-            # (avoids O(n^2) on long generations). A reply that landed exactly on the cap has no marker yet, so let
-            # one more append record the truncation before freezing.
+            # Once the "..." marker is present the head is frozen; skip the O(n^2) re-concat.
             if len(entry.reply) >= _MAX_REPLY_CHARS:
                 if not entry.reply.endswith("..."):
                     entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
@@ -794,8 +764,7 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-        # Coerce before locking: arbitrary payloads, and a raise here (this runs inside streaming generators) would
-        # truncate the user's response.
+        # Coerce before locking: a raise here would truncate the streamed response.
         tok_per_sec = _finite_float_or_none(tok_per_sec)
         prompt_tok_per_sec = _finite_float_or_none(prompt_tok_per_sec)
         prompt_ms = _finite_float_or_none(prompt_ms)
@@ -810,7 +779,6 @@ class ApiMonitor:
                 entry.prompt_tok_per_sec = prompt_tok_per_sec
             if prompt_ms is not None:
                 entry.prompt_ms = prompt_ms
-            # Past a day of decode it is a bad reading, not a slow model.
             if decode_ms is not None and 0 <= decode_ms <= _MAX_DECODE_MS:
                 entry.decode_ms = decode_ms
             if stop_reason is not None:
@@ -861,7 +829,6 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-        # Coerce first: snapshot() does math on these arbitrary payload values.
         prompt_tokens = _token_count_or_none(prompt_tokens)
         completion_tokens = _token_count_or_none(completion_tokens)
         total_tokens = _token_count_or_none(total_tokens)
@@ -880,8 +847,6 @@ class ApiMonitor:
             elif not entry.total_tokens_authoritative and (
                 prompt_tokens is not None or completion_tokens is not None
             ):
-                # Derive only when no authoritative total has been set; a later partial chunk must not clobber a
-                # provider total.
                 entry.total_tokens = (entry.prompt_tokens or 0) + (entry.completion_tokens or 0)
             if context_length is not None:
                 entry.context_length = context_length
@@ -899,7 +864,6 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
-            # Idempotent: second call (e.g. [DONE] after the finally block already ran) must not move finished_*.
             if entry.finished_at is not None:
                 return
             _append_stream_tool_previews(entry, entry.openai_stream_tool_calls)
@@ -941,7 +905,6 @@ class ApiMonitor:
             if entry is None:
                 return
             if entry.finished_at is not None:
-                # Already terminal; refresh error text only.
                 if error:
                     entry.error = _trim(error, 1000)
                     _advance_updated_at(entry)
@@ -1076,14 +1039,11 @@ class ApiMonitor:
                 self._entries.clear()
                 self._hidden_shared.clear()
                 return
-            # A running shared row is a load in progress, not history, so it stays.
             hidden = self._hidden_shared.setdefault((current_account_id(), subject), set())
             for entry in self._entries:
                 if entry.shared and entry.status != "running":
                     hidden.add(entry.id)
-            # Shared rows are hidden, never dropped, even when owned: they are another caller's history too. An own
-            # running row is not history either, and dropping it loses the request outright: active_count falls to zero
-            # and the finish or fail that follows has no entry left to land on.
+            # Shared rows are hidden, never dropped; dropping an own running row loses the request.
             self._entries = deque(
                 entry
                 for entry in self._entries
@@ -1094,7 +1054,6 @@ class ApiMonitor:
         if subject is None:
             return True
         if entry.shared:
-            # Every subject minus the cleared ones. Before ownership, so a clear hides own rows.
             if entry.id in self._hidden_shared.get((current_account_id(), subject), ()):
                 return False
             return _lifecycle_row_visible_to_caller(entry, subject)
@@ -1127,7 +1086,6 @@ class ApiMonitor:
                 kept.append(entry)
                 terminal_seen += 1
         self._entries = kept
-        # Keep hidden sets to live rows so they stay bounded by the ring buffer.
         live = {entry.id for entry in kept}
         for key, hidden in list(self._hidden_shared.items()):
             hidden &= live

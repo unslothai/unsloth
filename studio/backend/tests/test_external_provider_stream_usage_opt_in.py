@@ -93,14 +93,14 @@ def test_only_an_opted_in_caller_receives_the_usage_chunk():
 
 
 def test_a_llama_cpp_connection_receives_the_usage_chunk():
-    # The chat context bar reads prompt_tokens from this chunk, not from llama-server timings.
+    # the chat context bar reads prompt_tokens from this chunk, not llama-server timings
     opted_in, body = _proxy("llama_cpp", stream_options = {"include_usage": True})
     assert body["stream_options"] == {"include_usage": True}
     assert _usage_chunks(opted_in) == [_USAGE]
 
 
 def test_the_opt_in_does_not_reach_a_custom_endpoint():
-    # "custom" is never asked for usage upstream: a strict endpoint 400s on the field.
+    # "custom" is never asked for usage: a strict endpoint 400s on the field
     _, opted_in = _proxy("custom", stream_options = {"include_usage": True})
     _, plain = _proxy("custom")
     assert opted_in == plain

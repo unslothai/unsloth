@@ -39,9 +39,6 @@ def _payload(**overrides):
     return ChatCompletionRequest(**base)
 
 
-# ── the ambiguous shape, both readings ───────────────────────────────
-
-
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)
 def test_search_only_without_the_flag_stays_hosted(provider_type):
     """An old cached bundle sends exactly this and means the provider's search."""
@@ -70,9 +67,6 @@ def test_an_explicit_false_is_not_read_as_a_local_request(provider_type):
     assert _selects_only_provider_hosted_tools(payload, provider_type) is True
 
 
-# ── everything the flag must not change ──────────────────────────────
-
-
 @pytest.mark.parametrize("provider_type", SELF_HOSTED_PROVIDERS)
 def test_self_hosted_providers_are_unaffected(provider_type):
     """They declare no hosted tools, so this was never ambiguous for them."""
@@ -98,7 +92,6 @@ def test_a_hosted_only_name_with_no_local_stand_in_stays_hosted(provider_type):
     from core.inference.tools import ALL_TOOLS
     from routes.inference import _selects_only_provider_hosted_tools
 
-    # The premise: Unsloth has nothing to substitute.
     assert "image_generation" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
     payload = _payload(enabled_tools = ["image_generation"])
@@ -136,8 +129,6 @@ def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(
     from core.inference.tools import ALL_TOOLS
     from routes.inference import _select_request_tools, _selects_only_provider_hosted_tools
 
-    # The premise, derived rather than asserted: a mapping exists, nothing it
-    # points at was selected, and Unsloth has no code_execution of its own.
     assert LOCAL_STANDINS_FOR_HOSTED_TOOLS["code_execution"] == frozenset({"python", "terminal"})
     assert "code_execution" not in {tool["function"]["name"] for tool in ALL_TOOLS}
 
@@ -146,7 +137,6 @@ def test_code_execution_alone_stays_hosted_because_its_stand_ins_are_unselected(
         run_tools_locally = True,
         confirm_tool_calls = True,
     )
-    # The local catalog this request would take into the loop: empty.
     assert _drive(_select_request_tools(payload, tools_on = True, mcp_allowed = False)) == []
     assert _selects_only_provider_hosted_tools(payload, provider_type) is True
 

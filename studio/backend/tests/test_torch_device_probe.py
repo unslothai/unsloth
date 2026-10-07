@@ -16,13 +16,8 @@ import pytest
 from utils import process_lifetime, torch_device_probe
 
 
-# A child that dies of SIGSEGV is still handed to the host's core_pattern handler
-# (apport on Ubuntu), which reads the whole core before the child is reaped: a
-# multi-MB write and roughly 4x the wall time per fault, on every run of this suite.
-# Marking the child non-dumpable first keeps the SIGSEGV the test needs and writes
-# no core. RLIMIT_CORE = 0 does NOT work here, because a piped core_pattern ignores
-# it; PR_SET_DUMPABLE is the only thing that suppresses the dump. prctl is
-# Linux-only, so the call is guarded and simply does nothing elsewhere.
+# Mark the child non-dumpable so its SIGSEGV writes no core (a piped core_pattern
+# ignores RLIMIT_CORE). prctl is Linux-only.
 _SUPPRESS_CORE = (
     "import ctypes\n"
     "try:\n"
@@ -124,8 +119,7 @@ def test_hung_child_marks_the_device_unusable(monkeypatch):
 
 
 def test_unspawnable_probe_does_not_claim_the_accelerator_works(monkeypatch):
-    # A probe that never ran proves nothing, and the two ways of being wrong are not
-    # symmetric: CPU costs embedding speed, the accelerator costs the backend.
+    # The two errors are not symmetric: CPU costs speed, the accelerator costs the backend.
     def _no_spawn(*_args, **_kwargs):
         raise OSError("fork failed")
 
@@ -134,9 +128,7 @@ def test_unspawnable_probe_does_not_claim_the_accelerator_works(monkeypatch):
 
 
 def test_an_unrunnable_probe_still_leaves_cpu_available(monkeypatch):
-    # The opposite trade for CPU: it cannot fault a GPU driver, so a probe that never ran
-    # says nothing against it. Condemning it would push the caller past its CPU fallback
-    # to the GGUF backend, changing the embedding space over a passing failure to fork.
+    # CPU cannot fault a GPU driver, so a probe that never ran says nothing against it.
     def _no_spawn(*_args, **_kwargs):
         raise OSError("fork failed")
 
@@ -158,10 +150,7 @@ def test_unreadable_probe_result_cleans_up_and_does_not_claim_the_device_works(m
 
 
 def test_a_read_failure_during_teardown_does_not_escape(monkeypatch):
-    # The post-kill read used to sit inside the timeout branch, where the trailing
-    # except OSError was a sibling and could not catch it. A pipe failure there escaped
-    # device_can_allocate, so a device that really did time out raised instead of
-    # returning False, and the child never reached the reaper.
+    # A pipe failure in the post-kill read must return False, not raise.
     process = _FakeProcess(returncode = None, timeouts = 1)
     reaped = threading.Event()
     process.wait = lambda: reaped.set()
@@ -262,10 +251,7 @@ def test_child_uses_selected_device_without_preexec(monkeypatch):
 
 
 def test_a_child_that_hit_its_own_deadline_is_a_failed_probe(monkeypatch):
-    # A child that stopped itself hung, and a hang is a device failure. Neither form was
-    # recognised before: SIGALRM is not a hard fault so it fell through _died_by_signal,
-    # and the Windows status is an ordinary non-zero exit. Both read as a healthy device,
-    # which let the parent make the allocation the probe stands in front of.
+    # A self-stopped child hung (SIGALRM, or the Windows status) and must read as a failure.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
     _patch_popen(monkeypatch, _FakeProcess(returncode = -torch_device_probe._SIGALRM_NUMBER))
     assert torch_device_probe.device_can_allocate("cuda") is False
@@ -289,7 +275,6 @@ def test_a_windows_crt_abort_is_a_failed_probe(monkeypatch):
 
 
 def test_the_abort_status_is_read_as_a_crash_only_on_windows(monkeypatch):
-    # Elsewhere 3 is just an exit status a child chose, and an abort arrives as SIGABRT.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
     assert (
         torch_device_probe._died_by_signal(torch_device_probe._WINDOWS_ABORT_EXIT_STATUS) is False
@@ -321,10 +306,8 @@ def test_the_windows_watchdog_uses_the_status_the_parent_looks_for(monkeypatch):
 
 
 def test_the_child_deadline_does_not_depend_on_the_gil(monkeypatch):
-    # The deadline exists for a torch that hangs in a native call, and that is exactly when
-    # a threading.Timer cannot fire: its callback needs the GIL, which a long C call never
-    # returns to the interpreter to release. SIGALRM with no handler is enforced by the
-    # kernel, so it runs no Python at all.
+    # A threading.Timer needs the GIL, which a hung native call never releases;
+    # SIGALRM with no handler is enforced by the kernel.
     script = torch_device_probe._PROBE_SCRIPT
     assert "signal.alarm" in script
     assert script.index("signal.alarm") < script.index("import torch")
@@ -333,8 +316,6 @@ def test_the_child_deadline_does_not_depend_on_the_gil(monkeypatch):
 
 
 def test_the_kernel_enforces_the_child_deadline():
-    # Proves the mechanism rather than trusting it: no handler is installed, so the default
-    # disposition terminates the process, and the exit is the signal itself.
     if not hasattr(signal, "alarm"):
         pytest.skip("POSIX only")
     done = subprocess.run(
@@ -346,9 +327,7 @@ def test_the_kernel_enforces_the_child_deadline():
 
 
 def test_an_inherited_sigalrm_disposition_cannot_disarm_the_deadline():
-    # exec keeps an inherited SIG_IGN and an inherited blocked mask, so a supervisor that
-    # ignores or blocks SIGALRM would leave the deadline unenforceable and an orphaned probe
-    # running against a hung driver forever. The child restores the disposition itself.
+    # exec keeps an inherited SIG_IGN and blocked mask, so the child restores SIGALRM itself.
     if not hasattr(signal, "alarm"):
         pytest.skip("POSIX only")
     prologue = torch_device_probe._PROBE_SCRIPT.split("if sys.platform")[0]
@@ -456,8 +435,7 @@ def test_windows_rocm_directories_use_numeric_version_order(monkeypatch, tmp_pat
     [
         (-11, False, True),
         (-6, False, True),
-        # Something else killed the probe; that says nothing about the device. The repo
-        # makes the same exclusion in LlamaCppBackend._is_signal_crash.
+        # Killed externally says nothing about the device (as in LlamaCppBackend._is_signal_crash).
         (-9, False, False),
         (-15, False, False),
         (-2, False, False),
@@ -476,10 +454,7 @@ def test_died_by_signal(monkeypatch, returncode, on_windows, expected):
 
 @pytest.mark.parametrize("killer", [9, 15, 1])
 def test_a_killed_probe_is_not_a_pass_for_an_accelerator(monkeypatch, killer):
-    # Not a hard fault, so it is no evidence against the device, but it is not the clean
-    # run that earns a pass either. Importing torch and building its device context is
-    # enough to trip a cgroup OOM on its own, and reading that as a pass sends the caller
-    # on to a much larger load in this process.
+    # Not a hard fault, but not a pass: a cgroup OOM on import must not lead to a larger load.
     monkeypatch.setattr(torch_device_probe.os, "name", "posix")
     _patch_popen(monkeypatch, _FakeProcess(returncode = -killer))
     assert torch_device_probe.device_can_allocate("cuda") is False

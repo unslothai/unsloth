@@ -11,9 +11,7 @@ Model/variant for the managed mode resolve from ``--unsloth-model`` /
 ``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
-# --- torch.compile cache isolation -------------------------------------------------
-# Must run before torch is imported anywhere below, so it is here rather than in a
-# fixture. See tests/_shared/compile_cache_isolation.py for what it does and why.
+# Must run before torch is imported; see tests/_shared/compile_cache_isolation.py.
 import importlib.util as _ilu  # noqa: E402
 import pathlib as _pathlib  # noqa: E402
 
@@ -23,9 +21,8 @@ for _up in _iso.parents:
     if _candidate.is_file():
         _spec = _ilu.spec_from_file_location("_unsloth_compile_cache_isolation", _candidate)
         _mod = _ilu.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)  # sets the env vars on import
+        _spec.loader.exec_module(_mod)
         break
-# -----------------------------------------------------------------------------------
 
 import contextlib
 import errno
@@ -37,32 +34,24 @@ from pathlib import Path
 
 import pytest
 
-# Add backend root to sys.path (mirrors app launch)
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
-# Settle the real ``loggers`` package before any test module is imported. 84 test files
-# stub it with a bare ``ModuleType``, which has no ``__path__`` and so is not a package: once
-# one wins the slot, ``from loggers.media_progress import ...`` (routes/inference.py, at module
-# level) dies with "'loggers' is not a package". Only bites when pytest is invoked from the
-# repo root, which is why the repo's own CI, run from studio/backend, never saw it.
+# Import the real loggers package first: test stubs without __path__ break
+# 'from loggers.media_progress import' when pytest runs from the repo root.
 try:
     import loggers  # noqa: E402
 except ImportError:
-    # loggers.handlers needs structlog, and some tests stub structlog to run without it. Where
-    # it is missing, the import this protects would die on structlog anyway.
     pass
 else:
-    # A stub satisfies the import too: ``__path__`` is the whole difference. Also keeps the
-    # name used, which is what verify_import_hoist.py reads a module-level import for.
+    # __path__ is what separates the real package from a stub; the use also feeds verify_import_hoist.py.
     assert hasattr(loggers, "__path__"), (
         f"the 'loggers' slot holds a non-package ({loggers!r}); a ModuleType stub from some "
         "test module got there first, so `from loggers.media_progress import ...` will fail"
     )
 
-# tests/_shared, as tests/conftest.py does for its own trees. Module scope, not a fixture:
-# a test module imports from it at collection, before any fixture runs.
+# Module scope: test modules import from tests/_shared at collection.
 for _up in Path(__file__).resolve().parents:
     _repo_shared = _up / "tests" / "_shared"
     if (_repo_shared / "growth.py").is_file():
@@ -73,26 +62,14 @@ for _up in Path(__file__).resolve().parents:
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
-# The other half of the same guard: unsloth_zoo.__init__ refuses to import unless this is present, normally set by `import unsloth`. Without it
-# the patch backend's only route to the helpers is that ~940 MB import, which a CPU-only host cannot complete. run.py and main.py do the same.
+# unsloth_zoo refuses to import without this; mirrors run.py and main.py.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
-# The on-demand attention-backend installer defaults to "auto", so ANY test that loads a
-# pipeline with attention_backend="xformers"/"sage"/"flash" would shell out to a real pip
-# (up to 600s) and, for xformers, a real torch probe. test_diffusion_attention.py disables
-# it per-test; pin the default off for the whole suite so a new test elsewhere cannot
-# reintroduce that by accident. setdefault, so an explicit override still wins.
+# Avoid real pip installs for attention backends; setdefault so an override wins.
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
-# Avoid a cold torch subprocess in unrelated RAG tests. The probe tests re-enable it.
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
-# A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
+# Tests that hide nvidia-smi must not find real GPUs via NVML.
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
-# settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
-# transient tenant on a live card has time to clear. Under test the snapshots are stubs
-# whose answers do not change with time, so the wait buys nothing and the max() over the
-# reads -- which is what the retry is actually for -- is unaffected. Measured on the
-# backend suite: 142s of test_diffusion_backend.py's 328s went here, in tests reaching it
-# through _plan_memory, which has no way to pass delay_s. setdefault, so a test that wants
-# the production spacing can still set it.
+# Stubbed snapshots do not change over time, so the retry spacing only wastes minutes.
 os.environ.setdefault("UNSLOTH_SETTLE_DELAY_S", "0")
 
 
@@ -112,7 +89,7 @@ _studio_home_counter = itertools.count()
 
 @pytest.fixture(scope = "session")
 def _skills_home_root(tmp_path_factory):
-    # One mktemp per session; see _studio_home_root for why a per-test mktemp is quadratic.
+    # One mktemp per session; per-test mktemp is quadratic (see _studio_home_root).
     return tmp_path_factory.mktemp("skills_homes")
 
 
@@ -121,14 +98,13 @@ _skills_home_counter = itertools.count()
 
 @pytest.fixture(autouse = True)
 def _no_real_mxc_drive_aliases(monkeypatch):
-    # A Windows test host would otherwise map real drive letters; test_mxc_drive_alias.py and the native
-    # MXC tests opt back in.
+    # Windows hosts would map real drive letters; MXC tests opt back in.
     monkeypatch.setenv("UNSLOTH_MXC_DRIVE_ALIAS", "0")
 
 
 @pytest.fixture(autouse = True)
 def _forget_mxc_isolation_settings():
-    # Held for a second across tests that each get their own Studio home; only when already imported.
+    # The setting is cached for a second across tests that each get their own Studio home.
     def _forget():
         settings = sys.modules.get("utils.mxc_isolation_settings")
         if settings is not None:
@@ -141,7 +117,6 @@ def _forget_mxc_isolation_settings():
 
 @pytest.fixture(autouse = True)
 def _no_background_sandbox_probes(monkeypatch):
-    # No warm-up thread and no background re-probe; each test starts with no cached tool answer.
     monkeypatch.setenv("UNSLOTH_DISABLE_SANDBOX_WARMUP", "1")
 
     def _forget():
@@ -156,18 +131,16 @@ def _no_background_sandbox_probes(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_restricted_region_defaults(monkeypatch):
-    # A host where Hugging Face is restricted would otherwise default the model source to ModelScope.
     monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
 
 
 @pytest.fixture(autouse = True)
 def _isolate_agent_skills(_skills_home_root, monkeypatch):
-    # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
+    # The developer's own skills must not leak into tool-selection tests.
     from core.inference import skills as _skills
 
     home = _skills_home_root / f"h{next(_skills_home_counter)}"
     home.mkdir()
-    # Owner home under tmp, bundled root empty; managed-account roots stay for the account matrix.
     monkeypatch.setattr(_skills, "_owner_home", lambda: home)
     monkeypatch.setattr(_skills, "_BUNDLED_ROOT", ("bundled", home / "bundled-absent"))
     try:
@@ -200,10 +173,10 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _reset_gpu_query_cache():
-    # Only when already imported: importing utils.hardware would change import-order tests.
+    # Only if already imported: importing utils.hardware would change import-order tests.
     def _reset():
         gpu_query = sys.modules.get("utils.hardware.gpu_query")
-        # A background probe thread may still be importing it; a half-built module has no cache yet.
+        # A background probe may still be importing it.
         reset = getattr(gpu_query, "reset", None)
         if reset is not None:
             reset()
@@ -219,7 +192,7 @@ def _reset_gpu_query_cache():
 
 @pytest.fixture(autouse = True)
 def _restore_fp32_matmul_precision():
-    # torchao's default config handler sets set_float32_matmul_precision("high") process-wide.
+    # torchao's default config handler sets float32 matmul precision process-wide.
     def _get():
         getter = getattr(sys.modules.get("torch"), "get_float32_matmul_precision", None)
         return getter() if getter is not None else None
@@ -248,9 +221,6 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
             monkeypatch.setattr(module, "_schema_ready", set())
-
-
-# Pytest CLI options
 
 
 def pytest_configure(config):
@@ -294,9 +264,6 @@ def pytest_addoption(parser):
     )
 
 
-# E2E server fixtures
-
-
 @pytest.fixture(scope = "session", autouse = True)
 def _isolate_xet_health_home(tmp_path_factory):
     """Point HF_HOME at a temp dir for the whole session, before any server is spawned.
@@ -311,10 +278,7 @@ def _isolate_xet_health_home(tmp_path_factory):
 
     mp = MonkeyPatch()
     mp.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home_session")))
-    # Pin these to what the hub resolved from the REAL environment before moving HF_HOME, which
-    # also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH: moving it alone would send the
-    # E2E server to an empty cache and token store, so a ~1.1GB GGUF redownload inside the 120s
-    # startup deadline and no credentials for a private --unsloth-model.
+    # Pin hub paths before moving HF_HOME, or the E2E server gets an empty cache and token store.
     mp.setenv("HF_HUB_CACHE", hf_constants.HF_HUB_CACHE)
     mp.setenv("HF_TOKEN_PATH", hf_constants.HF_TOKEN_PATH)
     xet_cache = getattr(hf_constants, "HF_XET_CACHE", None)
@@ -334,9 +298,7 @@ def _isolate_xet_health_state():
     That reproduced: `test_shim_injects_studio_prepare_on_http_retry` saw the fallback without the
     Xet attempt it asserts. Clean CI runners hide it, developer machines do not.
     """
-    # Load it the way the shim does: a bare `from unsloth_zoo import ...` raises NotImplementedError
-    # on a CPU-only host (its __init__ runs accelerator detection), so a plain import would skip
-    # this isolation on exactly the hosts the shim's GPU-init retry exists to support.
+    # Load like the shim: a bare unsloth_zoo import raises on CPU-only hosts.
     from utils.hf_xet_fallback import _load_optional
 
     hf_xet_health = _load_optional("unsloth_zoo.hf_xet_health")
@@ -493,10 +455,7 @@ def _no_background_model_scan(monkeypatch):
     from core.inference import local_model_resolver
 
     monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
-    # Start from a built, empty index: stubbing only the warm left the cold path
-    # walking those caches inside the admission wait, so on a large install the
-    # assertion became a 503 "still indexing". Cold-path tests reset _scan themselves;
-    # _build_index is untouched so tests calling it directly still walk for real.
+    # Start from a built empty index, or the cold path walks caches inside the admission wait.
     monkeypatch.setattr(local_model_resolver, "_scan", (time.monotonic(), {}))
     monkeypatch.setattr(local_model_resolver, "_misses", {})
 
@@ -548,7 +507,6 @@ def _no_leftover_generation_account(monkeypatch):
     covers the rest, and the six keep their explicit version because there it IS the
     thing under test.
     """
-    # sys.modules, not an import: a module nothing imported has no global to leak.
     routes_video = sys.modules.get("routes.video")
     if routes_video is None:
         return
@@ -567,8 +525,7 @@ def _assume_bare_metal(monkeypatch):
     from core.inference import llama_cpp
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
-    # The route rebinds the detector as a module global (its import sits in a module-level
-    # try), so patching llama_cpp alone leaves it on real hardware.
+    # The route rebinds the detector as a module global, so patching llama_cpp alone is not enough.
     try:
         from routes import inference as routes_inference
     except Exception:  # optional deps absent on some CI legs
@@ -580,8 +537,7 @@ def _assume_bare_metal(monkeypatch):
 
 _LOOPBACK_HOSTS = frozenset({"::1", "localhost", "localhost.localdomain", "0.0.0.0", "::", ""})
 
-# The spellings worth writing into NO_PROXY. Same set as above minus the wildcards and
-# the empty string, which mean "every interface" to bind() and nothing to a proxy rule.
+# Loopback spellings for NO_PROXY (no wildcards or empty string).
 _LOOPBACK_PROXY_BYPASS = ("localhost", "localhost.localdomain", "127.0.0.1", "::1")
 
 _PROXY_ENV_VARS = (
@@ -609,9 +565,7 @@ def no_proxy_with_test_servers(*existing) -> str:
     return ",".join(dict.fromkeys(parts + bypass))
 
 
-# Server URLs the suite is explicitly configured to talk to. Both documented external-server
-# modes may name a remote host, and neither suite carries the allow_network marker, so
-# blocking them would make a deliberately configured integration run unusable.
+# Explicitly configured external servers must stay reachable.
 _EXTERNAL_SERVER_ENV_VARS = ("UNSLOTH_E2E_BASE_URL", "STUDIO_TEST_URL")
 
 
@@ -633,16 +587,10 @@ def _configured_server_hosts() -> frozenset:
     return frozenset(hosts)
 
 
-# What those hostnames resolved to during this test. socket.create_connection looks the
-# name up and then dials the numeric result, so allowing the name alone still refuses the
-# connect that follows: by then the destination is an address that matches no name rule.
-# Filled in at resolution time, and only for names the rules already allowed, so the
-# address-literal exemption below cannot widen anything through it.
+# Addresses allowed names resolved to: create_connection dials the numeric result.
 _RESOLVED_SERVER_ADDRESSES: set = set()
 
-# Lifted only by allow_outbound(), below. A module global rather than something a
-# fixture holds, because the callers that need it run before any per-test fixture
-# exists to hold it for them.
+# Module global: its callers run before any per-test fixture exists.
 _outbound_permitted = False
 
 
@@ -691,7 +639,6 @@ def _host_is_allowed(host) -> bool:
     the real resolver, and the address it returned was then dialable.
     """
     if host is None:
-        # getaddrinfo(None, port) asks for a local address to bind, not a destination.
         return True
     decoded = _decoded_host(host)
     if decoded is None:
@@ -793,19 +740,12 @@ def _outbound_network_guard():
     def blocked_connect_ex(self, address, *args, **kwargs):
         if _outbound_permitted or _is_local_endpoint(self, address):
             return real.connect_ex(self, address, *args, **kwargs)
-        # Returned, not raised: connect_ex reports failure with an errno and callers
-        # branch on it (run.py probes a port that way). Raising here would send code
-        # that only handles a non-zero result down a path a real failure never takes.
+        # Returned, not raised: connect_ex callers branch on the errno.
         return errno.ENETUNREACH
 
-    # Resolution runs before either of those: socket.create_connection, which is what the
-    # Hub's HTTP stack ends up in, calls getaddrinfo first. Left live, an uncached request
-    # still hits the host resolver and can stall there, so the dependency is not actually
-    # gone. Refuse the lookup too, which is also where a real resolver would fail.
+    # Refuse lookups too, or an uncached request can still stall in the host resolver.
     def guarded_getaddrinfo(host, port, *args, **kwargs):
-        # An address literal consults no resolver, so it cannot stall and is left alone;
-        # the SSRF guards resolve private literals on purpose to prove they reject them,
-        # and connect() still refuses anything non-loopback afterwards.
+        # Address literals use no resolver; SSRF tests resolve private literals on purpose.
         allowed_by_name = _outbound_permitted or _host_is_allowed(host)
         if not (allowed_by_name or _is_ip_literal(host)):
             raise socket.gaierror(
@@ -815,9 +755,7 @@ def _outbound_network_guard():
             )
         infos = real.getaddrinfo(host, port, *args, **kwargs)
         if allowed_by_name and not _outbound_permitted:
-            # Carry the permission across the lookup, so the numeric address this hands
-            # back is still dialable. Deliberately not done on the literal branch: that
-            # one exists so a private literal can be resolved and then refused.
+            # Allow the resolved address so it stays dialable; not on the literal branch.
             for info in infos:
                 try:
                     _RESOLVED_SERVER_ADDRESSES.add(str(info[4][0]).lower())
@@ -829,10 +767,7 @@ def _outbound_network_guard():
     patch.setattr(socket.socket, "connect_ex", blocked_connect_ex)
     patch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
 
-    # A refused connection still looks retryable to huggingface_hub, which backs off
-    # 1+2+4+8+8s over five attempts before giving up -- so blocking the socket without
-    # this turns a fast failure back into a ~23s one per call. Swap the clock only
-    # inside that module, since `time` is shared and real sleeps elsewhere matter.
+    # huggingface_hub backs off ~23s on refused connects; patch its clock only.
     try:
         from huggingface_hub.utils import _http as hf_http
     except Exception:
@@ -849,20 +784,9 @@ def _outbound_network_guard():
 
         patch.setattr(hf_http, "time", _NoBackoffClock())
 
-    # A proxy, where one is configured, is dialled instead of the server the request
-    # names -- so the guard sees the proxy, which is not what the run was pointed at,
-    # refuses it, and the server is unreachable after all. That applies to the managed
-    # loopback server as much as to a configured remote one: a proxy with no loopback
-    # entry in NO_PROXY swallows localhost requests too.
-    #
-    # Bypassed rather than allowed, since allowing the proxy host would let that same
-    # proxy carry Hub traffic straight through, which is the thing being stopped here.
-    # Done at session scope with everything else: the fixtures that dial these servers
-    # (test_providers_api's auth_headers and public_key_pem) are session-scoped, so a
-    # per-test version would be set up long after they had already tried and failed.
+    # A configured proxy would be dialled instead of the test server, so bypass it via NO_PROXY.
+    # Bypass, not allow, so the proxy cannot carry Hub traffic. Session scope for session fixtures.
     if any(os.environ.get(name) for name in _PROXY_ENV_VARS):
-        # Both spellings merged once and written back identically, so neither variable
-        # loses what the other one carried.
         combined = no_proxy_with_test_servers(
             os.environ.get("NO_PROXY"), os.environ.get("no_proxy")
         )
@@ -900,8 +824,7 @@ def _no_outbound_network(request, monkeypatch, _outbound_network_guard):
     Also lifts the guard for the whole of an ``allow_network`` test, which is where a
     marker can still do the job: the test body has not started yet.
     """
-    # Per test, so a name a test pointed the env vars at itself does not stay dialable
-    # for the rest of the run.
+    # Per test, so names a test pointed env vars at do not stay dialable.
     _RESOLVED_SERVER_ADDRESSES.clear()
 
     if request.node.get_closest_marker("allow_network") is not None:
@@ -941,10 +864,7 @@ def _hub_reachable_without_probing(monkeypatch):
 
     from utils import utils as utils_utils
 
-    # Dated far ahead rather than by overriding _reachability_fresh: the freshness rule is
-    # itself under test (test_verdict_expires_so_a_disconnect_is_noticed shortens the TTL and
-    # asserts the verdict lapses), so it has to keep working. A future stamp keeps this seed
-    # fresh under the real rule, and a test that writes its own verdict replaces it.
+    # Seed a future stamp instead of overriding _reachability_fresh, which is itself under test.
     monkeypatch.setattr(
         utils_utils, "_hf_reachability", (time.monotonic() + 10**6, False), raising = False
     )
@@ -970,7 +890,6 @@ def studio_server(request):
         yield external_url, api_key
         return
 
-    # Lazy import; pytest has already loaded test_studio_api, so this is a cache hit.
     import test_studio_api as _e2e
 
     model = (
@@ -1003,9 +922,6 @@ def api_key(studio_server):
     return studio_server[1]
 
 
-# ── RAG fixtures ─────────────────────────────────────────────────────
-
-
 @pytest.fixture(scope = "session")
 def linkable_temp_base(tmp_path_factory):
     """Session scratch root for tests whose paths must satisfy the linked-folder policy.
@@ -1019,7 +935,6 @@ def linkable_temp_base(tmp_path_factory):
     root = Path.home() / ".unsloth-test-tmp"
     base = root / basetemp.name
     base.mkdir(parents = True, exist_ok = True)
-    # pytest keeps its numbered temp roots, so a missing one means that session is gone
     for stale in root.iterdir():
         if stale.name != basetemp.name and not (basetemp.parent / stale.name).exists():
             shutil.rmtree(stale, ignore_errors = True)
@@ -1072,7 +987,7 @@ def stub_embeddings(monkeypatch):
 
     from core.rag import config, embeddings
 
-    # Pin the backend: "auto" probes the hardware (nvidia-smi) for each backend it builds.
+    # Pin the backend: 'auto' probes nvidia-smi for each backend.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 
@@ -1158,10 +1073,7 @@ def healthy_diffusers(monkeypatch):
                     return getattr(_real, name)
                 except Exception:  # noqa: BLE001 -- the lazy submodule is what may be broken
                     pass
-            # "Model" as well as "Pipeline": the gate probes whatever class a family names,
-            # and the video families name a transformer (MiniMaxH3Transformer3DModel), not a
-            # pipeline. Answering only pipelines let that probe miss and turned routing tests
-            # into the 400 about diffusers this proxy exists to prevent.
+            # Video families name a transformer Model, not a Pipeline.
             if name.endswith("Pipeline") or name.endswith("Model"):
                 return object
             raise AttributeError(name)
@@ -1202,8 +1114,7 @@ def real_prequant_safe_globals(monkeypatch):
         for module, name in pq._PREQUANT_SAFE_GLOBALS
     ]
     monkeypatch.setattr(pq, "_prequant_safe_globals", lambda: pairs)
-    # Per test rather than per process: the memo is a module global, so one test's registration
-    # would otherwise decide the answer for every test that ran after it.
+    # Per test: the memo is a module global.
     monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
     monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
     return resolver
@@ -1221,10 +1132,7 @@ def _no_carried_over_hardware_measurements():
     from utils.hardware import hardware as _hw
 
     def _clear():
-        # Under the locks: a non-blocking read hands the refresh to a daemon thread that holds
-        # these while it writes, so clearing without waiting lets a previous test's REAL host land
-        # in the cache a moment later. Torch lock FIRST, then the inventory lock, because that is
-        # the order the background refresh takes them in.
+        # Under the locks (torch lock first, matching the refresh) so a prior test's host cannot land.
         with _hw._torch_build_snapshot_lock, _hw._physical_gpu_inventory_lock:
             _hw._torch_build_snapshot_cache = None
             _hw._physical_gpu_inventory_cache = None
@@ -1248,14 +1156,8 @@ def _process_shutdown_latch_is_clear():
 
     def _reopen():
         process_lifetime.begin_process_lifecycle()
-        # The ROUTE latch too. Any test that exercises _graceful_shutdown reaches
-        # cancel_pending_loads, which sets it, and only run_server clears it -- so one
-        # such test cancels every load admitted by every test that follows it. That is
-        # how four tunnel-safe tests came to fail in a full run and pass alone.
-        # Only if it is ALREADY imported. Importing it here would drag a heavy module
-        # into every test that never asked for it, which perturbed source-contract and
-        # import-order tests elsewhere; and the latch cannot have been set without the
-        # module being loaded, so there is nothing to miss.
+        # Reset the route latch set by cancel_pending_loads, or later loads get cancelled.
+        # Only if already imported, to avoid perturbing import-order tests.
         mod = sys.modules.get("routes.inference")
         if mod is not None:
             try:
@@ -1399,7 +1301,7 @@ def pin_installer_torch_vendor(monkeypatch):
     """Pin the installer's torch-vendor probe so a ROCm-torch dev box answers like CI."""
     monkeypatch.delenv("UNSLOTH_FORCE_ROCM_TORCH", raising = False)
     for module in list(sys.modules.values()):
-        # __dict__: hasattr would trip a lazy __getattr__. _torchao_stub has its own probe.
+        # __dict__: hasattr would trip a lazy __getattr__.
         if "_rocm_torch_preferred" in (getattr(module, "__dict__", None) or {}):
             monkeypatch.setattr(module, "_installed_torch_is_rocm", lambda: None)
 

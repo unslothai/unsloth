@@ -61,8 +61,7 @@ def hf_datasets_cache_roots() -> list[Path]:
         seen.add(resolved)
         roots.append(resolved)
 
-    # Keep this stdlib-only: training validates cached datasets before activating a Transformers
-    # sidecar, and importing datasets here would cache the base huggingface_hub module first.
+    # Stdlib-only: importing datasets here would cache base huggingface_hub before the sidecar.
     env_cache = os.environ.get("HF_DATASETS_CACHE")
     if env_cache:
         add(Path(env_cache))
@@ -563,7 +562,7 @@ def load_cached_hf_dataset(
         )
     dataset = load_dataset(**kwargs)
     if app_cache is not None:
-        # Advisory flag: a purged entry, read-only home or full disk must not discard a loaded dataset.
+        # Advisory: a failure must not discard a loaded dataset.
         try:
             mark_app_processed_dataset_cache_complete(app_cache)
         except UnsafeDatasetCachePathError:

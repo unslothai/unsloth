@@ -18,13 +18,12 @@ import pytest
 
 import core.inference.diffusion_memory as dm
 
-# Loaded storage of Qwen-Image-2.1 auto (int8 transformer, fp8 text encoder, bf16 VAE), MiB.
+# Loaded storage of Qwen-Image-2.1 auto (int8 DiT, fp8 text encoder, bf16 VAE), MiB.
 Q21_LOADED = {
     "transformer": (6922, "dit"),
     "text_encoder": (8959, "text_encoder"),
     "vae": (644, "other"),
 }
-# The flat plan's inputs for that load (family table sizes, flat 8192 headroom).
 Q21_FLAT = dict(model_dense_mib = 19630, companion_dense_mib = 12182, text_encoder_dense_mib = 10847)
 
 
@@ -49,7 +48,7 @@ def _flat_plan(
         **Q21_FLAT,
     )
     if plan.offload_policy == dm.OFFLOAD_MODEL:
-        # what torchao_offload_plan makes of whole-module offload for a streamable int8 denoiser
+        # What torchao_offload_plan makes of whole-module offload for a streamable int8 denoiser.
         plan = dm.torchao_streaming_plan(plan)
     return plan
 
@@ -79,15 +78,13 @@ def _refine(
 
 def test_measured_headroom_values(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION", raising = False)
-    # 1849 MiB measured worst phase x 1.15, rounded up to 256 MiB; linear in pixels
+    # 1849 MiB measured worst phase x 1.15, rounded up to 256 MiB; linear in pixels.
     assert dm.measured_image_runtime_mib("qwen-image-2.1", "default") == 2304
     assert dm.measured_image_runtime_mib("qwen-image-2.1", "max") == 2304
     assert (
         dm.measured_image_runtime_mib("qwen-image-2.1", "default", width = 2048, height = 2048) == 8704
     )
-    # never below the 1 MP figure for a smaller canvas
     assert dm.measured_image_runtime_mib("qwen-image-2.1", "default", width = 512, height = 512) == 2304
-    # unmeasured family / eager tiers keep the flat estimate
     assert dm.measured_image_runtime_mib("flux", "default") is None
     assert dm.measured_image_runtime_mib("qwen-image-2.1", "off") is None
     assert dm.measured_image_runtime_mib("qwen-image-2.1", "eager") is None
@@ -97,7 +94,6 @@ def test_measured_headroom_values(monkeypatch):
 
 def test_24gb_keeps_transformer_and_text_encoder_resident(q21_pipe):
     plan = _flat_plan(21432, 24576)
-    # the reported flat decision: DiT resident, text encoder streamed on every prompt
     assert plan.estimates["resident_required_mib"] == 29870
     assert (
         plan.offload_policy == dm.OFFLOAD_GROUP
@@ -105,7 +101,7 @@ def test_24gb_keeps_transformer_and_text_encoder_resident(q21_pipe):
         and not plan.stream_transformer
     )
     new = _refine(q21_pipe, plan)
-    # the flat hooks stay (so an oversized request can stream again); the whole encoder is kept resident in them
+    # Flat hooks stay so an oversized request can stream again; the encoder stays resident in them.
     assert new.offload_policy == dm.OFFLOAD_GROUP
     assert new.stream_text_encoders and not new.stream_transformer
     assert new.resident_transformer_mib is None
@@ -115,19 +111,15 @@ def test_24gb_keeps_transformer_and_text_encoder_resident(q21_pipe):
         >= 8959
     )
     assert new.estimates["measured_runtime_headroom_mib"] == 2304
-    # never under-reserved: loaded weights + measured peak x margin + base overhead within the safe budget
     assert 6922 + 8959 + 644 + 2304 + dm.DEFAULT_BASE_OVERHEAD_MIB <= 21432
 
 
 def test_16gb_keeps_transformer_resident_streams_encoder(q21_pipe):
     plan = _flat_plan(13638, 16376)
-    assert (
-        plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_transformer
-    )  # flat: every DiT block streamed
+    assert plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_transformer
     new = _refine(q21_pipe, plan)
     assert new.offload_policy == dm.OFFLOAD_GROUP
     assert new.stream_text_encoders and new.stream_transformer
-    # every DiT group kept resident through its hooks, the rest of the room holds encoder layers
     assert new.resident_transformer_mib == 6922
 
 
@@ -161,7 +153,6 @@ def test_12gb_keeps_the_whole_transformer_resident_encoders_streamed(q21_pipe, m
     assert new.resident_transformer_mib == 6922
     assert new.resident_text_encoder_mib is None
     assert new.estimates["resident_dit_slack_mib"] == 1228
-    # while the encoders run, the transformer drops back to the flat room the partial placement kept
     assert (
         new.estimates["encode_resident_transformer_mib"]
         == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
@@ -172,7 +163,7 @@ def test_12gb_keeps_the_whole_transformer_resident_encoders_streamed(q21_pipe, m
 
 def test_12gb_partial_residency_when_the_whole_transformer_does_not_fit(q21_pipe, monkeypatch):
     monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
-    # 500 MiB less free memory (a desktop session on the card): the whole DiT misses the slack, the flat room holds
+    # 500 MiB less free (a desktop session on the card): the whole DiT misses the slack.
     plan = _flat_plan(9000, 12288)
     assert 6922 + 644 + 2304 + 1228 > plan.device_memory.free_mib
     new = _refine(q21_pipe, plan)
@@ -261,7 +252,6 @@ def test_every_tier_fits_measured_need(q21_pipe, budget):
     head = 2304 + dm.DEFAULT_BASE_OVERHEAD_MIB
     if new is plan:
         return
-    # the policy and stream flags are the flat plan's: only resident rooms are added
     assert (new.offload_policy, new.stream_transformer, new.stream_text_encoders) == (
         plan.offload_policy,
         plan.stream_transformer,
@@ -275,7 +265,6 @@ def test_every_tier_fits_measured_need(q21_pipe, budget):
     )
     assert int(new.resident_transformer_mib or 0) <= 6922
     if "resident_dit_slack_mib" in new.estimates:
-        # the whole-DiT tier: every encoder streams, and weights + peak x margin + slack fit free memory
         assert new.resident_transformer_mib == 6922 and not new.resident_text_encoder_mib
         slack = new.estimates["resident_dit_slack_mib"]
         assert slack >= max(1024, total // 10)
@@ -298,7 +287,7 @@ def test_compact_layer_cache_frees_full_storage(monkeypatch):
         assert torch.equal(got, ref)
     owned = cache.k
     q21._compact_layer_cache(cache)
-    assert cache.k is owned  # already compact: untouched
+    assert cache.k is owned
     monkeypatch.setenv("UNSLOTH_DIFFUSION_Q21_COMPACT_KV", "0")
     assert not q21.compact_kv_enabled()
     monkeypatch.delenv("UNSLOTH_DIFFUSION_Q21_COMPACT_KV")
@@ -315,9 +304,7 @@ def _cuda_offload_model():
         def __init__(self):
             super().__init__()
             self.proj_in = torch.nn.Linear(64, 1024)
-            self.blocks = torch.nn.ModuleList(
-                torch.nn.Linear(1024, 1024) for _ in range(6)
-            )  # ~4 MiB each
+            self.blocks = torch.nn.ModuleList(torch.nn.Linear(1024, 1024) for _ in range(6))
             self.proj_out = torch.nn.Linear(1024, 64)
 
         def forward(self, x):
@@ -354,7 +341,7 @@ def test_partial_residency_bit_identical_and_placed(keep_blocks, monkeypatch):
         p.numel() * p.element_size() for m in (net.proj_in, net.proj_out) for p in m.parameters()
     )
     block = sum(p.numel() * p.element_size() for p in net.blocks[0].parameters())
-    # whole MiB, rounded up: room for the top-level group and keep_blocks blocks, short of one more block
+    # Whole MiB, rounded up: room for the top group plus keep_blocks blocks, short of one more.
     room = -(-(top + keep_blocks * block) // mib) if keep_blocks else 0
     kept = dm._keep_groups_resident(net, room, "cuda")
     for _ in range(3):  # first forward traces the prefetch order, later ones prefetch
@@ -438,12 +425,10 @@ def test_resident_group_keeps_copy_stream_wait(monkeypatch):
     monkeypatch.setattr(dm, "_offload_groups", lambda m: groups)
     dm._keep_groups_resident(module, 1, "cpu")
     assert all(getattr(g, "_unsloth_resident", False) for g in groups)
-    # every group resident: nothing is ever queued on the copy stream, so there is nothing to wait for
     for g in groups:
         g.onload_()
         g.offload_()
     assert Stream.waits == 0
-    # one group of the module streams again (an oversized request): the resident ones wait for it again
     module._unsloth_stream_state["streamed"] = 1
     for g in groups:
         g.onload_()
@@ -478,7 +463,7 @@ def test_oversized_request_streams_resident_groups_and_restores_them(monkeypatch
 
     restore = dm.release_resident_groups(pipe, 1024)
     assert restore is not None
-    # blocks first, from the last; the top-level group goes last
+    # Blocks release first, from the last; the top-level group goes last.
     assert all(next(b.parameters()).device.type == "cpu" for b in net.blocks)
     for _ in range(2):
         assert torch.equal(net(x.cuda()).cpu(), ref)
@@ -506,7 +491,7 @@ def test_partial_release_frees_only_what_the_request_needs(monkeypatch):
     )
     dm._keep_groups_resident(net, 1024, "cuda")
     pipe = types.SimpleNamespace(components = {"transformer": net})
-    restore = dm.release_resident_groups(pipe, 1)  # one ~4 MiB block covers 1 MiB
+    restore = dm.release_resident_groups(pipe, 1)
     placed = [next(b.parameters()).device.type for b in net.blocks]
     assert placed == ["cuda"] * 5 + ["cpu"]
     restore()
@@ -640,17 +625,14 @@ def test_generate_hooks_the_resident_transformer_only_when_the_release_falls_sho
 def test_measured_request_extra(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION", raising = False)
     pipe = types.SimpleNamespace(_unsloth_measured_reserve = (2304, "qwen-image-2.1", "default"))
-    # the default request is what the reserve was sized for
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024) == 0
     assert dm.measured_request_extra_mib(pipe, width = 512, height = 512) == 0
-    # a bigger canvas, a batch and reference images each need more
     assert dm.measured_request_extra_mib(pipe, width = 2048, height = 2048) == 8704 - 2304
     assert dm.measured_request_extra_mib(pipe, width = 1024, height = 1024, batch_size = 2) > 0
     one_ref = int(1024 * 1024 * 0.32)
     assert dm.measured_request_extra_mib(
         pipe, width = 1024, height = 1024, condition_pixels = one_ref
     ) == int(8192 * 0.32 * 1.15)
-    # no measured placement: never releases
     assert dm.measured_request_extra_mib(object(), width = 2048, height = 2048) == 0
 
 
@@ -703,7 +685,7 @@ def test_pinned_denoiser_reads_real_group_offload_hooks(monkeypatch):
         non_blocking = True,
     )
     pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
-    assert not dm.denoisers_pinned_resident(pipe)  # hooked, nothing pinned: streams
+    assert not dm.denoisers_pinned_resident(pipe)
     assert dm._keep_groups_resident(net, 1024, "cuda") > 0
     assert dm.denoisers_pinned_resident(pipe)
     restore = dm.release_resident_groups(pipe, 1024)
@@ -759,7 +741,7 @@ def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
             assert torch.equal(net(x), ref)
         restore()
         for lin in net[1]:
-            # torchao 0.14 (torch <= 2.9) keeps the v1 layout, nesting its int8 data one subclass deeper
+            # torchao 0.14 (torch <= 2.9) keeps the v1 layout, nesting int8 data one subclass deeper.
             assert set(_inner_devices(lin.weight)) == {"cuda"}
         assert torch.equal(net(x), ref)
 
@@ -822,7 +804,7 @@ def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkey
     block_mib = 4  # each 1024x1024 fp32 block is 4 MiB + bias
     whole = 1024
     assert dm.install_encode_release(pipe, _whole_plan(whole, whole - 2 * block_mib), None) == 1
-    for _ in range(2):  # per request; nothing accumulates
+    for _ in range(2):
         enc(torch.randn(2, 8, device = "cuda"))
         assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
         assert on_device() == ["cuda"] * 6
@@ -836,7 +818,7 @@ def test_encode_release_restores_after_a_failed_encode(monkeypatch):
     enc.fail = True
     with pytest.raises(RuntimeError):
         enc(torch.randn(2, 8, device = "cuda"))
-    assert enc.seen[-1] == ["cpu"] * 6  # encode room 0: every block streamed during the encode
+    assert enc.seen[-1] == ["cpu"] * 6
     assert on_device() == ["cuda"] * 6
     enc.fail = False
     enc(torch.randn(2, 8, device = "cuda"))
@@ -848,12 +830,12 @@ def test_encode_release_keeps_an_oversized_release_streamed(monkeypatch):
     """Inside an oversized request (groups already streamed for a bigger canvas), the encode streams the same surplus
     on top and pins back only its own groups, so the big denoise still runs with the oversized release in place."""
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
-    dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 4), None)  # surplus covers one block
-    outer = dm.release_resident_groups(pipe, 4)  # the oversized request: one block
+    dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 4), None)
+    outer = dm.release_resident_groups(pipe, 4)
     assert on_device() == ["cuda"] * 5 + ["cpu"]
     enc(torch.randn(2, 8, device = "cuda"))
     assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
-    assert on_device() == ["cuda"] * 5 + ["cpu"]  # the oversized release is still in force
+    assert on_device() == ["cuda"] * 5 + ["cpu"]
     assert torch.equal(net(x.cuda()).cpu(), ref)
     outer()
     assert on_device() == ["cuda"] * 6
@@ -862,7 +844,6 @@ def test_encode_release_keeps_an_oversized_release_streamed(monkeypatch):
 
 def test_encode_release_only_for_the_whole_tier(monkeypatch):
     torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
-    # the partial / 16 GB placements carry no encode room: nothing is hooked, the encode sees the placement as is
     assert (
         dm.install_encode_release(
             pipe, types.SimpleNamespace(resident_transformer_mib = 1024, estimates = {}), None
@@ -879,7 +860,6 @@ def test_generate_load_installs_the_encode_release():
         encoding = "utf-8"
     )
     at = src.index("install_encode_release(pipe, plan, logger)")
-    # after the placement is applied and before the int8 GEMM reads the final residency
     assert src.index("effective_policy, effective_tiling = apply_memory_plan(") < at
     assert at < src.index("if denoisers_pinned_resident(pipe):", at)
 

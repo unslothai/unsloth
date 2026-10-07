@@ -31,7 +31,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-_BACKEND_DIR = Path(__file__).resolve().parent.parent  # studio/backend
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 _COMMANDS_RS = _BACKEND_DIR.parent / "src-tauri" / "src" / "commands.rs"
 
 
@@ -262,13 +262,6 @@ def test_liveness_answers_immediately_and_never_starts_detection():
     15s. The stub raises if detection is started, so returning at all proves it was not."""
     result = _probe(settled = False)
 
-    # Returning at all is most of the assertion: `must_not_run` raises if detection starts,
-    # and DETECTION_COMPLETE is cleared, so a route awaiting one never returns.
-    #
-    # Two bounds, as in test_liveness_reports_inference_active.py. The relative one is
-    # against a route in the same app that only returns a dict, so what is left after both
-    # pay the same interpreter and scheduler is the route's own work; the absolute one is
-    # the watchdog's, since a control that somehow took seconds would scale with it.
     relative = max(result["control"] * 40, 0.05)
     ceiling = min(relative, _watchdog_probe_budget_s() / 2)
     assert result["elapsed"] < ceiling, (
@@ -276,14 +269,7 @@ def test_liveness_answers_immediately_and_never_starts_detection():
         f"{result['control'] * 1000:.1f}ms to answer a route that does nothing, so it was "
         "waiting on something rather than reading the snapshot"
     )
-    # Still the full port-validation payload the launcher matches on. The key must be
-    # present because the launcher reads it; its value is environment-derived and is
-    # legitimately empty on a bare CI runner, so presence is what this asserts.
-    #
-    # Read it off has_root_id, not off `result`. The subprocess snippet builds `result`
-    # with `body.get("studio_root_id")`, so the key exists in `result` whether or not the
-    # reply carried it -- `"studio_root_id" in result` was true even with the field
-    # deleted from liveness_check(). Its two neighbours already use this indirection.
+    # check has_root_id: `result` always has the key via body.get(), so `in result` proves nothing
     assert result["has_root_id"], (
         "/api/liveness dropped studio_root_id; desktop_backend_owner.rs deserializes it "
         "into DesktopLiveness and rejects a sibling port without it"

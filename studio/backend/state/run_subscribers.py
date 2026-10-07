@@ -23,8 +23,7 @@ import threading
 import time
 import uuid
 
-# Three follower keep-alive periods. Errs towards present: a stale stamp costs an idle slot for 45s,
-# reading a present user as absent costs them the decision.
+# Three follower keep-alive periods; errs towards present.
 _ATTENDED_FOR_S = 45.0
 
 _LOCK = threading.Lock()
@@ -89,7 +88,6 @@ def is_attended(run_id: str, account_id: str = "") -> bool:
         followers = _SEEN.get(key)
         if not followers:
             return False
-        # Expired lazily; a reaper would need a thread for what this loop already does.
         for token, seen in list(followers.items()):
             if seen <= cutoff:
                 del followers[token]

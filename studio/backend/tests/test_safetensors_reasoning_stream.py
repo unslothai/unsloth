@@ -95,16 +95,7 @@ _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat1
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
-# Build the module while the stubs are live, then drop them, exactly as
-# test_audio_type_inconclusive.py does. The three tests below reach this through
-# pytest.importorskip and get it from sys.modules, so the stubs only have to exist
-# for this one import.
-#
-# Dropping them is not tidiness. A stub left in sys.modules is a cross-file leak:
-# test_audio_type_inconclusive.py::test_the_stubs_do_not_outlive_this_module asserts
-# nobody does it, and every other file's _stub_if_missing returns early when the name
-# is already present, so its own bookkeeping never runs and its cleanup has nothing to
-# undo. Leaving them installed traded this file's order dependency for a worse one.
+# Stubs live only for this import: a leftover stub in sys.modules leaks into other test files.
 _EAGER_IMPORT_ERROR: str | None = None
 try:
     import core.inference.inference  # noqa: E402,F401
@@ -115,32 +106,27 @@ for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 
 
-# DeepSeek-R1 / QwQ / GLM shape: the generation prompt opens an unclosed ``<think>``.
 _THINK_TPL = (
     "{% for m in messages %}<|user|>{{ m['content'] }}{% endfor %}"
     "{% if add_generation_prompt %}<|assistant|>\n<think>\n{% endif %}"
 )
-# Qwen3.5 shape: a CLOSED ``<think></think>`` unless thinking is explicitly requested.
 _TEMPLATE_DEFAULT_OFF_TPL = (
     "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n"
     "{% if enable_thinking is defined and enable_thinking is true %}<think>\n"
     "{% else %}<think>\n\n</think>\n\n{% endif %}{% endif %}"
 )
-# Opens ``<think>`` only at high effort.
 _EFFORT_SHAPE_TPL = (
     "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n"
     "{% if reasoning_effort is defined and reasoning_effort == 'high' %}<think>\n"
     "{% else %}<think>\n\n</think>\n\n{% endif %}{% endif %}"
 )
-# Stamps a date through the ``strftime_now`` global transformers exposes to every template.
 _STRFTIME_TPL = (
     "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{{ strftime_now('%Y') }}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif %}"
 )
-# Nemotron shape: thinking is off until a message opts in with ``/think``.
 _MESSAGE_SHAPE_TPL = (
     "{% set ns = namespace(think = false) %}"
     "{% for m in messages %}{% if '/think' in m['content'] %}{% set ns.think = true %}{% endif %}"
@@ -148,7 +134,6 @@ _MESSAGE_SHAPE_TPL = (
     "{% if add_generation_prompt %}<|im_start|>assistant\n"
     "{% if ns.think %}<think>\n{% else %}<think></think>{% endif %}{% endif %}"
 )
-# Qwen override shape: an inline ``<|think_off|>`` in any message closes the block.
 _THINK_OFF_TAG_TPL = (
     "{% set ns = namespace(off = false) %}"
     "{% for m in messages %}{% if '<|think_off|>' in m['content'] %}{% set ns.off = true %}"
@@ -156,13 +141,11 @@ _THINK_OFF_TAG_TPL = (
     "{% if add_generation_prompt %}<|im_start|>assistant\n"
     "{% if ns.off %}<think>\n\n</think>\n\n{% else %}<think>\n{% endif %}{% endif %}"
 )
-# Kimi shape: renders history into the prompt but opens no block of its own.
 _HISTORY_ONLY_TPL = (
     "{% for m in messages %}<|im_user|>{{ m['role'] }}<|im_middle|>{{ m['content'] }}<|im_end|>"
     "{% if m['role'] == 'assistant' %}<think></think>{% endif %}{% endfor %}"
     "{% if add_generation_prompt %}<|im_assistant|>assistant<|im_middle|>{% endif %}"
 )
-# Closes its block, and raises on a tool turn the way a strict template does.
 _STRICT_HISTORY_TPL = (
     "{% for m in messages %}{% if m['role'] == 'tool' %}{{ raise_exception('no tool turns') }}"
     "{% endif %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
@@ -178,8 +161,6 @@ def test_prefill_mode_on_for_enable_thinking_default():
 
 
 def test_prefill_mode_follows_template_default_not_the_request_flag():
-    # The kwarg is omitted when the request says nothing, so the template's own default
-    # decides. Assuming a prefill blanked ``content`` for every OpenAI client.
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _TEMPLATE_DEFAULT_OFF_TPL) is False
     assert _sf_reasoning_prefill_mode(_ETHINK, True, _TEMPLATE_DEFAULT_OFF_TPL) is True
 
@@ -189,8 +170,6 @@ def test_prefill_mode_off_when_thinking_disabled():
 
 
 def test_prefill_mode_off_for_reasoning_effort_none():
-    # enable_thinking_effort turns thinking off via reasoning_effort="none"; prefilled mode
-    # would capture the whole answer as reasoning_content.
     assert (
         _sf_reasoning_prefill_mode(_ETHINK_EFFORT, None, _THINK_TPL, reasoning_effort = "none")
         is False
@@ -202,13 +181,11 @@ def test_prefill_mode_off_for_reasoning_effort_none():
 
 
 def test_prefill_mode_renders_with_the_requested_reasoning_effort():
-    # Rendering without the request's effort would report the closed shape for both.
     assert _sf_reasoning_prefill_mode(_ETHINK_EFFORT, None, _EFFORT_SHAPE_TPL, "high") is True
     assert _sf_reasoning_prefill_mode(_ETHINK_EFFORT, None, _EFFORT_SHAPE_TPL, "low") is False
 
 
 def test_a_template_that_stamps_a_date_still_renders():
-    # Without ``strftime_now`` the render raises and the failure reads as a prefill.
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRFTIME_TPL) is False
 
 
@@ -217,8 +194,6 @@ def test_prefill_mode_off_without_think_markers():
 
 
 def test_prefill_mode_renders_the_request_messages():
-    # The template reads the shape off the conversation, so a fixed stand-in classifies a
-    # request nobody made and the answer to the opted-in one lands in visible content.
     plain = [{"role": "user", "content": "what is 2+2"}]
     opted_in = [{"role": "user", "content": "/think what is 2+2"}]
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _MESSAGE_SHAPE_TPL, None, plain) is False
@@ -226,27 +201,20 @@ def test_prefill_mode_renders_the_request_messages():
 
 
 def test_messages_the_template_refuses_fall_back_to_the_single_user_probe():
-    # A history the template raises on must not itself read as a prefill: fall back to the
-    # stand-in every caller got before the messages were threaded through.
     refused = [{"role": "user", "content": "hi"}, {"role": "tool", "content": "42"}]
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRICT_HISTORY_TPL, None, refused) is False
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _STRICT_HISTORY_TPL) is False
 
 
 def test_a_think_tag_the_user_typed_does_not_prefill():
-    # Only the assistant prefix counts. Weighing the whole prompt would let anyone asking
-    # about a <think> tag become the last opener and blank their own answer.
     for text in ("how do I emit a <think> tag?", "use <think>x</think> tags", "plain"):
         msgs = [{"role": "user", "content": text}]
         assert _sf_reasoning_prefill_mode(_ETHINK, None, _HISTORY_ONLY_TPL, None, msgs) is False
-    # A template that really does open one is still read as prefilled.
     typed = [{"role": "user", "content": "a <think> b"}]
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _THINK_TPL, None, typed) is True
 
 
 def test_content_parts_must_reach_the_probe_flattened():
-    # Why the route probes the normalized conversation: the shapes disagree, so a raw array
-    # would test ``'/think' in <list>``, miss the opt-in, and classify a prompt never rendered.
     flattened = [{"role": "user", "content": "/think what is 2+2"}]
     raw_parts = [{"role": "user", "content": [{"type": "text", "text": "/think what is 2+2"}]}]
     assert _sf_reasoning_prefill_mode(_ETHINK, None, _MESSAGE_SHAPE_TPL, None, flattened) is True
@@ -254,8 +222,6 @@ def test_content_parts_must_reach_the_probe_flattened():
 
 
 def test_control_markup_must_reach_the_probe_swept():
-    # The renderer neutralizes control markup first, so a user's ``<think>`` arrives as
-    # ``< think>``. A template branching on it would otherwise split from generation.
     from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
     raw = [{"role": "user", "content": "<think> tags"}]
@@ -267,7 +233,6 @@ def test_control_markup_must_reach_the_probe_swept():
 
 
 def test_prefill_mode_without_messages_matches_the_single_user_probe():
-    # Omitting the argument keeps the pre-existing signature and verdict.
     for tpl in (_THINK_TPL, _TEMPLATE_DEFAULT_OFF_TPL, _MESSAGE_SHAPE_TPL):
         assert _sf_reasoning_prefill_mode(_ETHINK, None, tpl) == _sf_reasoning_prefill_mode(
             _ETHINK, None, tpl, None, [{"role": "user", "content": "hi"}]
@@ -286,7 +251,7 @@ def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
     visible_deltas: list[str] = []
     monitor: list[str] = []
     tool_starts: list[dict] = []
-    order: list[str] = []  # sequence of ("reasoning"|"visible"|"tool_start") events
+    order: list[str] = []
 
     def _flush():
         fr, fv = extractor.finish()
@@ -342,7 +307,6 @@ def _replay_sf_reasoning_stream(events: list[dict], *, prefilled: bool) -> dict:
 
 
 def test_s1_plain_stream_splits_prefilled_reasoning():
-    # S1: plain/MLX single turn -> reasoning delta + visible delta; monitor visible-only.
     events = [
         {"type": "content", "text": "Let me compute 17*23"},
         {"type": "content", "text": "Let me compute 17*23 = 391</think>The answer is 391."},
@@ -355,7 +319,6 @@ def test_s1_plain_stream_splits_prefilled_reasoning():
 
 
 def test_s2_reasoning_flushed_before_tool_start():
-    # S2: reasoning streamed as reasoning_content, then flushed BEFORE tool_start.
     events = [
         {"type": "content", "text": "I should search"},
         {"type": "content", "text": "I should search Sydney weather</think>"},
@@ -365,17 +328,14 @@ def test_s2_reasoning_flushed_before_tool_start():
         {"type": "content", "text": "Found it</think>Sydney is 21C today."},
     ]
     out = _replay_sf_reasoning_stream(events, prefilled = True)
-    # Both turns' reasoning surfaced, answer only from turn 2.
     assert "I should search Sydney weather" in out["reasoning"]
     assert "Found it" in out["reasoning"]
     assert out["visible"] == "Sydney is 21C today."
     assert out["monitor"] == "Sydney is 21C today."
-    # Ordering: the pre-tool reasoning is emitted before the tool_start.
     assert out["order"].index("reasoning") < out["order"].index("tool_start")
 
 
 def test_s3_extractor_resets_each_turn():
-    # S3: multi-turn -> the two turns' reasoning are distinct (fresh extractor each).
     events = [
         {"type": "content", "text": "turn1 thoughts</think>partial"},
         {"type": "status", "text": ""},
@@ -387,7 +347,6 @@ def test_s3_extractor_resets_each_turn():
 
 
 def test_s4_harmony_full_tags_normal_mode():
-    # S4: gpt-oss / explicit-tag models use normal mode (prefilled=False).
     events = [{"type": "content", "text": "<think>reasoning here</think>visible answer"}]
     out = _replay_sf_reasoning_stream(events, prefilled = False)
     assert out["reasoning"] == "reasoning here"
@@ -395,7 +354,6 @@ def test_s4_harmony_full_tags_normal_mode():
 
 
 def test_s5_thinking_off_no_reasoning_deltas():
-    # S5: thinking disabled -> not prefilled, no </think>, all content is visible.
     events = [{"type": "content", "text": "Just the plain answer, no thinking."}]
     out = _replay_sf_reasoning_stream(events, prefilled = False)
     assert out["reasoning"] == ""
@@ -404,32 +362,20 @@ def test_s5_thinking_off_no_reasoning_deltas():
 
 
 def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
-    # GLM-5.2-style enable_thinking_effort: a request with reasoning_effort="none" (and
-    # enable_thinking omitted) disables thinking exactly like enable_thinking=False, so
-    # prefilled mode must be OFF. Otherwise the model emits no </think> and a plain
-    # answer is swallowed whole into reasoning_content, leaving the visible response
-    # empty (the exact bug: prefilled=True below eats the whole answer).
     feats = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
     assert _sf_reasoning_prefill_mode(feats, None, _THINK_TPL, "none") is False
-    # Thinking on (effort level or default) still prefills.
     assert _sf_reasoning_prefill_mode(feats, None, _THINK_TPL, "high") is True
     assert _sf_reasoning_prefill_mode(feats, None, _THINK_TPL, None) is True
-    # An explicit enable_thinking=False also disables (unchanged).
     assert _sf_reasoning_prefill_mode(feats, False, _THINK_TPL, "high") is False
-    # reasoning_always_on wins regardless of reasoning_effort.
     always = {**feats, "reasoning_always_on": True}
     assert _sf_reasoning_prefill_mode(always, None, _THINK_TPL, "none") is True
-    # Plain enable_thinking models (Qwen) have no "none" sentinel; unaffected.
     plain = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
     assert _sf_reasoning_prefill_mode(plain, None, _THINK_TPL, "none") is True
 
-    # End-to-end: with the corrected prefilled=False, a plain no-</think> answer is
-    # emitted as visible content rather than swallowed into the thinking drawer.
     events = [{"type": "content", "text": "The capital of France is Paris."}]
     out = _replay_sf_reasoning_stream(events, prefilled = False)
     assert out["visible"] == "The capital of France is Paris."
     assert out["reasoning"] == ""
-    # The buggy prefilled=True path is what swallowed the whole answer (guard the delta).
     swallowed = _replay_sf_reasoning_stream(events, prefilled = True)
     assert swallowed["visible"] == ""
     assert swallowed["reasoning"] == "The capital of France is Paris."
@@ -600,7 +546,6 @@ def test_text_only_vlm_fallback_resolves_native_markers_off():
     )
     assert captured["reasoning_channel_markers"] is None
     assert captured["reasoning_channel_markers_resolved"] is True
-    # No markers on this branch, so this pins forwarding only.
     assert captured["prompt"] == "manual text-only prompt"
 
 
@@ -712,7 +657,6 @@ def test_route_resumes_an_mlx_thought_as_reasoning(monkeypatch, stream):
     message = _sf_route_message(
         monkeypatch,
         _TEMPLATE_DEFAULT_OFF_TPL,
-        # The MLX backend re-emits a bare opener ahead of the resumed tail.
         ["<think>tail", "<think>tail.</think>\n\nanswer"],
         is_mlx = True,
         seen = seen,
@@ -721,7 +665,6 @@ def test_route_resumes_an_mlx_thought_as_reasoning(monkeypatch, stream):
             {"role": "assistant", "content": "", "reasoning_content": "The head, then the "},
         ],
         continue_final_message = True,
-        # The turn is reasoning whatever the toggle now says.
         enable_thinking = False,
         stream = stream,
     )
@@ -749,7 +692,6 @@ def test_route_refuses_response_format_on_an_mlx_thought_resume(monkeypatch):
 
 def test_route_returns_the_answer_as_content_when_the_template_closes_its_block(monkeypatch):
     """The user-visible symptom: a plain answer reaching ``content``, not the thinking drawer."""
-    # generate_chat_response yields cumulative text snapshots, not events.
     snapshots = ["The capital", "The capital of Japan is Tokyo."]
     message = _sf_route_message(monkeypatch, _TEMPLATE_DEFAULT_OFF_TPL, snapshots)
     assert message["content"] == "The capital of Japan is Tokyo."
@@ -820,7 +762,6 @@ _THINK_OFF_MESSAGES = [
     "reason, content, reasoning",
     [
         (None, "Paris.", ""),
-        # A refused override is not what renders, so the shipped template's open block decides.
         ("it could not render a conversation", "", "Paris."),
     ],
 )
@@ -865,14 +806,11 @@ def test_parse_think_markers_gates_on_capability_and_request():
 
 
 def test_parse_think_markers_reads_only_the_dial_the_template_branches_on():
-    # Plain enable_thinking templates ignore the effort.
     assert _sf_parse_think_markers(_ETHINK, None, "none") is True
-    # Effort-only ladders ignore the boolean.
     _EFFORT_ONLY = {"reasoning_style": "reasoning_effort", "supports_reasoning": True}
     assert _sf_parse_think_markers(_EFFORT_ONLY, False, None) is True
     assert _sf_parse_think_markers(_EFFORT_ONLY, None, "none") is False
     assert _sf_parse_think_markers(_EFFORT_ONLY, None, "low") is True
-    # Hybrid templates read enable_thinking first (Kimi-K3).
     assert _sf_parse_think_markers(_ETHINK_EFFORT, True, "none") is True
     assert _sf_parse_think_markers(_ETHINK_EFFORT, False, "high") is False
     assert _sf_parse_think_markers(_ETHINK_EFFORT, None, "none") is False

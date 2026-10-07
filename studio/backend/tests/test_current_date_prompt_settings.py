@@ -198,7 +198,7 @@ class TestExternalProviderMessages:
         assert out[1] == {"role": "user", "content": "hi"}
 
     def test_ollama_keeps_its_modelfile_system_prompt_when_studio_sends_none(self):
-        # Ollama applies the Modelfile SYSTEM only while messages[0] is not a system turn (#10436).
+        # Ollama applies the Modelfile SYSTEM only while messages[0] is not a system turn.
         import routes.inference as inference
 
         messages = [{"role": "user", "content": "hi"}]
@@ -292,7 +292,6 @@ class TestExternalProviderMessages:
         assert refreshed[1]["content"] == "The current date is 2026-08-15."
 
     def test_any_api_key_request_is_left_verbatim(self, monkeypatch):
-        # studio's own workflow keys are excluded too, not just third-party sk-unsloth callers.
         import routes.inference as inference
 
         monkeypatch.setattr(inference, "_request_has_api_key", lambda _request: True)
@@ -395,7 +394,6 @@ class TestResearchSystemPrompt:
         assert "<chat_instructions>\nBe terse.\n</chat_instructions>" in prompt
 
     def test_run_without_a_stamped_date_is_unchanged(self):
-        # runs created before the field existed, and runs started with the setting off.
         assert _system_prompt_with_instructions("BASE", {}) == "BASE"
         assert _system_prompt_with_instructions("BASE", {"currentDate": ""}) == "BASE"
 
@@ -583,7 +581,6 @@ class TestDateStaysInTheSystemTurn:
             "_local_template_system_turn",
             lambda today, *_a: (True, f"Today's Date: {today:%B %d, %Y}.\nYou are Granite."),
         )
-        # the system turn the tool nudge is appended to, so a tool request keeps the date too.
         expected = (
             "The current date is 2026-10-04.\n\nToday's Date: October 04, 2026.\nYou are Granite."
         )
@@ -609,7 +606,6 @@ class TestDateStaysInTheSystemTurn:
             self.inference, "_local_template_system_turn", lambda *_a: (False, None)
         )
         assert self.inference._apply_current_date_prompt("", object()) == ""
-        # a system prompt the caller wrote is still theirs to send, dated.
         assert self.inference._apply_current_date_prompt("Be terse.", object()) == (
             "The current date is 2026-10-04.\n\nBe terse."
         )
@@ -693,7 +689,6 @@ class TestDateStaysInTheSystemTurn:
             True,
             "You are Qwen, a helpful assistant.",
         )
-        # the mapper runs on the text path only; an image render keeps the loaded template.
         assert self.inference._local_template_system_turn(_DAY, True) == (True, "")
 
     def test_an_image_request_probes_the_processor_template(self, monkeypatch):

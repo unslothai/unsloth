@@ -25,9 +25,9 @@ from utils.log_redaction import redact_log_text
 
 BLOCK_BYTES = 65_536
 DEFAULT_TAIL_LINES = 1_000
-MAX_TAIL_LINES = 2_000  # == MAX_LINES_PER_RESPONSE: a larger ?lines= was silently capped
-# /api is not gzipped (GZipMiddleware is scoped to the assets sub-app), so this
-# is what actually goes on the wire on the first paint.
+# == MAX_LINES_PER_RESPONSE: a larger ?lines= would be silently capped.
+MAX_TAIL_LINES = 2_000
+# /api is not gzipped, so this is what goes on the wire on first paint.
 MAX_TAIL_BYTES = 1_048_576
 MAX_APPEND_BYTES = 524_288
 MAX_LINE_BYTES = 32_768
@@ -49,8 +49,7 @@ class ReadResult:
 
 
 def _file_key(stat: os.stat_result, name: str) -> str:
-    # Identity only: st_ctime_ns changes on append on Linux, which made every poll look like a rotation and resend the
-    # whole tail; st_ino can be 0 on Windows, so name and device carry it there.
+    # st_ctime_ns changes on append on Linux; st_ino can be 0 on Windows, so name helps.
     return f"{name}|{stat.st_dev}|{stat.st_ino}"
 
 
@@ -83,10 +82,7 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
         first = data.find(b"\n")
         remainder = b"" if first == -1 else data[first + 1 :]
         if not remainder:
-            # The whole window sits inside ONE record (no line break, or only the terminator at the end), so dropping
-            # the partial head left nothing: a record bigger than the window (native dump, \r-only progress run, giant
-            # JSON line) rendered an EMPTY pane on a megabyte log while the cursor still advanced past it. Keep the
-            # record's tail.
+            # Window inside one huge record: keep its tail rather than render an empty pane.
             body = data if first == -1 else data[:first]
             remainder = body[-MAX_LINE_BYTES:]
         data = remainder
@@ -98,7 +94,6 @@ def _split_lines(data: bytes, *, drop_partial_head: bool) -> tuple[list[str], bo
     lines: list[str] = []
     for line in raw:
         line = line.rstrip("\r")
-        # An enormous line is split rather than dropped, so nothing is lost.
         while len(line) > MAX_LINE_BYTES:
             lines.append(line[:MAX_LINE_BYTES])
             line = line[MAX_LINE_BYTES:]
@@ -168,7 +163,6 @@ def read_since(
         result.reset_reason = "rotated"
         return result
     if offset > size:
-        # Reopened in "w" mode, or truncated underneath us.
         result = read_tail(path, max_lines)
         result.reset_reason = "truncated"
         return result
@@ -187,7 +181,6 @@ def read_since(
         handle.seek(start)
         data = handle.read(size - start)
 
-    # Stop at the last newline and leave the cursor before the partial line
     last_newline = data.rfind(b"\n")
     if last_newline == -1:
         if len(data) < MAX_LINE_BYTES:
@@ -199,10 +192,7 @@ def read_since(
         consumed = last_newline + 1
         body = data[:consumed]
 
-    # Cap by BYTES before decoding so the cursor stops where the response stops: slicing decoded lines threw away the
-    # oldest of a burst while advancing past them, reporting dropped_bytes = 0.
-    # A model load logging more than MAX_LINES_PER_RESPONSE lines between polls lost the head of its own failure; the
-    # remainder now arrives next poll.
+    # Cap by bytes before decoding so the cursor stops exactly where the response stops.
     newline_count = body.count(b"\n")
     if newline_count > MAX_LINES_PER_RESPONSE:
         cut = -1

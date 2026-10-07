@@ -13,13 +13,11 @@ from __future__ import annotations
 import re
 
 
-# Tagged on the worker's audio_error payload so the parent recognises the case without matching on prose.
 AUDIO_UNSUPPORTED_CODE = "audio_unsupported_backend"
 AUDIO_RUNTIME_ERROR_CODE = "audio_runtime_error"
 
 _MAX_RUNTIME_DETAIL_CHARS = 300
-# A network URL (kept: its tokens are redact_log_text's job), else an absolute POSIX, drive-letter,
-# UNC or file:// path, also after a ':' ("path:/home/..."). A "family:name" pair has no slash.
+# A URL is matched to keep it (its tokens are redact_log_text's job); else absolute/UNC/file:// paths.
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?P<url>\b(?:https?|wss?|ftp)://[^\s\"'`,;]+)"
     r"|(?<![\w/])(?:file://)?(?:/|[A-Za-z]:[\\/]|\\\\)[^\s\"'`,;]+"

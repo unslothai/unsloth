@@ -44,8 +44,7 @@ class TestErrorMessageFromChunk:
         assert error_message_from_chunk({"error": "boom"}) == "boom"
 
     def test_an_unrecognised_error_shape_is_still_an_error(self):
-        # Empty string, not None: the caller must still fail the stream. Returning None
-        # here would restore the silent truncation this module exists to remove.
+        # Empty string, not None: None would restore silent truncation.
         assert error_message_from_chunk({"error": {"code": 500}}) == ""
 
 
@@ -101,8 +100,6 @@ class TestDescribeStreamError:
         assert described == "Deep Research: tokenizer failed"
 
     def test_no_outcome_is_the_old_fixed_string(self):
-        # The regression guard: whatever the input, the user must never be handed a
-        # message that discards the cause.
         for text in ("Context size has been exceeded.", "tokenizer failed", ""):
             assert "Local model stream failed" not in describe_stream_error(text)
 
@@ -134,9 +131,7 @@ class TestSurvivesTheRouteLayer:
         assert "An internal error occurred" not in described
 
     def test_starvation_is_not_classified_as_a_context_overflow(self):
-        # True would set the client compacting. False would emit a 400 and tell the
-        # client its own request was at fault, discouraging the retry that is the right
-        # response to server capacity exhaustion. None keeps it a 500.
+        # None keeps it a 500: True would compact, False would blame the client's request.
         routes = self._routes()
         assert (
             routes._classify_llama_generation_error(self._error("Context size has been exceeded."))
@@ -155,7 +150,6 @@ class TestSurvivesTheRouteLayer:
         described = routes._friendly_error(error)
         assert described.startswith("Message too long: 2358 tokens")
         assert "2048-token context window" in described
-        # An overflow genuinely is one, so the client should compact here.
         assert routes._classify_llama_generation_error(error) is True
 
     def test_a_pre_generation_context_refusal_is_a_client_error_not_a_server_failure(self):
@@ -308,16 +302,13 @@ class TestSurvivesTheRouteLayer:
             self._error("request (2358 tokens) exceeds the available context size (2048 tokens)")
         )
         assert "2358" in oversize and "Context Length in Model settings" in oversize
-        # A plain exception still reads from str().
         assert _safe_error(RuntimeError("plain")) == "plain"
 
     def test_str_of_the_error_stays_the_server_text(self):
-        # What lets the existing token-count regex in _friendly_error still match.
         error = self._error("request (10 tokens) exceeds the available context size (5 tokens)")
         assert str(error).startswith("request (10 tokens)")
 
     def test_the_typed_error_is_a_runtimeerror(self):
-        # Callers that already catch RuntimeError around the stream keep working.
         assert isinstance(self._error("boom"), RuntimeError)
         assert isinstance(self._error("boom"), LlamaStreamError)
 

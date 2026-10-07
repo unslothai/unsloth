@@ -51,9 +51,7 @@ def _client() -> TestClient:
 
 
 def _post_multipart_binary(client: TestClient):
-    # A multipart upload to a JSON-body route: the shape that produced the 500.
-    # FastAPI reads the body, fails to coerce it to the model, and puts the raw
-    # bytes in the error's "input".
+    # FastAPI puts the raw multipart bytes in the error's "input".
     return client.post("/api/thing", files = {"file": ("audio.wav", _BINARY, "audio/wav")})
 
 
@@ -95,7 +93,7 @@ def test_summarizer_makes_inputs_encodable(value, expected_fragment):
     errors = [{"type": "x", "loc": ("body",), "msg": "bad", "input": value}]
     safe = safe_validation_errors(errors)
     assert expected_fragment in str(safe[0]["input"])
-    jsonable_encoder(safe)  # must not raise
+    jsonable_encoder(safe)
 
 
 def test_short_inputs_are_left_alone():
@@ -164,8 +162,7 @@ def test_a_long_dictionary_key_is_truncated():
 
 
 def test_non_finite_numbers_do_not_break_json():
-    # Starlette's JSONResponse dumps with allow_nan = False, so an echoed NaN or
-    # Infinity turns the intended 422 into a 500.
+    # JSONResponse uses allow_nan = False, so an echoed NaN turns the 422 into a 500.
     import json
 
     errors = [
@@ -204,8 +201,7 @@ def test_a_long_loc_element_is_truncated():
 
 
 def test_an_enormous_integer_is_summarized():
-    # str() on an int past sys.get_int_max_str_digits() raises, and json.dumps would
-    # otherwise emit every digit.
+    # str() past sys.get_int_max_str_digits() raises.
     import json
 
     errors = [{"type": "x", "loc": ("body", "audio"), "msg": "bad", "input": 10**20_000}]
@@ -220,8 +216,7 @@ def test_an_ordinary_integer_is_left_alone():
 
 
 def test_a_lone_surrogate_can_still_be_encoded():
-    # Starlette encodes the response as UTF-8 with ensure_ascii = False, and a lone
-    # surrogate survives JSON parsing but cannot be encoded.
+    # A lone surrogate survives JSON parsing but cannot be UTF-8 encoded.
     errors = [{"type": "x", "loc": ("body", "batch_size"), "msg": "bad", "input": "\ud800bad"}]
     safe = safe_validation_errors(errors)
     import json

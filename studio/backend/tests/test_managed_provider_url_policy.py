@@ -34,7 +34,7 @@ METADATA_URLS = [
 
 @pytest.fixture(autouse = True)
 def _clean_resolver_state(monkeypatch, tmp_path):
-    # Isolated per test: the real setter would otherwise write to the machine's own installation.
+    # Isolated per test, or the real setter writes to the machine's own installation.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.delenv(setting.BLOCK_PRIVATE_ENV, raising = False)
@@ -68,7 +68,6 @@ def test_a_managed_account_is_refused_by_default(monkeypatch, as_alice, url):
     with pytest.raises(ValueError) as refusal:
         providers.validate_provider_base_url(url)
     assert "public-network provider base URLs" in str(refusal.value)
-    # The person reading this cannot lift it themselves, so it says who can.
     assert "Settings > Accounts" in str(refusal.value)
 
 
@@ -126,7 +125,6 @@ def settings_client():
     app = FastAPI()
     app.include_router(settings_routes.router)
     app.dependency_overrides[settings_routes.get_current_subject] = lambda: "unsloth"
-    # An interactive owner at the console, which is what the write requires.
     app.dependency_overrides[settings_routes.authenticated_via_api_key] = lambda: False
     with TestClient(app, raise_server_exceptions = False) as client:
         yield client
@@ -196,7 +194,6 @@ def test_the_recipe_egress_guard_narrows_rather_than_standing_down(monkeypatch, 
         guarded = socket.getaddrinfo
         assert guarded is not original
 
-        # A LAN answer is what the switch bought; the metadata answer is not.
         monkeypatch.setattr(
             service.socket if hasattr(service, "socket") else socket,
             "getaddrinfo",
@@ -219,15 +216,13 @@ def test_the_recipe_guard_follows_a_later_flip(monkeypatch, as_alice):
 
     original = socket.getaddrinfo
     monkeypatch.setattr(socket, "getaddrinfo", original)
-    # The real store: the guard closed over the function it imported, so rebinding that name
-    # proves nothing about a running worker.
+    # Use the real store: the guard closed over the imported function, so rebinding proves nothing.
     setting.set_managed_private_provider_urls_allowed(True)
     try:
         service.install_public_egress_guard()
         guarded = socket.getaddrinfo
         assert guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
 
-        # The owner turns it off while this worker is still running.
         setting.set_managed_private_provider_urls_allowed(False)
         with pytest.raises(socket.gaierror) as refusal:
             guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
@@ -286,7 +281,6 @@ def test_a_link_local_provider_that_saves_can_also_be_dialled(monkeypatch, as_al
     assert saved == "http://printer.local:8000/v1"
     assert provider_address_excluding_metadata(saved) == "169.254.3.7"
 
-    # The metadata service itself, and a literal anywhere in the range, still refused.
     for literal in ("http://169.254.169.254/v1", "http://169.254.3.7/v1"):
         with pytest.raises(ValueError):
             provider_address_excluding_metadata(literal)

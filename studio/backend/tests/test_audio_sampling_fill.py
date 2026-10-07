@@ -81,7 +81,6 @@ def _run_generate_audio(
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
 
-    # Recommendation source == the Chat UI's .inference block.
     monkeypatch.setattr(ic, "load_inference_config", lambda mid: dict(recommended or {}))
     ic._recommended_sampling.cache_clear()
 
@@ -125,12 +124,12 @@ def test_moss_uses_the_published_audio_sampling_defaults(model_id):
 def test_audio_operator_pin_overrides_client(monkeypatch):
     monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.9")
     captured = _run_generate_audio(monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2)
-    assert captured["temperature"] == 0.9  # operator pin wins even over an explicit client value
+    assert captured["temperature"] == 0.9
 
 
 def test_audio_client_explicit_preserved(monkeypatch):
     captured = _run_generate_audio(monkeypatch, recommended = {"temperature": 1.0}, temperature = 0.2)
-    assert captured["temperature"] == 0.2  # explicit client value preserved over recommendation
+    assert captured["temperature"] == 0.2
 
 
 def test_audio_generate_returns_the_exact_persisted_clip_id(monkeypatch):

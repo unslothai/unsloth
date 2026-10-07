@@ -183,17 +183,14 @@
     {{- '<tool_response|>' -}}
 {%- endmacro -%}
 
-{#- ===== SETUP ===== -#}
 {%- set ns = namespace(prev_message_type=None, prev_non_tool_role=None) -%}
 {%- set loop_messages = messages -%}
 {%- set enable_thinking = enable_thinking | default(false) -%}
-{#- Unsloth Studio: preserve_thinking defaults OFF (upstream PR #118 defaults true). -#}
+{#- preserve_thinking defaults OFF (upstream PR #118 defaults true). -#}
 {%- set preserve_thinking = preserve_thinking | default(false) -%}
 {{- bos_token -}}
-{#- Handle System/Tool Definitions Block -#}
 {%- if enable_thinking or tools or (messages and messages[0]['role'] in ['system', 'developer']) -%}
     {{- '<|turn>system\n' -}}
-    {#- Inject Thinking token at the very top of the FIRST system turn -#}
     {%- if enable_thinking -%}
         {{- '<|think|>\n' -}}
         {%- set ns.prev_message_type = 'think' -%}
@@ -219,7 +216,6 @@
     {{- '<turn|>\n' -}}
 {%- endif %}
 
-{#- Pre-scan: find last user message index for reasoning guard -#}
 {%- set ns_turn = namespace(last_user_idx=-1) -%}
 {%- for i in range(loop_messages | length) -%}
     {%- if loop_messages[i]['role'] == 'user' -%}
@@ -227,18 +223,16 @@
     {%- endif -%}
 {%- endfor -%}
 
-{#- Loop through messages -#}
 {%- for message in loop_messages -%}
     {%- if message['role'] != 'tool' -%}
     {%- set ns.prev_message_type = None -%}
     {%- set role = 'model' if message['role'] == 'assistant' else message['role'] -%}
-    {#- Detect continuation using tracked state - O(1) instead of O(n) backward scan -#}
     {%- set continue_same_model_turn = (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
     {%- if not continue_same_model_turn -%}
         {{- '<|turn>' + role + '\n' }}
     {%- endif -%}
 
-    {#- Render reasoning/reasoning_content as thinking channel (tool-call turns only) -#}
+    {#- Reasoning is rendered as a thinking channel on tool-call turns only. -#}
     {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
     {%- set thinking_gate = (loop.index0 > ns_turn.last_user_idx) or preserve_thinking -%}
     {%- if thinking_text and thinking_gate and message.get('tool_calls') -%}
@@ -271,14 +265,12 @@
 
             {%- set ns_tr_out = namespace(flag=false) -%}
             {%- if message.get('tool_responses') -%}
-                {#- Legacy: tool_responses embedded on the assistant message (Google/Gemma native) -#}
                 {%- for tool_response in message.get('tool_responses') -%}
                     {{- format_tool_response_block(tool_response['name'] | default('unknown', true), tool_response['response']) -}}
                     {%- set ns_tr_out.flag = true -%}
                     {%- set ns.prev_message_type = 'tool_response' -%}
                 {%- endfor -%}
             {%- elif message.get('tool_calls') -%}
-                {#- OpenAI Chat Completions: forward-scan consecutive role:tool messages -#}
                 {%- set ns_tool_scan = namespace(stopped=false) -%}
                 {%- for k in range(loop.index0 + 1, loop_messages | length) -%}
                     {%- if ns_tool_scan.stopped -%}
@@ -286,14 +278,12 @@
                         {%- set ns_tool_scan.stopped = true -%}
                     {%- else -%}
                         {%- set follow = loop_messages[k] -%}
-                        {#- Resolve tool_call_id to function name -#}
                         {%- set ns_tname = namespace(name=follow.get('name') or 'unknown') -%}
                         {%- for tc in message.get('tool_calls') -%}
                             {%- if tc.get('id') == follow.get('tool_call_id') -%}
                                 {%- set ns_tname.name = tc['function']['name'] -%}
                             {%- endif -%}
                         {%- endfor -%}
-                        {#- Handle content as string or content-parts array -#}
                         {%- set tool_body = follow.get('content') -%}
                         {%- if tool_body is string -%}
                             {{- format_tool_response_block(ns_tname.name, tool_body) -}}
@@ -352,7 +342,6 @@
             {{- captured_content -}}
             {%- set has_content = captured_content | trim | length > 0 -%}
 
-        {#- Forward-scan: find next non-tool message role for continuation detection -#}
         {%- set next_nt = namespace(role=None, found=false) -%}
         {%- for j in range(loop.index0 + 1, loop_messages | length) -%}
             {%- if not next_nt.found -%}
@@ -378,7 +367,6 @@
             {{- '<turn|>\n' -}}
         {%- endif -%}
 
-    {#- Track previous non-tool role for next iteration (avoids O(n) backward scan) -#}
     {%- set ns.prev_non_tool_role = message['role'] -%}
     {%- endif -%}
 {%- endfor -%}
@@ -389,7 +377,6 @@
     {%- endif -%}
 
     {%- if not enable_thinking -%}
-        {#- Suppress thinking - but not when awaiting tool responses -#}
         {%- if ns.prev_message_type != 'tool_call' -%}
             {{- '<|channel>thought\n<channel|>' -}}
         {%- endif -%}

@@ -100,7 +100,7 @@ def _tool_event(**overrides):
         "type": "tool_start",
         "tool_name": "python",
         "tool_call_id": "call_0",
-        # Explicit: the consumer's .get("arguments", {}) fallback is the malformed-event path, so omitting it drops the real wire shape.
+        # Explicit: .get('arguments', {}) is the malformed-event fallback.
         "arguments": {},
         **overrides,
     }
@@ -176,9 +176,6 @@ def _tool_result_turn(
 
 
 def test_anthropic_emitter_reasoning_only_becomes_thinking_block():
-    # Anthropic asks the GGUF generator not to promote reasoning into a duplicate
-    # visible fallback; the balanced <think> markup becomes one typed thinking
-    # block with no literal tags leaking to the client.
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")
     events += emitter.feed({"type": "content", "text": "<think>The capital"})
@@ -191,14 +188,11 @@ def test_anthropic_emitter_reasoning_only_becomes_thinking_block():
     assert _emitter_client_thinking(events) == "The capital of France is Paris."
     assert _emitter_client_text(events) == ""
     thinking_start = next(e for e in events if '"type": "thinking"' in e)
-    # signature is part of the Anthropic thinking-block shape; strict stream
-    # decoders reject the block start without it.
+    # Strict stream decoders reject a thinking block start without signature.
     assert '"signature": ""' in thinking_start
 
 
 def test_anthropic_emitter_splits_think_from_answer():
-    # A reasoning-then-answer reply: the trace streams as a thinking block, the
-    # answer as a separate text block, tags consumed by the splitter.
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")
     events += emitter.feed({"type": "content", "text": "<think>Thinking."})
@@ -210,8 +204,6 @@ def test_anthropic_emitter_splits_think_from_answer():
 
 
 def test_anthropic_emitter_parse_think_off_keeps_literal_tags():
-    # A non-reasoning model quoting <think> markup (e.g. an XML example) must
-    # deliver it verbatim as text, not have it consumed into a thinking block.
     emitter = AnthropicStreamEmitter(parse_think = False)
     events = emitter.start("msg_1", "m")
     events += emitter.feed({"type": "content", "text": "Use <think>like this</think> tags."})
@@ -235,22 +227,17 @@ def test_think_parsing_expected_gates_on_capability_and_request():
             self.reasoning_always_on = always_on
             self.reasoning_default = default
 
-    # Non-reasoning model never parses; always-on always does.
     assert _think_parsing_expected(_Backend(supports = False), _basic_payload()) is False
     assert (
         _think_parsing_expected(_Backend(supports = False, always_on = True), _basic_payload()) is True
     )
-    # Request-level off wins on a switchable model.
     assert _think_parsing_expected(_Backend(), _basic_payload(enable_thinking = False)) is False
     assert _think_parsing_expected(_Backend(), _basic_payload(reasoning_effort = "none")) is False
-    # Unspecified follows the template default; explicit on parses.
     assert _think_parsing_expected(_Backend(default = False), _basic_payload()) is False
     assert _think_parsing_expected(_Backend(), _basic_payload()) is True
     assert _think_parsing_expected(_Backend(), _basic_payload(enable_thinking = True)) is True
 
-    # Effort-dial templates (gpt-oss) map enable_thinking=False to a
-    # low-but-thinking effort; the gate must follow the RESOLVED kwargs and
-    # keep parsing on, disabling only for a genuine "none".
+    # Effort-dial templates map False to low effort; only 'none' disables parsing.
     class _EffortBackend(_Backend):
         def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
             if reasoning_effort == "none":
@@ -262,7 +249,7 @@ def test_think_parsing_expected_gates_on_capability_and_request():
         _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none")) is False
     )
 
-    # Inkling: _coerce_reasoning_effort rewrites the "none" sentinel to 0, so 0 reads as off.
+    # _coerce_reasoning_effort rewrites 'none' to 0, so 0 reads as off.
     class _NumericEffortBackend(_Backend):
         def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
             return {"reasoning_effort": 0.0 if reasoning_effort == "none" else 0.2}
@@ -278,9 +265,6 @@ def test_think_parsing_expected_gates_on_capability_and_request():
 
 
 def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
-    # Effort-only requests must drive enable_thinking-style templates the same
-    # way /v1/responses does: "none" is off, a named level is on. Generation
-    # and the parsing gate read these same args, so they cannot disagree.
     from routes.inference import _anthropic_reasoning_args
 
     assert (
@@ -292,8 +276,6 @@ def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
         is True
     )
     assert _anthropic_reasoning_args(_basic_payload())["enable_thinking"] is None
-    # An explicit boolean always wins; a contradictory effort is removed rather than
-    # riding along into model-specific template resolution.
     assert _anthropic_reasoning_args(
         _basic_payload(enable_thinking = True, reasoning_effort = "none")
     ) == {
@@ -310,15 +292,8 @@ def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
     }
 
 
-# thinking x reasoning_effort, every combination. The request model documents
-# "[x-unsloth] reasoning controls ... win over `thinking` when both are
-# present", so reasoning_effort must be resolved BEFORE the native block: an
-# effort decides whenever it is sent, and `thinking` only speaks when neither
-# x-unsloth control did. Pinned as a full cross product so the precedence
-# cannot silently flip back -- reading resolved_enable_thinking() first made
-# `thinking: enabled` + `reasoning_effort: "none"` still think on Qwen3.
+# reasoning_effort must win over `thinking`; pinned as a full cross product.
 _THINKING_EFFORT_MATRIX = [
-    # (thinking, reasoning_effort, expected enable_thinking)
     (None, None, None),
     (None, "none", False),
     (None, "low", True),
@@ -346,10 +321,8 @@ def test_reasoning_effort_outranks_native_thinking(thinking_type, effort, expect
     args = _anthropic_reasoning_args(_basic_payload(**fields))
 
     assert args["enable_thinking"] is expected
-    # The raw effort still reaches effort-dial templates untouched.
     assert args["reasoning_effort"] == effort
-    # Precedence resolution must not touch preserve_thinking (three-valued:
-    # None keeps llama-server on the load-time --chat-template-kwargs).
+    # preserve_thinking None keeps llama-server's load-time kwargs.
     assert args["preserve_thinking"] is None
 
 
@@ -396,9 +369,6 @@ def test_thinking_effort_matrix_reaches_enable_thinking_templates(thinking_type,
 
 
 def test_x_unsloth_enable_thinking_still_outranks_effort_and_thinking():
-    # Precedence WITHIN the x-unsloth group is unchanged: the explicit boolean
-    # is the most specific control and beats both the effort dial and the
-    # native block.
     from routes.inference import _anthropic_reasoning_args
 
     args = _anthropic_reasoning_args(
@@ -440,9 +410,6 @@ def test_replayed_thinking_preserved_only_when_requested():
 
 
 def test_anthropic_emitter_only_leading_think_is_reasoning():
-    # Genuine reasoning is only ever a single leading <think> block; a model
-    # quoting the tag mid-answer (an XML example) keeps it as literal text,
-    # even with parsing enabled.
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")
     events += emitter.feed({"type": "content", "text": "<think>why</think>Use "})
@@ -478,9 +445,7 @@ def test_split_think_segments_only_parses_leading_block():
 
 
 def test_anthropic_emitter_keeps_embedded_close_tag_in_trace():
-    # Genuine reasoning ABOUT the </think> syntax contains the literal tag; the
-    # generator-recorded length keeps the whole trace in the thinking block and
-    # the real closing marker never leaks into the answer.
+    # Generator-recorded length keeps a trace quoting </think> intact.
     trace = "the tag </think> ends a block"
     prov = {"wrapped": 1, "wraps": [{"len": 0}]}
     emitter = AnthropicStreamEmitter(think_provenance = prov)
@@ -505,7 +470,6 @@ def test_split_think_segments_wrap_length_beats_embedded_tag():
         ("thinking", trace),
         ("text", "Visible."),
     ]
-    # Without provenance the first marker still closes (heuristic fallback).
     assert _split_think_segments(text) == [
         ("thinking", "quote "),
         ("text", " inside</think>Visible."),
@@ -513,7 +477,6 @@ def test_split_think_segments_wrap_length_beats_embedded_tag():
 
 
 def test_anthropic_emitter_holds_back_partial_think_tag():
-    # A tag split across deltas must not leak fragments into the wrong block.
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")
     events += emitter.feed({"type": "content", "text": "<th"})
@@ -567,11 +530,6 @@ def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch, bloc
     assert entry["reply"] == 'Tool call: lookup\nInput: {"query":"weather"}'
 
 
-# =====================================================================
-# Tool nudge tests
-# =====================================================================
-
-
 class TestToolActionNudge:
     def test_balanced_nudge_uses_expanded_web_and_code_tips(self):
         nudge = _build_tool_action_nudge(
@@ -582,7 +540,6 @@ class TestToolActionNudge:
             model_name = "Llama-3.1-70B-Instruct",
         )
 
-        # the date rides on the system prompt now, not the nudge.
         assert "The current date is " not in nudge
         assert nudge.startswith("Tools are available when they materially improve")
         assert "prefer using tools rather than answering from memory" not in nudge
@@ -621,11 +578,6 @@ class TestToolActionNudge:
 
         assert "- guided: Guide this task." in nudge
         assert "create_skill" not in nudge
-
-
-# =====================================================================
-# Pydantic model tests
-# =====================================================================
 
 
 class TestAnthropicModels:
@@ -760,11 +712,6 @@ class TestAnthropicModels:
         assert resp.usage.input_tokens == 0
 
 
-# =====================================================================
-# Message translation tests
-# =====================================================================
-
-
 class TestAnthropicMessagesToOpenAI:
     def test_simple_user_message(self):
         msgs = [{"role": "user", "content": "Hello"}]
@@ -882,7 +829,6 @@ class TestAnthropicMessagesToOpenAI:
         [([], "No results found."), (_WEB_SEARCH_ERROR, "Search failed: unavailable")],
     )
     def test_replayed_web_search_without_hits_ends_on_its_result(self, content, text):
-        # No ``input``: an unvalidated replayed block must not fail the request.
         search_only = [
             {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search"},
             {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": content},
@@ -980,7 +926,7 @@ class TestAnthropicMessagesToOpenAI:
                 "tool_call_id": "tu_1",
             }
         }
-        assert folded[1] is msgs[1]  # assistant turn untouched, tool_calls intact
+        assert folded[1] is msgs[1]
 
     def test_folding_is_a_no_op_without_tool_messages(self):
         from core.inference.anthropic_compat import fold_tool_results_into_user
@@ -1054,8 +1000,8 @@ class TestAnthropicMessagesToOpenAI:
         from routes.inference import _sanitize_anthropic_openai_messages, _template_supports_tools
 
         class DiffusionGemma:
-            supports_tools = False  # forced off: keeps it out of the tool loop
-            supports_tool_passthrough = True  # the real template capability
+            supports_tools = False
+            supports_tool_passthrough = True
 
         class ToollessTemplate:
             supports_tools = False
@@ -1405,8 +1351,6 @@ class TestAnthropicMessagesToOpenAI:
         assert parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
     def test_image_text_order_preserved(self):
-        # [text1, image1, text2, image2] must not collapse to
-        # [text1+text2, image1, image2].
         msgs = [
             {
                 "role": "user",
@@ -1448,13 +1392,7 @@ class TestAnthropicMessagesToOpenAI:
             }
         ]
         result = anthropic_messages_to_openai(msgs)
-        # No image parts emitted; message falls back to plain text.
         assert result[0] == {"role": "user", "content": "Hi"}
-
-
-# =====================================================================
-# Tool translation tests
-# =====================================================================
 
 
 class TestAnthropicToolsToOpenAI:
@@ -1573,11 +1511,6 @@ class TestAnthropicToolsToOpenAI:
         assert result[0]["function"]["name"] == "test"
 
 
-# =====================================================================
-# SSE event helper tests
-# =====================================================================
-
-
 class TestBuildAnthropicSSEEvent:
     def test_basic_event(self):
         result = build_anthropic_sse_event("message_start", {"type": "message_start"})
@@ -1592,15 +1525,8 @@ class TestBuildAnthropicSSEEvent:
         assert payload == {"key": "value"}
 
 
-# =====================================================================
-# Stream emitter tests
-# =====================================================================
-
-
 class TestAnthropicStreamEmitter:
     def test_start_emits_message_start_only(self):
-        # Content blocks open lazily on first output, so a turn that begins
-        # with thinking gets a thinking block first, not an empty text block.
         e = AnthropicStreamEmitter()
         events = e.start("msg_123", "test-model")
         assert len(events) == 1
@@ -1644,7 +1570,6 @@ class TestAnthropicStreamEmitter:
                 "arguments": {"query": "test"},
             }
         )
-        # content_block_stop + content_block_start(tool_use) + content_block_delta(input_json)
         assert len(events) == 3
         assert "content_block_stop" in events[0]
         assert "tool_use" in events[1]
@@ -1697,7 +1622,6 @@ class TestAnthropicStreamEmitter:
         tool_use_id = start_payload["content_block"]["id"]
         assert tool_use_id.startswith("toolu_")
         events = e.feed(_tool_result_event(tool_name = "t", tool_call_id = "tc_1"))
-        # content_block_stop (tool) + tool_result; the next text opens its own block.
         assert len(events) == 2
         assert "content_block_stop" in events[0]
         assert "tool_result" in events[1]
@@ -1710,7 +1634,6 @@ class TestAnthropicStreamEmitter:
         e.start("msg_1", "m")
         e.feed({"type": "content", "text": "Hi"})
         events = e.finish("end_turn")
-        # content_block_stop + message_delta + message_stop
         assert len(events) == 3
         assert "content_block_stop" in events[0]
         assert "message_delta" in events[1]
@@ -1776,8 +1699,6 @@ class TestAnthropicStreamEmitter:
         e.feed({"type": "content", "text": "Before tool"})
         e.feed(_tool_event(tool_name = "t", tool_call_id = "tc_1"))
         e.feed(_tool_result_event(tool_name = "t", tool_call_id = "tc_1", result = "ok"))
-        # After tool_end, prev_text should be reset; the content opens a fresh
-        # text block and diffs against an empty baseline.
         events = e.feed({"type": "content", "text": "After tool"})
         assert "content_block_start" in events[0]
         parsed = json.loads(events[1].split("data: ")[1])
@@ -1850,11 +1771,6 @@ class TestAnthropicStreamEmitter:
 
         assert [b["type"] for b in blocks] == ["server_tool_use", "web_search_tool_result", "text"]
         assert blocks[1]["content"] == content
-
-
-# =====================================================================
-# Non-streaming tool response tests
-# =====================================================================
 
 
 def _connected_request(disconnected = False):
@@ -2055,7 +1971,6 @@ class TestAnthropicToolNonStreaming:
         assert body["stop_reason"] == "end_turn"
 
     def test_consecutive_web_searches_reusing_a_call_id_stay_separate(self):
-        # Text-parsed calls restart at call_0 on every tool-loop iteration.
         def _run_gen():
             for i, query in enumerate(["first", "second"]):
                 yield _tool_event(tool_name = "web_search", arguments = {"query": query})
@@ -2102,8 +2017,6 @@ class TestAnthropicToolNonStreaming:
         assert search_result["content"] == content
 
     def test_display_strip_gates_on_declared_tools(self):
-        # A final answer containing NAME[ARGS]{json} is gated on the declared tools: undeclared
-        # ``foo`` markup is prose and survives, the declared web_search rehearsal strips.
         def _run_gen():
             yield {
                 "type": "content",
@@ -2118,13 +2031,8 @@ class TestAnthropicToolNonStreaming:
         )
         body = json.loads(response.body)
         text = "".join(b["text"] for b in body["content"] if b["type"] == "text")
-        assert 'foo[ARGS]{"x": 1}' in text  # inactive name preserved as prose
-        assert "web_search[ARGS]" not in text  # active name stripped from display
-
-
-# =====================================================================
-# Pass-through emitter tests (client-side tool execution path)
-# =====================================================================
+        assert 'foo[ARGS]{"x": 1}' in text
+        assert "web_search[ARGS]" not in text
 
 
 class TestAnthropicPassthroughEmitter:
@@ -2145,7 +2053,6 @@ class TestAnthropicPassthroughEmitter:
         e.start("msg_1", "m")
         chunk = {"choices": [{"delta": {"content": "Hello"}}]}
         events = e.feed_chunk(chunk)
-        # content_block_start + content_block_delta
         assert len(events) == 2
         assert "content_block_start" in events[0]
         assert '"type": "text"' in events[0]
@@ -2158,7 +2065,6 @@ class TestAnthropicPassthroughEmitter:
         e.start("msg_1", "m")
         events1 = e.feed_chunk({"choices": [{"delta": {"content": "Hello"}}]})
         events2 = e.feed_chunk({"choices": [{"delta": {"content": " world"}}]})
-        # First chunk opens the block, second only emits delta
         assert len(events1) == 2
         assert len(events2) == 1
         assert self._parse(events2[0])["delta"]["text"] == " world"
@@ -2187,7 +2093,6 @@ class TestAnthropicPassthroughEmitter:
     def test_tool_call_arguments_streamed_as_input_json_delta(self):
         e = AnthropicPassthroughEmitter()
         e.start("msg_1", "m")
-        # Open the tool call
         e.feed_chunk(
             _chunk(
                 tool_calls = [
@@ -2200,7 +2105,6 @@ class TestAnthropicPassthroughEmitter:
                 ],
             )
         )
-        # Stream argument fragments
         events1 = e.feed_chunk(
             _chunk(tool_calls = [{"index": 0, "function": {"arguments": '{"cmd'}}])
         )
@@ -2229,7 +2133,6 @@ class TestAnthropicPassthroughEmitter:
                 ],
             )
         )
-        # Should close text block and open tool_use block
         assert "content_block_stop" in events[0]
         assert "content_block_start" in events[1]
         assert '"type": "tool_use"' in events[1]
@@ -2309,7 +2212,6 @@ class TestAnthropicPassthroughEmitter:
         e = AnthropicPassthroughEmitter()
         e.start("msg_1", "m")
         events = e.finish()
-        # No content_block_stop because no block was opened
         assert not any("content_block_stop" in ev for ev in events)
         assert any("message_delta" in ev for ev in events)
         assert any("message_stop" in ev for ev in events)
@@ -2317,7 +2219,6 @@ class TestAnthropicPassthroughEmitter:
     def test_multiple_tool_calls_distinct_blocks(self):
         e = AnthropicPassthroughEmitter()
         e.start("msg_1", "m")
-        # First tool call
         e.feed_chunk(
             _chunk(
                 tool_calls = [
@@ -2330,7 +2231,6 @@ class TestAnthropicPassthroughEmitter:
                 ],
             )
         )
-        # Second tool call (different index)
         events = e.feed_chunk(
             _chunk(
                 tool_calls = [
@@ -2343,7 +2243,6 @@ class TestAnthropicPassthroughEmitter:
                 ],
             )
         )
-        # Should close block 0, open block 1
         assert "content_block_stop" in events[0]
         assert "content_block_start" in events[1]
         parsed = self._parse(events[1])
@@ -2616,8 +2515,7 @@ class TestAnthropicPassthroughStreamAdapter:
             return real_async_client(transport = transport, timeout = kwargs.get("timeout", 600))
 
         monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
-        # Echo the request kwargs back the way the real backend does, so the
-        # test covers the route wiring rather than the backend's style logic.
+        # Echo kwargs back so the test covers route wiring, not backend style logic.
         backend = SimpleNamespace(
             base_url = "http://llama.test",
             context_length = 4096,
@@ -2674,7 +2572,6 @@ class TestReasoningContentReachesTheClient:
         assert '"type": "thinking"' in blob
         assert "thinking_delta" in blob
         assert "step one" in blob
-        # Thinking must open before the text block, the order Anthropic defines.
         assert blob.index("thinking_delta") < blob.index("text_delta")
 
     def test_stream_thinking_only_still_emits(self):
@@ -2746,7 +2643,6 @@ class TestReasoningContentReachesTheClient:
         dumped = resp.model_dump()
         assert [b["type"] for b in dumped["content"]] == ["thinking", "text"]
         assert dumped["content"][0]["thinking"] == "because 2+2"
-        # signature is part of Anthropic's shape; empty is fine, missing is not.
         assert "signature" in dumped["content"][0]
 
 
@@ -2770,12 +2666,10 @@ class TestAnthropicReasoningArgs:
             ({}, None),
             ({"thinking": {"type": "enabled", "budget_tokens": 600}}, True),
             ({"thinking": {"type": "disabled"}}, False),
-            # Anthropic's adaptive tiers: unknown types must mean "think", never 400.
             ({"thinking": {"type": "adaptive"}}, True),
             ({"thinking": {"type": "auto"}}, True),
             ({"enable_thinking": True}, True),
             ({"enable_thinking": False}, False),
-            # x-unsloth field wins, mirroring enable_tools precedence.
             ({"thinking": {"type": "disabled"}, "enable_thinking": True}, True),
         ],
     )
@@ -2832,14 +2726,8 @@ class TestAnthropicReasoningArgs:
         )
         converted = anthropic_messages_to_openai([m.model_dump() for m in payload.messages])
         assistant = next(m for m in converted if m["role"] == "assistant")
-        # Thinking is dropped from the prompt; the tool call survives.
         assert "thinking" not in json.dumps(assistant)
         assert assistant["tool_calls"][0]["function"]["name"] == "ls"
-
-
-# =====================================================================
-# Vision guard + PNG normalization (/v1/messages)
-# =====================================================================
 
 
 def _jpeg_data_url() -> str:
@@ -2931,7 +2819,6 @@ class TestNormalizeAnthropicOpenAIImages:
             }
         ]
         _normalize_anthropic_openai_images(msgs, is_vision = True)
-        # The bytes are JPEG whatever the server declared, and are labelled as such.
         assert msgs[0]["content"][0]["image_url"]["url"] == _jpeg_data_url()
 
     def test_bad_base64_raises_400(self):
@@ -2949,11 +2836,6 @@ class TestNormalizeAnthropicOpenAIImages:
         with pytest.raises(HTTPException) as exc:
             _normalize_anthropic_openai_images(msgs, is_vision = True)
         assert exc.value.status_code == 400
-
-
-# =====================================================================
-# Unsloth-tool alias detection (/v1/messages tool routing)
-# =====================================================================
 
 
 class TestAnthropicRequestedStudioTools:
@@ -2988,15 +2870,11 @@ class TestAnthropicRequestedStudioTools:
         assert _anthropic_requested_studio_tools(tools) == set()
 
     def test_bare_name_without_type_is_not_treated_as_server_tool(self):
-        # Anthropic dispatches server tools by `type`; bare-name matching
-        # would let a malformed client tool (missing input_schema) silently
-        # flip the request into server-execution mode.
+        # Server tools dispatch by `type`; bare-name matching could flip modes.
         tools = [{"name": "python"}]
         assert _anthropic_requested_studio_tools(tools) == set()
 
     def test_client_tool_named_python_is_not_misclassified(self):
-        # input_schema is the client-tool discriminator; its presence must
-        # prevent the name from being treated as an Unsloth alias.
         tools = [
             {
                 "name": "python",
@@ -3025,11 +2903,6 @@ class TestAnthropicRequestedStudioTools:
         assert _anthropic_requested_studio_tools([]) == set()
 
 
-# =====================================================================
-# Route-level tool routing (/v1/messages)
-# =====================================================================
-
-
 def _mock_backend(monkeypatch, **overrides):
     """Install a minimal stub backend on routes.inference.
 
@@ -3038,8 +2911,7 @@ def _mock_backend(monkeypatch, **overrides):
     """
     import routes.inference as inf_mod
 
-    # Pinned off by default so prompt assertions do not depend on the host's stored setting;
-    # the date's own behaviour on this route is covered in test_current_date_prompt_settings.
+    # Pinned off so prompt assertions do not depend on the host setting.
     monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
 
     calls = []
@@ -3090,8 +2962,7 @@ def _reset_policy():
 
 @pytest.fixture(autouse = True)
 def _reset_admission_queues():
-    # The admission queue is process-global; isolate the shared "llama-server" key
-    # so one test's leftover reservation can't stall the next.
+    # Admission queue is process-global; reset so leftovers cannot stall tests.
     from core.inference.llama_admission import reset_llama_admission_queues
 
     reset_llama_admission_queues()
@@ -3119,8 +2990,6 @@ class TestAnthropicMessagesToolRouting:
         return _drive(_consume())
 
     def test_plain_non_streaming_states_the_current_date(self, monkeypatch):
-        # /v1/messages used to get the date from the tool nudge; it now rides the system turn,
-        # so this route needs its own coverage or the date silently disappears from it.
         import routes.inference as inf_mod
 
         backend = _mock_backend(monkeypatch, context_length = 2048)
@@ -3292,7 +3161,6 @@ class TestAnthropicMessagesToolRouting:
         assert body.get("thinking_budget_tokens") == budget
 
     def test_client_tool_catalog_without_passthrough_is_rejected(self, monkeypatch):
-        # /v1/chat/completions 400s this; /v1/messages answered in prose instead.
         backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
         payload = _basic_payload(tools = [{"name": "lookup", "input_schema": {"type": "object"}}])
 
@@ -3305,8 +3173,6 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls == []
 
     def test_replayed_tool_history_without_passthrough_still_answers(self, monkeypatch):
-        # fold_tool_results_into_user already handles this template, so a history-only turn
-        # still answers. Verified on a real gemma-3-270m-it GGUF.
         backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
         payload = _basic_payload(
             messages = [
@@ -3324,7 +3190,6 @@ class TestAnthropicMessagesToolRouting:
         assert response.status_code == 200
         [(path, kwargs)] = backend.calls
         assert path == "plain"
-        # The tool_result was folded into a user turn rather than sent as role="tool".
         assert not any(m.get("role") == "tool" for m in kwargs["messages"])
         assert any(
             m.get("role") == "user" and "tool_response" in (m.get("content") or "")
@@ -3345,8 +3210,6 @@ class TestAnthropicMessagesToolRouting:
         assert path == "plain"
 
     def test_a_plain_turn_survives_a_backend_whose_supports_tools_raises(self, monkeypatch):
-        # Reading the passthrough flag on a turn that sent no tools would 500 the half-ready
-        # backend test_folding_gate_prefers_passthrough_even_when_supports_tools_raises covers.
         from routes.inference import anthropic_count_tokens
 
         import routes.inference as inf_mod
@@ -3389,8 +3252,7 @@ class TestAnthropicMessagesToolRouting:
         )
 
     def test_count_tokens_rejects_the_catalog_messages_rejects(self, monkeypatch):
-        # The template renders no schemas, so the count matched with and without them
-        # (27 either way on a real gemma-3-270m) and handed an SDK a budget /messages 400s.
+        # The template renders no schemas, so the count ignored them.
         from routes.inference import anthropic_count_tokens
 
         _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
@@ -3546,9 +3408,7 @@ class TestAnthropicMessagesToolRouting:
     def test_the_rejection_reaches_the_client_as_an_anthropic_error(
         self, monkeypatch, path, stream
     ):
-        # A `detail` wrapper would make the SDKs raise on the missing `error` key instead of
-        # surfacing the reason. Streaming too: the gate precedes the generator, so the caller
-        # must get JSON, not a 200 SSE stream carrying the error in a frame.
+        # SDKs need a top-level `error` key and a JSON (not SSE) response.
         backend = _mock_backend(monkeypatch, supports_tools = False, supports_tool_passthrough = False)
         client = self._v1_client(monkeypatch, backend)
 
@@ -3596,8 +3456,6 @@ class TestAnthropicMessagesToolRouting:
     def test_non_streaming_disconnect_stops_generation_and_records_it_cancelled(
         self, monkeypatch, with_tools
     ):
-        # The route already 499s a client that is gone before admission, so the gap is a
-        # client that leaves once a slot was granted and tokens are already flowing.
         import routes.inference as inf_mod
 
         total = 200
@@ -3667,8 +3525,6 @@ class TestAnthropicMessagesToolRouting:
 
         def _gen_plain(**kwargs):
             assert kwargs["promote_reasoning_only"] is False
-            # Mirror the real generator: record that the leading <think> was
-            # wrapped from reasoning_content, not literal model text.
             prov = kwargs.get("reasoning_provenance")
             if prov is not None:
                 prov["wrapped"] = prov.get("wrapped", 0) + 1
@@ -3702,7 +3558,7 @@ class TestAnthropicMessagesToolRouting:
         if stream:
             body = self._sse_blob(self._consume_response(response))
             assert body.count(reasoning) == 1
-            assert "<think>" not in body  # markup split into a typed thinking block
+            assert "<think>" not in body
         else:
             body = json.loads(response.body)
             assert body["content"][0]["type"] == "thinking"
@@ -3710,9 +3566,6 @@ class TestAnthropicMessagesToolRouting:
 
     @pytest.mark.parametrize("stream", [False, True])
     def test_literal_leading_think_without_provenance_stays_text(self, monkeypatch, stream):
-        # The model answered with literal <think> markup (user asked for it) and
-        # produced no genuine reasoning: the generator recorded no wrap, so the
-        # markup must come back as text, not be consumed into a thinking block.
         literal = "<think>like this</think>"
 
         def _gen_plain(**kwargs):
@@ -3835,8 +3688,6 @@ class TestAnthropicMessagesToolRouting:
         return "".join(c.decode() if isinstance(c, (bytes, bytearray)) else c for c in chunks)
 
     def test_plain_streaming_unclassified_error_emits_error_event(self, monkeypatch):
-        # An unclassified mid-stream failure must surface as an SSE `error` event
-        # and stop, not a message_stop that masks a truncated turn as clean.
         def _gen_boom(**_kwargs):
             yield "partial"
             raise RuntimeError("llama-server crashed mid-decode")
@@ -3852,7 +3703,6 @@ class TestAnthropicMessagesToolRouting:
         assert "event: message_stop" not in blob
 
     def test_tool_streaming_unclassified_error_emits_error_event(self, monkeypatch):
-        # Same guarantee on the tool-calling stream path.
         def _gen_tools_boom(**_kwargs):
             yield {"type": "content", "text": "partial"}
             raise RuntimeError("llama-server crashed mid-decode")
@@ -3999,10 +3849,6 @@ class TestAnthropicMessagesToolRouting:
         assert captured["tools"][0]["function"]["name"] == "Write"
 
     def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(self, monkeypatch):
-        # Regression: a client tool sharing a name with a mapped server tool
-        # (e.g. a custom "web_search") must still trigger the mixed-mode 400;
-        # otherwise the post-name filter drops the client tool and silently
-        # routes to server-only.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [
@@ -4028,11 +3874,7 @@ class TestAnthropicMessagesToolRouting:
         assert "input_schema" in exc.value.detail
 
     def test_client_tool_missing_name_rejected_with_400(self, monkeypatch):
-        # Regression: AnthropicTool.name was relaxed to Optional for server
-        # tools, so a client-tool payload with input_schema but no `name`
-        # (typo) now parses but would be silently dropped by
-        # anthropic_tools_to_openai, leaving tool calling disabled. Reject at
-        # the boundary instead.
+        # A nameless client tool would be silently dropped; reject at the boundary.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"input_schema": {"type": "object"}}],
@@ -4053,9 +3895,7 @@ class TestAnthropicMessagesToolRouting:
         assert "name" in exc.value.detail
 
     def test_client_tool_empty_name_rejected_with_400(self, monkeypatch):
-        # Same silent-disable class as missing-name: `name: ""` passes the
-        # isinstance check but is dropped by anthropic_tools_to_openai's
-        # `if not name` guard. Reject at the boundary so the typo shows.
+        # `name: ""` is dropped by the `if not name` guard; reject at the boundary.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"name": "", "input_schema": {"type": "object"}}],
@@ -4067,10 +3907,6 @@ class TestAnthropicMessagesToolRouting:
         assert "name" in exc.value.detail
 
     def test_alias_named_client_tool_without_schema_rejected_with_400(self, monkeypatch):
-        # Regression: a typo'd client tool whose name collides with an Unsloth
-        # alias (e.g. a custom "python" tool missing input_schema) must
-        # surface a 400, not silently switch into Unsloth's built-in python
-        # execution.
         _mock_backend(monkeypatch)
         payload = _basic_payload(tools = [{"name": "python"}])
 
@@ -4089,8 +3925,6 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls[0][0] == "plain"
 
     def test_disable_tools_policy_overrides_server_tool_alias(self, monkeypatch):
-        # CLI `unsloth run --disable-tools` sets policy=False. A request with
-        # an Unsloth server-tool alias must NOT enter the agentic loop then.
         backend = _mock_backend(monkeypatch)
         set_tool_policy(False)
         payload = _basic_payload(
@@ -4104,9 +3938,6 @@ class TestAnthropicMessagesToolRouting:
         "tool_type", ["web_search_20250305", "web_search_20260209", "web_search_20260318"]
     )
     def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch, tool_type):
-        # Mirror of the previous test for the default (None) policy. An omitted
-        # permission_mode still runs here because web_search is a safe server tool
-        # (only a selected terminal/python would require the missing gate).
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"type": tool_type, "name": "web_search"}],
@@ -4185,14 +4016,12 @@ class TestAnthropicMessagesToolRouting:
     def test_permission_mode_gating_for_server_tools(self, monkeypatch):
         import routes.inference as inf_mod
 
-        # An Anthropic web-search request must not inherit the confirmation-gated create_skill tool.
         monkeypatch.setattr(
             inf_mod,
             "_enabled_agent_skills",
             lambda: [{"name": "skill-creator", "description": "Create a skill."}],
         )
-        # ask is a request for a per-call pause this channel cannot honor, so it is
-        # always rejected, even for a safe-only server tool (web_search).
+        # ask needs a per-call pause this channel cannot honor.
         safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]
         backend = _mock_backend(monkeypatch)
         payload = _basic_payload(tools = safe_tools, permission_mode = "ask")
@@ -4202,19 +4031,13 @@ class TestAnthropicMessagesToolRouting:
         assert "no confirmation channel" in exc.value.detail["error"]["message"]
         assert backend.calls == []
 
-        # auto only gates unsafe calls, so a safe-only selection runs (nothing to
-        # gate), like the omitted default. Both keep existing callers working.
         for extra in ({"permission_mode": "auto"}, {}):
             backend = _mock_backend(monkeypatch)
             payload = _basic_payload(tools = safe_tools, **extra)
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
-        # Reading this conversation's own archive is as read-only as the other two, and
-        # is_potentially_unsafe_tool_call says so, so selecting it must not trip the gate.
-        # Adding the schema to ALL_TOOLS without adding the name here made the Anthropic
-        # selector pick it and the pre-switch guard reject the whole request with the
-        # terminal/python message, on auto and on the omitted default alike.
+        # Reading this conversation's archive is read-only and must not trip the gate.
         for extra in ({"permission_mode": "auto"}, {}):
             backend = _mock_backend(monkeypatch)
             payload = _basic_payload(
@@ -4223,9 +4046,6 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
-        # But auto or an omitted mode that would run a local tool (terminal/python,
-        # via a bare Anthropic tool type or enabled_tools) is rejected, since that
-        # tool could need the gate this channel lacks.
         for local_payload in (
             _basic_payload(tools = [{"type": "terminal", "name": "terminal"}]),
             _basic_payload(
@@ -4240,10 +4060,7 @@ class TestAnthropicMessagesToolRouting:
             assert "terminal" in exc.value.detail["error"]["message"]
             assert backend.calls == []
 
-        # off, full, and a legacy confirm_tool_calls=False opt-out all run, even
-        # with a local tool selected. The explicit opt-out wins over the mode
-        # (mirrors _permission_mode_confirm and the GGUF path), so it runs even
-        # under ask, which otherwise always rejects.
+        # Explicit confirm opt-out wins over the mode, even under ask.
         for extra in (
             {"tools": safe_tools, "permission_mode": "off"},
             {"tools": safe_tools, "permission_mode": "full"},
@@ -4285,7 +4102,6 @@ class TestAnthropicMessagesToolRouting:
         )
         assert not kwargs.get("tools")
 
-        # An explicit ask still routes to the loop, with the mode that permits it.
         backend = _mock_backend(monkeypatch)
         _drive(
             anthropic_messages(
@@ -4296,9 +4112,7 @@ class TestAnthropicMessagesToolRouting:
         )
         assert backend.calls[0][0] == "tools"
 
-        # mcp_enabled is an ask on the OpenAI routes, which wire MCP discovery. This one does
-        # not, and the request model is extra="allow" so the key does arrive: honouring it
-        # would answer an MCP-only request with ALL_TOOLS' terminal/python under an MCP name.
+        # This route does not wire MCP discovery, so ignore mcp_enabled.
         reset_tool_policy()
         backend = _mock_backend(monkeypatch)
         _drive(
@@ -4311,7 +4125,6 @@ class TestAnthropicMessagesToolRouting:
         assert backend.calls[0][0] == "plain"
         assert not backend.calls[0][1].get("tools")
 
-        # The same default must not stop gating a request that does ask for server tools.
         for fields in (
             {"enable_tools": True},
             {"enable_tools": True, "permission_mode": "ask"},
@@ -4325,10 +4138,7 @@ class TestAnthropicMessagesToolRouting:
             assert "no confirmation channel" in exc.value.detail["error"]["message"]
 
     def test_render_html_gated_for_server_tools(self, monkeypatch):
-        # render_html is no longer unconditionally safe: a networked canvas prompts
-        # in auto and this channel cannot present that gate, so selecting it under
-        # ask/auto/omitted rejects like terminal/python; off/full (and an explicit
-        # confirm opt-out) run it.
+        # A networked render_html prompts in auto, which this channel cannot show.
         rh = {"enable_tools": True, "enabled_tools": ["render_html"]}
         for mode in ("ask", "auto", None):
             backend = _mock_backend(monkeypatch)
@@ -4352,9 +4162,7 @@ class TestAnthropicMessagesToolRouting:
             assert backend.calls[0][0] == "tools"
 
     def test_permission_mode_rejected_before_auto_switch(self, monkeypatch):
-        # The unsupported-mode rejection must run before _maybe_auto_switch_model,
-        # so an invalid confirm-gated request never evicts the resident model
-        # (mirrors the pre-switch malformed- and mixed-tool guards).
+        # Reject before _maybe_auto_switch_model so the resident model is not evicted.
         import routes.inference as inf_mod
 
         switch_calls = []
@@ -4366,8 +4174,6 @@ class TestAnthropicMessagesToolRouting:
         safe_tools = [{"type": "web_search_20250305", "name": "web_search"}]
         local_tools = [{"type": "terminal", "name": "terminal"}]
 
-        # ask (any server tool), auto with a local tool, and an omitted mode
-        # selecting a local tool are all rejected up front, before the switch runs.
         for payload in (
             _basic_payload(tools = safe_tools, permission_mode = "ask"),
             _basic_payload(tools = local_tools, permission_mode = "auto"),
@@ -4380,7 +4186,6 @@ class TestAnthropicMessagesToolRouting:
             assert exc.value.status_code == 400
             assert switch_calls == [], "rejection must precede the auto-switch"
 
-        # A supported request (off) still reaches the switch and runs the loop.
         switch_calls.clear()
         _mock_backend(monkeypatch)
         payload = _basic_payload(tools = safe_tools, permission_mode = "off")
@@ -4399,8 +4204,6 @@ class TestAnthropicMessagesToolRouting:
 
 
 def test_resumed_session_thinking_and_null_content_do_not_400():
-    # A resumed session replays assistant turns with `thinking` (and sometimes null)
-    # content. Those must be accepted (thinking dropped by the converter), not 400ed.
     from pydantic import ValidationError
 
     req = AnthropicMessagesRequest(
@@ -4416,20 +4219,18 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
                     {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
                 ],
             },
-            {"role": "assistant", "content": None},  # tool-only turn serialized as null
+            {"role": "assistant", "content": None},
         ],
     )
-    # Known blocks parse as their typed models; replayed thinking is typed too.
     assert type(req.messages[1].content[0]).__name__ == "AnthropicThinkingBlock"
     assert type(req.messages[1].content[1]).__name__ == "AnthropicTextBlock"
-    assert req.messages[2].content == ""  # null coerced
+    assert req.messages[2].content == ""
 
     openai = anthropic_messages_to_openai([m.model_dump() for m in req.messages])
     assistant = next(m for m in openai if m["role"] == "assistant" and m.get("content"))
     assert assistant["content"] == "the answer"
-    assert "secret reasoning" not in json.dumps(openai)  # thinking never forwarded
+    assert "secret reasoning" not in json.dumps(openai)
 
-    # A malformed KNOWN block still fails cleanly instead of being swallowed.
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
             model = "x",
@@ -4439,8 +4240,6 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
 
 
 def test_user_thinking_block_rejected_not_silently_dropped():
-    # Thinking blocks are typed for assistant replay only; the converter drops
-    # them from user content, so accepting one there would lose the user turn.
     from pydantic import ValidationError
     for btype in ("thinking", "redacted_thinking"):
         with pytest.raises(ValidationError):
@@ -4454,23 +4253,18 @@ def test_user_thinking_block_rejected_not_silently_dropped():
 def test_think_markup_split_preserves_text_verbatim():
     from routes.inference import _think_markup_to_blocks
 
-    # Reasoning-free output passes through untouched, whitespace included.
     [block] = _think_markup_to_blocks("  indented\n  lines\n")
     assert block.text == "  indented\n  lines\n"
 
-    # With markup, the trace and the answer keep their own bytes.
     thinking, text = _think_markup_to_blocks("<think>why</think>\n\n  answer\n")
     assert thinking.thinking == "why"
     assert text.text == "\n\n  answer\n"
 
-    # Whitespace-only segments are dropped rather than emitted as empty blocks.
     [only_thinking] = _think_markup_to_blocks("<think>why</think>\n\n")
     assert only_thinking.thinking == "why"
 
 
 def test_user_null_content_rejected():
-    # The null->"" leniency is assistant-only; a null user content must be rejected
-    # at the boundary, not coerced into an empty prompt and forwarded to the model.
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
@@ -4481,9 +4275,7 @@ def test_user_null_content_rejected():
 
 
 def test_user_unknown_block_rejected_not_silently_dropped():
-    # The converter skips user blocks it cannot translate, so a user turn whose only
-    # block is unknown would validate yet forward no content. Reject at the boundary
-    # to avoid that silent data loss (the assistant fallback is unaffected).
+    # A user turn with only unknown blocks would forward nothing; reject it.
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
@@ -4526,8 +4318,6 @@ def test_user_unreadable_document_rejected_outside_tool_results(source):
 
 
 def test_user_translatable_blocks_still_accepted():
-    # text / image / tool_result are translatable, so a real user message built from
-    # them must still pass; the unknown-block guard only trips on other types.
     req = AnthropicMessagesRequest(
         model = "x",
         max_tokens = 16,
@@ -4556,8 +4346,6 @@ def test_user_translatable_blocks_still_accepted():
 
 
 def test_user_malformed_known_block_still_rejected():
-    # The guard only allow-lists a user block's *type*; the union still validates its
-    # shape, so a known-but-malformed block (tool_result without tool_use_id) fails.
     from pydantic import ValidationError
     with pytest.raises(ValidationError):
         AnthropicMessagesRequest(
@@ -4570,9 +4358,7 @@ def test_user_malformed_known_block_still_rejected():
 
 
 def test_user_content_block_non_string_type_rejected_cleanly():
-    # A user block whose `type` is a non-string (unhashable list / dict, or a stray
-    # int) must fail as a clean validation error, not raise TypeError from the
-    # frozenset membership test and escape as a 500.
+    # Non-string `type` must fail validation, not raise TypeError as a 500.
     from pydantic import ValidationError
     for bad_type in ([], {}, 5):
         with pytest.raises(ValidationError):
@@ -4584,8 +4370,6 @@ def test_user_content_block_non_string_type_rejected_cleanly():
 
 
 def test_assistant_missing_content_key_still_rejected():
-    # The null -> "" leniency is only for an EXPLICIT null. An assistant message that
-    # omits content entirely stays malformed and must fail required-field validation.
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
@@ -4594,7 +4378,6 @@ def test_assistant_missing_content_key_still_rejected():
             max_tokens = 16,
             messages = [{"role": "assistant"}],
         )
-    # An explicit null is still accepted and coerced (regression guard).
     req = AnthropicMessagesRequest(
         model = "x",
         max_tokens = 16,
@@ -4607,9 +4390,7 @@ def test_assistant_missing_content_key_still_rejected():
 
 
 def test_resumed_null_assistant_between_users_coalesced_on_messages_route(monkeypatch):
-    # user -> assistant(null) -> user is now accepted: the null assistant turn coerces
-    # to "" and is dropped. The route must then coalesce the two remaining user turns
-    # so a strict GGUF chat template does not 400 on non-alternating roles.
+    # After dropping the null assistant turn, adjacent user turns must merge.
     backend = _mock_backend(monkeypatch, context_length = 2048)
 
     class _Req:
@@ -4635,7 +4416,7 @@ def test_resumed_null_assistant_between_users_coalesced_on_messages_route(monkey
 
     [(_path, kwargs)] = backend.calls
     user_turns = [m for m in kwargs["messages"] if m.get("role") == "user"]
-    assert len(user_turns) == 1  # the two user turns were merged, not left adjacent
+    assert len(user_turns) == 1
     merged = user_turns[0]["content"]
     if isinstance(merged, list):
         merged = " ".join(p.get("text", "") for p in merged if isinstance(p, dict))
@@ -4659,8 +4440,6 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
             yield _tool_event(type = "tool_start")
             yield {"type": "heartbeat"}
             yield _tool_result_event(result = "r1")
-            # Second call: dropped by disable_parallel_tool_use, still executed
-            # server-side (heartbeats + live output).
             yield _tool_event(tool_call_id = "call_1")
             yield {"type": "heartbeat"}
             yield {
@@ -4692,9 +4471,7 @@ def test_disable_parallel_tool_use_forwards_heartbeats_while_dropping():
 
     chunks = asyncio.run(_drive())
     keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
-    # One heartbeat inside the kept call, two inside the dropped window.
     assert len(keepalives) >= 3
-    # The dropped call must not surface as a second tool_use block.
     tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
     assert len(tool_use_starts) == 1
 
@@ -4712,11 +4489,7 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
         _anthropic_tool_stream,
     )
 
-    # Deterministic clock: only the drop-branch keepalive uses time.monotonic
-    # here, so jumping past the stall window per call makes each dropped event
-    # cross the rate-limit threshold. asyncio.wait uses the loop clock and
-    # next(gen) returns promptly, so the outer stall keepalive never fires --
-    # every keepalive here is from the drop branch.
+    # Deterministic clock: every keepalive here comes from the drop branch.
     _real_time = inf_mod.time
     _tick = {"v": 0.0}
 
@@ -4737,7 +4510,6 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
     def run_gen():
         def gen():
             yield _tool_event(type = "tool_start")
-            # Chatty streamed stdout, no heartbeats.
             for i in range(n_output):
                 yield {
                     "type": "tool_output",
@@ -4767,7 +4539,6 @@ def test_dropped_tool_output_events_emit_rate_limited_keepalives(monkeypatch):
     chunks = asyncio.run(_drive())
     keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
     assert len(keepalives) == n_output
-    # Final answer still reaches the client (drop is transport-only).
     assert any("final answer" in c for c in chunks)
 
 
@@ -4785,7 +4556,6 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
         _anthropic_tool_stream,
     )
 
-    # Deterministic clock: jumps past the stall window per call (see sibling test).
     _real_time = inf_mod.time
     _tick = {"v": 0.0}
 
@@ -4805,11 +4575,8 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
 
     def run_gen():
         def gen():
-            # First (kept) call.
             yield _tool_event(type = "tool_start")
             yield _tool_result_event(result = "r1")
-            # Second call: dropped whole by disable_parallel_tool_use but still
-            # executed server-side, streaming chatty stdout with no heartbeats.
             yield _tool_event(tool_call_id = "call_1")
             for i in range(n_output):
                 yield {
@@ -4841,7 +4608,6 @@ def test_parallel_disabled_dropped_call_output_emits_rate_limited_keepalives(mon
     chunks = asyncio.run(_drive())
     keepalives = [c for c in chunks if c == _OPENAI_PASSTHROUGH_SSE_KEEPALIVE]
     assert len(keepalives) == n_output
-    # The dropped call must not surface as a second tool_use block.
     tool_use_starts = [c for c in chunks if "content_block_start" in c and '"tool_use"' in c]
     assert len(tool_use_starts) == 1
     assert any("final answer" in c for c in chunks)
@@ -4861,7 +4627,7 @@ def test_plain_stream_emits_keepalive_during_prompt_stall(monkeypatch):
 
     def run_gen():
         def gen():
-            _time.sleep(0.24)  # stall past several shortened keepalive windows
+            _time.sleep(0.24)
             yield "hello world"
 
         return gen()
@@ -4920,7 +4686,6 @@ def test_plain_stream_closes_generator_on_disconnect():
         async for chunk in resp.body_iterator:
             out.append(chunk)
             if "tok0" in chunk:
-                # Client drops after the first token; the next loop turn tears down.
                 state["disconnected"] = True
         return out
 
@@ -4929,10 +4694,7 @@ def test_plain_stream_closes_generator_on_disconnect():
 
 
 def test_display_strip_keeps_provenance_trace_intact():
-    # Genuine reasoning that quotes </think> and then rehearses an enabled call: the
-    # think-aware cleaner closes the block at the quoted tag, so without provenance it
-    # strips the rehearsal out of the trace while wrap["len"] still measures the full
-    # one -- the split then eats the real terminator and the whole answer.
+    # Without provenance, a quoted </think> makes the split eat the real answer.
     from routes.inference import _ReasoningSpanGuard, _split_think_segments
 
     trace = (
@@ -4959,9 +4721,7 @@ def test_display_strip_keeps_provenance_trace_intact():
 
 
 def test_display_strip_protects_the_wrap_of_each_tool_turn():
-    # A tool loop's second synthesis turn opens its own leading <think> backed by the NEXT
-    # wrap entry, so the guard must advance with the emitter's ledger; measuring turn 2
-    # against wraps[0] would put the boundary mid-trace and strip the rehearsal again.
+    # Each synthesis turn uses its own wrap entry, so the guard must advance.
     from routes.inference import _ReasoningSpanGuard
 
     first = "short first turn"
@@ -4981,7 +4741,6 @@ def test_display_strip_protects_the_wrap_of_each_tool_turn():
 
 
 def test_display_strip_still_cleans_tool_xml_after_the_trace():
-    # The protection covers only the recorded span; a leaked call in the answer still goes.
     from routes.inference import _ReasoningSpanGuard, _strip_tool_xml_for_display
 
     prov = {"wrapped": 1, "wraps": [{"len": len("plain reasoning")}]}
@@ -4990,7 +4749,6 @@ def test_display_strip_still_cleans_tool_xml_after_the_trace():
         raw, auto_heal_tool_calls = True, enabled_tool_names = {"get_weather"}
     )
     assert clean == "<think>plain reasoning</think>Done ok"
-    # No provenance -> byte-identical to the plain display strip.
     assert _ReasoningSpanGuard(None).strip(
         raw, auto_heal_tool_calls = True, enabled_tool_names = {"get_weather"}
     ) == _strip_tool_xml_for_display(
@@ -4999,7 +4757,6 @@ def test_display_strip_still_cleans_tool_xml_after_the_trace():
 
 
 def test_display_strip_leaves_unwrapped_leading_tag_to_the_cleaner():
-    # wrapped == 0: the model typed the tag itself, so behaviour must not change.
     from routes.inference import _ReasoningSpanGuard, _strip_tool_xml_for_display
     raw = '<think>literal</think>Done <tool_call>{"name": "get_weather", "arguments": {}}</tool_call>ok'
     for prov in ({"wrapped": 0, "wraps": []}, None):
@@ -5008,11 +4765,6 @@ def test_display_strip_leaves_unwrapped_leading_tag_to_the_cleaner():
         ) == _strip_tool_xml_for_display(
             raw, auto_heal_tool_calls = True, enabled_tool_names = {"get_weather"}
         )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SSE grammar conformance
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _parse_anthropic_sse(lines):
@@ -5553,7 +5305,6 @@ class TestReasoningProvenanceIsBoundToItsSynthesisTurn:
 
         provenance = {"wrapped": 0}
         gen = self._generator(monkeypatch, streams, provenance)
-        # Exactly what _anthropic_tool_non_streaming does: drain first, reduce after.
         events = _collect_anthropic_events(lambda: gen, provenance)
         response = _anthropic_tool_response_from_events(
             events,
@@ -5581,14 +5332,11 @@ class TestReasoningProvenanceIsBoundToItsSynthesisTurn:
 
     def _literal_then_genuine(self):
         return [
-            # Turn 1: the model re-emitted the template's closed think block, so
-            # llama-server reports no reasoning_content and the tags are content.
             [
                 self._sse({"content": "<think>\n\n</think>\n\nLet me check."}),
                 self._tool_call_sse("call_1", "SF"),
                 "data: [DONE]\n",
             ],
-            # Turn 2: genuine reasoning, reported as reasoning_content.
             [
                 self._sse({"reasoning_content": "The tool said sunny, so"}),
                 self._sse({"content": "It is sunny in SF."}),
@@ -5736,13 +5484,9 @@ class TestPreserveThinkingHonoursTheBackendDefault:
     @pytest.mark.parametrize(
         "default, override, expected",
         [
-            # The regression: omitted on a preserve-by-default model must keep
-            # the block, not drop it.
+            # Omitted on a preserve-by-default model must keep the block.
             (True, None, True),
-            # Omitted on an off-by-default model still drops (unchanged).
             (False, None, False),
-            # Explicit values win over the default in both directions and are
-            # unchanged by the resolver.
             (True, True, True),
             (True, False, False),
             (False, True, True),
@@ -5803,7 +5547,6 @@ class TestPreserveThinkingHonoursTheBackendDefault:
         assert ("reasoning_content" in assistant) is expected_kept
         if expected_kept:
             assert assistant["reasoning_content"] == self.TRACE
-        # The answer text is never affected by the preserve decision.
         assert assistant["content"] == "About 384,400 km."
 
     @pytest.mark.parametrize(
@@ -5880,8 +5623,7 @@ class TestPreserveThinkingHonoursTheBackendDefault:
         asyncio.run(anthropic_messages(payload, request = _Request(), current_subject = "t"))
         gen_messages = seen["messages"]
         assert any(m.get("reasoning_content") for m in gen_messages) is expect_block
-        # An omitted override must stay None on the wire so llama-server keeps
-        # falling back to the launch-time kwarg rather than being pinned here.
+        # Omitted stays None so llama-server uses the launch-time kwarg.
         assert seen["preserve_thinking"] == override
 
         asyncio.run(anthropic_count_tokens(payload, request = _Request(), current_subject = "t"))
@@ -5889,7 +5631,6 @@ class TestPreserveThinkingHonoursTheBackendDefault:
 
 
 def test_effort_resolved_from_output_config():
-    # Claude Code sends the tier as output_config.effort, never as reasoning_effort.
     assert (
         _basic_payload(
             output_config = {"effort": "high"}, thinking = {"type": "adaptive"}
@@ -5906,7 +5647,6 @@ def test_explicit_reasoning_effort_outranks_output_config():
 
 
 def test_unknown_output_config_effort_is_ignored():
-    # thinking on, so an ignored level is the level check talking, not the gate below.
     adaptive = {"type": "adaptive"}
     assert (
         _basic_payload(output_config = {"effort": "turbo"}, thinking = adaptive).reasoning_effort
@@ -5920,9 +5660,7 @@ def test_unknown_output_config_effort_is_ignored():
     )
 
 
-# Claude Code sends output_config.effort on every request, thinking on or off, so
-# adopting it unconditionally would turn `reasoning_effort` into an always-present
-# override -- and a named level means "think" from _anthropic_reasoning_args down.
+# Claude Code always sends output_config.effort, so gate it on thinking.
 _EFFORT_THINKING_OFF_SHAPES = [
     ({}, None),
     ({"thinking": {"type": "disabled"}}, False),
@@ -5935,7 +5673,6 @@ def test_output_config_effort_never_switches_thinking_back_on(fields, expected_e
     from routes.inference import _anthropic_reasoning_args
 
     payload = _basic_payload(output_config = {"effort": "high"}, **fields)
-    # Left unset, so nothing downstream reads a level the caller never asked for.
     assert payload.reasoning_effort is None
     args = _anthropic_reasoning_args(payload)
     assert args["enable_thinking"] is expected_enable
@@ -5943,8 +5680,6 @@ def test_output_config_effort_never_switches_thinking_back_on(fields, expected_e
 
 
 def test_x_unsloth_effort_still_outranks_thinking_when_sent_explicitly():
-    # The gate applies to output_config only: an explicit reasoning_effort keeps
-    # the documented precedence covered by _THINKING_EFFORT_MATRIX.
     from routes.inference import _anthropic_reasoning_args
 
     args = _anthropic_reasoning_args(
@@ -5998,7 +5733,6 @@ def test_an_anthropic_replay_hands_the_model_the_picture_not_the_base64():
     payload = base64.b64encode(buffer.getvalue()).decode()
     envelope = json.dumps([{"data": payload, "mimeType": "image/png"}])
 
-    # The shape anthropic_messages_to_openai produces from a replayed tool_result.
     messages = [
         {"role": "user", "content": "take a screenshot"},
         {
@@ -6169,7 +5903,6 @@ def test_an_anthropic_client_tool_is_not_trusted_as_an_mcp_image_source():
     assert not any(
         isinstance(m.get("content"), list) for m in out
     ), "a non-mcp__ tool was promoted as trusted image input"
-    # The suffix still comes off the text for everyone, MCP or not.
     assert mcp_images.SENTINEL not in json.dumps(out)
 
 
@@ -6302,7 +6035,6 @@ def test_the_anthropic_count_refusal_is_name_aware():
 
     assert not _messages_have_promotable_mcp_images(_translated("read_file"))
     assert _messages_have_promotable_mcp_images(_translated("mcp__shot__capture"))
-    # Unnamed and uncorrelated is still legacy history, and still refused.
     assert _messages_have_promotable_mcp_images(
         [{"role": "tool", "tool_call_id": "x", "content": "out\n" + mcp_images.SENTINEL + envelope}]
     )

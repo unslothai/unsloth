@@ -61,12 +61,11 @@ class HuggingFaceCachePaths:
         return self.source == "studio"
 
     def child_env(self, base: Optional[Mapping[str, str]] = None) -> dict[str, str]:
-        # Scrub either way: an explicit base is usually the caller's own os.environ
-        # copy, so it carries any scoped offline flags an open guard has set.
+        # Scrub anyway: an explicit base may carry scoped offline flags from an open guard.
         from utils.utils import hf_environment_for_spawn, hf_environment_scrubbed
 
         env = hf_environment_for_spawn() if base is None else hf_environment_scrubbed(base)
-        # Do not rewrite HF_HOME. It also owns HF's token path.
+        # Do not rewrite HF_HOME: it also owns HF's token path.
         env["HF_HUB_CACHE"] = str(self.hub_cache)
         env["HF_XET_CACHE"] = str(self.xet_cache)
         env.pop("HUGGINGFACE_HUB_CACHE", None)
@@ -93,8 +92,7 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
     default_home = _default_cache_home()
     hf_home = _canonical(explicit_home) if explicit_home else default_home
     hub = _canonical(explicit_hub) if explicit_hub else hf_home / "hub"
-    # huggingface_hub derives HF_XET_CACHE from HF_HOME, never from HF_HUB_CACHE, so a hub-only
-    # override would leave the chunk and shard caches in the host home.
+    # huggingface_hub derives HF_XET_CACHE from HF_HOME, not HF_HUB_CACHE.
     xet_home = hf_home if explicit_home else (_portable_cache_home() or hf_home)
     xet = _canonical(explicit_xet) if explicit_xet else xet_home / "xet"
     controlling = next(
@@ -102,9 +100,6 @@ def _environment_paths() -> Optional[HuggingFaceCachePaths]:
         for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME")
         if key in _EXPLICIT_CACHE_ENV
     )
-    # Settings describes model downloads, so an explicit hub path is the
-    # displayed/opened location even when HF_HOME points somewhere else for
-    # credentials or XET data.
     display_home = (
         (hub.parent if explicit_hub and hub.name.lower() == "hub" else hub)
         if explicit_hub
@@ -146,10 +141,8 @@ def _absence_is_real(path: Path) -> bool:
 
 
 def _stored_cache_home() -> Optional[Path]:
-    # get_app_setting CREATES and migrates studio.db, so an unconditional read built one on
-    # machines that had never opened Studio. os.stat, not Path.exists: only a positively observed
-    # absence may skip the read, and from 3.14 the predicates report EACCES and EIO as False.
-    # stat, not lstat: sqlite follows symlinks.
+    # get_app_setting creates studio.db, so skip only on an observed absence (os.stat).
+    # Not Path.exists (3.14 hides EACCES/EIO) nor lstat (sqlite follows symlinks).
     try:
         if "storage.studio_db" not in sys.modules:
             from utils.paths.storage_roots import studio_db_path
@@ -228,7 +221,7 @@ def get_hf_cache_paths() -> HuggingFaceCachePaths:
             _canonical(xet) if xet else stored / "xet",
             "studio",
         )
-    # Ranks below env vars and Settings: portable mode is a default, not an override.
+    # Portable mode is a default, ranked below env vars and Settings.
     home = _portable_cache_home() or _default_cache_home()
     xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
     return HuggingFaceCachePaths(
@@ -269,8 +262,7 @@ def child_environment_for_spawn(environment: Mapping[str, str]) -> Iterator[None
 
     from utils.utils import hf_environment_restored_for_spawn
 
-    # Exclude the Xet shim's GPU-init override window: a child spawned inside it inherits the flag for life and
-    # unsloth_zoo hands it STUB triton and bitsandbytes, so the run produces nothing.
+    # Avoid the Xet shim's GPU-init override window: children would inherit stub triton/bnb.
     with _spawn_env_lock, _xet_loader_barrier(), hf_environment_restored_for_spawn():
         missing = object()
         saved_environment: dict[str, str | object] = {}
@@ -291,8 +283,6 @@ def initialize_hf_cache_environment() -> HuggingFaceCachePaths:
     """Seed import-time HF variables once during backend startup."""
 
     paths = get_hf_cache_paths()
-    # Preserve an explicit HF_HOME, else keep credentials at the platform default while routing
-    # cache bytes through the selected home.
     if not os.environ.get("HF_HOME", "").strip():
         os.environ["HF_HOME"] = str(_default_cache_home())
     os.environ["HF_HUB_CACHE"] = str(paths.hub_cache)
@@ -406,17 +396,13 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
                 CACHE_HISTORY_SETTING_KEY: deduped,
             }
         )
-    # Inventory scans are cached independently from settings. Invalidate after
-    # persistence so the next request sees both the new active root and history.
+    # Invalidate after persistence so the next scan sees the new root.
     from hub.utils.inventory_scan import invalidate_hf_cache_scans
 
     invalidate_hf_cache_scans()
-    # Partial resumability is a property of the filesystem the cache sits on, so it is re-decided
-    # for the new root rather than carried over from the old one.
     from hub.utils.hf_cache_state import invalidate_partial_resumability
 
     invalidate_partial_resumability()
-    # And the inventory's remembered sizes, which are keyed by cache rather than by path.
     from utils.cache_inventory import invalidate_hf_rooted_sizes
 
     invalidate_hf_rooted_sizes()

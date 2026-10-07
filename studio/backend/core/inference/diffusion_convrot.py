@@ -55,23 +55,15 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any, Iterable, Optional
 
-# The metadata contract, carried in the prequant checkpoint's own ``metadata`` dict. The rotation KIND: a value this
-# module does not implement is refused, so a future scheme can be added without a released Unsloth silently treating
-# it as this one.
+# Unknown rotation kinds are refused so a future scheme is never misread as this one.
 CONVROT_KIND = "convrot_hadamard_v1"
-# Key naming mirrors the adaLN curve contract next door (``adaln_form`` / ``curve_dim`` / ``curve_grid``): a form tag
-# plus the parameters needed to reproduce the form.
 ROTATION_KEY = "activation_rotation"
 ROTATION_GROUP_KEY = "activation_rotation_group"
 ROTATION_FQNS_KEY = "activation_rotation_fqns"
 
-# The group size the denoiser artifact ships at, and the one the hosted conditioner already uses. 256 beat 64 in
-# weight space on MiniMax-H3 (mean relative quantization error -19.9% vs -17.3% over 200 layers) and is the largest
-# power of 4 that divides every quantized H3 input axis.
+# 256: lower quant error than 64 on H3, largest power of 4 dividing every quantized H3 axis.
 DEFAULT_CONVROT_GROUPSIZE = 256
 
-# Marker set on a transformer whose rotation is installed, so a caller can tell a rotated module from an unrotated one
-# without re-deriving anything. Diagnostic only.
 CONVROT_ATTR = "_unsloth_activation_rotation"
 
 
@@ -86,12 +78,10 @@ def is_power_of_four(size: Any) -> bool:
     n = size
     if n < 4 or n & (n - 1):
         return False
-    # a power of two is a power of four exactly when its single set bit sits at an even index
     return (n.bit_length() - 1) % 2 == 0
 
 
-# H = kron(H4, ...) / sqrt(size), H4[a, b] = -1 iff a ^ b == 3: sign(i, j) = parity of base-4 digits of i ^ j equal to 3.
-# Must stay bit-identical to the kron construction the hosted checkpoints were rotated with.
+# Must stay bit-identical to the kron(H4, ...) construction hosted checkpoints were rotated with.
 _HADAMARD_CACHE: dict = {}
 
 
@@ -103,7 +93,7 @@ def _convrot_sign_bits(size: int) -> Any:
     both = idx[:, None] ^ idx[None, :]
     threes = both & (both >> 1) & 0x5555555555555555
     parity = torch.zeros_like(threes)
-    # fixed Python loop count keeps this traceable under fullgraph
+    # fixed loop count keeps this traceable under fullgraph
     for _ in range((size.bit_length() - 1) // 2):
         parity ^= threes & 1
         threes = threes >> 2
@@ -187,8 +177,6 @@ def convrot_linear_class() -> Any:
     class ConvRotLinear(nn.Linear):
         """``nn.Linear`` whose input is block-Hadamard rotated before the matmul."""
 
-        # set per instance by _install_rotation; the class default exists so a half-constructed instance cannot silently
-        # rotate at some other group
         convrot_groupsize: int = DEFAULT_CONVROT_GROUPSIZE
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -254,8 +242,7 @@ def rotation_metadata_error(metadata: Any) -> Optional[str]:
         )
     fqns = metadata.get(ROTATION_FQNS_KEY)
     if not isinstance(fqns, (list, tuple)) or not fqns:
-        # An empty list is refused rather than read as "rotate nothing": a builder that failed to record its set would
-        # otherwise emit an artifact that loads clean and renders garbage.
+        # Empty list refused: it would load clean and render garbage.
         return f"activation rotation records no fqns ({ROTATION_FQNS_KEY} is {fqns!r})"
     if not all(isinstance(fqn, str) and fqn for fqn in fqns):
         return f"activation rotation {ROTATION_FQNS_KEY} has non-string entries"
@@ -370,7 +357,7 @@ def apply_activation_rotation(
                 f"activation rotation target {fqn!r} has in_features {module.in_features}, "
                 f"which the recorded group {group_size} does not divide"
             )
-    # validate every target before swapping ANY: a partial install still renders, just wrongly
+    # validate every target before swapping any: a partial install renders wrongly
     for fqn in fqns:
         _install_rotation(modules[fqn], group_size)
     try:

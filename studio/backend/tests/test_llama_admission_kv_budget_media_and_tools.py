@@ -52,9 +52,7 @@ def _image_b64(kib: int = 200) -> str:
     return base64.b64encode(b"\x89PNG" + b"x" * (kib * 1024)).decode()
 
 
-# Two real, decodable, DIFFERENT PNGs. The builders decode and re-encode, unlike the
-# estimator, so the synthetic fixture above cannot reach them; and the pair has to
-# differ for a distinct-legacy-image case to be distinct at all.
+# real, decodable, different PNGs: the builders decode and re-encode, the estimator does not
 _TINY_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC"
 )
@@ -87,14 +85,10 @@ class TestMediaIsCharged:
             ],
             max_tokens = 128,
         )
-        # Clear of the clamp: at 4096 `max(1, min(budget, ...))` pinned both sides to the
-        # budget, so they agreed whatever the estimator did and this proved nothing.
+        # clear of the clamp, else both sides pin to the budget and agree regardless
         legacy_cost = _openai_llama_admission_tokens(legacy, budget = 1_000_000, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
-        # The wire spelling must not change the commitment. Not to the token: inline
-        # really does send a content-part wrapper legacy does not, and the marker is
-        # itself a little JSON. What must not survive is the 30x gap between pricing an
-        # image at its base64 length and at its text.
+        # not to the token: inline sends a content-part wrapper legacy does not
         assert abs(legacy_cost - inline_cost) <= 64, (legacy_cost, inline_cost)
         assert max(legacy_cost, inline_cost) < 2 * _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
 
@@ -119,8 +113,6 @@ class TestMediaIsCharged:
         )
         inline = _Payload(messages = inline_messages, max_tokens = 128)
 
-        # Clear of the clamp: at 65536 a 1 MiB image priced as prompt text pinned both
-        # sides to the budget, so `dual == inline` held on the unfixed estimator too.
         dual_cost = _openai_llama_admission_tokens(dual, budget = 1_000_000, capacity = 4)
         inline_cost = _openai_llama_admission_tokens(inline, budget = 1_000_000, capacity = 4)
 
@@ -185,8 +177,6 @@ class TestMediaIsCharged:
                 messages = [{"role": "user", "content": "what is this?"}],
                 image_base64 = image,
             ),
-            # An older image in history plus a genuinely different one attached to this
-            # turn through the legacy field: two images, and both must be charged.
             "history image plus a distinct legacy attachment": ChatCompletionRequest(
                 model = "m",
                 max_tokens = 128,
@@ -269,26 +259,20 @@ class TestMediaIsCharged:
             allowance = _openai_llama_admission_image_tokens(_Backend(spelling))
             assert allowance > _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
             assert allowance >= 8102, f"{spelling} under-reserves the measured cost"
-        # Junk must not be mistaken for a cap, and must not raise.
         for junk in (["--image-max-tokens"], ["--image-max-tokens", "abc"], ["-c", "40000"]):
             assert _openai_llama_admission_image_tokens(_Backend(junk)) == (
                 _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
             )
 
-        # Every family llama.cpp gives its own ceiling must be bounded, including the
-        # ones far above the default: youtuvl is 62500 and hunyuanvl 16384, so a flat
-        # default would have reserved a fraction of what one image really costs.
+        # youtuvl is 62500 and hunyuanvl 16384, far above the default
         for projector, ceiling in _MMPROJ_IMAGE_TOKEN_MAX.items():
             assert _openai_llama_admission_image_tokens(_Backend(projector = projector)) >= ceiling
         assert _openai_llama_admission_image_tokens(_Backend(projector = "youtuvl")) >= 62500
-        # A projector with a small ceiling reserves near it rather than the default.
         assert _openai_llama_admission_image_tokens(_Backend(projector = "lfm2")) < 1024
-        # An unknown family keeps the default rather than inventing a number.
         assert _openai_llama_admission_image_tokens(_Backend(projector = "nope")) == (
             _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS
         )
-        # The flag is only honoured by dynamic-resolution projectors, so a LOW cap must
-        # not talk the reservation below what a fixed-resolution one really costs.
+        # only dynamic-resolution projectors honour the flag, so a low cap can't undercut these
         assert (
             _openai_llama_admission_image_tokens(
                 _Backend(["--image-max-tokens", "16"], projector = "qwen3vl_merger")
@@ -361,8 +345,6 @@ class TestMediaIsCharged:
 
         first, second = asyncio.run(scenario())
         assert first is not None, "the first image chat owns the cache"
-        # The conservative per-image allowance alone is larger than this tiny cache,
-        # so the second request must still queue rather than overcommit it.
         assert second is None
 
     def test_audio_and_video_are_charged_too(self):
@@ -388,7 +370,7 @@ def _wav_b64(seconds: float, rate: int = 16000) -> str:
 
 
 def _mp3_b64(frames: int) -> str:
-    # MPEG-1 Layer III, 128 kbps, 44.1 kHz: 417-byte frames of 1152 samples.
+    # MPEG-1 Layer III, 128 kbps, 44.1 kHz: 417-byte frames of 1152 samples
     frame = b"\xff\xfb\x90\x00" + b"\x00" * 413
     return base64.b64encode(frame * frames).decode()
 
@@ -455,7 +437,7 @@ class TestAnAudioTurnIsChargedByItsDuration:
     )
     def test_the_charge_bounds_every_audio_projector(self, audio, seconds):
         cost = _openai_llama_admission_media_tokens(_Payload(audio_base64 = audio))
-        # 25 embeddings a second, and a Whisper encoder pads each clip to a whole 30 s window.
+        # 25 embeddings a second; a Whisper encoder pads each clip to a whole 30 s window
         whisper_windows = int(seconds // 30) + 1
         assert cost >= max(25 * seconds, 750 * whisper_windows)
         assert cost <= 25 * (seconds + 30) + 256
@@ -495,7 +477,6 @@ class TestAnAudioTurnIsChargedByItsDuration:
             enable_tools = True,
             max_tokens = 256,
         )
-        # What _inject_audio_part hands the tool loop.
         conversation = [
             {
                 "role": "user",
@@ -559,7 +540,7 @@ class TestAnAudioTurnIsChargedByItsDuration:
         asyncio.run(run())
         assert on_loop == [False]
 
-    # An ogg header states no length, so only the WAV it is transcoded to can be measured.
+    # an ogg header states no length, so only the WAV it is transcoded to can be measured
     @pytest.mark.parametrize(
         "raw",
         [inference_route._mono_f32_to_wav_bytes(np.zeros(320_000), 16000), b"OggS" * 4**8],
@@ -603,7 +584,7 @@ class TestAnAudioTurnIsChargedByItsDuration:
         response = TestClient(app).post("/v1/chat/completions", json = body)
 
         assert response.status_code == 200, response.text
-        # 25/s over the clip and a trailing 30 s window, the wrapper, output, and the prompt.
+        # 25/s over the clip plus a trailing 30 s window, the wrapper, output, and the prompt
         assert 0 <= charged[0] - (25 * (20 + 30) + 128 + 256) < 32, charged
 
 
@@ -637,8 +618,6 @@ class TestAnAnthropicImageIsChargedLikeAnyOtherImage:
         )
 
     def test_a_big_anthropic_image_costs_what_a_tiny_one_costs(self):
-        # Clear of the clamp, as the image_url cases above are, so the estimator is what
-        # is being compared rather than `min(budget, ...)`.
         big = _openai_llama_admission_tokens(
             self._request(_image_b64(1024)), budget = 1_000_000, capacity = 4
         )
@@ -842,7 +821,7 @@ class TestEveryBlockTheTranslationDropsIsPricedTheSameWay:
     def test_none_of_them_reserve_the_whole_cache(self):
         budget = 32768
         data = _image_b64(150)
-        # Both orders: a filter that stops at the first block would pass one of them.
+        # both orders: a filter that stops at the first block would pass one of them
         for text_first in (True, False):
             for name, block in self._blocks(data).items():
                 payload = self._request(block, text_first = text_first)
@@ -1034,12 +1013,11 @@ class TestTheBudgetIsTheWholeCacheNotOneSlot:
         assert _openai_llama_admission_budget(backend) == 16384
 
     def test_a_unified_cache_is_unchanged(self):
-        # slots == 1 under --kv-unified, so the total IS the per-request window.
+        # slots == 1 under --kv-unified, so the total IS the per-request window
         backend = _Payload(context_length = 8192, _kv_cache_context_total = 8192)
         assert _openai_llama_admission_budget(backend) == 8192
 
     def test_an_unread_backend_falls_back_to_context_length(self):
-        # Nothing read back yet: the two agree, so the fallback is not a guess.
         backend = _Payload(context_length = 8192, _kv_cache_context_total = None)
         assert _openai_llama_admission_budget(backend) == 8192
 
@@ -1125,8 +1103,6 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
             max_tokens = 128,
         )
         opened, committed, _ = self._round_zero(payload, output_tokens = 128)
-        # One image alone is 4224 against this 4096 budget, so the reservation clamps to
-        # the whole cache: four times the 1024 share the re-cost used to drop it to.
         assert _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS > 4096 and opened == 4096, opened
         assert committed == opened, (
             f"round zero shrank a correct lease from {opened} to {committed}, "

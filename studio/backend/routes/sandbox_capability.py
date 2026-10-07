@@ -42,7 +42,7 @@ def _setup_fields_for(request: Request, isolated: bool) -> dict:
 def _refresh(force: bool) -> None:
     from core.inference import os_sandbox
     if os_sandbox._background_probes_disabled():
-        return  # UNSLOTH_DISABLE_SANDBOX_WARMUP=1: answers come only from real launches
+        return
     for tool in os_sandbox.ISOLATED_TOOLS:
         if force or not os_sandbox.has_tool_isolation_answer(tool):
             os_sandbox.refresh_tool_isolation(tool, force = force)
@@ -54,7 +54,6 @@ def _capability() -> dict:
     python = cached_tool_capability("python")
     terminal = cached_tool_capability("terminal")
     if python is None or terminal is None:
-        # "unknown" keeps the client waiting: one tool's answer says nothing about the other.
         backend, reason = "unknown", "The sandbox check has not finished yet."
     else:
         isolated = [item for item in (python, terminal) if item[0]]
@@ -83,7 +82,6 @@ async def sandbox_capability(
     capability = _capability()
     isolated = capability["python_os_isolated"] and capability["terminal_os_isolated"]
     setup = await asyncio.to_thread(_setup_fields_for, request, isolated)
-    # The dialog shows the command on its own; the probe reason would repeat it inside a sentence.
     short_reason = setup.pop("setup_reason", "")
     if short_reason and setup.get("manual_command"):
         capability["reason"] = short_reason

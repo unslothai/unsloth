@@ -453,8 +453,7 @@ def test_probe_memo_does_not_answer_across_paths(managed_node_install, monkeypat
     old.mkdir()
     _make_executable(old, "node")
 
-    # Patched directly rather than through _patch_floors: that helper drops the path
-    # argument, which is the whole dimension under test here.
+    # Patched directly: _patch_floors drops the path argument, which is under test here.
     def _npm_floor(executable, path = None):
         # The shim runs whichever node its PATH reaches, so only the good PATH clears.
         return path is not None and str(good) in path
@@ -464,8 +463,6 @@ def test_probe_memo_does_not_answer_across_paths(managed_node_install, monkeypat
     good_path = f"{shim}{os.pathsep}{good}"
     old_path = f"{shim}{os.pathsep}{old}"
     assert node_runtime._path_has_usable_node(good_path) is True
-    # Same npm executable, PATH whose node is below the floor: must be re-probed, not served
-    # from the entry the good PATH cached.
     assert node_runtime._path_has_usable_node(old_path) is False
 
 
@@ -687,7 +684,7 @@ def test_npx_only_path_is_still_held_to_the_npm_floor(managed_node_install, monk
 
     def _npm_floor(executable, path = None):
         probed.append(str(executable))
-        return False  # the bundled npm is below the installers' floor
+        return False
 
     monkeypatch.setattr(node_runtime, "_npm_version_ok", _npm_floor)
     expected = f"{managed_node_install}{os.pathsep}{curated}"
@@ -788,13 +785,11 @@ def test_npm_probe_runs_with_the_candidate_path(managed_node_install, monkeypatc
     node.write_text("#!/bin/sh\necho v22.12.0\n")
     node.chmod(0o755)
     npm = toolchain / "npm"
-    npm.write_text("#!/usr/bin/env node\n")  # only runs if node is on the probe PATH
+    npm.write_text("#!/usr/bin/env node\n")
     npm.chmod(0o755)
     _make_executable(toolchain, "npx")
-    # a backend PATH with no node at all, which is why this PR exists
     monkeypatch.setenv("PATH", "/nonexistent-9304")
     monkeypatch.setattr(node_runtime, "_npm_meets_floor", lambda version: True)
-    # the managed install must be usable, or the function returns before the npm probe
     monkeypatch.setattr(node_runtime, "managed_node_usable", lambda: True)
     assert node_runtime.path_with_managed_node(str(toolchain)) == str(toolchain)
 

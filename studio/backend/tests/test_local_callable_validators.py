@@ -35,7 +35,6 @@ def test_oxc_batch_falls_back_when_node_times_out(monkeypatch, tmp_path):
 
     assert len(calls) == 1
     assert calls[0][1]["timeout"] == validators._OXC_TIMEOUT_S
-    # The wrapper needs the same budget: oxlint is a grandchild this kill cannot reach.
     assert json.loads(calls[0][1]["input"])["timeout_ms"] == validators._OXC_TIMEOUT_S * 1000
     assert len(results) == 2
     assert all(result["is_valid"] is False for result in results)
@@ -47,16 +46,14 @@ def test_oxc_batch_falls_back_when_node_times_out(monkeypatch, tmp_path):
 
 
 def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
-    # Python's timeout SIGKILLs only the wrapper, so oxlint has to die inside validate.mjs,
-    # against what is left of the caller's budget. On the source: no JS test runner ships.
+    # Python's timeout kills only the wrapper; oxlint must die inside validate.mjs.
     source = validators._OXC_RUNNER_PATH.read_text(encoding = "utf-8")
 
     assert re.search(
         r"mapBudgetMs\(payload\?\.timeout_ms\)", source
     ), "the oxlint budget must come from the timeout_ms the caller sends"
 
-    # performance.now() is monotonic ms since process start, the same basis as the caller's
-    # timeout; Date.now() would drift from it on a wall-clock step.
+    # performance.now() is monotonic like the caller's timeout; Date.now() drifts.
     remaining = re.search(r"const timeoutMs = ([^;]+);", source)
     assert remaining, "runLintBatch must compute what is left of the caller's budget"
     assert "performance.now()" in remaining.group(1)
@@ -73,5 +70,5 @@ def test_the_wrapper_kills_oxlint_against_the_remaining_caller_budget():
     assert "timeout: timeoutMs" in options.group(
         1
     ), "oxlint's bound must be the computed remainder, not a constant"
-    # SIGTERM is ignorable, and spawnSync then waits out the child anyway.
+    # SIGTERM is ignorable, and spawnSync then waits out the child.
     assert 'killSignal: "SIGKILL"' in options.group(1)

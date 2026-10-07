@@ -58,9 +58,6 @@ def _choice(install_kind: str, name: str = "bundle.tar.gz") -> ilp.AssetChoice:
     )
 
 
-# ── The vocabulary ──
-
-
 def test_every_install_kind_the_installer_can_select_names_a_backend():
     """The marker describes each install by backend, so a bundle kind with no
     mapping would install as an unknown one the picker cannot show or re-assert.
@@ -70,8 +67,8 @@ def test_every_install_kind_the_installer_can_select_names_a_backend():
     instead of silently shipping an undescribed install.
     """
     source = Path(ilp.__file__).read_text(encoding = "utf-8")
+    # assignments only: the validate-install CLI also names kinds in help text
     selected = set(re.findall(r'install_kind = "([a-z0-9-]+)"', source))
-    # The validate-install CLI documents kinds in help text; only assignments count.
     assert selected, "no install_kind assignments found -- has the pattern changed?"
     unmapped = sorted(selected - set(ilp.INSTALL_KIND_BACKENDS))
     assert unmapped == [], f"install kinds with no backend mapping: {unmapped}"
@@ -114,29 +111,21 @@ def test_windows_rocm_bundle_satisfies_a_rocm_request():
     assert filtered[0].attempts == [choice]
 
 
-# ── Reading a choice back off an install ──
-
-
 @pytest.mark.parametrize(
     "marker, expected",
     [
-        # Nothing recorded: an ordinary detected install, which must keep detecting.
         ({"asset": "app-b1-linux-x64-cuda12.tar.gz", "force_cpu": False}, "auto"),
-        # The two overrides older installers could record.
         ({"asset": "app-b1-linux-x64-cpu.tar.gz", "force_cpu": True}, "cpu"),
         ({"asset": "vulkan.tar.gz", "llama_backend": "vulkan"}, "vulkan"),
-        # Automatic Windows-AMD Vulkan routing: detected, not chosen.
+        # automatic Windows-AMD Vulkan routing: detected, not chosen
         ({"asset": "win-vulkan.zip", "llama_backend": "auto"}, "auto"),
-        # Pre-#7188: no llama_backend key at all, so the asset is the only evidence.
+        # older marker with no llama_backend key: the asset is the only evidence
         ({"asset": "llama-b1-bin-ubuntu-vulkan-x64.tar.gz"}, "vulkan"),
-        # Written by this build.
         ({"backend": "rocm", "backend_request": "rocm"}, "rocm"),
         ({"backend": "cuda", "backend_request": "auto"}, "auto"),
-        # A choice from a newer Unsloth is returned verbatim, never as "auto":
-        # "auto" would license this build to re-detect over it.
+        # a newer Unsloth's choice comes back verbatim: "auto" would license a re-detect
         ({"backend": "sycl", "backend_request": "sycl"}, "sycl"),
         ({"asset": "x.tar.gz", "llama_backend": "sycl"}, "sycl"),
-        # A non-string records no readable choice at all, so detection applies.
         ({"backend": "cuda", "backend_request": 7}, "auto"),
         ({"asset": "x.tar.gz", "llama_backend": 7}, "auto"),
     ],
@@ -146,12 +135,8 @@ def test_persisted_backend_request_reads_old_and_new_markers(tmp_path, marker, e
 
 
 def test_persisted_backend_request_without_an_install(tmp_path):
-    # No marker records no choice, which is detection, not an unreadable one.
     assert ilp.persisted_backend_request(None) == "auto"
     assert ilp.persisted_backend_request(tmp_path) == "auto"
-
-
-# ── Precedence ──
 
 
 def test_the_flag_outranks_the_environment_and_the_install(monkeypatch, tmp_path):
@@ -167,7 +152,6 @@ def test_the_environment_outranks_the_install(monkeypatch, tmp_path):
 
 
 def test_an_explicit_auto_clears_a_recorded_choice(monkeypatch, tmp_path):
-    # How the picker's "Automatic" entry gets back to detection.
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
     install = _marker(tmp_path, backend_request = "vulkan")
     assert ilp.effective_backend_request(None, install_dir = install) == ("auto", True)
@@ -181,14 +165,12 @@ def test_an_explicit_auto_suppresses_the_legacy_vulkan_flag(monkeypatch, tmp_pat
 
 
 def test_legacy_force_vulkan_still_outranks_a_recorded_choice(monkeypatch, tmp_path):
-    # The legacy environment override outranks the stored choice.
     monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
     install = _marker(tmp_path, backend_request = "cpu")
     assert ilp.effective_backend_request(None, install_dir = install) == ("vulkan", True)
 
 
 def test_a_recorded_choice_applies_when_nobody_names_one(tmp_path):
-    # The whole point: no env, no flag, and the install still comes back Vulkan.
     install = _marker(tmp_path, backend_request = "vulkan")
     assert ilp.effective_backend_request(None, install_dir = install) == ("vulkan", False)
 
@@ -199,9 +181,6 @@ def test_an_unknown_environment_value_falls_through_to_the_install(monkeypatch, 
     assert ilp.effective_backend_request(None, install_dir = install) == ("vulkan", False)
 
 
-# ── What gets recorded ──
-
-
 @pytest.mark.parametrize(
     "request_backend, kind, expected",
     [
@@ -209,8 +188,7 @@ def test_an_unknown_environment_value_falls_through_to_the_install(monkeypatch, 
         ("cpu", "linux-cpu", "cpu"),
         ("auto", "linux-cuda", "auto"),
         (None, "linux-cuda", "auto"),
-        # An unhonourable request is KEPT, not erased to "auto" (#11143), so a later update
-        # can retry it.
+        # an unhonourable request is kept, not erased to "auto", so a later update can retry
         ("vulkan", "linux-cpu", "vulkan"),
         # Except where no release could ever honour it: macOS ships one universal Metal
         # bundle and the picker offers only "auto", so a preserved "cpu" is unappliable.
@@ -229,9 +207,8 @@ def test_the_request_is_recorded_verbatim(request_backend, kind, expected):
         ("cpu", "linux-cpu", True),
         ("auto", "linux-cuda", True),
         (None, "linux-cuda", True),
-        # A single-build platform cannot owe a request: nothing could ever serve it.
+        # a single-build platform cannot owe a request
         ("cpu", "macos-arm64", True),
-        # Concrete requests the bundle that landed contradicts.
         ("vulkan", "linux-cpu", False),
     ],
 )
@@ -471,7 +448,7 @@ def _route_auto_with(
 
 
 def test_auto_follows_rocm_torch_on_the_operators_arch_when_the_probe_misses(monkeypatch):
-    # argparse feeds UNSLOTH_ROCM_GFX_ARCH in as the --rocm-gfx default.
+    # argparse feeds UNSLOTH_ROCM_GFX_ARCH in as the --rocm-gfx default
     host = _route_auto_with(
         monkeypatch, env = {"UNSLOTH_ROCM_GFX_ARCH": "gfx1201"}, override_rocm_gfx = "gfx1201"
     )
@@ -687,7 +664,7 @@ def test_metadata_records_both_the_backend_and_the_choice(tmp_path):
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
     assert marker["backend"] == "vulkan"
     assert marker["backend_request"] == "vulkan"
-    # The superseded field stays, so an older Unsloth keeps re-asserting Vulkan.
+    # the superseded field stays, so an older Unsloth keeps re-asserting Vulkan
     assert marker["llama_backend"] == "vulkan"
 
 
@@ -709,13 +686,8 @@ def test_a_detected_install_records_its_backend_but_no_choice(tmp_path):
         prebuilt_fallback_used = False,
     )
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
-    # Describes the install for the picker...
     assert marker["backend"] == "cuda"
-    # ...without pinning it, so the next update re-detects as it always has.
     assert marker["backend_request"] == "auto"
-
-
-# ── Applying a request to an install ──
 
 
 def _stub_selection(
@@ -726,7 +698,7 @@ def _stub_selection(
 ):
     """Record which backend the install path asked for, and answer for it."""
     seen = []
-    # Avoid the unrelated DiffusionGemma backfill download.
+    # avoid the unrelated DiffusionGemma backfill download
     monkeypatch.setattr(ilp, "diffusion_visual_server_backfill_needed", lambda *a, **k: False)
 
     def _select(
@@ -789,7 +761,6 @@ def test_an_update_refuses_to_replace_an_unknown_recorded_choice(monkeypatch, tm
 
 
 def test_a_recorded_choice_this_host_cannot_serve_falls_back_to_detection(monkeypatch, tmp_path):
-    # Re-detect after hardware invalidates a stored choice.
     seen = _stub_selection(monkeypatch, available = {"auto"})
     monkeypatch.setattr(ilp, "existing_install_matches_plan", lambda *a, **k: True)
     _marker(tmp_path, backend = "rocm", backend_request = "rocm")
@@ -798,21 +769,18 @@ def test_a_recorded_choice_this_host_cannot_serve_falls_back_to_detection(monkey
 
     assert seen == ["rocm", "auto"]
     marker = json.loads((tmp_path / "UNSLOTH_PREBUILT_INFO.json").read_text())
-    # The CHOICE survives the re-detect, flagged as not what landed. Erasing it to "auto"
-    # here is what made a configured Vulkan install keep coming back as ROCm (#11143).
+    # the choice survives, flagged; erasing it to "auto" let a Vulkan install revert to ROCm
     assert marker["backend_request"] == "rocm"
     assert marker["backend_request_unsatisfied"] is True
 
 
 def test_a_named_backend_this_host_cannot_serve_fails_instead(monkeypatch, tmp_path):
-    # An explicit request must not silently install another backend.
     seen = _stub_selection(monkeypatch, available = {"auto"})
     _marker(tmp_path, backend = "cuda", backend_request = "auto")
 
     with pytest.raises(SystemExit) as raised:
         ilp.install_prebuilt(tmp_path, "latest", FORK, "", llama_backend = "vulkan")
 
-    # Both the UI and setup need a specific fail-closed result.
     assert raised.value.code == ilp.EXIT_BACKEND_UNAVAILABLE
     assert seen == ["vulkan"]
 

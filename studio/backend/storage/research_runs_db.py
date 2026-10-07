@@ -179,11 +179,9 @@ def _bind_assistant_locked(
     existing_run_id = (
         existing_metadata.get("researchRunId") if isinstance(existing_metadata, dict) else None
     )
-    # Only bind to an empty placeholder or this run's own message: an untagged reply carries parts
-    # _update_assistant drops on completion, so binding one silently overwrites an existing answer.
+    # Bind only to an empty placeholder or this run's message, or an existing answer is overwritten.
     parts = _loads(message["content_json"], [])
-    # A preamble beside the deep_research call is not a prior answer, so only text WITHOUT the
-    # handoff refuses the bind. Source parts, which only a finished answer carries, still do.
+    # A preamble beside the deep_research call is not a prior answer; source parts still refuse.
     has_research_handoff = any(
         isinstance(part, dict)
         and part.get("type") == "tool-call"
@@ -376,10 +374,8 @@ def rebind_cancelled(
             plan_revision = revision,
             created = now,
         )
-        # retry_count is the attempt epoch every event is stamped with, and a new question is a new attempt: without
-        # the bump its report would carry the stopped question's reasoning, since get_reasoning_text joins every event
-        # at the run's current attempt. The retry BUDGET is counted per question, so spending an epoch here spends no
-        # retry.
+        # retry_count is the event attempt epoch; bump it per question so old reasoning is not joined.
+        # The retry budget is counted per question, so this spends no retry.
         conn.execute(
             "UPDATE research_runs SET user_message_id=?, assistant_message_id=?, "
             "status='planning', cancel_requested=0, plan_json=NULL, plan_hash=NULL, "
@@ -401,8 +397,7 @@ def rebind_cancelled(
         conn.execute("DELETE FROM research_plan_steps WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_sources WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM research_document_sources WHERE run_id=?", (run_id,))
-        # Events replay into the activity panel, so a kept approval would show "Plan approved" for a
-        # question this run no longer researches.
+        # Events replay into the activity panel; drop the stale approval.
         conn.execute(
             "DELETE FROM research_events WHERE run_id=? AND event_type='run.approved'", (run_id,)
         )
@@ -647,7 +642,6 @@ def create_and_bind_terminal_fallback(
         return message_id, True
     except sqlite3.IntegrityError:
         conn.rollback()
-        # A concurrent terminal path may have inserted the deterministic fallback.
         message_id = discover_and_bind_assistant_message(run_id)
         if message_id is None:
             raise
@@ -799,9 +793,7 @@ def retry(run_id: str, max_retries: int = 3) -> str:
             raise KeyError(run_id)
         if row["status"] not in {"failed", "cancelled"}:
             raise ResearchConflictError("Only failed or cancelled runs can be retried")
-        # Counted per question, not per run row: a thread re-points one run at each new question, so a raw
-        # retry_count would hand a fresh question whatever the stopped one left over, and nothing at all once the
-        # budget was spent.
+        # Counted per question, not per run row: one run is re-pointed at each new question.
         spent = conn.execute(
             "SELECT COUNT(*) FROM research_events WHERE run_id=? AND event_type='run.retried' "
             "AND seq > COALESCE((SELECT MAX(seq) FROM research_events "
@@ -881,8 +873,7 @@ def _has_claimable(now: int) -> bool:
 
 
 def claim_next(worker_id: str, lease_ms: int = 120_000) -> dict | None:
-    # Advisory only: the row can disappear between this probe and the transaction below, which the "row
-    # is None" branch already handles.
+    # Advisory only: the row can vanish before the transaction (handled below).
     if not _has_claimable(now_ms()):
         return None
     conn = get_connection()
@@ -998,7 +989,6 @@ def finish(
             else status
         )
         actual_error = None if actual_status == "cancelled" else error
-        # A cancelled run stores no report: a stop is the user asking for nothing back.
         report_text = None
         if actual_status in {"completed", "failed"} and event_payload:
             candidate = event_payload.get("report")

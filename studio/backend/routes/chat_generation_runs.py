@@ -67,7 +67,6 @@ _EXTERNAL_ROUTING_FIELDS = {
     "encrypted_api_key",
     "provider_base_url",
 }
-# Attachments the composer sends inline. Durable replay has no representation for them.
 _MEDIA_FIELDS = {
     "image_base64",
     "audio_base64",
@@ -160,7 +159,6 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 422,
             detail = safe_validation_errors(exc.errors()),
         ) from exc
-    # Without this an unservable part is queued at 202 and fails where the caller cannot see it.
     from routes.inference import (
         _messages_have_embedded_image,
         _messages_have_input_audio,
@@ -170,8 +168,7 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
 
     _reject_unsupported_content_parts(request)
 
-    # Message content/reasoning are user-authored data, not routing configuration. Scan every
-    # other persisted field, including extra message-envelope fields, with the credential policy.
+    # Message content is user data; scan every other persisted field for credentials.
     durable_config = {
         key: value
         for key, value in raw.items()
@@ -193,12 +190,8 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    # request_json for the life of the thread. _MEDIA_FIELDS is field-shaped, so a video_url part
-    # needs _request_has_video, and an inline image part needs _messages_have_embedded_image:
-    # turn-scoping means a TEXT-only follow-up no longer sets top-level image_base64, yet the
-    # thread's earlier screenshot still rides along inside messages[].content, so the field-shaped
-    # check alone admits it and re-persists the blob on every follow-up.
+    # A media turn persists verbatim, so refuse base64 blobs in fields or in earlier
+    # messages[].content (image follow-ups no longer set top-level image_base64).
     if (
         any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
         or _messages_have_input_audio(request.messages)
@@ -209,23 +202,17 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
         )
-    # What UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 hands back to the legacy stream beyond the raw `tools` key: the
-    # launcher's effective tool policy, and any checkpoint recall that can switch tools on mid-thread.
     from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
 
-    # Shipped ON (default ON so a restart alone activates it - env scoping proved unreliable across launchers):
-    # tool-enabled turns are durable because replay now re-tags persisted frames exactly as the live stream yields
-    # them; set UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 to restore the original refusal.
+    # Default ON; UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 restores the legacy refusal.
     _durable_tools = os.environ.get("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "1").strip().lower() in (
         "1",
         "true",
         "yes",
     )
-    # NOTE: the guard wraps the WHOLE or-chain. `A and B or C or D` parses as `(A and B) or C or D`, so a bare
-    # prefix only guarded raw["tools"]; the Studio UI sends `enable_tools: true` (term 2), which still raised with
-    # the flag ON - the flip was inert for exactly the turns it was added to unblock.
+    # The guard must wrap the whole or-chain: `A and B or C` parses as `(A and B) or C`.
     if not _durable_tools and (
         raw.get("tools")
         or request.enable_tools is True
@@ -241,8 +228,7 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
         raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")
     sanitized = request.model_dump(mode = "json", exclude_none = True)
     if request.permission_mode == "off" and not request._off_confirm_opt_out:
-        # The validator forces confirm_tool_calls=False for "off"; persisted, the replay would read that as the
-        # caller's explicit opt-out and never arm the no-OS-sandbox confirm gate.
+        # Persisted False would read as an explicit opt-out and skip the no-sandbox confirm gate.
         sanitized.pop("confirm_tool_calls", None)
     for field in _EXTERNAL_ROUTING_FIELDS:
         sanitized.pop(field, None)
@@ -322,8 +308,7 @@ async def create_chat_generation_run(
     sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
     if timezone_headers := _timezone_headers(request):
         sanitized[db.TIMEZONE_HEADERS_FIELD] = timezone_headers
-    # Serialize the off-loop commit with model lifecycle work, so a run is registered either before the gate opens or
-    # after an unload/swap, never mid-swap.
+    # Serialize with model lifecycle so a run never registers mid-swap.
     async with inference_lifecycle_gate():
         _require_available_supervisor_run_id(payload.runId)
         try:
@@ -399,25 +384,21 @@ async def chat_generation_events(
         # run_in_executor does not copy ContextVars, unlike asyncio.to_thread.
         wait_for_events = partial(run_as, current_account(), db.wait_for_events)
 
-    # One token per stream, so a closing tab clears only its OWN stamp. Two tabs on a run, or a
-    # reconnect overlapping the stream it replaces, otherwise delete each other's heartbeat.
+    # One token per stream so concurrent tabs don't delete each other's heartbeat.
     follower = run_subscribers.new_follower_token()
     follower_account = current_account_id() or ""
 
     async def stream():
         nonlocal cursor
         loop = asyncio.get_running_loop()
-        # A reconnect to an already-settled run has nothing to replay, and wait_for_events would hold it for the full
-        # timeout and tie up an event-wait worker.
+        # A settled run has nothing to replay; don't hold an event-wait worker for it.
         opening = await asyncio.to_thread(db.get_run, run_id)
         if opening is None:
             return
         if opening["status"] in db.TERMINAL_STATUSES and cursor >= int(opening["lastEventSeq"]):
             return
         while True:
-            # A parked tool approval reads this before applying its ceiling, so the ceiling bounds
-            # an ABANDONED decision rather than a user still reading the card. Stamped before the
-            # wait so a follower attaching mid-park counts immediately. See state/run_subscribers.py.
+            # Stamp before the wait so a parked approval's ceiling sees this follower immediately.
             run_subscribers.mark_subscriber_seen(run_id, follower, follower_account)
             events = await loop.run_in_executor(
                 _EVENT_WAIT_EXECUTOR,
@@ -448,10 +429,8 @@ async def chat_generation_events(
             if await request.is_disconnected():
                 return
             if not events:
-                # Carries the run's progress stamp, which the lease renewals move. A bare keep-alive proves only that the
-                # CONNECTION is healthy, so a follower rearming its no-progress deadline on one could never settle a wedged
-                # run while the socket stayed up, the one case that fallback exists for. Comment framing, so _SSEDecoder
-                # still drops it and no client parsing it as an event is affected.
+                # Carries the progress stamp so followers can detect a wedged run; comment framing keeps
+                # _SSEDecoder ignoring it.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
     async def stream_while_attended():

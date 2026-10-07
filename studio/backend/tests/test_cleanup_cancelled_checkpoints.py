@@ -59,7 +59,7 @@ def test_in_flight_tmp_checkpoints_removed(outputs_setup):
     out.mkdir()
     _mk_dir(out, "tmp-checkpoint-100")
     _mk_dir(out, "tmp-checkpoint-200")
-    _mk_dir(out, "checkpoint-50")  # completed, kept
+    _mk_dir(out, "checkpoint-50")
 
     _cleanup_cancelled_checkpoints(out)
 
@@ -75,7 +75,7 @@ def test_non_checkpoint_dirs_left_alone(outputs_setup):
     out.mkdir()
     _mk_dir(out, "logs")
     _mk_dir(out, "tensorboard")
-    _mk_dir(out, "checkpoint-final")  # non-int suffix, kept
+    _mk_dir(out, "checkpoint-final")
     _mk_dir(out, "checkpoint-best")
     _mk_dir(out, "tmp-checkpoint-99")
 
@@ -130,7 +130,6 @@ def test_symlinked_output_dir_skipped(outputs_setup):
 def test_missing_output_dir_is_noop(outputs_setup):
     from core.training.training import _cleanup_cancelled_checkpoints
     _cleanup_cancelled_checkpoints(outputs_setup / "does-not-exist")
-    # Should not raise; nothing to assert beyond non-failure.
 
 
 def test_symlinked_child_skipped(outputs_setup):

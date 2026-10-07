@@ -362,8 +362,6 @@ def test_settings_route_returns_the_specific_validation_error(settings_store, tm
     )
 
 
-# The account that does not exist anywhere, which is what a rename leaves behind in a
-# service unit or a .env.
 _UNKNOWN_USER = "~no-such-account-anywhere/llama.cpp"
 
 
@@ -414,7 +412,6 @@ def test_discovery_continues_past_an_unresolvable_override(monkeypatch, tmp_path
     llama_cpp = pytest.importorskip("core.inference.llama_cpp")
     monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", _UNKNOWN_USER)
     monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
-    # Not asserting which runtime is found: the machine decides that. The claim under
-    # test is only that the search reaches its own answer instead of raising.
+    # Which runtime is found depends on the machine; only "does not raise" is under test.
     result = llama_cpp.LlamaCppBackend._find_llama_server_binary()
     assert result is None or isinstance(result, (str, Path, tuple))

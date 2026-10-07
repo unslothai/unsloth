@@ -22,9 +22,6 @@ from core.inference.external_provider import (
 )
 
 
-# ── _build_usage_chunk unit tests ───────────────────────────────────
-
-
 def test_build_usage_chunk_anthropic_shape():
     line = _build_usage_chunk(
         "chatcmpl-x",
@@ -43,15 +40,12 @@ def test_build_usage_chunk_anthropic_shape():
     assert payload["object"] == "chat.completion.chunk"
     assert payload["choices"] == []
     usage = payload["usage"]
-    # Anthropic's input_tokens excludes cache buckets; prompt_tokens must
-    # sum all three input components so downstream context/cost displays
-    # see the real prompt size.
+    # Anthropic's input_tokens excludes cache buckets, so sum all three
     assert usage["prompt_tokens"] == 8 + 1367 + 18901
     assert usage["completion_tokens"] == 862
     assert usage["total_tokens"] == 8 + 1367 + 18901 + 862
     assert usage["cache_creation_input_tokens"] == 1367
     assert usage["cache_read_input_tokens"] == 18901
-    # OpenAI-style mirror for clients that key off prompt_tokens_details.
     assert usage["prompt_tokens_details"]["cached_tokens"] == 18901
 
 
@@ -101,14 +95,12 @@ def test_build_usage_chunk_openai_shape():
         "reasoning_tokens": 12,
         "accepted_prediction_tokens": 9,
     }
-    # Anthropic-only keys must not leak onto the OpenAI shape.
     assert "cache_creation_input_tokens" not in usage
     assert "cache_read_input_tokens" not in usage
 
 
 def test_build_usage_chunk_missing_fields_default_to_zero():
-    # OpenAI Responses can omit input_tokens_details when prompt caching is
-    # unused; the helper should still emit a chunk with cached_tokens=0.
+    # OpenAI Responses can omit input_tokens_details when caching is unused
     line = _build_usage_chunk(
         "chatcmpl-z",
         "openai",
@@ -120,8 +112,7 @@ def test_build_usage_chunk_missing_fields_default_to_zero():
 
 
 def test_build_usage_chunk_returns_none_when_all_zero():
-    # If upstream errored before any usage event, suppress the chunk to
-    # avoid a misleading "0 tokens" line.
+    # no usage before an upstream error: suppress rather than show "0 tokens"
     assert _build_usage_chunk("id", "anthropic", {}) is None
     assert _build_usage_chunk("id", "anthropic", None) is None
     assert _build_usage_chunk("id", "openai", {}) is None
@@ -137,9 +128,6 @@ def test_build_usage_chunk_returns_none_when_all_zero():
         )
         is None
     )
-
-
-# ── streaming integration tests ─────────────────────────────────────
 
 
 def _drive(coro):
@@ -192,7 +180,6 @@ def _anthropic_sse(events: list[dict]) -> bytes:
 
 
 def _openai_sse(events: list[dict]) -> bytes:
-    # Responses API ships one `event:` line per object plus the data line.
     chunks: list[str] = []
     for event in events:
         chunks.append(f"event: {event['type']}")
@@ -551,7 +538,6 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     usages = _usage_chunks(lines)
     assert len(usages) == 1, f"expected one usage chunk, got {len(usages)}: {usages}"
     u = usages[0]
-    # Real prompt size = uncached input + cache writes + cache reads.
     assert u["prompt_tokens"] == 7 + 6253 + 5713
     assert u["completion_tokens"] == 1066
     assert u["total_tokens"] == 7 + 6253 + 5713 + 1066
@@ -559,7 +545,6 @@ def test_anthropic_stream_emits_usage_chunk_before_done(monkeypatch):
     assert u["cache_read_input_tokens"] == 5713
     assert u["prompt_tokens_details"]["cached_tokens"] == 5713
 
-    # Usage chunk must come before [DONE].
     data_lines = [ln for ln in lines if ln.startswith("data:")]
     done_idx = next(i for i, ln in enumerate(data_lines) if ln.strip().endswith("[DONE]"))
     usage_idx = next(
@@ -614,7 +599,6 @@ def test_openai_responses_stream_emits_usage_chunk_on_completed(monkeypatch):
     assert u["prompt_tokens"] == 5507
     assert u["completion_tokens"] == 252
     assert u["prompt_tokens_details"]["cached_tokens"] == 4736
-    # OpenAI shape must NOT carry Anthropic-only keys.
     assert "cache_creation_input_tokens" not in u
     assert "cache_read_input_tokens" not in u
 
@@ -706,16 +690,15 @@ def test_self_hosted_providers_get_the_continuation_flags(monkeypatch):
     for provider_type in ("llama_cpp", "vllm"):
         body = _continuation_body(monkeypatch, provider_type, "http://local.example/v1")
         assert body["continue_final_message"] is True, provider_type
-        # A server rejects both being asked for at once.
+        # a server rejects both being asked for at once
         assert body["add_generation_prompt"] is False, provider_type
 
 
 @pytest.mark.parametrize(
     ("provider_type", "base_url"),
     [
-        # Prompt assembly is theirs, so the flag would just be an unknown field.
+        # prompt assembly is theirs, so the flag would be an unknown field
         ("openai", "https://api.openai.com/v1"),
-        # Any user-supplied base_url, including a strict endpoint that would 400.
         ("custom", "http://custom.example/v1"),
         ("ollama", "http://localhost:11434/v1"),
     ],
@@ -733,16 +716,14 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
         ("openrouter", True),
         ("kimi", True),
         ("llama_cpp", True),
-        # Any user-supplied base_url: a strict endpoint 400s on an unknown field.
+        # a user-supplied base_url may be strict and 400 on an unknown field
         ("custom", False),
         ("ollama", False),
-        # "openai" is absent: it routes to /v1/responses, which reports usage itself.
+        # "openai" is absent: /v1/responses reports usage itself
     ],
 )
 def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider_type, expected):
-    # An OAI-compatible stream omits usage without stream_options.include_usage, and
-    # these providers report no llama.cpp timings, so the monitor has no token count to
-    # derive a speed from and the row shows a blank Speed for every completed request.
+    # without include_usage these providers report no token count, so Speed shows blank
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -781,14 +762,12 @@ def test_streamed_usage_is_requested_only_where_documented(monkeypatch, provider
 
 
 def test_kimi_no_search_fallback_requests_usage(monkeypatch):
-    # The web-search path returns before the common body injection, and Kimi reports no
-    # engine timings, so this fallback would leave tokens and speed blank.
+    # the web-search path returns before the common body injection
     bodies: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
         bodies.append(body)
-        # First call: the model declines to invoke $web_search.
         return httpx.Response(
             200,
             content = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n',

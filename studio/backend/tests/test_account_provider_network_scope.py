@@ -27,7 +27,6 @@ from utils.account_context import OWNER, AccountContext, bind_account, reset_acc
 
 ALICE = AccountContext("a" * 32, "alice")
 
-# What an owner-local llama-server would expose and a tenant must never see.
 OWNER_LOCAL_MODEL = "owner-local-secret-model"
 
 
@@ -120,7 +119,7 @@ def owner_allows_private_urls(monkeypatch):
     monkeypatch.setattr(
         managed_provider_url_settings, "get_managed_private_provider_urls_allowed", lambda: True
     )
-    # The pinning client is a module-level singleton; drop it so the choice is made fresh.
+    # Module-level singleton; reset so the choice is made fresh.
     monkeypatch.setattr(external_provider, "_managed_clients", {}, raising = False)
 
 

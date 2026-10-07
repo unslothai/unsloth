@@ -26,7 +26,6 @@ def test_the_shell_is_isolated():
         assert directive in csp
     assert "frame-ancestors 'self'" in csp
     assert csp.rstrip().endswith("treat-as-public-address")
-    # No plain-http requests of any kind, so pages can't hit local services.
     for part in csp.split(";"):
         name, *sources = part.split()
         if name.endswith("-src"):
@@ -76,20 +75,17 @@ def test_the_shell_guards():
         "if (result === false) cancelled = true;",
     ):
         assert guard in shell, guard
-    # The child is locked against navigation only after it is in place.
     assert shell.index("document.body.appendChild(page)") < shell.index(
         "lock.content = \"frame-src 'none'\""
     )
     assert "document.write(" not in shell
     assert "observe(document.documentElement" not in shell
-    # Links and forms go through the proxy only when the page's own handlers leave them alone.
     assert shell.count("unlessCancelled(event, ") == 2
     assert "requestSubmit = " not in shell
 
 
 def test_annotate_code_is_sent_only_when_annotating():
     shell, code = browser_mod._FRAME_HTML, browser_mod._ANNOTATE_JS
-    # Not in the shell (so not in every page), installed once and only from the shell's own message.
     assert "const BLOCK =" in code and "const BLOCK =" not in shell
     assert 'const value = node.type === "password" ? "" : node.value;' in code
     assert code.rstrip().endswith("return { start, stop, forget, number };")
@@ -116,7 +112,6 @@ def test_prepare_page_strips_what_would_escape_the_sandbox():
     assert refresh == {"delay": 2.0, "url": "https://example.com/docs/next.html"}
     slow = '<meta http-equiv="refresh" content="600; url=/later">'
     assert browser_mod._prepare_page(slow, "https://example.com/")[2] is None
-    # Addresses urljoin cannot parse are ignored, not a failed fetch.
     bad = '<base href="http://[bad"><meta http-equiv="refresh" content="1; url=http://[bad">'
     assert browser_mod._prepare_page(bad, "https://example.com/a")[1:] == (
         "https://example.com/a",
@@ -282,7 +277,6 @@ def test_fetches_run_in_their_own_pool(monkeypatch):
 
     monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
     _call()
-    # Not the default executor, which chat inference shares.
     assert threads[0].startswith("browser-fetch")
 
 
@@ -332,7 +326,6 @@ def test_bot_checks_are_told_apart_from_plain_refusals():
     assert _is_bot_check(503, headers(cf_mitigated = "challenge"))
     assert _is_bot_check(403, headers(x_datadome = "protected"))
     assert _is_bot_check(403, headers(Server = "cloudflare"))
-    # A rate limit or an outage behind Cloudflare is not a bot check.
     assert not _is_bot_check(429, headers(Server = "cloudflare"))
     assert not _is_bot_check(503, headers(Server = "cloudflare"))
     assert not _is_bot_check(404, headers(Server = "cloudflare"))

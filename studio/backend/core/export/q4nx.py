@@ -25,12 +25,10 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# GGUF types FastFlowLM's Q4NX packs directly; any other quant is dequantized and rounded again.
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
-# Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
+# FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
-# Read for token ids only. No config.json is written: FLM's own carries the flm_version its
-# catalog checks, and one without it makes FLM delete the folder's weights and re-pull stock.
+# No config.json is written: without FLM's flm_version, FLM deletes the weights and re-pulls.
 CONFIG_FILES = ("config.json", "generation_config.json")
 CONVERTER_MODULES = ("torch", "gguf", "einops", "safetensors", "numpy", "mpmath")
 
@@ -71,8 +69,7 @@ def _gguf_architecture(gguf_path: str) -> str:
     return field.contents() if field is not None else ""
 
 
-# convert.py's __main__ overwrites sys.argv at the older pin, and importing it first is circular
-# (q4nx.models.phi4 imports convert), so drive the package's own entry point.
+# convert.py's __main__ overwrites sys.argv and importing it first is circular.
 _RUN_CONVERTER = (
     "import sys; from q4nx import create_converter; "
     "create_converter(sys.argv[1], '').convert(q4nx_path = sys.argv[2], weights_type = 'language')"
@@ -97,7 +94,6 @@ def staged_output(out_dir: Path):
         out_dir.mkdir(exist_ok = True)
         # Again at publish: the conversion is long enough for the folder to be swapped.
         refuse_symlink()
-        # The last model's companions must not survive beside the new weights.
         for name in ("model.q4nx", "config.json", *TOKENIZER_FILES):
             (out_dir / name).unlink(missing_ok = True)
         for path in staging.iterdir():
@@ -121,7 +117,6 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread
     from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
-    # Dies with its parent: a cancelled export's worker must not leave a converter holding a model.
     process = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
             [sys.executable, "-c", _RUN_CONVERTER, gguf_path, str(out_dir)],
@@ -220,7 +215,6 @@ def write_flm_tokenizer_config(out_dir: Path, *configs: Optional[dict]) -> None:
     )
 
 
-# One conversion at a time: each holds a whole model in RAM, and retries must not interleave.
 _CONVERT_LOCK = threading.Lock()
 
 
@@ -249,7 +243,6 @@ def convert_existing_gguf(
     with _CONVERT_LOCK, staged_output(out_dir) as staging:
         convert_gguf_to_q4nx(str(gguf_path), staging)
         for name in TOKENIZER_FILES:
-            # The HF tokenizer.json replaces the one the converter rebuilds from the GGUF.
             if found[name] is not None:
                 shutil.copyfile(found[name], staging / name)
         if found["chat_template.jinja"] is None:

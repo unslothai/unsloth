@@ -72,7 +72,7 @@ def _lease(
     return reservation.lease_nowait()
 
 
-# (label, slots, n_ctx, kv_unified) -- the shapes a real load actually produces.
+# (label, slots, n_ctx, kv_unified)
 BACKENDS = [
     ("cpu-only, 1 slot", 1, 4096, True),
     ("small vram, downshifted", 1, 8192, True),
@@ -184,7 +184,7 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
         assert queue._reparking == 0
 
 
-# In the order they were added, so older positional callers keep their meaning.
+# in the order they were added, so older positional callers keep their meaning
 _TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot", "thinking_budget_tokens")
 
 
@@ -209,7 +209,6 @@ class TestOldCallers:
         assert queue._reparking == 0, "the non-blocking path must never touch the wait line"
 
     def test_the_route_recost_helper_accepts_no_cancel_event(self):
-        # Reservation None is the "not admitted yet" case every call site can hit.
         import routes.inference as routes_inference
         routes_inference._openai_llama_admission_recost(
             None,
@@ -238,7 +237,6 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        # Later parameters may only be appended after the hooks, never inserted before them.
         start = names.index(_TOOL_LOOP_HOOKS[0])
         hooks = names[start : start + len(_TOOL_LOOP_HOOKS)]
         assert hooks == list(
@@ -276,7 +274,6 @@ class TestNoPersistentStateChanged:
 
         from core.inference.llama_admission import llama_admission_config_from_env
 
-        # A completely bare environment must still produce a usable config.
         saved = {k: v for k, v in os.environ.items() if k.startswith("UNSLOTH_")}
         try:
             for key in list(saved):
@@ -332,7 +329,8 @@ class TestTheInjectedToolCatalogueIsCharged:
         it there is correct."""
         import routes.inference as routes_inference
 
-        budget, capacity = 8192, 16  # share 512, smaller than the catalogue
+        # share 512, smaller than the catalogue
+        budget, capacity = 8192, 16
         payload = _payload(text = "hi")
         without = _tokens(payload, budget = budget, capacity = capacity, tool_loop = True)
         with_catalog = routes_inference._openai_llama_admission_tokens(
@@ -385,5 +383,5 @@ class TestTheInjectedToolCatalogueIsCharged:
             def __repr__(self):
                 raise RuntimeError("no")
 
-        # default=str still reaches __repr__, so this must be caught rather than raised.
+        # default=str still reaches __repr__, so this must be caught rather than raised
         assert routes_inference._openai_llama_admission_injected_tool_tokens([Awkward()]) >= 0

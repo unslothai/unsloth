@@ -92,7 +92,6 @@ def test_eligible_runtime_root_is_granted_once_and_recorded(host):
     assert host.calls == [("grant", venv)]
     assert _states() == {os.path.normcase(venv): "complete"}
     assert _record()[os.path.normcase(venv)]["identity"]
-    # The second launch finds the ACE and never walks the tree again.
     assert mxc_read_grants.ensure([venv]) == (venv,)
     assert host.calls == [("grant", venv)]
 
@@ -107,7 +106,7 @@ def test_a_folder_windows_already_grants_is_left_alone(host, tmp_path):
 
 
 def test_an_existing_entry_for_the_group_is_never_taken_over(host):
-    # Someone else's partial grant: adding ours and later /remove:g would delete theirs too.
+    # Someone else's partial grant: a later /remove:g would delete theirs too.
     venv = _runtime(host)
     host.explicit.add(os.path.normcase(venv))
     assert mxc_read_grants.ensure([venv]) == ()
@@ -220,7 +219,7 @@ def test_a_failed_rollback_refuses_the_launch_and_keeps_the_retry(host):
 
 def test_a_grant_interrupted_by_a_crash_is_redone(host):
     venv = _runtime(host)
-    host.granted.add(os.path.normcase(venv))  # the root ACE landed, the propagation may not have
+    host.granted.add(os.path.normcase(venv))
     host.explicit.add(os.path.normcase(venv))
     identity = mxc_read_grants._identity(venv)
     mxc_read_grants._save_record(
@@ -262,7 +261,7 @@ def test_revocation_never_follows_a_folder_that_was_replaced(host, tmp_path):
         os.symlink(other, venv, target_is_directory = True)
         linked = True
     except OSError:
-        os.mkdir(venv)  # no symlinks here: a fresh folder at the same path has another identity
+        os.mkdir(venv)
         linked = False
     assert mxc_read_grants.revoke_recorded() == ()
     assert ("revoke", os.path.normcase(venv)) not in host.calls
@@ -280,7 +279,7 @@ def test_an_unreadable_identity_keeps_the_record_for_a_later_revoke(host, monkey
 
 
 def test_revocation_waits_for_a_running_workload_and_its_release_finishes_it(host, monkeypatch):
-    # On Windows a lease held open cannot be deleted; here an existing file stands in for that.
+    # On Windows a held lease cannot be deleted; an existing file stands in for that.
     monkeypatch.setattr(mxc_read_grants, "_lease_is_live", lambda path: path.exists())
     venv = _runtime(host)
     mxc_read_grants.ensure([venv])
@@ -347,8 +346,8 @@ def test_release_reads_the_switches_fresh_after_another_process_opts_out(host, m
     venv = _runtime(host)
     lease = mxc_read_grants.hold_if_needed()
     assert lease is not None and mxc_read_grants.ensure([venv]) == (venv,)
-    assert saved.persistent_grants_setting()  # cached "on" in this process
-    store[saved.GRANTS_SETTING_KEY] = False  # another Studio process turns it off, no local write
+    assert saved.persistent_grants_setting()
+    store[saved.GRANTS_SETTING_KEY] = False
     lease.release()
     assert host.calls[-1] == ("revoke", os.path.normcase(venv))
     assert _record() == {}
@@ -358,7 +357,7 @@ def test_release_reads_the_switches_fresh_after_another_process_opts_out(host, m
 def test_a_lease_that_cannot_be_recorded_refuses_instead_of_running_unguarded(host):
     blocker = mxc_read_grants._leases_dir()
     blocker.parent.mkdir(parents = True, exist_ok = True)
-    blocker.write_text("")  # a file where the lease folder belongs
+    blocker.write_text("")
     with pytest.raises(mxc_read_grants.ReadGrantError, match = "could not record"):
         mxc_read_grants.hold()
 
@@ -392,9 +391,9 @@ def test_a_launch_during_a_deferred_revocation_keeps_the_grants_until_it_exits(h
     venv = _runtime(host)
     first = mxc_read_grants.hold_if_needed()
     mxc_read_grants.ensure([venv])
-    switch["on"] = False  # the owner turns the grants off while the first call runs
+    switch["on"] = False
     assert mxc_read_grants.revoke_recorded() == ()
-    second = mxc_read_grants.hold_if_needed()  # starts while the entries are still in place
+    second = mxc_read_grants.hold_if_needed()
     assert second is not None
     first.release()
     assert ("revoke", os.path.normcase(venv)) not in host.calls
@@ -414,7 +413,7 @@ def test_a_replaced_folder_is_not_adopted_through_a_stale_record(host, tmp_path)
     venv = _runtime(host)
     mxc_read_grants.ensure([venv])
     os.replace(venv, tmp_path / "moved-away")
-    _runtime(host)  # a new folder at the same path, carrying its owner's own entry for the group
+    _runtime(host)
     host.explicit.add(os.path.normcase(venv))
     host.granted.discard(os.path.normcase(venv))
     assert mxc_read_grants.ensure([venv]) == ()
@@ -480,7 +479,6 @@ def test_another_process_mid_grant_refuses_the_launch_but_not_the_cleanup(host, 
     holder = FileLock(str(mxc_read_grants.record_path()) + ".lock")
     holder.acquire()
     try:
-        # Held by "another process": this launch cannot know whether that grant finished.
         mxc_read_grants._scanned.clear()
         host.granted.discard(os.path.normcase(venv))
         monkeypatch.setattr(mxc_read_grants, "_lock", __import__("threading").Lock())
@@ -581,7 +579,6 @@ def test_launch_policy_grants_runtime_roots_only_on_the_dacl_tier(monkeypatch, t
     if dacl:
         [(kind, roots)] = calls
         assert kind == "ensure"
-        # The model library stays a per-launch grant: it is user data, not Studio's runtime.
         assert model not in roots
         assert set(roots) <= set(readonly)
     else:
@@ -623,8 +620,6 @@ def test_capability_names_the_persistent_grant_and_cleans_up_when_off(monkeypatc
     assert revoked == [True]
     monkeypatch.delenv(mxc_read_grants.PERSISTENT_GRANTS_ENV)
     monkeypatch.delenv(mxc_policy.DACL_FALLBACK_ENV)
-    # Leaving the DACL tier on a host with nothing else: the capability is unavailable, no launch is
-    # ever built, and the grants still come back.
     default = snapshot(execution_kind = "python", selected_executable = sys.executable)
     assert "mxc_tier3_persistent_runtime_read_grants" not in default.limitations
     assert mxc_read_grants.PERSISTENT_GRANTS_ENV in default.remediation
@@ -643,7 +638,6 @@ def test_real_dacl_check_sees_a_granted_folder(tmp_path):
     assert mxc_read_grants._package_aces(str(folder)) == (True, True)
     child = folder / "child"
     child.mkdir()
-    # Inherited, not explicit: a child of a granted folder is covered but was never set by Studio.
     assert mxc_read_grants._package_aces(str(child)) == (True, False)
     subprocess.run(
         ["icacls", str(folder), "/remove:g", "*S-1-15-2-1", "/Q"], check = True, capture_output = True

@@ -14,11 +14,11 @@ import re
 
 REDACTED = "<redacted>"
 
-# Stripped BEFORE anything is matched: a colorized writer puts an escape between a key and its value, and the "m" ending a colour code is a word character, so every anchored rule below stops matching. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
-# _strip_ansi replaces one alternation of lazy `[\s\S]*?` bodies whose FAILURE was quadratic: an unterminated introducer scanned to end of record, failed, and the engine retried from the next position. Its output is identical to that pattern on every input, by differential fuzzing, and must stay so: a redactor is the wrong place to smuggle a behaviour change into a performance fix, and every attempt to also improve the truncated cases moved a leak rather than removing one (unslothai/unsloth#10721).
+# Strip ANSI first: escapes between key and value defeat the anchored rules.
+# _strip_ansi must stay output-identical to the old regex (differential fuzzed).
 _CSI_7BIT_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CSI_8BIT_RE = re.compile(r"\x9b[0-?]*[ -/]*[@-~]")
-# Fe covers 0x40-0x5F, so it also claims a "]" or "P" whose control string never terminated. Hence tried last.
+# Fe also claims an unterminated "]" or "P", hence tried last.
 _FE_RE = re.compile(r"\x1b[@-Z\\-_]")
 _ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
 _C1_STRING_INTRODUCERS = "\x9d\x90\x98\x9e\x9f"
@@ -33,7 +33,7 @@ def _strip_ansi(text: str) -> str:
     written = 0
     index = first.start()
     length = len(text)
-    # index only moves forward, so a cached hit at or after it is still the next one and a cached miss stays a miss. This is what makes the scan linear.
+    # index only moves forward, so cached hits stay valid; keeps the scan linear.
     found: dict[str, int] = {}
 
     def next_index(needle: str, start: int) -> int:
@@ -72,7 +72,7 @@ def _strip_ansi(text: str) -> str:
                 match = None
             end = match.end() if match else -1
         if end < 0:
-            # Skip to the next introducer, not the next character, so ordinary text is never walked one character at a time.
+            # Jump to the next introducer, not the next character, to stay linear.
             following = _ANSI_INTRODUCER_RE.search(text, index + 1)
             if following is None:
                 break
@@ -86,28 +86,26 @@ def _strip_ansi(text: str) -> str:
     return "".join(out)
 
 
-# Key names whose VALUE is a secret. "token" alone is absent on purpose, so n_tokens = 4096 and token_id=128009 survive.
+# Bare "token" is absent on purpose so n_tokens and token_id survive.
 _SECRET_KEYS = (
     "authorization|x-api-key|api[-_]?key|apikey|hf[-_]?token|access[-_]?token|"
     "refresh[-_]?token|auth[-_]?token|bearer[-_]?token|client[-_]?secret|"
     "aws_secret_access_key|aws_session_token|wandb[-_]?token|hub[-_]?token|"
-    # Unsloth's own S3 field (models/training.py:60) and its camelCase alias: neither is reachable through the bare "secret" alternative, and an AWS secret key has no prefix of its own for a shape rule to catch.
+    # Unsloth's S3 field and camelCase alias; AWS secrets have no shape prefix.
     "secret[-_]?access[-_]?key|"
     "password|passwd|secret"
 )
 
-# No leading word boundary, since "_" is a word character and one never fires inside OPENAI_API_KEY / db_password, the shape an env dump or argv line carries; the trailing boundary stays, so eos_token_id and secret_sauce_path are left alone.
+# No leading \b since "_" is a word char (OPENAI_API_KEY); trailing \b stays.
 _KEY_START = r"(?<![A-Za-z0-9])"
 
 _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    # Hugging Face
     (re.compile(r"\bhf_(?:oauth_[A-Za-z0-9._~+/=-]{20,}|[A-Za-z0-9]{20,})"), "hf_" + REDACTED),
-    # OpenAI and other sk- keys (project, Anthropic, OpenRouter). Not a word boundary: that also fires after a hyphen, eating checkpoint-sk-9f8a... in a filename.
+    # No \b: it would fire after a hyphen, eating checkpoint-sk-... filenames.
     (
         re.compile(r"(?<![A-Za-z0-9-])sk-(?:proj-|ant-api\d{2}-|or-v1-)?[A-Za-z0-9_-]{16,}"),
         "sk-" + REDACTED,
     ),
-    # Other vendor prefixes
     (
         re.compile(
             r"\b(?:gsk_|xai-|ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|"
@@ -117,11 +115,9 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"), REDACTED),
     (re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), REDACTED),
-    # JWTs, including the desktop access token
     (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}"), REDACTED),
-    # user:password@host in a URL
     (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://" + REDACTED + "@"),
-    # Presigned URL parameters. Bare "key" is deliberately absent: in an object storage URL it names the object, and blanking it hides WHICH download failed. Google's ?key=AIza... is caught by the AIza rule above.
+    # Bare "key" omitted: in object storage URLs it names the object.
     (
         re.compile(
             r"(?i)([?&](?:token|api[-_]key|apikey|sig|signature|x-amz-signature|"
@@ -131,7 +127,7 @@ _PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
 )
 
-# The QUOTED branch wins whenever an opening quote is there: stopping at whitespace turned password="correct horse battery staple" into a mask that leaked all but the first word. The value pattern matches a non-quote character or an escape rather than a lazy ".*?", so an escaped quote does not end the value early, and a newline is excluded so an unterminated quote cannot run the mask past its own line.
+# Quoted branch wins so multi-word values are fully masked; newlines end the value.
 _QUOTED_VALUE = r"(?:[^\"'\\\n]|\\.){6,}"
 _KV_RE = re.compile(
     r"(?i)" + _KEY_START + r"(?P<key>" + _SECRET_KEYS + r")\b"
@@ -144,15 +140,15 @@ _FLAG_RE = re.compile(
     r"(?P<val>(?(q)" + _QUOTED_VALUE + r"|[^\s\"']{6,}))"
 )
 
-# An Authorization value whatever the scheme: the key/value rule captures only "Basic" and leaves the credential behind it. Same for a Cookie, which for Unsloth is the UI session.
+# Mask the full Authorization/Cookie value whatever the scheme.
 _SCHEMES = ("bearer", "basic", "digest", "token", "apikey")
-# A scheme word only introduces a credential when an Authorization header put it there, and the credential stops at a quote or structural delimiter, since \S+ swallowed the rest of the dict. Bare "digest sha256:..." and "token hf_..." are ordinary log content, and firing on the word alone blanked the digest a user came here to read.
+# Scheme words count only after an Authorization header; stop at delimiters.
 _CREDENTIAL = r"[^\s\"',}\]]+"
 _AUTH_HEADER_RE = re.compile(
     r"(?i)((?:proxy-)?authorization[\"']?\s*[:=]\s*[\"']?"
     r"(?:" + "|".join(_SCHEMES) + r"))(\s+)(" + _CREDENTIAL + r")"
 )
-# Bearer is not an English word that shows up in a log on its own, so it keeps a header-less rule; the shape guard still spares "Bearer credentials expired".
+# Bearer keeps a header-less rule; the shape guard spares plain English.
 _SCHEME_RE = re.compile(r"(?i)\b(Bearer)(\s+)(" + _CREDENTIAL + r")")
 # MULTILINE: this also runs over exception text.
 _COOKIE_RE = re.compile(
@@ -160,7 +156,7 @@ _COOKIE_RE = re.compile(
     re.MULTILINE,
 )
 
-# Keys whose value is a secret even when it is all digits (a numeric password is still a password); everywhere else a bare number is a count or an id.
+# Numeric values stay secret only for password/secret keys.
 _NUMERIC_IS_STILL_SECRET = re.compile(r"(?i)pass(word|wd)?$|secret$")
 
 
@@ -177,11 +173,11 @@ def _looks_like_credential(value: str) -> bool:
 
 
 def _redact_kv(match: re.Match[str]) -> str:
-    # Named groups: the quoted/unquoted branch adds a group, so positional numbering is not stable.
+    # Named groups: the quoted branch shifts positional numbering.
     value = match.group("val")
     if value.isdigit() and not _NUMERIC_IS_STILL_SECRET.search(match.group("key")):
         return match.group(0)
-    # Quoting puts the scheme inside the value ('authorization': 'Basic abc'). Step over it rather than abandon the match: the rest is still the credential, and blanking the scheme reads as if the header were the secret.
+    # A quoted value may include the scheme; skip it and mask the rest.
     scheme, sep, rest = value.partition(" ")
     if scheme.lower() in _SCHEMES:
         if not sep or not rest.strip():
@@ -196,13 +192,12 @@ def _redact_shaped(match: re.Match[str]) -> str:
     return f"{match.group(1)}{match.group(2)}{REDACTED}"
 
 
-# A cookie header is name=value pairs.
 _COOKIE_PAIR_RE = re.compile(r"^[A-Za-z0-9_.\-]+=\S")
 
 
 def _redact_cookie(match: re.Match[str]) -> str:
     value, tail = match.group("val"), ""
-    # A quoted value ends at its closing quote, so the fields behind it in a header dict survive instead of disappearing into the mask.
+    # A quoted value ends at its closing quote so following fields survive.
     quote = match.group("q")
     if quote:
         end = value.find(quote)
@@ -217,12 +212,11 @@ def redact_log_text(text: str) -> str:
     """Mask credentials. Idempotent, and a no-op on ordinary log content."""
     if not text:
         return text
-    # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
         text = _strip_ansi(text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
-    # Before the key/value rules: _KV_RE captures "Basic" from "Authorization: Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.
+    # Before the key/value rules, which would mask only the scheme word.
     text = _AUTH_HEADER_RE.sub(_redact_shaped, text)
     text = _SCHEME_RE.sub(_redact_shaped, text)
     text = _COOKIE_RE.sub(_redact_cookie, text)

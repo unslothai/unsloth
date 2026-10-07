@@ -23,8 +23,6 @@ from unittest.mock import patch
 
 import pytest
 
-# Stub heavy/unavailable deps before importing the module under test.
-
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -63,22 +61,14 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
-# what is installed, so setdefault does not defer to a real httpx that nothing in this
-# process has touched yet: the stub wins and shadows it for the whole session. This stub
-# has no Response, and starlette.testclient reads httpx.Response at import, so every
-# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+# Stub only if httpx is not installed: a stub without Response breaks later
+# starlette.testclient imports for the whole session.
 try:
     import httpx  # noqa: F401
 except ImportError:
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference.llama_cpp import LlamaCppBackend
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make():
@@ -111,11 +101,6 @@ def _fake_proc_reader(rss_kb):
     return fake_open
 
 
-# ---------------------------------------------------------------------------
-# A. Platform matrix
-# ---------------------------------------------------------------------------
-
-
 class TestPlatformMatrix:
     """Linux-first via /proc. On macOS/Windows must degrade to None
     rather than crash."""
@@ -132,7 +117,6 @@ class TestPlatformMatrix:
         assert out is not None
         assert out["phase"] == "mmap"
         assert out["bytes_total"] == 1 * 1024**3
-        # Our process has some RSS -- sanity-check it's positive.
         assert out["bytes_loaded"] > 0
 
     def test_macos_no_proc_returns_none(self, tmp_path):
@@ -168,11 +152,6 @@ class TestPlatformMatrix:
         with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
         assert out is None
-
-
-# ---------------------------------------------------------------------------
-# B. VmRSS parsing edge cases
-# ---------------------------------------------------------------------------
 
 
 class TestVmRSSParsing:
@@ -238,13 +217,7 @@ class TestVmRSSParsing:
 
         with patch("builtins.open", side_effect = fake_open):
             out = inst.load_progress()
-        # int() ValueError is caught and returns None.
         assert out is None
-
-
-# ---------------------------------------------------------------------------
-# C. Filesystem edge cases
-# ---------------------------------------------------------------------------
 
 
 class TestFilesystemEdges:
@@ -304,25 +277,19 @@ class TestFilesystemEdges:
             os.chdir(cwd)
 
 
-# ---------------------------------------------------------------------------
-# D. Shard aggregation
-# ---------------------------------------------------------------------------
-
-
 class TestShardAggregation:
     def test_partial_multi_shard_download(self, tmp_path):
         """Primary present but shards 2..N still ``.incomplete``. Sums
         only the fully-arrived ``.gguf`` files."""
         _sparse(tmp_path / "m-00001-of-00004.gguf", 30 * 1024**3)
         _sparse(tmp_path / "m-00002-of-00004.gguf", 30 * 1024**3)
-        # 3 and 4 still downloading as .incomplete.
         _sparse(tmp_path / "m-00003-of-00004.gguf.incomplete", 5 * 1024**3)
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "m-00001-of-00004.gguf")
         with patch("builtins.open", side_effect = _fake_proc_reader(0)):
             out = inst.load_progress()
-        assert out["bytes_total"] == 60 * 1024**3  # only the .gguf siblings
+        assert out["bytes_total"] == 60 * 1024**3
 
     def test_two_shard_series_in_same_dir(self, tmp_path):
         """Defensive: when two quant series share a dir, the prefix
@@ -335,7 +302,7 @@ class TestShardAggregation:
         inst._gguf_path = str(tmp_path / "m_q8-00001-of-00002.gguf")
         with patch("builtins.open", side_effect = _fake_proc_reader(0)):
             out = inst.load_progress()
-        assert out["bytes_total"] == 40 * 1024**3  # just q8 series
+        assert out["bytes_total"] == 40 * 1024**3
 
     def test_mmproj_sibling_not_counted(self, tmp_path):
         """Vision models drop an ``mmproj-*.gguf`` alongside. For a
@@ -347,7 +314,6 @@ class TestShardAggregation:
         inst._gguf_path = str(tmp_path / "m.gguf")
         with patch("builtins.open", side_effect = _fake_proc_reader(0)):
             out = inst.load_progress()
-        # Non-sharded: only the primary is counted.
         assert out["bytes_total"] == 8 * 1024**3
 
     def test_single_file_model(self, tmp_path):
@@ -360,11 +326,6 @@ class TestShardAggregation:
             out = inst.load_progress()
         assert out["bytes_total"] == 4 * 1024**3
         assert out["bytes_loaded"] == 2 * 1024**3
-
-
-# ---------------------------------------------------------------------------
-# E. Lifecycle races
-# ---------------------------------------------------------------------------
 
 
 class TestLifecycleRaces:
@@ -399,11 +360,6 @@ class TestLifecycleRaces:
         assert out["phase"] == "ready"
 
 
-# ---------------------------------------------------------------------------
-# F. Concurrent sampling  (simulates multiple browser tabs polling)
-# ---------------------------------------------------------------------------
-
-
 class TestConcurrentSampling:
     def test_parallel_invocations_never_raise(self, tmp_path):
         """Many concurrent samplers on one backend must not raise.
@@ -432,18 +388,12 @@ class TestConcurrentSampling:
         assert not errors, errors
 
 
-# ---------------------------------------------------------------------------
-# G. Fraction bounds
-# ---------------------------------------------------------------------------
-
-
 class TestFractionBounds:
     def test_fraction_capped_at_one(self, tmp_path):
         _sparse(tmp_path / "m.gguf", 1 * 1024**3)
         inst = _make()
         inst._process = _Proc(os.getpid())
         inst._gguf_path = str(tmp_path / "m.gguf")
-        # RSS > total (post-paged-in + extra structures)
         with patch("builtins.open", side_effect = _fake_proc_reader(2 * 1024**2)):
             out = inst.load_progress()
         assert 0.0 <= out["fraction"] <= 1.0

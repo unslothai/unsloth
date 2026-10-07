@@ -72,7 +72,6 @@ def test_a_load_attaches_to_a_hub_download_of_the_same_repo(registry):
     ref = download_lifecycle.active_download_refs(registry, None, with_variant = False)[0]
     assert (ref.owner, ref.load_attached) == (None, True)
     assert not load_downloads.is_load_owned(registry, "owner/base::")
-    # A Xet -> HTTP retry keeps the attachment.
     assert registry.claim(
         "owner/base::", "http", repo_type = "model", repo_id = "owner/base", replace_active = True
     )[0]

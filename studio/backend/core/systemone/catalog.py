@@ -72,7 +72,7 @@ CHECKPOINTS = {
     )
 }
 
-# Names TypeSafe's and OpenJev's SDKs send by default, so an unmodified client reaches the configured model.
+# Default model names TypeSafe's and OpenJev's SDKs send.
 DEFAULT_ALIASES = frozenset({"default", "laya", "jev-latest", "jev-preview", "openjev-latest"})
 LOCAL_NAME = "laya-local"
 CONNECTION_PREFIX = "connection:"

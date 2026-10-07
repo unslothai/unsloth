@@ -251,7 +251,6 @@ def test_bounded_stop_ends_a_watcher_whose_first_cancel_was_swallowed(make_watch
         }
 
         async def receive():
-            # Parks like uvicorn's receive() until the request ends.
             parked.put_nowait(None)
             await release.wait()
             return {"type": "http.disconnect"}
@@ -337,7 +336,6 @@ def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
     func = getattr(inference_route, func_name)
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
 
-    # a release must never sit ahead of a close in the same block
     for block in _blocks(tree):
         release_at = _first_index(block, ("_release_admission",))
         teardown_at = _first_index(block, _TEARDOWN_CALLS)
@@ -349,10 +347,7 @@ def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
             + "\n".join(ast.unparse(stmt) for stmt in block)
         )
 
-    # and every close must sit under a try whose finally releases, so a stalled close cannot
-    # drop the lease. By ancestry, not direct membership: the nesting that stops a cancel in
-    # _aclose_send_task's wait from skipping the later closes puts the first teardown one
-    # level up, which membership would reject even though it is strictly safer.
+    # every close must sit under a finally that releases; checked by ancestry, not direct membership
     parents = {}
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):

@@ -39,7 +39,7 @@ from utils.paths.path_utils import drop_shadowed_appledouble_names
 
 logger = logging.getLogger(__name__)
 
-# Extensions the local-file loader (UnslothTrainer._loader_for_files) understands.
+# Must match UnslothTrainer._loader_for_files.
 SUPPORTED_EXTENSIONS = (".parquet", ".json", ".jsonl", ".csv")
 _JSON_EXTENSIONS = (".json", ".jsonl")
 _IGNORED_METADATA_FILENAMES = {
@@ -97,7 +97,6 @@ def _build_s3_client(s3_config: dict):
             aws_access_key_id = access_key_id,
             aws_secret_access_key = secret_access_key,
         )
-    # IAM role / instance profile / ambient credentials
     return boto3.client("s3", region_name = region)
 
 
@@ -118,9 +117,7 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
                 continue
             if key.lower().endswith(SUPPORTED_EXTENSIONS + _AUDIO_EXTENSIONS):
                 keys.append(key)
-    # A Mac sync uploads Finder metadata under the shard's own extension and
-    # _validate_single_extension_family cannot see it, so a key is dropped only when the object it
-    # would describe is in the same listing.
+    # Drop an AppleDouble key only when the object it describes is in the same listing.
     return drop_shadowed_appledouble_names(keys)
 
 
@@ -245,7 +242,6 @@ def _rewrite_row(row, resolve) -> None:
         if replacement is not None:
             row[column] = replacement
         elif isinstance(value, dict):
-            # HF undecoded audio: {"path": ..., "bytes": ...}
             replacement = resolve(value.get("path"))
             if replacement is not None:
                 value["path"] = replacement
@@ -257,7 +253,7 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
     try:
         data = None if manifest_path.lower().endswith(".jsonl") else json.loads(text)
     except json.JSONDecodeError:
-        data = None  # JSON Lines in a .json file
+        data = None
     if data is None:
         rows = [json.loads(line) for line in text.splitlines() if line.strip()]
         for row in rows:
@@ -267,7 +263,7 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
                 f.write(json.dumps(row, ensure_ascii = False) + "\n")
         return
     if not isinstance(data, list):
-        return  # column-oriented JSON
+        return
     for row in data:
         _rewrite_row(row, resolve)
     with open(manifest_path, "w", encoding = "utf-8") as f:

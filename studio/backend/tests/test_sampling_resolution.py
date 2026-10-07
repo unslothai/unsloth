@@ -27,7 +27,6 @@ _SCHEMA_DEFAULTS = {
 
 @pytest.fixture(autouse = True)
 def _isolate(monkeypatch):
-    # The recommended lookup is lru-cached; clear it so a patched config takes effect.
     ic._recommended_sampling.cache_clear()
     for field in SAMPLING_FIELD_NAMES:
         monkeypatch.delenv(ic._SAMPLING_FIELDS[field][0], raising = False)
@@ -40,8 +39,7 @@ def _all_omitted():
 
 
 def _set_recommended(monkeypatch, mapping):
-    # _recommended_sampling sources from load_inference_config -- the exact block the Chat UI
-    # seeds from -- so patch that directly. Fields absent from `mapping` fall to schema defaults.
+    # Patch load_inference_config directly: _recommended_sampling sources from it, as the Chat UI does.
     monkeypatch.setattr(ic, "load_inference_config", lambda mid: dict(mapping))
     ic._recommended_sampling.cache_clear()
 
@@ -52,7 +50,6 @@ def test_recommended_applies_when_client_omits(monkeypatch):
     assert eff["temperature"] == 1.0
     assert eff["top_k"] == 64
     assert eff["min_p"] == 0.0
-    # A field with no recommendation keeps the static schema default.
     assert eff["top_p"] == 0.95
 
 
@@ -70,8 +67,6 @@ def test_operator_pin_beats_client_and_recommended(monkeypatch):
 
 
 def test_unknown_model_matches_ui_inference_block(monkeypatch):
-    # An unknown model gets the same values the Chat UI would seed (load_inference_config's
-    # default.yaml fallback: temp 0.7 / top_k -1), NOT the request schema defaults.
     ui_block = {
         "temperature": 0.7,
         "top_p": 0.95,
@@ -89,8 +84,6 @@ def test_unknown_model_matches_ui_inference_block(monkeypatch):
 
 
 def test_empty_recommendation_falls_back_to_schema_defaults(monkeypatch):
-    # If load_inference_config yields nothing usable, the resolver falls back to the request
-    # schema defaults.
     monkeypatch.setattr(ic, "load_inference_config", lambda mid: {})
     ic._recommended_sampling.cache_clear()
     eff = resolve_effective_sampling("some/model", _all_omitted())
@@ -102,8 +95,6 @@ def test_empty_recommendation_falls_back_to_schema_defaults(monkeypatch):
     ["unsloth/gemma-4-E4B", "unsloth/Qwen3-4B", "unsloth/Qwen3.5-9B", "someorg/unknown-xyz"],
 )
 def test_recommendation_matches_ui_source(model):
-    # Parity guard: what the server recommends for omitted fields equals the Chat UI's source
-    # (load_inference_config) for every field the UI adopts (mergeBackendRecommendedInference).
     ic._recommended_sampling.cache_clear()
     ui = ic.load_inference_config(model)
     rec = ic._recommended_sampling(model)
@@ -143,17 +134,14 @@ def test_qwen38_reuses_qwen36_sampling_defaults():
 
 
 def test_repetition_penalty_not_auto_recommended(monkeypatch):
-    # The Chat UI's mergeBackendRecommendedInference never adopts a backend repetition_penalty
-    # (e.g. lfm2's family value 1.05), so the server must not auto-apply one either. It stays at
-    # the schema default unless the client sends it or an operator pins it.
+    # The Chat UI never adopts a backend repetition_penalty, so the server must not auto-apply one.
     monkeypatch.setattr(
         ic, "load_inference_config", lambda mid: {"temperature": 0.7, "repetition_penalty": 1.05}
     )
     ic._recommended_sampling.cache_clear()
     eff = resolve_effective_sampling("some/lfm2-model", _all_omitted())
-    assert eff["temperature"] == 0.7  # a UI-adopted field is recommended
-    assert eff["repetition_penalty"] == 1.0  # rep is NOT auto-recommended (matches the UI)
-    # An operator can still pin it explicitly.
+    assert eff["temperature"] == 0.7
+    assert eff["repetition_penalty"] == 1.0
     monkeypatch.setenv("UNSLOTH_SAMPLING_REPETITION_PENALTY", "1.05")
     eff2 = resolve_effective_sampling("some/lfm2-model", _all_omitted())
     assert eff2["repetition_penalty"] == 1.05
@@ -163,13 +151,13 @@ def test_repetition_penalty_not_auto_recommended(monkeypatch):
     "raw, expected",
     [
         ("0.5", 0.5),
-        ("abc", None),  # unparseable
-        ("9.0", None),  # above temperature max (2.0)
-        ("-1", None),  # below temperature min (0.0)
-        ("   ", None),  # blank
+        ("abc", None),
+        ("9.0", None),
+        ("-1", None),
+        ("   ", None),
         ("nan", None),  # NaN would pass a naive range check
-        ("inf", None),  # non-finite
-        ("-inf", None),  # non-finite
+        ("inf", None),
+        ("-inf", None),
     ],
 )
 def test_operator_override_parsing(monkeypatch, raw, expected):
@@ -178,59 +166,50 @@ def test_operator_override_parsing(monkeypatch, raw, expected):
 
 
 def test_out_of_range_recommendation_is_dropped(monkeypatch):
-    # A malformed model recommendation (out of range) is ignored, so the request keeps the
-    # schema default rather than forwarding a bad value to llama-server.
     _set_recommended(monkeypatch, {"temperature": 5.0, "top_k": 64})
     eff = resolve_effective_sampling("some/model", _all_omitted())
-    assert eff["temperature"] == 0.6  # 5.0 is outside [0, 2] -> schema default
-    assert eff["top_k"] == 64  # a valid recommendation is still applied
+    assert eff["temperature"] == 0.6
+    assert eff["top_k"] == 64
 
 
 def test_operator_override_top_k_int_and_range(monkeypatch):
     monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_K", "40")
     assert ic._operator_sampling_override("top_k") == 40
-    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_K", "200")  # above max 100
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_K", "200")
     assert ic._operator_sampling_override("top_k") is None
-    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_K", "-1")  # min allowed
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_K", "-1")
     assert ic._operator_sampling_override("top_k") == -1
 
 
 @pytest.mark.parametrize(
     "field, val",
     [
-        ("top_k", 10**400),  # oversized int on an int field: int() ok, but math.isfinite raises
-        ("top_k", float("nan")),  # NaN reaching an int field: int(nan) raises ValueError
-        ("top_k", float("inf")),  # inf reaching an int field: int(inf) raises OverflowError
+        ("top_k", 10**400),
+        ("top_k", float("nan")),
+        ("top_k", float("inf")),
         (
             "temperature",
             10**400,
-        ),  # oversized int on a float field: float(huge_int) raises OverflowError
+        ),
     ],
 )
 def test_clean_sampling_value_rejects_unrepresentable(field, val):
-    # None of these may raise; each is unusable and must be dropped to None (regression: an
-    # oversized value used to raise OverflowError before the range check could drop it).
     assert ic._clean_sampling_value(field, val) is None
 
 
 def test_oversized_operator_override_ignored(monkeypatch):
-    # A huge integer string parses via int() but overflows float(); math.isfinite would raise
-    # OverflowError and 500 the request. It must be ignored like any other bad override and the
-    # field must fall back to the schema default -- no exception.
     monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_K", "9" * 400)
     assert ic._operator_sampling_override("top_k") is None
-    _set_recommended(monkeypatch, {})  # no per-model recommendation -> schema default applies
+    _set_recommended(monkeypatch, {})
     eff = resolve_effective_sampling("some/model", _all_omitted())
-    assert eff["top_k"] == 20  # schema default, resolved without raising
+    assert eff["top_k"] == 20
 
 
 def test_oversized_recommendation_ignored(monkeypatch):
-    # A malformed per-model recommendation carrying an oversized int must not raise while
-    # resolving either; the field simply falls back to the schema default.
     _set_recommended(monkeypatch, {"temperature": 10**400, "top_k": 64})
     eff = resolve_effective_sampling("some/model", _all_omitted())
-    assert eff["temperature"] == 0.6  # oversized -> dropped -> schema default
-    assert eff["top_k"] == 64  # a valid recommendation is still applied
+    assert eff["temperature"] == 0.6
+    assert eff["top_k"] == 64
 
 
 def test_fill_recommended_sampling_openai_payload(monkeypatch):
@@ -239,15 +218,14 @@ def test_fill_recommended_sampling_openai_payload(monkeypatch):
 
     _set_recommended(monkeypatch, {"temperature": 1.0, "top_k": 64, "min_p": 0.0})
 
-    # Client sent only temperature; top_k / min_p were omitted.
     payload = ChatCompletionRequest(
         model = "m", messages = [{"role": "user", "content": "hi"}], temperature = 0.2
     )
     _fill_recommended_sampling_openai(payload, "some/model")
-    assert payload.temperature == 0.2  # explicit client value preserved
-    assert payload.top_k == 64  # recommended fills the omitted field
+    assert payload.temperature == 0.2
+    assert payload.top_k == 64
     assert payload.min_p == 0.0
-    assert payload.top_p == 0.95  # no recommendation -> schema default unchanged
+    assert payload.top_p == 0.95
 
 
 def test_fill_recommended_sampling_openai_operator_pin_overrides_client(monkeypatch):
@@ -263,7 +241,7 @@ def test_fill_recommended_sampling_openai_operator_pin_overrides_client(monkeypa
         model = "m", messages = [{"role": "user", "content": "hi"}], temperature = 0.2
     )
     _fill_recommended_sampling_openai(payload, "some/model")
-    assert payload.temperature == 0.9  # operator pin wins even over an explicit client value
+    assert payload.temperature == 0.9
 
 
 @pytest.mark.parametrize("thinking_mode", [True, False])
@@ -360,9 +338,7 @@ def test_chat_route_lifts_harness_template_kwargs_before_sampling(monkeypatch, t
             None,
             None,
         ),
-        # bool("false") used to be True here, so the string turned thinking ON. The invalid
-        # nested type is now ignored: nothing reaches generation and the template renders in
-        # its own default.
+        # bool("false") is True, so an invalid nested type is ignored, not coerced.
         ({"chat_template_kwargs": {"enable_thinking": "false"}}, None, None, None),
         (
             {"chat_template_kwargs": {"enable_thinking": False, "reasoning_effort": {}}},
@@ -672,27 +648,22 @@ def test_conflicting_controls_resolve_before_model_specific_translation(
 
 
 def test_fill_recommended_sampling_completions_body(monkeypatch):
-    # /v1/completions is a raw proxy: recommendations fill omitted fields, but a field with no
-    # recommendation and no pin is left absent so llama-server keeps its own default (unlike the
-    # chat schema, which carries per-field defaults).
+    # /v1/completions is a raw proxy: unset fields stay absent so llama-server keeps its defaults.
     from routes.inference import _fill_recommended_sampling_completions
 
     _set_recommended(monkeypatch, {"temperature": 1.0, "top_k": 64, "min_p": 0.0})
 
     body = {"prompt": "hi", "temperature": 0.2}
     _fill_recommended_sampling_completions(body, "some/model")
-    assert body["temperature"] == 0.2  # explicit client value preserved
-    assert body["top_k"] == 64  # recommendation fills the omitted field
+    assert body["temperature"] == 0.2
+    assert body["top_k"] == 64
     assert body["min_p"] == 0.0
-    # No recommendation and no pin -> NOT injected (llama-server keeps its default).
     assert "top_p" not in body
     assert "presence_penalty" not in body
     assert "repeat_penalty" not in body
 
 
 def test_fill_recommended_sampling_completions_operator_pin(monkeypatch):
-    # An operator pin overrides the client's raw-body value, and the repetition pin is written
-    # under llama-server's "repeat_penalty" key (the schema field is repetition_penalty).
     from routes.inference import _fill_recommended_sampling_completions
 
     monkeypatch.setattr(ic, "load_inference_config", lambda mid: {})
@@ -702,9 +673,9 @@ def test_fill_recommended_sampling_completions_operator_pin(monkeypatch):
 
     body = {"prompt": "hi", "temperature": 0.2, "repeat_penalty": 1.05}
     _fill_recommended_sampling_completions(body, "some/model")
-    assert body["temperature"] == 0.9  # operator pin wins over the client's explicit value
+    assert body["temperature"] == 0.9
     assert body["repeat_penalty"] == 1.2  # repetition pin lands on llama-server's key
-    assert "repetition_penalty" not in body  # never leak the schema field name into the body
+    assert "repetition_penalty" not in body
 
 
 @pytest.mark.parametrize("effort", ["hihg", ""])
@@ -720,21 +691,16 @@ def test_count_tokens_rejects_an_effort_the_chat_endpoint_would_reject(effort):
 @pytest.mark.parametrize(
     "reasoning_style, request_kwargs, expected_kwargs",
     [
-        # An effort dial cannot be turned off, so enable_thinking=False lands on its
-        # lowest level, not "none"; the contradictory "high" used to ride along.
         (
             "reasoning_effort",
             {"enable_thinking": False, "reasoning_effort": "high"},
             {"reasoning_effort": "low"},
         ),
-        # The mirror case: the typed boolean wins and the contradictory level goes,
-        # so the template's own default effort applies instead of "none".
         (
             "reasoning_effort",
             {"enable_thinking": True, "reasoning_effort": "none"},
             {"reasoning_effort": "high"},
         ),
-        # A boolean-only template never saw the effort either way.
         (
             "enable_thinking",
             {"enable_thinking": False, "reasoning_effort": "high"},
@@ -745,7 +711,6 @@ def test_count_tokens_rejects_an_effort_the_chat_endpoint_would_reject(effort):
             {"enable_thinking": True, "reasoning_effort": "none"},
             {"enable_thinking": True},
         ),
-        # Agreeing controls are not touched.
         (
             "reasoning_effort",
             {"enable_thinking": True, "reasoning_effort": "high"},
@@ -846,16 +811,15 @@ def test_normalizing_does_not_mutate_the_clients_nested_dict():
     inference_route._normalize_chat_reasoning_controls(payload)
 
     assert client_dict == {"enable_thinking": False, "reasoning_effort": "none", "keep_me": 1}
-    # Unrelated keys survive on the payload; the consumed ones do not.
     assert payload.model_extra["chat_template_kwargs"] == {"keep_me": 1}
 
 
 @pytest.mark.parametrize(
     "nested_enable_thinking",
     [
-        "false",  # bool("false") was True, so this used to turn thinking ON
+        "false",
         "true",
-        0,  # a JSON number used to be coerced, and happened to land on the right answer
+        0,
         1,
         None,
         [],
@@ -886,7 +850,6 @@ def test_a_nested_enable_thinking_that_is_not_a_json_boolean_is_ignored(nested_e
 
     assert payload.enable_thinking is None
     assert payload.reasoning_effort is None
-    # Consumed either way, so no render sees the value the validation just refused.
     assert payload.model_extra["chat_template_kwargs"] == {}
 
 
@@ -941,7 +904,6 @@ def test_an_ignored_nested_control_resolves_exactly_like_omitting_it():
     ):
         assert _resolved(nested) == omitted, nested
 
-    # A valid control alongside an invalid one is still honored.
     assert _resolved({"enable_thinking": "false", "reasoning_effort": "none"}) == (
         False,
         "none",
@@ -972,5 +934,4 @@ def test_an_anthropic_derived_boolean_stays_out_of_the_explicit_field_set():
     from routes import inference as inference_route
 
     inference_route._normalize_chat_reasoning_controls(payload)
-    # The nested control is the higher-priority source, so it wins over the derived one.
     assert payload.enable_thinking is False

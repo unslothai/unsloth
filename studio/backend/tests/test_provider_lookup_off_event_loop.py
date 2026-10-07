@@ -53,7 +53,6 @@ def test_the_saved_provider_row_is_read_off_the_event_loop_thread(monkeypatch):
 
     monkeypatch.setattr(inference_routes.providers_db, "get_provider", _get_provider)
 
-    # run_until_complete drives the loop on this thread.
     loop_thread = threading.get_ident()
     with pytest.raises(HTTPException) as excinfo:
         asyncio.new_event_loop().run_until_complete(

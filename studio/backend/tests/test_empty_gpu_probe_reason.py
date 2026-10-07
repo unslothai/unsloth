@@ -74,7 +74,7 @@ def _load_site_guard() -> str:
     while start >= 0 and not lines[start].lstrip().startswith("if "):
         start -= 1
     assert start >= 0, "no enclosing if statement"
-    # To the END of the block: stopping at the marker hid a mutant in the continuation.
+    # scan to the END of the block: stopping at the marker hid a mutant in the continuation
     base = len(lines[start]) - len(lines[start].lstrip())
     end = hit
     while end + 1 < len(lines):
@@ -256,7 +256,7 @@ class TestItDoesNotAssertTheLaunchOutcome:
     below, so an empty probe cannot tell you where the model ends up."""
 
     def test_the_message_reports_the_probe_not_the_placement(self):
-        # Comments stripped: the guard's own note names the claim it forbids.
+        # comments stripped: the guard's own note names the claim it forbids
         body = "\n".join(
             line for line in _load_site_guard().splitlines() if not line.lstrip().startswith("#")
         )
@@ -276,8 +276,6 @@ class TestItDoesNotAssertTheLaunchOutcome:
 
         src = inspect.getsource(mod.LlamaCppBackend.load_model)
         warn = src.find("could not enumerate any GPU")
-        # The pick is restored in the picker's own order now, not sorted, so the
-        # anchor is the assignment rather than the sort that used to spell it.
         restore = src.find("gpu_indices = _picked_order")
         assert warn != -1 and restore != -1
         assert warn < restore, "if the pin moved above the warning, re-derive this guard"

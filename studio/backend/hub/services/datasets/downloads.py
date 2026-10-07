@@ -53,10 +53,9 @@ _dataset_size_cache_lock = threading.Lock()
 _registry = download_registry.get_datasets_registry()
 _account_registries = {}
 _account_registry_lock = threading.Lock()
-# The HF cache is shared across per-account registries, so a reservation must reach all of them.
+# The HF cache is shared, so a reservation must reach every per-account registry.
 _deleting: set[str] = set()
-# Whole-cache purges in flight. Counted, like DownloadRegistry._purging, and kept here
-# so a registry created for an account DURING a purge starts out reserved too.
+# Counted here so a registry created during a purge starts reserved.
 _purging = 0
 
 
@@ -70,9 +69,6 @@ def _account_registry():
             registry = download_registry.DownloadRegistry()
             for reserved in _deleting:
                 registry.begin_delete(reserved)
-            # Same reason as the line above: a purge holding every OTHER registry would not
-            # hold this one, and the account whose first download creates it would write into
-            # a tree being removed.
             for _ in range(_purging):
                 registry.begin_cache_purge()
             _account_registries[account_id] = registry
@@ -166,8 +162,7 @@ def get_dataset_snapshot_metadata_cached(
             size, hashes, restricted, cached_fp, ts = cached
             if (time.monotonic() - ts) >= _DATASET_SIZE_POS_TTL:
                 del _dataset_size_cache[repo_id]
-            # A gated or private repo's metadata is only served back to the token that fetched it;
-            # another token may have no access at all.
+            # Gated/private metadata is only served back to the token that fetched it.
             elif not restricted or cached_fp == token_fp:
                 _dataset_size_cache.move_to_end(repo_id)
                 return size, hashes
@@ -220,7 +215,6 @@ async def get_dataset_download_progress_response(
     hf_token = account_hf_token(hf_token)
     registry = _account_registry()
     if managed_account():
-        # The dataset cache is shared, so reading it needs the same grant as the model path.
         await asyncio.to_thread(
             account_access.require_download_progress_access, registry, repo_id, "dataset"
         )
@@ -274,13 +268,11 @@ async def download_dataset_response(
             detail = f"Invalid repo_id: {repo_id!r}",
         )
     if managed_account():
-        # Before the claim: a conflict reply would otherwise reveal another account's job.
+        # Before the claim: a conflict reply would reveal another account's job.
         await asyncio.to_thread(account_access.authorize_download, repo_id, "dataset", hf_token)
-    # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
-    # Size and Auto resolution may perform network probes, so keep both off the event loop.
     largest_file_bytes = await asyncio.to_thread(
         download_lifecycle.largest_download_file_bytes,
         "dataset",
@@ -302,8 +294,7 @@ async def download_dataset_response(
     cache_env = cache_paths.child_env({})
 
     def claim_and_launch():
-        # Claim and launch as one operation, off the loop: a cancel while queued must not
-        # leave a claimed job with no worker, and token resolution can do network I/O.
+        # Claim and launch atomically: a queued cancel must not leave a job with no worker.
         registry = _account_registry()
         claimed, claim_state = _claim_dataset_download(
             registry,
@@ -316,8 +307,6 @@ async def download_dataset_response(
         )
         generation = registry.current_generation(key)
         if not claimed:
-            # Both come from adoptable: an in-progress delete leaves no job, and only an in-flight job of this
-            # repo attached to anything.
             adoptable = registry.adoptable(key)
             return {
                 "repo_id": repo_id,
@@ -325,15 +314,10 @@ async def download_dataset_response(
                 "accepted": adoptable,
                 "attached": adoptable,
                 "generation": generation,
-                # An adopted job keeps the transport it started on, so report it rather than let the caller assume
-                # the one it asked for.
                 "transport": registry.job_transport(key),
-                # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
-                # partial.
                 "cancel_transport": registry.job_cancel_transport(key),
             }
-        # Record ownership with the claim, not at launch: retirement scans this registry, and an
-        # unattributed job makes its cancel raise "Download not found" and abort the deletion.
+        # Record ownership at claim, else cancel raises "Download not found" during deletion.
         download_lifecycle.record_download_account(registry, key)
         download_manifest.clear_cancel_marker(
             "dataset",
@@ -369,7 +353,6 @@ async def download_dataset_response(
             "accepted": True,
             "attached": False,
             "generation": generation,
-            # See models: the resolved transport, which a downgrade can make different from the one requested.
             "transport": transport,
         }
 

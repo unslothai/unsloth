@@ -18,7 +18,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-# Ensure backend is on sys.path.
 _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
@@ -64,7 +63,6 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
         size = _estimate_fp16_model_size_bytes_from_config(config)
         self.assertIsNotNone(size)
         size_gb = size / (1024**3)
-        # Llama 3.1 8B should be ~15GB in fp16
         self.assertGreater(size_gb, 12)
         self.assertLess(size_gb, 20)
 
@@ -82,7 +80,6 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
         size = _estimate_fp16_model_size_bytes_from_config(config)
         self.assertIsNotNone(size)
         size_gb = size / (1024**3)
-        # ~1B model should be ~2GB in fp16
         self.assertGreater(size_gb, 1)
         self.assertLess(size_gb, 5)
 
@@ -90,7 +87,7 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
         from utils.hardware.hardware import _estimate_fp16_model_size_bytes_from_config
         from types import SimpleNamespace
 
-        config = SimpleNamespace(vocab_size = 32000)  # most fields missing
+        config = SimpleNamespace(vocab_size = 32000)
         size = _estimate_fp16_model_size_bytes_from_config(config)
         self.assertIsNone(size)
 
@@ -112,7 +109,6 @@ class TestEstimateFP16ModelSizeFromConfig(unittest.TestCase):
         size = _estimate_fp16_model_size_bytes_from_config(config)
         self.assertIsNotNone(size)
         size_gb = size / (1024**3)
-        # MoE model with 64 experts should be large
         self.assertGreater(size_gb, 50)
 
 
@@ -123,11 +119,11 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
         from utils.hardware.hardware import estimate_required_model_memory_gb
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
-            return_value = (10 * (1024**3), "config"),  # 10GB model
+            return_value = (10 * (1024**3), "config"),
         ):
             required, meta = estimate_required_model_memory_gb(
                 "test/model",
-                training_type = None,  # inference
+                training_type = None,
                 load_in_4bit = False,
             )
             self.assertIsNotNone(required)
@@ -138,22 +134,22 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
         from utils.hardware.hardware import estimate_required_model_memory_gb
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
-            return_value = (30 * (1024**3), "config"),  # 30GB fp16 model
+            return_value = (30 * (1024**3), "config"),
         ):
             required, meta = estimate_required_model_memory_gb(
                 "test/model",
-                training_type = None,  # inference
+                training_type = None,
                 load_in_4bit = True,
             )
             self.assertIsNotNone(required)
-            # 4bit base = 30/3.2 = 9.375GB, required = 9.375 + max(9.375*0.3, 2) = 12.19GB
+            # 30/3.2 + max(9.375*0.3, 2) = 12.19GB
             self.assertAlmostEqual(required, 12.2, places = 0)
 
     def test_4bit_training_reduces_base(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
-            return_value = (30 * (1024**3), "config"),  # 30GB fp16 model
+            return_value = (30 * (1024**3), "config"),
         ):
             required, meta = estimate_required_model_memory_gb(
                 "test/model",
@@ -161,21 +157,21 @@ class TestEstimateRequiredModelMemory(unittest.TestCase):
                 load_in_4bit = True,
             )
             self.assertIsNotNone(required)
-            # fallback: base=30/3.2=9.375, lora=30*0.04=1.2, act=30*0.15=4.5, cuda=1.4
+            # base=9.375, lora=1.2, act=4.5, cuda=1.4
             self.assertAlmostEqual(required, 16.5, places = 0)
 
     def test_full_finetune_uses_3_5x(self):
         from utils.hardware.hardware import estimate_required_model_memory_gb
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
-            return_value = (10 * (1024**3), "config"),  # 10GB model
+            return_value = (10 * (1024**3), "config"),
         ):
             required, meta = estimate_required_model_memory_gb(
                 "test/model",
                 training_type = "Full Finetuning",
             )
             self.assertIsNotNone(required)
-            # fallback: 10 * 3.5 + 1.4 cuda overhead = 36.4
+            # 10 * 3.5 + 1.4 cuda overhead
             self.assertAlmostEqual(required, 36.4, places = 0)
 
     def test_returns_none_when_unavailable(self):
@@ -247,7 +243,6 @@ class TestAutoSelectGpuIds(unittest.TestCase):
             ),
         ):
             selected, meta = auto_select_gpu_ids("test/model")
-            # Should pick GPU 1 (most free memory: 78GB) -- enough for 10GB
             self.assertEqual(len(selected), 1)
             self.assertEqual(selected[0], 1)
 
@@ -284,14 +279,13 @@ class TestAutoSelectGpuIds(unittest.TestCase):
                 "get_visible_gpu_utilization",
                 return_value = self._make_utilization(
                     [
-                        (0, 40.0, 30.0),  # 30GB free
-                        (1, 40.0, 35.0),  # 35GB free
+                        (0, 40.0, 30.0),
+                        (1, 40.0, 35.0),
                     ]
                 ),
             ),
         ):
             selected, meta = auto_select_gpu_ids("test/model")
-            # 35GB (first) + 30*0.85 (second) = 60.5GB > 50GB
             self.assertEqual(len(selected), 2)
 
     def test_non_accelerator_returns_none(self):
@@ -431,7 +425,6 @@ class TestMultiGpuOverheadAccounting(unittest.TestCase):
         from utils.hardware.hardware import auto_select_gpu_ids
         import utils.hardware.hardware as hw
 
-        # Model requires 79GB, GPU has 80GB free
         with (
             patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA),
             patch.object(
@@ -469,7 +462,6 @@ class TestMultiGpuOverheadAccounting(unittest.TestCase):
             ),
         ):
             selected, meta = auto_select_gpu_ids("test/model")
-            # Should fit on 1 GPU (80GB >= 79GB)
             self.assertEqual(len(selected), 1)
 
     def test_second_gpu_has_overhead(self):
@@ -477,8 +469,7 @@ class TestMultiGpuOverheadAccounting(unittest.TestCase):
         from utils.hardware.hardware import auto_select_gpu_ids
         import utils.hardware.hardware as hw
 
-        # Model requires 110GB. First GPU has 80GB, second has 40GB.
-        # With overhead: 80 + 40*0.85 = 114GB -- just enough
+        # 80 + 40*0.85 = 114GB >= 110GB required
         with (
             patch.object(hw, "get_device", return_value = hw.DeviceType.CUDA),
             patch.object(
@@ -516,7 +507,6 @@ class TestMultiGpuOverheadAccounting(unittest.TestCase):
             ),
         ):
             selected, meta = auto_select_gpu_ids("test/model")
-            # Should use both GPUs
             self.assertEqual(len(selected), 2)
 
 

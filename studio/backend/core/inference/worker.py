@@ -36,7 +36,6 @@ from core.inference.audio_errors import (
 from core.inference.context_refusal import ContextBudgetExceeded
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
-# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
 from utils.happy_eyeballs import activate_happy_eyeballs
 
@@ -150,8 +149,6 @@ activate_happy_eyeballs()
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
 
-# studio/backend root, prepended to sys.path so the spawned subprocess can
-# import the utils/core packages.
 _BACKEND_PATH = str(Path(__file__).resolve().parent.parent.parent)
 
 
@@ -427,8 +424,7 @@ def _run_security_gates(
     """
     targets = list(dict.fromkeys(t for t in targets if t))
 
-    # A poisoned pickle deserializes during from_pretrained even with trust_remote_code
-    # False, so check HF's security scan every load (for a LoRA, the base deserializes).
+    # Poisoned pickles deserialize even without trust_remote_code: scan every load (LoRA: the base).
     from utils.security import evaluate_file_security
 
     from utils.security import load_scan_target
@@ -463,8 +459,7 @@ def _run_security_gates(
             )
             return False
 
-    # Scan auto_map code before it runs; block CRITICAL/HIGH unless pinned-approved. Adapter
-    # and base are scanned as one unit, pinned by a single fingerprint.
+    # Block CRITICAL/HIGH auto_map code unless pinned-approved; adapter + base share one fingerprint.
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
         _rc = evaluate_remote_code_consent_for_targets(
@@ -571,7 +566,6 @@ def _hub_cache_dir() -> Optional[str]:
         return None
 
 
-# The token env before a load scrubbed it; the next load restores it.
 _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD: Optional[dict] = None
 
 
@@ -630,8 +624,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         hf_token = _config_hf_token(config)
         load_in_4bit = _resolve_lora_4bit(mc, config.get("load_in_4bit", True))
 
-        # Latest-transformers sidecar models load 16-bit: bnb 4-bit feeds quantized
-        # expert weights into unvalidated paths (e.g. grouped-MoE torch._grouped_mm).
+        # Latest-tier models load 16-bit: bnb 4-bit feeds quantized experts into unvalidated paths.
         if load_in_4bit:
             from utils.transformers_version import latest_tier_active_for
             if latest_tier_active_for(config["model_name"], hf_token):
@@ -649,8 +642,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "Auto-enabled trust_remote_code for Nemotron model: %s", config["model_name"]
             )
 
-        # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
-        # the SSM install so a blocked model never triggers a native kernel build.
+        # Must run before the SSM install so a blocked model never triggers a native kernel build.
         from core.inference.native_audio import native_audio_security_targets
 
         targets = native_audio_security_targets(
@@ -668,9 +660,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         ):
             return
 
-        # Install SSM/Mamba kernels: a no-op for the initial load (pre-installed before import)
-        # but still needed for a LoRA's base (resolved only now via mc) and in-process loads.
-        # Skip on MLX (no macOS wheel). Probe the base, not the adapter id / local path.
+        # Install SSM kernels for a LoRA's base (resolved only now) and in-process loads; no MLX wheel.
         if getattr(backend, "device", None) != "mlx":
             from utils.ssm_runtime import ssm_probe_identifier
 
@@ -681,10 +671,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             if not _ensure_ssm_kernels(ssm_targets, resp_queue):
                 return
 
-        # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
-        # loads; a no-progress Xet download is reported as a stall so the parent
-        # can respawn over HTTP. Watch model + base repos (base is the LoRA
-        # download bottleneck).
+        # Heartbeat keeps the parent's deadline alive; a stalled Xet download triggers HTTP respawn.
         from core.inference.model_ids import mlx_bnb_substitutions
         from utils.hf_xet_fallback import start_watchdog
 
@@ -693,7 +680,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         if base and str(base) != mc.identifier:
             watch_repos.append(str(base))
 
-        # Watch the repositories Zoo downloads after substitution.
         if getattr(backend, "device", None) == "mlx":
             substitutions = mlx_bnb_substitutions(watch_repos)
             replacements = dict(substitutions)
@@ -753,7 +739,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "is_vision": mc.is_vision,
                 "is_lora": mc.is_lora,
                 "is_gguf": False,
-                # MLX backend sets device="mlx"; lets the UI tag MLX models.
                 "is_mlx": getattr(backend, "device", None) == "mlx",
                 "is_audio": getattr(mc, "is_audio", False),
                 "audio_type": getattr(mc, "audio_type", None),
@@ -778,11 +763,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         model_info[_ctx_field] = int(_ctx_value)
                 except Exception as _ctx_exc:
                     logger.warning("%s forward failed: %s", _ctx_field, _ctx_exc)
-            # Tri-state, so it is forwarded as it is rather than coerced: None means the
-            # backend does not answer, which is not the same as a confirmed False.
+            # Tri-state: None means the backend does not answer, not False.
             if _entry.get("context_length_enforced") is not None:
                 model_info["context_length_enforced"] = bool(_entry["context_length_enforced"])
-            # Backend post-load audio and video classification outranks pre-load config.
             model_info.update(
                 {
                     k: _entry[k]
@@ -811,7 +794,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
-            # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
                 {
                     k: _entry[k]
@@ -833,7 +815,6 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     if k in _entry
                 }
             )
-            # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _tpl_info = _entry.get("chat_template_info")
                 _mapped_tpl = None
@@ -849,11 +830,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "format_type": _tpl_info.get("format_type", "generic"),
                         "template_name": _tpl_info.get("template_name"),
                         "special_tokens": _tpl_info.get("special_tokens", {}) or {},
-                        # The IMAGE-turn body; the whitelist is the only way out.
                         "processor_template": _tpl_info.get("processor_template"),
                         "renders_image": _tpl_info.get("renders_image"),
                         "accepts_multiple_images": _tpl_info.get("accepts_multiple_images"),
-                        # The body a text render installs at generate time, when the model is mapped.
                         "mapped_template": _mapped_tpl,
                     }
             except Exception as _tpl_exc:
@@ -1157,8 +1136,6 @@ def _handle_generate(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
             {
                 "type": "gen_done",
                 "request_id": request_id,
-                # usage/timings from MLX and safetensors, plus "truncated" from
-                # safetensors (None for a backend that reports neither).
                 "stats": getattr(backend, "last_generation_stats", None),
             },
         )
@@ -1194,8 +1171,7 @@ def _handle_count_tokens(backend, cmd: dict, resp_queue: Any) -> None:
         resp_queue,
         {
             "type": "count_tokens_response",
-            # Echoed so the dispatcher can address the caller's mailbox; an unaddressed
-            # reply is dropped and the caller waits out its timeout.
+            # Unaddressed replies are dropped and the caller waits out its timeout.
             "request_id": cmd.get("request_id"),
             "input_tokens": int(count),
             "model": backend.active_model_name,
@@ -1380,8 +1356,7 @@ class _ResidentBatch:
         if reason is not None:
             return reason
         if self.width is not None and self.width != _admitted_width(cmd):
-            # A command at another width waits for the batch to drain: joining at the old
-            # one would refill the batch, so a narrowed load never reaches its new width.
+            # Joining at the old width would refill the batch so the new width is never reached.
             return "the open batch is decoding at a different width"
         if (
             self.width is not None
@@ -1689,7 +1664,6 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
             return
-        # Only audio.cpp models take per-model options; other backends never see the keyword.
         extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
         # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
         # workflow its backend has no keyword for.
@@ -1721,7 +1695,6 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             **extra,
         )
 
-        # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
         done = {
             "type": "audio_done",
             "request_id": request_id,
@@ -1743,7 +1716,6 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             "type": "audio_error",
             "request_id": request_id,
             "error": str(exc),
-            # Flag a shared-event cancel (unload, training, arbiter) so the orchestrator does not report HTTP 500.
             "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
             "stack": traceback.format_exc(limit = 20),
             **_audio_runtime(backend),
@@ -1764,21 +1736,17 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
     try:
         import numpy as np
 
-        # "audio_data" is the older single-clip list form.
         if "audio_clips" in cmd:
-            # Copy: frombuffer views are read-only.
             clips = [np.frombuffer(clip, dtype = np.float32).copy() for clip in cmd["audio_clips"]]
         else:
             clips = [np.array(cmd["audio_data"], dtype = np.float32)]
         audio_array = clips[0]
-        # Passed only when present, so single-clip calls are unchanged.
         extra_audio_kwargs = {"extra_audio_arrays": clips[1:]} if len(clips) > 1 else {}
 
         audio_type = cmd.get("audio_type")
 
         if audio_type == "whisper":
             if not hasattr(backend, "generate_whisper_response"):
-                # MLX has no ASR path; report it instead of a raw AttributeError.
                 raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
@@ -1799,11 +1767,9 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 "repetition_penalty": cmd.get("repetition_penalty", 1.0),
                 "cancel_event": cancel_event,
             }
-            # Forward only when present, as the "generate" branch does.
             use_adapter = cmd.get("use_adapter")
             if use_adapter is not None:
                 audio_kwargs["use_adapter"] = use_adapter
-            # MLX-only here too, for the reason the text branch gates it.
             if "stop" in cmd and _backend_declares(
                 backend, "stop", "generate_audio_input_response"
             ):
@@ -1831,7 +1797,6 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
             {
                 "type": "gen_done",
                 "request_id": request_id,
-                # Same channel as the text path; the ASR backends reset it per run.
                 "stats": getattr(backend, "last_generation_stats", None),
             },
         )
@@ -1915,21 +1880,16 @@ def run_inference_process(
         pending_teardowns: counts the commands that end everything on their way here, so a
             held command is answered rather than run in front of one. Read, for the same reason.
     """
-    # Apply request credentials before a Hugging Face import snapshots the environment.
     _apply_worker_hf_token_environment(config)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    os.environ["PYTHONWARNINGS"] = "ignore"  # Suppress warnings at C-level before imports
+    os.environ["PYTHONWARNINGS"] = "ignore"
 
     if config.get("disable_xet"):
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         logger.info("Xet transport disabled (HF_HUB_DISABLE_XET=1)")
 
-    # Offline auto-detect, as the training and export workers already do. The parent's guard is scoped, so child_env
-    # deliberately scrubs it rather than turning a per-request flag into a lifetime one; without a probe of its own
-    # this worker would then walk back into the retry paths the parent already ruled out, in _remote_lora_base and in
-    # tier activation below. Runs before any HF import, so env alone is enough. Skipped entirely for a filesystem-only
-    # load: a local checkpoint whose recorded base is local too never reaches the Hub, so probing would spend seconds
-    # before a load that has no Hub dependency.
+    # Offline auto-detect: child_env scrubs the parent's scoped guard, so probe here too.
+    # Skipped for filesystem-only loads, which have no Hub dependency.
     _probe_model = config["model_name"]
     _probe_base, _probe_needs_hub = _recorded_local_base(_probe_model)
     if "HF_HUB_OFFLINE" not in os.environ and (
@@ -1945,8 +1905,7 @@ def run_inference_process(
             if not _offline and not hf_probe_disabled():
                 from utils.transformers_version import hf_endpoint_unreachable
 
-                # Lifetime flags, so only a definite no-egress answer counts: a momentary
-                # 502 or a slow proxy must not strand the worker offline.
+                # Lifetime flag: only a definite no-egress answer counts, not a transient 502.
                 _offline = hf_endpoint_unreachable(
                     gateway_errors_offline = False,
                     proxy_timeouts_offline = False,
@@ -1958,7 +1917,7 @@ def run_inference_process(
                     "Hugging Face endpoint unreachable; HF_HUB_OFFLINE=1 for this worker."
                 )
         except Exception:
-            pass  # fail open: the load decides as it does today
+            pass
 
     import warnings
     from loggers.config import LogConfig
@@ -1970,10 +1929,7 @@ def run_inference_process(
         service_name = "unsloth-studio-inference-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
-    # Must follow setup_logging. Structlog records go to fd 1, but a third-party library
-    # logging through stdlib `logging` reaches fd 2 via `logging.lastResort`, and that
-    # traceback is byte-identical to a dying process's: unmarked, the parent hands a
-    # RECOVERED failure to the NEXT caller on a shared worker as their crash.
+    # Must follow setup_logging: unmarked stdlib lastResort tracebacks look like a crash to the parent.
     from utils.worker_stderr import mark_log_record_continuations
 
     mark_log_record_continuations()
@@ -1982,16 +1938,12 @@ def run_inference_process(
 
     model_name = config["model_name"]
 
-    # These architectures use their publishers' native Transformers/Diffusers
-    # interfaces. Select that backend before the Apple MLX fast-path and before
-    # importing Unsloth; native_audio itself has no eager ML imports.
+    # Select native backend before the MLX fast-path and before importing Unsloth.
     from core.inference.native_audio import is_native_audio_model
 
-    # The route marks an audio.cpp GGUF, which a bare Hub id does not reveal without a header read.
     _native_audio_worker = bool(config.get("audio_cpp")) or is_native_audio_model(model_name)
 
-    # Before detect_hardware(), whose probe would leave a CUDA context here; the route
-    # skips the arbiter on the basis that this load reserves none.
+    # Before detect_hardware(): its probe leaves a CUDA context, and the route skipped the arbiter.
     if _native_audio_worker:
         from core.inference.audio_device import (
             audio_device_forces_cpu,
@@ -2004,8 +1956,6 @@ def run_inference_process(
     _ensure_backend_on_path()
 
     if is_apple_silicon():
-        # Non-fatal: fall through with the installed version, but log the cause
-        # instead of swallowing it (issue #6103).
         try:
             _activate_transformers_version(model_name, _config_hf_token(config))
         except Exception as exc:
@@ -2028,10 +1978,7 @@ def run_inference_process(
                 group, rank, size = _init_mlx_distributed()
                 config["_mlx_distributed_group"] = group
                 if size <= 1:
-                    # A singleton group (MLX built without distributed support,
-                    # or an invalid launch env/hostfile) would leave nonzero ranks
-                    # looping forever on share_distributed_object. Fail the load
-                    # instead of silently continuing without sharding.
+                    # A singleton group hangs nonzero ranks in share_distributed_object; fail.
                     raise RuntimeError(
                         "MLX distributed launch requested but initialized a singleton "
                         "group (size 1). Ensure the installed MLX has distributed "
@@ -2135,11 +2082,7 @@ def run_inference_process(
                         continue
                     batch.close()
                     cancel_event.clear()
-                    # Re-check the drain after clearing: the parent sets drain_event
-                    # then cancel_event for an unload, so if that pair landed between
-                    # the check above and this clear, the clear just erased the unload's
-                    # cancel. Skip here so the outgoing model is not run to completion,
-                    # which would stall the switch until the dispatcher idle-timeout.
+                    # Re-check drain: the clear may have erased an unload's cancel.
                     if _drain_skip_generate(cmd, resp_queue, drain_event):
                         continue
                     if _teardown_skip(cmd, resp_queue, pending_teardowns):
@@ -2173,18 +2116,14 @@ def run_inference_process(
                         _StopWhileItRuns(cancel_event, stops, cmd.get("request_id", "")),
                     )
                 elif cmd_type == "generate_audio":
-                    # No TTS here, but codec checkpoints still reach this loop
-                    # (dispatch is by device). Answer, or the parent waits 120s.
+                    # Codec checkpoints still reach this loop; answer or the parent waits 120s.
                     _send_response(
                         resp_queue,
                         {
                             "type": "audio_error",
                             "request_id": cmd.get("request_id"),
                             "error": "Text-to-speech is not supported on the MLX backend yet.",
-                            # Lets the parent raise a typed error, not a generic 500.
                             "code": AUDIO_UNSUPPORTED_CODE,
-                            # Only some TTS families publish a GGUF build, so name the
-                            # host as the general fix and GGUF as the conditional one.
                             "hint": (
                                 "Run it on a non-MLX host, or load a GGUF build of it "
                                 "if one is published -- llama.cpp carries the "
@@ -2248,8 +2187,6 @@ def run_inference_process(
                     batch.close()
                     return
                 else:
-                    # As in the GPU loop: dropping a command silently costs the
-                    # caller its whole timeout.
                     logger.warning("Unknown MLX command type: %s", cmd_type)
                     _send_response(
                         resp_queue,
@@ -2270,22 +2207,16 @@ def run_inference_process(
                     warmth.active()
         return
 
-    # Windows Triton check, ahead of the torchao stub below, matching the training and export workers' gate-then-stub
-    # order. Importable Triton is not enough on AMD: its clang-cl JIT also needs the MSVC CRT headers (#7595).
+    # Gate before the torchao stub; AMD Triton JIT also needs MSVC CRT headers (#7595).
     if sys.platform == "win32":
         from core._msvc_env import gate_torch_compile_on_windows
         gate_torch_compile_on_windows(logger)
 
-    # Stub torchao on Windows ROCm before ANY transformers import. Must precede every path that pulls transformers,
-    # not just the ML imports below: a local LoRA adapter with no recorded base reaches transformers here via
-    # _resolve_base_model -> utils.models. See core/_torchao_stub.py; no-op off Windows ROCm.
+    # Stub torchao on Windows ROCm before ANY transformers import (incl. _resolve_base_model).
     from core._torchao_stub import install_torchao_windows_rocm_stub
 
     install_torchao_windows_rocm_stub()
 
-    # Resolve the effective base once, before activation, gates and install. No ML import on the common path; a local
-    # adapter with no recorded base pulls transformers via utils.models, which is why the stub above precedes this. A
-    # remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig after import).
     # _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json
 
@@ -2307,8 +2238,7 @@ def run_inference_process(
             _lora_base = None
     if not _lora_base:
         _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
-    # Base for tier activation + the SSM-kernel heuristic: the LoRA base if any, else a full
-    # fine-tune's recorded base from config.json (its name reveals the SSM/sidecar arch).
+    # LoRA base, else a full fine-tune's recorded base (its name reveals SSM/sidecar arch).
     _base = _lora_base or _resolve_base_model(model_name)
 
     try:
@@ -2324,11 +2254,7 @@ def run_inference_process(
         )
         return
 
-    # Security gates, then SSM/Mamba kernels, BEFORE importing transformers. transformers snapshots its
-    # optional-backend gates at import, so a hybrid model's kernels must be installed before the import below
-    # ("mamba-ssm is required" otherwise). The gates are metadata-only, so run them first and refuse a blocked model
-    # before any native build. Gate only the model and a genuine LoRA base (matching _handle_load), never a full
-    # fine-tune's unloaded base; _handle_load re-runs the authoritative gates with the mc base.
+    # Gates, then SSM kernels, before transformers import: it snapshots backend availability at import.
     _gate_targets = _native_audio_security_targets_or_error(model_name, _hf_token, resp_queue)
     if _gate_targets is None:
         return
@@ -2347,8 +2273,7 @@ def run_inference_process(
         subject = config.get("subject"),
     ):
         return
-    # Probe the resolved base for SSM kernels, not the adapter id / local checkpoint path
-    # (arbitrary names must not match the SSM substrings).
+    # Probe the resolved base, not the adapter id / local path.
     from utils.ssm_runtime import ssm_probe_identifier
 
     _ssm_targets = [ssm_probe_identifier(model_name, _base)]
@@ -2373,12 +2298,10 @@ def run_inference_process(
         if _native_audio_worker:
             from core.inference.native_audio import is_audio_cpp_audio_model
             if config.get("audio_cpp") or is_audio_cpp_audio_model(model_name):
-                # Weights run in audiocpp_server; this worker only proxies to it.
                 from core.inference.audio_cpp_backend import AudioCppBackend as InferenceBackend
             else:
                 from core.inference.native_audio import NativeAudioBackend as InferenceBackend
         else:
-            # Recover from any namespace-package shadow before importing Unsloth.
             from core.import_guards import ensure_real_packages
             ensure_real_packages("unsloth_zoo", "unsloth")
 
@@ -2400,7 +2323,6 @@ def run_inference_process(
         return
 
     try:
-        # Native audio picks its device in __init__, so the preference goes there.
         backend = (
             InferenceBackend(device_preference = config.get("audio_device"))
             if _native_audio_worker
@@ -2428,8 +2350,6 @@ def run_inference_process(
         )
         return
 
-    # Command loop: process commands until shutdown. cancel_event is an mp.Event the parent can set anytime to cancel
-    # generation instantly, with no queue polling.
     logger.info("Inference subprocess ready, entering command loop")
 
     while True:
@@ -2452,11 +2372,7 @@ def run_inference_process(
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
                 cancel_event.clear()
-                # Re-check the drain after clearing: the parent sets drain_event then
-                # cancel_event for an unload, so if that pair landed between the check
-                # above and this clear, the clear just erased the unload's cancel. Skip
-                # here so the outgoing model is not run to completion, which would stall
-                # the switch until the dispatcher idle-timeout tears the subprocess down.
+                # Re-check drain: the clear may have erased an unload's cancel.
                 if _drain_skip_generate(cmd, resp_queue, drain_event):
                     continue
                 _dispatch_generate(backend, cmd, resp_queue, cancel_event)

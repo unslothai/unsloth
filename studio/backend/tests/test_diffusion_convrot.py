@@ -76,9 +76,6 @@ def _meta(
     }
 
 
-# ── the Hadamard itself ───────────────────────────────────────────────────────────
-
-
 def test_power_of_four_gate():
     assert [n for n in (1, 2, 4, 8, 16, 32, 64, 256, 1024) if is_power_of_four(n)] == [
         4,
@@ -175,19 +172,15 @@ def test_denoiser_and_conditioner_share_one_hadamard():
     assert te.rotate_convrot_activation is cr.rotate_convrot_activation
 
 
-# ── the identity ──────────────────────────────────────────────────────────────────
-
-
 def test_rotate_then_unrotate_is_the_identity():
-    # The core invariant: rotating the weight offline and the activation online leaves the float
-    # result unchanged. Everything the rotation buys happens inside the quantizer, not here.
+    # Offline weight rotation plus online activation rotation leaves the float result unchanged.
     torch.manual_seed(0)
     linear = nn.Linear(1024, 512, dtype = torch.float32)
     x = torch.randn(37, 1024)
     reference = linear(x)
 
     rotate_convrot_weight_(linear, DEFAULT_CONVROT_GROUPSIZE)
-    assert not torch.allclose(linear(x), reference)  # weight side alone is NOT a no-op
+    assert not torch.allclose(linear(x), reference)
     linear.convrot_groupsize = DEFAULT_CONVROT_GROUPSIZE
     from core.inference.diffusion_convrot import convrot_linear_class
 
@@ -216,8 +209,6 @@ def test_rotatable_fqns_splits_on_divisibility():
     rotatable, not_divisible = rotatable_fqns(model, lambda m, fqn: True, GROUP)
     assert rotatable == ("a", "b")
     assert not_divisible == ("odd",)
-    # A filter that rejects a Linear keeps it out of BOTH lists: it is never quantized, so there
-    # is nothing for the rotation to help.
     rotatable, not_divisible = rotatable_fqns(model, lambda m, fqn: fqn != "b", GROUP)
     assert rotatable == ("a",) and not_divisible == ("odd",)
 
@@ -228,7 +219,7 @@ def test_offline_rotation_records_only_what_it_applied():
     meta = rotation_metadata(GROUP, rotated)
     assert meta[ROTATION_KEY] == CONVROT_KIND
     assert meta[ROTATION_GROUP_KEY] == GROUP
-    assert meta[ROTATION_FQNS_KEY] == ["a", "b"]  # sorted, so two builds agree byte for byte
+    assert meta[ROTATION_FQNS_KEY] == ["a", "b"]
     assert rotation_metadata_error(meta) is None
 
 
@@ -240,16 +231,11 @@ def test_offline_rotation_raises_rather_than_over_recording():
         rotate_linears_(model, ["a"], 32)
 
 
-# ── the loader rotates exactly the recorded set ───────────────────────────────────
-
-
 def test_apply_rotates_exactly_the_recorded_fqns():
     model = _Model()
     assert apply_activation_rotation(model, _meta(["a"])) == ("a",)
     assert is_rotated_linear(model.a)
-    # ... and nothing else, including the other Linear the group WOULD divide. The recorded list
-    # is the contract; "everything divisible" is a rule, and a rule can drift away from the
-    # weights that were actually baked.
+    # The recorded list is the contract; "everything divisible" can drift from what was baked.
     assert not is_rotated_linear(model.b)
     assert not is_rotated_linear(model.odd)
     assert getattr(model, CONVROT_ATTR)["linears"] == 1
@@ -269,20 +255,20 @@ def test_rotated_linear_keeps_the_state_dict_unchanged():
     model = _Model()
     apply_activation_rotation(model, _meta(["a", "b"]))
     assert sorted(model.state_dict()) == before
-    assert isinstance(model.a, nn.Linear)  # still an nn.Linear, so torchao treats it as one
+    assert isinstance(model.a, nn.Linear)
 
 
 @pytest.mark.parametrize(
     "metadata",
     [
-        _meta(["a"], kind = "convrot_hadamard_v2"),  # a kind this build does not implement
+        _meta(["a"], kind = "convrot_hadamard_v2"),
         _meta(["a"], kind = True),
-        _meta(["a"], group = 32),  # not a power of 4
+        _meta(["a"], group = 32),
         _meta(["a"], group = "256"),
-        _meta([]),  # declared but records nothing
-        {ROTATION_KEY: CONVROT_KIND, ROTATION_GROUP_KEY: GROUP},  # no fqn key at all
-        _meta(["a", "a"]),  # duplicates
-        _meta(["a", 7]),  # not strings
+        _meta([]),
+        {ROTATION_KEY: CONVROT_KIND, ROTATION_GROUP_KEY: GROUP},
+        _meta(["a", "a"]),
+        _meta(["a", 7]),
     ],
 )
 def test_apply_refuses_an_unusable_contract(metadata):
@@ -321,15 +307,11 @@ def test_apply_refuses_to_rotate_twice():
 
 
 def test_a_refused_apply_rotates_nothing_at_all():
-    # A PARTIAL install is worse than either end state: the rotated half still renders, just
-    # wrongly, so nothing downstream fails. Validate every target before swapping any.
+    # A partial install renders wrongly without failing, so validate every target before swapping.
     model = _Model()
     with pytest.raises(ValueError):
         apply_activation_rotation(model, _meta(["a", "b", "odd"]))
     assert not any(is_rotated_linear(m) for m in (model.a, model.b, model.odd))
-
-
-# ── the prequant checkpoint contract ──────────────────────────────────────────────
 
 
 def test_format_tag_follows_the_rotation():
@@ -348,11 +330,8 @@ def test_format_tag_follows_the_rotation():
     [
         (pq.PREQUANT_FORMAT, {}, True),
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["a"]), True),
-        # A rotated artifact tagged v1 loads clean on an Unsloth predating the online half and
-        # renders wrong pixels. Refuse it here too: whoever wrote the tag is not to be trusted
-        # about the rest of the file either.
+        # A rotated artifact tagged v1 would load on older Unsloth and render wrong pixels.
         (pq.PREQUANT_FORMAT, _meta(["a"]), False),
-        # A v2 tag with nothing to rotate: something was meant to happen and did not.
         (pq.PREQUANT_FORMAT_ROTATED, {}, False),
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["a"], kind = "something_else"), False),
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["a"], group = 32), False),
@@ -364,10 +343,7 @@ def test_validator_enforces_the_format_rotation_biconditional(fmt, metadata, ok)
 
 
 def test_h3_int8_resolves_to_the_rotated_artifact_with_the_plain_one_behind_it():
-    # The wiring the shipped denoiser depends on: this build asks for the ConvRot artifact by
-    # name, and the derived name stays as the fallback so an install predating the online half
-    # still resolves the plain checkpoint instead of refusing the v2 tag and downloading 66.3 GB
-    # of dense weights.
+    # The derived name stays the fallback so older installs get the plain checkpoint, not 66.3 GB dense.
     from core.inference.video_families import detect_video_family
 
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")
@@ -375,11 +351,7 @@ def test_h3_int8_resolves_to_the_rotated_artifact_with_the_plain_one_behind_it()
     assert src.location == "unsloth/MiniMax-H3-FP8"
     assert src.filename == "MiniMax-H3-INT8-ConvRot.pt"
     assert "MiniMax-H3-INT8.pt" in src.fallback_filenames
-    # fp8 is untouched: one artifact, the derived name.
     assert pq.resolve_prequant_source(fam, "fp8").filename == "MiniMax-H3-FP8.safetensors"
-
-
-# ── end to end through the prequant loader ────────────────────────────────────────
 
 
 class _FakeTransformer(nn.Module):
@@ -452,7 +424,6 @@ def test_loader_leaves_a_plain_checkpoint_alone(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     ("fmt", "metadata"),
     [
-        # Declared but unusable, in each of the ways the loader can tell.
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["a"], kind = "convrot_hadamard_v99")),
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["a"], group = 32)),
         (pq.PREQUANT_FORMAT_ROTATED, _meta(["not_on_this_model"])),
@@ -461,8 +432,7 @@ def test_loader_leaves_a_plain_checkpoint_alone(monkeypatch, tmp_path):
     ],
 )
 def test_loader_refuses_a_rotation_it_cannot_apply(monkeypatch, tmp_path, fmt, metadata):
-    # None means "fall back to the dense download": slower and bigger, but never wrong. The
-    # alternative -- loading it anyway -- has no symptom at all.
+    # None means fall back to the dense download: slower, never wrong.
     assert _load_rotated(monkeypatch, tmp_path, _ckpt(fmt, metadata)) is None
 
 
@@ -485,7 +455,6 @@ def test_every_rotated_projection_shares_one_class():
     _install_rotation(second, 256)
     assert type(first) is type(second)
     assert type(first) is convrot_linear_class()
-    # Still an nn.Linear, which is what keeps torchao's filter and the checkpoint keys working.
     assert isinstance(first, nn.Linear)
     assert is_rotated_linear(first) and is_rotated_linear(second)
     # And the swap is per instance, so a shared class must not leak one module's group to another.

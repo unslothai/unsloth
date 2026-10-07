@@ -15,7 +15,6 @@ from typing import Any
 
 XET_NOTICE_COUNT_KEY = "xet_notice_shown_count"
 
-# Enforced where the count is stored, so the two cannot disagree.
 XET_NOTICE_LIMIT = 3
 
 

@@ -115,8 +115,6 @@ def test_the_fetch_names_the_revision_and_only_python(tmp_path, monkeypatch, pin
     assert repo_id == _DEEPSEEK_OCR_REPOSITORY
     assert kwargs["revision"] == _DEEPSEEK_OCR_REVISION
     assert kwargs["allow_patterns"] == ["*.py"]
-    # Not inside the backend source tree: installing this must not put the backend's own
-    # directories on the import path as a side effect.
     assert str(source).startswith(str(tmp_path))
     assert _DEEPSEEK_OCR_REVISION in str(source)
 

@@ -13,8 +13,7 @@ from utils.datasets import audio_decode
 
 np = pytest.importorskip("numpy")
 sf = pytest.importorskip("soundfile")
-# The shim needs both: it resamples through librosa, so without it every
-# ensure_audio_decoding() below correctly returns False and the tests fail.
+# The shim resamples through librosa; without it ensure_audio_decoding() returns False.
 pytest.importorskip("librosa")
 datasets = pytest.importorskip("datasets")
 
@@ -38,8 +37,7 @@ def broken_torchcodec(monkeypatch):
 
     monkeypatch.setattr(config, "TORCHCODEC_AVAILABLE", False)
     monkeypatch.setattr(Audio, "decode_example", Audio.decode_example)
-    # encode_example is patched too, so it needs restoring as well: leaving the
-    # shim installed made the next test capture it as _ORIGINAL_ENCODE.
+    # encode_example is patched too; restore it so it is not captured as original.
     monkeypatch.setattr(Audio, "encode_example", Audio.encode_example)
     monkeypatch.setattr(audio_decode, "_installed", False)
     monkeypatch.setattr(audio_decode, "_ORIGINAL_ENCODE", None)
@@ -63,7 +61,6 @@ def test_the_soundfile_decoder_resamples_to_the_cast_rate(broken_torchcodec):
     decoded = ds[0]["audio"]
 
     assert decoded["sampling_rate"] == 24000
-    # 1600 samples at 16 kHz is 0.1 s, so 24 kHz gives 2400 back.
     assert len(decoded["array"]) == pytest.approx(2400, abs = 4)
     assert decoded["path"] == "a.wav"
 
@@ -90,9 +87,6 @@ def _m4a_bytes(seconds = 1.0, sampling_rate = 22050):
 
 
 def test_an_m4a_row_decodes_through_pyav_when_torchcodec_is_broken(broken_torchcodec):
-    # soundfile refuses the container, so before this the row raised on every host whose
-    # torchcodec cannot load, and the installer told people to install FFmpeg for a
-    # format PyAV's bundled FFmpeg already reads.
     from datasets import Audio, Dataset
 
     raw = _m4a_bytes()
@@ -106,8 +100,7 @@ def test_an_m4a_row_decodes_through_pyav_when_torchcodec_is_broken(broken_torchc
     assert decoded["sampling_rate"] == 16000
     array = np.asarray(decoded["array"])
     assert array.ndim == 1 and array.dtype == np.float32
-    # One second of a 440 Hz tone at 0.5 amplitude, resampled to 16 kHz; AAC adds priming
-    # samples and the encoder rounds to frame boundaries, so bound rather than pin.
+    # AAC priming and frame rounding: bound rather than pin.
     assert 15000 <= len(array) <= 17500
     assert 0.4 <= float(np.abs(array).max()) <= 0.6
     assert decoded["path"] == "tone.m4a"
@@ -144,7 +137,6 @@ def _dominant_hz(array, rate):
 
 
 def test_the_stream_index_selects_the_track(broken_torchcodec):
-    # datasets.Audio(stream_index=1) must reach the second track, as torchcodec would.
     from datasets import Audio, Dataset
 
     raw = _two_stream_m4a_bytes()
@@ -159,8 +151,7 @@ def test_the_stream_index_selects_the_track(broken_torchcodec):
 
 
 def test_a_missing_index_picks_the_default_track_not_the_first(broken_torchcodec, tmp_path):
-    # torchcodec resolves stream_index=None through av_find_best_stream, where a default
-    # disposition beats position; a file whose second track is the default must decode it.
+    # Default disposition beats position, as in av_find_best_stream.
     import shutil
     import subprocess
 
@@ -204,8 +195,7 @@ def test_a_missing_index_picks_the_default_track_not_the_first(broken_torchcodec
 
 
 def test_a_channel_first_array_round_trips_through_the_encoder(broken_torchcodec):
-    # torchcodec hands decoded audio out as (channels, samples); libsndfile writes (frames, channels).
-    # Written as is, a (2, 1600) clip became two frames of 1600 channels, or failed outright.
+    # torchcodec gives (channels, samples); libsndfile wants (frames, channels).
     from datasets import Audio, Dataset
 
     assert audio_decode.ensure_audio_decoding() is True
@@ -217,7 +207,6 @@ def test_a_channel_first_array_round_trips_through_the_encoder(broken_torchcodec
 
 
 def test_an_m4a_path_decodes_through_pyav(broken_torchcodec, tmp_path):
-    # The path form goes to av.open as a filename, the bytes form as a buffer.
     from datasets import Audio, Dataset
 
     path = tmp_path / "tone.m4a"
@@ -272,8 +261,6 @@ def test_a_working_torchcodec_is_left_alone(monkeypatch):
     from datasets import config
     from datasets.features.audio import Audio
 
-    # Stub the decoder the guard probes for, so the assertion holds on hosts
-    # that have no torchcodec installed at all rather than a broken one.
     module = sys.modules.get("datasets.features._torchcodec")
     if module is None:
         module = types.ModuleType("datasets.features._torchcodec")
@@ -326,15 +313,13 @@ def test_the_dataset_format_check_installs_the_decoder():
 
 
 def test_the_audio_trainer_paths_install_the_decoder():
-    # Read the source rather than import it: this asserts a wiring contract, and
-    # importing the trainer drags in the whole torch/unsloth stack for it.
+    # Read source: importing the trainer drags in the torch/unsloth stack.
     from pathlib import Path
 
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
         encoding = "utf-8"
     )
     assert "ensure_audio_decoding()" in source
-    # Guarded so a text-only run never pays for the probe.
     assert "if self._audio_type or self.is_audio_vlm:" in source
 
 
@@ -405,8 +390,6 @@ def test_a_chained_url_is_keyed_on_the_repo_it_actually_fetches():
 def test_an_unknown_host_gets_no_token_when_the_mapping_is_ambiguous():
     tokens = {"org/first": "token-first", "org/second": "token-second"}
     assert audio_decode._token_for_url("https://example.com/clip.wav", tokens) is None
-    # The single-repo mapping every caller in this codebase passes still works, which is
-    # what the previous next(iter(...)) did for all of them.
     assert audio_decode._token_for_url("https://example.com/clip.wav", {"org/x": "t"}) == "t"
     assert audio_decode._token_for_url("https://example.com/clip.wav", {}) is None
     assert audio_decode._token_for_url("https://example.com/clip.wav", None) is None

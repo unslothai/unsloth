@@ -139,9 +139,7 @@ class TestValidateJudgesTheListBeforeRewritingIt(unittest.TestCase):
             return asyncio.run(route.validate_model(request, current_subject = "test-user"))
 
     def test_an_attached_offload_spelling_is_refused_not_translated(self):
-        # llama.cpp looks the whole token up in its option map, so "--gpu-layers=20"
-        # is an argument it has never heard of; /load refuses the list. Translating
-        # first read the 20, stripped the token, and approved the switch.
+        # llama.cpp looks up the whole token, so "--gpu-layers=20" is unknown to it.
         from fastapi import HTTPException
 
         route = _load_route_module("inf_route_validate_order_1")
@@ -219,8 +217,6 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
     def test_an_explicit_layer_count_reaches_the_guard(self):
         route = _load_route_module("inf_route_manual_ngl_1")
         seen = self._validate(route, gpu_layers = 0, extra_args = ["-ngl", "20"])
-        # The layer count the load will really run, and the raw flag stripped out of
-        # the list exactly as /load strips it once it owns the field.
         self.assertEqual(seen, [(20, [])])
 
     def test_a_zero_layer_override_is_read_the_same_way(self):
@@ -231,8 +227,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         self.assertEqual(seen, [(0, [])])
 
     def test_auto_mode_leaves_the_flag_alone(self):
-        # Only manual mode owns these. In Auto the flag is a pass-through the loader
-        # honours, so translating it here would invent a first-class value /load never set.
+        # Only manual mode owns these; in Auto the flag passes through to the loader.
         route = _load_route_module("inf_route_manual_ngl_3")
         seen: list = []
 
@@ -450,8 +445,6 @@ class TestEmbeddingSlotClampInTheBatchFloor(unittest.TestCase):
         )
 
     def test_defaults_clamp_nothing(self):
-        # Nothing overrides the batch, so the launch runs llama.cpp's own 2048 and the
-        # micro-batch is nowhere near the slot count.
         route = _load_route_module("inf_route_embed_clamp_3")
         self.assertEqual(
             self._clamped(route, is_embedding = True, extra_args = ["--numa", "distribute"]),
@@ -511,8 +504,7 @@ class TestValidateAllowsTheEmbeddingClampedBatch(TestValidateRefusesWhatLoadWoul
         self.assertIn("aborts on --batch-size", str(caught.exception.detail))
 
     def test_an_embedding_gguf_below_its_own_floor_is_still_refused(self):
-        # The clamp floors at one slot, and llama-server aborts on a batch of 1 at any
-        # slot count, so this is not a refusal the clamp may lift.
+        # llama-server aborts on a batch of 1 at any slot count.
         route = _load_route_module("inf_route_validate_embed_3")
         with (
             patch.object(route, "_is_embedding_gguf", return_value = True),

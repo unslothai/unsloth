@@ -83,7 +83,6 @@ def test_register_images_keeps_urls_server_side_and_filters_unsafe_results():
     assert entry["title"] == "Golden Retriever portrait"
     assert entry["domain"] == "akc.org"
     assert entry["source"] == "https://www.akc.org/dog-breeds/golden-retriever/"
-    # The thumbnail URL never reaches the model or the frontend.
     assert "bing" not in json.dumps(entry)
     stored = search_images.lookup_image(entry["id"])
     assert stored["thumbnail"] == "https://tse1.mm.bing.net/th?id=golden"
@@ -122,8 +121,7 @@ def test_strip_images_suffix_only_removes_a_valid_envelope():
 
     assert search_images.strip_images_suffix(wrapped) == body
     assert strip_result_for_model(wrapped, "web_search") == body
-    # A sibling sentinel after ours bounds the payload, exactly as the frontend
-    # parser and _strip_files_sentinel do; the ids must not survive into the model.
+    # A sibling sentinel after ours bounds the payload, as in the frontend parser and _strip_files_sentinel.
     trailing = wrapped + "\n__FILES__:[]"
     text, entries = search_images.split_images_envelope(trailing)
     assert text == body + "\n__FILES__:[]"
@@ -131,7 +129,6 @@ def test_strip_images_suffix_only_removes_a_valid_envelope():
     assert entries and "__WEB_IMAGES__" not in text
     assert entries[0]["id"] not in strip_result_for_model(trailing, "web_search")
 
-    # Tool text that merely mentions the marker is content, not an envelope.
     literal = "see\n__WEB_IMAGES__:not json"
     assert search_images.strip_images_suffix(literal) == literal
     foreign = 'x\n__WEB_IMAGES__:[{"id":"zzz"}]'
@@ -289,7 +286,6 @@ def test_image_search_returns_tokens_grouped_by_subject(monkeypatch):
         ["German Shepherd", " german shepherd ", "Labrador", "Nothing Here", "Broken"],
     )
 
-    # Deduped case-insensitively; each subject searched once (concurrently, any order).
     assert sorted(_SubjectDDGS.calls) == sorted(
         ["German Shepherd", "Labrador", "Nothing Here", "Broken"]
     )
@@ -299,8 +295,6 @@ def test_image_search_returns_tokens_grouped_by_subject(monkeypatch):
     assert "Labrador:\n- [[img:" in model_text
     assert "Nothing Here: no image found" in model_text
     assert "Broken: no image found" in model_text
-    # The header example plus exactly one token per found subject; spares ride only in
-    # the envelope.
     assert model_text.count("[[img:") == 1 + 2
     envelope = json.loads(result.rsplit(search_images.SEARCH_IMAGES_SENTINEL, 1)[1])
     assert len(envelope) == 2 * tools.IMAGE_SEARCH_PER_QUERY
@@ -319,7 +313,6 @@ def test_image_queries_alone_are_a_pure_image_lookup(monkeypatch):
     assert tools._image_search([]) == "No subjects provided."
     assert tools._image_search("Pug").count("Pug:") == 1
     assert tools._image_search({"bad": 1}) == "No subjects provided."
-    # Without image_queries an empty call is still the old "No query provided."
     assert tools.execute_tool("web_search", {}, search_images = True) == "No query provided."
 
 
@@ -340,9 +333,7 @@ def test_web_search_with_image_queries_gives_one_picture_per_subject(monkeypatch
     )
     assert "Title: AKC" in result
     assert "Pug:\n- [[img:" in result and "Beagle:\n- [[img:" in result
-    # The subjects replace the generic pile: no query-wide image lookup ran.
     assert sorted(_SubjectDDGS.calls) == ["Beagle", "Pug"]
-    # With the setting off, named subjects are acknowledged rather than dropped.
     off = tools._web_search("top dog breeds", include_images = False, image_queries = ["Pug"])
     assert "Title: AKC" in off and tools.IMAGE_SEARCH_DISABLED in off and "[[img:" not in off
     envelope = json.loads(result.rsplit(search_images.SEARCH_IMAGES_SENTINEL, 1)[1])
@@ -350,8 +341,7 @@ def test_web_search_with_image_queries_gives_one_picture_per_subject(monkeypatch
 
 
 def test_named_subjects_survive_a_text_sweep_that_finds_nothing(monkeypatch):
-    # image_queries is an explicit request that succeeds on its own without a query, so
-    # an empty TEXT sweep must not take the pictures down with it.
+    # image_queries works without a query, so an empty text sweep must not drop the pictures.
     class NoText(_SubjectDDGS):
         def text(
             self,
@@ -390,27 +380,22 @@ def test_named_subjects_survive_a_text_sweep_that_finds_nothing(monkeypatch):
         assert tools.EMPTY_SEARCH_RESULTS[0] in result
         assert "Pug:\n- [[img:" in result
         assert sorted(_SubjectDDGS.calls) == ["Pug"]
-        # With the setting off the parameter is acknowledged, not silently dropped.
         off = tools._web_search("top dog breeds", include_images = False, image_queries = ["Pug"])
         assert tools.IMAGE_SEARCH_DISABLED in off and "[[img:" not in off
-        # No image_queries: the empty answer stays exactly as it was.
         assert (
             tools._web_search("top dog breeds", include_images = True)
             == (tools.EMPTY_SEARCH_RESULTS[0])
         )
 
-    # Every hit filtered out by the website policy is the same empty answer.
     _SubjectDDGS.calls = []
     monkeypatch.setattr("ddgs.DDGS", OnlyBlocked)
     scoped = tools._web_search(
         "top dog breeds",
         include_images = True,
         image_queries = ["Pug"],
-        # The image hosts stay allowed; only the text hit's domain is out of scope.
         website_policy = {"allowedDomains": ["akc.org", "cdn.example.com", "example.com"]},
     )
     assert tools.EMPTY_SEARCH_RESULTS[1] in scoped and "Pug:\n- [[img:" in scoped
-    # One image lookup, scoped by the same policy the text sweep used.
     assert len(_SubjectDDGS.calls) == 1 and _SubjectDDGS.calls[0].startswith("Pug")
 
 
@@ -427,15 +412,12 @@ def test_a_genuine_search_failure_carries_no_pictures(monkeypatch):
     _SubjectDDGS.calls = []
     monkeypatch.setattr("ddgs.DDGS", Boom)
     result = tools._web_search("top dog breeds", include_images = True, image_queries = ["Pug"])
-    # Pictures under an error would read as a partial answer.
     assert result.startswith("Search failed:") and "[[img:" not in result
     assert _SubjectDDGS.calls == []
 
 
 def test_clear_all_chats_beats_a_thumbnail_write_already_in_flight(monkeypatch, tmp_path):
-    # The fetch copies its registry entry up front, so without the generation check it
-    # could land tmp.replace() after the clear and restore a thumbnail on disk, where
-    # the cache-first path would keep serving it.
+    # The fetch copies its registry entry up front; without the generation check it could restore a cleared thumbnail.
     entry = search_images.register_images(RAW_IMAGES)[0]
 
     def clear_then_serve(url, **kwargs):
@@ -446,7 +428,6 @@ def test_clear_all_chats_beats_a_thumbnail_write_already_in_flight(monkeypatch, 
     assert search_images.thumbnail_bytes(entry["id"]) is None
     assert list(tmp_path.glob("*.jpg")) == []
     assert list(tmp_path.glob("*.tmp")) == []
-    # A fetch with no clear racing it still caches, so the guard is not just "never write".
     monkeypatch.setattr(
         tools,
         "_fetch_url_raw",
@@ -507,9 +488,7 @@ def test_clear_all_chats_invalidates_an_image_lookup_already_in_a_thread(monkeyp
 
 
 def test_clear_all_chats_invalidates_the_plain_query_image_sweep(monkeypatch, tmp_path):
-    # The same race on the path with no image_queries: the sweep runs while the user
-    # clears every chat, and without the generation it registers afterwards anyway --
-    # the sidecar then outlives the clear and keeps the picture fetchable.
+    # Same race without image_queries: registering after a clear would keep the picture fetchable.
     started = threading.Event()
     release = threading.Event()
 
@@ -541,27 +520,19 @@ def test_clear_all_chats_invalidates_the_plain_query_image_sweep(monkeypatch, tm
     assert search_images._registry == {}
     assert list(tmp_path.glob("*.json")) == []
 
-    # No clear racing it: the same sweep still returns its images, so the guard is
-    # not simply "never register".
     assert search_images.SEARCH_IMAGES_SENTINEL in tools._web_search_images_suffix(
         BlockingClient(), "dog breeds", 5, None, None
     )
 
 
 def test_a_clear_between_the_two_registry_reads_still_wins(monkeypatch, tmp_path):
-    # The exact interleaving the first fix missed: the entry and the cache generation
-    # were read under SEPARATE acquisitions, so a clear landing in the gap handed this
-    # call the post-clear generation, the check before the write matched, and the
-    # thumbnail the clear had just deleted was written straight back.
+    # Entry and cache generation must be read under one lock acquisition, or a clear in the gap is missed.
     entry = search_images.register_images(RAW_IMAGES)[0]
     real_lookup = search_images._lookup_locked
 
     def clearing_lookup(image_id):
         found = real_lookup(image_id)
-        # Inline rather than clear_cache(): the caller already holds _registry_lock. It has
-        # to move _full_clear_generation as well, because that -- not the bare generation --
-        # is what a clear-everything raises to abort every in-flight fetch. Bumping only the
-        # generation simulates a clear that spared this id, which is a different test.
+        # Inline: the caller holds _registry_lock; a full clear must bump _full_clear_generation too.
         search_images._registry.clear()
         search_images._cache_generation += 1
         search_images._full_clear_generation = search_images._cache_generation
@@ -575,21 +546,18 @@ def test_a_clear_between_the_two_registry_reads_still_wins(monkeypatch, tmp_path
 
 
 def test_an_id_still_resolves_after_a_restart_that_never_cached_it(monkeypatch, tmp_path):
-    # Chat history keeps ids, not URLs, and the browser only asks for a thumbnail once
-    # it nears the viewport -- so a picture nobody scrolled to has no bytes on disk. The
-    # in-memory registry does not survive the process, and reopening used to 404 forever.
+    # The registry does not survive a restart and unscrolled thumbnails have no bytes; the sidecar resolves them.
     entry = search_images.register_images(RAW_IMAGES)[0]
     assert (tmp_path / f"{entry['id']}.json").is_file()
     assert not (tmp_path / f"{entry['id']}.jpg").exists(), "never materialized"
 
-    search_images._registry.clear()  # the restart
+    search_images._registry.clear()
     monkeypatch.setattr(
         tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
     )
     data = search_images.thumbnail_bytes(entry["id"])
     assert data is not None and data[:3] == b"\xff\xd8\xff"
 
-    # Clear all chats takes the metadata with the bytes, so nothing resolves afterwards.
     search_images.clear_cache()
     assert list(tmp_path.glob("*.json")) == [] and list(tmp_path.glob("*.jpg")) == []
     assert search_images.thumbnail_bytes(entry["id"]) is None
@@ -598,7 +566,6 @@ def test_an_id_still_resolves_after_a_restart_that_never_cached_it(monkeypatch, 
 def test_persisted_metadata_is_re_checked_on_the_way_back_in(monkeypatch, tmp_path):
     entry = search_images.register_images(RAW_IMAGES)[0]
     search_images._registry.clear()
-    # A host that is no longer public must not be fetched just because it once was.
     (tmp_path / f"{entry['id']}.json").write_text(
         json.dumps({"thumbnail": "http://127.0.0.1/secret.png", "source": "http://127.0.0.1/x"})
     )
@@ -606,7 +573,6 @@ def test_persisted_metadata_is_re_checked_on_the_way_back_in(monkeypatch, tmp_pa
         tools, "_fetch_url_raw", lambda url, **kw: pytest.fail("must not fetch a private host")
     )
     assert search_images.thumbnail_bytes(entry["id"]) is None
-    # Corrupt or truncated metadata is a miss, never an error.
     (tmp_path / f"{entry['id']}.json").write_text("{not json")
     assert search_images.thumbnail_bytes(entry["id"]) is None
 
@@ -793,8 +759,6 @@ def test_thumbnail_bytes_reencodes_and_caches(monkeypatch, tmp_path):
     cached = tmp_path / f"{entry['id']}.jpg"
     assert cached.is_file()
 
-    # Served from disk afterwards: no second fetch, even once the registry forgot the id
-    # (a restart), so a reopened chat keeps its pictures.
     monkeypatch.setattr(
         tools.urllib.request, "build_opener", lambda *a, **k: pytest.fail("refetched")
     )
@@ -830,9 +794,7 @@ def test_thumbnail_bytes_unknown_id():
 
 
 def test_thumbnail_fetch_keeps_the_website_policy_of_the_search(monkeypatch):
-    # register_images checks the policy, but the proxy fetch happens on a later
-    # request: without carrying it, every redirect hop off an allowed image host
-    # was re-checked against no policy at all.
+    # The proxy fetch happens later, so the policy must be carried for every redirect hop.
     policy = {"allowedDomains": ["tse1.mm.bing.net", "akc.org"]}
     entry = search_images.register_images(RAW_IMAGES, policy)[0]
     seen = {}
@@ -916,9 +878,7 @@ def test_route_requires_auth():
 
 
 def test_one_locked_thumbnail_does_not_strand_the_rest_of_the_clear(monkeypatch, tmp_path):
-    # A JPEG another process holds open on Windows raises on unlink. Aborting the
-    # sweep there left every later file on disk, and thumbnail_bytes reads the
-    # cache before the registry, so those ids kept serving after a clear.
+    # On Windows unlinking a held file raises; the sweep must continue, since reads check the cache first.
     entries = [search_images.register_images(RAW_IMAGES)[0] for _ in range(3)]
     monkeypatch.setattr(
         tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
@@ -947,9 +907,6 @@ def test_one_locked_thumbnail_does_not_strand_the_rest_of_the_clear(monkeypatch,
 
 
 def test_a_thumbnail_the_clear_could_not_unlink_is_not_served(monkeypatch, tmp_path):
-    # Same Windows situation as above, from the reader's side: the cache-first read
-    # and the sidecar read both go around the registry, so the file the clear left
-    # behind would have gone on answering for a picture the user had cleared.
     entry = search_images.register_images(RAW_IMAGES)[0]
     monkeypatch.setattr(
         tools, "_fetch_url_raw", lambda url, **kw: (None, _png_bytes((40, 30)), "image/png")
@@ -968,7 +925,6 @@ def test_a_thumbnail_the_clear_could_not_unlink_is_not_served(monkeypatch, tmp_p
     search_images.clear_cache()
     assert stuck.is_file()
     assert search_images.thumbnail_bytes(entry["id"]) is None
-    # Once the other process lets go, the retry reaps it and the id is ordinary again.
     held[0] = False
     assert search_images.thumbnail_bytes(entry["id"]) is None
     assert not stuck.exists()
@@ -976,8 +932,6 @@ def test_a_thumbnail_the_clear_could_not_unlink_is_not_served(monkeypatch, tmp_p
 
 
 def test_a_sidecar_the_clear_could_not_unlink_cannot_resurrect_an_id(monkeypatch, tmp_path):
-    # The sidecar carries the thumbnail and source URLs, so a surviving one is the
-    # half of the pair that matters: it is what lets a cleared id be fetched again.
     entry = search_images.register_images(RAW_IMAGES)[0]
     stuck = tmp_path / f"{entry['id']}.json"
     real_unlink = Path.unlink
@@ -998,8 +952,7 @@ def test_a_sidecar_the_clear_could_not_unlink_cannot_resurrect_an_id(monkeypatch
 
 
 def test_the_route_rejects_an_id_with_a_trailing_newline():
-    # `$` matches before a trailing newline, so `.match` alone let one through to
-    # the store, which refused it with fullmatch. Refuse it at the door instead.
+    # `$` matches before a trailing newline, so fullmatch is required.
     assert search_images.IMAGE_ID_RE.fullmatch("0123456789ab\n") is None
     assert (
         search_images.is_image_entry(
@@ -1040,9 +993,7 @@ def _fake_ddgs_with_text(monkeypatch):
 
 
 def test_a_failing_subject_lookup_does_not_discard_the_text_results(monkeypatch):
-    # The named-subject branch sits inside _web_search's own `except`, so a raise
-    # there came back as "Search failed: ..." with the results thrown away. The two
-    # sibling branches already swallow; this one has to as well.
+    # This branch sits inside _web_search's own except, so it must swallow its own errors.
     _fake_ddgs_with_text(monkeypatch)
 
     def boom(*_args, **_kwargs):
@@ -1058,8 +1009,6 @@ def test_a_failing_subject_lookup_does_not_discard_the_text_results(monkeypatch)
 
 
 def test_a_failing_image_only_lookup_still_returns_a_string(monkeypatch):
-    # This branch is evaluated before the try, so it carries its own guard:
-    # execute_tool answers with a string for every input the model can send.
     _fake_ddgs_with_text(monkeypatch)
 
     def boom(*_args, **_kwargs):
@@ -1108,17 +1057,13 @@ def test_a_selective_clear_does_not_abort_a_fetch_for_an_image_it_spared(monkeyp
     until the component remounts.
     """
     spared = search_images.register_images(RAW_IMAGES)[0]
-    # Only one of RAW_IMAGES survives the policy filter, and this needs a second id purely
-    # as something for the clear to reap. Straight into the registry: what matters is that
-    # it is NOT the id being fetched.
     doomed_id = "0123456789ab"
     search_images._registry[doomed_id] = dict(search_images._registry[spared["id"]])
     real_lookup = search_images._lookup_locked
 
     def clearing_lookup(image_id):
         found = real_lookup(image_id)
-        # A selective clear landing mid-fetch, reaping the OTHER image. Inline because the
-        # caller already holds _registry_lock; the bookkeeping matches clear_cache's.
+        # Inline: the caller already holds _registry_lock.
         search_images._registry.pop(doomed_id, None)
         search_images._cache_generation += 1
         search_images._reaped_at[doomed_id] = search_images._cache_generation
@@ -1170,7 +1115,6 @@ def test_an_overflowing_reap_record_drops_the_oldest_not_everything(monkeypatch,
     monkeypatch.setattr(search_images, "_reaped_floor_generation", 0)
     monkeypatch.setattr(search_images, "_full_clear_generation", 0)
 
-    # Two clears that fit, then one that does not.
     search_images.clear_cache({"000000000000", "000000000001"})
     search_images.clear_cache({"000001000000", "000001000001"})
     in_flight_generation = search_images.cache_generation()
@@ -1182,10 +1126,7 @@ def test_an_overflowing_reap_record_drops_the_oldest_not_everything(monkeypatch,
     ), "the reap that overflowed is exactly the one that must still be remembered"
 
     with search_images._registry_lock:
-        # A fetch already running for an image no clear ever named. Promoting the overflow
-        # to a full clear took this down with everything else.
         assert search_images._reaped_since_locked("ffffffffffff", in_flight_generation) is False
-        # And the ids that clear really did take are still known to be reaped.
         assert search_images._reaped_since_locked("000002000000", in_flight_generation) is True
 
 
@@ -1225,14 +1166,11 @@ def test_a_lookup_already_running_when_a_clear_starts_publishes_nothing(monkeypa
     """
     monkeypatch.setattr(search_images, "_cache_dir", lambda: tmp_path)
 
-    # What _image_search does on entry, before it goes to the network.
     sampled = search_images.cache_generation()
 
-    # The clear reaches its boundary while that lookup is still out.
     snapshot = search_images.snapshot_and_fence_registrations()
     assert snapshot is not None
 
-    # The lookup comes back and tries to publish.
     published = search_images.register_images(RAW_IMAGES, expected_generation = sampled)
 
     assert (

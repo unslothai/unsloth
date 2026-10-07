@@ -174,13 +174,7 @@ def test_the_variants_own_partial_still_decides_for_the_variant(cache):
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
 
 
-# --------------------------------------------------------------------------------------------
-# One repo can own several active cache directories at once: a case-sensitive filesystem holds
-# models--Org--Model beside models--org--model, and every one of them matches. The blob scan
-# unions them while a marker read answers from whichever comes first, so a verdict built from
-# the two separately can pair a partial in one directory with a marker from another.
-# prepare_cache_for_transport judges each directory on its own, so the pairing has to as well.
-# --------------------------------------------------------------------------------------------
+# Case-sensitive FSs hold models--Org--Model beside models--org--model; judge each dir alone.
 
 
 @pytest.fixture
@@ -205,7 +199,6 @@ def test_a_marker_does_not_vouch_for_another_directorys_companion(split_cache):
     first, second = split_cache
     _record_with_companion("http", first)
     download_registry._write_companion_marker(first, "http")
-    # The partial lives next door, under a Xet companion marker that will purge it.
     download_registry._write_marker(second, "http", "Q4_K_M")
     download_registry._write_companion_marker(second, "xet")
     _partial(second, f"{COMPANION}{hf_cache_state.INCOMPLETE_SUFFIX}")
@@ -216,7 +209,6 @@ def test_a_marker_does_not_vouch_for_another_directorys_companion(split_cache):
 def test_a_marker_does_not_vouch_for_another_directorys_main_partial(split_cache):
     first, second = split_cache
     _record("http", first)
-    # Same repo, other directory, written by Xet: its own marker is what decides.
     download_registry._write_marker(second, "xet", "Q4_K_M")
     _partial(second, LEGACY_PARTIAL)
 
@@ -232,12 +224,7 @@ def test_a_partial_and_its_own_directorys_marker_still_resume(split_cache):
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
 
 
-# --------------------------------------------------------------------------------------------
-# A row is not always displayed from the active cache. local_inventory enumerates remembered
-# ("previous HF cache") and custom roots too, and hands each row's own directory down. That
-# root holds its own partials and its own manifest scope (state_dir keys manifests by a
-# per-cache digest), so the resume verdict has to be asked of it and not of the active root.
-# --------------------------------------------------------------------------------------------
+# Rows can come from remembered/custom roots; ask that root, not the active one.
 
 
 @pytest.fixture

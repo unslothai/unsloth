@@ -55,8 +55,7 @@ _SYSTEM_READ_ROOTS = (
     "/proc",
     "/sys",
 )
-# Pseudo-devices every tool needs, then the accelerator nodes. The rest of /dev stays out: other
-# sessions' ptys, same-UID shm objects and, for a root-run Studio, every block and character device.
+# Pseudo-devices plus accelerator nodes; the rest of /dev (ptys, shm, block devices) stays out.
 _DEVICE_NODES = ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty")
 _ACCELERATOR_NODES = (
     "/dev/nvidiactl",
@@ -70,8 +69,7 @@ _ACCELERATOR_NODES = (
 
 # Readable by the service user, so DAC alone does not stop a tool. The rest of /run is readable.
 _PRIVATE_RUNTIME_ROOTS = ("/run/user", "/run/secrets", "/run/credentials")
-# Secrets a root-run Studio (the Docker image) could otherwise hand a managed tool; the rest of /etc
-# (ld.so.cache, nsswitch, hosts, resolv.conf, ssl/certs) is what tool processes need.
+# Secrets a root-run Studio (Docker) could hand a tool; the rest of /etc is needed.
 _PRIVATE_SYSTEM_PATHS = (
     "/etc/shadow",
     "/etc/shadow-",
@@ -243,7 +241,6 @@ def _grant_excluding(
     for name in children:
         child = os.path.join(path, name)
         if not os.path.exists(child):
-            # A dangling link cannot carry a rule.
             continue
         if os.path.islink(child):
             # A link opens as its target, so one near a protected root would grant that tree.
@@ -369,11 +366,8 @@ def _landlock_preexec(
             try:
                 parent_fd = os.open(path, os.O_PATH | os.O_CLOEXEC)
             except FileNotFoundError:
-                # The rules come from a directory walk, and a path can go between that walk and
-                # this open: a cache purge, a model delete, an account delete. Landlock denies by
-                # default, so dropping a grant only ever narrows the child, while raising here
-                # kills the whole tool call as "Exception occurred in preexec_fn", which names
-                # neither the path nor the reason.
+                # A path can vanish after the walk; Landlock denies by default, so skipping only narrows,
+                # while raising kills the call as an opaque preexec_fn error.
                 continue
             try:
                 beneath = _PathBeneathAttr(access & handled, parent_fd)
@@ -446,7 +440,6 @@ def macos_profile(
         "(allow ipc-posix-shm)",
         "(allow network*)",
         "(allow file-read-metadata)",
-        # Pseudo-devices only; the rest of /dev (other sessions' ttys, disks) stays denied.
         '(allow file-read* file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random")'
         ' (literal "/dev/urandom") (literal "/dev/tty") (literal "/dev/dtracehelper"))',
         '(allow file-ioctl (literal "/dev/tty") (literal "/dev/dtracehelper"))',

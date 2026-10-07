@@ -326,7 +326,7 @@ def test_no_private_api_but_rocm_clang_cl_on_disk_is_gated(tmp_path, monkeypatch
     monkeypatch.setitem(sys.modules, "triton.runtime.build", None)
     monkeypatch.setattr(_msvc_env, "_rocm_clang_cl_present", lambda: True)
     monkeypatch.setattr(_msvc_env, "_triton_is_triton_windows", lambda: True)
-    # Left real, this asks the runner's own Visual Studio and answers for the wrong machine.
+    # Left real, this queries the runner's own Visual Studio.
     monkeypatch.setattr(_msvc_env, "_triton_include_dirs", lambda: [])
     assert _msvc_env._needs_msvc_headers() is True
     assert _msvc_env.crt_headers_reachable() is False
@@ -401,7 +401,6 @@ def test_marker_positive_dirs_are_still_probed(tmp_path, monkeypatch):
     dirs = _sdk_dirs(tmp_path, with_toolset = True)
     _fake_triton(monkeypatch, dirs)
     monkeypatch.setattr(_msvc_env, "_compiles_a_trivial_translation_unit", lambda cc, d: False)
-    # The heuristic would say yes; the compiler says no, and the compiler wins.
     assert _msvc_env._headers_complete(dirs) is True
     assert _msvc_env.crt_headers_reachable() is False
 
@@ -428,8 +427,6 @@ def test_the_probe_really_compiles_and_really_reports_failure(tmp_path):
         assert _msvc_env._compiles_a_trivial_translation_unit("no-such-compiler", []) is None
         return
     flag_style_ok = _msvc_env._compiles_a_trivial_translation_unit(cc, [])
-    # A cc that rejects /Zs answers False rather than crashing, which is the contract that
-    # matters here; on a real clang-cl it answers True.
     assert flag_style_ok in (True, False)
     assert _msvc_env._compiles_a_trivial_translation_unit("no-such-compiler", []) is None
 
@@ -485,10 +482,9 @@ def test_gate_survives_a_probe_that_raises(monkeypatch):
 
 def _gate(monkeypatch, *, triton_importable, headers_ok):
     monkeypatch.setattr(sys, "platform", "win32")
-    # setenv first: delenv(raising = False) records nothing when absent, so the gate's write leaks.
+    # setenv first: delenv(raising=False) records nothing when absent, so the gate's write leaks.
     monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
     monkeypatch.delenv("TORCHDYNAMO_DISABLE")
-    # A None entry in sys.modules makes `import triton` raise ImportError.
     monkeypatch.setitem(
         sys.modules, "triton", types.ModuleType("triton") if triton_importable else None
     )

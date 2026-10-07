@@ -86,7 +86,6 @@ def test_persists_clip_to_gallery(monkeypatch):
 
 
 def test_gallery_persist_failure_still_serves_audio(monkeypatch):
-    # Persistence is best-effort: a full disk must not fail the request that produced the audio.
     cli, calls, saved = _make_client(monkeypatch)
 
     def _boom(wav_bytes, meta):
@@ -135,7 +134,6 @@ def test_null_response_format_means_wav(monkeypatch):
 
 
 def test_empty_input_is_rejected(monkeypatch):
-    # install_api_error_handlers maps validation errors to a 400 OpenAI envelope on /v1.
     cli, calls, saved = _make_client(monkeypatch)
     resp = cli.post("/v1/audio/speech", json = {"input": ""})
     assert resp.status_code == 400
@@ -143,7 +141,6 @@ def test_empty_input_is_rejected(monkeypatch):
 
 
 def test_core_error_propagates(monkeypatch):
-    # "No model loaded" from the TTS core keeps its status through the route.
     async def _no_model(text):
         raise HTTPException(status_code = 400, detail = "No model loaded.")
 
@@ -154,7 +151,6 @@ def test_core_error_propagates(monkeypatch):
 
 
 def test_wav_duration_seconds_reads_header():
-    # A real 1-second 24 kHz mono WAV reports ~1.0s.
     import io
     import wave
 
@@ -165,7 +161,6 @@ def test_wav_duration_seconds_reads_header():
         out.setframerate(24000)
         out.writeframes(b"\x00\x00" * 24000)
     assert routes_module._wav_duration_seconds(buf.getvalue(), 24000) == 1.0
-    # Unreadable bytes fall back to the 16-bit mono PCM estimate.
     fallback = routes_module._wav_duration_seconds(b"\x00" * (44 + 48000), 24000)
     assert fallback == 1.0
 
@@ -199,8 +194,7 @@ def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
     budget = routes_module._tts_max_new_tokens(payload, text)
 
     assert budget < 2048
-    # Minus the codec wrapper too: the backends generate from a formatted prompt, not the
-    # raw text, so budgeting the whole remainder left the few delimiter tokens to overflow.
+    # Minus the codec wrapper too: backends generate from a formatted prompt.
     assert budget == (
         2048 - routes_module._prompt_token_estimate(text) - routes_module._TTS_PROMPT_FORMAT_RESERVE
     )
@@ -218,7 +212,6 @@ def test_an_over_context_prompt_is_a_client_error(monkeypatch):
 
     assert excinfo.value.status_code == 400
     assert "too long" in str(excinfo.value.detail).lower()
-    # A normal line is untouched.
     routes_module._raise_if_prompt_leaves_no_speech_budget("A short line.")
 
 
@@ -298,7 +291,6 @@ def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatc
 
     remaining = {clip["id"] for clip in gallery.list_audio()}
     assert len(remaining) == 3
-    # Newest kept, oldest dropped.
     assert set(ids[-3:]) == remaining
 
 
@@ -353,9 +345,6 @@ def test_unreachable_subprocess_tokenizers_use_a_conservative_byte_budget():
         "你好世界" * 50,
     ):
         assert estimate(text) == len(text.encode("utf-8"))
-
-
-# ── External connection proxying (provider_id) ───────────────────
 
 
 def _install_external(
@@ -415,8 +404,8 @@ def test_provider_id_routes_to_external_endpoint(monkeypatch):
     assert resp.status_code == 200
     assert resp.content == b"external-audio"
     assert resp.headers["content-type"].startswith("audio/wav")
-    assert calls == []  # the local TTS core never runs
-    assert saved == []  # external clips skip the gallery
+    assert calls == []
+    assert saved == []
     assert created[0]["base_url"] == "http://tts.local:8880/v1"
     assert created[0]["provider_type"] == "custom"
     assert speech_calls[0]["model"] == "kokoro"
@@ -916,8 +905,7 @@ def test_external_rejects_a_cross_process_provider_edit_after_resolving_its_key(
         "display_name": "New TTS",
         "base_url": "http://new-tts.local:8880/v1",
     }
-    # A second process is not covered by provider_config_guard. It can update
-    # the row and then the secret while this process is resolving that secret.
+    # Another process can update the row then the secret mid-resolve; guard does not cover it.
     snapshots = iter((old_config, old_config, new_config))
     monkeypatch.setattr(routes_module.providers_db, "get_provider", lambda _pid: next(snapshots))
     monkeypatch.setattr(routes_module, "validate_provider_base_url", lambda url: url)
@@ -957,7 +945,6 @@ def test_speech_opens_a_monitor_row(monkeypatch):
     assert rows[0]["endpoint"] == "/v1/audio/speech"
     assert rows[0]["status"] == "completed"
     assert rows[0]["prompt_preview"] == "hello sloth"
-    # Relabelled to the loaded TTS model, not the informational body.model.
     assert rows[0]["model"] == "unsloth/orpheus-3b-0.1-ft"
 
 
@@ -988,7 +975,6 @@ def test_tts_failure_records_an_error_row(monkeypatch):
 
 
 def test_rejected_response_format_records_nothing(monkeypatch):
-    # Refused before any work, so it is not traffic the monitor should show.
     cli, calls, saved = _make_client(monkeypatch)
     api_monitor.clear()
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "wma"})
@@ -997,7 +983,6 @@ def test_rejected_response_format_records_nothing(monkeypatch):
 
 
 def test_client_abort_records_a_cancelled_row(monkeypatch):
-    # The disconnect watcher turns a client abort into a 499, not a CancelledError.
     async def _cancelled(text):
         raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
 
@@ -1039,7 +1024,6 @@ def test_a_failure_before_the_relabel_does_not_leak_the_requested_path(
 
 
 def test_an_ordinary_model_id_is_still_recorded_verbatim(monkeypatch):
-    # The redaction must not rewrite the ids clients actually send.
     cli, calls, saved = _make_client(monkeypatch, generate = _boom)
     for requested in ("tts-1", "gpt-4o-mini-tts", "unsloth/orpheus-3b-0.1-ft"):
         api_monitor.clear()

@@ -68,7 +68,6 @@ def test_amd_host_imports_the_missing_rocm_vars(linux, monkeypatch):
         "USE_CK": "0",
     }
     assert environ["HSA_OVERRIDE_GFX_VERSION"] == "11.0.0"
-    # PATH is src-tauri's, deliberately built; taking it here would overwrite it.
     assert environ["PATH"] == "/gui/bin"
 
 
@@ -79,13 +78,11 @@ def test_a_variable_already_set_is_never_overwritten():
 
 
 def test_a_variable_exported_empty_counts_as_set():
-    # Replacing an exported empty would be this module choosing a device.
     shell = {"HIP_VISIBLE_DEVICES": "0,1"}
     assert dse.select_missing_vars({"HIP_VISIBLE_DEVICES": ""}, shell) == {}
 
 
 def test_an_empty_mask_in_the_shell_is_imported_as_empty():
-    # An exported empty hides every agent; dropping it hands back the cards.
     assert dse.select_missing_vars({}, {"ROCR_VISIBLE_DEVICES": ""}) == {"ROCR_VISIBLE_DEVICES": ""}
 
 
@@ -101,7 +98,6 @@ def test_only_allowlisted_names_are_imported():
 
 
 def test_the_allowlist_carries_no_other_vendor():
-    # One of these on the list changes a GUI launch on someone else's stack.
     forbidden = ("CUDA", "NVIDIA", "NCCL", "ONEAPI", "SYCL", "LEVEL_ZERO", "MLX", "METAL")
     offenders = [
         name
@@ -152,7 +148,6 @@ def test_a_real_login_shell_round_trips_a_value(tmp_path, monkeypatch):
         encoding = "utf-8",
     )
     shim = tmp_path / "shell.sh"
-    # Stands in for a login shell: takes -ilc and sources an rc file first.
     shim.write_text(
         "#!/bin/sh\n" f'. "{rc}"\n' "shift 1\n" 'exec /bin/sh -c "$1"\n',
         encoding = "utf-8",
@@ -169,7 +164,6 @@ def test_a_real_login_shell_round_trips_a_value(tmp_path, monkeypatch):
     not sys.platform.startswith("linux"), reason = "the KFD topology only exists on Linux"
 )
 def test_the_amd_probe_answers_from_the_kernel_without_torch():
-    # No assertion about the answer: this box may or may not have an AMD GPU.
     assert dse.host_has_amd_gpu() in (True, False)
 
 
@@ -179,7 +173,6 @@ def test_a_launch_the_desktop_app_does_not_own_reads_no_shell(linux, monkeypatch
 
     monkeypatch.setattr(dse, "host_has_amd_gpu", _explode)
     monkeypatch.setattr(dse, "read_login_shell_env", _explode)
-    # A terminal, a systemd unit, a container: none carry the marker.
     for environ in ({}, {dse.DESKTOP_MANAGED_ENV: "0"}, {dse.DESKTOP_MANAGED_ENV: ""}):
         before = dict(environ)
         assert dse.import_rocm_env_from_login_shell(environ = environ) == {}
@@ -286,7 +279,6 @@ def test_an_override_the_install_cannot_serve_is_not_imported(linux, monkeypatch
 
 
 def test_an_override_the_install_can_serve_is_imported(linux, monkeypatch):
-    # 11.0.0 is gfx1100, and these wheels carry gfx1100 kernels.
     _shell_with_the_reporters_override(monkeypatch)
     environ = desktop(**{dse.ROCM_INSTALLED_ARCH_ENV: "gfx1100"})
     imported = dse.import_rocm_env_from_login_shell(environ = environ)

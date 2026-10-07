@@ -24,7 +24,6 @@ from core.inference.llama_cpp import LlamaCppBackend
 
 GIB = 1 << 30
 MIB = 1 << 20
-# What a DGX Spark actually reports.
 SPARK_TOTAL_BYTES = 124609 * MIB
 SPARK_TOTAL_GB = round(SPARK_TOTAL_BYTES / GIB, 2)
 
@@ -87,15 +86,11 @@ def _spark_gpu_memory(
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: available_mib)
     )
-    # The cgroup probe is a SECOND, independent read of the host, so leaving it live
-    # would let the machine running the suite decide the answer: under a container with
-    # a memory.max below the mocked pool these cases fail while claiming to be hermetic.
-    # Stubbed to the value the case is about, None (unconstrained) unless it says.
+    # Stub the cgroup probe too, or the runner's own memory.max decides the answer.
     monkeypatch.setattr(
         LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: cgroup_mib)
     )
-    # nvidia-smi answers [N/A] for both memory columns on a Spark, so every row is
-    # unparseable and the probe falls through to torch. Absent is the same path.
+    # A Spark's nvidia-smi answers [N/A] for memory, so the probe falls through to torch.
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
         lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no nvidia-smi")),
@@ -109,9 +104,7 @@ def test_gguf_fit_does_not_lose_the_pool_to_the_page_cache(monkeypatch):
 
     index, free_mib, total_mib = gpus[0]
     assert index == 0
-    # 118451 available, less the 1 GiB integrated host reserve. Was 28485.
     assert free_mib == 118451 - 1024
-    # An integrated part keeps its total: unlike a ROCm APU's, it IS the whole pool.
     assert total_mib == 124609
 
 
@@ -129,9 +122,6 @@ def test_gguf_fit_never_exceeds_the_pool(monkeypatch):
     )
 
     assert gpus[0][1] == 124609 - 1024
-
-
-# ── a host that is not one of these parts must be untouched ──────────────────
 
 
 def test_discrete_cuda_keeps_the_whole_free_reading(monkeypatch):
@@ -155,7 +145,6 @@ def test_discrete_cuda_keeps_the_whole_free_reading(monkeypatch):
         lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no nvidia-smi")),
     )
 
-    # Untouched by both the 1 GiB reserve and the low host figure beside it.
     assert LlamaCppBackend._get_gpu_memory() == [(0, 29509, 81559)]
 
 
@@ -201,11 +190,9 @@ def test_the_unified_preflight_reaches_an_integrated_cuda_soc(monkeypatch):
 
     assert LlamaCppBackend._integrated_cuda_unified_memory(None) is True
     assert LlamaCppBackend._integrated_cuda_unified_memory([0]) is True
-    # 180 GiB of weights against 118 GiB of pool: the message the preflight now reaches.
     message = LlamaCppBackend._apu_ram_shortfall_message(180 * GIB, 118 * 1024, part = "SoC")
     assert message is not None
     assert "unified-memory SoC" in message
-    # A Spark is aarch64 Linux and a Jetson is not a PC: neither runs under WSL.
     assert ".wslconfig" not in message
 
 
@@ -373,9 +360,7 @@ def test_a_device_that_did_not_answer_is_not_settled(monkeypatch):
     module.cuda.get_device_properties = _properties
     monkeypatch.setitem(_sys.modules, "torch", module)
 
-    # The answer still comes back, so a card that cannot be queried keeps its default.
     assert LlamaCppBackend._integrated_cuda_gpu_ids() == {0}
-    # ...but the preflight is told there is nothing free to read.
     assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
 
 
@@ -443,12 +428,9 @@ def test_the_preflight_needs_every_credited_device_to_share_the_pool(monkeypatch
     )
     monkeypatch.setitem(_sys.modules, "torch", module)
 
-    # Any: true, which is right for the double-count question the tensor-spill guard asks.
     assert LlamaCppBackend._integrated_cuda_unified_memory([0, 1]) is True
-    # Every: false, which is what this guard needs.
     assert LlamaCppBackend._integrated_cuda_selection_is_all_shared([0, 1]) is False
     assert LlamaCppBackend._integrated_cuda_selection_is_all_shared([0]) is True
-    # Nothing pinned means every visible device, and one of them is discrete.
     assert LlamaCppBackend._integrated_cuda_selection_is_all_shared(None) is False
 
 
@@ -474,11 +456,7 @@ def test_an_equal_cgroup_remainder_is_still_the_ceiling(monkeypatch):
     )
 
     assert gpus[0][1] == 16384 - 1024
-    # The host-wide total here would reserve several GiB the container cannot reach.
     assert gpus[0][2] == 0
-
-
-# ── one pool, more than one device drawing on it ──
 
 
 def _two_integrated_torch(free_mib: int, total_mib: int) -> types.ModuleType:
@@ -495,12 +473,6 @@ def _two_integrated_torch(free_mib: int, total_mib: int) -> types.ModuleType:
 
 
 def test_two_integrated_devices_do_not_each_claim_the_whole_pool(monkeypatch):
-    # Every figure the integrated arm computes -- MemAvailable, the cgroup
-    # remainder, the pool total -- describes the WHOLE host. Handing it to each
-    # device in turn lets a caller that sums across cards commit the same bytes
-    # twice, and the fit then sizes a load against memory that does not exist.
-    # No shipping product pairs two integrated SoCs, so this is a guard rather
-    # than a reproduction, and it costs a division by 1 everywhere else.
     for mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         monkeypatch.delenv(mask, raising = False)
     monkeypatch.setitem(sys.modules, "torch", _two_integrated_torch(1590, 124609))
@@ -519,12 +491,10 @@ def test_two_integrated_devices_do_not_each_claim_the_whole_pool(monkeypatch):
     gpus = LlamaCppBackend._get_gpu_memory()
 
     assert len(gpus) == 2
-    # The pool is offered once, not once per device.
     assert sum(free for _idx, free, _total in gpus) <= 61850
     assert sum(total for _idx, _free, total in gpus) <= 124609
 
 
 def test_a_single_integrated_device_is_not_divided(monkeypatch):
-    # The guard above must be invisible on every machine that actually exists.
     gpus = _spark_gpu_memory(monkeypatch, driver_free_mib = 1590, available_mib = 61850)
     assert gpus == [(0, 61850 - 1024, 124609)]

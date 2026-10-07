@@ -91,8 +91,7 @@ def _terminal_probe(selected_executable: str, workdir: Path, canary: Path, outsi
     name = Path(selected_executable).name.casefold()
     read_capture = workdir / "outside-read.txt"
     if _is_cmd(selected_executable):
-        # The quoted redirect is the positive control for quoting: a command line that mangles quotes
-        # also fails the denied read and write below, which would otherwise pass without isolation.
+        # Quoted redirect is the quoting positive control, else denied read/write pass vacuously
         command = (
             "echo ok>inside.txt"
             ' & echo ok>"inside quoted.txt"'
@@ -250,7 +249,6 @@ def _probe(
                 lease = None
         grant_lease = None
         try:
-            # The probe reads Python through the same grants, so a revocation waits for it too.
             grant_lease = mxc_read_grants.hold_if_needed()
             request = (
                 mxc_policy.build_launch_request(probe_plan, cwd_alias = lease.root)
@@ -285,7 +283,7 @@ def _probe(
                     continue
             proc._unsloth_completion_reason = "finished"
             result = mxc_adapter.completion_result(proc)
-        except Exception as exc:  # capability result, never a workload fallback decision
+        except Exception as exc:
             return False, f"the live MXC probe failed: {type(exc).__name__}: {exc}"
         finally:
             if "proc" in locals():

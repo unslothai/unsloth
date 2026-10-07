@@ -45,7 +45,6 @@ def test_the_sources_list_names_the_running_session(client):
     assert body["default_source_id"]
     assert any(s["label"] == path.name and s["is_current"] for s in body["sources"])
     assert any(s["realpath"] == str(path.resolve()) for s in body["sources"])
-    # the logs directory itself, not the logs/server folder the log sits in
     assert body["log_root"] == str(path.resolve().parent.parent)
 
 
@@ -163,9 +162,6 @@ def test_the_endpoints_stay_out_of_the_access_log():
     suppression each poll appends a line the next poll reads back."""
     from loggers.handlers import _is_quiet_success
 
-    # Behaviour, not membership: these go through _SELF_READ_PATHS rather than
-    # _QUIET_SUCCESS_PATHS because --verbose must not lift them.
-    # test_debug_log_self_feedback.py proves it over the real middleware.
     assert _is_quiet_success("GET", "/api/settings/debug/logs", 200, False) is True
     assert _is_quiet_success("GET", "/api/settings/debug/logs/sources", 200, False) is True
 

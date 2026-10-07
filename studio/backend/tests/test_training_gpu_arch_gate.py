@@ -233,7 +233,6 @@ class TestFailsOpen:
         ids = ["no_arch_attribute", "properties_raise"],
     )
     def test_an_unreadable_device_is_not_an_all_uncovered_host(self, monkeypatch, no_mask, second):
-        # The unread device is still selectable, so this is not "every GPU" (#8792).
         _install(monkeypatch, _fake_torch([_props("gfx1036"), second]))
         assert rocm_gpu_ids_without_torch_kernels() == {0}
 
@@ -335,8 +334,7 @@ class TestTheOrdinalToIdMapMustBeTotal:
         assert gpu_ids == [2]
 
     def test_amd_smi_undercounting_still_gates(self, monkeypatch, no_mask):
-        # No mask, so the short list is only amd-smi missing the iGPU; bailing out here
-        # would disable the fix on the very host #8792 reports.
+        # No mask, so the short list is amd-smi missing the iGPU.
         monkeypatch.setattr(_hw_module, "get_physical_gpu_count", lambda: 1)
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
         assert rocm_gpu_ids_without_torch_kernels() == {1}
@@ -536,8 +534,7 @@ class TestThePinLandsOnTheKeptCard:
             assert os.environ["HIP_VISIBLE_DEVICES"] == "1"
 
     def test_an_inherited_cuda_mask_is_already_relative(self, monkeypatch):
-        # rocclr already read this as the HIP mask, so translating again writes "0":
-        # ROCr agent 0, physical 1, the card the parent hid.
+        # rocclr already read this as the HIP mask; translating again maps it twice.
         with patch.dict(os.environ):
             self._rocr(monkeypatch, "1,0")
             os.environ["CUDA_VISIBLE_DEVICES"] = "1"

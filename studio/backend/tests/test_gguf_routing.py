@@ -15,7 +15,6 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
-# Stub structlog before importing backend modules (as in other suite tests)
 if "structlog" not in sys.modules:
 
     class _DummyLogger:

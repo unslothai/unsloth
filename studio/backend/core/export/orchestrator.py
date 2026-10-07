@@ -31,15 +31,12 @@ logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
 
-# Max log lines kept per orchestrator (live log panel scrollback); ~1 MB worst-case.
 _LOG_BUFFER_MAXLEN = 4000
 
-# How long an export op may go without a single log or status line before the worker is treated as
-# dead. Not how long an export may run: a reporting worker resets it on every line.
+# Inactivity budget (no log/status line), not a total runtime cap.
 _EXPORT_INACTIVITY_TIMEOUT = 3600.0
 
-# Teardown is a bounded amount of work, so it is capped outright rather than by silence: the log
-# gate an export opens is never closed, and teardown chatter would otherwise renew this forever.
+# Capped outright: teardown chatter would otherwise renew an inactivity timer forever.
 _CLEANUP_TIMEOUT = 30.0
 
 
@@ -52,28 +49,21 @@ class ExportOrchestrator:
         self._proc: Optional[mp.Process] = None
         self._cmd_queue: Any = None
         self._resp_queue: Any = None
-        # Serializes export ops so concurrent HTTP requests can't interleave commands.
         self._lock = threading.Lock()
 
         self.current_checkpoint: Optional[str] = None
         self.is_vision: bool = False
         self.is_peft: bool = False
 
-        # Thread-safe ring buffer of worker log lines; powers the export logs SSE endpoint.
         self._log_buffer: Deque[Dict[str, Any]] = deque(maxlen = _LOG_BUFFER_MAXLEN)
         self._log_lock = threading.Lock()
-        # Monotonic seq, never reset, so SSE clients have a stable cursor across clear_logs().
+        # Never reset, so SSE clients keep a stable cursor across clear_logs().
         self._log_seq: int = 0
-        # SSE defaults its cursor here so a late-connecting client still sees the full run.
         self._run_start_seq: int = 0
-        # True while an export op runs; SSE ends the stream 1s after this flips False.
         self._export_active: bool = False
-        # Set by cancel_export(); reset when a new load/export run starts. Lets the caller distinguish a
-        # user cancel from a genuine subprocess crash.
         self._cancel_requested: bool = False
 
-        # Kept so a client whose blocking POST was cut by a tunnel 524 can poll /api/export/status; _op_seq
-        # is the monotonic baseline for "my op finished".
+        # Lets a client whose POST was cut by a tunnel 524 poll /api/export/status.
         self._op_lock = threading.Lock()
         self._op_seq: int = 0
         self._active_op_kind: Optional[str] = None
@@ -81,8 +71,6 @@ class ExportOrchestrator:
 
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
-
-    # ------------------------------------------------------------------
 
     def _clear_account_result(self):
         self.current_checkpoint = None
@@ -207,21 +195,18 @@ class ExportOrchestrator:
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:
-        # Export does not evict loaded models; at least free an idle resident H3 sd-server.
         try:
             from core.inference.video_minimax_h3 import release_h3_native_servers
             release_h3_native_servers("export subprocess starting")
         except Exception as exc:  # noqa: BLE001 - never block an export on this
             logger.warning("Could not release the idle video sd-server for export: %s", exc)
-        # Inside an op a reservation is an install about to abort on is_export_active(), so raising here
-        # would kill the export for an install that never proceeds.
+        # Inside an op the install aborts on is_export_active(), so do not raise here.
         from utils.transformers_version import sidecar_swap_in_progress
 
         from utils.transformers_version import sidecar_swap_kind
 
         _swap_kind = sidecar_swap_kind()
-        # An INSTALL reservation aborts on the is_export_active check, but a lazy REPAIR has none and may
-        # be rebuilding the sidecar right now, so always refuse the spawn.
+        # A lazy REPAIR has no is_export_active check and may be rebuilding the sidecar now.
         if _swap_kind == "repair" or (_swap_kind is not None and not self._export_active):
             from utils.transformers_version import SidecarSwapInProgress
             raise SidecarSwapInProgress(
@@ -237,9 +222,7 @@ class ExportOrchestrator:
 
         cache_env = get_hf_cache_paths().child_env({})
 
-        # An export admitted before the quit can still reach this line after the shutdown
-        # sweep has taken its snapshot, and the worker adopted below would then outlive
-        # Studio holding the model in memory.
+        # An export admitted before quit can reach here after the shutdown sweep snapshot.
         if is_process_shutting_down():
             raise RuntimeError("Unsloth is shutting down; not starting an export subprocess")
 
@@ -260,10 +243,7 @@ class ExportOrchestrator:
                     "config": config,
                 },
             )
-            # Kept in a local as well as on self: a concurrent _shutdown_subprocess can
-            # see a process that has not finished starting, decide it is not alive and
-            # clear self._proc, and every read below would then be off a None while the
-            # worker is alive and unadopted.
+            # Kept in a local: a concurrent _shutdown_subprocess may clear self._proc mid-start.
             _spawned_proc = _CTX.Process(
                 target = run_without_native_path_secret,
                 args = process_args,
@@ -275,11 +255,7 @@ class ExportOrchestrator:
         from utils.process_lifetime import adopt_pid, forget_pid
 
         adopt_pid(_spawned_proc.pid)
-        # Recheck once the pid is recorded, for the window between the gate above and
-        # this record. Adoption runs first, so a worker torn down here was in the sweep
-        # record for as long as it existed. The handle check catches the other half of
-        # the race: a teardown that already cleared or replaced self._proc leaves this
-        # worker with no owner, so reap it here rather than let it run on.
+        # Recheck after recording the pid; reap the worker if a teardown already replaced self._proc.
         if is_process_shutting_down() or self._proc is not _spawned_proc:
             logger.info("shutdown began during the spawn; stopping the new export subprocess")
             if self._proc is _spawned_proc:
@@ -344,7 +320,6 @@ class ExportOrchestrator:
                     pass
 
         if self._proc is not None and self._proc.is_alive():
-            # Survived SIGKILL: keep the handle so callers and the pre-swap guard see a live worker.
             logger.error(
                 "Export subprocess still alive after terminate/kill; "
                 "preserving its handle for the pre-swap liveness check"
@@ -429,8 +404,6 @@ class ExportOrchestrator:
 
             if rtype == "status":
                 message = resp.get("message", "")
-                # One structured export_progress line per phase (consolidated in the server log, like
-                # training/download progress); also shown live.
                 if message:
                     logger.info("export_progress", phase = message)
                     self._append_log(
@@ -468,8 +441,6 @@ class ExportOrchestrator:
                 return events
             except (EOFError, OSError, ValueError):
                 return events
-
-    # ------------------------------------------------------------------
 
     @owned_job()
     def load_checkpoint(
@@ -514,20 +485,17 @@ class ExportOrchestrator:
         }
         from utils.hardware import get_device, gpu_ids_with_torch_kernels
 
-        # Prevent export from sharding onto GPUs with missing kernels (#11870).
         sub_config["resolved_gpu_ids"] = gpu_ids_with_torch_kernels()
         sub_config["device_backend"] = get_device().value
 
         with self._lock:
-            # Fresh log buffer so the UI sees only this run's output.
             self.clear_logs()
             self._cancel_requested = False
             self._active_op_kind = "load_checkpoint"
             self._export_active = True
             op_success, op_message = False, ""
             try:
-                # Handshake with the sidecar install route (see load_checkpoint): either this recheck refuses
-                # before tearing down the old worker, or the install sees is_export_active() and 409s.
+                # Sidecar install handshake: we refuse here, or the install sees is_export_active().
                 from utils.transformers_version import sidecar_swap_in_progress
 
                 if sidecar_swap_in_progress():
@@ -539,9 +507,7 @@ class ExportOrchestrator:
                     raise SidecarSwapInProgress(op_message)
                 if self._ensure_subprocess_alive():
                     if self._shutdown_subprocess() is False:
-                        # A survivor still holds GPU memory (a wedged CUDA syscall outliving SIGKILL) and its handle is
-                        # kept so is_worker_alive() still sees it, so do not spawn a second worker over it; fail so the
-                        # load can retry once it exits.
+                        # A survivor of SIGKILL still holds GPU memory; do not spawn a second worker over it.
                         op_message = (
                             "The current export worker did not exit and still holds GPU "
                             "memory; not starting a new checkpoint load over it. Retry shortly."
@@ -554,8 +520,6 @@ class ExportOrchestrator:
                 try:
                     self._spawn_subprocess(sub_config)
                 except Exception:
-                    # The old worker is already gone; a stale current_checkpoint would make the Export page claim a
-                    # loaded checkpoint that the next op then fails on with "No export subprocess running".
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
@@ -711,7 +675,7 @@ class ExportOrchestrator:
             self._export_active = True
             op_success, op_message, op_output_path = False, "", None
             try:
-                # Recheck before sending, else an install blocks in cleanup_memory behind a long export op.
+                # Recheck before sending, else an install blocks in cleanup_memory behind a long export.
                 from utils.transformers_version import sidecar_swap_in_progress
 
                 if sidecar_swap_in_progress():
@@ -724,10 +688,7 @@ class ExportOrchestrator:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
                     self._send_cmd(cmd)
-                    # Scaled by quant count because the budget is silence, not duration: a
-                    # multi-quant list runs every pass in one op, and the quant passes emit
-                    # nothing (Studio leaves UNSLOTH_ENABLE_LOGGING unset, which is what makes
-                    # save_pretrained_gguf quantize without streaming). One hour per silent pass.
+                    # Scaled by quant count: the budget is silence and each quant pass emits nothing.
                     _qm = params.get("quantization_method")
                     _n = len(_qm) if isinstance(_qm, (list, tuple)) and _qm else 1
                     resp = self._wait_response(

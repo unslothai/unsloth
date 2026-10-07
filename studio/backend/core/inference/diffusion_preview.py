@@ -92,7 +92,6 @@ def latent_grid(latents: Any, spec: LatentRGB, height: int, width: int) -> Any:
         n = int(latents.shape[1])
         if n < gh * gw or n % (gh * gw):
             return None
-        # Frame-major then row-major (diffusers _pack_latents).
         return latents[0, : gh * gw].reshape(gh, gw, spec.channels)
     if spec.layout == "bchw":
         if latents.ndim != 4 or latents.shape[1] != spec.channels:
@@ -121,7 +120,7 @@ def smooth_patch_grid(rgb: Any) -> Any:
     import torch.nn.functional as F
 
     chw = rgb.permute(2, 0, 1).unsqueeze(1)
-    # Built on the device from scalars: a host tensor would be a pageable copy, which synchronises.
+    # Built on device: a host tensor would be a pageable, synchronising copy.
     kernel = torch.full((1, 1, 3, 3), 1.0 / 16.0, device = rgb.device, dtype = rgb.dtype)
     kernel[..., 1, :] *= 2.0
     kernel[..., :, 1] *= 2.0
@@ -234,13 +233,11 @@ class LatentPreviewer:
         self._clock = clock
         self._publish = publish
         self._weight, self._bias = _device_map(spec, self.device)
-        # Pre-sized (with a margin for pipelines that round the size up): nothing is allocated in the loop.
+        # Pre-sized with margin for pipelines that round up: no allocation in the loop.
         side_h = (self.height // spec.down + 2) * spec.patch
         side_w = (self.width // spec.down + 2) * spec.patch
-        # to_uint8 output never exceeds the input or max_side on either side, whatever divisor it picks.
         cap = min(side_h, self.max_side) * min(side_w, self.max_side) * 3
         total = max(1, int(total_steps or 1))
-        # One slot per planned snapshot: with the host far ahead every one can be in flight at once.
         self.stride = max(1, math.ceil(total / max(1, int(max_snapshots))))
         n_slots = total // self.stride + 2
         pinned = torch.empty(n_slots * cap, dtype = torch.uint8, pin_memory = True)
@@ -248,7 +245,7 @@ class LatentPreviewer:
             {
                 "host": pinned[i * cap : (i + 1) * cap],
                 "event": torch.cuda.Event(),
-                "state": "free",  # free -> copying -> encoding -> free
+                "state": "free",
                 "shape": None,
                 "step": 0,
             }
@@ -336,7 +333,6 @@ class LatentPreviewer:
                 if not isinstance(index, int) or prev_index != index - 1:
                     prev = None
                 if prev is None and not final and _sigma_pair(scheduler) is not None:
-                    # No partner yet: skip rather than open on the raw noisy latent.
                     return
                 self._steps_seen += 1
                 if not final and (self._steps_seen - 1) % self.stride:

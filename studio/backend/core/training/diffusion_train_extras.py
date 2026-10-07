@@ -41,8 +41,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 
-# Effective decay is min(decay, (1 + updates) / (WARMUP_OFFSET + updates)); at offset 10 step 1 averages aggressively
-# (~0.18) and the ramp reaches 0.99 after ~1000 updates.
+# Effective decay = min(decay, (1 + n) / (WARMUP_OFFSET + n)).
 
 _EMA_WARMUP_OFFSET = 10.0
 
@@ -255,9 +254,7 @@ def _hub_cache_roots() -> list[str]:
     return roots
 
 
-# An in-place edit of any of these must change the fingerprint: text_encoder*/tokenizer* produce
-# the embeddings and vae* the latents. "connectors" is LTX-2's, the only family running a module
-# between encode_prompt and the DiT: its connector output, not the raw Gemma3 state, is cached.
+# In-place edits here must change the fingerprint; "connectors" is LTX-2's cached connector.
 _CACHE_SOURCE_SUBDIRS = ("text_encoder", "tokenizer", "vae", "connectors")
 
 
@@ -391,13 +388,10 @@ class PersistentConditioningCache:
             return None
 
 
-# Buckets snap to 64 pixels: the DiT families divide by 8 in the VAE and 2 again in latent patching, and regional
-# torch.compile prefers few distinct shapes.
+# VAE /8 and patching /2; compile prefers few distinct shapes.
 
 BUCKET_DIVISOR = 64
 
-# Widest aspect ratio a bucket may take; anything more extreme clamps to it (matching the common
-# practice of capping panoramas).
 MAX_BUCKET_RATIO = 2.0
 
 

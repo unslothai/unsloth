@@ -40,7 +40,6 @@ QUOTED = {
     # A span opened with N backticks closes on a run of N, so it is one span rather
     # than two empty pairs around live markup.
     "inline_double_backtick": 'Write ``get_weather[ARGS]{"command": "id"}`` as docs.',
-    # A lone backtick is valid content inside a doubled span, so only a run of two closes it.
     "inline_double_with_inner_backtick": (
         'Write ``get_weather[ARGS]{"command": "id"} and `x` `` as docs.'
     ),
@@ -52,8 +51,6 @@ QUOTED = {
 }
 
 
-# A real call must still run when the text around it only looks like a fence. These are the
-# opposite failure: over-suppression silently drops a tool call the user asked for.
 LIVE_AFTER = {
     # A backtick fence info string cannot contain backticks, so this opens an inline span,
     # not a fence running to EOF.

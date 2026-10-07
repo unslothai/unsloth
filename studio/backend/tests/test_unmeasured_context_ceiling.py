@@ -73,7 +73,6 @@ class TestTheTensorParallelFallback:
             TWO_80, 20 * GB, NATIVE, max_target_ctx = NATIVE, explicit_ctx = True
         )
         assert effective == NATIVE
-        # The pair the issue quotes from /v1/models: the ceiling may not contradict it.
         assert ceiling >= effective
 
     def test_auto_still_takes_the_conservative_fallback(self):
@@ -157,7 +156,6 @@ class TestTheNotice:
         source = inspect.getsource(LlamaCppBackend.load_model)
         func = ast.parse(textwrap.dedent(source)).body[0]
 
-        # Nothing hands the notice straight to the slot where it is decided.
         for node in ast.walk(func):
             if not (
                 isinstance(node, ast.Call)
@@ -188,10 +186,8 @@ class TestTheNotice:
         assert len(held) == 2, held
         assert len(flushed) == 1, flushed
 
-        # The flush is past this attempt's memory advisories, or it displaces one again.
-        # Named rather than "every _record_load_warning": the arch-crash retry's pair sits
-        # textually below the publish point but belongs to a later attempt, which clears
-        # the slot through _begin_load_warnings before recording anything.
+        # The flush must come after this attempt's memory advisories; the arch-crash retry's
+        # pair belongs to a later attempt.
         advisories = {
             arg.id: node.lineno
             for node in ast.walk(func)

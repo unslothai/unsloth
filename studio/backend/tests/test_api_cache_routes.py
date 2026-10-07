@@ -80,8 +80,6 @@ def test_a_purge_that_names_a_path_is_rejected(monkeypatch, client):
         "purge_caches",
         lambda keys: called.append(keys) or (_ for _ in ()).throw(ValueError("boom")),
     )
-    # No path field exists to send one through, and a path in the key list is
-    # simply not a key.
     response = client.post("/api/settings/caches/purge", json = {"paths": ["/"]})
     assert response.status_code == 422
     assert called == []
@@ -154,6 +152,5 @@ def test_an_api_key_caller_cannot_force_a_rescan(monkeypatch):
     remote = TestClient(app)
     assert remote.get("/api/settings/caches?refresh=true").status_code == 403
     assert asked == []
-    # ...and the ordinary read still answers it.
     assert remote.get("/api/settings/caches").status_code == 200
     assert asked == [False]

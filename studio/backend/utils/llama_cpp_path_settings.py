@@ -80,7 +80,6 @@ def llama_server_candidates(
     binary_name = llama_server_binary_name(platform)
     windows = (platform or sys.platform) == "win32"
     candidates = [root / binary_name]
-    # build/ first, then the per-backend build dirs a source checkout keeps side by side (#5941).
     for build in ("build", "build-cuda", "build-hip", "build-rocm", "build-vulkan"):
         candidates.append(root / build / "bin" / binary_name)
         if windows:
@@ -102,7 +101,7 @@ _GPU_BACKEND_LIB_RE = re.compile(
     r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$"
 )
 _CPU_BACKEND_LIB_RE = re.compile(r"^(?:lib)?ggml-(?:cpu|base)(?:[-.]|$)")
-# Backends bound to one vendor; vulkan, opencl and virtgpu run on any GPU.
+# Vendor-bound backends; vulkan, opencl and virtgpu run on any GPU.
 _BACKEND_VENDOR = {
     "cuda": "nvidia",
     "hip": "amd",
@@ -118,11 +117,10 @@ _WINDOWS_VENDOR_DLLS = {
     "intel": ("ze_intel_gpu64.dll", "igdrcl64.dll"),
 }
 _DRM_ROOT = "/sys/class/drm"
-# WSL2 reaches the GPU through /dev/dxg (no DRM card, no /dev/kfd or /dev/nvidiactl): the
-# vendor is the runtime that drives it, librocdxg for AMD and the WSL libcuda for NVIDIA.
+# WSL2 uses /dev/dxg; the vendor is the runtime: librocdxg (AMD) or WSL libcuda (NVIDIA).
 _WSL_ROCM_LIB_DIRS = ("/opt/rocm/lib", "/opt/rocm/lib64")
 _WSL_CUDA_LIB_DIR = "/usr/lib/wsl/lib"
-_HOST: Any = object()  # prefer_gpu_capable's default: read the vendors from this host
+_HOST: Any = object()
 
 
 def binary_gpu_backends(binary: Path | str) -> Optional[set[str]]:
@@ -191,8 +189,7 @@ def host_gpu_vendors() -> Optional[set[str]]:
         wsl_nvidia = wsl and any(Path(_WSL_CUDA_LIB_DIR).glob("libcuda.so*"))
         vendors |= {v for v, on in (("amd", wsl_amd), ("nvidia", wsl_nvidia)) if on}
         detected = set(vendors)
-        # A container that exposes only one vendor's device nodes, or a mask hiding a vendor,
-        # must not make its backend look runnable on a hybrid box.
+        # Hidden device nodes or a masking env var must not make a backend look runnable.
         if "nvidia" in vendors and (
             not (os.path.exists("/dev/nvidiactl") or wsl_nvidia)
             or _mask_hides_all("CUDA_VISIBLE_DEVICES")
@@ -257,7 +254,7 @@ def get_stored_custom_llama_cpp_path() -> Optional[Path]:
         from utils.account_context import OWNER, run_as
         value = run_as(OWNER, get_app_setting, CUSTOM_LLAMA_CPP_PATH_SETTING_KEY, None)
     except Exception:
-        # A settings DB problem must not take the bundled runtime down with it.
+        # A settings DB problem must not take the bundled runtime down.
         return None
     if not isinstance(value, str):
         return None

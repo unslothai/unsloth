@@ -45,11 +45,10 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 _INSTALL_TIMEOUT_SECONDS = 1800  # 30 min ceiling for download + build/validate
-# install_llama_prebuilt.py EXIT_NO_SPACE: out of disk, retrying will not help.
+# install_llama_prebuilt.py EXIT_NO_SPACE: retrying will not help.
 _EXIT_NO_SPACE = 4
-# A concrete backend selection could not be satisfied.
 _EXIT_BACKEND_UNAVAILABLE = 5
-# Prebuilt path failed; setup scripts source-build, but the in-app updater cannot.
+# Prebuilt failed; setup scripts source-build but the in-app updater cannot.
 _EXIT_FALLBACK = 2
 
 
@@ -67,7 +66,7 @@ _JOB_SUCCESS = _flow.JOB_SUCCESS
 _JOB_ERROR = _flow.JOB_ERROR
 
 _job_lock = threading.Lock()
-# Covers the whole operation including release/backend resolution before the worker starts. _job_lock only protects the status dict and must never be held across network work.
+# Spans the whole operation; _job_lock guards only status and is never held over network.
 _operation_lock = threading.Lock()
 _job: dict = _flow.new_job()
 _ALREADY_RUNNING_MESSAGE = "Another llama.cpp install is already running."
@@ -100,8 +99,6 @@ def _installer_script() -> Optional[Path]:
     )
 
 
-# Markerless (source-build) installs have no UNSLOTH_PREBUILT_INFO.json, so we
-# ask the installer whether an official prebuilt now exists for this host.
 _resolve_memo: dict = {}
 
 
@@ -148,7 +145,7 @@ def get_installed_llama_version() -> Optional[str]:
         tag = marker.get("release_tag") or marker.get("tag")
         if tag:
             return tag
-    # Markerless/source build: the fallback execs ``llama-server --version``. Skip it while an update is swapping the tree, since on Windows that exec can make the installer's os.replace fail; the panel just omits the row.
+    # Skip the --version exec during an update: on Windows it can break os.replace.
     with _job_lock:
         job_running = _job["state"] == _JOB_RUNNING
     if job_running:
@@ -173,17 +170,16 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
     if not res or not res.get("prebuilt_available"):
         return None
-    # llama_tag is the upstream bNNNN base whose numeric part matches --version's build field; release_tag is the full tag, either a same-base mix (bNNNN-mix-<sha>) or a fork wrapper (e.g. v1.0). Compare the numeric base against llama_tag.
+    # Compare llama_tag's numeric base (matches --version), not the full release_tag.
     base_tag = res.get("llama_tag") or res.get("release_tag")
     release_tag = res.get("release_tag")
     if not base_tag:
         return None
-    # No resolvable install root (e.g. a pinned LLAMA_SERVER_PATH we cannot manage) means an apply would not take effect, so do not offer.
     if _llama_install_root(binary) is None:
         return None
     installed_build = _installed_build_number(binary)
     latest_build = parse_base_build(base_tag)
-    # A same-base mix adds patches the bare base lacks, so it is newer even at an unchanged build number; the bNNNN anchor keeps a fork wrapper tag from being read as a mix.
+    # A same-base mix is newer than the bare base; the bNNNN anchor excludes fork tags.
     latest_is_mix = (
         isinstance(release_tag, str)
         and latest_build is not None
@@ -191,19 +187,16 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         and release_tag.strip() != f"b{latest_build}"
     )
     if installed_build is None or latest_build is None:
-        # Unknown installed/latest version (the involuntary source-build case): treat as behind so we still offer the prebuilt.
+        # Unknown version: treat as behind so the prebuilt is still offered.
         update_available = True
     elif installed_build < latest_build:
         update_available = True
     elif installed_build == latest_build:
-        # Same upstream base: offer the extra-patch mix, never a bare rebuild.
         update_available = latest_is_mix
     else:
-        # Source build newer than the latest prebuilt: downgrade guard.
+        # Downgrade guard: source build is newer than the latest prebuilt.
         update_available = False
-    # Display the mix tag when that's what makes it newer; otherwise the base.
     latest = release_tag if latest_is_mix else base_tag
-    # Size of the resolved prebuilt, so source builds show it like the marker path. Fails open to None (offline / asset absent).
     update_size_bytes = None
     if update_available:
         asset_name = res.get("asset")
@@ -328,18 +321,17 @@ def get_update_changelog(
         return empty
     repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
     installed_full = marker.get("release_tag") or marker.get("tag")
-    # force_refresh reaches only the exact release lookups. Refreshing the latest pointer would retarget a release the banner has not adopted, which it rejects.
+    # force_refresh only hits exact release lookups, not the latest pointer.
     freshness = check_prebuilt_freshness(binary)
     latest = freshness.get("latest_tag")
     empty["installed_tag"] = freshness.get("installed_tag")
     empty["latest_tag"] = latest
     if not freshness.get("behind") or not installed_full or not latest:
         return empty
-    # Answer about the caller's pair, not whatever the shared latest-release memo now holds: any other surface's forced status check advances it process-wide and the frontend rejects a mismatched answer, Retry included. Only while the install still matches.
+    # Answer for the caller's pair: the shared latest memo may have moved.
     if latest_tag and installed_tag and installed_tag == empty["installed_tag"]:
         latest = latest_tag
         empty["latest_tag"] = latest
-    # Offer the release page even when the comparison fails; GitHub can still show it.
     empty["release_url"] = release_page_url(repo, latest)
     try:
         result = changelog_for_update(
@@ -366,10 +358,10 @@ def _llama_only_status(
 ) -> dict:
     """The llama.cpp half of get_update_status (no whisper sub-status)."""
     binary = _find_binary()
-    # A path selected in Settings is user-managed even if its folder happens to contain an Unsloth prebuilt marker. Never offer to replace that tree.
+    # A Settings-selected path is user-managed; never offer to replace it.
     if _studio_custom_path_active():
         return _local_link_status()
-    # A --with-llama-cpp-dir local link is the user's own tree; never offer to replace it. Bail before any network/freshness work.
+    # A --with-llama-cpp-dir link is the user's own tree; never replace it.
     if _active_install_is_local_link(binary):
         return _local_link_status()
     marker = read_install_marker(binary)
@@ -378,7 +370,8 @@ def _llama_only_status(
     with _job_lock:
         job_running = _job["state"] == _JOB_RUNNING
 
-    # No marker = source build / custom path: offer the official prebuilt if one now exists for this host (this is why macOS source builds showed no button). Skipped while the updater swaps the tree, since each 3s poll would exec the half-replaced binary (on Windows that can make the installer's os.replace fail) and the poller only consumes job progress.
+    # No marker: offer the official prebuilt if one exists. Skip while updating, since
+    # exec of a half-replaced binary can break os.replace on Windows.
     if (
         marker is None
         and binary is not None
@@ -400,10 +393,8 @@ def _llama_only_status(
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
     latest = freshness.get("latest_tag")
-    # `behind` compares the full release identity with a base-build guard, so a lagging /releases/latest or a mix-tagged latest cannot show a false update (llama_cpp_freshness.is_behind).
     update_available = bool(freshness.get("has_marker") and freshness.get("behind"))
 
-    # Size of the prebuilt Update would download, for the banner. Only when an update is offered; fails open to None.
     update_size_bytes = None
     if update_available:
         try:
@@ -416,7 +407,7 @@ def _llama_only_status(
         except Exception as exc:  # pragma: no cover - network defensive
             logger.debug("llama update: size lookup failed", error = str(exc))
 
-    # An automatic install whose detection now resolves elsewhere; nothing else surfaces it. Skipped while a job runs, and when an update is offered: that update re-detects.
+    # Offer a pending auto-backend migration; an offered update re-detects anyway.
     to_backend = (
         None
         if job_running or update_available or checks_disabled
@@ -548,7 +539,7 @@ def _pending_backend_migration(
         return None
     _override = _env_backend_override()
     if _override is not None and _override != "auto":
-        # The environment owns the backend, so an offer could not be applied. "auto" is the exception: it asks for the detection the migration re-applies.
+        # The environment owns the backend, except "auto" which re-applies detection.
         return None
     if marker_backend_request(marker) != "auto":
         return None
@@ -567,7 +558,7 @@ def _pending_backend_migration(
     auto = next((option for option in options if option["backend"] == "auto"), None)
     target = (auto or {}).get("resolved_backend")
     if target == "cpu" and marker_backend(marker) not in (None, "cpu"):
-        # An empty probe and a host that really lost its GPU look identical from here, and moving a working GPU install onto CPU is the costly side of that. Settings can.
+        # An empty probe may be a probe failure; never move a GPU install to CPU from here.
         return None
     return target
 
@@ -585,7 +576,6 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         "env_backend": _env_backend_override(),
         "backend": marker_backend(marker),
         "backend_request": marker_backend_request(marker),
-        # Only the resolver can tell that an automatic choice has drifted, so an unresolved status must not invite an apply.
         "selection_applied": True,
         "installed_tag": (marker or {}).get("release_tag") or (marker or {}).get("tag"),
         "options": [],
@@ -604,7 +594,7 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         _install_dir_for(binary),
         force_refresh = force_refresh,
         published_repo = repo,
-        # The same recovery the update-status path uses, or the picker describes a different host: no arch here reads an AMD box with no probes as CPU-only, so Settings offers an Automatic that installs something else.
+        # Same rocm_gfx recovery as the status path, or an AMD box reads as CPU-only.
         rocm_gfx = _remembered_rocm_gfx(marker),
     )
     if not resolved:
@@ -641,7 +631,7 @@ def _run_llama_phase(
     marked = []
     model_was_active = False
     mtmd_guard = ExitStack()
-    # The installer exits 0 for a transient failure it answered by keeping the tree, so success no longer implies a new release. Read as the post-install check reads it.
+    # The installer exits 0 when it keeps the tree, so success does not imply a new release.
     prior_marker = read_install_marker(_find_binary())
     prior_tag = (prior_marker or {}).get("release_tag") or (prior_marker or {}).get("tag")
     try:
@@ -665,7 +655,6 @@ def _run_llama_phase(
                 logger.debug("llama update: load coordination failed", error = str(exc))
         from core.inference import model_slots
 
-        # Each kept model's in-flight load drains under its own lock, as the primary's did above.
         for slot in list(model_slots.slots):
             with slot.llama._serial_load_lock:
                 slot.llama._llama_update_in_progress = True
@@ -674,11 +663,11 @@ def _run_llama_phase(
             if model_slots.unload_llama_slots(strict = True):
                 model_was_active = True
         except RuntimeError:
-            # A kept server that survived would run from, or lock, the tree being replaced.
+            # A surviving server would run from, or lock, the tree being replaced.
             model_was_active = True
             raise
 
-        # The mtmd dictation sidecar serves Qwen3-ASR from this same llama-server out of this same tree, so a live one locks the exe on Windows and a concurrent load would start against a half-swapped install.
+        # The mtmd sidecar runs llama-server from this tree and would lock it on Windows.
         model_was_active = _block_mtmd_sidecar(mtmd_guard) or model_was_active
 
         cmd = [
@@ -701,7 +690,7 @@ def _run_llama_phase(
         if backend_request is not None:
             env.pop("UNSLOTH_FORCE_VULKAN", None)
             env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend_request
-        # A Vulkan asset name carries no arch, so the marker is the only record of the gfx an automatic AMD route used. Automatic only: elsewhere the asset has the arch and replaying it would assert ROCm on a host whose AMD GPU is gone. Advisory even then, applied only if this host's own probe finds none.
+        # Vulkan assets carry no arch, so replay the marker's gfx for automatic AMD routes only.
         if rocm_gfx and llama_backend == "auto":
             env["UNSLOTH_ROCM_GFX_REMEMBERED"] = rocm_gfx
         _flow.stream_installer(
@@ -711,7 +700,6 @@ def _run_llama_phase(
             timeout_seconds = _INSTALL_TIMEOUT_SECONDS,
         )
 
-        # Drop stale caches so the banner re-checks the swapped marker. If GitHub is offline, latest stays unknown and the banner fails open.
         reset_caches(drop_disk = True)
         _backends_memo.clear()
         try:
@@ -751,7 +739,7 @@ def _run_llama_phase(
                 )
 
         kept_existing = backend_request is None and new_tag is not None and new_tag == prior_tag
-        # A migration asks for "auto", so it can land back where it started (the ROCm fallback behind the preference), which would read as applied and be re-offered.
+        # A migration to "auto" may land where it started; that must not read as applied.
         migration_kept = bool(migration_target) and new_backend != migration_target
         logger.info(
             "llama update: success",
@@ -769,7 +757,6 @@ def _run_llama_phase(
         elif backend_request is not None:
             message = f"llama.cpp is now running on {new_backend or backend_request}.{reload_hint}"
         elif kept_existing:
-            # The phase only runs when a newer release was offered, so naming the kept release as current would send the user looking for a fix it does not have.
             message = (
                 f"llama.cpp could not be updated right now, so the existing {new_tag} "
                 "install was kept. Try again later."
@@ -794,13 +781,11 @@ def _run_llama_phase(
             ) from exc
         if exc.returncode == _EXIT_BACKEND_UNAVAILABLE:
             failed_backend = backend_request or _env_backend_override()
-            # "requested" reads as the user's choice; an automatic update has none.
             backend_label = (
                 f"{failed_backend} "
                 if failed_backend is not None and failed_backend != "auto"
                 else ""
             )
-            # The reason, as every sibling branch does: otherwise the record is "null".
             logger.warning(
                 "llama update: backend unavailable",
                 backend = failed_backend,
@@ -813,7 +798,7 @@ def _run_llama_phase(
             ) from exc
         if exc.returncode == _EXIT_FALLBACK:
             message = str(exc)
-            # Same predicate the formatter uses: exit 2 also carries failures like a rate-limited huggingface.co validation-model fetch, which GH_TOKEN cannot fix.
+            # Same predicate the formatter uses: exit 2 also covers failures GH_TOKEN cannot fix.
             if _flow.is_github_rate_limit_text(message):
                 token_present = _flow.github_token_present(env)
                 logger.warning("llama update: GitHub rate limit", authenticated = token_present)
@@ -844,8 +829,6 @@ def _run_llama_phase(
         raise
     finally:
         mtmd_guard.close()
-        # A kept slot serving a non-GGUF model stays loaded through the update; its llama backend
-        # must not stay refused once the update is done.
         for llama in (backend, *marked):
             if llama is not None:
                 try:
@@ -864,7 +847,7 @@ def _block_mtmd_sidecar(stack: ExitStack) -> bool:
         return False
 
 
-# Combined-job progress split when both phases run (the llama bundle dwarfs the whisper one); normalized to 0..1 when a phase is skipped.
+# Llama/whisper progress split; renormalized when a phase is skipped.
 _LLAMA_PHASE_WEIGHT = 0.7
 _WHISPER_PHASE_WEIGHT = 0.3
 
@@ -885,7 +868,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
                 ),
             },
         }
-    # Refuse to update a --with-llama-cpp-dir local link: installing a prebuilt here would write through the link into the user's own checkout (or fail) and silently drop the link.
+    # Never update through a --with-llama-cpp-dir link: it would write into the user's tree.
     if _active_install_is_local_link(binary):
         return {
             "skip_reason": "local_link",
@@ -911,7 +894,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         }
 
     if marker:
-        # Mirror the detection guard: a direct POST or a stale banner must not start an install when the latest is not actually newer (force a fresh check so a stale 24h cache cannot wrongly block a real update either). A switch replaces the backend at the same release.
+        # Force-refresh check: a direct POST must not install when latest is not newer.
         migration = False
         migration_target = None
         status = (
@@ -923,7 +906,6 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             )
         )
         if backend_request is None and not status.get("update_available"):
-            # Nothing newer to install, but "auto" can resolve elsewhere now. Re-asking for "auto" keeps it automatic, so rocm_gfx and the crash recovery survive.
             migration_target = _pending_backend_migration(binary, marker)
             if migration_target is None:
                 return {
@@ -943,9 +925,11 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
         llama_backend = marker.get("llama_backend")
-        # Recovered, not read: the status path offers the migration through _remembered_rocm_gfx, so an apply reading the bare field would re-resolve without the arch on exactly the host the recovery exists for, and refuse the offer it just made as already_selected.
+        # Use _remembered_rocm_gfx like the status path, or the offered migration is refused.
         rocm_gfx = _remembered_rocm_gfx(marker)
-        # Install exactly the release the banner offered: the installer's own "latest" is commit-date ordered and can lag the published_at pick above, reinstalling the current build in a loop (the #6219 class). Not on macOS, which needs the older-release walk-back a pin disables; elsewhere an unusable latest fails the job loudly (retryable) instead of walking back. Switch only the backend: slim whisper bundles require this exact release.
+        # Pin the offered release: the installer's "latest" can lag and loop reinstalls.
+        # Not on macOS, which needs the older-release walk-back. A switch keeps the installed
+        # release: slim whisper bundles require it.
         installed_release_tag = marker.get("release_tag") or marker.get("tag")
         wanted_tag = (
             installed_release_tag if backend_request is not None else status.get("latest_tag")
@@ -964,7 +948,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             },
         }
     else:
-        # Source build / custom path: only proceed when the same detection logic would offer the update (prebuilt exists, install is behind, root is manageable), so a direct POST cannot downgrade a newer source build.
+        # Mirror detection so a direct POST cannot downgrade a newer source build.
         src = _source_build_status(binary, force_refresh = True) if binary else None
         if src is None:
             return {
@@ -997,7 +981,6 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
         asset = (res or {}).get("asset")
         llama_backend = None
         rocm_gfx = None
-        # No pin: source-build detection resolves via --resolve-prebuilt latest, the same resolver the unpinned apply uses, so the two already agree.
         pin_release_tag = None
         migration = False
         migration_target = None
@@ -1022,7 +1005,6 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
             "llama_backend": llama_backend,
             "rocm_gfx": rocm_gfx,
             "backend_request": backend_request,
-            # So the caller keeps presenting this as the update it is, not the switch its backend_request would make it look like.
             "migration": migration,
             "migration_target": migration_target,
         }
@@ -1105,7 +1087,7 @@ def _whisper_phase_plan(
     migration: bool = False,
 ) -> dict:
     """Whisper's half of the chained job: catch up on releases for an update, or re-pair with the new backend for a switch. A switch that installs nothing leaves llama's ggml where it was, so there is nothing to re-pair and a refused switch stays refused instead of becoming a whisper-only job. The exception is what a failed re-pair leaves behind: llama runs first and records the new backend, so a retryable whisper failure ends with llama on the requested backend and dictation still hardlinked to the old runtime, making a retry ``already_selected`` and stranding the user unless they switch away and back. So allow a repair-only job for that one refusal, and only while the pairing is genuinely stale."""
-    # A migration is switch-shaped but update-behaved, so whisper needs the chained plan: the repair-only branch has no phase for a self-contained install and drops updates.
+    # A migration needs whisper's chained plan; the repair-only branch drops updates.
     if backend_request is None or migration:
         chained = (
             _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
@@ -1115,7 +1097,6 @@ def _whisper_phase_plan(
         if backend_request is None:
             if not _update_can_move_the_backend(llama_will_run):
                 return chained
-            # Whisper has nothing to catch up on, so the chained answer stands unless a re-pair is owed.
             repair = _repair_pairing_plan_or_empty(llama_will_run, llama_skip_reason)
             return repair if repair.get("phase") is not None else chained
     return _repair_pairing_plan_or_empty(llama_will_run, llama_skip_reason)
@@ -1191,11 +1172,10 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
     handed_to_worker = False
     migration = False
     try:
-        # The operation reservation starts before any marker read or resolver call, so a second update/switch cannot change the install between this plan and the worker that applies it.
+        # Planned under the operation reservation so the install cannot change before apply.
         llama_plan = _plan_llama_phase(backend_request)
         llama_spec = llama_plan.get("spec")
         if llama_spec is not None and llama_spec.get("migration"):
-            # The planner turned an up-to-date update into a re-application of "auto"; adopt its request, and keep the claimed operation the offered "update".
             migration = True
             backend_request = llama_spec["backend_request"]
             with _job_lock:
@@ -1205,7 +1185,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                 llama_spec["install_dir"],
                 force_refresh = True,
                 published_repo = llama_spec["repo"],
-                # Same replay the status path uses: without it this re-probe resolves "auto" to CPU and the offered migration refuses as already_selected.
+                # Same rocm_gfx replay as status, or "auto" resolves to CPU and is refused.
                 rocm_gfx = llama_spec.get("rocm_gfx"),
             )
             if not resolved:
@@ -1246,7 +1226,6 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
         )
         whisper_spec = (whisper_plan or {}).get("phase")
         if llama_spec is None and whisper_spec is None:
-            # Nothing to run: answer with the llama refusal so the existing reasons (local_link / up_to_date / already_selected / ...) keep their meaning.
             refusal = llama_plan["refusal"]
             return _finish_planning_refusal(refusal["reason"], refusal["message"])
 
@@ -1302,7 +1281,7 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
                     if backend_request is not None
                     else "whisper.cpp update failed."
                 ),
-                # The sidecar reload is whisper-internal; it must not trip the job-level reload flag the chat frontend resyncs on.
+                # Whisper-internal reload must not trip the chat frontend's job reload flag.
                 "affects_job_reload": False,
                 "skip_reason": (whisper_plan or {}).get("skip_reason") or "unavailable",
                 "run": whisper_run,

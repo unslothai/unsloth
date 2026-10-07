@@ -37,7 +37,6 @@ class _TinyLoRAish(torch.nn.Module):
         self.base = torch.nn.Parameter(torch.full((2,), 7.0), requires_grad = False)
 
 
-# ── LoRA EMA ──────────────────────────────────────────────────────────────────
 def test_ema_tracks_only_trainable_params():
     m = _TinyLoRAish()
     ema = LoRAEMA(m, decay = 0.9, warmup = False)
@@ -61,14 +60,13 @@ def test_ema_fixed_decay_math():
 def test_ema_warmup_ramp_is_responsive_early_and_capped_late():
     m = _TinyLoRAish()
     ema = LoRAEMA(m, decay = 0.99, warmup = True)
-    # First update: decay = min(0.99, 1/11), so the shadow mostly adopts the new value.
+    # First update: decay = min(0.99, 1/11).
     assert ema.effective_decay() == pytest.approx(1 / 11)
     with torch.no_grad():
         m.lora_A.fill_(2.0)
     ema.update(m)
     d = 1 / 11
     assert torch.allclose(ema.state_dict()["lora_A"], torch.full((3,), d * 1.0 + (1 - d) * 2.0))
-    # Far into the run the ramp caps at the configured decay.
     ema.updates = 10_000
     assert ema.effective_decay() == pytest.approx(0.99)
 
@@ -78,12 +76,11 @@ def test_ema_copy_to_and_restore_roundtrip():
     ema = LoRAEMA(m, decay = 0.5, warmup = False)
     with torch.no_grad():
         m.lora_A.fill_(3.0)
-    ema.update(m)  # shadow = 2.0
+    ema.update(m)
     backup = ema.copy_to(m)
     assert torch.allclose(m.lora_A.detach(), torch.full((3,), 2.0))
     ema.restore(m, backup)
     assert torch.allclose(m.lora_A.detach(), torch.full((3,), 3.0))
-    # The frozen base param is never touched.
     assert torch.allclose(m.base.detach(), torch.full((2,), 7.0))
 
 
@@ -94,7 +91,6 @@ def test_ema_rejects_bad_decay():
         LoRAEMA(_TinyLoRAish(), decay = -0.1)
 
 
-# ── persistent conditioning cache ─────────────────────────────────────────────
 def _make_image(
     tmp_path,
     name = "a.png",
@@ -111,7 +107,7 @@ def test_cache_roundtrip_is_bit_identical(tmp_path):
     cache = PersistentConditioningCache(tmp_path / "cc", "qwen-image", 512)
     img = _make_image(tmp_path)
     key = cache.latent_key(img, (0.25, 0.75, True))
-    # Posterior stats exactly as the trainer holds them: fp32, normalisation folded in.
+    # Posterior stats as the trainer holds them: fp32, normalisation folded in.
     a = torch.randn(1, 16, 1, 64, 64, dtype = torch.float32)
     b = torch.randn(1, 16, 1, 64, 64, dtype = torch.float32)
     assert not cache.has(key)
@@ -140,7 +136,6 @@ def test_cache_text_entries_and_variable_tuples(tmp_path):
     cache.put(key, (pe, mask))
     rpe, rmask = cache.get(key)
     assert torch.equal(rpe, pe) and torch.equal(rmask, mask)
-    # A different caption gets a different key.
     assert cache.text_key("another caption") != key
 
 
@@ -180,7 +175,6 @@ def test_cache_corrupt_entry_returns_none(tmp_path):
     assert cache.get("absent_key") is None
 
 
-# ── aspect-ratio bucketing ────────────────────────────────────────────────────
 def test_square_bucket_is_exactly_base_resolution():
     assert compute_bucket(1000, 1000, 512) == (512, 512)
     assert compute_bucket(64, 64, 768) == (768, 768)
@@ -190,9 +184,7 @@ def test_buckets_preserve_area_and_divisor():
     for w, h in ((1920, 1080), (1080, 1920), (800, 600), (512, 768)):
         bw, bh = compute_bucket(w, h, 512)
         assert bw % BUCKET_DIVISOR == 0 and bh % BUCKET_DIVISOR == 0
-        # Same-area constraint: within ~20% of base^2 after snapping.
         assert 0.8 < (bw * bh) / (512 * 512) < 1.25
-        # Orientation preserved.
         assert (bw >= bh) == (w >= h)
 
 
@@ -238,17 +230,14 @@ def test_bucket_batch_sampler_rejects_empty():
         BucketBatchSampler({}, random.Random(0))
 
 
-# ── preset plumbing ───────────────────────────────────────────────────────────
 def test_flow_families_carry_warmup_presets():
     for family in ("flux.1", "qwen-image", "flux.2-klein", "flux.2-dev"):
         assert FAMILY_TRAIN_DEFAULTS[family]["lr_warmup_steps"] > 0
         assert train_defaults(family)["lr_warmup_steps"] > 0
-    # Families without a measured warmup preset keep their previous defaults untouched.
     assert "lr_warmup_steps" not in FAMILY_TRAIN_DEFAULTS["sdxl"]
 
 
-# diffusers' get_scheduler returns before it reads num_warmup_steps for these, so a warmup
-# preset paired with one of them is silently discarded.
+# diffusers' get_scheduler returns before reading num_warmup_steps for these, silently dropping warmup.
 _SCHEDULERS_THAT_IGNORE_WARMUP = {"constant", "piecewise_constant"}
 
 
@@ -279,8 +268,8 @@ def _cfg(**kw):
 
 def test_config_defaults_keep_current_behavior():
     n = _cfg().normalized()
-    assert n.ema_decay == 0.0  # EMA off by default
-    assert n.cond_cache_dir is None  # persistent cache off by default
+    assert n.ema_decay == 0.0
+    assert n.cond_cache_dir is None
 
 
 def test_config_ema_decay_validation_and_coercion():
@@ -299,7 +288,7 @@ def test_config_blank_cond_cache_dir_means_off():
 
 
 def test_source_revision_marks_a_dir_update_and_never_raises(tmp_path):
-    # The trainer namespaces its conditioning cache on this, so an in-place checkpoint update must change the marker or a warm run trains on the old embeddings.
+    # The cond cache is namespaced on this, so an in-place checkpoint update must change it.
     from core.training.diffusion_train_extras import source_revision
 
     d = tmp_path / "ckpt"
@@ -307,7 +296,7 @@ def test_source_revision_marks_a_dir_update_and_never_raises(tmp_path):
     w = d / "text_encoder" / "model.safetensors"
     w.write_bytes(b"v1")
     first = source_revision(str(d))
-    assert first == source_revision(str(d))  # stable while untouched
+    assert first == source_revision(str(d))
     w.write_bytes(b"v2-longer")
     second = source_revision(str(d))
     assert second != first
@@ -354,12 +343,11 @@ def test_hub_cache_roots_puts_the_active_studio_cache_first(monkeypatch, tmp_pat
 
     roots = extras._hub_cache_roots()
     assert roots and roots[0] == str(active)
-    # The environment root is still consulted, just after the live setting.
     assert str(tmp_path / "env" / "hub") in roots
 
 
 def test_hub_cache_roots_survives_without_studio_settings(monkeypatch, tmp_path):
-    # The trainer subprocess may run without Unsloth's settings module importable, so the env and the library constant still have to work.
+    # The trainer subprocess may lack Unsloth's settings module, so env and library constant must still work.
     import builtins
 
     from core.training import diffusion_train_extras as extras

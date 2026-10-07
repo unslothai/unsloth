@@ -24,45 +24,32 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 from utils.paths.path_utils import drop_appledouble_metadata
 
-# Checkpoint contracts mirrored from diffusers.modular_pipelines.minimax_h3, which the trainer cannot import; asserted
-# against the live components at load, so a move is caught.
+# Mirrored from diffusers.modular_pipelines.minimax_h3; asserted against the live components.
 H3_FPS = 24
-# The video VAE's clip_length and tokens_chunk_size: 17 pixel frames per chunk, 5 latent frames
-# kept per chunk, plus a 2-frame head.
 H3_FRAMES_PER_CHUNK = 17
 H3_LATENTS_PER_CHUNK = 5
 H3_SPATIAL_COMPRESSION = 16
-# The transformer's (t, h, w) patch. Only the spatial half is > 1.
 H3_PATCH_T, H3_PATCH_H, H3_PATCH_W = 1, 2, 2
-# Both axes have to survive the VAE's 16x spatial compression AND still be a whole number of 2x2
-# patch rows, so the canvas multiple is their product.
 H3_CANVAS_MULTIPLE = H3_SPATIAL_COMPRESSION * H3_PATCH_W
 H3_AUDIO_SAMPLING_RATE = 32000
 H3_AUDIO_LATENTS_PER_SECOND = 40
 H3_AUDIO_CHANNELS = 2
-# 1% of a 5.17s window is ~52ms, covering the tail a container routinely ends short by while still
-# refusing a mostly-silent stream.
+# ~52 ms of a 5.17 s window: covers a container's short tail, refuses mostly-silent audio.
 _MAX_AUDIO_PAD_FRACTION = 0.01
-# About -80 dBFS on PyAV's "flt" scale: below the noise floor of any real recording, above the
-# rounding dust an encode/decode round trip leaves on authored digital silence.
+# About -80 dBFS: below any real noise floor, above codec rounding dust on digital silence.
 _SILENT_AUDIO_PEAK = 1e-4
 H3_AUDIO_LATENT_CHANNELS = 32
 H3_VIDEO_LATENT_CHANNELS = 24
-# Per-row modality tags, which index the transformer's AdaLN table.
 H3_VIDEO_TAG, H3_TEXT_TAG, H3_AUDIO_TAG = 0, 1, 2
-# The canvas the released checkpoint generates on.
 H3_CANVAS_SHORT_EDGE = 768
 H3_CANVAS_MAX_PIXELS = 768 * 1344
 H3_MIN_ASPECT_RATIO = 1 / 4
 H3_MAX_ASPECT_RATIO = 4
-# ImageNet, the video VAE's pixel convention.
 H3_PIXEL_MEAN = (0.485, 0.456, 0.406)
 H3_PIXEL_STD = (0.229, 0.224, 0.225)
 
-# ONE VAE chunk, the shortest clip the video VAE can encode at all, which is 0.917 s at 24 fps.
-# Deliberately far below the 5 s floor MiniMax-H3 generates at: the packed sequence is quadratic
-# in its own length, and training short clips at the native canvas keeps the SPATIAL statistics on
-# distribution. A 22-frame clip's temporal rotary grid is a strict PREFIX of a generated one's.
+# ONE VAE chunk: the packed sequence is quadratic, and short clips at native canvas keep
+# spatial statistics on distribution.
 H3_TRAIN_NUM_FRAMES = H3_FRAMES_PER_CHUNK + H3_LATENTS_PER_CHUNK
 
 _VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
@@ -145,7 +132,6 @@ def h3_train_canvas(
             f"{aspect_width:g}x{aspect_height:g} ({ratio:.2f}:1). Crop it first."
         )
     if max_pixels is None:
-        # The released cap, rescaled to the requested short edge: (1344/768) * short_edge^2.
         max_pixels = int(H3_CANVAS_MAX_PIXELS * (short_edge / H3_CANVAS_SHORT_EDGE) ** 2)
     if ratio >= 1.0:
         width, height = short_edge * ratio, float(short_edge)
@@ -284,7 +270,6 @@ def decode_clip(
             )
         stream = container.streams.video[0]
         source_fps = float(stream.average_rate or stream.guessed_rate or H3_FPS) or float(H3_FPS)
-        # Best effort: an unknown duration means no note, never a failed decode.
         source_duration_s = 0.0
         try:
             if stream.duration is not None and stream.time_base is not None:
@@ -302,8 +287,7 @@ def decode_clip(
             if int(next_target * source_fps / H3_FPS) > source_index:
                 continue
             image = frame.to_image().convert("RGB")
-            # Before the crop: the canvas is in display orientation, so cropping the coded frame would trim the
-            # wrong edges as well as train it sideways.
+            # Before the crop: the canvas is in display orientation.
             image = apply_display_rotation(image, display_rotation_degrees(frame, stream), Image)
             image = _cover_resize(image, width, height, Image)
             while (
@@ -352,12 +336,11 @@ def display_rotation_degrees(frame: Any, stream: Any) -> int:
         if entry is not None:
             raw = bytes(entry)
             if len(raw) >= 36:
-                # Native byte order: the matrix is an in-memory int32[9], not a serialised field.
+                # Native byte order: the matrix is an in-memory int32[9].
                 matrix = struct.unpack("=9i", raw[:36])
     except Exception:  # noqa: BLE001 -- no side-data API, or no matrix on this frame
         matrix = None
     if matrix is None:
-        # Legacy MOV/MP4 tag, still what older files carry.
         try:
             tag = (stream.metadata or {}).get("rotate")
             return int(float(tag)) % 360 if tag is not None else 0
@@ -373,7 +356,6 @@ def display_rotation_degrees(frame: Any, stream: Any) -> int:
     except Exception:  # noqa: BLE001 -- a degenerate matrix means "no rotation", not a failure
         return 0
     theta = int(-round(degrees)) % 360
-    # Only the four square turns; anything else cannot be applied without resampling, and no camera writes one.
     return theta if theta in (90, 180, 270) else 0
 
 
@@ -419,8 +401,7 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
     chunks = []
     have = 0
     with av.open(str(path)) as container:
-        # Stops at the training window: only the first num_frames are trained, so decoding the rest of the
-        # soundtrack would spend a whole recording's time and fail on damage in an unused region.
+        # Only the training window: decoding the rest wastes time and can fail on unused damage.
         for frame in container.decode(audio = 0):
             for resampled in resampler.resample(frame):
                 block = resampled.to_ndarray().reshape(-1, H3_AUDIO_CHANNELS)
@@ -429,8 +410,7 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
             if have >= target_samples:
                 break
         if have < target_samples:
-            # Only when the stream ran out: the resampler holds a partial block back and that tail is what the
-            # pad allowance measures; after an early break the window is already full.
+            # Only when the stream ran out: the resampler's held-back tail is what the pad allowance measures.
             for resampled in resampler.resample(None):
                 chunks.append(resampled.to_ndarray().reshape(-1, H3_AUDIO_CHANNELS))
     if not chunks:
@@ -448,7 +428,6 @@ def _decode_clip_audio(path: Any, target_samples: int, av: Any, np: Any) -> Any:
                 f"soundtrack runs its full length."
             )
         samples = np.pad(samples, ((0, missing), (0, 0)))
-    # A muted track passes every check above and comes back all zeros.
     if float(np.max(np.abs(samples))) <= _SILENT_AUDIO_PEAK:
         raise ValueError(
             f"{Path(path).name} has a soundtrack that is silent all the way through. "

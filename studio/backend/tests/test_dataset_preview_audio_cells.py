@@ -48,7 +48,6 @@ def test_a_missing_rate_does_not_raise():
 
 
 def test_a_numpy_array_cell_is_summarised_too():
-    # The decoder hands back a numpy array, not a list; the raw repr was landing in the table.
     np = pytest.importorskip("numpy")
     cell = {"path": "a.m4a", "array": np.zeros(22050, dtype = "float32"), "sampling_rate": 22050}
     assert _serialize_preview_value({"audio": cell}) == {

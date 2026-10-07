@@ -120,7 +120,6 @@ def _report_clips(
     monkeypatch.setattr(tr, "_diffusion_dataset_summary", fake)
 
 
-# ── the picker ───────────────────────────────────────────────────────────────
 def test_a_clip_family_is_not_offered_while_every_listed_dataset_is_stills(client, ds_root):
     """The bug: H3 was advertised in the Train tab while the only datasets that tab can list are
     folders of images. Every pick was a dead end -- Start rejected the dataset the picker had
@@ -136,7 +135,6 @@ def test_a_clip_family_is_not_offered_while_every_listed_dataset_is_stills(clien
     assert not (
         offered & clip_families
     ), "a family that trains only on clips must not be offered while no clip dataset is listable"
-    # The narrowing is surgical: everything else the API offers is still in the picker.
     assert offered == _trainable_here() - clip_families
     assert "sdxl" in offered
 
@@ -151,15 +149,13 @@ def test_a_clip_family_is_offered_as_soon_as_a_clip_dataset_is_listable(
     if not clip_families:
         pytest.skip("this install trains no clip family")
     _stills_dataset(ds_root, "video-clips")
-    # A folder of clips, so images = 0: with stills left in it this is the mixed case, which
-    # test_a_mixed_folder_does_not_advertise_a_clip_family covers and which Start refuses.
+    # images = 0: leftover stills would be the mixed case, which Start refuses.
     _report_clips(monkeypatch, 3, images = 0)
 
     body = client.get("/api/train/diffusion/info").json()
     assert [d["name"] for d in body["datasets"]] == ["video-clips"]
     offered = {f["name"] for f in body["families"]}
     assert clip_families <= offered
-    # And now the picker is the full trainable set again: the gate withheld nothing else.
     assert offered == _trainable_here()
 
 
@@ -187,12 +183,11 @@ def test_the_gate_withholds_exactly_the_clip_trained_families():
     every = {i["name"] for i in family_train_infos()}
     withheld = every - {i["name"] for i in tr._ui_trainable_families([])}
     assert withheld == CLIP_TRAINED_FAMILIES & every
-    # LTX-2 is video and trains from stills, so a still dataset feeds it and it stays offered.
+    # LTX-2 is video but trains from stills, so it stays offered.
     if "ltx-2" in every:
         assert "ltx-2" not in withheld
 
-    # Derived from the dataset layer's own report, not from a hardcoded name or a flag someone
-    # has to remember to flip: the source of the gate mentions no family at all.
+    # The gate must derive from the dataset report, not a hardcoded family name.
     src = (
         inspect.getsource(tr._ui_trainable_families)
         + inspect.getsource(tr._listed_dataset_clip_count)
@@ -228,7 +223,7 @@ def test_a_mixed_folder_does_not_advertise_a_clip_family():
     mixed_only = {i["name"] for i in tr._ui_trainable_families([summary("mixed", 4, 6)])}
     assert not (mixed_only & clip_families)
 
-    # And the converse, so this cannot pass by withholding the family unconditionally.
+    # The converse, so this cannot pass by withholding the family unconditionally.
     with_clean = {
         i["name"]
         for i in tr._ui_trainable_families([summary("mixed", 4, 6), summary("clips", 0, 6)])
@@ -253,7 +248,6 @@ def test_a_summary_with_an_unreadable_clip_count_is_treated_as_no_clips():
     assert tr._listed_dataset_clip_count(object()) == 0
 
 
-# ── the API is not narrowed ──────────────────────────────────────────────────
 def test_the_api_still_carries_the_family_the_picker_withholds(client, ds_root):
     """The review item asked for the routing to be KEPT: only the advertisement changes. So on a
     stills-only host, where the picker withholds H3, the trainable set the start route resolves
@@ -273,10 +267,8 @@ def test_the_api_still_carries_the_family_the_picker_withholds(client, ds_root):
 
     offered = {f["name"] for f in client.get("/api/train/diffusion/info").json()["families"]}
     assert not (offered & trainable)
-    # Same request, the unnarrowed source: the API still describes the family in full.
     assert trainable <= {i["name"] for i in family_train_infos()}
 
-    # And the gate lives on the info route alone: the start route never consults it.
     start = inspect.getsource(tr.start_diffusion_training)
     assert "_ui_trainable_families" not in start
     assert "_listed_dataset_clip_count" not in start

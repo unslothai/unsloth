@@ -61,7 +61,6 @@ def _decide(
 def test_flux1_on_a_31gb_fp16_host_takes_the_route():
     d = _decide(FLUX1)
     assert d.engaged and d.refuse is None
-    # only the large bf16 components load memory-mapped; the fp32 CLIP and VAE convert as before
     assert d.storage_dtypes == {"transformer": "bfloat16", "text_encoder_2": "bfloat16"}
     assert d.dense_host_mib > KAGGLE_AVAILABLE
     assert d.route_host_mib == 22700 // 2
@@ -75,7 +74,6 @@ def test_unet_and_large_vae_are_budgeted_at_their_converted_size():
     }
     d = _decide(comps, total = 8 * 1024, available = 6000)
     assert d.engaged
-    # only a DiT is stored as int8; the UNet and VAE convert dense on the host, the encoder stays memory-mapped
     assert d.route_host_mib == 4900 + 600
     assert d.refuse is not None
     assert (
@@ -92,7 +90,6 @@ def test_qwen_image_fp32_promoted_takes_the_route():
 
 def test_large_host_and_bf16_cards_are_untouched():
     assert not _decide(FLUX1, total = 230 * 1024, available = 220 * 1024).engaged
-    # bf16 compute loads a bf16 repo memory-mapped already: never routed, whatever the host
     assert not _decide(FLUX1, dtype = torch.bfloat16).engaged
     assert not _decide(FLUX1, device = "mps").engaged
     assert not _decide({"transformer": sh.StoredComponent("transformer", 9000, "float16")}).engaged
@@ -176,7 +173,7 @@ def test_t5_kept_fp32_layers_are_budgeted_and_variants_ignored(tmp_path):
         "transformer": sh.StoredComponent("transformer", 4000, "bfloat16"),
         "text_encoder_2": sh.StoredComponent("text_encoder_2", 9084, "bfloat16", 1920),
     }
-    # the streamed encoder's ``wo`` converts to fp32 on the host: 1920 MiB stored -> 3840 MiB loaded
+    # the streamed encoder's wo converts to fp32 on the host: 1920 MiB stored -> 3840 MiB
     assert _decide(tiny).route_host_mib == 2000 + 3840
 
 
@@ -209,7 +206,7 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
             self.wo = torch.nn.Linear(128, 64, bias = False)
 
         def forward(self, x):
-            # T5's pattern: the parent reads wo.weight.dtype BEFORE wo runs
+            # T5's pattern: the parent reads wo.weight.dtype before wo runs
             h = self.wi(x)
             return self.wo(h.to(self.wo.weight.dtype))
 
@@ -221,7 +218,7 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
             self.embed = torch.nn.Embedding(100, 64)
             self.block = Block()
             self.norm = torch.nn.LayerNorm(64)
-            # computed at init, never stored: fp32 in the dense fp16 load too (RoPE inv_freq)
+            # init-time buffer (RoPE inv_freq): fp32 even in the dense fp16 load
             self.register_buffer("inv_freq", torch.rand(8), persistent = False)
 
         @property
@@ -234,9 +231,7 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
     torch.manual_seed(0)
     enc = Enc()
     for p in enc.parameters():
-        p.data = p.data.to(
-            torch.bfloat16
-        )  # the stored-dtype load: parameters bf16, init-time buffers fp32
+        p.data = p.data.to(torch.bfloat16)
     dense = Enc()
     dense.load_state_dict({k: v.float() for k, v in enc.state_dict().items()})
     dense.inv_freq = enc.inv_freq.clone()
@@ -252,15 +247,15 @@ def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
     sh.prepare_streamed_encoder_(enc, torch.float32)
     # the first float parameter's owner converts so .dtype reports the compute dtype
     assert enc.dtype == torch.float32
-    assert enc.block.wi.weight.dtype == torch.bfloat16  # memory-mapped storage stays
+    assert enc.block.wi.weight.dtype == torch.bfloat16
     assert (
         HookRegistry.check_if_exists_or_initialize(enc.block.wi).get_hook("layerwise_casting")
         is not None
     )
-    assert enc.block.wo.weight.dtype == torch.float32  # kept-fp32 converts now
+    assert enc.block.wo.weight.dtype == torch.float32
     ids = torch.randint(0, 100, (2, 7))
     with torch.no_grad():
-        assert torch.equal(enc(ids), dense(ids))  # bf16 -> fp32 is exact
+        assert torch.equal(enc(ids), dense(ids))
 
 
 def _group_plan(**kw):
@@ -298,7 +293,6 @@ def test_route_plan_streams_encoders_and_keeps_what_fits(monkeypatch):
     plan = DiffusionBackend._small_host_plan(None, pipe, _group_plan(), None, log)
     assert plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_text_encoders
     assert plan.stream_transformer and plan.resident_transformer_mib == 12599 - 3072 - 2048 - 160
-    # a plan that already keeps everything resident, or a pipe the route did not touch, is left alone
     none = _group_plan(offload_policy = dm.OFFLOAD_NONE)
     assert DiffusionBackend._small_host_plan(None, pipe, none, None, log) is none
     other = _group_plan()

@@ -13,13 +13,12 @@ from typing import Any, Optional
 
 from .diffusion_families import IDEOGRAM4_FAMILY_NAME
 
-# The planner DECIDED against the seed, unlike never having asked: the pull kept the dense shards, so
-# the loader must not re-take the decision and fetch the artifact inline.
+# Planner declined (dense shards kept): the loader must not re-decide and fetch the artifact inline.
 PIPELINE_SEED_DECLINED = "__declined__"
 
 DENOISER_COMPONENT = "transformer"
 
-# Ideogram's assembler never sees ``pipe_kwargs``, so a seed would be dropped after the plan dropped its dense shards.
+# Ideogram's assembler never sees pipe_kwargs, so a seed would be dropped.
 _UNSEEDABLE_PIPELINE_FAMILIES = (IDEOGRAM4_FAMILY_NAME,)
 
 
@@ -64,12 +63,9 @@ def denoiser_prequant_cached(
     if source is None:
         return False
     if getattr(source, "kind", None) != "repo":
-        # ``usable_prequant_source`` already proved a local override present and baked for this scheme.
         return True
     try:
         from .diffusion_prequant import prequant_checkpoint_cached
-
-        # Offline: the load walks to the first cached name, so any cached readable name is what it opens.
         return prequant_checkpoint_cached(source, cache_dir = cache_dir, online = False)
     except Exception:  # noqa: BLE001 -- an unreadable cache is not proof the artifact is there
         return False

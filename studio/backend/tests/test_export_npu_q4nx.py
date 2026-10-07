@@ -36,7 +36,7 @@ class _Tokenizer:
 
 
 class _Model:
-    # Like Phi-4-mini: the chat-turn stop id is only in generation_config.
+    # like Phi-4-mini: the chat-turn stop id is only in generation_config
     generation_config = type("G", (), {"eos_token_id": [7, 9]})()
 
     def __init__(self):
@@ -84,7 +84,7 @@ def test_q4nx_folder_matches_the_flm_layout(monkeypatch, tmp_path):
     assert success is True, message
     assert calls == ["Model.Q4_1.gguf"]
     q4nx = save_dir / "npu-q4nx"
-    # No config.json: copied over a catalog model it would drop FLM's flm_version.
+    # no config.json: copied over a catalog model it would drop FLM's flm_version
     assert sorted(p.name for p in q4nx.iterdir()) == [
         "chat_template.jinja",
         "model.q4nx",
@@ -205,7 +205,6 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path, architecture,
     assert ran["cwd"] == str(tmp_path / converter)
     assert ran["env"]["PYTHONIOENCODING"] == "utf-8"
     if sys.platform.startswith("linux"):
-        # Dies with its parent: cancelling an export must not orphan a converter.
         assert callable(ran["preexec_fn"])
 
 
@@ -329,9 +328,7 @@ def test_existing_gguf_takes_companions_from_the_base_model(monkeypatch, tmp_pat
     assert calls == ["Qwen3-0.6B-Q4_1.gguf"]
     assert (out / "tokenizer.json").read_text() == tokenizer
     assert not (out / "config.json").exists()
-    # FLM exits without an eos_token_id array; the tokenizer's eos comes first, then the configs'.
     assert json.loads((out / "tokenizer_config.json").read_text())["eos_token_id"] == [3, 5, 6]
-    # Neither the base folder nor its tokenizer_config carries a template, so the GGUF's is used.
     assert (out / "chat_template.jinja").read_text() == "{{ gguf }}"
 
 

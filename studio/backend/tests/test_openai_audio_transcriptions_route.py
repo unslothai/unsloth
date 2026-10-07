@@ -73,7 +73,6 @@ def _post(
 
 
 def test_json_response_is_text_only(monkeypatch):
-    # OpenAI's json shape carries only the text; the sidecar's extra fields stay internal.
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli)
     assert resp.status_code == 200
@@ -115,7 +114,6 @@ def test_unknown_response_format_is_400(monkeypatch):
 
 
 def test_missing_file_is_rejected(monkeypatch):
-    # install_api_error_handlers maps validation errors to a 400 OpenAI envelope on /v1.
     cli, calls = _make_client(monkeypatch)
     resp = cli.post("/v1/audio/transcriptions", data = {"model": "whisper-1"})
     assert resp.status_code == 400
@@ -123,8 +121,7 @@ def test_missing_file_is_rejected(monkeypatch):
 
 
 def test_sidecar_errors_keep_their_status(monkeypatch):
-    # The shared error mapping (SttModelIdError -> 422, empty audio -> 400, ...) sits inside
-    # _transcribe_audio_result; the route must not swallow or rewrap what it raises.
+    # Error mapping lives in _transcribe_audio_result; the route must not swallow or rewrap it.
     async def _bad_model(raw):
         raise HTTPException(status_code = 422, detail = "Unknown STT model id.")
 
@@ -206,7 +203,6 @@ def test_verbose_json_without_a_language_is_refused_before_any_work(monkeypatch)
 
 
 def test_verbose_json_works_when_the_caller_supplies_a_language(monkeypatch):
-    # Echoing a language the caller named is correct, so this half of verbose_json works.
     cli, calls = _make_client(monkeypatch)
     resp = _post(cli, data = {"response_format": "verbose_json", "language": "en"})
     assert resp.status_code == 200
@@ -227,7 +223,6 @@ def test_verbose_json_never_emits_a_null_duration(monkeypatch):
 
 
 def test_timestamp_granularities_are_refused_not_dropped(monkeypatch):
-    # Returning 200 with neither words nor segments looks like the audio simply had none.
     cli, calls = _make_client(monkeypatch)
     resp = _post(
         cli,
@@ -264,7 +259,6 @@ def test_verbose_json_validates_against_the_openai_client_model(monkeypatch, res
 
 
 def test_subtitle_formats_are_still_400(monkeypatch):
-    # srt/vtt need per-segment timing the sidecar does not report yet.
     cli, calls = _make_client(monkeypatch)
     for fmt in ("srt", "vtt"):
         assert _post(cli, data = {"response_format": fmt}).status_code == 400
@@ -356,7 +350,6 @@ def test_a_baseexception_still_closes_the_row(monkeypatch, exc):
 
 
 def test_a_real_cancellederror_records_a_cancelled_row(monkeypatch):
-    # The 499 arm covers the disconnect watchers; this is the plain asyncio cancel.
     async def _cancelled(raw):
         raise asyncio.CancelledError()
 
@@ -370,7 +363,6 @@ def test_a_real_cancellederror_records_a_cancelled_row(monkeypatch):
 
 
 def test_a_non_http_failure_records_a_friendly_error_row(monkeypatch):
-    # Every other error test raises HTTPException; this is the catch-all arm.
     async def _boom(raw):
         raise RuntimeError("sidecar exploded")
 
@@ -385,7 +377,6 @@ def test_a_non_http_failure_records_a_friendly_error_row(monkeypatch):
 
 
 def test_the_monitor_label_never_carries_a_local_path(monkeypatch):
-    # Sidecar ids are curated or owner/model today; the row still goes over the tunnel.
     async def _pathy(raw):
         return {
             "text": "t",
@@ -751,7 +742,6 @@ def test_verbose_json_is_forwarded_to_the_provider_verbatim(monkeypatch):
     )
     assert resp.status_code == 200
     assert sidecar_calls[-1]["response_format"] == "verbose_json"
-    # The monitor preview reads the body without consuming it.
     assert resp.json()["segments"] == [{"id": 0, "text": "remote words"}]
     assert api_monitor.snapshot(include_details = False)[0]["reply_preview"] == "remote words"
 
@@ -792,7 +782,6 @@ def test_external_transcription_reply_preview_for_plain_text(monkeypatch):
 
 
 def test_external_transcription_failure_records_an_error_row(monkeypatch):
-    # A disabled connection is rejected before the proxy call; the row still closes.
     cli, sidecar_calls = _make_client(monkeypatch)
     _install_external(monkeypatch, enabled = False)
     api_monitor.clear()
@@ -808,8 +797,6 @@ def test_external_transcription_failure_records_an_error_row(monkeypatch):
 
 
 def test_external_reply_preview_handles_an_uppercase_json_media_type(monkeypatch):
-    # Content-Type is case-insensitive, so Application/JSON is still a JSON envelope and
-    # the row should show the transcript, not the whole {"text": ...} wrapper.
     cli, sidecar_calls = _make_client(monkeypatch)
     _install_external(monkeypatch, media_type = "Application/JSON")
     api_monitor.clear()
@@ -822,8 +809,7 @@ def test_external_reply_preview_handles_an_uppercase_json_media_type(monkeypatch
 
 
 def test_timestamp_granularities_reach_a_capable_provider(monkeypatch):
-    # The sidecar cannot produce timings, but a saved connection may, so the proxied arm
-    # forwards the parameter instead of dropping it.
+    # A saved connection may produce timings, so the proxied arm forwards the parameter.
     cli, sidecar_calls = _make_client(monkeypatch)
     _client_args, transcription_calls, _creds = _install_external(monkeypatch)
     resp = _post(
@@ -897,7 +883,6 @@ def test_a_sidecar_failure_does_not_leak_the_requested_path(monkeypatch, request
     assert row["status"] == "error"
     assert row["model"] == expected
     assert "/" not in row["model"] and "\\" not in row["model"]
-    # The redaction is for the monitor label only; the engine still gets what was asked for.
     assert calls[0]["model"] == requested
 
 
@@ -911,7 +896,6 @@ def test_the_proxied_row_never_carries_a_local_path(monkeypatch):
     assert resp.status_code == 200
     row = api_monitor.snapshot(include_details = False)[0]
     assert row["model"] == "whisper-v3"
-    # Only the label is redacted; the provider is still asked for what the client sent.
     assert transcription_calls[-1]["model"] == "/home/ana/models/whisper-v3"
 
 

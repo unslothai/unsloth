@@ -51,7 +51,7 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
     return sum(unique.values())
 
 
-# One definition, so the orphan listing and the delete preview cannot disagree about which cached repos are leftovers (see companion_assets.repo_holds_denoiser).
+# One definition so the orphan listing and delete preview agree on leftovers.
 _repo_holds_denoiser = companion_assets.repo_holds_denoiser
 
 
@@ -112,7 +112,6 @@ def _remaining_main_gguf_variants(repo_info, *, excluding: Optional[str] = None)
                     pass
             if not _is_main_gguf_filename(name):
                 continue
-            # The delete this previews ignores proven metadata, so counting it here would report a checkpoint as surviving that the deletion itself does not see.
             if path and is_appledouble_metadata(Path(path)):
                 continue
             key = gguf_variant_key(name).lower()
@@ -171,8 +170,6 @@ def _delete_impact_blocking(
     for repo_info in repos:
         reclaimed += _variant_bytes(repo_info, variant) if variant else _repo_blob_bytes(repo_info)
 
-    # Would this delete leave the repo with no runnable checkpoint? Only then can its companions become reclaimable;
-    # while a sibling quant survives they stay in use.
     removes_last_checkpoint = not any(_repo_holds_denoiser(repo) for repo in surviving)
     if variant:
         for repo_info in repos:
@@ -183,7 +180,6 @@ def _delete_impact_blocking(
     ignore = [repo_id] if removes_last_checkpoint else []
     required_after = companion_assets.required_companion_bases(scans, ignore_repo_ids = ignore)
 
-    # Companion bases THIS pick uses, from the same derivation the loader's resolver feeds.
     own_bases = companion_assets.required_companion_bases(
         [_SingleRepoScan(repos)] if repos else [],
     )
@@ -200,10 +196,9 @@ def _delete_impact_blocking(
         entry = {"repo_id": display, "size_bytes": base_bytes, "needed_by": holders}
         if holders:
             retained.append(entry)
-        # The SAME offerability test orphan_companions_response applies, since this row points at that list: a borrowed chat GGUF repo is a curated companion id but holds a denoiser, so advertising it sent the user to Free up space to remove a row that is never there.
+        # Same offerability test as orphan_companions_response, since this row points at that list.
         elif base_key in offerable and any(not _repo_holds_denoiser(r) for r in base_repos):
             freeable.append(entry)
-        # A base only a recorded link names: the orphan endpoint is table-only by design, so advertising it here pointed the user at a Free up space list it will never appear in.
 
     return {
         "repo_id": repo_id,
@@ -212,7 +207,6 @@ def _delete_impact_blocking(
         "cache_path": cache_path,
         "retained_companions": retained,
         "freeable_companions": freeable,
-        # Same predicate the destructive path uses: the native Qwen-Image encoder is a named quant inside a chat GGUF repo, so previewing only whole-repo deletes left Delete enabled and the refusal arriving after the user confirmed.
         "blocked_by": (
             companion_dependents(repo_id, scans, ignore_repo_ids = [repo_id])
             if companion_assets.is_companion_base(repo_id)
@@ -254,16 +248,15 @@ def _orphan_companions_blocking() -> dict:
         if required.get(base_key):
             continue
         repos = by_id[base_key]
-        # A repo holding a runnable denoiser is a model the user installed: a companion fetch takes everything BUT transformer/, while a pipeline pick takes it, so its presence answers whether the user asked for this repo. Per COPY, since a delete is scoped to one cache root.
+        # A repo holding a denoiser was user-installed; checked per copy (delete is per cache root).
         repos = [r for r in repos if not _repo_holds_denoiser(r)]
         if not repos:
             continue
-        # One row per cache root: a delete is scoped to a single cache, so pooling copies from several would promise bytes one removal cannot deliver.
         for repo in repos:
             size = _repo_blob_bytes(repo)
             if size <= 0:
                 continue
-            # The repo dir itself, not its parent: scoped_delete_root walks up to the models-- component, so a bare root resolves to nothing and the delete comes back "Invalid cache_path".
+            # scoped_delete_root walks up to models--, so pass the repo dir, not the root.
             try:
                 cache_path = str(Path(getattr(repo, "repo_path")))
             except (TypeError, OSError):

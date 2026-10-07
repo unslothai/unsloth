@@ -33,7 +33,7 @@ def verify_password(password: str, salt: str, hashed: str) -> bool:
     return hmac.compare_digest(dk.hex(), hashed)
 
 
-# Fixed inputs, so a miss spends the same PBKDF2 round a real account would.
+# Fixed inputs so a miss spends the same PBKDF2 round as a real account.
 _EQUALIZE_SALT = "0" * 32
 _EQUALIZE_HASH = "0" * 64
 

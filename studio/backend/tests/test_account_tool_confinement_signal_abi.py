@@ -63,7 +63,7 @@ def test_a_confined_managed_child_cannot_kill_a_foreign_process_on_a_pre_scope_a
         try:
             run_as(BOB, tools._account_confinement)
         except tool_confinement.ToolConfinementUnavailable:
-            return  # refused: the gap cannot be reached
+            return
         out = run_as(
             BOB,
             tools._python_exec,

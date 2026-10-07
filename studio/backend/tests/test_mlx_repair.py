@@ -32,19 +32,13 @@ class _Result:
 @pytest.fixture(autouse = True)
 def _reset_attempt_guard(monkeypatch):
     monkeypatch.setattr(mr, "_attempted", False)
-    # Both halves, or a worker takes _run_repair_and_redetect's "install ran" branch on a
-    # latch an earlier test left set and re-detects for real against the next test.
+    # Reset both halves, or a latch left by an earlier test re-detects for real.
     monkeypatch.setattr(mr, "_environment_mutated", False)
     monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising = False)
-    # The self-heal now declines on a --no-torch install, and the answer comes from the
-    # manifest of whatever venv these tests happen to run in. Left ambient, four tests below
-    # fail inside a GGUF-only Studio venv, which is a real place to run them. Pin it here and
-    # let the file that owns the opt-out drive the True case:
-    # test_mlx_autorepair_no_torch_optout.py.
+    # Pin the --no-torch opt-out, or tests fail in a GGUF-only venv; the optout test owns True.
     monkeypatch.setattr(mr, "_installed_without_torch", lambda: False)
     yield
-    # Join inside the test's stubs: an outliving worker would run the real detect_hardware()
-    # against the next test's globals.
+    # Join here: an outliving worker would run real detect_hardware() against the next test.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
             assert join_when_started(thread, timeout = 5), (
@@ -59,40 +53,30 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     assert cmd is not None
     assert cmd[:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
     assert set(mr.MLX_PACKAGES) <= set(cmd)
-    # mlx-vlm keeps a floor so the resolver cannot backtrack to an old one that
-    # imports but breaks VLM Train/Export, and a ceiling so this unattended
-    # install cannot cross a major line on its own.
+    # Floor blocks a VLM-breaking old mlx-vlm; ceiling stops unattended major upgrades.
     assert "mlx-vlm>=0.4.4,<=0.7.4" in cmd
-    # Pinned, not floored: see _MLX_INSTALL_SPECS.
     assert "mlx==0.32.3" in cmd
     assert "mlx-lm==0.31.3" in cmd
-    # Look the requirement up by name rather than by prefix. Asserting on
-    # startswith("mlx==") could only ever be checked on a spec that already
-    # pins, so it passed vacuously the moment the pin was relaxed, which is the
-    # one case worth catching.
+    # Look up by name: a startswith check passes vacuously once the pin is relaxed.
     for name in ("mlx", "mlx-lm"):
         spec = mr._MLX_INSTALL_SPECS[name]
         assert spec.startswith("=="), f"{name} must be pinned, not floored: got {spec}"
 
 
 def test_install_narrows_mlx_vlm_to_what_the_installed_zoo_declares(monkeypatch):
-    # An mlx-vlm the installed zoo excludes must not be installed unattended: 0.7.1 passes
-    # `cache` to gated_delta_update and an older zoo's patch does not take it, so training
-    # raises TypeError after mlx_stack_available() has already cleared the chat-only gate.
+    # An mlx-vlm the installed zoo excludes must not be installed unattended.
     monkeypatch.setattr(
         mr, "_zoo_declared_specifier", lambda name: "<0.7.0,>=0.4.4" if name == "mlx-vlm" else ""
     )
     packages = mr._install_packages()
     vlm = next(p for p in packages if p.startswith("mlx-vlm"))
     assert "<0.7.0" in vlm
-    # mlx and mlx-lm are pinned at both ends, so they are left alone: intersecting them with a
-    # zoo one patch release behind would empty the range and break every self-heal.
+    # mlx/mlx-lm are pinned at both ends; intersecting with zoo's range could empty it.
     assert "mlx==0.32.3" in packages
     assert "mlx-lm==0.31.3" in packages
 
 
 def test_install_keeps_the_full_range_when_the_zoo_declares_nothing(monkeypatch):
-    # No zoo installed, or unreadable metadata: there is no constraint to honour.
     monkeypatch.setattr(mr, "_zoo_declared_specifier", lambda _name: "")
     assert mr._install_packages() == mr.MLX_PACKAGES
 
@@ -103,7 +87,6 @@ def test_zoo_declared_specifier_reads_the_real_requirement(monkeypatch):
         "_zoo_declared_specifier",
         mr._zoo_declared_specifier,
     )
-    # Markers and ordering are the installed zoo's business; only the range comes back.
     spec = mr._zoo_declared_specifier("mlx-vlm")
     assert spec == "" or all(part[0] in "<>=!~" for part in spec.split(","))
 
@@ -169,8 +152,7 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
 
     assert mr.attempt_mlx_repair() is True
     cmd = captured["cmd"]
-    # transformers is pinned via a constraint file so the mlx install cannot
-    # upgrade it underneath Unsloth, and the temp constraint file is cleaned up.
+    # transformers is pinned via a constraint file so the mlx install cannot upgrade it.
     assert "--constraint" in cmd
     assert "--upgrade" in cmd
     reinstall_pairs = set(zip(cmd, cmd[1:]))
@@ -182,19 +164,14 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     for pkg in mr.MLX_PACKAGES:
         assert any(sent.startswith(pkg) for sent in cmd), pkg
     assert created_paths and not Path(created_paths[0]).exists()
-    # The install mirrors the main installer by relaxing the transformers pin via
-    # UV_OVERRIDE so a current mlx-vlm can coexist with the Unsloth Transformers pin.
+    # UV_OVERRIDE relaxes the transformers pin so a current mlx-vlm can coexist.
     env = captured["env"]
     assert env is not None
     assert env.get("UV_OVERRIDE", "").endswith("overrides-darwin-arm64.txt")
 
 
 def test_install_requires_prebuilt_wheels(monkeypatch):
-    # A source distribution's PEP 517 build backend runs arbitrary code at install
-    # time, before the post-install stack check. The unattended self-heal must
-    # require pre-built wheels so a malicious resolver-selected sdist cannot execute
-    # during ordinary Unsloth startup. mlx/mlx-metal ship wheels only and
-    # mlx-lm/mlx-vlm publish py3-none-any wheels, so a healthy self-heal still works.
+    # sdist build backends run arbitrary code, so the self-heal needs wheels (all mlx pkgs ship them).
     pytest.importorskip("transformers")
     captured = {}
 
@@ -209,9 +186,7 @@ def test_install_requires_prebuilt_wheels(monkeypatch):
 
 
 def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
-    # The unattended self-heal must not hand resolver/build code the full Unsloth
-    # environment: secrets and package-source redirects are dropped, while the
-    # variables uv genuinely needs are forwarded.
+    # The self-heal must not hand resolver/build code secrets or source redirects.
     monkeypatch.setenv("HF_TOKEN", "secret-hf")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret-aws")
     monkeypatch.setenv("WANDB_API_KEY", "secret-wandb")
@@ -226,11 +201,8 @@ def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
 
     env = mr._mlx_install_env()
 
-    # Secrets never reach a (potentially malicious) build/install hook.
     for secret in ("HF_TOKEN", "AWS_SECRET_ACCESS_KEY", "WANDB_API_KEY"):
         assert secret not in env
-    # A poisoned process env cannot repoint the install at a hostile source or
-    # an attacker-staged cache (cache poisoning / symlink writes).
     for redirect in (
         "UV_FIND_LINKS",
         "UV_DEFAULT_INDEX",
@@ -240,7 +212,6 @@ def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
         "XDG_CACHE_HOME",
     ):
         assert redirect not in env
-    # What uv genuinely needs is still forwarded.
     assert env["PATH"] == "/usr/bin:/bin"
     assert env["HOME"] == "/home/studio"
     # UV_OVERRIDE is set by us (not inherited), so a poisoned one is ignored.
@@ -248,23 +219,16 @@ def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
 
 
 def test_repair_rejects_inadequate_stack(monkeypatch):
-    # A successful uv run that still leaves an old/missing mlx-vlm must NOT clear
-    # chat-only: attempt_mlx_repair returns False so Train/Export stay disabled.
+    # A uv success that leaves an old/missing mlx-vlm must not clear chat-only.
     monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
     assert mr.attempt_mlx_repair() is False
 
 
 def test_inadequate_stack_warning_names_the_floors_not_the_install_pins(monkeypatch):
-    # The gate this message reports on is mlx_stack_available(), which tests the
-    # floors. Quoting the install pins instead would tell an operator running a
-    # perfectly usable mlx 0.33 that they need exactly 0.32.3.
+    # The message must quote the floors mlx_stack_available() checks, not the install pins.
     warnings = []
-    # Pin both, or this test measures the host. attempt_mlx_repair returns early
-    # when _uv_executable() finds nothing, long before the message under test, so
-    # on a machine without uv the warning list comes back empty and the unpack
-    # below fails rather than the assertion. That is what took CI red while this
-    # passed locally.
+    # Pin _uv_executable too: without uv on the host the repair returns before the message.
     monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
     monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
     monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
@@ -391,8 +355,6 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
 
     redetected = {"called": False}
 
-    # _run_repair_and_redetect imports utils.hardware.hardware lazily; stub repair
-    # and capture that re-detection is invoked on success.
     monkeypatch.setattr(mr, "attempt_mlx_repair", _fake_repair)
 
     monkeypatch.setattr(hw, "detect_hardware", lambda: redetected.__setitem__("called", True))
@@ -400,7 +362,6 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
     started = mr.start_mlx_autorepair_if_needed()
     assert started is True
 
-    # Join the daemon thread deterministically.
     for thread in threading.enumerate():
         if thread.name == "mlx-autorepair":
             join_when_started(thread, timeout = 5)
@@ -417,11 +378,11 @@ def test_attempts_only_once_per_process(monkeypatch):
     first = mr.start_mlx_autorepair_if_needed()
     second = mr.start_mlx_autorepair_if_needed()
     assert first is True
-    assert second is False  # guard prevents a second concurrent attempt
+    assert second is False
 
 
 def test_mlx_install_env_routes_uv_override_through_safe_path(monkeypatch):
-    # uv truncates UV_OVERRIDE at the first space (issue #6503).
+    # uv truncates UV_OVERRIDE at the first space.
     seen = {}
 
     def _spy(path):
@@ -433,7 +394,6 @@ def test_mlx_install_env_routes_uv_override_through_safe_path(monkeypatch):
 
     env = mr._mlx_install_env()
 
-    # The override file ships in the repo, so the helper must have run.
     assert "path" in seen
     assert str(seen["path"]).endswith("overrides-darwin-arm64.txt")
     assert env["UV_OVERRIDE"] == "/space_free/marker.txt"
@@ -453,7 +413,6 @@ def test_venv_root_is_none_outside_a_venv(monkeypatch, tmp_path):
 
 
 def test_venv_root_requires_the_marker_file(monkeypatch, tmp_path):
-    # A half-deleted tree must not be offered to uv as an install target.
     monkeypatch.setattr(mr.sys, "prefix", str(tmp_path))
     monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
     assert mr._venv_root() is None
@@ -462,9 +421,7 @@ def test_venv_root_requires_the_marker_file(monkeypatch, tmp_path):
 
 
 def test_install_env_names_the_target_venv_for_uv(monkeypatch, tmp_path):
-    # VIRTUAL_ENV is set from sys.prefix, never forwarded from os.environ: it names
-    # the environment uv installs into, so inheriting it would let a caller
-    # redirect the install.
+    # VIRTUAL_ENV comes from sys.prefix, never inherited, or a caller could redirect the install.
     venv = _fake_venv(tmp_path)
     monkeypatch.setattr(mr.sys, "prefix", str(venv))
     monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
@@ -476,8 +433,7 @@ def test_install_env_names_the_target_venv_for_uv(monkeypatch, tmp_path):
 
 
 def test_unresolvable_venv_reports_the_unsloth_repair_command(monkeypatch, tmp_path, capsys):
-    # uv's own text tells the user to run `uv venv`, which would build an
-    # environment Unsloth does not manage. Point at `unsloth studio update`.
+    # uv's text suggests `uv venv`; point at `unsloth studio update` instead.
     venv = _fake_venv(tmp_path)
     monkeypatch.setattr(mr.sys, "prefix", str(venv))
     monkeypatch.setattr(mr.sys, "base_prefix", "/usr")
@@ -552,9 +508,6 @@ def test_an_unresolvable_interpreter_is_diagnosed_not_retried(monkeypatch, tmp_p
     ), f"a corrupting install target reached the uv command line: {flat}"
 
 
-# ── Overturning a verdict a first-import race left behind (issue #9120) ───────
-
-
 def _published_verdict(monkeypatch, *, chat_only: bool, reason):
     """Settled means a device and a set event beside the reason (a chat-only Mac measured its
     way to CPU, not to nothing), or a success check ignoring the verdict would pass. The state
@@ -601,8 +554,6 @@ def _join_the_repair_worker():
 
 
 def test_a_stack_that_measures_usable_overturns_the_verdict(monkeypatch):
-    # The #9120 shape: chat-only cached from a race the warm has since finished importing.
-
     import utils.hardware.hardware as hw
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
@@ -628,7 +579,6 @@ def test_a_stack_that_is_really_unusable_keeps_its_verdict(monkeypatch):
 
 
 def test_a_settled_verdict_that_does_not_blame_mlx_is_left_alone(monkeypatch):
-    # Both were measured by something this cannot re-run.
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
 
@@ -639,7 +589,6 @@ def test_a_settled_verdict_that_does_not_blame_mlx_is_left_alone(monkeypatch):
 
 
 def test_declining_the_reinstall_does_not_mean_keeping_a_wrong_verdict(monkeypatch):
-    # The opt-out declines changing the environment; re-detecting changes nothing on disk.
     monkeypatch.setenv(mr.DISABLE_ENV_VAR, "1")
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
     monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
@@ -706,8 +655,6 @@ def test_a_redetect_that_publishes_nothing_is_not_announced(monkeypatch):
     assert mr.start_mlx_autorepair_if_needed() is False
     assert announced == [], f"announced an overturn that never published: {announced}"
 
-    # Retired mid-probe instead: the pass discards its healthy answer and leaves the reason
-    # cleared, which "no longer the MLX verdict" reads as a win.
     hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = None, True, "mlx_unavailable"
     hw.DETECTION_COMPLETE.set()
 
@@ -721,8 +668,6 @@ def test_a_redetect_that_publishes_nothing_is_not_announced(monkeypatch):
     assert hw.overturn_the_mlx_verdict(hw.current_detection_epoch()) is False
     assert (hw.DEVICE, hw.CHAT_ONLY) == (None, True), "the discarded pass left state behind"
 
-    # And shutdown clears DEVICE, then the event, then the verdict, unlocked: a read between
-    # the first two sees a set event beside a device already gone.
     hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = None, True, "mlx_unavailable"
     hw.DETECTION_COMPLETE.set()
 

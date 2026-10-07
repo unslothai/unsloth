@@ -6,7 +6,6 @@
 Each map was fitted by least squares from the final denoised latent of real renders to the same renders' VAE
 decode, box-averaged onto the latent grid. Families without an entry get no preview."""
 
-# family name or alias (lower case) -> map key
 FAMILY_FACTORS = {
     "flux.1": "flux1",
     "flux.1-kontext": "flux1",

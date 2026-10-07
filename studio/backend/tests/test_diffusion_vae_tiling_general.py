@@ -98,7 +98,6 @@ def _hunyuan_image():
     ).eval()
 
 
-# (builder, ratio, stock (tile, overlap), floor (tile, overlap)) with each VAE's real tile settings
 GEOMETRY = [
     (_qwen_image, 8, (32, 8), (32, 16)),
     (_qwen_image_21, 16, (16, 4), (32, 16)),
@@ -115,7 +114,6 @@ def test_geometry_is_read_off_each_vae(build, ratio, stock, floor):
     assert vt.stock_tiles(vae) == stock
     assert vt.floor_tiles(vae) == floor
     assert vt.install(vae)
-    # the memory estimates see the wide floor tile; it never shrinks below the stock tile
     assert vae._unsloth_decode_tile_side == floor[0] * ratio
     assert dm.vae_tile_side(vae) == floor[0] * ratio
     vt.uninstall(vae)
@@ -125,27 +123,24 @@ def test_geometry_is_read_off_each_vae(build, ratio, stock, floor):
 @pytest.mark.parametrize(
     "stock, length, ok",
     [
-        # Qwen-Image (8x), Qwen-Image-2.1 (16x), HunyuanImage-2.1 (32x): blends under 16 latents, every size
         ((32, 8), 40, False),
         ((32, 8), 128, False),
         ((16, 4), 64, False),
         ((12, 3), 64, False),
-        # AutoencoderKL / FLUX.2 (8x, 1024 px tiles, 768 px stride): fine unless the last tile is a sliver
         ((128, 32), 128, True),
-        ((128, 32), 166, True),  # 1328 px
-        ((128, 32), 192, True),  # 1536 px
+        ((128, 32), 166, True),
+        ((128, 32), 192, True),
         ((128, 32), 200, False),  # 1600 px: an 8-latent last tile
-        ((128, 32), 220, False),  # 1760 px: 28 latents
-        ((128, 32), 224, True),  # 1792 px: 32 latents
-        ((128, 32), 256, True),  # 2048 px
+        ((128, 32), 220, False),
+        ((128, 32), 224, True),
+        ((128, 32), 256, True),
         ((128, 32), 296, False),  # 2368 px: 8 latents
-        ((128, 32), 336, True),  # 2688 px
+        ((128, 32), 336, True),
     ],
 )
 def test_stock_layout_floor(stock, length, ok):
     assert vt.stock_layout_ok(stock, length, length) is ok
     assert vt.stock_layout_ok(stock, min(length, stock[0]), length) is ok
-    # one tiled axis is enough to fail
     if not ok:
         assert vt.stock_layout_ok(stock, stock[0], length) is False
 
@@ -288,7 +283,7 @@ def test_keep_stock_list_skips_the_install(monkeypatch):
     assert vt.install(vae) is False
     assert "tiled_decode" not in vae.__dict__
     for reason in vt.KEEP_STOCK.values():
-        assert reason  # every kept class states its measured reason
+        assert reason
 
 
 def test_unreadable_geometry_keeps_the_stock_decode():
@@ -650,7 +645,6 @@ def test_load_installs_for_every_image_family():
     ]
     assert calls
     for node in ast.walk(ast.parse(src)):
-        # not nested under an `if` on the family / VAE class
         if isinstance(node, ast.If) and any(c in ast.walk(node) for c in calls):
             assert (
                 "fam" not in ast.unparse(node.test) and "vae" not in ast.unparse(node.test).lower()

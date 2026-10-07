@@ -114,7 +114,7 @@ def smi(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.delenv("UNSLOTH_GPU_QUERY_CACHE", raising = False)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
-    # No NVML child unless a test asks for one: it would read this host's real driver.
+    # No NVML child unless asked: it would read this host's real driver.
     monkeypatch.setenv("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
     monkeypatch.setattr(nvidia, "_nvidia_smi_executable", lambda: "nvidia-smi")
     gpu_query.reset()
@@ -248,7 +248,7 @@ def test_different_queries_are_not_merged(smi):
 def test_fit_checks_always_read_afresh(smi, llama_probe):
     """Another process's allocation raises no Studio event, so the next fit check must see it."""
     assert llama_probe() == [(0, 180000, 183359), (1, 170000, 183359)]
-    smi.set_free(1000, 1000)  # another process took nearly all of both GPUs, no invalidation
+    smi.set_free(1000, 1000)
     assert llama_probe() == [(0, 1000, 183359), (1, 1000, 183359)]
     assert smi.calls("memory.free") == 2
 
@@ -322,7 +322,7 @@ def test_a_static_read_after_redetection_does_not_join_an_older_child(smi):
     started = smi.calls("-L")
     first.start()
     smi.wait_for_call("-L", started + 1)
-    smi.state["gpus"] = smi.state["gpus"][:1]  # a GPU went away; re-detection follows
+    smi.state["gpus"] = smi.state["gpus"][:1]
     smi.save()
     gpu_query.invalidate_static("redetect")
     assert nvidia.get_physical_gpu_count() == 1
@@ -337,7 +337,7 @@ def test_display_after_a_load_reads_afresh_inside_the_ttl(smi, monkeypatch):
 
     @gpu_memory_events.invalidates_gpu_memory("test load")
     def load_model():
-        smi.set_free(1024, 1024)  # the model now occupies the cards
+        smi.set_free(1024, 1024)
 
     load_model()
     with gpu_query.display_reads():
@@ -504,7 +504,7 @@ def test_slow_cli_never_shows_a_pre_load_reading_after_a_load(smi, monkeypatch):
 def test_a_failed_answer_replaces_the_cached_inventory(smi, monkeypatch):
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_STATIC_TTL", "0")
     assert nvidia.get_physical_gpu_count() == 2
-    smi.set(exit = 6)  # real nvidia-smi on a host with no GPU: "No devices were found", exit 6
+    smi.set(exit = 6)  # nvidia-smi with no GPU: exit 6
     counts = []
     for _ in range(20):
         counts.append(nvidia.get_physical_gpu_count())
@@ -518,7 +518,7 @@ def test_an_expired_inventory_is_not_served_after_a_card_goes_away(smi, monkeypa
     monkeypatch.setenv("UNSLOTH_GPU_QUERY_STATIC_TTL", "0.2")
     assert nvidia.get_physical_gpu_count() == 2
     time.sleep(0.5)
-    smi.state["gpus"] = smi.state["gpus"][:1]  # an eGPU detached
+    smi.state["gpus"] = smi.state["gpus"][:1]
     smi.save()
     assert nvidia.get_physical_gpu_count() == 1
 
@@ -548,7 +548,7 @@ def test_a_check_true_failure_replaces_the_cached_answer(smi, monkeypatch):
 @pytest.mark.parametrize("code, failed", [(6, False), (9, True)])
 def test_no_devices_found_is_an_answer_not_a_failure(smi, code, failed):
     assert nvidia.get_backend_visible_gpu_info([0, 1], "0,1")["available"]
-    smi.set(exit = code)  # 6: "No devices were found"; 9: driver not loaded
+    smi.set(exit = code)  # 6: No devices were found; 9: driver not loaded
     gpu_query.invalidate_static("redetect")
     out = nvidia.get_backend_visible_gpu_info([0, 1], "0,1")
     assert out["available"] is False
@@ -565,7 +565,7 @@ def test_a_read_after_a_hung_child_does_not_wait_on_it(smi, monkeypatch):
     smi.set(delay = 8.0)
     with pytest.raises(subprocess.TimeoutExpired):
         run(0.5)
-    smi.set(delay = 0)  # the driver recovered; the first child is still running
+    smi.set(delay = 0)
     t0 = time.monotonic()
     assert run(0.5).stdout.split()[0] == "0,"
     assert time.monotonic() - t0 < 1.0
@@ -576,7 +576,7 @@ def test_display_reads_without_stale_wait_for_a_new_reading(smi, monkeypatch):
     with gpu_query.display_reads(max_stale = 0):
         first = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
     time.sleep(0.4)
-    smi.set_free(1000, 1000)  # another process allocated; no Studio event
+    smi.set_free(1000, 1000)
     with gpu_query.display_reads(max_stale = 0):
         after = _free_by_index(nvidia.get_visible_gpu_utilization([0, 1]))
     assert after != first
@@ -605,7 +605,7 @@ def test_an_older_answer_does_not_overwrite_a_newer_empty_one(smi, monkeypatch):
         return gpu_query.run_nvidia_smi(argv, capture_output = True, text = True, timeout = 5)
 
     smi.set(delay = 1.0)
-    older = threading.Thread(target = run)  # fit checks never share a child
+    older = threading.Thread(target = run)
     started = smi.calls("--query-gpu")
     older.start()
     smi.wait_for_call("--query-gpu", started + 1)
@@ -620,7 +620,7 @@ def test_slow_cli_never_answers_a_fit_check_from_an_old_reading(smi, llama_probe
     """Another process can allocate between readings, so no earlier sample may stand in."""
     monkeypatch.setattr(gpu_query, "_background_timeout", lambda: 4.0)
     assert llama_probe() == [(0, 180000, 183359), (1, 170000, 183359)]
-    smi.set_free(1000, 1000)  # another process took nearly all of both GPUs
+    smi.set_free(1000, 1000)
     smi.set(delay = 12.0)
     monkeypatch.setattr(gpu_query, "run_nvidia_smi", _with_timeout(gpu_query.run_nvidia_smi, 0.5))
     assert llama_probe() == []

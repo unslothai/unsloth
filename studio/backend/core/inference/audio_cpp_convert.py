@@ -30,7 +30,6 @@ def convert_caps(model: AudioCppModel) -> Optional[dict[str, Any]]:
         "modes": [mode for mode, _task in convert.modes],
         "target": convert.target,
         "builtin_voices": [{"id": vid, "label": label} for vid, label in convert.builtin_voices],
-        # Seed-VC adds a manual shift on top of Auto; Vevo2's explicit steps replace its estimate.
         "pitch": {
             mode: {"auto": auto, "shift_with_auto": auto and convert.pitch_options == "semitone"}
             for mode, auto in convert.pitch
@@ -138,7 +137,6 @@ def convert_request(
     if mode in pitch_modes and not take_style:
         auto = pitch_auto and pitch_modes[mode]
         if convert.pitch_options == "shift_steps":
-            # Auto leaves both out: the style-preserving routes estimate the shift themselves.
             if not auto and pitch is not None:
                 if int(pitch):
                     request_options["use_pitch_shift"] = "true"

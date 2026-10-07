@@ -23,7 +23,7 @@ _CTRL_Z = "\x1a"
 _BACKSPACES = ("\x7f", "\x08")
 _SUBMITS = ("\r", "\n")
 
-# Mirror in unsloth_cli/commands/_password_prompt.py; keep the name in sync.
+# Keep in sync with unsloth_cli/commands/_password_prompt.py.
 SUPPLIED_PASSWORD_ENV = "UNSLOTH_STUDIO_PASSWORD"
 
 
@@ -105,7 +105,7 @@ class _prompt_raw_mode:
         self._old_attrs = old_attrs
         self._signals = _RestoreTtyOnSignals(fd, old_attrs)
         self._signals.__enter__()
-        # cbreak leaves ISIG on, so clear it and surface Ctrl-C as \x03 for the caller loop to restore the tty.
+        # cbreak leaves ISIG on; clear it and surface Ctrl-C as \x03 so the caller restores the tty.
         tty.setcbreak(fd, termios.TCSADRAIN)
         new_attrs = termios.tcgetattr(fd)
         new_attrs[3] &= ~termios.ISIG
@@ -124,7 +124,7 @@ class _prompt_raw_mode:
 
 
 def _getch_posix() -> str:  # pragma: no cover - needs a real tty
-    # Byte-at-a-time decode so a multi-byte UTF-8 char straddling a read boundary is not dropped.
+    # Byte-at-a-time decode so a UTF-8 char split across reads is not dropped.
     import codecs
 
     fd = sys.stdin.fileno()
@@ -305,7 +305,7 @@ def prompt_for_password_change(
         f"password now. {refusal}\n\n"
     )
     out.flush()
-    # Only the first read is deadlined; a key arriving proves someone is there.
+    # Only the first read is deadlined.
     pending_timeout = first_key_timeout
     try:
         while True:
@@ -343,7 +343,6 @@ def prompt_for_password_change(
         out.flush()
         return None
     except (KeyboardInterrupt, EOFError):
-        # Must agree with the banner: a caller that continues cannot claim otherwise.
         out.write(
             "Password change aborted; not exposing Unsloth.\n"
             if refusal_aborts

@@ -30,8 +30,7 @@ import pytest
 
 from core.inference.diffusion import DiffusionBackend
 
-# The fake torch/diffusers runtime is reused rather than re-declared. Loaded by path because the
-# test directory is not a package, which is the same idiom test_mlx_context_platform_matrix.py uses.
+# Loaded by path because the test directory is not a package.
 _SIBLING = "test_diffusion_backend"
 if _SIBLING in sys.modules:
     _backend_tests = sys.modules[_SIBLING]
@@ -49,7 +48,7 @@ fake_runtime = _backend_tests.fake_runtime
 OS_CELLS = {
     "windows": ("win32", "Windows", "10.0.22631"),
     "linux": ("linux", "Linux", "6.8.0-45-generic"),
-    # Indistinguishable from Linux except for this marker, which is exactly why the row exists.
+    # WSL is indistinguishable from Linux except for this release marker.
     "wsl": ("linux", "Linux", "5.15.153.1-microsoft-standard-WSL2"),
     "macos": ("darwin", "Darwin", "24.1.0"),
 }
@@ -63,7 +62,7 @@ VENDOR_CELLS = {
     "cpu": ("cpu", "float32"),
 }
 
-# Cells a user can actually be in: no CUDA/ROCm/XPU on macOS, no Metal anywhere else.
+# Only reachable cells: no CUDA/ROCm/XPU on macOS, no Metal anywhere else.
 CELLS = [
     (os_key, vendor)
     for os_key in OS_CELLS
@@ -103,7 +102,7 @@ def test_an_eject_cancels_the_load_that_was_already_in_flight(cell, tmp_path):
     (tmp_path / "model.gguf").write_bytes(b"weights")
     token = backend._load_token
     backend.unload()
-    # The worker carries the epoch it was given; the eject bumped it, so the worker is cancelled.
+    # The eject bumped the epoch the worker carries, so the worker is cancelled.
     with pytest.raises(RuntimeError, match = "cancelled"):
         backend.load_pipeline(
             str(tmp_path),
@@ -124,7 +123,7 @@ def test_a_load_arriving_during_an_eject_queues_and_then_runs(cell, tmp_path, mo
     monkeypatch.setattr(backend, "_run_load", lambda **kwargs: dispatched.set())
 
     def hold_pipeline_lock():
-        # Stands in for the multi-minute constructor (or the active denoise) the eject must wait for.
+        # Stands in for the multi-minute constructor or denoise the eject must wait for.
         with backend._lock:
             held.set()
             release.wait(10)

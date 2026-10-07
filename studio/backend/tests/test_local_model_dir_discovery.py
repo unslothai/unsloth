@@ -57,8 +57,7 @@ class _RecordingLogger:
 
     def debug(self, event, *args, **kwargs):
         self.debug_calls.append((event, args))
-        # Mirror structlog's own %-interpolation so a broken format string raises here
-        # instead of silently rendering "%s" to a user later.
+        # Mirror structlog %-interpolation so a broken format string raises here.
         if args:
             event % args
 
@@ -83,11 +82,6 @@ def write_settings(home: Path, payload: bytes) -> Path:
 def settings_json(downloads: Path | str, *, bom: bool = False) -> bytes:
     body = json.dumps({"downloadsFolder": str(downloads)}).encode("utf-8")
     return (BOM_UTF8 if bom else b"") + body
-
-
-# ---------------------------------------------------------------------------
-# A. Encoding of ~/.lmstudio/settings.json
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("bom", [False, True], ids = ["no_bom", "utf8_bom"])
@@ -155,8 +149,6 @@ def test_a_parse_failure_is_logged_once_with_its_cause(fake_home, recording_logg
     assert len(recording_logger.debug_calls) == 1
     event, args = recording_logger.debug_calls[0]
     assert "LM Studio settings" in event
-    # The path and the underlying exception both have to reach the log line, or the
-    # message tells an operator nothing they can act on.
     assert len(args) == 2
     assert str(fake_home) in str(args[0])
     assert isinstance(args[1], Exception)
@@ -169,11 +161,6 @@ def test_a_readable_settings_file_logs_nothing(fake_home, recording_logger):
 
     assert storage_roots.lmstudio_model_dirs() == [downloads]
     assert recording_logger.debug_calls == []
-
-
-# ---------------------------------------------------------------------------
-# B. Filesystem state of the configured folder
-# ---------------------------------------------------------------------------
 
 
 def test_a_configured_folder_that_does_not_exist_is_dropped(fake_home):
@@ -203,8 +190,6 @@ def test_a_symlinked_folder_keeps_the_spelling_the_user_configured(fake_home, tm
     write_settings(fake_home, settings_json(link))
 
     assert storage_roots.lmstudio_model_dirs() == [link]
-    # well_known_model_dirs is the other contract: it feeds a containment check, so it
-    # does resolve.
     assert real.resolve() in storage_roots.well_known_model_dirs()
 
 
@@ -278,8 +263,7 @@ def test_settings_path_being_a_directory_is_not_a_crash(fake_home):
 
 @pytest.mark.skipif(
     not hasattr(os, "geteuid") or os.geteuid() == 0,
-    # geteuid is POSIX-only, and skipif evaluates at import, so calling it unguarded
-    # fails collection of this whole module on Windows.
+    # geteuid is POSIX-only and skipif evaluates at import.
     reason = "needs POSIX mode bits and a non-root user",
 )
 def test_an_unreadable_settings_file_is_logged_not_raised(fake_home, recording_logger):
@@ -290,11 +274,6 @@ def test_an_unreadable_settings_file_is_logged_not_raised(fake_home, recording_l
         assert len(recording_logger.debug_calls) == 1
     finally:
         settings.chmod(0o600)
-
-
-# ---------------------------------------------------------------------------
-# C. Platform matrix -- pure-string normalizer behaviour
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -383,11 +362,6 @@ def test_the_empty_string_is_returned_unchanged(as_host):
     assert path_utils.host_normalize_path("") == ""
 
 
-# ---------------------------------------------------------------------------
-# C2. Platform matrix -- discovery against a real filesystem (os.name untouched)
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def as_wsl(monkeypatch):
     def _apply(automount: str):
@@ -419,8 +393,7 @@ def test_a_windows_downloads_folder_is_dropped_on_plain_linux(fake_home):
 
 @pytest.mark.skipif(
     os.name == "nt",
-    # The property under test is POSIX-only: on Windows this name cannot be created,
-    # mkdir reads the backslash as a separator and the parent does not exist.
+    # POSIX-only: on Windows mkdir reads the backslash as a separator.
     reason = "a backslash cannot be part of a filename on Windows",
 )
 def test_a_posix_folder_with_a_backslash_survives_discovery(fake_home):
@@ -431,11 +404,6 @@ def test_a_posix_folder_with_a_backslash_survives_discovery(fake_home):
 
     assert storage_roots.lmstudio_model_dirs() == [downloads]
     assert hub_paths.lmstudio_model_dirs() == [downloads]
-
-
-# ---------------------------------------------------------------------------
-# D. The two entry points are one implementation
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -463,11 +431,6 @@ def test_the_hub_normalizer_still_reads_its_own_module_attributes(monkeypatch):
     monkeypatch.setattr(hub_paths, "_WSL_AUTOMOUNT_ROOT", "/custom-root/")
 
     assert hub_paths.normalize_path("D:\\models") == "/custom-root/d/models"
-
-
-# ---------------------------------------------------------------------------
-# E. Return-shape contracts (the backwards-compatibility guard)
-# ---------------------------------------------------------------------------
 
 
 def test_per_tool_lists_are_unresolved_and_well_known_is_resolved(fake_home, tmp_path):
@@ -526,11 +489,6 @@ def test_discovery_returns_path_objects_not_strings(fake_home):
         assert all(isinstance(p, Path) for p in result)
 
 
-# ---------------------------------------------------------------------------
-# F. $OLLAMA_MODELS -- previously untested anywhere in the repo
-# ---------------------------------------------------------------------------
-
-
 def test_the_ollama_env_override_is_honoured(fake_home, monkeypatch, tmp_path):
     models = tmp_path / "ollama-models"
     models.mkdir()
@@ -567,11 +525,6 @@ def test_the_ollama_default_is_found_without_the_env(fake_home, monkeypatch):
     default.mkdir(parents = True)
 
     assert storage_roots.ollama_model_dirs() == [default]
-
-
-# ---------------------------------------------------------------------------
-# G. Import graph -- the new hub -> storage_roots edge
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(

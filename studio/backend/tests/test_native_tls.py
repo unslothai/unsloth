@@ -96,7 +96,6 @@ def test_activate_keeps_explicit_uv_override(monkeypatch):
 
     assert native_tls.activate_native_tls() is True
     assert os.environ["UV_SYSTEM_CERTS"] == "0"
-    # uv takes either var as an opt-in, so the legacy name must mirror the opt-out.
     assert os.environ["UV_NATIVE_TLS"] == "0"
 
 
@@ -133,7 +132,6 @@ def test_activate_fails_open_without_truststore(monkeypatch):
     monkeypatch.setitem(sys.modules, "truststore", None)
 
     assert native_tls.activate_native_tls() is False
-    # A later call with truststore available recovers.
     calls = _fake_truststore(monkeypatch)
     assert native_tls.activate_native_tls() is True
     assert calls == ["inject"]
@@ -155,9 +153,9 @@ def test_activate_fails_open_when_injection_raises(monkeypatch):
 @pytest.mark.parametrize(
     ("platform", "desktop_kind", "expected"),
     [
-        ("linux", "tauri", True),  # .deb/AppImage desktop: icon launch, no shell profile
-        ("linux", "", False),  # headless `unsloth studio`: opt-in stays
-        ("linux", "other", False),  # unknown owner kind: not the Tauri handshake
+        ("linux", "tauri", True),
+        ("linux", "", False),
+        ("linux", "other", False),
     ],
 )
 def test_linux_desktop_owner_flips_native_tls_default(
@@ -192,8 +190,7 @@ def test_activate_spells_the_resolved_decision_into_the_env(monkeypatch):
 def test_activate_overwrites_an_unrecognized_inherited_flag(monkeypatch, inherited):
     import os
 
-    # An unrecognized value resolves to the default here but reads as off in a
-    # child, so setdefault would leave the probes verifying against certifi.
+    # Unrecognized values read as off in a child, so setdefault would keep certifi.
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", inherited)
     monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
@@ -206,9 +203,7 @@ def test_activate_overwrites_an_unrecognized_inherited_flag(monkeypatch, inherit
 def test_desktop_default_leaves_uv_on_its_bundled_roots(monkeypatch):
     import os
 
-    # uv's system certs replace its webpki roots rather than adding to them, so an
-    # unusable SSL_CERT_FILE it ignores today would become a hard failure, and
-    # core/training/worker.py runs uv with no pip fallback.
+    # uv system certs replace webpki roots; an unusable SSL_CERT_FILE would hard-fail uv.
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "tauri")
     _fake_truststore(monkeypatch)
@@ -232,8 +227,7 @@ def test_linux_explicit_opt_in_still_moves_uv(monkeypatch):
 def test_a_worker_inherits_the_uv_answer_it_cannot_re_derive(monkeypatch):
     import os
 
-    # The worker's env is the parent's: the flag normalized to "1" and the marker
-    # popped, so re-deriving would read as an explicit opt-in and flip uv anyway.
+    # The worker inherits flag="1" with marker popped; re-deriving would flip uv anyway.
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "1")
     monkeypatch.setenv("UV_SYSTEM_CERTS", "0")
@@ -280,8 +274,6 @@ def _run_inline_gate(
         monkeypatch.setenv("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", owner_kind)
     if flag is not None:
         monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", flag)
-    # The gate reads only sys.platform and sys.path off the handed-in `sys`;
-    # `import truststore` still finds _fake_truststore's stub in the real sys.modules.
     child_sys = _types.SimpleNamespace(platform = platform, path = [])
     namespace = {"os": os, "sys": child_sys, "_TRUSTSTORE_VENDOR": "/vendor"}
     exec(native_tls.inline_gate_source(), namespace)

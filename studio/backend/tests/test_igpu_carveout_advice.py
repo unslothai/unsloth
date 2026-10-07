@@ -32,15 +32,12 @@ class TestGating:
     """Who must never see this."""
 
     def test_a_discrete_gpu_is_never_advised(self):
-        # A discrete card's VRAM is fixed silicon, however badly the model fits.
         assert _advice(gb(40), gb(8), gb(64), is_igpu = False) is None
 
     def test_a_model_that_already_fits_says_nothing(self):
-        # 20 GB of weights inside a 32 GB allocation: nothing to fix.
         assert _advice(gb(20), gb(32), gb(96), is_igpu = True) is None
 
     def test_a_model_too_large_for_the_machine_says_nothing(self):
-        # 120 GB of weights on a 128 GB machine: no allocation here holds it.
         assert _advice(gb(120), gb(32), gb(95.78), is_igpu = True) is None
 
     def test_unknown_inputs_never_advise(self):
@@ -54,21 +51,18 @@ class TestTheMeasuredMachine:
     """The Strix Halo host the 3-4x was measured on, at both carve-outs."""
 
     def test_the_slow_configuration_is_advised(self):
-        # 32 GiB allocation, 95.78 GiB visible, a 42.90 GiB model: the 3-4x slower one.
+        # 32 GiB allocation, 95.78 GiB visible, a 42.90 GiB model.
         got = _advice(gb(42.90), gb(32), gb(95.78), is_igpu = True)
         assert got is not None
         assert got["current_gb"] == 32.0
         assert got["needed_gb"] == 42.9
-        # Smallest rung that holds the weights: every GB suggested leaves the desktop.
         assert got["suggested_gb"] == 48
         assert got["machine_gb"] == 127.8
 
     def test_the_fast_configuration_is_silent(self):
-        # Same model after raising it to 96 GiB: weights resident, nothing to say.
         assert _advice(gb(42.90), gb(96), gb(31.78), is_igpu = True) is None
 
     def test_a_bigger_model_on_the_raised_machine_is_advised_again(self):
-        # 67.56 GiB (Qwen3.8-Flash-Next UD-IQ1_S) against a 64 GiB allocation.
         got = _advice(gb(67.56), gb(64), gb(63.78), is_igpu = True)
         assert got is not None and got["suggested_gb"] == 96
 
@@ -77,14 +71,12 @@ class TestGeneralisesToOtherMachines:
     """Nothing may be pinned to 128 GB or to one vendor's menu."""
 
     def test_a_small_laptop(self):
-        # 16 GB machine, 2 GB allocated, an 8 GB model.
         got = _advice(gb(8), gb(2), gb(14), is_igpu = True)
         assert got is not None
         assert got["suggested_gb"] == 8
         assert got["host_left_gb"] == 8.0
 
     def test_a_large_workstation(self):
-        # 512 GB machine, 32 GB allocated, a 300 GB model.
         got = _advice(gb(300), gb(32), gb(480), is_igpu = True)
         assert got is not None
         assert got["suggested_gb"] == 384
@@ -98,7 +90,6 @@ class TestGeneralisesToOtherMachines:
             assert got["suggested_gb"] <= machine - max(8, machine * 0.20)
 
     def test_a_suggestion_is_always_an_increase(self):
-        # A rung at or below what is already set is not advice.
         got = _advice(gb(33), gb(32), gb(95.78), is_igpu = True)
         assert got is None or got["suggested_gb"] > got["current_gb"]
 
@@ -120,8 +111,7 @@ class TestRecordingItOnALoad:
         carve_bytes = 32 * _GB,
         total_mib = 95 * 1024,
     ):
-        # __new__: no real server, config or filesystem. The method under test only
-        # reads the stubs below and writes one attribute.
+        # __new__: no real server, config or filesystem needed.
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         monkeypatch.setattr(
             LlamaCppBackend, "_amd_apu_wants_unified_memory", staticmethod(lambda _i = None: is_igpu)
@@ -153,7 +143,6 @@ class TestRecordingItOnALoad:
         assert backend.last_carveout_advice is None
 
     def test_an_unknown_model_size_records_nothing(self, monkeypatch):
-        # _unified_need is None unless the launch forces a full offload.
         backend = self._backend(monkeypatch)
         backend._record_carveout_advice(None, None)
         assert backend.last_carveout_advice is None
@@ -172,7 +161,6 @@ class TestRecordingItOnALoad:
         assert backend.last_carveout_advice is None
 
     def test_a_raised_allocation_speaks_again_after_dismissal(self, monkeypatch):
-        # Dismissed at 32 GB, user raised it to 64 GB, still short: say it once more.
         from utils.igpu_carveout_notice_settings import dismiss_notice
 
         dismiss_notice(32.0)
@@ -186,7 +174,7 @@ class TestRecordingItOnALoad:
 
         backend = self._backend(monkeypatch)
         monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(boom))
-        backend._record_carveout_advice(None, gb(42.90))  # must not raise
+        backend._record_carveout_advice(None, gb(42.90))
         assert backend.last_carveout_advice is None
 
 
@@ -196,25 +184,18 @@ class TestTheMessage:
     def test_it_names_the_numbers_and_the_cost(self):
         msg = _message(_advice(gb(42.90), gb(32), gb(95.78), is_igpu = True))
         assert "43 GB" in msg and "32 GB" in msg and "48 GB" in msg
-        assert "80 GB" in msg  # what the host keeps: the trade-off, stated
+        assert "80 GB" in msg
 
     def test_it_says_where_the_setting_lives_without_claiming_a_menu(self):
-        # Firmware on one machine, a driver panel on the next, under different names.
-        # Naming both and neither specifically is as far as this can honestly go.
         msg = _message(_advice(gb(42.90), gb(32), gb(95.78), is_igpu = True))
         assert "firmware" in msg and "control panel" in msg
-        # No menu path, key or control name is claimed.
         for invented in ("F10", "UMA Frame Buffer", "Variable Graphics Memory", "Advanced >"):
             assert invented not in msg
 
     def test_it_stays_short_enough_for_a_toast(self):
-        # A tall toast covers the controls under it for as long as it is up (see
-        # xet-progress-notice.ts, #9293). Bounded at the widest plausible reading,
-        # since a 4-digit machine renders longer than the development one.
+        # A tall toast covers controls (#9293); bounded at the widest plausible reading.
         widest = _message(_advice(gb(400), gb(0.5), gb(1023.5), is_igpu = True))
         assert len(widest) <= 260, (len(widest), widest)
-        # Two sentences, and no paragraph breaks: the dialog's three-paragraph body
-        # is what this replaced.
         assert "\n" not in widest
 
     def test_it_names_no_vendor(self):
@@ -242,8 +223,6 @@ class TestPropertiesOverEveryPlausibleMachine:
                     yield machine, carve, model, host
 
     def test_following_the_advice_always_ends_it(self):
-        # An advisory that survives being followed is a nag, and one that cannot be
-        # satisfied is a bug.
         checked = 0
         for machine, carve, model, host in self._cases():
             first = _advice(gb(model), gb(carve), host, is_igpu = True)
@@ -309,19 +288,16 @@ class TestTheSmallAllocationsTheLadderMustOffer:
     """An APU on its automatic setting reports a few hundred megabytes."""
 
     def test_the_low_rungs_exist(self):
-        # Firmware offers 1 and 2 GB, so a ladder starting at 4 could only advise
-        # past them.
+        # Firmware offers 1 and 2 GB rungs.
         assert LlamaCppBackend._igpu_carveout_ladder_gb(8) == [1, 2, 3, 4, 6, 8]
 
     def test_a_small_model_is_advised_onto_the_smallest_rung_that_fits(self):
-        # 1 GB allocated, 2 GB of weights, a 16 GB machine.
         advice = _advice(gb(2), gb(1), gb(15), is_igpu = True)
         assert advice is not None
         assert advice["suggested_gb"] == 2
         assert advice["host_left_gb"] == 14.0
 
     def test_the_measured_machine_is_unchanged(self):
-        # The low rungs must not perturb the case this feature was built for.
         advice = _advice(gb(42.90), gb(32), gb(95.78), is_igpu = True)
         assert advice is not None and advice["suggested_gb"] == 48
 
@@ -350,12 +326,10 @@ class TestTheRungTheUserIsAlreadyOn:
     """A driver reports the pool it kept, not the number in the firmware menu."""
 
     def test_a_reading_just_under_its_own_rung_is_not_advised_back_to_it(self):
-        # 95.83 GB is the 96 GB setting as the driver reports it, so the rung covering
-        # a 95.9 GB model is 96: the setting already in force.
+        # The driver reports the 96 GB setting as 95.83 GB.
         assert _advice(gb(95.9), gb(95.83), gb(31.78), is_igpu = True) is None
 
     def test_the_next_real_rung_is_still_advised(self):
-        # The slack must not swallow a genuine step up: a 32 GB reading still earns 48.
         assert _advice(gb(42.9), gb(32), gb(95.8), is_igpu = True)["suggested_gb"] == 48
 
     def test_the_slack_is_narrower_than_the_gap_between_rungs(self):
@@ -397,10 +371,7 @@ class TestThePlacementItAdvisesAbout:
         return backend
 
     def test_a_vulkan_launch_on_a_discrete_device_is_never_even_priced(self, monkeypatch):
-        # Ordinal 1 is not in the planner's shared set, so this offloads to a discrete
-        # card. No advice, and no allocation reading either: on Linux that falls
-        # through to the ROCm pool, which imports torch for a load that cannot be
-        # advised.
+        # Ordinal 1 is a discrete card: no advice, and no ROCm pool read (it imports torch).
         probes = []
         backend = self._backend(monkeypatch, probes = probes)
         backend._record_carveout_advice(
@@ -414,8 +385,7 @@ class TestThePlacementItAdvisesAbout:
         assert probes == [], "the allocation was read for a device that shares nothing"
 
     def test_a_vulkan_launch_on_the_shared_device_is_advised(self, monkeypatch):
-        # The ROCm gate answers False, having read the Vulkan ordinal as a physical id.
-        # The Vulkan classification applies, and it says this device shares memory.
+        # The ROCm gate misreads the Vulkan ordinal; the Vulkan classification applies.
         backend = self._backend(monkeypatch, probes = [], rocm_gate = False)
         backend._record_carveout_advice(
             [0],
@@ -428,7 +398,6 @@ class TestThePlacementItAdvisesAbout:
         assert advice is not None and advice["suggested_gb"] == 48
 
     def test_an_unknown_vulkan_inventory_says_nothing(self, monkeypatch):
-        # Fails closed like every other reading here: no shared set, no advice.
         probes = []
         backend = self._backend(monkeypatch, probes = probes)
         backend._record_carveout_advice(
@@ -442,9 +411,7 @@ class TestThePlacementItAdvisesAbout:
         assert probes == []
 
     def test_a_user_device_override_declines(self, monkeypatch):
-        # With no gpu_ids a user --device wins last-wins over the generated pin, so the
-        # placement this would describe is not the one that runs. The cache tuning
-        # declines for the same reason and with the same test.
+        # Without gpu_ids a user --device wins over the generated pin, so decline.
         probes = []
         backend = self._backend(monkeypatch, probes = probes)
         backend._record_carveout_advice([0], gb(42.90), target_unknown = True)
@@ -452,7 +419,6 @@ class TestThePlacementItAdvisesAbout:
         assert probes == []
 
     def test_a_non_vulkan_launch_still_uses_the_rocm_gate(self, monkeypatch):
-        # The ROCm path is unchanged, gate still asked last, after the shortfall.
         backend = self._backend(monkeypatch, probes = [], rocm_gate = False)
         backend._record_carveout_advice([0], gb(42.90))
         assert backend.last_carveout_advice is None
@@ -462,8 +428,7 @@ class TestTheCpuOnlyReplay:
     """A Vulkan crash replays with --gpu-layers 0 --device none."""
 
     def test_the_advice_does_not_survive_it(self, monkeypatch):
-        # No allocation holds any weights after this replay. Both CPU-fallback call
-        # sites reach this one function, which is why the clear lives here.
+        # Both CPU-fallback call sites reach this function, so the clear lives here.
         backend = LlamaCppBackend.__new__(LlamaCppBackend)
         backend._last_carveout_advice = {"current_gb": 32.0, "suggested_gb": 48}
         backend._last_load_warning = None
@@ -485,8 +450,7 @@ class TestTheResponseRechecksTheDismissal:
         return backend
 
     def test_a_dismissed_notice_is_stripped_from_the_response(self):
-        # The already-resident path never runs the launch-time gate, so the toast came
-        # back on every later load of the same model.
+        # The already-resident path never runs the launch-time gate.
         from routes.inference import _live_carveout_advice
         from utils.igpu_carveout_notice_settings import dismiss_notice
 
@@ -497,7 +461,6 @@ class TestTheResponseRechecksTheDismissal:
         assert _live_carveout_advice(backend) is None
 
     def test_a_larger_allocation_still_speaks(self):
-        # Dismissed at 32, now running 64 and short again: the launch path's rule.
         from routes.inference import _live_carveout_advice
         from utils.igpu_carveout_notice_settings import dismiss_notice
 
@@ -514,9 +477,7 @@ class TestTheArchitectureGatedCpuLaunch:
     """Every GPU unsupported by this llama.cpp build, so the child runs on the CPU."""
 
     def test_a_forced_cpu_launch_is_never_advised(self, monkeypatch):
-        # Priced before the env block masks every device away, so the argv still reads
-        # as a full GPU offload. Without the gate an unsupported APU's CPU-only load
-        # returns a toast about a GPU this build cannot use at all.
+        # Priced before the env masks devices, so the argv still reads as a full GPU offload.
         probes = []
 
         def _read(_i = None, **_kwargs):
@@ -564,9 +525,7 @@ class TestEveryCallSitePricesThePlacementItRuns:
         assert "forced_cpu" in by_target["_unified_gpu_indices"]
 
     def test_the_proactive_arch_gate_reprices_against_the_survivors(self):
-        # The gate narrows onto supported devices before the spawn, and
-        # _rocm_selected_pool_mib declines the unnarrowed set on a mixed host, so a
-        # model outgrowing the surviving APU's carve-out was never advised about.
+        # _rocm_selected_pool_mib declines the unnarrowed set on a mixed host.
         by_target = {
             ast.unparse(call.args[0]): {kw.arg for kw in call.keywords} for call in self._calls()
         }
@@ -576,9 +535,7 @@ class TestEveryCallSitePricesThePlacementItRuns:
         assert "forced_cpu" in by_target["_survivors"]
 
     def test_the_architecture_retry_reprices_against_the_surviving_gpus(self):
-        # _begin_load_warnings() drops the advice priced for the crashed placement, but
-        # the respawn can land on an APU the same weights outgrow, so the retry has to
-        # price it again rather than only clear.
+        # The respawn can land on an APU the weights outgrow, so the retry re-prices.
         by_target = {
             ast.unparse(call.args[0]): {kw.arg for kw in call.keywords} for call in self._calls()
         }
@@ -614,9 +571,7 @@ class TestWhichAdapterTheAllocationBelongsTo:
         assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) == 32 * _GB
 
     def test_an_intel_igpu_beside_a_discrete_radeon_declines(self, monkeypatch):
-        # What the AMD-only query got wrong: the Intel iGPU is the shared one, but the
-        # single AMD record is the discrete card, whose fixed VRAM was then quoted as
-        # the integrated GPU's allocation.
+        # The Intel iGPU is shared while the single AMD record is the discrete card.
         import utils.hardware.hardware as hw
         self._with_records(
             monkeypatch,
@@ -628,9 +583,7 @@ class TestWhichAdapterTheAllocationBelongsTo:
         assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
 
     def test_an_intel_only_host_is_counted_but_never_quoted(self, monkeypatch):
-        # Intel is read for the COUNT, which makes the attribution above safe, never
-        # for the answer: on Intel UMA the DirectX value is a small dedicated block
-        # beside memory the driver hands out dynamically.
+        # Intel is read only for the count: its DirectX value is a small dedicated block.
         import utils.hardware.hardware as hw
         self._with_records(
             monkeypatch, {hw._INTEL_PCI_VENDOR_ID: {2: {"dedicated_memory_bytes": 8 * _GB}}}
@@ -638,9 +591,7 @@ class TestWhichAdapterTheAllocationBelongsTo:
         assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
 
     def test_an_adapter_with_no_readable_allocation_still_counts(self, monkeypatch):
-        # The count IS the attribution test: filtering out an APU record with no
-        # dedicated-memory value left the discrete Radeon beside it as the only
-        # candidate, with its fixed 16 GB quoted as the APU's carve-out.
+        # Filtering out a valueless APU record left the discrete Radeon as sole candidate.
         import utils.hardware.hardware as hw
         self._with_records(
             monkeypatch,
@@ -654,7 +605,6 @@ class TestWhichAdapterTheAllocationBelongsTo:
         assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
 
     def test_a_vendor_the_registry_could_not_read_fails_closed(self, monkeypatch):
-        # An incomplete inventory cannot say the adapter it did see is the only one.
         import utils.hardware.hardware as hw
         self._with_records(
             monkeypatch,
@@ -666,8 +616,6 @@ class TestWhichAdapterTheAllocationBelongsTo:
         assert LlamaCppBackend._igpu_dedicated_memory_bytes([0]) is None
 
     def test_no_registry_record_at_all_falls_through_to_rocm(self, monkeypatch):
-        # The Linux path: no adapter records, so the ROCm pool is the reading, and the
-        # vendor rule above must not swallow it.
         self._with_records(monkeypatch, {})
         monkeypatch.setattr(
             LlamaCppBackend, "_rocm_selected_pool_mib", staticmethod(lambda _i = None: 32 * 1024)
@@ -690,7 +638,6 @@ class TestTheRoutingIsDeterministic:
 
     _NEED = gb(42.90)
     _HOST_MIB = 95 * 1024
-    # None is "no reading", 64 GB holds the weights, 32 GB is the measured shortfall.
     _CARVE_OUTS = (None, 64 * _GB, 32 * _GB)
 
     @staticmethod
@@ -783,18 +730,15 @@ class TestTheRoutingIsDeterministic:
             if bool(advice) != expected:
                 wrong.append((case, bool(advice), expected))
         assert not wrong, f"{len(wrong)} of the routing cases disagree: {wrong[:3]}"
-        # A table where nothing ever speaks would pass every assertion above.
         assert spoke, "no combination produced advice, so this proves nothing"
 
     def test_the_same_inputs_always_reach_the_same_answer(self, monkeypatch):
-        # Nothing here is time, order or host dependent, message included.
         first = [self._run(monkeypatch, **case)[0] for case in self._cases()]
         second = [self._run(monkeypatch, **case)[0] for case in self._cases()]
         assert first == second
 
     def test_a_declined_placement_is_never_priced(self, monkeypatch):
-        # The cheap gates all sit BEFORE the allocation reading, which on Linux imports
-        # torch. A load that could never be advised must not pay for it.
+        # Cheap gates precede the allocation read, which imports torch on Linux.
         for case in self._cases():
             declined_early = (
                 case["forced_cpu"]
@@ -828,7 +772,6 @@ class TestTheAdvisoryCannotReachTheLaunch:
         raise AssertionError("_record_carveout_advice is gone")
 
     def test_it_writes_one_attribute_and_no_other(self):
-        # Any other `self.x = ...` here would be launch state written by an advisory.
         written = set()
         for node in ast.walk(self._recorder(self._module_tree())):
             targets = []
@@ -846,8 +789,7 @@ class TestTheAdvisoryCannotReachTheLaunch:
         assert written == {"_last_carveout_advice"}, written
 
     def test_no_call_site_computes_anything_of_its_own(self):
-        # Arguments are evaluated OUTSIDE the recorder's try/except, so a call in the
-        # argument list is a way for an advisory to raise into a launch.
+        # Arguments run outside the recorder's try/except, so a call there can raise into a launch.
         tree = self._module_tree()
         calls = [
             node
@@ -859,8 +801,6 @@ class TestTheAdvisoryCannotReachTheLaunch:
         assert calls
 
         def cannot_raise(node) -> bool:
-            # A name, a constant, an attribute of one, or an `or` over those. Anything
-            # else -- a call above all -- is work outside the recorder's guard.
             if isinstance(node, (ast.Name, ast.Constant)):
                 return True
             if isinstance(node, ast.Attribute):
@@ -876,7 +816,6 @@ class TestTheAdvisoryCannotReachTheLaunch:
                 ), f"an advisory call site evaluates {ast.unparse(argument)}"
 
     def test_no_caller_can_branch_on_what_it_returns(self):
-        # Every call is a bare expression statement, so a launch cannot branch on it.
         tree = self._module_tree()
         statements = {
             id(node.value)
@@ -937,7 +876,6 @@ class TestTheIndexSpaceTheAllocationIsReadIn:
         assert asked == [], f"a Vulkan launch paid for a HIP context: {asked}"
 
     def test_a_vulkan_launch_still_reads_the_windows_registry(self, monkeypatch):
-        # The half that must keep working: per adapter, and never touches an ordinal.
         import utils.hardware.hardware as hw
 
         asked = self._readers(
@@ -949,7 +887,6 @@ class TestTheIndexSpaceTheAllocationIsReadIn:
         assert asked == []
 
     def test_a_non_vulkan_launch_still_scopes_by_physical_id(self, monkeypatch):
-        # Those integers ARE HIP ids, and narrowing keeps a dGPU out of the answer.
         asked = self._readers(monkeypatch)
         LlamaCppBackend._igpu_dedicated_memory_bytes([0])
         assert asked == [[0]]

@@ -22,8 +22,7 @@ from typing import Optional
 BOOTSTRAP_TIMEOUT_ENV_VAR = "UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT"
 DEFAULT_BOOTSTRAP_TIMEOUT_SECONDS = 3600
 
-# Monotonic expiry, or None when nothing is armed. Read back over HTTP because the
-# stderr warning is lost on the launches that arm it (--secure, external bind).
+# Read back over HTTP because the stderr warning is lost on --secure / external-bind launches.
 _deadline_at: Optional[float] = None
 
 
@@ -137,7 +136,7 @@ def enforce_bootstrap_password_deadline(
     print(message, file = sys.stderr, flush = True)
     try:
         trigger_shutdown()
-    except Exception as e:  # shutdown is best-effort; never raise from the timer
+    except Exception as e:
         if logger is not None:
             logger.warning("Bootstrap-timeout shutdown failed: %s", e)
     return True

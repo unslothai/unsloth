@@ -23,10 +23,7 @@ _DEEPSEEK_HARNESS_FILE_MARKERS = (
     b"@deepseek-ai+dsh",
 )
 
-# Keep in sync with the `unsloth start <agent>` subcommands defined in
-# unsloth_cli/commands/start.py. Each entry is the exact executable name that
-# subcommand launches, so a hit here means `unsloth start <agent>` can find the
-# binary on PATH without the user installing anything first.
+# Keep in sync with `unsloth start <agent>` in unsloth_cli/commands/start.py.
 CODING_AGENTS: tuple[str, ...] = (
     "claude",
     "codex",
@@ -90,17 +87,12 @@ def deepseek_harness_executables_on_path(path: Optional[str] = None) -> list[str
 
 
 def _is_on_path(agent: str) -> bool:
-    # shutil.which returns None on a miss but PATH lookups can still raise, and this is advisory, so a lookup failure
-    # reads as "not installed" rather than breaking the endpoint.
     try:
         executable = shutil.which(agent)
         if executable is None:
             return False
         if agent == "dsh":
-            # Detection runs when the settings panel opens, so it must not execute an
-            # arbitrary same-named program. Official npm/pnpm launchers contain one of
-            # the package or product markers above; explicit launches may additionally
-            # use the bounded --help probe for custom wrappers.
+            # Must not execute an arbitrary same-named program when the panel opens.
             if is_deepseek_harness_executable(executable, allow_execution = False):
                 return True
             return any(

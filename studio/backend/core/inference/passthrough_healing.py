@@ -36,15 +36,12 @@ from core.inference.tool_loop_controller import (
 )
 from core.tool_healing import parse_tool_calls_from_text
 
-# Only the formats this healer's parser can promote -- narrower than the loops' broader TOOL_XML_SIGNALS. A loop-only
-# marker (Llama <|python_tag|>, bare [ARGS]) would buffer a streamed call as prose without promoting it, so keep a
-# healer-aligned list. Mistral's [TOOL_CALLS] IS promotable, so it stays in.
+# Only formats this parser can promote, narrower than TOOL_XML_SIGNALS.
 _HEAL_SIGNALS = (
     "<tool_call>",
     "<|tool_call>",
     "<function=",
     "[TOOL_CALLS]",
-    # TML Inkling native call marker (leaks as text when the server-side parser misses a narration-then-call turn).
     "<|content_invoke_tool_json|>",
 )
 
@@ -53,10 +50,7 @@ def _has_heal_signal(text: str) -> bool:
     return any(s in text for s in _HEAL_SIGNALS)
 
 
-# Read once at import (same convention as the other UNSLOTH_* switches).
 _HEALING_DISABLED = os.environ.get("UNSLOTH_DISABLE_TOOL_CALL_HEALING", "0") == "1"
-# Nudging is OPT-IN: per-request nudge_tool_calls=true, or flip the process default with UNSLOTH_TOOL_CALL_NUDGE=1 (e.g.
-# an `unsloth run` operator).
 _NUDGE_DEFAULT = os.environ.get("UNSLOTH_TOOL_CALL_NUDGE", "0") == "1"
 
 
@@ -71,8 +65,7 @@ def nudge_enabled(request_flag: Optional[bool], *, response_format: Any = None) 
 
 
 _MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
-# A suspected-but-unclosed tool block larger than this is declared a false alarm and flushed, bounding memory on a
-# model rambling XML-lookalike text.
+# Bounds memory when a model rambles XML-lookalike text.
 _MAX_HOLD_CHARS = 64 * 1024
 
 
@@ -340,13 +333,8 @@ class StreamToolCallHealer:
         self._buffer = ""
         self._holding = False
         self._id_offset = 0
-        # Markup span each promoted call was cut from, keyed by its call id. Promotion is destructive -- the span
-        # never reaches the client -- so a caller that ends up DISCARDING a promoted call (a turn truncated at
-        # finish_reason "length" cannot be executed) has no other way to give the model's own words back. Bounded by
-        # _MAX_HOLD_CHARS per span.
+        # Promotion is destructive; keep spans so a discarded call can return the model's words.
         self._promoted_spans: dict[str, str] = {}
-        # Structured delta.tool_calls seen upstream: grammar mode already worked, so healing goes dormant and text
-        # relays verbatim.
         self.dormant = False
 
     @property
@@ -413,8 +401,6 @@ class StreamToolCallHealer:
             pos = 0
             run_end = spans[0][1]
             for order, (call, (start, end)) in enumerate(zip(parsed, spans)):
-                # Stop at the first gap or incomplete trailing block: leave it for the next pass to re-hold and stream
-                # incrementally, not flush as text early.
                 if order and start != run_end:
                     break
                 promoted = _promote(
@@ -424,18 +410,15 @@ class StreamToolCallHealer:
                     tool_schemas = self._tool_schemas,
                 )
                 if promoted:
-                    # Flush any leading text, then drop the promoted markup span.
                     if self._buffer[pos:start]:
                         events.append(("text", self._buffer[pos:start]))
                     events.append(("tool_call", promoted[0]))
                     self._promoted_spans[promoted[0]["id"]] = self._buffer[start:end]
                     self._id_offset += 1
                 else:
-                    # Undeclared/unusable name: markup is DATA, flush it (and prior text) verbatim.
                     events.append(("text", self._buffer[pos:end]))
                 pos = end
                 run_end = end
-            # Everything past the drained run (later blocks) stays and is rescanned.
             self._buffer = self._buffer[run_end:]
             self._holding = False
 
@@ -530,9 +513,7 @@ def response_has_promotable_calls(
         return False
     tool_calls = message.get("tool_calls")
     if tool_calls:
-        # ALL structured calls must be declared: the caller forwards the whole list (and a parallel cap could keep only
-        # the FIRST one), so a mixed response with a single hallucinated name could still hand the client an undeclared
-        # tool.
+        # ALL structured calls must be declared: one hallucinated name would reach the client.
         return all(
             isinstance(tc, dict)
             and isinstance(tc.get("function"), dict)

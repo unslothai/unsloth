@@ -15,7 +15,6 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-# --- Conditional framework imports ---
 try:
     import torch
     HAS_TORCH = True
@@ -44,9 +43,6 @@ import utils.hardware.hardware as _hw_module
 from utils.utils import format_error_message, is_hf_authentication_error
 
 
-# ========== Helpers ==========
-
-
 def _actual_device() -> str:
     """Return the real device string for the current machine."""
     if HAS_TORCH and torch.cuda.is_available():
@@ -60,9 +56,6 @@ def _reset_and_detect():
     """Reset the cached DEVICE global and re-run detection."""
     _hw_module.DEVICE = None
     return detect_hardware()
-
-
-# ========== get_device() ==========
 
 
 class TestGetDevice:
@@ -80,8 +73,6 @@ class TestGetDevice:
 
     def test_matches_actual_hardware(self):
         assert get_device().value == _actual_device()
-
-    # --- Mocked paths ---
 
     @needs_torch
     def test_returns_cuda_when_cuda_available(self):
@@ -123,9 +114,6 @@ class TestGetDevice:
             assert _reset_and_detect() == DeviceType.CPU
 
 
-# ========== is_apple_silicon() ==========
-
-
 class TestIsAppleSilicon:
     def test_returns_bool(self):
         assert isinstance(is_apple_silicon(), bool)
@@ -143,9 +131,6 @@ class TestIsAppleSilicon:
             mock_plat.system.return_value = system
             mock_plat.machine.return_value = machine
             assert is_apple_silicon() is expected
-
-
-# ========== clear_gpu_cache() ==========
 
 
 class TestClearGpuCache:
@@ -198,9 +183,6 @@ class TestClearGpuCache:
             mock_empty.assert_not_called()
 
 
-# ========== get_gpu_memory_info() ==========
-
-
 class TestGetGpuMemoryInfo:
     def test_returns_dict(self):
         result = get_gpu_memory_info()
@@ -218,8 +200,6 @@ class TestGetGpuMemoryInfo:
         from utils.hardware.hardware import _backend_label
         result = get_gpu_memory_info()
         assert result["backend"] == _backend_label(get_device())
-
-    # --- When a GPU IS available ---
 
     @pytest.mark.skipif(_actual_device() == "cpu", reason = "No GPU available on this machine")
     def test_gpu_available_fields(self):
@@ -330,8 +310,6 @@ class TestGetGpuMemoryInfo:
         assert abs(device["vram_free_gb"] - 6.0) < 0.01
         assert device["vram_total_gb"] - device["vram_used_gb"] > 14.0
 
-    # --- CUDA-specific mocked test ---
-
     @needs_torch
     def test_cuda_path_returns_correct_fields(self):
         mock_props = MagicMock()
@@ -417,8 +395,6 @@ class TestGetGpuMemoryInfo:
         assert abs(result["total_gb"] - 100.0) < 0.01
         assert abs(result["free_gb"] - 98.0) < 0.01
 
-    # --- XPU (Intel GPU) ---
-
     def _xpu_torch(self, mem_get_info):
         """A torch stub exposing only what the XPU branch touches."""
         props = types.SimpleNamespace(total_memory = 16 * (1024**3), name = "Intel Arc A770")
@@ -458,12 +434,10 @@ class TestGetGpuMemoryInfo:
         result = self._xpu_result(monkeypatch, None)
         assert abs(result["free_gb"] - 13.0) < 0.01
 
-    # --- MLX-specific mocked test ---
-
     @needs_mlx
     def test_mlx_path_returns_correct_fields(self):
         mock_psutil_mem = MagicMock()
-        mock_psutil_mem.total = 32 * (1024**3)  # 32 GB unified
+        mock_psutil_mem.total = 32 * (1024**3)
 
         mock_psutil = MagicMock()
         mock_psutil.virtual_memory.return_value = mock_psutil_mem
@@ -479,15 +453,11 @@ class TestGetGpuMemoryInfo:
         assert "Apple Silicon" in result["device_name"]
         assert abs(result["total_gb"] - 32.0) < 0.01
 
-    # --- CPU-only path ---
-
     def test_cpu_path_returns_unavailable(self):
         with patch("utils.hardware.hardware.get_device", return_value = DeviceType.CPU):
             result = get_gpu_memory_info()
         assert result["available"] is False
         assert result["backend"] == "cpu"
-
-    # --- Error resilience ---
 
     @needs_torch
     def test_cuda_error_returns_unavailable(self):
@@ -501,9 +471,6 @@ class TestGetGpuMemoryInfo:
             result = get_gpu_memory_info()
         assert result["available"] is False
         assert "error" in result
-
-
-# ========== log_gpu_memory() ==========
 
 
 class TestLogGpuMemory:
@@ -537,9 +504,6 @@ class TestLogGpuMemory:
 
         captured = capfd.readouterr()
         assert "No GPU available" in captured.out
-
-
-# ========== CUDA_DEVICE_ORDER pinning ==========
 
 
 class TestCudaDeviceOrder:
@@ -580,9 +544,6 @@ class TestCudaDeviceOrder:
 
     def test_import_respects_explicit_user_override(self):
         assert self._order_after_fresh_import("FASTEST_FIRST") == "FASTEST_FIRST"
-
-
-# ========== _print_cuda_device_list() ==========
 
 
 class TestPrintCudaDeviceList:
@@ -636,9 +597,6 @@ class TestPrintCudaDeviceList:
         assert "[0] AMD Instinct MI300X" in out
 
 
-# ========== format_error_message() ==========
-
-
 class TestFormatErrorMessage:
     def test_not_found(self):
         err = Exception("Repository not found for unsloth/test")
@@ -675,8 +633,6 @@ class TestFormatErrorMessage:
         rate_error.response = response
         assert is_hf_authentication_error(rate_error) is False
 
-    # --- OOM on CUDA ---
-
     @needs_torch
     def test_cuda_oom(self):
         err = Exception("CUDA out of memory")
@@ -686,8 +642,6 @@ class TestFormatErrorMessage:
         assert "big/model" not in msg
         assert "model" in msg
 
-    # --- OOM on MLX ---
-
     @needs_mlx
     def test_mlx_oom(self):
         err = Exception("MLX backend out of memory")
@@ -695,15 +649,11 @@ class TestFormatErrorMessage:
             msg = format_error_message(err, "unsloth/huge-model")
         assert "Apple Silicon" in msg
 
-    # --- OOM on CPU ---
-
     def test_cpu_oom(self):
         err = Exception("not enough memory to allocate")
         with patch("utils.hardware.get_device", return_value = DeviceType.CPU):
             msg = format_error_message(err, "any/model")
         assert "system" in msg.lower()
-
-    # --- Generic fallback ---
 
     def test_generic_error(self):
         err = Exception("Something completely unexpected")
@@ -771,8 +721,7 @@ class TestAuthSafeRedirectHandler:
 
         class _Recorder(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.0"
-            # Defaults to None: a connection that sends nothing wedges serve_forever in
-            # readline(), and shutdown() waits on that loop with no timeout of its own.
+            # Default None: a silent connection wedges serve_forever and shutdown() has no timeout.
             timeout = 5
 
             def _handle(self):
@@ -786,8 +735,7 @@ class TestAuthSafeRedirectHandler:
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
-            # do_GET is NOT dead: 3.13 preserves HEAD across a redirect, 3.12 downgrades
-            # it to GET, so HEAD-only answers 501 on every 3.12 runner.
+            # do_GET is needed: 3.12 downgrades HEAD to GET across a redirect.
             do_GET = _handle
             do_HEAD = _handle
 
@@ -796,8 +744,7 @@ class TestAuthSafeRedirectHandler:
 
         class _Server(http.server.HTTPServer):
             def server_bind(self):
-                # HTTPServer.server_bind calls socket.getfqdn(), which conftest's network
-                # guard does not patch: a real PTR query on Windows, and it can stall.
+                # server_bind calls socket.getfqdn(), unpatched by conftest; it can stall on Windows.
                 import socketserver
 
                 socketserver.TCPServer.server_bind(self)
@@ -858,8 +805,6 @@ class TestAuthSafeRedirectHandler:
         back = [r for r in first.seen if r["path"] == "/back"]
         assert second.seen and second.seen[0]["auth"] is None
         assert back and back[0]["auth"] is None
-
-    # --- scheme and host rules, at the handler ---
 
     def _redirect(
         self,

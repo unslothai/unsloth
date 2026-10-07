@@ -31,9 +31,6 @@ def _func_src(rel, name):
     return ast.get_source_segment(src, node)
 
 
-# -- capability matrix --------------------------------------------------------------------------
-
-
 def _patch(monkeypatch, *, torch: bool, device, apple: bool):
     monkeypatch.setattr(hw, "_has_torch", lambda: torch)
     monkeypatch.setattr(hw, "get_device", lambda: device)
@@ -41,21 +38,13 @@ def _patch(monkeypatch, *, torch: bool, device, apple: bool):
 
 
 def test_cpu_with_torch_unsupported_no_accelerator(monkeypatch):
-    # PyTorch present but no accelerator: unsupported with no_accelerator, not "PyTorch missing".
     _patch(monkeypatch, torch = True, device = hw.DeviceType.CPU, apple = False)
-    # Both branches below sit AFTER the gpu-present-but-unusable one, so they are only
-    # reachable on a host with no accelerator at all. The verdict is module state that
-    # detection writes and that current_chat_only_verdict() re-derives from a 60 second
-    # inventory cache, so without pinning it here this reads whatever an earlier test in
-    # the same worker left behind: a run that has already faked an NVIDIA host answers
-    # "torch_cpu_build" and never reaches the branch being asserted. The rest of this file
-    # already pins the verdict wherever it matters.
+    # pin the verdict: it is cached module state an earlier test may have faked
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_gpu", None))
     cap = hw.export_capability()
     assert cap["export_supported"] is False
     assert cap["export_unsupported_reason"] == "no_accelerator"
     assert "accelerator" in cap["export_unsupported_message"].lower()
-    # Must NOT tell a user with PyTorch installed to install PyTorch.
     assert "PyTorch is not installed" not in cap["export_unsupported_message"]
 
 
@@ -73,20 +62,13 @@ def test_xpu_with_torch_supports_export(monkeypatch):
 
 
 def test_mlx_without_torch_supports_export(monkeypatch):
-    # Apple Silicon MLX exports without PyTorch.
     _patch(monkeypatch, torch = False, device = hw.DeviceType.MLX, apple = True)
     assert hw.export_capability()["export_supported"] is True
 
 
 def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
     _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = False)
-    # Both branches below sit AFTER the gpu-present-but-unusable one, so they are only
-    # reachable on a host with no accelerator at all. The verdict is module state that
-    # detection writes and that current_chat_only_verdict() re-derives from a 60 second
-    # inventory cache, so without pinning it here this reads whatever an earlier test in
-    # the same worker left behind: a run that has already faked an NVIDIA host answers
-    # "torch_cpu_build" and never reaches the branch being asserted. The rest of this file
-    # already pins the verdict wherever it matters.
+    # pin the verdict: it is cached module state an earlier test may have faked
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_gpu", None))
     cap = hw.export_capability()
     assert cap["export_supported"] is False
@@ -95,7 +77,6 @@ def test_no_torch_non_apple_reports_pytorch_missing(monkeypatch):
 
 
 def test_apple_without_mlx_reports_mlx_unavailable(monkeypatch):
-    # Apple + CPU means the MLX stack is missing; reason is mlx_unavailable regardless of torch.
     for has_torch in (False, True):
         _patch(monkeypatch, torch = has_torch, device = hw.DeviceType.CPU, apple = True)
         cap = hw.export_capability()
@@ -105,7 +86,6 @@ def test_apple_without_mlx_reports_mlx_unavailable(monkeypatch):
 
 
 def test_apple_no_torch_install_reports_no_torch(monkeypatch):
-    # GGUF-only by request: the message must not send the user to `unsloth studio update`.
     _patch(monkeypatch, torch = False, device = hw.DeviceType.CPU, apple = True)
     monkeypatch.setattr(hw, "current_chat_only_verdict", lambda: ("no_torch", None))
     cap = hw.export_capability()
@@ -113,9 +93,6 @@ def test_apple_no_torch_install_reports_no_torch(monkeypatch):
     assert cap["export_unsupported_reason"] == "no_torch"
     assert "--no-torch" in cap["export_unsupported_message"]
     assert "unsloth studio update" not in cap["export_unsupported_message"]
-
-
-# -- import safety without PyTorch --------------------------------------------------------------
 
 
 def test_export_backend_imports_without_torch(monkeypatch):
@@ -132,7 +109,7 @@ def test_export_backend_imports_without_torch(monkeypatch):
             raise ImportError(f"simulated: {top} not installed")
         return real_import(name, *args, **kwargs)
 
-    # Drop any preloaded copies so the guarded import paths re-run under the block.
+    # drop preloaded copies so the guarded imports re-run under the block
     for m in [k for k in sys.modules if k.split(".")[0] in {"torch", "unsloth"}]:
         monkeypatch.delitem(sys.modules, m, raising = False)
     monkeypatch.delitem(sys.modules, "core.export.export", raising = False)
@@ -153,12 +130,8 @@ def test_export_backend_imports_without_torch(monkeypatch):
     assert "PyTorch is not installed" in message
 
 
-# -- endpoint / backend wiring (ast) ------------------------------------------------------------
-
-
 def test_main_endpoints_expose_export_capability():
     m = _src("main.py")
-    # Both system endpoints spread export_capability() into their response.
     assert m.count("**export_capability()") >= 2
     assert '"/api/system/hardware"' in m and '"/api/system"' in m
 
@@ -166,14 +139,12 @@ def test_main_endpoints_expose_export_capability():
 def test_routes_guard_mutating_endpoints():
     r = _src("routes/export.py")
     assert "async def _ensure_export_supported()" in r
-    # load + all four export endpoints call the guard.
     assert r.count("await _ensure_export_supported()") >= 5
 
 
 def test_export_methods_check_runtime():
     e = _src("core/export/export.py")
     assert "def _export_runtime_available()" in e
-    # Each export method returns the clear message when the runtime is missing.
     assert e.count("_export_runtime_available()") >= 5
     assert "_PYTORCH_MISSING_MESSAGE" in e
 

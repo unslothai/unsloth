@@ -85,9 +85,6 @@ def _fake_quantized_linear(
     return lin
 
 
-# ── shape and value preservation ──────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("m", [1, 5, 10, 16, 17, 19, 64])
 @pytest.mark.parametrize("lead", [(), (2,), (2, 3)])
 def test_padding_returns_the_unpadded_result(m, lead):
@@ -184,9 +181,6 @@ def test_forward_holds_no_mutable_integer_state():
     assert before == int_attrs(wrapped) == {"min_m": 17, "pad_to": 32}
 
 
-# ── drop-in transparency ──────────────────────────────────────────────────────
-
-
 def test_attributes_pass_through_to_the_inner_linear():
     """diffusers' attention processors read ``to_q.weight.dtype`` and H3's blocks read
     ``context_embedder.weight``; without the passthrough the wrapper is a drop-in only until the
@@ -218,13 +212,9 @@ def test_state_dict_hides_the_wrapper_in_both_directions():
     assert sorted(wrapped_model.state_dict()) == sorted(plain.state_dict())
     assert "context_embedder.inner.weight" not in wrapped_model.state_dict()
 
-    # A checkpoint written from a wrapped tree loads into an unwrapped one, and the reverse.
     assert plain.load_state_dict(dict(wrapped_model.state_dict()), strict = True)
     assert wrapped_model.load_state_dict(dict(plain.state_dict()), strict = True)
     assert torch.equal(wrapped_model.context_embedder.weight, plain.context_embedder.weight)
-
-
-# ── the granularity gate ──────────────────────────────────────────────────────
 
 
 def test_activation_granularity_probe_reads_both_torchao_layouts():
@@ -249,7 +239,6 @@ def test_activation_granularity_probe_reads_both_torchao_layouts():
     assert activation_granularity_is_per_row(_v2("PerTensor")) is False
     assert activation_granularity_is_per_row(_v2("PerGroup")) is False
 
-    # A dense Linear is not quantized at all, so there is no activation granularity to report.
     assert activation_granularity_is_per_row(nn.Linear(8, 6)) is None
 
 
@@ -280,7 +269,7 @@ def test_wrap_skips_dense_and_already_wrapped_linears():
     assert isinstance(model.context_embedder, PadToMinM)
     assert wrap_small_m_linears(model, ["context_embedder"]) == ()
     assert not isinstance(model.context_embedder.inner, PadToMinM)
-    # The wrapper forwards `weight` to its inner Linear, so the gate cannot lean on that alone.
+    # the wrapper forwards `weight` to its inner Linear, so the gate cannot rely on it alone
     assert model.context_embedder.weight is model.context_embedder.inner.weight
     assert is_quantized_linear(model.context_embedder) is False
 
@@ -386,9 +375,6 @@ def test_the_guard_list_is_read_with_the_same_substring_rule():
     assert fqns == ("image_embedder.linear_1", "image_embedder.linear_2")
     assert wrap_zero_row_linears(model, fqns) == fqns
     assert model.image_embedder(torch.zeros(1, 0, 8)).shape == (1, 0, 6)
-
-
-# ── the real thing ────────────────────────────────────────────────────────────
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "int8 dynamic quant needs CUDA")

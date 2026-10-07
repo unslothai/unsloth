@@ -34,8 +34,7 @@ from models.providers import ProviderCreate, ProviderUpdate
 from storage import credential_secrets, providers_db
 
 
-# routes/providers.py imports its siblings as ``routes.*``. Loading it by path under
-# a private name is the pattern test_credential_routes.py already uses.
+# routes/providers.py imports siblings as routes.*; load it by path under a private name.
 def _load_route_module(module_name: str, path: Path):
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
@@ -65,12 +64,9 @@ finally:
 
 CREDENTIAL = ("alice", None)
 
-# From the registry, so a provider added later is covered without an edit here.
 NON_CUSTOM_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "custom")
 OVERRIDABLE_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "openai_codex")
 
-# The schema as it stood before this column, including the two columns earlier
-# releases added by ALTER. A database in this shape is what an upgrading user has.
 _PRE_PR_TABLE_DDL = """
     CREATE TABLE llm_providers (
         id TEXT NOT NULL PRIMARY KEY,
@@ -170,9 +166,6 @@ def _write_pre_pr_database(db_path: Path) -> None:
         conn.close()
 
 
-# ── Upgrade ───────────────────────────────────────────────────────
-
-
 def test_a_pre_column_database_migrates_and_keeps_its_rows(isolated_providers_db: Path):
     """The upgrade case: an existing home opened by this build."""
     _write_pre_pr_database(isolated_providers_db)
@@ -184,7 +177,6 @@ def test_a_pre_column_database_migrates_and_keeps_its_rows(isolated_providers_db
     assert row["available_models"] == ["vendor/model", "vendor/other"]
     assert {p["id"] for p in providers_db.list_providers()} == {"old-custom", "old-openai"}
 
-    # And the migrated row now accepts one.
     assert providers_db.update_provider(id = "old-custom", max_output_tokens = 262144)
     assert _raw_override(isolated_providers_db, "old-custom") == 262144
     assert _raw_override(isolated_providers_db, "old-openai") is None
@@ -206,9 +198,6 @@ def test_a_missing_table_is_created_then_migrated(isolated_providers_db: Path):
     assert "max_output_tokens" in _columns(isolated_providers_db)
 
 
-# ── Downgrade ─────────────────────────────────────────────────────
-
-
 def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     isolated_providers_db: Path,
 ):
@@ -226,13 +215,11 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     conn = sqlite3.connect(str(isolated_providers_db))
     conn.row_factory = sqlite3.Row
     try:
-        # Exactly what the previous release's get_provider does.
         row = dict(
             conn.execute("SELECT * FROM llm_providers WHERE id = ?", ("new-custom",)).fetchone()
         )
         assert row["display_name"] == "New Custom"
         assert row["models_json"] == '["vendor/model"]'
-        # An INSERT that never mentions the column, as the old code writes.
         conn.execute(
             "INSERT INTO llm_providers (id, provider_type, display_name, base_url, "
             "is_enabled, models_json, available_models_json, created_at, updated_at) "
@@ -250,12 +237,8 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
     finally:
         conn.close()
 
-    # Back on this build: the old row reads as no override, the new one kept its value.
     assert providers_db.get_provider("downgrade-written")["max_output_tokens"] is None
     assert providers_db.get_provider("new-custom")["max_output_tokens"] == 384000
-
-
-# ── Route contract ────────────────────────────────────────────────
 
 
 def _create(payload: ProviderCreate):
@@ -326,8 +309,6 @@ def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
     assert error.value.status_code == 400
     assert _raw_override(provider_routes, "openai_codex-1") is None
 
-    # Create takes the same contract, and reaches it before the auth one, so the caller
-    # is told which rule stopped them.
     with pytest.raises(HTTPException) as created:
         _create(
             ProviderCreate(
@@ -355,7 +336,6 @@ def test_a_custom_connection_can_set_preserve_and_clear_its_override(provider_ro
 
     assert _update(created.id, ProviderUpdate(max_output_tokens = 65536)).max_output_tokens == 65536
 
-    # An unrelated edit must leave it alone: omitted is not the same as null.
     preserved = _update(created.id, ProviderUpdate(display_name = "Renamed Custom"))
     assert preserved.display_name == "Renamed Custom"
     assert _raw_override(provider_routes, created.id) == 65536

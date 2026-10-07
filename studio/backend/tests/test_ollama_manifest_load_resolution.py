@@ -543,7 +543,6 @@ def test_ollama_intent_loads_the_link_but_keeps_the_manifest_identity(tmp_path, 
     assert active_intent.gguf_path == resolved
 
 
-# Modelfile metadata nearly every pulled model carries.
 _METADATA_LAYERS = (
     "application/vnd.ollama.image.params",
     "application/vnd.ollama.image.template",
@@ -557,7 +556,6 @@ _UNSUPPORTED_RUNTIME_LAYERS = (
     "application/vnd.ollama.image.future-runtime",
 )
 
-# Carried by a real manifest but dropped by the load without changing its output.
 _IGNORABLE_LAYERS = (
     "application/vnd.ollama.image.draft",
     "application/vnd.ollama.image.embed",
@@ -613,9 +611,7 @@ def test_a_normally_pulled_model_resolves_for_a_load(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("ignorable", _IGNORABLE_LAYERS)
 def test_an_ignorable_layer_does_not_hide_the_primary_model(tmp_path, monkeypatch, ignorable):
-    # Neither layer stops llama.cpp loading the model layer beside it, so neither is a
-    # reason to withhold the row: a draft model only accelerates speculative decoding,
-    # and ollama has ignored the embed layer since 0.1.2.
+    # Neither layer stops llama.cpp loading the model; ollama ignores embed since 0.1.2.
 
     from hub.services.models import ollama
 
@@ -632,8 +628,7 @@ def test_an_ignorable_layer_does_not_hide_the_primary_model(tmp_path, monkeypatc
 def test_one_unsupported_layer_still_withholds_beside_the_metadata(
     tmp_path, monkeypatch, unsupported
 ):
-    # Pins each unsupported type on its own. The withholding test above carries both at
-    # once, so admitting just one of them back into the loadable set would still pass it.
+    # Pin each unsupported type alone; the combined test would miss one being re-admitted.
 
     from hub.services.models import ollama
 

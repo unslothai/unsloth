@@ -73,9 +73,7 @@ def test_conftest_isolates_the_generation_state_for_every_test():
     ]
     assert autouse, f"{_FIXTURE} is no longer autouse, so it only isolates tests that ask"
 
-    # Before AND after: clearing only on the way in leaves the last test of a worker holding a
-    # fence for whatever the next file does, and clearing only on the way out trusts every
-    # other conftest and plugin to have left it alone.
+    # Reset before and after: either alone leaks state across files or trusts other plugins.
     resets = [
         node
         for node in ast.walk(fixture)

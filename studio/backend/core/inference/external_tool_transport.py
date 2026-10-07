@@ -23,8 +23,7 @@ from typing import Any
 from core.inference.external_provider import ExternalProviderClient
 
 
-# /inference/cancel and the model-load path only set a threading.Event, so an asyncio consumer has to poll it. Same
-# interval as the Codex client's watcher.
+# The cancel paths only set a threading.Event, so poll it (same interval as the Codex client).
 _CANCEL_POLL_S = 0.05
 
 
@@ -44,10 +43,7 @@ class OAICompatTransport:
     """
 
     heals_text_tool_calls = True
-    # the client sanitizes raw upstream lines on arrival
-    # ExternalProviderClient sanitizes every raw upstream line at the point it arrives, before any translation. What it
-    # yields on top of that is this server's own synthesized frames (a provider-hosted image or web-search result),
-    # which a second pass in the loop could no longer tell apart.
+    # The client already sanitized upstream lines; what remains here is our own synthesized frames.
     sanitizes_provider_frames = True
 
     def __init__(
@@ -68,7 +64,6 @@ class OAICompatTransport:
         self._continue_final_message = continue_final_message
         self._message_fitter = message_fitter
         self._request_kwargs = request_kwargs
-        # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
         self.tool_result_only_continuation = client.provider_type == "anthropic"
         self._initial_message_count: int | None = None
         self._last_tools: list[dict[str, Any]] | None = None
@@ -189,8 +184,6 @@ class OAICompatTransport:
                 yield line
         finally:
             watcher.cancel()
-            # The pre-existing teardown: the route or the loop closing this generator still reaches the provider stream
-            # through here.
             aclose = getattr(upstream, "aclose", None)
             if aclose is not None:
                 with contextlib.suppress(RuntimeError, GeneratorExit, StopAsyncIteration):

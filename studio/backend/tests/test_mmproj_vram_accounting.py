@@ -33,7 +33,7 @@ def test_zero_when_no_projector_resolved(tmp_path: Path):
 
 
 def test_zero_when_projector_missing_on_disk(tmp_path: Path):
-    missing = tmp_path / "Qwen3.5-9B-BF16-mmproj.gguf"  # never created
+    missing = tmp_path / "Qwen3.5-9B-BF16-mmproj.gguf"
 
     got = _backend()._mmproj_vram_bytes(str(missing))
 

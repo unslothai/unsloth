@@ -53,7 +53,6 @@ def _installed_diffusers(monkeypatch, direct_url):
     "direct_url, expected",
     [
         (None, True),  # a PyPI wheel records no direct_url.json
-        # A local checkout, editable or not, is the user's own build.
         ({"url": "file:///src/diffusers", "dir_info": {"editable": True}}, False),
         ({"url": "https://github.com/huggingface/diffusers", "vcs_info": {"vcs": "git"}}, False),
         (
@@ -90,7 +89,6 @@ def test_a_release_install_runs_the_installer_step_and_reports_it(monkeypatch):
 
     monkeypatch.setattr(dr.subprocess, "Popen", fake_popen)
     assert dr.repair_diffusers_before_imports(lines.append) is True
-    # The slow fetch first, into uv's cache only, then the install from it.
     assert [argv for argv, _env in calls] == [
         [sys.executable, str(dr._INSTALLER), "--prefetch-diffusers-main"],
         [sys.executable, str(dr._INSTALLER), "--repair-diffusers-main"],
@@ -129,8 +127,7 @@ def _slow_installer(
     monkeypatch.setattr(dr, "_INSTALLER", installer)
     monkeypatch.setattr(dr, "_REPAIR_TIMEOUT_S", timeout_s)
     monkeypatch.setattr(dr, "_INSTALL_MIN_TIMEOUT_S", timeout_s)
-    # The tree kill names descendants before it signals, so a child forked in between is missed.
-    # A slow runner's installer can still be starting at the deadline: let it spawn first.
+    # The tree kill names descendants before signalling, so let the installer spawn first.
     import utils.process_lifetime as pl
 
     real_terminate = pl.terminate_pid
@@ -319,7 +316,7 @@ def _manifest(monkeypatch, manifest):
 @pytest.mark.parametrize(
     "min_python, manifest",
     [
-        ((99, 0), {}),  # Python 3.9 against the real (3, 10) floor
+        ((99, 0), {}),
         ((3, 0), {"diffusers_main_repair": "failed"}),
         ((3, 0), {"step_results": {"diffusers-main.txt": "failed"}}),
     ],

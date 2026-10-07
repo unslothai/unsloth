@@ -120,9 +120,6 @@ def _write_synthetic_gguf(
     return path
 
 
-# --- read_gguf_general_metadata ----------------------------------------
-
-
 def test_returns_none_for_missing_file(tmp_path: Path):
     assert read_gguf_general_metadata(str(tmp_path / "nope.gguf")) is None
 
@@ -153,7 +150,6 @@ def test_context_length_read_from_arch_namespaced_key(tmp_path: Path):
 
 
 def test_context_length_none_when_absent(tmp_path: Path):
-    # Architecture present but no <arch>.context_length key.
     p = _write_synthetic_gguf(
         tmp_path / "model.gguf",
         {"general.architecture": "llama"},
@@ -163,7 +159,6 @@ def test_context_length_none_when_absent(tmp_path: Path):
 
 
 def test_context_length_ignores_foreign_arch_key(tmp_path: Path):
-    # A context_length under a different arch namespace must not match.
     p = _write_synthetic_gguf(
         tmp_path / "model.gguf",
         {"general.architecture": "llama"},
@@ -207,7 +202,6 @@ def test_nextn_predict_layers_uses_the_active_architecture_namespace(tmp_path: P
 
     assert read_gguf_nextn_predict_layers(str(reversed_order)) == 2
 
-    # Verify the file-identity cache.
     import utils.models.gguf_metadata as metadata
 
     monkeypatch.setattr(
@@ -218,9 +212,6 @@ def test_nextn_predict_layers_uses_the_active_architecture_namespace(tmp_path: P
     assert read_gguf_nextn_predict_layers(str(embedded)) == 1
 
 
-# --- read_gguf_staged_dims (one pass: context + layer + moe counts) ----
-
-
 def test_staged_dims_none_for_missing_or_non_gguf(tmp_path: Path):
     assert read_gguf_staged_dims(str(tmp_path / "nope.gguf")) is None
     p = tmp_path / "garbage.gguf"
@@ -229,7 +220,6 @@ def test_staged_dims_none_for_missing_or_non_gguf(tmp_path: Path):
 
 
 def test_staged_dims_moe_with_leading_dense(tmp_path: Path):
-    # GLM-4.7-Flash shape: context + total layers + MoE layers in one read.
     p = _write_synthetic_gguf(
         tmp_path / "glm.gguf",
         {"general.architecture": "deepseek2"},
@@ -248,7 +238,6 @@ def test_staged_dims_moe_with_leading_dense(tmp_path: Path):
 
 
 def test_staged_dims_dense_model(tmp_path: Path):
-    # Dense: layer_count present, moe_layer_count 0 (slider hidden).
     p = _write_synthetic_gguf(
         tmp_path / "dense.gguf",
         {"general.architecture": "qwen3"},
@@ -262,7 +251,6 @@ def test_staged_dims_dense_model(tmp_path: Path):
 
 
 def test_staged_dims_all_moe_no_leading_dense(tmp_path: Path):
-    # Experts present, no leading_dense key -> every block is a MoE layer.
     p = _write_synthetic_gguf(
         tmp_path / "moe.gguf",
         {"general.architecture": "qwen35moe"},
@@ -276,7 +264,7 @@ def test_staged_dims_all_moe_no_leading_dense(tmp_path: Path):
 
 
 def test_staged_dims_uint64_block_count(tmp_path: Path):
-    # block_count stored as uint64 (vtype 10) still parses; moe == block_count.
+    # block_count stored as uint64 (vtype 10).
     p = _write_synthetic_gguf(
         tmp_path / "moe64.gguf",
         {"general.architecture": "gpt-oss"},
@@ -291,7 +279,6 @@ def test_staged_dims_uint64_block_count(tmp_path: Path):
 
 
 def test_context_length_read_from_uint64(tmp_path: Path):
-    # Some models store context_length as a uint64 (vtype 10).
     p = _write_synthetic_gguf(
         tmp_path / "model.gguf",
         {"general.architecture": "qwen3"},
@@ -301,8 +288,7 @@ def test_context_length_read_from_uint64(tmp_path: Path):
 
 
 def test_context_length_zero_treated_as_absent(tmp_path: Path):
-    # A zero/garbage ceiling must read as None so the UI can't build a slider
-    # with max < min.
+    # Zero/garbage ceiling reads as None so the UI never builds a slider with max < min.
     p = _write_synthetic_gguf(
         tmp_path / "model.gguf",
         {"general.architecture": "llama"},
@@ -360,9 +346,6 @@ def test_metadata_is_cached(tmp_path: Path):
     assert second == {"general.basename": "Second", "general.organization": "X"}
 
 
-# --- is_mmproj_by_metadata --------------------------------------------
-
-
 def test_is_mmproj_by_metadata_signals():
     assert is_mmproj_by_metadata({"general.type": "mmproj"}) is True
     assert is_mmproj_by_metadata({"general.type": "MMProj"}) is True
@@ -370,14 +353,11 @@ def test_is_mmproj_by_metadata_signals():
     assert is_mmproj_by_metadata({"general.basename": "foo"}) is None
     assert is_mmproj_by_metadata({}) is None
     assert is_mmproj_by_metadata(None) is None
-    # llama.cpp's projector arch; ggml-org's SmolVLM projector says "clip-vision".
+    # ggml-org's SmolVLM projector uses general.type 'clip-vision'.
     assert is_mmproj_by_metadata({"general.architecture": "clip", "general.type": "clip-vision"})
     assert (
         is_mmproj_by_metadata({"general.architecture": "llama", "general.type": "model"}) is False
     )
-
-
-# --- pairing_score -----------------------------------------------------
 
 
 def test_pairing_score_base_model_url_match():
@@ -627,9 +607,6 @@ def test_pairing_score_no_overlap_returns_zero():
     assert pairing_score(None, {"general.basename": "Foo"}) == 0
 
 
-# --- read_mmproj_audio_capability --------------------------------------
-
-
 def test_mmproj_audio_capability_true(tmp_path: Path):
     """clip.has_audio_encoder=True (e.g. Gemma 4's gemma4ua projector)."""
     p = _write_synthetic_gguf(
@@ -671,9 +648,6 @@ def test_mmproj_audio_capability_missing_or_non_gguf(tmp_path: Path):
     junk = tmp_path / "garbage.gguf"
     junk.write_bytes(b"not a gguf header at all")
     assert read_mmproj_audio_capability(str(junk)) is None
-
-
-# read_gguf_architecture
 
 
 class _CountingFile:
@@ -739,7 +713,7 @@ def test_architecture_read_stops_before_a_large_tokenizer_array(tmp_path: Path, 
         "general.name": "Test",
     }
 
-    # Use separate paths to avoid the readers' file-stat caches.
+    # Separate paths avoid the readers' file-stat caches.
     targeted = tmp_path / "targeted.gguf"
     targeted.write_bytes(p.read_bytes())
     whole = tmp_path / "whole.gguf"
@@ -779,9 +753,6 @@ def test_architecture_matches_the_general_metadata_reader(tmp_path: Path):
         )
         expected = (read_gguf_general_metadata(str(p)) or {}).get("general.architecture")
         assert read_gguf_architecture(str(p)) == expected == arch
-
-
-# --- mmproj_accepts_image ----------------------------------------------
 
 
 def _projector(tmp_path: Path, **bools) -> str:
@@ -890,8 +861,7 @@ def test_is_gguf_embedding_model_rejects_generic_bert_without_pooling(tmp_path: 
         tmp_path / "bge-small-en-v1.5.gguf",
         {"general.architecture": "bert", "general.name": "Bge Small Encoder"},
     )
-    # No classifier head proves this is not a reranker, but it cannot tell us
-    # whether the missing pooling strategy should be CLS or MEAN.
+    # No classifier head rules out a reranker but cannot pick CLS vs MEAN pooling.
     assert is_gguf_embedding_model(str(p), model_identifier = "local/bge-small") is False
 
 

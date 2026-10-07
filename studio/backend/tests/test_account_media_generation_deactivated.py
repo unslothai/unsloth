@@ -114,8 +114,7 @@ def _start_alice_generation(alice_resident):
 def test_owner_cannot_cancel_a_deactivated_accounts_image_generation(deactivatable, alice_resident):
     thread, result = _start_alice_generation(alice_resident)
     try:
-        # The owner deactivates alice mid-generation: the active count drops to one, but
-        # set_account_active() only cancels chat generations, so this image job runs on.
+        # set_account_active() only cancels chat generations, so this image job keeps running.
         deactivatable["value"] = False
         assert run_as(OWNER, access.generation_is_foreign, "diffusion") is True
         assert run_as(OWNER, access.tracked_generation_account) == OWNER.account_id

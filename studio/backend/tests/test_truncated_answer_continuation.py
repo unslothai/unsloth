@@ -112,9 +112,7 @@ from core.inference.llama_cpp import (
 
 _HALF_AN_ANSWER = (
     "<!DOCTYPE html>\n<html>\n<body>\n<canvas id='c'></canvas>\n<script>\n"
-    # Varied on purpose. Forty VERBATIM copies of one line is repetition-dominated by the
-    # guard's line rule, which is correct of the guard and wrong of a fixture standing in
-    # for streamed code: the first draft of this file tripped its own echo test.
+    # Varied on purpose: verbatim repeats trip the guard's repetition line rule.
     + "".join(
         f"  ctx.lineTo({i * 3}, {i * 7 % 31});\n  ctx.stroke(); // segment {i}\n" for i in range(40)
     )
@@ -342,7 +340,6 @@ def test_the_final_continuation_turns_the_generation_prompt_off(monkeypatch):
     assert len(payloads) == 2, "the final answer was left mid-sentence"
     assert payloads[1]["continue_final_message"] is True
     assert payloads[1]["add_generation_prompt"] is False
-    # The initial request still needs the default generation prompt.
     assert "add_generation_prompt" not in payloads[0]
 
 
@@ -353,7 +350,6 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
     monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: 64)
 
     def _respawned() -> bool:
-        # Force a refit against the replacement window.
         backend._effective_context_length = 2048
         return True
 
@@ -363,7 +359,6 @@ def test_a_respawn_refit_during_a_continuation_carries_the_partial(monkeypatch):
     def flaky_stream(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
-            # Fail while opening the continuation.
             payloads.append(copy.deepcopy(args[2]))
             raise httpx.RemoteProtocolError("llama-server died before the headers")
         with healthy(*args, **kwargs) as response:
@@ -393,7 +388,6 @@ def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
     monkeypatch.setattr(backend, "count_chat_tokens", _count)
 
     def _respawned() -> bool:
-        # The conversation fits, but the restored partial does not.
         backend._effective_context_length = 1400
         return True
 
@@ -426,7 +420,6 @@ def test_a_respawn_refit_prices_the_carried_partial(monkeypatch):
 
     replayed = payloads[-1]
     assert replayed["messages"][-1]["role"] == "assistant", "the partial still rides across"
-    # The restored partial forces eviction of the older exchange.
     assert len(replayed["messages"]) == 2, "the older exchange was not evicted for the partial"
     assert _count(replayed["messages"]) + _reply_floor(1400) <= 1400
     assert replayed["continue_final_message"] is True
@@ -493,7 +486,7 @@ def test_a_respawn_refit_during_the_reasoning_recovery_keeps_its_request(monkeyp
     @contextlib.contextmanager
     def flaky_stream(*args, **kwargs):
         calls["n"] += 1
-        if calls["n"] == 3:  # the recovery request's own open
+        if calls["n"] == 3:
             payloads.append(copy.deepcopy(args[2]))
             raise httpx.RemoteProtocolError("llama-server died before the headers")
         with healthy(*args, **kwargs) as response:
@@ -528,7 +521,6 @@ def test_the_recovery_is_declined_rather_than_sent_without_its_question(monkeypa
     def flaky_stream(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
-            # Force the recovery through admission eviction.
             backend._effective_context_length = 320
         with healthy(*args, **kwargs) as response:
             yield response
@@ -580,7 +572,6 @@ def test_an_older_exchange_is_still_evicted_to_admit_the_recovery(monkeypatch):
     def flaky_stream(*args, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
-            # Leave room for the recovered turn, but not the older exchange.
             backend._effective_context_length = 1800
         with healthy(*args, **kwargs) as response:
             yield response
@@ -614,7 +605,6 @@ def test_a_refit_eviction_keeps_the_turn_the_recovery_is_recovering(monkeypatch)
     _shared_setup_5(backend, monkeypatch)
 
     def _respawned() -> bool:
-        # The refitted conversation fits without its recovery tail.
         backend._effective_context_length = 300
         return True
 
@@ -732,8 +722,7 @@ def test_the_final_continuation_replays_each_fragment_once(monkeypatch):
     replayed = payloads[2]["messages"][-1]["content"]
     assert replayed == _HALF_AN_ANSWER + _SECOND_HALF
     assert replayed.count("<!DOCTYPE html>") == 1
-    # And the user is shown each fragment once as well. Content events are CUMULATIVE
-    # here, not deltas, so the last one is the whole answer.
+    # Content events are CUMULATIVE here, so the last one is the whole answer.
     shown = _texts(events, "content")[-1]
     assert shown.count("<!DOCTYPE html>") == 1
     assert shown.endswith("</html>")
@@ -801,7 +790,6 @@ def test_a_continuation_that_would_be_rejected_is_not_sent(monkeypatch):
     events = _run_no_tools(backend)
 
     assert len(payloads) == 1
-    # And the work already streamed is still the answer.
     assert "<!DOCTYPE html>" in "".join(_texts(events, "content"))
 
 
@@ -993,8 +981,7 @@ def test_a_continuation_that_stalls_in_reasoning_is_not_read_as_more_answer(monk
     events = _run_no_tools(backend)
 
     assert len(payloads) == 3, "the stalled continuation was not recovered"
-    # The recovery ends on a USER turn asking for the answer, which is what tells it
-    # apart from the answer continuation: that one replays the partial and extends it.
+    # Ending on a USER turn distinguishes recovery from the answer continuation.
     assert payloads[2]["messages"][-1]["role"] == "user"
     assert "continue_final_message" not in payloads[2]
     assert "add_generation_prompt" not in payloads[2]

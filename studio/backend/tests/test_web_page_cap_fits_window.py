@@ -41,11 +41,8 @@ def _shared_setup_1():
 def _unknown_window(monkeypatch):
     """Default to "no model loaded" so each test states the window it means."""
     monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: None)
-    # The request-scoped window is module state that outlives a test, and execute_tool
-    # sets it deliberately. Restore it so one test cannot decide another's budget.
+    # The request-scoped window is module state; restore it so tests stay independent.
     token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
-    # Measured counts are cached per model for the life of the process, so one test's
-    # backend double must not answer the next one's questions.
     tools._PROBE_COUNT_CACHE.clear()
     yield
     tools._PROBE_COUNT_CACHE.clear()
@@ -65,7 +62,6 @@ def test_a_small_window_gets_a_page_it_can_hold(monkeypatch):
     budget = tools._page_char_budget()
 
     assert budget < 12_295, "the page that caused the refusal must no longer fit"
-    # And still worth reading rather than a stub.
     assert budget >= tools._MIN_PAGE_CHARS
 
 
@@ -108,7 +104,7 @@ def test_an_unreadable_backend_is_unknown_rather_than_an_error(monkeypatch):
     def _boom():
         raise RuntimeError("backend gone")
 
-    monkeypatch.undo()  # drop the autouse stub; this test owns the reader
+    monkeypatch.undo()
     monkeypatch.setattr(routes_inference, "get_llama_cpp_backend", _boom)
 
     assert tools._loaded_context_tokens() is None
@@ -126,7 +122,6 @@ def test_the_caller_can_still_pin_a_size(monkeypatch):
         return text[:max_chars]
 
     monkeypatch.setattr(tools, "_truncate_page_text", _fake_truncate)
-    # The signature default is None, so an explicit value must survive to the truncation.
     assert tools._truncate_page_text("x" * 50_000, 200) == "x" * 200
     assert captured["max_chars"] == 200
 
@@ -142,7 +137,6 @@ class TestTheWindowIsReadPerRequest:
     """
 
     def test_a_native_model_window_is_read_when_no_gguf_is_loaded(self, monkeypatch):
-        # The autouse fixture stubs the reader out; these exercise the real one.
         monkeypatch.undo()
         monkeypatch.setattr(
             "routes.inference.get_llama_cpp_backend",
@@ -158,8 +152,6 @@ class TestTheWindowIsReadPerRequest:
         assert tools._loaded_context_tokens() == 4864
 
     def test_a_native_window_is_read_even_if_the_gguf_probe_raises(self, monkeypatch):
-        # The llama.cpp branch must fall through, not return None: swallowing the
-        # native answer is what made the reader report "unknown" here.
         monkeypatch.undo()
 
         def _boom():
@@ -173,7 +165,6 @@ class TestTheWindowIsReadPerRequest:
         assert tools._loaded_context_tokens() == 8192
 
     def test_an_external_request_does_not_inherit_the_resident_gguf_window(self, monkeypatch):
-        # A large resident GGUF must not hand its budget to a small external endpoint.
         _window(monkeypatch, 262_144)
         token = tools._REQUEST_CONTEXT_TOKENS.set(0)
         try:
@@ -215,8 +206,6 @@ class TestToolResultsAlsoFitTheWindow:
         budget = tools._tool_result_char_budget()
 
         assert budget < tools._MAX_OUTPUT_CHARS
-        # Roughly 1,800 tokens rather than 4,000, which is what brought the live
-        # 7,043-token request back under a 5,120-token window.
         assert budget <= 5120 * 4 * tools._PAGE_CONTEXT_SHARE
 
     def test_a_large_window_keeps_the_full_cap(self, monkeypatch):
@@ -225,8 +214,6 @@ class TestToolResultsAlsoFitTheWindow:
             assert tools._tool_result_char_budget() == tools._MAX_OUTPUT_CHARS
 
     def test_an_unknown_window_keeps_the_full_cap(self):
-        # Not knowing must never shrink a result: that would silently degrade every
-        # provider path where the local backend is not the one answering.
         assert tools._tool_result_char_budget() == tools._MAX_OUTPUT_CHARS
 
     def test_an_external_request_keeps_the_full_cap(self, monkeypatch):
@@ -271,7 +258,6 @@ class TestADenseResultIsSizedByWhatItCosts:
     That is the irreducible refusal this budget exists to prevent, reproduced.
     """
 
-    # One paragraph of CJK prose with the wiki-style escaped links that come with it.
     _CJK_PAGE = (
         "人工智能是一门研究如何使机器具备智能行为的学科，"
         "涵盖[机器学习](/wiki/%E6%9C%BA%E5%99%A8%E5%AD%A6%E4%B9%A0)、"
@@ -292,12 +278,7 @@ class TestADenseResultIsSizedByWhatItCosts:
 
         out = tools._truncate_page_text(self._CJK_PAGE, tools._page_char_budget())
 
-        # The whole point: what lands in the turn costs about the share reserved for it,
-        # not the entire window. A little over for the truncation notice itself.
         assert self._dense_tokens(out) <= int(4864 * tools._PAGE_CONTEXT_SHARE) + 64
-        # And this is not a no-op: the characters the flat budget would have admitted
-        # do not fit the share by either measure, the repo's dense estimate or the rule
-        # here (which the real tokenizers above put at 79-95% of the prompt budget).
         flat = self._CJK_PAGE[: tools._page_char_budget()]
         assert self._dense_tokens(flat) > int(4864 * tools._PAGE_CONTEXT_SHARE)
         assert tools._dense_prefix_chars(flat, 4864 * tools._PAGE_CONTEXT_SHARE) < len(flat)
@@ -315,11 +296,8 @@ class TestADenseResultIsSizedByWhatItCosts:
         so charging it four characters per token undercounts it three-fold."""
         escaped = "%E7%9F%A5" * 100
 
-        # 300 escapes, a token each for the three bytes they spell: 900 tokens, where
-        # four characters per token would have called the same text 225.
         assert tools._dense_prefix_chars(escaped, 900) == len(escaped)
         assert tools._dense_prefix_chars(escaped, 450) == len(escaped) // 2
-        # Cut on a whole escape, never halfway through one.
         assert tools._dense_prefix_chars(escaped, 451) % 3 == 0
 
     def test_a_dense_result_never_falls_below_the_readable_floor(self, monkeypatch):
@@ -398,9 +376,7 @@ class TestDenseAsciiIsMeasuredNotEstimated:
 
         kept = tools._dense_char_limit(text, tools._tool_result_char_budget())
 
-        # The share it was promised, not the whole window.
         assert kept / self._RATE <= 5120 * tools._PAGE_CONTEXT_SHARE
-        # And this is not vacuous: the estimate alone would have kept the full cap.
         assert tools._dense_prefix_chars(text, 5120 * tools._PAGE_CONTEXT_SHARE) > kept
 
     def test_a_dense_result_no_longer_outweighs_the_window(self, monkeypatch):
@@ -472,8 +448,6 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         _window(monkeypatch, 5120)
         dense_chars = 2500
 
-        # The measured Qwen3-4B rates, priced per character so the count is exact at
-        # every prefix length rather than only at the two the test happens to check.
         def _price(chunk):
             dense = min(len(chunk), dense_chars)
             return int(dense / 1.376 + (len(chunk) - dense) / 4.2)
@@ -497,7 +471,6 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         kept = tools._dense_char_limit(text, tools._tool_result_char_budget())
 
         assert _price(text[:kept]) <= share, "the retained prefix must be counted, not assumed"
-        # And not by collapsing to the floor: the fit is still worth reading.
         assert kept > tools._MIN_PAGE_CHARS
 
     def test_a_template_that_drops_tool_messages_is_still_measured(self, monkeypatch):
@@ -516,8 +489,6 @@ class TestDenseAsciiIsMeasuredNotEstimated:
         seen = []
 
         def _count_chat_tokens(messages, *a, **k):
-            # A template with the Gemma-4 convention: user turns render, a standalone
-            # tool message does not.
             seen.append([m["role"] for m in messages])
             body = "".join(m["content"] for m in messages if m["role"] == "user")
             return 11 + int(len(body) / 1.33)
@@ -548,12 +519,11 @@ class TestDenseAsciiIsMeasuredNotEstimated:
             lambda: SimpleNamespace(
                 is_loaded = True,
                 context_length = 5120,
-                count_chat_tokens = lambda messages, *a, **k: 11,  # framing, whatever is sent
+                count_chat_tokens = lambda messages, *a, **k: 11,
             ),
         )
 
         assert tools._loaded_token_counter(5120)("0123456789abcdef" * 250) is None
-        # And the caller keeps the estimate rather than a prefix nothing priced.
         assert tools._dense_char_limit("0123456789abcdef" * 2000, 7168) == 7168
 
     def test_the_readable_floor_still_holds_under_an_exact_count(self, monkeypatch):
@@ -597,7 +567,7 @@ class TestAConfiguredCapIsNeverRaised:
         _window(monkeypatch, 8192)
         text = "x" * 5000
 
-        assert len(tools._truncate(text)) - len(text[:500]) < 400  # notice only
+        assert len(tools._truncate(text)) - len(text[:500]) < 400
         assert tools._truncate(text).startswith(text[:500])
         assert studio_tool_loop._truncate_for_model(text).startswith(text[:500])
 
@@ -657,7 +627,6 @@ class TestTheProbeIsNotPaidForTwice:
             is_loaded = True, context_length = ctx, count_chat_tokens = count_chat_tokens
         )
         if identified:
-            # What a real backend exposes once a GGUF is resident.
             backend._process = SimpleNamespace(pid = pid)
             backend.model_identifier = "Qwen3-4B"
             backend._gguf_load_identity = ((gguf, 66306, 4242, 1),)
@@ -676,7 +645,7 @@ class TestTheProbeIsNotPaidForTwice:
 
         kept = tools._dense_char_limit("0123456789abcdef" * 2000, tools._MAX_PAGE_CHARS)
 
-        assert kept == tools._MIN_PAGE_CHARS  # the merge base's answer, unchanged
+        assert kept == tools._MIN_PAGE_CHARS
         assert calls == []
 
     def test_a_result_that_fits_does_not_price_the_framing_baseline(self, monkeypatch):
@@ -690,7 +659,7 @@ class TestTheProbeIsNotPaidForTwice:
 
         kept = tools._dense_char_limit(text, budget)
 
-        assert kept == budget  # English keeps every character it was allowed, as before
+        assert kept == budget
         assert len(calls) == 1
         assert calls == [budget], "the one call is the measurement, not the baseline"
 
@@ -706,12 +675,10 @@ class TestTheProbeIsNotPaidForTwice:
         calls.clear()
         tools._dense_char_limit(second, tools._tool_result_char_budget())
 
-        # A chunk of length 0 IS the baseline: the empty probe the guard measures against.
         assert 0 in cold_calls, "the first dense result pays for the baseline"
         assert calls, "the second result is still measured"
         assert 0 not in calls, "but the baseline is answered from the cache"
         assert len(calls) == len(cold_calls) - 1
-        # And the answer is still the measured one.
         assert cold / self._RATE <= 5120 * tools._PAGE_CONTEXT_SHARE
 
     def test_the_same_result_twice_costs_nothing_the_second_time(self, monkeypatch):
@@ -788,10 +755,10 @@ class TestTheProbeIsNotPaidForTwice:
         text = "0123456789abcdef" * 2000
         budget = tools._tool_result_char_budget()
 
-        assert tools._dense_char_limit(text, budget) == budget  # the estimate stands
+        assert tools._dense_char_limit(text, budget) == budget
         state["fail"] = False
 
-        assert tools._dense_char_limit(text, budget) < budget  # and is measured next time
+        assert tools._dense_char_limit(text, budget) < budget
 
     def test_the_cache_cannot_grow_without_bound(self, monkeypatch):
         _window(monkeypatch, 5120)
@@ -823,7 +790,6 @@ class TestTheProbeIsNotPaidForTwice:
 
         held = sum(len(key) for entry in tools._PROBE_COUNT_CACHE.values() for key in entry)
         assert held <= tools._PROBE_COUNT_CACHE_CHARS
-        # And the baseline, which is 0 characters, is still in there earning its keep.
         assert any("" in entry for entry in tools._PROBE_COUNT_CACHE.values())
 
     def test_a_prefix_too_large_to_hold_is_skipped_not_stored(self, monkeypatch):
@@ -876,7 +842,6 @@ class TestTheProbeIsNotPaidForTwice:
         self._serving(monkeypatch, 5120, rate = 1.33, pid = 900)
         dense = tools._dense_char_limit(text, budget)
 
-        # Reloaded with only a pass-through template added. Everything managed is identical.
         calls, backend = self._serving(
             monkeypatch,
             5120,
@@ -956,7 +921,7 @@ class TestTheProbeIsNotPaidForTwice:
             calls.append((len(body), bool(k.get("strict"))))
             if k.get("strict"):
                 raise RuntimeError("llama-server could not render the chat template")
-            return int(len(body) / (fallback_rate or rate)) or 1  # no framing: the fallback
+            return int(len(body) / (fallback_rate or rate)) or 1
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -987,7 +952,6 @@ class TestTheProbeIsNotPaidForTwice:
 
         assert kept < budget, "the fallback still measured the bytes"
         assert not any(cache for cache in tools._PROBE_COUNT_CACHE.values())
-        # And a later result re-measures rather than trusting it.
         calls.clear()
         tools._dense_char_limit(text, budget)
         assert calls
@@ -1041,8 +1005,6 @@ class TestTheProbeIsNotPaidForTwice:
         _window(monkeypatch, 5120)
         budget = tools._tool_result_char_budget()
 
-        # 64 English results, each of which fits on its first count, so `_framing()` never
-        # runs and the baseline is never offered to the cache.
         self._serving(monkeypatch, 5120, rate = 4.2)
         for index in range(tools._PROBE_COUNT_CACHE_ENTRIES):
             tools._dense_char_limit(
@@ -1053,7 +1015,6 @@ class TestTheProbeIsNotPaidForTwice:
         assert len(held) == tools._PROBE_COUNT_CACHE_ENTRIES, "the cache really is full"
         assert tools._PROBE_BASELINE not in held, "and the baseline really is not in it"
 
-        # Now dense results arrive. The first pays for the baseline; the rest must not.
         calls, _ = self._serving(monkeypatch, 5120, rate = 1.33)
         tools._dense_char_limit("D1" + "0123456789abcdef" * 2000, budget)
         calls.clear()
@@ -1079,8 +1040,7 @@ class TestTheProbeIsNotPaidForTwice:
 
         _window(monkeypatch, 5120)
         self._serving(monkeypatch, 5120)
-        # Cache pressure, so eviction fires on nearly every insert, and aggressive
-        # preemption so the read-then-mutate windows are actually interleaved.
+        # Small cache plus aggressive preemption so eviction and races actually interleave.
         monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_ENTRIES", 3)
         monkeypatch.setattr(tools, "_PROBE_COUNT_CACHE_CHARS", 12_000)
         previous_interval = sys.getswitchinterval()
@@ -1109,10 +1069,8 @@ class TestTheProbeIsNotPaidForTwice:
             sys.setswitchinterval(previous_interval)
 
         assert errors == [], f"the shared cache raised under concurrency: {errors[:3]}"
-        # And every thread agreed on every answer, which is the point of the whole change.
         for name, seen in answers.items():
             assert len(seen) == 1, f"{name} got different answers in different threads: {seen}"
-        # The bounds still hold when several threads insert at once.
         for entry in tools._PROBE_COUNT_CACHE.values():
             assert len(entry) <= 3
             assert sum(map(len, entry)) <= 12_000

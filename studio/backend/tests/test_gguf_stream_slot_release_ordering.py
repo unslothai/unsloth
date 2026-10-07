@@ -86,7 +86,7 @@ class _FailsMidStreamBackend(_OneSlotBackend):
             yield "abc"
         except GeneratorExit:
             self.closing.set()
-            # Stand in for the time llama-server needs to notice the drop and free its slot.
+            # Simulates llama-server's delay in freeing the slot.
             self.finish_close.wait(10.0)
             self.closed.set()
             raise
@@ -173,7 +173,6 @@ def test_slot_is_free_before_the_done_frame_reaches_send(monkeypatch):
             if message.get("type") != "http.response.body":
                 return
             if message.get("body", b"").decode() == "data: [DONE]\n\n":
-                # Sampled exactly where a stalled client would wedge.
                 slots_at_done.append(_active_slots())
                 finished.set()
 
@@ -227,14 +226,13 @@ def test_error_sentinel_keeps_the_slot_until_the_generator_is_closed(monkeypatch
             if message.get("type") != "http.response.body":
                 return
             chunk = message.get("body", b"").decode()
-            # The error form: a payload line plus the sentinel, in one chunk.
             if chunk.endswith("data: [DONE]\n\n") and chunk != "data: [DONE]\n\n":
                 saw_error.set()
 
         task = asyncio.create_task(app(_scope(app, body), receive, send))
         try:
             await wait_for_frame(saw_error, task, what = "the error sentinel")
-            # Wait until cleanup reaches gen.close(), so llama-server still holds the slot.
+            # Wait until cleanup reaches gen.close(), while llama-server still holds the slot.
             for _ in range(500):
                 if backend.closing.is_set():
                     break

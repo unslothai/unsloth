@@ -20,8 +20,6 @@ frees the host RAM the same weights occupy there, which is just as much the user
 
 from __future__ import annotations
 
-# Resident media models are shared, so every account refreshes the same global activity clock.
-
 import asyncio
 import contextlib
 import os
@@ -48,13 +46,8 @@ class _Tracker:
         # Requests blocked on the gate but not yet counted in _inflight (see llama_keepwarm).
         self._pending = 0
         self._last_active = time.monotonic()
-        # The model identity the last tick saw, so a fresh load counts as activity.
         self.seen: Any = None
-        # Whether the last tick found work in flight, so the tick that sees it end can start the TTL there rather than
-        # at the last busy poll.
         self.was_busy = False
-        # The terminal record of the last finished background job this tracker has seen, so a job no poll ever sampled
-        # as busy still dates the TTL from its completion.
         self.completed: Any = None
 
     def note_pending(self) -> None:
@@ -95,9 +88,7 @@ class _Tracker:
 
 _TRACKERS = {DIFFUSION: _Tracker(DIFFUSION), VIDEO: _Tracker(VIDEO)}
 
-# Per backend, not per engine object: a diffusers <-> sd.cpp switch replaces that object. Keyed by the target a load was
-# started for, since a load route records this the moment the background load is accepted and that load can still fail
-# with the previous model resident.
+# Per backend (an engine switch replaces the object), keyed by the load target since it may fail
 _LOAD_ORIGINS: dict[str, tuple[tuple[str, str, str], bool]] = {}
 _LOAD_ORIGINS_GUARD = threading.Lock()
 
@@ -184,21 +175,14 @@ def other_request_count(
     return max(0, total - 1) if current_request_counted else total
 
 
-# The concrete mounted paths, not any path that ends in one of them: FastAPI answers /v1/anything/images/generations
-# with a 404 without ever running an endpoint, and stamping that as activity would let unauthenticated 404s keep a
-# pipeline resident past every TTL. Only the generate and load routes: */generate-progress and */generate/cancel are
-# polled while the user watches, so they must not count as activity. The load routes are here because a load registers
-# with the backend only part way through its POST, so sampling loading_repo_ids() cannot see one that has been accepted
-# but not yet started. Holding the gate for the whole request closes that window rather than narrowing it.
-# test_media_keepwarm asserts every one of these is a real route on the routers main.py mounts, so a rename cannot
-# silently drop the protection an in-flight generation rides on.
+# Exact mounted paths only (unauthenticated 404s must not count); progress/cancel polls excluded.
+# Load routes count since a load registers with the backend only part way through its POST.
+# test_media_keepwarm asserts each is a real mounted route.
 _TRACKED_PATHS = {
-    # studio_router, mounted at /api/inference only.
     "/api/inference/images/generate": DIFFUSION,
     "/api/inference/images/load": DIFFUSION,
     "/api/inference/video/generate": VIDEO,
     "/api/inference/video/load": VIDEO,
-    # The OpenAI-compatible route is on inference_router, mounted at both prefixes.
     "/api/inference/images/generations": DIFFUSION,
     "/v1/images/generations": DIFFUSION,
     "/api/inference/videos": VIDEO,
@@ -226,8 +210,7 @@ async def admission_gate(owner: str):
 
 @contextlib.asynccontextmanager
 async def _gate(tracker: _Tracker):
-    # Polled non-blocking acquire, exactly like llama_keepwarm's: it keeps the wait off this loop AND
-    # cancellation-safe, since a cancel lands during the sleep with the gate free.
+    # Polled non-blocking acquire (as in llama_keepwarm): keeps the loop free and cancellation-safe
     while not tracker.gate.acquire(blocking = False):
         await asyncio.sleep(0.02)
     try:
@@ -257,9 +240,7 @@ def end_request(owner: str, *, counted: bool = True) -> None:
 
 
 def _diffusion_engine() -> Any:
-    # Through the router: a native sd.cpp selection must unload the sd-server, not the diffusers pipeline. Nothing can
-    # be resident before either module is imported, and importing them here just to find that out would drag torch into
-    # every idle tick.
+    # Via the router (sd.cpp must unload sd-server); skip if neither module is imported, avoids torch
     if not {"core.inference.diffusion", "core.inference.sd_cpp_backend"} & set(sys.modules):
         return None
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
@@ -313,10 +294,7 @@ def _probe(backend: Any) -> tuple[bool, Optional[tuple[Any, ...]]]:
     return loading or bool(progress.get("active")), _completed_token(progress)
 
 
-# What makes one resident build different from another. The repo id is not enough: MiniMax-H3 stages a different
-# denoiser per h3_task, so a cached fl2va -> ref2va reload is a new build under the same id, and the quants are picked
-# per load too. Only fields fixed at load time, so nothing that moves under a resident model (a Speed=Auto compile
-# flips speed_optims mid-life) can be mistaken for a reload and keep it warm forever.
+# Load-time fields only: same repo id can be a new build (H3 task, quants); not speed_optims, which moves mid-life
 _IDENTITY_FIELDS = (
     "repo_id",
     "base_repo",
@@ -342,22 +320,15 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         status = await asyncio.to_thread(backend.status)
         identity = _identity(status)
         busy, completed = await asyncio.to_thread(_probe, backend)
-        # A job whose whole life fell between two polls is only ever visible as a terminal record this tracker has not
-        # seen before. The first tick to see any record spends one TTL on work that may be older, which is the direction
-        # that keeps the model.
         finished = completed is not None and completed != tracker.completed
         tracker.completed = completed
         if busy:
-            # A load or generation in flight is activity: the TTL restarts from the end of the work, and the backend is
-            # never torn down under it.
             tracker.note_activity()
             tracker.seen = identity
             tracker.was_busy = True
             return
         if tracker.was_busy or finished:
-            # The work ended between two ticks. A video generation outlives its POST, so the only activity it stamps
-            # after that is the busy polls, and dating the TTL from the last of those spends up to one poll interval
-            # of the keep-warm window the user configured before the model was even free. Start it here instead.
+            # Start the TTL when work ends, not at the last busy poll
             tracker.was_busy = False
             tracker.seen = identity
             tracker.note_activity()
@@ -371,9 +342,7 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
             return
         if identity is None or not tracker.is_idle(ttl):
             return
-        # Re-read the effective setting immediately before the teardown. One step covers both backends and an unload
-        # frees several GB, so a residency veto applied while it runs (Model Memory, or the TTL itself moved) would
-        # otherwise be ignored by every teardown left in the step, freeing a model the settings page now calls pinned.
+        # Re-read just before teardown so a residency veto applied mid-step is honoured
         ttl = await asyncio.to_thread(_effective_ttl)
         if ttl <= 0 or not tracker.is_idle(ttl):
             return
@@ -389,8 +358,7 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         if not tracker.is_idle(ttl):
             return
         await asyncio.to_thread(backend.unload)
-        # Drop ownership only if nothing came back meanwhile, and check it under the arbiter lock so a same-owner load
-        # that re-registered keeps it. Mirrors /images/unload.
+        # Drop ownership under the arbiter lock so a re-registered same-owner load keeps it
         await asyncio.to_thread(
             release_if,
             tracker.owner,

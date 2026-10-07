@@ -20,10 +20,8 @@ from core.inference.audio_cpp_models import (
 
 AUDIO_WORKFLOW_IDS = ("speak", "clone", "edit", "convert", "music", "separate", "transcribe")
 
-# Generation audio types that make music; every other generation audio type speaks.
 MUSIC_AUDIO_TYPES = frozenset(("minimax_music3", AUDIO_CPP_MUSIC_AUDIO_TYPE))
 
-# Audio types of a loaded model that transcribes rather than generates.
 _TRANSCRIBE_AUDIO_TYPES = frozenset(("whisper",))
 
 

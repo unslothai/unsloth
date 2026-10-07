@@ -65,7 +65,6 @@ def test_trainer_records_16bit_when_bitsandbytes_unusable(tmp_path):
 
 @pytest.mark.parametrize("requested", [True, False])
 def test_worker_legacy_cpt_keeps_request(tmp_path, requested):
-    # A pre-flag CPT adapter may have been quantized on the fly from a non-bnb repo.
     mc = _adapter(tmp_path, {"unsloth_training_method": "CPT"}, "unsloth/Qwen3-4B")
     assert _resolve_lora_4bit(mc, requested) is requested
 
@@ -93,9 +92,7 @@ def test_worker_lora_qlora_unchanged(tmp_path, method, requested, expected):
 
 
 def test_method_and_precision_never_disagree(tmp_path):
-    # bitsandbytes unusable (Mac, Intel, CPU, some AMD): the run trained on a 16-bit base, so
-    # it is a "lora". Tagging it "qlora" next to unsloth_load_in_4bit=false left the two keys
-    # contradicting each other, and the method is what the Hub card shows.
+    # No bitsandbytes: trained on a 16-bit base, so it is a lora, not qlora.
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA"}))
     _patch_adapter_config(bnb_usable = False)(
         SimpleNamespace(is_cpt = False, load_in_4bit = True), str(tmp_path)
@@ -114,7 +111,6 @@ def _forced_16bit_branches_in_load_model():
     )
     forced = set()
     for node in ast.walk(load_model):
-        # `self._audio_type == "<name>"` guarding a from_pretrained(..., load_in_4bit = False)
         if not (isinstance(node, ast.If) and isinstance(node.test, ast.Compare)):
             continue
         left, ops, comparators = node.test.left, node.test.ops, node.test.comparators
@@ -155,7 +151,6 @@ def _declared_forced_16bit_audio_types():
             getattr(t, "id", None) == "_FORCED_16BIT_AUDIO_TYPES" for t in node.targets
         ):
             value = node.value
-            # frozenset({...}) / set({...}) today, a bare literal if that is ever simplified
             if isinstance(value, ast.Call) and value.args:
                 value = value.args[0]
             return set(ast.literal_eval(value))
@@ -163,18 +158,14 @@ def _declared_forced_16bit_audio_types():
 
 
 def test_forced_16bit_audio_types_match_the_loader():
-    # The constant is what _patch_adapter_config records for these runs; if a new audio type
-    # hardcodes a 16-bit load and is not listed, its adapter claims a 4-bit base it never used
-    # and Chat reloads it in 4-bit. Read the branches rather than trusting the list.
+    # Read the branches, not the list: an unlisted forced-16-bit type would record 4-bit.
     declared = _declared_forced_16bit_audio_types()
     assert declared == _forced_16bit_branches_in_load_model()
-    # snac passes the request straight through, so it must NOT be in the set.
     assert "snac" not in declared
 
 
 def test_load_model_records_the_forced_16bit_precision():
-    # _patch_adapter_config only ever sees self.load_in_4bit, so load_model has to correct it
-    # before the forced-16-bit branches run. Without this, the request is what gets recorded.
+    # load_model must correct load_in_4bit before the forced-16-bit branches run.
     tree = ast.parse(_TRAINER.read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "UnslothTrainer")
     load_model = next(
@@ -197,7 +188,6 @@ def test_load_model_records_the_forced_16bit_precision():
         )
     ]
     assert len(fixups) == 1, "load_model must set self.load_in_4bit = False for the forced types"
-    # It has to land before the branch chain it describes, or it records the wrong thing.
     csm = next(
         node
         for node in ast.walk(load_model)
@@ -212,10 +202,8 @@ def test_load_model_records_the_forced_16bit_precision():
 
 
 def test_forced_16bit_audio_run_reloads_in_16bit(tmp_path):
-    # A csm/whisper/bicodec/dac run requested 4-bit, but the loader forced 16-bit. Recording the
-    # request would make Chat download a bnb-4bit base the run never trained on.
     (tmp_path / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA"}))
-    trainer = SimpleNamespace(is_cpt = False, load_in_4bit = False)  # after the load_model fixup
+    trainer = SimpleNamespace(is_cpt = False, load_in_4bit = False)
     _patch_adapter_config()(trainer, str(tmp_path))
     cfg = json.loads((tmp_path / "adapter_config.json").read_text())
     assert cfg["unsloth_load_in_4bit"] is False

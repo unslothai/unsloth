@@ -32,9 +32,7 @@ from torch import nn
 # ``_int_mm`` wants strictly more than 16 rows.
 INT_MM_MIN_M = 17
 
-# Pad to a warp-friendly constant rather than to exactly INT_MM_MIN_M. Two reasons: 32 tiles better than 17, and it
-# pins ONE compiled shape for every activation below it, so prompts of differing token counts (H3's seven eval prompts
-# run at M = 10..19) do not each trigger their own inductor recompile.
+# Pad to 32 (not 17): better tiling and one compiled shape for all smaller M.
 DEFAULT_PAD_TO = 32
 
 
@@ -111,33 +109,21 @@ class PadToMinM(nn.Module):
         super().__init__()
         self.inner = inner
         self.min_m = int(min_m)
-        # pad_to may exceed min_m to buy tiling and shape stability; it may never be below it, or the "padded"
-        # activation would still be under the floor it exists to clear.
         self.pad_to = max(int(pad_to or min_m), self.min_m)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Deliberately free of call counters or any other mutable int attribute: dynamo treats an nn.Module's integer
-        # attributes as static and guards on their value, so a `+= 1` here would force a recompile on EVERY call until
-        # the recompile limit is hit, at which point the module silently drops back to eager. Instrumentation belongs
-        # outside.
+        # No mutable int attributes: dynamo guards on them, forcing recompiles then eager fallback.
         lead = x.shape[:-1]
         flat = x.reshape(-1, x.shape[-1])
         m = flat.shape[0]
         if m == 0:
-            # No rows to project, and no row 0 to replicate from. torchao returns a zero-row input UNPROJECTED (a
-            # quantized 1472 -> 2048 Linear maps [0, 1472] to [0, 1472]), which then breaks a downstream
-            # width-sensitive add, so synthesise the empty result at the right width instead of calling through.
+            # torchao returns a zero-row input unprojected (wrong width), so build the empty result.
             return x.new_empty((*lead, self.inner.out_features))
         if torch.compiler.is_compiling():
-            # Branch-free: `m < pad_to` guards a dynamic row count, so an H3 i2v caption past it recompiles.
-            # Arithmetic max: dynamo <= 2.8 rejects torch.sym_max on a concrete m; max() left an `m <= pad_to` guard.
+            # Branch-free: `m < pad_to` would guard a dynamic row count; dynamo <= 2.8 rejects sym_max.
             rows = torch.arange((m + self.pad_to + abs(m - self.pad_to)) // 2, device = flat.device)
             out = self.inner(flat.index_select(0, torch.where(rows < m, rows, 0)))[:m]
         elif m < self.pad_to:
-            # Everything below pad_to normalises to pad_to, not just what is below min_m. Clearing the floor takes only
-            # the latter, but pinning ONE row count means one inductor graph covers every prompt length in the range
-            # instead of one per length, and the extra rows are free at these sizes (measured on H3's 13 modules: 1.57
-            # ms padded from M = 10 against 1.48 ms unpadded at M = 17, on a 2.4 s render).
             flat = torch.cat([flat, flat[:1].expand(self.pad_to - m, -1)], dim = 0)
             out = self.inner(flat)[:m]
         else:
@@ -145,11 +131,7 @@ class PadToMinM(nn.Module):
         return out.reshape(*lead, out.shape[-1])
 
     def __getattr__(self, name: str) -> Any:
-        # Callers reach THROUGH a Linear for weight / bias / in_features / out_features: diffusers' attention processors
-        # read `to_q.weight.dtype`, and H3's blocks read `context_embedder.weight`. Without this forward the wrapper is
-        # a drop-in only until the first such access, which fails at render time rather than at wrap time.
-        # nn.Module.__getattr__ runs first, so parameters, buffers and submodules registered on the wrapper itself still
-        # win.
+        # Forward attribute access to the inner Linear (callers read e.g. `to_q.weight.dtype`).
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -170,7 +152,6 @@ class PadToMinM(nn.Module):
         prefix = kwargs.pop("prefix", args[1] if len(args) > 1 else "")
         keep_vars = kwargs.pop("keep_vars", args[2] if len(args) > 2 else False)
         if destination is None:
-            # Top-level call (``wrapper.state_dict()``): let the inner module build the mapping.
             return self.inner.state_dict(prefix = prefix, keep_vars = keep_vars)
         self.inner.state_dict(destination = destination, prefix = prefix, keep_vars = keep_vars)
         return destination
@@ -213,7 +194,6 @@ class ZeroRowSafeLinear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.numel() == 0:
-            # The bias add broadcasts over zero elements, kept so the result matches F.linear's.
             out = x.new_zeros((*x.shape[:-1], self.inner.out_features))
             bias = getattr(self.inner, "bias", None)
             return out if bias is None else out + bias
@@ -324,11 +304,8 @@ def wrap_small_m_linears(
             parent = model.get_submodule(parent_name) if parent_name else model
             module = getattr(parent, leaf)
         except AttributeError:
-            # a family token matching nothing on this variant is not an error
             continue
-        # Skips a dense Linear (``F.linear`` has no row floor to clear, and there is no granularity to prove) and, by
-        # the same gate, an already-wrapped one: ``PadToMinM`` is not an ``nn.Linear``, so re-wrapping cannot nest the
-        # padding and double the row count.
+        # Skips dense Linears and already-wrapped PadToMinM (not an nn.Linear), so no double pad.
         if not is_quantized_linear(module):
             continue
         if require_per_row and activation_granularity_is_per_row(module) is not True:

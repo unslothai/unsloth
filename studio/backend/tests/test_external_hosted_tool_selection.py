@@ -55,7 +55,7 @@ def _request():
         return False
 
     return SimpleNamespace(
-        # These cases drive the tool loop, whose confirm gate asks over these frames.
+        # the confirm gate asks over these frames
         headers = {"X-Unsloth-Events": "1"},
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
@@ -143,19 +143,15 @@ def _clean_policy():
     reset_tool_policy()
 
 
-# ── the helper ───────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "selection, expected",
     [
         (["python", "terminal", "image_generation"], ["image_generation"]),
         (["search_knowledge_base", "image_generation"], ["image_generation"]),
-        # web_search is Unsloth's own once the loop runs, so it never rides along.
+        # web_search is Unsloth's own once the loop runs, so it never rides along
         (["web_search", "python", "image_generation"], ["image_generation"]),
         (["python", "terminal"], []),
         (["web_search"], []),
-        # Order and duplicates come from the client; the forwarded list is stable.
         (
             ["image_generation", "python", "image_generation"],
             ["image_generation"],
@@ -186,9 +182,6 @@ def test_an_absent_or_malformed_selection_is_not_a_crash():
     assert hosted_only_tools("openai", [None, 3, "image_generation"]) == ["image_generation"]
 
 
-# ── the route ────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize("provider_type", ["openai", "gemini"])
 def test_images_plus_a_studio_tool_still_reaches_the_provider(monkeypatch, provider_type):
     """The regression in one line: Images plus Code took the Unsloth loop, and the
@@ -207,9 +200,7 @@ def test_automatic_rag_does_not_cost_the_user_their_image_tool(monkeypatch):
         monkeypatch,
         "openai",
         ["search_knowledge_base", "image_generation"],
-        # The route drops the RAG tool without a scope, and no scope means no
-        # loop at all, so the automatic-RAG turn has to carry one to be the case
-        # this is about.
+        # no scope means no loop at all, so the auto-RAG turn must carry one
         rag_scope = {"kb_id": "kb-1"},
     )
     assert transport._request_kwargs["enabled_tools"] == ["image_generation"]

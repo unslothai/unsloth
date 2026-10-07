@@ -129,7 +129,6 @@ def _serialize_binary_value(data):
 
 
 def _is_sample_sequence(samples) -> bool:
-    # A list from the JSON path or a numpy array straight from the decoder; never text, bytes or a nested cell.
     return hasattr(samples, "__len__") and not isinstance(
         samples, (str, bytes, bytearray, memoryview, dict)
     )
@@ -168,14 +167,12 @@ def _serialize_preview_value(value):
         pass
 
     if isinstance(value, dict):
-        # Undecoded HF Image/Audio cells are {"bytes": b"...", "path": ...}.
         raw = value.get("bytes")
         if isinstance(raw, (bytes, bytearray, memoryview)) and not (
             value.keys() - {"bytes", "path"}
         ):
             return _serialize_binary_value(raw)
-        # A decoded Audio cell becomes one float per sample under the soundfile fallback, so ten preview
-        # rows of a few seconds each are tens of MB of JSON and the client dies rendering it.
+        # Decoded audio is a float per sample; tens of MB of JSON kills the client.
         if "sampling_rate" in value and _is_sample_sequence(value.get("array")):
             return _serialize_decoded_audio(value)
         return {str(key): _serialize_preview_value(item) for key, item in value.items()}
@@ -240,7 +237,7 @@ def _select_tier1_repo_file(
     train_split: str,
     allow_unlabeled_fallback: bool = False,
 ) -> Optional[str]:
-    # "._train.parquet" sorts first and would be handed to the single-file preview load.
+    # "._train.parquet" (AppleDouble) would sort first.
     data_files = sorted(
         f
         for f in drop_shadowed_appledouble_names(list(files))
@@ -336,11 +333,7 @@ def _load_any_cached_hf_preview_slice(
     preview_size: int,
     hf_token: Optional[str] = None,
 ):
-    # Both paths return real rows off disk without asking the Hub: the raw slice reads the
-    # snapshot, the processed one loads with local_files_only=True and drops the falsy
-    # sentinel. Neither reaches the network, so read first and gate the answer: reading our
-    # own disk is not the leak, handing it back is. Gating first probed /auth-check for a
-    # prefer-local request that had ruled the network out and then missed the cache anyway.
+    # Read first, gate the answer: reading local disk is not the leak, returning it is.
     if not _cached_preview_visible(request):
         return None
     cached_preview = _load_cached_hf_preview_slice(request, preview_size)
@@ -356,10 +349,7 @@ def _load_any_cached_hf_preview_slice(
             return None
     if cached_preview is None:
         return None
-    # The shared gate, not the raw check: the outer guard has already let a cached PUBLIC
-    # dataset through for the anonymous sentinel, and vetoing it again here turned that into
-    # a local-cache-miss 404 for a preview the caller was entitled to. is_cached is True
-    # because the rows are in hand by now.
+    # Shared gate, not the raw check: a cached PUBLIC dataset is already allowed.
     if cached_read_refused(
         hf_token,
         repo_id = request.dataset_name,
@@ -396,13 +386,12 @@ def check_format_response(
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
 
-        # An audio column decodes on the first preview row, so this precedes every tier.
+        # Audio decodes on the first preview row, so this precedes every tier.
         ensure_audio_decoding()
 
         try:
             dataset_path = resolve_dataset_path(request.dataset_name)
         except ValueError as e:
-            # Malformed path (null bytes, '..', outside roots) is a client error: surface 400, not 500.
             raise HTTPException(status_code = 400, detail = str(e)) from e
         total_rows = None
 
@@ -410,14 +399,10 @@ def check_format_response(
         if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
             raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
 
-        # Both streaming tiers run on the default prefer_local_cache=false, ahead of the
-        # guarded cache reader below, so the gate stands in front of them.
         if not dataset_exists:
             refuse_unauthorized_dataset_preview(
                 hf_token,
                 request.dataset_name,
-                # A prefer-local request reads the cache or 404s below, either way without
-                # the network, so the probe would be a round trip it had ruled out.
                 offline = bool(request.prefer_local_cache),
             )
         if dataset_exists:
@@ -430,7 +415,7 @@ def check_format_response(
         else:
             from datasets import Dataset, load_dataset
 
-            # Tier 1: list_repo_files → load only the first data file
+            # Tier 1: list_repo_files -> load only the first data file
             cached_preview = (
                 _load_any_cached_hf_preview_slice(request, PREVIEW_SIZE, hf_token)
                 if request.prefer_local_cache
@@ -452,8 +437,6 @@ def check_format_response(
                 try:
                     from huggingface_hub import HfApi
 
-                    # No token on the constructor: list_repo_files is given it explicitly
-                    # and that argument wins.
                     api = HfApi()
                     repo_files = api.list_repo_files(
                         request.dataset_name,
@@ -477,11 +460,7 @@ def check_format_response(
                             "token": hf_token,
                         }
 
-                        # Recorded against the call that can materialise rows, not the
-                        # listing above it: a preview writes into the datasets cache under
-                        # what may be a one-off token, and unrecorded a later tokenless
-                        # caller reads "none needed one". Recording before `list_repo_files`
-                        # left a record for a fetch a 404 or outage never made.
+                        # Record on the call that materialises rows, not the listing.
                         with recording_a_request_token_fetch(
                             hf_token, request.dataset_name, "dataset"
                         ):
@@ -496,7 +475,7 @@ def check_format_response(
                     )
 
             if preview_slice is None:
-                # Tier 2: full streaming (resolves all files - slow for large repos)
+                # Tier 2: full streaming (resolves all files, slow for large repos)
                 logger.info("Tier 2: falling back to full streaming load_dataset")
                 try:
                     load_kwargs = {
@@ -508,8 +487,6 @@ def check_format_response(
                     if request.subset:
                         load_kwargs["name"] = request.subset
 
-                    # Tier 2 reaches the network on its own, whether or not tier 1 ran, and
-                    # takes its record back if it fails having cached nothing.
                     with recording_a_request_token_fetch(hf_token, request.dataset_name, "dataset"):
                         streamed_ds = load_dataset(**load_kwargs)
 
@@ -541,7 +518,6 @@ def check_format_response(
         preview_samples = None
         if not result["requires_manual_mapping"]:
             if result.get("suggested_mapping"):
-                # Heuristic-detected: show raw data so columns match the response (stripping happens at training).
                 preview_samples = _serialize_preview_rows(preview_slice)
             else:
                 try:
@@ -592,7 +568,6 @@ def check_format_response(
         scrubbed = modelscope_missing(e, request.dataset_name) or download_registry.scrub_secrets(
             str(e), hf_token = hf_token
         )
-        # Missing/gated/bad-token and malformed names are client errors, not 500s.
         status = hf_error_status(e)
         if (
             status is None
@@ -601,7 +576,6 @@ def check_format_response(
         ):
             status, scrubbed = 400, "Invalid dataset name"
         elif status is None and isinstance(e, FileNotFoundError):
-            # datasets raises DatasetNotFoundError (FileNotFoundError) for missing/gated.
             status = 404
         elif status is None and isinstance(e, ValueError):
             status = 400

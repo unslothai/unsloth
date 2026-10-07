@@ -95,8 +95,7 @@ _REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _IMPORT_LOCK = threading.RLock()
 
-# Published on the Hub rather than on PyPI, so the modelling code is fetched. Pinned to
-# a revision: without one the import executes whatever the branch points at today.
+# Fetched from the Hub, pinned to a revision so the import cannot run whatever main holds.
 _DEEPSEEK_OCR_REPOSITORY = "unsloth/DeepSeek-OCR"
 _DEEPSEEK_OCR_REVISION = "84cced885e9ae0de9f2307915a255ac04fd6e8ec"
 _DEEPSEEK_OCR_PACKAGE = "deepseek_ocr"
@@ -107,11 +106,7 @@ _DEEPSEEK_OCR_MODULES = (
     "modeling_deepseekocr.py",
     "modeling_deepseekv2.py",
 )
-# sha256 of each module at the pinned revision, the same guarantee the git-based sources
-# get from source_tree_digest. The revision alone only fixes what is fetched; these fix
-# what is imported, so a cached file edited in place is rebuilt rather than run. They are
-# constants in this file deliberately: a manifest written beside the install would be
-# writable by whoever could edit the install. 181 KB, 0.6 ms to verify.
+# sha256 per module so an edited cached file is rebuilt; constants here, not a writable manifest.
 _DEEPSEEK_OCR_DIGESTS = {
     "configuration_deepseek_v2.py": "6ab21f29a4722e26fa28c8e0d4277591689a598df17cf6c712330e8f62b3fc7c",
     "conversation.py": "ec7b6ce89bcda643de1f43269ffa66a7b2e65dc3ed30e427958f776546b4ba03",
@@ -119,7 +114,7 @@ _DEEPSEEK_OCR_DIGESTS = {
     "modeling_deepseekocr.py": "31e3d52972534415cb6507a40ff7cd859a3ddd3419ace6900d659fba0e09321b",
     "modeling_deepseekv2.py": "bab8c5c67236453f3311ef2c6629a3606e608e6cc818c8a5923e7877ec65db7f",
 }
-# The complete package, so an added entry is a rebuild rather than an import candidate.
+# The complete package, so an added entry forces a rebuild.
 _DEEPSEEK_OCR_CONTENTS = frozenset({"__init__.py", *_DEEPSEEK_OCR_MODULES})
 
 _DAC_REPOSITORY = "ibm-research/DAC.speech.v1.0"
@@ -142,7 +137,7 @@ _ARCHIVE_MAX_TAR_BYTES = 160 * 1024 * 1024
 _ARCHIVE_SOCKET_TIMEOUT_SECONDS = 15
 _ARCHIVE_DOWNLOAD_DEADLINE_SECONDS = 300
 
-# Git for Windows still enforces MAX_PATH (260) unless told otherwise.
+# Git for Windows enforces MAX_PATH (260) unless told otherwise.
 _GIT_LONG_PATHS = ["-c", "core.longpaths=true"]
 
 
@@ -485,7 +480,7 @@ def _remove_owned_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok = True)
     elif path.is_dir():
-        # onexc replaced onerror in 3.12; the handler signature is the same either way.
+        # onexc replaced onerror in 3.12; same handler signature.
         handler = (
             {"onexc": _clear_read_only}
             if sys.version_info >= (3, 12)
@@ -1001,21 +996,16 @@ def ensure_deepseek_ocr_source(hf_token: HfTokenArg = None) -> Path:
                     cache_dir = active_hf_hub_cache(),
                     token = hf_token,
                 )
-                # snapshot_download leaves its own metadata directory inside local_dir.
-                # It is dot-prefixed and so not importable, but removing it keeps the
-                # installed package exactly the pinned files, which is what lets the
-                # predicate above treat any other entry as a reason to rebuild.
+                # Remove snapshot_download's metadata dir so any other entry means a rebuild.
                 _remove_owned_path(package / ".cache")
-                # The repo is a model, not a package, so it ships no __init__.py. Same
-                # approach as the `generated_files` entry the git-based sources use.
+                # The repo is a model and ships no __init__.py.
                 (package / "__init__.py").write_text("", encoding = "utf-8")
                 missing = [name for name in _DEEPSEEK_OCR_MODULES if not (package / name).is_file()]
                 if missing:
                     raise RuntimeError(
                         "The pinned DeepSeek-OCR revision is missing " + ", ".join(sorted(missing))
                     )
-                # Before the install is published, so bytes that do not match what was
-                # pinned are never moved into place for a later call to accept.
+                # Before publishing, so mismatched bytes are never moved into place.
                 unexpected = sorted(
                     name
                     for name, expected in _DEEPSEEK_OCR_DIGESTS.items()
@@ -1148,8 +1138,7 @@ def ensure_dac_speech_weights(
                 expected_size = _DAC_SIZE,
                 expected_sha256 = _DAC_SHA256,
             ):
-                # Same as the download branch below: the copy is an optimisation.
-                # A full disk must not reject weights that already passed the size and sha256 check.
+                # The copy is an optimisation; a full disk must not reject verified weights.
                 try:
                     _install_verified_artifact(legacy, destination)
                 except OSError:
@@ -1178,9 +1167,7 @@ def ensure_dac_speech_weights(
                 expected_size = _DAC_SIZE,
                 expected_sha256 = _DAC_SHA256,
             ):
-                # Populate the pinned destination so later loads hit the fast path instead of re-downloading and
-                # re-hashing 295 MB under the install lock. The copy is an optimisation, so a full disk falls
-                # back to the hub path rather than failing a verified download.
+                # Populate the pinned dest so later loads skip re-hashing; a full disk falls back to the hub path.
                 try:
                     _install_verified_artifact(downloaded, destination)
                 except OSError:
@@ -1219,7 +1206,7 @@ def _module_is_inside(module: ModuleType, package_root: Path) -> bool:
 
 
 def _purge_package_bytecode(package_root: Path) -> None:
-    # This is the only thing stopping a stale or planted .pyc from shadowing a verified .py
+    # Stops a stale or planted .pyc from shadowing a verified .py.
     for directory, child_directories, files in os.walk(package_root, topdown = True):
         directory_path = Path(directory)
         for name in tuple(child_directories):
@@ -1268,15 +1255,13 @@ def import_pinned_module(module_name: str, *, package: str, source: Path | str) 
             sys.path.remove(source_value)
         sys.path.insert(0, source_value)
         try:
-            # Inside the try: anything raising here would otherwise strand the cache dir at sys.path[0] for the process
-            # lifetime, with nothing imported and no rollback.
+            # Inside the try, else a raise strands the cache dir at sys.path[0] with no rollback.
             _purge_package_bytecode(package_root)
             importlib.invalidate_caches()
             module = importlib.import_module(module_name)
             invalid_modules = sorted(
                 name
-                # Snapshot: another thread importing here would otherwise raise "dictionary changed size during
-                # iteration" out of a good codec load.
+                # Snapshot: a concurrent import would raise "dictionary changed size during iteration".
                 for name, loaded_module in list(sys.modules.items())
                 if (name == package or name.startswith(f"{package}."))
                 and not _module_is_inside(loaded_module, package_root)

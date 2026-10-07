@@ -40,9 +40,7 @@ def join_when_started(thread: threading.Thread, timeout: float = 5.0) -> bool:
     not report one as drained either. A thread still in `_limbo` at the deadline has not run
     yet and still will, so True is reserved for a thread that actually finished.
     """
-    # join() raises RuntimeError for two unrelated reasons, and only one of them is a window
-    # that closes. Joining yourself never becomes possible, so retrying it would burn the whole
-    # timeout and then report a thread that is trivially still alive.
+    # Joining yourself never becomes possible, so do not retry it.
     if thread is threading.current_thread():
         raise RuntimeError("cannot join current thread")
     deadline = time.monotonic() + timeout
@@ -52,12 +50,7 @@ def join_when_started(thread: threading.Thread, timeout: float = 5.0) -> bool:
             thread.join(timeout = max(remaining, 0.0))
         except RuntimeError:
             if remaining <= 0:
-                # Still not started at the deadline, so it is UNDRAINED, and is_alive() must
-                # not be consulted here: it is False before a thread starts exactly as it is
-                # after one finishes, so asking it would report a worker that is still
-                # scheduled and will run later as one that is already done. Callers restore
-                # their monkeypatches on the strength of this answer, which is how that
-                # worker would end up running against the next test.
+                # Not started by the deadline means undrained; is_alive() is False before start too.
                 return False
             time.sleep(0.005)
             continue

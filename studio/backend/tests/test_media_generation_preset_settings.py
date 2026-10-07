@@ -185,7 +185,6 @@ def test_the_preset_list_is_capped_and_says_why(monkeypatch):
     assert refused.status_code == 409
     assert refused.json()["detail"] == "Delete a preset before saving another one"
 
-    # Overwriting one of the existing entries is not a new entry, so it still goes through.
     assert (
         client.put(
             "/api/settings/generation-presets/image/custom",
@@ -196,8 +195,7 @@ def test_the_preset_list_is_capped_and_says_why(monkeypatch):
 
 
 def test_a_store_larger_than_the_write_cap_still_reads(monkeypatch):
-    # The cap belongs to the write path, which answers 409. Refusing to report a store that
-    # somehow holds more would turn the GET into a 500 and take the whole preset UI with it.
+    # The cap belongs to writes (409); a GET must not 500 on a store holding more.
     client = _client(
         monkeypatch,
         {
@@ -263,8 +261,7 @@ def test_unreadable_presets_do_not_expand_the_readable_write_cap(monkeypatch):
 
 
 def test_a_blob_written_by_another_build_still_reads(monkeypatch):
-    # extra = "forbid" is right for a submitted payload and wrong for reading storage back: a single
-    # field from a newer build must not cost the user every recipe this build can still render.
+    # extra='forbid' is for submissions; one field from a newer build must not drop stored recipes.
     client = _client(
         monkeypatch,
         {
@@ -309,18 +306,15 @@ def test_one_unreadable_preset_does_not_discard_the_rest(monkeypatch):
 
     body = client.get("/api/settings/generation-presets/image").json()
 
-    # Still "saved", so the client does not mistake this for a fresh install and overwrite it.
+    # Still saved, so the client does not mistake this for a fresh install and overwrite it.
     assert body["saved"] is True
     assert [preset["name"] for preset in body["customPresets"]] == ["Readable"]
-    # The state validated on its own, so one bad entry in the list does not reset it.
     assert body["activePreset"] == "Broken"
     assert body["currentParams"]["steps"] == 24
 
 
 def test_a_store_holding_only_presets_is_not_a_saved_recipe(monkeypatch):
-    # A named-preset write can land while the debounced state write does not. Reporting that as
-    # saved hands the client schema defaults as if the user had chosen them, and the client stops
-    # seeding the resident model's own defaults for as long as it believes that.
+    # Reporting a failed state write as saved would hand the client schema defaults as user choices.
     client = _client(
         monkeypatch,
         {
@@ -333,13 +327,11 @@ def test_a_store_holding_only_presets_is_not_a_saved_recipe(monkeypatch):
     body = client.get("/api/settings/generation-presets/image").json()
 
     assert body["saved"] is False
-    # The library is still the user's; only the recipe falls back to the model's defaults.
     assert [preset["name"] for preset in body["customPresets"]] == ["Landscape"]
 
 
 def test_a_preset_collection_that_is_not_a_list_reads_as_empty(monkeypatch):
-    # Recovery exists so a store this build cannot represent still reads. Iterating a scalar here
-    # would answer 500 and take the whole preset UI down with it.
+    # Recovery must not iterate a scalar, or the GET 500s and takes down the preset UI.
     client = _client(
         monkeypatch,
         {
@@ -359,8 +351,7 @@ def test_a_preset_collection_that_is_not_a_list_reads_as_empty(monkeypatch):
 
 
 def test_one_unreadable_state_field_does_not_reset_the_recipe(monkeypatch):
-    # The response is still "saved", so the client applies and autosaves it. Handing back schema
-    # defaults for a recipe that read fine would overwrite the stored one.
+    # The client autosaves a saved response, so defaults must not replace a readable recipe.
     stored = {
         "image_generation_presets": {
             "activePreset": "X" * 200,
@@ -406,8 +397,7 @@ def test_one_unreadable_nested_recipe_field_does_not_reset_its_siblings(
     assert body["currentParams"]["guidance"] == recovered_guidance
     assert [preset["name"] for preset in body["customPresets"]] == ["Keep"]
 
-    # The client echoes the recovered representation after any recipe change. Its synthesized
-    # guidance default must not replace the raw value merely because this older schema was opened.
+    # The client echoes the recovered state; its synthesized default must not replace the raw value.
     body["currentParams"]["steps"] = 30
     echoed = {"activePreset": body["activePreset"], "currentParams": body["currentParams"]}
     assert client.put(f"/api/settings/generation-presets/{kind}", json = echoed).status_code == 200
@@ -415,15 +405,13 @@ def test_one_unreadable_nested_recipe_field_does_not_reset_its_siblings(
     assert kept["steps"] == 30
     assert kept["guidance"] == 100
 
-    # An actual edit to the recovered field still replaces the unreadable value.
     echoed["currentParams"]["guidance"] = 5
     assert client.put(f"/api/settings/generation-presets/{kind}", json = echoed).status_code == 200
     assert stored[f"{kind}_generation_presets"]["currentParams"]["guidance"] == 5
 
 
 def test_preset_bounds_match_the_generation_request(monkeypatch):
-    # A preset the generate endpoint would refuse is not usable: selecting it would make every
-    # following Generate fail validation.
+    # A preset the generate endpoint would refuse would make every following Generate fail.
     client = _client(monkeypatch)
     for params in (
         {"steps": 500},
@@ -458,8 +446,7 @@ def test_preset_bounds_match_the_generation_request(monkeypatch):
 
 
 def test_a_downgraded_read_does_not_erase_newer_stored_fields(monkeypatch):
-    # The GET drops what this build cannot validate, so the state the client echoes back is lossy.
-    # Opening the store with an older build must not cost the newer build its fields.
+    # The GET drops fields this build cannot validate, so an older build must not erase them.
     stored = {
         "image_generation_presets": {
             "activePreset": "Default",
@@ -473,7 +460,6 @@ def test_a_downgraded_read_does_not_erase_newer_stored_fields(monkeypatch):
     body = client.get("/api/settings/generation-presets/image").json()
     assert "aFieldFromLater" not in body["currentParams"]
 
-    # The client autosaves the representation it was given.
     echoed = {
         "activePreset": body["activePreset"],
         "currentParams": body["currentParams"],

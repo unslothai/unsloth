@@ -31,7 +31,6 @@ def _capture(monkeypatch, *, base_url: str, threshold) -> dict:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode("utf-8"))
-        # Empty Responses-shaped SSE stream so the helper exits cleanly.
         return httpx.Response(
             200,
             content = (
@@ -80,9 +79,6 @@ def _capture_at_threshold(
     return _capture(*args, threshold = threshold, **kwargs)
 
 
-# ── cloud OpenAI carries the compaction field verbatim ──────────────
-
-
 def test_cloud_openai_sets_compaction_block(monkeypatch):
     captured = _capture_at_threshold(monkeypatch, base_url = "https://api.openai.com/v1")
     assert captured["body"].get("context_management") == [
@@ -116,10 +112,7 @@ def test_non_cloud_base_silently_drops_compaction(monkeypatch):
 
 
 def test_azure_openai_base_url_carries_compaction_block(monkeypatch):
-    # Azure OpenAI Foundry exposes the same /v1/responses extensions
-    # (context_management, prompt_cache_retention, container shell) under
-    # a *.openai.azure.com base URL. Treat it as cloud so the compaction
-    # field reaches the API.
+    # Azure OpenAI exposes the same /v1/responses extensions, so treat it as cloud.
     captured = _capture_at_threshold(
         monkeypatch,
         base_url = "https://my-resource.openai.azure.com/openai/v1",
@@ -127,15 +120,10 @@ def test_azure_openai_base_url_carries_compaction_block(monkeypatch):
     assert captured["body"].get("context_management") == [
         {"type": "compaction", "compact_threshold": 200_000}
     ]
-    # Sibling Azure-cloud extension: prompt_cache_retention should also
-    # be set so caching works the same on Azure deployments.
     assert captured["body"].get("prompt_cache_retention") == "24h"
 
 
 def test_azure_openai_mixed_case_base_url_matches(monkeypatch):
-    # Case-insensitive match so URLs copy-pasted from the Azure portal
-    # (which sometimes capitalise the resource name) still get the
-    # cloud-only fields.
     captured = _capture(
         monkeypatch,
         base_url = "https://My-Resource.OpenAI.Azure.Com/openai/v1",
@@ -147,11 +135,7 @@ def test_azure_openai_mixed_case_base_url_matches(monkeypatch):
 
 
 def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
-    # CodeQL py/incomplete-url-substring-sanitization: an attacker
-    # controlling base_url could embed `api.openai.com` or
-    # an Azure managed suffix in a path or subdomain on an arbitrary host to
-    # slip cloud-only body fields to their own server. The
-    # hostname-anchored helper must reject both shapes.
+    # Hostname-anchored check: cloud hostnames embedded in a path or subdomain must not get cloud fields.
     for evil in [
         "https://evil.com/api.openai.com/v1",
         "https://api.openai.com.attacker.com/v1",
@@ -166,9 +150,6 @@ def test_cloud_gate_uses_hostname_not_substring(monkeypatch):
         assert "prompt_cache_retention" not in captured["body"], evil
 
 
-# ── omitted threshold leaves body untouched ─────────────────────────
-
-
 def test_omitted_threshold_no_body_field(monkeypatch):
     captured = _capture(
         monkeypatch,
@@ -178,21 +159,12 @@ def test_omitted_threshold_no_body_field(monkeypatch):
     assert "context_management" not in captured["body"]
 
 
-# ── schema floor matches what the upstream API actually accepts ────
-
-
 def test_chat_completion_request_accepts_any_positive_compaction_threshold():
-    # Codex follow-up: the field is a no-op for non-cloud OpenAI bases and
-    # every non-OpenAI provider, so a cross-provider schema floor would
-    # 422 valid Anthropic / ollama / llama.cpp requests carrying it. Keep
-    # the schema floor at ge=1 (any positive int) and let per-provider
-    # helpers (_stream_openai_responses / _stream_anthropic) enforce or
-    # clamp the real floor.
+    # Schema floor stays ge=1: the field is a no-op elsewhere; per-provider helpers enforce real floors.
     import pytest as _pytest
 
     from models.inference import ChatCompletionRequest
 
-    # Non-positive values rejected so blank-string posts don't sneak in.
     with _pytest.raises(Exception):
         ChatCompletionRequest.model_validate(
             {

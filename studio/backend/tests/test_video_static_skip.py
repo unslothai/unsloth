@@ -30,7 +30,6 @@ WAN_5B = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
 WAN_A14B = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
 HV15 = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"
 
-# Head 10 and tail 5 compute, the middle 35 alternate: 17 skips per CFG branch.
 STEPS = 50
 SKIPPED_PER_BRANCH = 17
 
@@ -190,7 +189,6 @@ def test_static_load_keeps_the_uncached_speed_decisions(loop_runtime, monkeypatc
         assert entry["value"] == "static" and entry["requested"] == "static"
         assert entry["status"] == "applied" and entry["reason"] == "requested"
         assert isinstance(pipe.transformer.__dict__["forward"], ss.StaticStepSkip)
-        # Never the FBCache marker, which is what would run a CUDA graph eager.
         assert getattr(pipe.transformer, "_unsloth_step_cache", None) is None
         assert pipe.transformer.cache_config is None
         assert status["transformer_cache_stats"]["mode"] == "taylor1"
@@ -226,9 +224,7 @@ def test_auto_installs_the_measured_static_skip_on_wan_5b(loop_runtime, monkeypa
     assert entry["value"] == "static" and entry["requested"] is None
     assert "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP" in entry["reason"]
     layer = loop_runtime["pipe"].transformer.__dict__["forward"]
-    # Measured at 50 steps, so a shorter render computes every step.
     assert (layer.every, layer.auto, layer.min_steps) == (2, True, 50)
-    # Kept graph decisions, and the generate-time FBCache toggle is never armed over it.
     assert [kw["cache_active"] for kw in seen] == [False]
     assert backend._state.cache_auto is False
     backend.generate(prompt = "a sloth", steps = STEPS)
@@ -275,7 +271,6 @@ def test_auto_kill_switch_restores_the_previous_auto(loop_runtime, monkeypatch, 
     )
     backend = VideoBackend()
     status = backend.load_pipeline(WAN_5B, model_kind = "pipeline", transformer_cache = request_cache)
-    # Auto resolves per speed tier (FBCache on max, else uncached), exactly as before.
     assert status["transformer_cache"] in (None, "fbcache")
     backend.unload()
 
@@ -409,7 +404,6 @@ def test_a_new_clip_does_not_report_the_previous_clips_counts(loop_runtime, monk
     backend, pipe = _static_backend(loop_runtime)
     backend.generate(prompt = "a sloth", steps = STEPS)
     assert backend.status()["transformer_cache_stats"]["stats"]["calls"] == 2 * STEPS
-    # Status polled between arming the next clip and its first transformer call (prep).
     seen = []
     real_reset = video_mod.reset_static_step_skip
 
@@ -558,11 +552,9 @@ def test_modular_workflow_engages_an_explicit_static_skip(h3_runtime, monkeypatc
     assert isinstance(pipe.transformer.__dict__["forward"], ss.StaticStepSkip)
     backend.generate(prompt = "a sloth", steps = 30, num_frames = 124, width = 960, height = 544)
     plan = ss.static_schedule(30)
-    # One call per step, the per-call counter is the step index: exactly the planned skips are skipped.
     assert _h3_fwd_calls(pipe) == sum(plan)
     stats = backend.status()["transformer_cache_stats"]["stats"]
     assert stats == {"calls": 30, "computed": sum(plan), "skipped": 30 - sum(plan)}
-    # Every skipped step still hands the loop a (video, audio) pair.
     assert all(type(o) is tuple and len(o) == 2 for o in pipe.outputs)
     backend.unload()
     assert "forward" not in pipe.transformer.__dict__
@@ -580,7 +572,6 @@ def test_modular_workflow_auto_follows_the_table_and_the_kill_switch(h3_runtime,
     assert "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP" in entry["reason"]
     layer = h3_runtime.instance.transformer.__dict__["forward"]
     assert layer.auto is True and layer.min_steps == dcache.AUTO_STATIC_MIN_STEPS
-    # A 16-step clip is under the auto floor: every step computes.
     backend.generate(prompt = "a sloth", steps = 16, num_frames = 124, width = 960, height = 544)
     assert _h3_fwd_calls(h3_runtime.instance) == 16
     backend.unload()
@@ -736,7 +727,6 @@ def test_status_route_shows_skip_counts_only_to_their_producer(monkeypatch, scop
         "planned_skips": 17,
         "stats": {"calls": 100, "computed": 66, "skipped": 34},
     }
-    # The view's snapshot, not the earlier status() read, is what the caller gets.
     fresh = {**stats, "stats": {"calls": 40, "computed": 26, "skipped": 14}}
 
     class _Backend:

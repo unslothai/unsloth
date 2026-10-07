@@ -170,7 +170,6 @@ def test_a_fixture_can_ask_for_the_traffic_it_needs(
     the stall this whole change exists to remove.
     """
     _hostname, address, port = offbox_server
-    # Undo what the fixture configured, so the address is a stranger again.
     monkeypatch.delenv("UNSLOTH_E2E_BASE_URL", raising = False)
     forget_resolved_servers()
 

@@ -37,7 +37,6 @@ def isolated(monkeypatch, tmp_path):
     hf_tokens.reset_repo_access_cache()
     monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
     monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: True)
-    # No cached copy anywhere: the answer has to come from the Hub listing below.
     monkeypatch.setattr(gguf_variants, "select_gguf_cache_snapshot", lambda *_a, **_k: None)
     monkeypatch.setattr(gguf_variants, "_quants_from_state", lambda *_a, **_k: None)
     monkeypatch.setattr(

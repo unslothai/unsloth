@@ -19,8 +19,7 @@ from typing import Optional
 
 from models.inference import _InferenceRuntimeFields
 
-# Taken from the model, not listed: an Optional field added there needs no edit here, and a
-# required one is named by the canary.
+# From the model so new Optional fields need no edit here.
 _RUNTIME_FIELDS = frozenset(_InferenceRuntimeFields.model_fields)
 
 
@@ -35,13 +34,10 @@ class FakeLlamaCppBackend:
     model_identifier = "test/model.gguf"
     is_vision = False
     supports_tools = False
-    # Read unguarded on the chat-completions path for the monitor's context-usage readout. None is
-    # what the real property answers before a model is loaded; context-usage tests set a number.
+    # None matches the real property before a model is loaded.
     context_length: Optional[int] = None
 
-    # Runtime fields /status mirrors, at LlamaCppBackend.__init__'s values. None is not one of
-    # them: the response rejects it. Re-declared by hand in the per-test fakes until now, which
-    # is how four reasoning fields added in one place reached CI as three red tests naming none.
+    # Runtime fields /status mirrors, at LlamaCppBackend.__init__ values (None is rejected).
     is_diffusion = False
     supports_reasoning = False
     reasoning_always_on = False
@@ -57,7 +53,6 @@ class FakeLlamaCppBackend:
     n_moe_layers = 0
     gpu_backend_unavailable = False
     offload_overridden = False
-    # Private: the only name the real backend has for these, so the one production falls back to.
     _is_audio = False
     _has_audio_input = False
     _has_video_input = False
@@ -65,8 +60,7 @@ class FakeLlamaCppBackend:
     _vision_disabled_by_user = False
     _requested_reasoning_budget = -1
     _requested_reasoning_budget_message = ""
-    # Read straight off the backend, not through the model-field loop, so an absent one is an
-    # AttributeError before the drift check can name it.
+    # Read directly, so an absent one is an AttributeError before the drift check.
     requested_spec_mode = None
     requested_parallel_slots = 1
     effective_parallel_slots = 1

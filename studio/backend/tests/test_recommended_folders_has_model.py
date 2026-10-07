@@ -53,9 +53,7 @@ def _load_has_downloaded_model():
         "os": os,
         "json": json,
         "is_appledouble_metadata": is_appledouble_metadata,
-        # The real one, like is_appledouble_metadata above: importing it costs no more
-        # than the module it lives in, and a stub here would let the imatrix exclusion
-        # this function depends on regress without the test noticing.
+        # The real helper: a stub would hide an imatrix-exclusion regression.
         "_is_imatrix_path": _is_imatrix_path,
     }
     exec(compile(module, f"<extracted {_models_src}>", "exec"), ns)
@@ -97,8 +95,6 @@ def test_ollama_with_manifest_is_true(tmp_path):
     models = tmp_path / "ollama" / "models"
     manifest = models / "manifests" / "registry.ollama.ai" / "library" / "llama3"
     manifest.mkdir(parents = True)
-    # A real manifest references its weights via an image.model layer; the
-    # referenced blob must exist on disk for the model to be loadable.
     (manifest / "latest").write_text(
         json.dumps(
             {
@@ -117,8 +113,7 @@ def test_ollama_with_manifest_is_true(tmp_path):
 
 
 def test_ollama_manifest_without_blob_is_false(tmp_path):
-    # A failed/pruned pull leaves the manifest behind but its model blob is
-    # gone: the chip must not lead to an empty picker.
+    # A pruned pull leaves the manifest but not the blob.
     models = tmp_path / "ollama" / "models"
     manifest = models / "manifests" / "registry.ollama.ai" / "library" / "llama3"
     manifest.mkdir(parents = True)
@@ -134,7 +129,7 @@ def test_ollama_manifest_without_blob_is_false(tmp_path):
             }
         )
     )
-    (models / "blobs").mkdir()  # empty: the referenced blob never landed
+    (models / "blobs").mkdir()
     assert has_downloaded_model(models) is False
 
 
@@ -146,8 +141,6 @@ def test_non_model_files_is_false(tmp_path):
 
 
 def test_pytorch_bin_weights_are_true(tmp_path):
-    # A folder whose only weights are PyTorch .bin checkpoints (which the local
-    # scanner accepts) should still earn a Recommended chip.
     repo = tmp_path / "models" / "repo"
     repo.mkdir(parents = True)
     (repo / "config.json").write_text("{}")
@@ -156,7 +149,6 @@ def test_pytorch_bin_weights_are_true(tmp_path):
 
 
 def test_non_weight_bin_is_false(tmp_path):
-    # A stray .bin that is not a weight file (e.g. tokenizer.bin) must not count.
     repo = tmp_path / "models" / "repo"
     repo.mkdir(parents = True)
     (repo / "tokenizer.bin").write_bytes(b"x")
@@ -164,9 +156,7 @@ def test_non_weight_bin_is_false(tmp_path):
 
 
 def test_hidden_subtree_does_not_starve_the_budget(tmp_path):
-    # A real model dir that also holds a huge hidden subtree (e.g. a .git or
-    # .cache). The hidden entries must not exhaust max_entries before the walk
-    # reaches the actual weights, which would falsely report "no model".
+    # Hidden subtrees (.git, .cache) must not exhaust max_entries before the weights.
     models = tmp_path / "models"
     git = models / ".git" / "objects"
     git.mkdir(parents = True)

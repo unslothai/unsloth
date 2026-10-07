@@ -29,7 +29,6 @@ SOURCE = "/srv/accounts/a/audio/inputs/0123.16000.mono.m300.wav"
 TARGET = "/srv/accounts/a/audio/inputs/4567.16000.mono.m30.wav"
 TRANSCRIPT = "Okay, I'm Cemo and what you just heard wasn't a human voice."
 
-# What the runtime specs declare (model_specs/*.json at the pin), as option_schema cleans them.
 _RVC_OPTIONS = (
     {"name": "voice_id", "type": "enum", "values": ["default", "manthos", "chocola", "fraise"]},
     {"name": "retrieval_blend", "type": "float", "min": 0.0, "max": 1.0, "default": 0.0},
@@ -175,7 +174,6 @@ def test_rvc_converts_to_a_builtin_voice_by_options_voice_id(started):
         voice = "manthos",
         pitch = 3,
     )
-    # Strict: no seed, no voice_ref, no language; the typed fields win over driven options.
     assert request == {
         "audio": SOURCE,
         "options": {"retrieval_blend": "0.6", "voice_id": "manthos", "semitone_shift": "3"},
@@ -184,7 +182,6 @@ def test_rvc_converts_to_a_builtin_voice_by_options_voice_id(started):
         "audio": SOURCE,
         "options": {"voice_id": "default"},
     }
-    # Auto is not offered on RVC, so it never becomes auto_f0_adjust.
     request = _convert(backend, inputs = {"source": SOURCE}, pitch = -5, pitch_auto = True)
     assert request["options"] == {"voice_id": "default", "semitone_shift": "-5"}
     assert started == []
@@ -228,9 +225,7 @@ def test_seed_vc_speech_sends_no_pitch_and_its_route_by_model_entry(started):
         "options": {"length_adjust": "1.25", "similarity_guidance_scale": "1.2"},
         "seed": "7",
     }
-    # The default engine (v2_vc) runs on the loaded session: no restart, no route sent.
     assert started == []
-    # Another engine reloads the model with that route as its default, never in the request.
     request = _convert(backend, options = {"route": "v1_xlsr_hift_vc"})
     assert "route" not in request and "route" not in request.get("options", {})
     (server,) = started
@@ -247,7 +242,6 @@ def test_seed_vc_speech_sends_no_pitch_and_its_route_by_model_entry(started):
 def test_seed_vc_singing_reloads_under_svc_and_sends_its_pitch(started):
     model = _model("seed_vc", _SEED_VC_OPTIONS)
     backend = _backend(model, started)
-    # The runtime applies the manual shift on top of the matched pitch, as seed-vc does.
     request = _convert(backend, mode = "singing", pitch = 12, pitch_auto = True)
     assert request["options"] == {"auto_f0_adjust": "true", "semitone_shift": "12"}
     request = _convert(backend, mode = "singing", pitch_auto = True)
@@ -256,7 +250,6 @@ def test_seed_vc_singing_reloads_under_svc_and_sends_its_pitch(started):
     assert server.model.server_task == "svc"
     assert backend.models[model.id]["audio_server_task"] == "svc"
     assert backend.models[model.id]["audio_convert_route"] == "v1_svc"
-    # A speech route sent in singing is dropped: v1_svc is the only singing route.
     request = _convert(backend, mode = "singing", pitch = -3, options = {"route": "v1_xlsr_hift_vc"})
     assert request["options"] == {"semitone_shift": "-3"}
     assert len(started) == 1
@@ -271,7 +264,6 @@ def test_chatterbox_converts_under_vc_and_clones_back_under_clon(started):
         backend,
         options = {"s3gen_cfg_rate": 1.0, "num_inference_steps": 6, "exaggeration": 0.9},
     )
-    # Exaggeration is clone-only and never reaches a conversion.
     assert request == {
         "audio": SOURCE,
         "voice_ref": TARGET,
@@ -327,7 +319,6 @@ def test_vevo2_takes_the_target_style_through_the_source_transcript():
         pitch = 5,
         seed = 7,
     )
-    # No pitch under the target's style: its prosody is the target's.
     assert request == {
         "source_audio": SOURCE,
         "target_voice": TARGET,
@@ -450,7 +441,6 @@ def test_the_seed_vc_server_entry_carries_its_route(monkeypatch, tmp_path):
 def test_a_five_minute_source_transcript_fits_the_request():
     from models.inference import AudioRunInputs
 
-    # ~150 words a minute for the 300 s Convert source cap is ~5000 characters.
     text = "word " * 1100
     inputs = AudioRunInputs(source = {"input_id": "a" * 32}, source_text = text)
     assert inputs.source_text == text

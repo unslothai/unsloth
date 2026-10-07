@@ -57,10 +57,8 @@ class FakeClient:
         self.connected = False
         self.fail_next = False
         self.call_delay = 0.0
-        # Models a dead stdio transport: real Client.is_connected() stays True
-        # after the subprocess dies, so liveness is probed via the transport.
+        # Real Client.is_connected() stays True after the subprocess dies, so probe the transport.
         self.dead = False
-        # A server still stuck on an abandoned call fails the liveness probe.
         self.probe_ok = True
         self.probe_error = False
         self.probes = 0
@@ -133,7 +131,6 @@ def test_stdio_sessions_keyed_by_url_and_env(fake_clients):
 
 
 def test_stdio_sessions_scoped_per_chat(fake_clients):
-    # Two conversations must not share one stateful server process.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat-a")
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat-b")
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat-a")
@@ -143,8 +140,6 @@ def test_stdio_sessions_scoped_per_chat(fake_clients):
 
 def test_dead_stdio_session_recovers(fake_clients):
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
-    # Subprocess dies between calls: the dead transport is detected before the
-    # next dispatch, so the call reconnects on a fresh session instead of failing.
     fake_clients[0].dead = True
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
@@ -162,7 +157,7 @@ def test_tool_error_does_not_recycle_session(fake_clients, monkeypatch):
             raise_on_error = True,
         ):
             if name == "boom":
-                raise ToolError("tool exploded")  # tool-level: session stays connected
+                raise ToolError("tool exploded")
             return await super().call_tool(name, args, raise_on_error)
 
     monkeypatch.setattr(
@@ -174,7 +169,6 @@ def test_tool_error_does_not_recycle_session(fake_clients, monkeypatch):
 
 
 def test_timeout_keeps_a_responsive_stdio_session(fake_clients):
-    # A stateful server (browser, DB handle) must survive one slow call.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
     out = call_tool_sync(
@@ -194,8 +188,6 @@ def test_timeout_keeps_a_responsive_stdio_session(fake_clients):
 
 
 def test_timeout_replaces_a_wedged_stdio_session(fake_clients):
-    # A server that never answers the probe is wedged, so it is replaced rather
-    # than reused.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     key = mcp_client._session_key(STDIO_URL, None, "chat")
     fake_clients[0].call_delay = 0.5
@@ -217,11 +209,9 @@ def test_timeout_replaces_a_wedged_stdio_session(fake_clients):
 
 
 def test_dirty_session_probe_stays_inside_the_caller_timeout(fake_clients):
-    # The probe that gates reuse shares the call's deadline; it must not add a
-    # window of its own on top of it.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
-    fake_clients[0].probe_ok = False  # probe hangs for 30s
+    fake_clients[0].probe_ok = False
     call_tool_sync(
         STDIO_URL,
         None,
@@ -237,8 +227,7 @@ def test_dirty_session_probe_stays_inside_the_caller_timeout(fake_clients):
 
 
 def test_failed_probe_replaces_the_session(fake_clients):
-    # Only a completed round-trip proves the abandoned call is done, so a probe
-    # that errors is not enough to reuse the session.
+    # Only a completed round-trip proves the abandoned call is done.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
     fake_clients[0].probe_error = True
@@ -258,7 +247,6 @@ def test_failed_probe_replaces_the_session(fake_clients):
 
 
 def test_successful_probe_is_not_repeated(fake_clients):
-    # Once a round-trip clears the flag, later calls dispatch without probing.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
     call_tool_sync(
@@ -277,10 +265,9 @@ def test_successful_probe_is_not_repeated(fake_clients):
 
 
 def test_stop_interrupts_a_hanging_dirty_probe(fake_clients):
-    # The recovery probe honors Stop like connect and the call itself do.
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.5
-    fake_clients[0].probe_ok = False  # probe hangs for 30s
+    fake_clients[0].probe_ok = False
     call_tool_sync(
         STDIO_URL,
         None,
@@ -308,16 +295,15 @@ def test_stop_interrupts_a_hanging_dirty_probe(fake_clients):
 
 def test_unwind_budget_comes_out_of_the_caller_deadline():
     budget = mcp_client._unwind_budget
-    assert budget(2.0, 0.05, 0.05) == 0.0  # deadline already spent
-    assert budget(2.0, 300.0, 2.0) == 2.0  # Stop early in a long call
-    assert budget(2.0, 3.0, 2.5) == pytest.approx(0.5)  # only the remainder
-    assert budget(2.0, None, 99.0) == 2.0  # no deadline at all
-    assert budget(0.0, 300.0, 1.0) == 0.0  # one-shot callers never wait
+    assert budget(2.0, 0.05, 0.05) == 0.0
+    assert budget(2.0, 300.0, 2.0) == 2.0
+    assert budget(2.0, 3.0, 2.5) == pytest.approx(0.5)
+    assert budget(2.0, None, 99.0) == 2.0
+    assert budget(0.0, 300.0, 1.0) == 0.0
 
 
 def test_liveness_probe_runs_without_the_wedge_margin(fake_clients, monkeypatch):
-    # The probe's whole budget is its window, so a wedged loop must not add the
-    # 15s margin on top of the caller's timeout.
+    # The probe's budget is its whole window, so a wedged loop must not add the 15s margin.
     margins = []
     real_run = mcp_client._McpSession.run
 
@@ -345,14 +331,11 @@ def test_liveness_probe_runs_without_the_wedge_margin(fake_clients, monkeypatch)
     fake_clients[0].call_delay = 0.0
     margins.clear()
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
-    # The dirty session is probed first, then the call itself dispatches.
     assert margins == [0.0, mcp_client._SESSION_WEDGE_MARGIN]
 
 
 def test_unwind_wait_only_for_cached_sessions(fake_clients, monkeypatch):
-    # Only a cached session needs the cancelled call to finish unwinding. HTTP
-    # and scope-less stdio clients are discarded either way, so a Stop on those
-    # must return without waiting for one.
+    # Only cached sessions need the cancelled call to unwind; others must return without waiting.
     seen = []
     real = mcp_client._race_tool_call
 
@@ -367,13 +350,12 @@ def test_unwind_wait_only_for_cached_sessions(fake_clients, monkeypatch):
 
     monkeypatch.setattr(mcp_client, "_race_tool_call", spy)
     call_tool_sync(HTTP_URL, None, "t", {})
-    call_tool_sync(STDIO_URL, None, "t", {})  # no scope: ephemeral, closed after
+    call_tool_sync(STDIO_URL, None, "t", {})
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     assert seen == [0.0, 0.0, mcp_client._CANCEL_UNWIND_TIMEOUT]
 
 
 def test_cancel_preserves_stateful_session(fake_clients):
-    # Pressing Stop must not tear down the server and its state.
     call_tool_sync(STDIO_URL, None, "browser_navigate", {}, scope = "chat")
     fake_clients[0].call_delay = 1.0
     cancel = threading.Event()
@@ -396,7 +378,6 @@ def test_cancel_preserves_stateful_session(fake_clients):
 def test_no_timeout_allows_long_call(fake_clients):
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     fake_clients[0].call_delay = 0.2
-    # timeout=None means no deadline: the call must not be treated as wedged.
     assert call_tool_sync(STDIO_URL, None, "slow", {}, timeout = None, scope = "chat") == "call-2"
 
 
@@ -433,7 +414,7 @@ def test_connect_respects_caller_timeout(fake_clients, monkeypatch):
 def test_connect_failure_timeout_surfaces_immediately(fake_clients, monkeypatch):
     class InitTimeout(FakeClient):
         async def __aenter__(self):
-            raise asyncio.TimeoutError  # e.g. fastmcp's own init timeout
+            raise asyncio.TimeoutError
 
     monkeypatch.setattr(
         mcp_client, "_client", lambda url, headers, use_oauth = False: InitTimeout(url)
@@ -441,7 +422,6 @@ def test_connect_failure_timeout_surfaces_immediately(fake_clients, monkeypatch)
     start = time.monotonic()
     out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 30.0)
     assert "timed out" in out
-    # Must fail fast, not wait out the 30s/60s connect window.
     assert time.monotonic() - start < 5.0
     assert mcp_client._mcp_sessions == {}
 
@@ -462,8 +442,6 @@ def test_key_lock_wait_honors_cancel_and_timeout(fake_clients, monkeypatch):
         if key_lock is not None and key_lock.lock.locked():
             break
         time.sleep(0.01)
-    # Second same-scope call is stuck behind the first slow connect: Stop must
-    # interrupt the key-lock wait, and a short tool timeout must bound it.
     ev = threading.Event()
     threading.Timer(0.2, ev.set).start()
     start = time.monotonic()
@@ -495,7 +473,6 @@ def test_idle_reap_closes_session(fake_clients, monkeypatch):
     assert _settled(fake_clients[0]) == 1
     assert mcp_client._mcp_sessions == {}
     assert key not in mcp_client._mcp_key_locks
-    # Next call transparently opens a fresh session.
     assert call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
 
@@ -529,8 +506,7 @@ def test_close_during_connect_is_not_cached(fake_clients, monkeypatch):
     deadline = time.monotonic() + 5.0
     while not fake_clients and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert fake_clients  # connect is in progress
-    # Server deleted/updated mid-connect: the session must not be cached after.
+    assert fake_clients
     close_mcp_sessions(STDIO_URL)
     worker.join(10.0)
     assert results and results[0].startswith("Error: MCP tool 't' failed")
@@ -544,14 +520,14 @@ def test_connect_abort_race_still_closes_client(fake_clients, monkeypatch):
             try:
                 await asyncio.sleep(5.0)
             except asyncio.CancelledError:
-                pass  # connect finishes just as the abort lands
+                pass
             return await super().__aenter__()
 
     monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: WinsRace(url))
     out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.1)
     assert "timed out" in out
     assert fake_clients[0].entered == 1
-    assert _settled(fake_clients[0]) == 1  # no orphaned subprocess
+    assert _settled(fake_clients[0]) == 1
     assert mcp_client._mcp_sessions == {}
 
 
@@ -572,8 +548,6 @@ def test_close_unblocks_no_limit_call(fake_clients):
             if session.in_flight >= 1:
                 break
         time.sleep(0.01)
-    # Server deleted while a no-limit call is in flight: the request thread
-    # must not hang forever on the stopped session loop.
     close_mcp_sessions(STDIO_URL)
     worker.join(5.0)
     assert not worker.is_alive()
@@ -597,8 +571,6 @@ def test_lock_wait_timeout_spares_the_borrowed_session(fake_clients):
             if session.in_flight >= 1:
                 break
         time.sleep(0.01)
-    # A second same-scope call times out waiting for the call lock; it never
-    # touched the transport, so the shared session must stay alive and cached.
     out = call_tool_sync(STDIO_URL, None, "fast", {}, timeout = 0.05, scope = "chat")
     assert "timed out" in out
     assert fake_clients[0].exited == 0
@@ -625,8 +597,6 @@ def test_stale_session_close_deferred_until_borrower_drains(fake_clients):
             if session.in_flight >= 1:
                 break
         time.sleep(0.01)
-    # The subprocess "dies" mid-call: a new caller replaces the stale session,
-    # but its close must wait for the slow borrower instead of killing its call.
     fake_clients[0].connected = False
     out = call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     assert out == "call-1"
@@ -634,8 +604,6 @@ def test_stale_session_close_deferred_until_borrower_drains(fake_clients):
     assert fake_clients[0].exited == 0
     slow.join(10.0)
     assert results == ["call-2"]
-    # The last borrower hands the deferred close to the cleanup worker rather
-    # than paying for it after its own result is ready.
     assert _settled(fake_clients[0]) == 1
     assert len(mcp_client._mcp_sessions) == 1
 
@@ -643,18 +611,15 @@ def test_stale_session_close_deferred_until_borrower_drains(fake_clients):
 def test_error_on_closed_session_does_not_retry(fake_clients):
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     session = next(iter(mcp_client._mcp_sessions.values()))
-    # A close can surface at the borrower as a plain transport error instead
-    # of _SessionClosed; that must not be treated as a crash and retried.
+    # A close can surface as a plain transport error, which must not be retried as a crash.
     fake_clients[0].fail_next = True
     session.closed.set()
     out = call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     assert out == "Error: MCP tool 't' failed: MCP server was updated or removed during the call"
-    assert len(fake_clients) == 1  # no respawn for the removed config
+    assert len(fake_clients) == 1
 
 
 def test_config_check_blocks_stale_publish(fake_clients):
-    # Simulates a caller that read the server row before an update/delete:
-    # the row re-check runs after connect and must block caching.
     out = call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat", config_check = lambda: False)
     assert out.startswith("Error: MCP tool 't' failed")
     assert mcp_client._mcp_sessions == {}
@@ -664,10 +629,7 @@ def test_config_check_blocks_stale_publish(fake_clients):
 def test_close_generation_keys_hold_no_secrets(fake_clients):
     secret_url = "npx server --token sk-url-secret"
     secret_env = {"API_KEY": "sk-env-secret"}
-    # A close records a generation only when it closed something, so each half needs its own live
-    # session. Reading whatever the maps already held made the non-vacuity check depend on earlier
-    # tests in this file: these maps are module-level and never pruned, so under `--dist load`,
-    # which spreads one file across workers, this test could run on a worker that left them empty.
+    # These maps are module-level and never pruned, so each half needs its own live session.
     before = set(mcp_client._mcp_cfg_close_gen) | set(mcp_client._mcp_url_close_gen)
 
     call_tool_sync(secret_url, secret_env, "t", {}, scope = "chat")
@@ -682,7 +644,7 @@ def test_close_generation_keys_hold_no_secrets(fake_clients):
         f"pass over an empty map: cfg={mcp_client._mcp_cfg_close_gen}, "
         f"url={mcp_client._mcp_url_close_gen}"
     )
-    # These maps are never pruned: neither command/URL nor env may persist.
+    # These maps are never pruned, so neither command/URL nor env may persist in keys.
     assert all("sk-url-secret" not in repr(k) and "sk-env-secret" not in repr(k) for k in gen_keys)
 
 
@@ -717,7 +679,6 @@ def test_overlapping_calls_serialize_on_shared_session(fake_clients, monkeypatch
         worker.start()
     for worker in workers:
         worker.join(10.0)
-    # A stateful server must never see interleaved same-scope operations.
     assert OverlapDetect.max_active == 1
     assert len(fake_clients) == 1
 
@@ -739,8 +700,6 @@ def test_timeout_budget_spans_connect_and_call(fake_clients, monkeypatch):
 
     monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowBoth(url))
     start = time.monotonic()
-    # 0.4s connect + 0.5s call vs a 0.6s budget: the call must inherit only
-    # the remaining ~0.2s, not a fresh full window.
     out = call_tool_sync(STDIO_URL, None, "t", {}, timeout = 0.6, scope = "chat")
     assert "timed out" in out
     assert time.monotonic() - start < 2.0
@@ -749,13 +708,11 @@ def test_timeout_budget_spans_connect_and_call(fake_clients, monkeypatch):
 def test_close_narrowed_by_headers_spares_other_env(fake_clients):
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "chat")
     call_tool_sync(STDIO_URL, {"ENV_VAR": "b"}, "t", {}, scope = "chat")
-    # Two server rows can share a command with different envs; editing one
-    # must only close its own sessions.
     close_mcp_sessions(STDIO_URL, None)
     assert _settled(fake_clients[0]) == 1
     assert fake_clients[1].exited == 0
     assert len(mcp_client._mcp_sessions) == 1
-    close_mcp_sessions(STDIO_URL)  # headers omitted: any env for the command
+    close_mcp_sessions(STDIO_URL)
     assert _settled(fake_clients[1]) == 1
     assert mcp_client._mcp_sessions == {}
 
@@ -772,8 +729,7 @@ def test_close_stdio_sessions_by_url(fake_clients):
 
 
 def test_execute_tool_mcp_scope_is_per_thread(tmp_path, monkeypatch):
-    # session_id is the sandbox id and can be shared project-wide; the stdio
-    # session scope must also carry the per-conversation thread id.
+    # session_id can be shared project-wide, so the scope must also carry the thread id.
     from core.inference import tools as tools_mod
     from storage import mcp_servers_db
 
@@ -793,17 +749,13 @@ def test_execute_tool_mcp_scope_is_per_thread(tmp_path, monkeypatch):
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "project-p1", thread_id = "thread-b")
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "sess-only")
     tools_mod.execute_tool("mcp__s1__t", {}, thread_id = "thread-a")
-    # Persist only with a thread_id; session_id alone stays one-shot (None) so a
-    # project-wide id can't leak state across conversations. Fields are tagged.
     assert scopes == ["s=project-p1:t=thread-a", "s=project-p1:t=thread-b", None, "s=:t=thread-a"]
-    # IDs containing ":" must not collapse distinct conversations into one scope,
-    # and a session-only id must never collide with a thread-only id.
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "a:b", thread_id = "c")
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "a", thread_id = "b:c")
     assert scopes[-2] != scopes[-1]
     tools_mod.execute_tool("mcp__s1__t", {}, session_id = "same")
     tools_mod.execute_tool("mcp__s1__t", {}, thread_id = "same")
-    assert scopes[-2] != scopes[-1]  # session-only "same" != thread-only "same"
+    assert scopes[-2] != scopes[-1]
 
 
 def test_execute_tool_config_check_tracks_row(tmp_path, monkeypatch):
@@ -846,9 +798,7 @@ def test_multi_block_result_flattens_through_session(fake_clients):
 
 
 def test_stdio_cache_trims_overshoot_after_burst(fake_clients, monkeypatch):
-    # A concurrent burst of distinct-scope calls can overshoot the cap while every
-    # session is busy (insert-time eviction only reclaims idle sessions). Once the
-    # calls finish, release-time trimming must bring the cache back within cap.
+    # Insert-time eviction only reclaims idle sessions, so release-time trimming restores the cap.
     monkeypatch.setattr(mcp_client, "_MAX_SESSIONS", 2)
 
     def slow_client(
@@ -857,7 +807,7 @@ def test_stdio_cache_trims_overshoot_after_burst(fake_clients, monkeypatch):
         use_oauth = False,
     ):
         client = FakeClient(url)
-        client.call_delay = 0.5  # keep every session in-flight during the burst
+        client.call_delay = 0.5
         return client
 
     monkeypatch.setattr(mcp_client, "_client", slow_client)
@@ -946,7 +896,6 @@ def test_dead_http_session_recovers(monkeypatch, fake_clients):
     in production. The idle recheck is what actually catches this."""
     monkeypatch.setattr(mcp_client, "_HTTP_IDLE_RECHECK", 0.0)
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-1"
-    # The server forgot the session: the liveness probe is what notices.
     fake_clients[0].probe_error = True
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-1"
     assert len(fake_clients) == 2
@@ -960,8 +909,6 @@ def test_live_idle_http_session_survives_the_recheck(monkeypatch, fake_clients):
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-1"
     assert call_tool_sync(HTTP_URL, None, "t", {}, scope = "chat") == "call-2"
     assert len(fake_clients) == 1
-    # Probed on the second call only: the first went through a fresh connect,
-    # which needs no proving.
     assert fake_clients[0].probes == 1
 
 

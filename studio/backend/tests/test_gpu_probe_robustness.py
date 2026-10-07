@@ -96,12 +96,12 @@ def test_the_winner_is_unchanged_when_every_probe_succeeds(monkeypatch):
 @pytest.mark.parametrize(
     ("device_id", "xpu_class"),
     [
-        ("0x56a0", True),  # Arc A770 (DG2)
-        ("0x56c0", True),  # Data Center GPU Flex 170 (ATS-M)
-        ("0x0bd5", True),  # Data Center GPU Max 1550 (PVC)
-        ("0xe20b", True),  # Arc B580 (BMG)
-        ("0x4905", False),  # Iris Xe MAX (DG1): discrete, but no XPU wheel supports it
-        ("0x46a6", False),  # Alder Lake iGPU
+        ("0x56a0", True),
+        ("0x56c0", True),
+        ("0x0bd5", True),
+        ("0xe20b", True),
+        ("0x4905", False),  # DG1: discrete, but no XPU wheel supports it
+        ("0x46a6", False),
         ("garbage", None),
     ],
 )
@@ -122,7 +122,6 @@ def test_an_xpu_class_intel_record_establishes_a_mismatch(monkeypatch):
     monkeypatch.setattr(hw, "_vendors_masked_off", lambda: set())
     arc = [{"vendor": "intel", "name": None, "index": 0, "xpu_class": True}]
     assert hw._devices_that_can_establish_a_mismatch(arc) == arc
-    # Controls: an iGPU or DG1 host's correct CPU install must not be flagged.
     for xpu_class in (False, None):
         igpu = [{"vendor": "intel", "name": None, "index": 0, "xpu_class": xpu_class}]
         assert hw._devices_that_can_establish_a_mismatch(igpu) == []
@@ -132,7 +131,7 @@ def test_an_xpu_class_intel_record_establishes_a_mismatch(monkeypatch):
     ("system", "vendors", "pinned"),
     [
         ("Linux", {"intel"}, True),
-        ("Windows", {"intel"}, False),  # install.ps1 autodetects Arc, so Repair works there
+        ("Windows", {"intel"}, False),  # install.ps1 autodetects Arc
         ("Linux", {"nvidia"}, False),
         ("Linux", {"intel", "nvidia"}, False),
     ],
