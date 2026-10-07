@@ -152,45 +152,65 @@ const mergeTokensIntoBlocks = (tokens: Token[]): string[] => {
   return mergedBlocks;
 };
 
-const collectProseBlocks = (tokens: Token[]): string[] => {
-  const blocks: string[] = [];
+const nonLineEndingPattern = /[^\n]/g;
+
+const collectProseBlocks = (
+  tokens: Token[],
+): { proseBlocks: string[]; referenceProseBlocks: string[] } => {
+  const proseBlocks: string[] = [];
+  const referenceProseBlocks: string[] = [];
   for (const token of tokens) {
     if (token.type === "code" || token.type === "space") {
       continue;
     }
     if (token.type === "blockquote") {
-      blocks.push(...collectProseBlocks(token.tokens ?? []));
+      const nested = collectProseBlocks(token.tokens ?? []);
+      proseBlocks.push(...nested.proseBlocks);
+      referenceProseBlocks.push(...nested.referenceProseBlocks);
       continue;
     }
     if (token.type === "list") {
       for (const item of token.items) {
-        blocks.push(...collectProseBlocks(item.tokens));
+        const nested = collectProseBlocks(item.tokens);
+        proseBlocks.push(...nested.proseBlocks);
+        referenceProseBlocks.push(...nested.referenceProseBlocks);
       }
       continue;
     }
-    blocks.push(token.raw);
+    proseBlocks.push(token.raw);
+    referenceProseBlocks.push(
+      token.type === "def"
+        ? token.raw.replace(nonLineEndingPattern, " ")
+        : token.raw,
+    );
   }
-  return blocks;
+  return { proseBlocks, referenceProseBlocks };
 };
 
 export function parseMarkdownBlockDetails(markdown: string): {
   blocks: string[];
   proseBlocks: string[];
+  referenceProseBlocks: string[];
 } {
   const hasFootnoteReference = footnoteReferencePattern.test(markdown);
   const hasFootnoteDefinition = footnoteDefinitionPattern.test(markdown);
 
   if (hasFootnoteReference || hasFootnoteDefinition) {
-    return { blocks: [markdown], proseBlocks: [markdown] };
+    return {
+      blocks: [markdown],
+      proseBlocks: [markdown],
+      referenceProseBlocks: [markdown],
+    };
   }
 
   const input = markdown.includes("\r")
     ? markdown.replace(lineEndingPattern, "\n")
     : markdown;
   const tokens = lexBlocks(input);
+  const prose = collectProseBlocks(tokens);
   return {
     blocks: mergeTokensIntoBlocks(tokens),
-    proseBlocks: collectProseBlocks(tokens),
+    ...prose,
   };
 }
 

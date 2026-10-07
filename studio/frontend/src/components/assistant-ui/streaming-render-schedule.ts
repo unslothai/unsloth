@@ -199,7 +199,6 @@ function codeSpanRegions(
 }
 
 const LINK_LABEL_USE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
-const NON_LINE_ENDING_RE = /[^\n]/g;
 const MAX_LINK_DESTINATION_DEPTH = 32;
 
 function isAsciiControl(char: string): boolean {
@@ -523,9 +522,7 @@ function hasShortcutReference(
   if (labels.size === 0) {
     return false;
   }
-  const uses = references.replace(LINK_DEFINITION_KEY_RE, (definition) =>
-    definition.replace(NON_LINE_ENDING_RE, " "),
-  );
+  const uses = references;
   const code = exact
     ? codeSpanRegions(uses, opaqueInlineRegions(uses))
     : [];
@@ -630,6 +627,7 @@ const HTML_TAG_START_RE = /[a-zA-Z/]/;
 let splitMarkdown: string | null = null;
 let splitBlocks: readonly string[] = [];
 let splitProseBlocks: readonly string[] = [];
+let splitReferenceProseBlocks: readonly string[] = [];
 
 function blocksOf(markdown: string): readonly string[] {
   if (splitMarkdown !== markdown) {
@@ -637,6 +635,7 @@ function blocksOf(markdown: string): readonly string[] {
     const details = parseMarkdownBlockDetails(markdown);
     splitBlocks = details.blocks;
     splitProseBlocks = details.proseBlocks;
+    splitReferenceProseBlocks = details.referenceProseBlocks;
   }
   return splitBlocks;
 }
@@ -644,6 +643,11 @@ function blocksOf(markdown: string): readonly string[] {
 function proseBlocksOf(markdown: string): readonly string[] {
   blocksOf(markdown);
   return splitProseBlocks;
+}
+
+function referenceProseBlocksOf(markdown: string): readonly string[] {
+  blocksOf(markdown);
+  return splitReferenceProseBlocks;
 }
 
 // Which replies have to be lexed in one piece.
@@ -677,8 +681,12 @@ function documentProse(markdown: string): string | null {
     proseBlocksOf(markdown)
       .join("\n\n"),
   );
+  const referenceProse = normalizeLineEndings(
+    referenceProseBlocksOf(markdown)
+      .join("\n\n"),
+  );
   return LINK_DEFINITION_LINE_RE.test(prose) &&
-    (hasLinkReference(prose) || hasShortcutReference(prose, prose))
+    (hasLinkReference(prose) || hasShortcutReference(prose, referenceProse))
     ? prose
     : null;
 }
