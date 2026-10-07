@@ -198,8 +198,10 @@ def run_decision_gguf_export(
     quantization_method,
     local_files_only: bool = False,
     print_output: bool = False,
+    token = None,
 ) -> dict:
-    """Writes <checkpoint_path>/gguf/ and returns its export.json content."""
+    """Writes <checkpoint_path>/gguf/ and returns its export.json content. ``token`` reaches the
+    base model download of an adapter folder (False = anonymous, None = ambient)."""
     folder = Path(str(checkpoint_path)).expanduser()
     quants = normalize_decision_quants(quantization_method)
     kind = decision_kind(folder)
@@ -215,6 +217,7 @@ def run_decision_gguf_export(
             load_in_4bit = False,
             use_gradient_checkpointing = False,
             local_files_only = local_files_only,
+            token = token,
         )
         try:
             return model.save_pretrained_gguf(
@@ -223,6 +226,7 @@ def run_decision_gguf_export(
                 quantization_method = quants,
                 source_folder = str(folder),
                 print_output = print_output,
+                token = token,
             )
         finally:
             del model

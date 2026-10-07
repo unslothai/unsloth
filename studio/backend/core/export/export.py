@@ -777,7 +777,7 @@ class ExportBackend:
             decision = decision_kind(checkpoint_path)
             if decision is not None:
                 return self._load_decision_checkpoint(
-                    str(Path(checkpoint_path).expanduser()), *decision
+                    str(Path(checkpoint_path).expanduser()), *decision, token = token
                 )
 
             checkpoint_path_obj = Path(checkpoint_path)
@@ -990,7 +990,11 @@ class ExportBackend:
         )
 
     def _load_decision_checkpoint(
-        self, checkpoint_path: str, layout: str, adapter_only: bool
+        self,
+        checkpoint_path: str,
+        layout: str,
+        adapter_only: bool,
+        token: HfTokenArg = None,
     ) -> Tuple[bool, str]:
         """Records a decision checkpoint; its weights load (adapters) or convert (merged) at export."""
         from core.export.decision import DecisionExportError, check_decision_eligibility
@@ -1002,6 +1006,8 @@ class ExportBackend:
         except DecisionExportError as exc:
             return False, str(exc)
         self.decision = {"layout": layout, "adapter_only": adapter_only}
+        # An adapter folder loads its base at export time, under the credential of this load.
+        self._decision_token = token
         self.is_vision = False
         self.is_peft = adapter_only
         self.current_checkpoint = checkpoint_path
@@ -1033,6 +1039,7 @@ class ExportBackend:
                 quantization_method,
                 local_files_only = _hf_offline(),
                 print_output = True,
+                token = getattr(self, "_decision_token", None),
             )
         except (DecisionExportError, ValueError, RuntimeError) as exc:
             logger.error(f"Decision GGUF export failed: {exc}")
