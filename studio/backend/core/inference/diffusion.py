@@ -282,6 +282,12 @@ from .diffusion_denoiser_prequant import (
     pipeline_seed_supported,
     prequant_artifact_label,
 )
+from .diffusion_comfy_block import (
+    comfy_block_backend,
+    comfy_block_backends,
+    comfy_block_runtime_layers,
+    comfy_nvfp4_runtime_possible,
+)
 from .diffusion_comfy_quant import (
     comfy_fp8_backend,
     comfy_int8_backend,
@@ -5831,8 +5837,14 @@ class DiffusionBackend:
                 _ensure_attention_backend_installed(preinstall_backend, logger)
         except Exception:  # noqa: BLE001 - the locked path re-resolves and validates
             pass
-        # Install FlashInfer only when a pre-quantised checkpoint will load: the on-the-fly build is torchao.
+        # Install FlashInfer only when a pre-quantised checkpoint (incl. a ComfyUI nvfp4 file) will load: on-the-fly is torchao.
         if (
+            kind == "single_file"
+            and nvfp4_diffusion_enabled()
+            and comfy_nvfp4_runtime_possible(getattr(fam, "name", None))
+            and not _has_active_lora(loras)
+            and self._comfy_single_file_holds_nvfp4(repo_id, gguf_filename)
+        ) or (
             dense_quant_supported_kind(kind)
             and nvfp4_diffusion_enabled()
             and TQ_NVFP4
@@ -5931,6 +5943,7 @@ class DiffusionBackend:
                     memory_mode,
                     cpu_offload,
                     kind = kind,
+                    lora = _has_active_lora(loras),
                     repo_id = repo_id,
                     # The base may be resolved off the OTHER cache root, which the plan's live-root scans read as zero
                     # companions.
@@ -7015,6 +7028,7 @@ class DiffusionBackend:
                                         memory_mode,
                                         cpu_offload,
                                         kind = kind,
+                                        lora = _has_active_lora(loras),
                                         repo_id = repo_id,
                                         base_local_dir = _base_local_dir,
                                         fetch_base = fetch_base,
@@ -7139,6 +7153,14 @@ class DiffusionBackend:
                                         fam.name,
                                         base,
                                         offload = _comfy_offload,
+                                    ),
+                                    **comfy_block_backends(
+                                        comfy_scan,
+                                        target,
+                                        fam.name,
+                                        dtype = dtype,
+                                        logger = logger,
+                                        lora = _has_active_lora(loras),
                                     ),
                                     family = fam.name,
                                     target = target,
@@ -8188,12 +8210,48 @@ class DiffusionBackend:
             return None
 
     @staticmethod
+    def _comfy_single_file_holds_nvfp4(repo_id: Optional[str], filename: Optional[str]) -> bool:
+        """Whether an already-on-disk single file holds ComfyUI nvfp4 layers; never downloads, never raises."""
+        try:
+            if not repo_id or not filename:
+                return False
+            local_root = Path(str(repo_id)).expanduser()
+            if local_root.exists():
+                path = str(resolve_local_gguf_child(local_root, filename))
+            else:
+                from huggingface_hub import try_to_load_from_cache
+                path = try_to_load_from_cache(repo_id, filename, cache_dir = hub_cache_dir())
+                if not isinstance(path, str):
+                    # the resolver falls back to Hugging Face's default cache too
+                    path = try_to_load_from_cache(repo_id, filename, cache_dir = None)
+            if not isinstance(path, str):
+                return False
+            from .diffusion_comfy_quant import scan_comfy_quant
+
+            scan = scan_comfy_quant(path)
+            return bool(scan is not None and not scan.problems and scan.counts().get("nvfp4"))
+        except Exception:  # noqa: BLE001 - an install hint only: the load decides on its own
+            return False
+
+    @staticmethod
     def _comfy_single_file_resident_mib(
-        single_file_path: Optional[str], fam: Any, target: Any, base: Optional[str]
+        single_file_path: Optional[str],
+        fam: Any,
+        target: Any,
+        base: Optional[str],
+        *,
+        lora: bool = False,
     ) -> Optional[int]:
         """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
         try:
             from .diffusion_comfy_quant import comfy_resident_mib, scan_comfy_quant
+            from .diffusion_transformer_quant import (
+                DEFAULT_MIN_LINEAR_FEATURES,
+                TQ_FP8,
+                TQ_MXFP8,
+                TQ_NVFP4,
+                divisible_for_scheme,
+            )
 
             scan = scan_comfy_quant(single_file_path)
             if scan is None or scan.problems:
@@ -8204,6 +8262,26 @@ class DiffusionBackend:
                 scan,
                 keep_int8 = comfy_int8_backend(target, name, base) is not None,
                 keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+                # the loader's runtime filter: layers it skips are priced dequantized
+                min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                fp8_divisible = divisible_for_scheme(TQ_FP8),
+                block_divisible = {
+                    "nvfp4": divisible_for_scheme(TQ_NVFP4),
+                    "mxfp8": divisible_for_scheme(TQ_MXFP8),
+                },
+                **{
+                    # a LoRA dequantizes the block layers (comfy_block_backends)
+                    f"keep_{fmt}": backend is not None and not lora
+                    for fmt, backend in (
+                        ("nvfp4", comfy_block_backend("nvfp4", target, name)[0]),
+                        (
+                            "mxfp8",
+                            comfy_block_backend(
+                                "mxfp8", target, name, dtype = getattr(target, "dtype", None)
+                            )[0],
+                        ),
+                    )
+                },
             )
         except Exception:  # noqa: BLE001 - a planning aid: the file-size estimate stands
             return None
@@ -9143,6 +9221,7 @@ class DiffusionBackend:
         fetch_base: Optional[str] = None,
         device_memory_override: Optional[DeviceMemory] = None,
         text_encoder_quant: Optional[str] = None,
+        lora: bool = False,
     ):
         """Build the memory plan for this load: snapshot free device memory and estimate the model's
         resident footprint, then let the planner pick an offload policy + VAE memory savers. Kept on
@@ -9304,7 +9383,7 @@ class DiffusionBackend:
                 if not getattr(fam, "single_file_is_pipeline", False):
                     # Priced from the header: layers a resident runtime keeps at stored size, dequantized ones at 2x.
                     _comfy_mib = self._comfy_single_file_resident_mib(
-                        single_file_path, fam, target, base
+                        single_file_path, fam, target, base, lora = lora
                     )
                     if _comfy_mib is not None:
                         transformer_resident = _comfy_mib
@@ -9693,6 +9772,12 @@ class DiffusionBackend:
                 "LoRA is not available on this load: system RAM was too small for the dense model, so Studio "
                 "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Load the "
                 "model with the LoRA selected (Studio then keeps the dense transformer), or use a host with more RAM."
+            )
+        if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
+            raise ValueError(
+                "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
+                "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Studio then "
+                "dequantizes those layers), or set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / UNSLOTH_DIFFUSION_COMFY_MXFP8=0."
             )
         if not diffusion_lora.supports_lora(
             engine = "diffusers",
@@ -11212,7 +11297,8 @@ class DiffusionBackend:
                 transformer_quant = state.transformer_quant,
                 compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
             )
-            and not _small_host_int8(state.pipe),
+            and not _small_host_int8(state.pipe)
+            and not comfy_block_runtime_layers(getattr(state.pipe, "transformer", None)),
             "small_host": small_host_engaged_on(state.pipe),
             "supports_controlnet": diffusion_controlnet.supports_controlnet(
                 engine = "diffusers",
