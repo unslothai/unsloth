@@ -219,7 +219,6 @@ def _other_snapshot_copies(repo_dir: Path, commit: str, rel_path: str) -> list[P
     out = [snap / rel_path for snap in snaps if os.path.isfile(snap / rel_path)]
     if len(out) > 1:
         from hub.utils.hf_cache_state import snapshot_selection_key
-
         out.sort(key = lambda p: snapshot_selection_key(p.parent), reverse = True)
     return out
 
@@ -227,7 +226,6 @@ def _other_snapshot_copies(repo_dir: Path, commit: str, rel_path: str) -> list[P
 def _refused_path() -> Optional[Path]:
     try:
         from hub.utils.state_dir import state_root
-
         root = state_root(create = True)
     except Exception:  # noqa: BLE001 - no state dir: the memo stays in memory
         return None
@@ -289,7 +287,6 @@ def _is_media_gguf(path: Path, repo_id: str, rel_path: str) -> bool:
     """Whether Studio lists this GGUF for the Images or Video page (header + name, as the catalog does)."""
     try:
         from hub.services.models.catalog_classification import _gguf_file_task
-
         return _gguf_file_task(path, (repo_id, rel_path)) in _MEDIA_TASKS
     except Exception:  # noqa: BLE001 - unclassifiable is not a media model
         return False
@@ -344,7 +341,11 @@ def rebuild_from_older_snapshot(
     fetched = 0
     decided = 0.0
 
-    def done(reason: str, placed: bool = False, build_s: float = 0.0) -> DeltaResult:
+    def done(
+        reason: str,
+        placed: bool = False,
+        build_s: float = 0.0,
+    ) -> DeltaResult:
         return DeltaResult(
             placed,
             fetched,
@@ -376,7 +377,9 @@ def rebuild_from_older_snapshot(
         local = []
         for candidate in olds:
             try:
-                local.append((candidate, os.path.getsize(candidate), _layout_of_local(candidate, cap)))
+                local.append(
+                    (candidate, os.path.getsize(candidate), _layout_of_local(candidate, cap))
+                )
             except (OSError, ValueError):
                 continue
         if not local:
@@ -551,7 +554,6 @@ def prepare_media_gguf(
             return DeltaResult(reason = "offline", decide_s = time.perf_counter() - t0)
         if metadata_fn is None:
             from huggingface_hub import get_hf_file_metadata, hf_hub_url
-
             def metadata_fn():
                 return get_hf_file_metadata(
                     hf_hub_url(repo_id, filename, repo_type = repo_type, revision = revision),
@@ -573,7 +575,6 @@ def prepare_media_gguf(
         )
         if result.placed and ref != commit:
             from huggingface_hub.file_download import _cache_commit_hash_for_specific_revision
-
             _cache_commit_hash_for_specific_revision(str(repo_dir), ref, commit)
         return result
     except Exception as exc:  # noqa: BLE001 - an optimisation only
