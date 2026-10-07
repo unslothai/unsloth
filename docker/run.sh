@@ -399,10 +399,15 @@ if [ -t 0 ] && [ -t 1 ]; then
 fi
 
 # unsloth-run keeps a URL notebook and its saves in the current directory, so start
-# it in the mounted $PWD: /workspace is inside the container and --rm discards it
+# a URL run in the mounted $PWD: /workspace is inside the container and --rm
+# discards it. Local notebook paths keep resolving against /workspace.
 WORKDIR_FLAG=()
 if [[ $# -gt 0 && "$1" == "unsloth-run" ]]; then
-    WORKDIR_FLAG=(-w /workspace/host)
+    for _arg in "${@:2}"; do
+        case "$_arg" in
+            http://* | https://*) WORKDIR_FLAG=(-w /workspace/host); break ;;
+        esac
+    done
 fi
 
 # No `set -x`: it would echo HF_TOKEN / WANDB_API_KEY to CI logs. The
