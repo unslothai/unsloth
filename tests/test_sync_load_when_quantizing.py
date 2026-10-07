@@ -71,7 +71,9 @@ def test_restores_when_the_load_raises():
     [(BNB, PREQUANTIZED), (None, UNQUANTIZED), (None, PREQUANTIZED)],
     ids = ["prequantized", "16bit", "16bit-prequantized-config"],
 )
-def test_leaves_async_loading_alone_when_nothing_is_quantized_on_the_fly(quantization_config, config):
+def test_leaves_async_loading_alone_when_nothing_is_quantized_on_the_fly(
+    quantization_config, config
+):
     with sync_load_when_quantizing(quantization_config, config):
         assert ENV not in os.environ
     assert ENV not in os.environ

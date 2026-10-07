@@ -3538,10 +3538,13 @@ class FastBaseModel:
                     )
                 ):
                     try:
-                        with begin_block_swap_load(
-                            _offload_layers, device_map, embeddings = bool(_embedding_needed)
-                        ) as (_block_swap_state), sync_load_when_quantizing(
-                            kwargs.get("quantization_config"), model_config
+                        with (
+                            begin_block_swap_load(
+                                _offload_layers, device_map, embeddings = bool(_embedding_needed)
+                            ) as (_block_swap_state),
+                            sync_load_when_quantizing(
+                                kwargs.get("quantization_config"), model_config
+                            ),
                         ):
                             model = auto_model.from_pretrained(
                                 model_name,
