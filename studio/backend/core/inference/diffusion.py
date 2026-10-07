@@ -3743,8 +3743,12 @@ class DiffusionBackend:
                 return None
             if _has_active_lora(loras):
                 return None
-            if _memory_request_forces_offload(memory_mode, cpu_offload):
+            # 'balanced' group-offload hooks refuse torchao weights. low_vram / cpu_offload (whole-module) seed on the
+            # host when the weights survive, only the winning rung (a lower one would change the runtime's scheme),
+            # and never a pinned scheme the loader serves torchao-free (native int8).
+            if normalize_memory_mode(memory_mode) == MEMORY_MODE_BALANCED:
                 return None
+            forced_offload = _memory_request_forces_offload(memory_mode, cpu_offload)
             # SCOPED, not pinned: the pooled asyncio.to_thread thread must not be handed back set to this card.
             with diffusion_device_scope(gpu_ordinal):
                 target = self._target_for_ordinal(fam, gpu_ordinal)
@@ -3804,7 +3808,7 @@ class DiffusionBackend:
                 # (Qwen-Image int8 on a 32 GB card) yields to the next resident rung instead of pinning a decline.
                 # An explicit scheme is honored or refused, never swapped.
                 rungs: list[str] = [scheme]
-                if auto:
+                if auto and not forced_offload:
                     try:
                         from .diffusion_transformer_quant import auto_scheme_candidates
                         below = list(
@@ -3832,6 +3836,15 @@ class DiffusionBackend:
                     getattr(getattr(self, "_state", None), "pipe", None)
                 )
                 for rung in rungs:
+                    if (
+                        forced_offload
+                        and not auto
+                        and native_quant_scheme(
+                            target, rung, family = getattr(fam, "name", None), offload = True
+                        )
+                        is not None
+                    ):
+                        continue
                     source = denoiser_prequant_source(
                         fam,
                         rung,
