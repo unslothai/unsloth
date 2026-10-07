@@ -145,19 +145,21 @@ function onNativeEvent(event: NativeEvent): void {
     if (openedTabs.has(event.tabId)) onDownload(event);
     return;
   }
-  if (!tab || currentEntry(tab).kind !== "web") return;
+  if (!tab) return;
+  const entry = currentEntry(tab);
+  if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
   switch (event.kind) {
     case "load":
       store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
-      if (!event.loading) history.recordVisit(event.url, tab.title);
+      if (!event.loading) history.recordVisit(event.url, tab.title, entry.temporary);
       break;
     case "title":
       store.updateTab(tab.id, { title: event.title });
       page(tab.id).title = event.title;
-      history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title);
+      history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title, entry.temporary);
       break;
     case "url":
       store.updateTab(tab.id, { displayUrl: event.url, ...leftOpenedPage(tab, event.url) });

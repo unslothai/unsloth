@@ -26,6 +26,7 @@ const { useBrowserHistoryStore } = await import("../src/features/browser/history
 const { useBrowserPrefsStore } = await import("../src/features/browser/prefs-store.ts");
 const { useBrowserBookmarksStore } = await import("../src/features/browser/bookmarks-store.ts");
 const { useChatRuntimeStore } = await import("@/features/chat");
+const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
 
 const download = { name: "file.pdf", url: "https://example.com/file.pdf", size: 10, contentType: "application/pdf" };
 
@@ -50,6 +51,24 @@ test("pages visited beside a temporary chat stay out of history, icons included"
   assert.deepEqual(useBrowserHistoryStore.getState().icons, {});
   useChatRuntimeStore.getState().setIncognito(false);
   history.recordVisit("https://example.com/", "Example");
+  assert.equal(useBrowserHistoryStore.getState().history.length, 1);
+});
+
+test("a page opened beside a temporary chat stays out of history when it loads after the chat turns normal", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearHistory();
+  useChatRuntimeStore.getState().setIncognito(true);
+  useBrowserStore.getState().openUrl("https://example.com/", { newTab: true });
+  const tab = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const entry = tab ? currentEntry(tab) : null;
+  useChatRuntimeStore.getState().setIncognito(false);
+  assert.equal(entry?.kind === "web" && entry.temporary, true);
+  history.recordVisit("https://example.com/", "Example", entry?.kind === "web" ? entry.temporary : false);
+  assert.deepEqual(useBrowserHistoryStore.getState().history, []);
+  useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+  const next = useBrowserStore.getState().tabs.find((item) => item.id === useBrowserStore.getState().activeTabId);
+  const nextEntry = next ? currentEntry(next) : null;
+  history.recordVisit("https://example.org/", "Example", nextEntry?.kind === "web" ? nextEntry.temporary : false);
   assert.equal(useBrowserHistoryStore.getState().history.length, 1);
 });
 

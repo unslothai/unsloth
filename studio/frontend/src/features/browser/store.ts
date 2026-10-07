@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { DocumentAnnotations } from "@/features/chat";
+import { type DocumentAnnotations, useChatRuntimeStore } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
@@ -18,6 +18,8 @@ export type BrowserEntry =
       body?: string;
       /** The page that sent the tab here (link, form, script, refresh); a file here downloads on its behalf. */
       from?: string;
+      /** Opened beside a temporary chat, so it stays out of history. */
+      temporary?: true;
     }
   | {
       kind: "file";
@@ -209,8 +211,9 @@ export function currentEntry(tab: BrowserTab): BrowserEntry {
 }
 
 function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string): BrowserEntry {
-  const entry: BrowserEntry =
+  const entry: Extract<BrowserEntry, { kind: "web" }> =
     method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
+  if (useChatRuntimeStore.getState().incognito) entry.temporary = true;
   return from ? { ...entry, from } : entry;
 }
 

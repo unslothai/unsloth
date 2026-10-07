@@ -102,7 +102,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           const favicon = safeFavicon(message.favicon);
           // Kept by site, so Recents, History and Suggested show it once the tab is gone.
           if (favicon && tab && entry?.kind === "web") {
-            useBrowserHistoryStore.getState().recordIcon(hostOf(tab.displayUrl ?? entry.url), favicon);
+            useBrowserHistoryStore.getState().recordIcon(hostOf(tab.displayUrl ?? entry.url), favicon, entry.temporary);
           }
           if (favicon && entry) {
             void proxiedFavicon(favicon).then((icon) => {
@@ -112,7 +112,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           }
           // POST results can't be revisited, so they stay out of history.
           if (tab && entry?.kind === "web" && entry.method !== "POST") {
-            useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title);
+            useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title, entry.temporary);
           }
           break;
         }
@@ -259,7 +259,7 @@ function WebPage({
           documentType: page.contentType,
           pageError: false,
         });
-        if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
+        if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name, entry.temporary);
       } else {
         fitZoomToPage(tab.id, false);
         updateTab(tab.id, {
