@@ -485,6 +485,13 @@ def test_freest_gpu_follows_the_visibility_order(stub, monkeypatch, mask, expect
         LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(lambda *_: ["Vulkan0", "Vulkan1"])
     )
     assert native_worker._pick_device("llama-server", env) == "Vulkan1"
+    # ROCm follows HIP_VISIBLE_DEVICES.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(lambda *_: ["ROCm0", "ROCm1"])
+    )
+    hip = dict(os.environ, HIP_VISIBLE_DEVICES = mask)
+    hip.pop("ROCR_VISIBLE_DEVICES", None)
+    assert native_worker._pick_device("llama-server", hip) == expected.replace("CUDA", "ROCm")
 
 
 @pytest.mark.parametrize("mode", ["nodecisions", "wrongalias"])
@@ -1289,3 +1296,22 @@ def test_an_image_that_decodes_to_too_many_pixels_is_refused(home, client, stub)
     refused = _post(client, images = [_image_url("png", big.getvalue())])
     assert refused.status_code == 422 and "4096 x 4096" in refused.text
     assert stub.records("start") == []
+
+
+def test_a_failed_laya_load_keeps_the_resident_clefs_fallback_reason(monkeypatch):
+    from core.systemone import laya_runtime
+
+    laya = SimpleNamespace(layout = "laya")
+    monkeypatch.setattr(laya_runtime, "_fallback_reason", "The GGUF is not downloaded.")
+    monkeypatch.setattr(laya_runtime, "select", lambda checkpoint, *a, **k: (checkpoint, None))
+
+    def fail(*_):
+        raise laya_runtime.Unavailable(503, "unavailable", "still loading")
+
+    monkeypatch.setattr(laya_runtime, "_decide", fail)
+    with pytest.raises(laya_runtime.Unavailable):
+        laya_runtime._route(laya, "s", {}, None)
+    assert laya_runtime._fallback_reason == "The GGUF is not downloaded."
+    monkeypatch.setattr(laya_runtime, "_decide", lambda *_: {"ok": True})
+    assert laya_runtime._route(laya, "s", {}, None) == {"ok": True}
+    assert laya_runtime._fallback_reason is None

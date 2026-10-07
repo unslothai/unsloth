@@ -260,14 +260,19 @@ def _pick_device(binary: str, env: dict[str, str]) -> str:
             free = LlamaCppBackend._get_gpu_free_memory(binary, for_llama_server = True)
         except Exception:
             free = []
-        # llama.cpp lists GPUs in CUDA_VISIBLE_DEVICES order; free rows come sorted by physical index.
+        # llama.cpp lists CUDA / ROCm GPUs in mask order; free rows come sorted by physical index.
+        # Vulkan ordinals ignore these masks, and HIP on top of ROCR composes, so both keep physical order.
         by_index = dict(free)
+        mask = None
+        if all(d.startswith("CUDA") for d in devices):
+            mask = env.get("CUDA_VISIBLE_DEVICES")
+        elif all(d.startswith("ROCm") for d in devices) and not env.get("ROCR_VISIBLE_DEVICES"):
+            mask = env.get("HIP_VISIBLE_DEVICES")
         try:
-            order = [int(x) for x in env.get("CUDA_VISIBLE_DEVICES", "").split(",") if x.strip()]
+            order = [int(x) for x in (mask or "").split(",") if x.strip()]
         except ValueError:
             order = []
-        # Vulkan ordinals ignore CUDA_VISIBLE_DEVICES (GGML_VK_VISIBLE_DEVICES masks them).
-        if len(order) != len(devices) or not all(d.startswith("CUDA") for d in devices):
+        if len(order) != len(devices):
             order = sorted(by_index)
         if len(order) == len(devices) and all(i in by_index for i in order):
             return devices[max(range(len(order)), key = lambda i: by_index[order[i]])]
