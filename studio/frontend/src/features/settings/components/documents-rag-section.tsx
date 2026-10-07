@@ -409,7 +409,11 @@ export function DocumentsRagSection(): ReactElement {
             ) : null}
           </span>
         }
-        className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
+        // Bottom-aligned while Not loaded shows, so it sits level with the On device line.
+        className={cn(
+          "max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3",
+          notLoaded && "items-end",
+        )}
         below={
           embeddingModelError ? (
             <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
@@ -459,7 +463,7 @@ export function DocumentsRagSection(): ReactElement {
               className="w-[calc(260px*var(--ui-space-scale,1))] max-[360px]:w-full"
             />
             {notLoaded ? (
-              <span className="flex items-center gap-1.5 px-3.5 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5 px-3.5 text-xs leading-snug text-muted-foreground">
                 <span className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-muted-foreground" />
                 {t("settings.general.rag.notLoaded")}
                 <StatusHint text={t("settings.general.rag.notLoadedHint")} />
