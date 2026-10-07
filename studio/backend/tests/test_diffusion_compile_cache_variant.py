@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The compile-cache key tells quantized artifacts of one scheme apart.
-
-Hosted INT8 and INT8-ConvRot both engage ``transformer_quant="int8"``, but ConvRot Linears trace an extra rotation,
-so a bundle warmed by one variant and loaded for the other gave a warm start that ran ~2x slower per step instead of
-a miss. The key now carries a structural descriptor of the denoiser (``graph_variant``) for quantized loads; dense
-and GGUF keys are unchanged. CPU only: tiny Linears, torchao's real Int8Tensor where installed.
-"""
+"""INT8 and INT8-ConvRot share ``transformer_quant="int8"``; a bundle from one reported a hit for the other, then
+recompiled in full. The key now carries ``graph_variant`` for quantized loads; dense and GGUF keys are unchanged."""
 
 from __future__ import annotations
 

@@ -10,9 +10,8 @@ Mega-cache (``save_cache_artifacts`` / ``load_cache_artifacts``, torch >= 2.7).
 
 PORTABILITY IS NOT UNIVERSAL: an artifact is only valid for the SAME torch/Triton/CUDA
 build, GPU arch, and model graph (family, dtype, quant, attention backend, compile
-kwargs, shape bucket; for a quantized denoiser also the loaded variant read off the
-module tree, e.g. INT8 vs INT8-ConvRot, and any graph-changing kill switch set off its
-default). torch validates these on load; a mismatch yields no hit, not an error. Hence
+kwargs, shape bucket, quant variant, graph kill switches). torch validates these on load;
+a mismatch yields no hit, not an error. Hence
 an EXACT-MATCH fingerprint with SILENT FALLBACK to local compile (a miss is normal), and
 per-arch bundles keyed by the full fingerprint. See
 ``outputs/compile_cache/DISTRIBUTION.md``.
@@ -285,11 +284,8 @@ def environment_fingerprint() -> dict[str, Any]:
     return fp
 
 
-# Kill switches that change what the denoiser traces (a module swap, forward patch, custom op or fused kernel) where
-# the module tree at begin() cannot show it: most of these swaps happen in apply_speed_optims or at the first forward.
-# name -> default ("on" / "off" / "auto", or "raw" for a value-carrying switch). A switch is keyed only when it is set
-# away from its default, so a default config keeps one key whatever else is in the environment. Runtime-only knobs
-# (tile choice inside an opaque op, logging) are deliberately absent.
+# Switches that change the traced graph after begin() (swaps in apply_speed_optims / first forward), so the tree can't
+# show them. name -> default ("raw" = value-carrying). Keyed only off default; runtime-only knobs are excluded.
 _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_INT8_GEMM": "auto",
     "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT": "on",
@@ -315,7 +311,6 @@ _ADDRESS_RE = re.compile(r" at 0x[0-9a-fA-F]+")
 
 
 def _switch_value(name: str, default: str) -> Optional[str]:
-    """The switch's setting when it differs from ``default``, else None (unset and default read the same)."""
     raw = (os.environ.get(name) or "").strip().lower()
     if raw in ("", "auto"):
         return None
@@ -328,7 +323,6 @@ def _switch_value(name: str, default: str) -> Optional[str]:
 
 
 def graph_switches() -> dict[str, str]:
-    """Every graph-changing kill switch set away from its default. Empty on a default config."""
     out: dict[str, str] = {}
     for name, default in sorted(_GRAPH_SWITCHES.items()):
         value = _switch_value(name, default)
@@ -338,7 +332,7 @@ def graph_switches() -> dict[str, str]:
 
 
 def _tensor_signature(tensor: Any, depth: int = 0) -> str:
-    """``Cls/dtype(inner...)``: the class and dtypes a traced op dispatches on, never shapes or values."""
+    """``Cls/dtype(inner...)``: what a traced op dispatches on, never shapes or values."""
     head = f"{type(tensor).__name__}/{getattr(tensor, 'dtype', None)}"
     if depth > 2:
         return head
@@ -349,7 +343,6 @@ def _tensor_signature(tensor: Any, depth: int = 0) -> str:
         *(getattr(cls, "optional_tensor_data_names", None) or ()),
     ]
     if data_names:
-        # torchao's newer subclasses (Int8Tensor, Float8Tensor) declare their fields.
         for name in data_names:
             value = getattr(tensor, name, None)
             inner.append(
@@ -361,8 +354,7 @@ def _tensor_signature(tensor: Any, depth: int = 0) -> str:
                     continue
                 inner.append(f"{name}={_ADDRESS_RE.sub('', repr(getattr(tensor, name, None)))}")
     elif cls.__name__ not in ("Tensor", "Parameter") and hasattr(tensor, "__tensor_flatten__"):
-        # Older wrapper subclasses (AffineQuantizedTensor and its tensor_impl): recurse over the inner tensors only;
-        # the flatten context carries the shape.
+        # Older wrappers (AffineQuantizedTensor): inner tensors only, the flatten context carries the shape.
         try:
             names, _ctx = tensor.__tensor_flatten__()
             for name in names:
@@ -373,11 +365,8 @@ def _tensor_signature(tensor: Any, depth: int = 0) -> str:
 
 
 def _weight_signature(module: Any, weight: Any) -> str:
-    """``Module/WeightCls(inner dtypes; attrs)`` for one weight: what the traced forward depends on, not its values.
-
-    Tensor subclasses (torchao Int8Tensor / Float8Tensor) are read through their flatten contract, so the scale
-    dtype (fp32 hosted vs bf16 runtime) and the activation-quant config (W8A8 vs weight-only) both land in the key.
-    ``block_size`` is skipped: it is the weight's shape, which the class/blocks already pin."""
+    """Scale dtype (fp32 hosted vs bf16 runtime) and W8A8 vs weight-only both land here; ``block_size`` is skipped
+    (it is the weight's shape)."""
     parts = [type(module).__name__, _tensor_signature(weight)]
     group = getattr(module, "convrot_groupsize", None)
     if group is not None:
@@ -387,7 +376,6 @@ def _weight_signature(module: Any, weight: Any) -> str:
         parts.append(f"rot{rot}")
     if getattr(module, "act_int8", False):
         parts.append("act_int8")
-    # An instance forward (a fused-kernel swap or wrapper installed at load) replaces the class forward under trace.
     fwd = module.__dict__.get("forward") if hasattr(module, "__dict__") else None
     if fwd is not None:
         func = getattr(fwd, "__func__", fwd)
@@ -398,11 +386,8 @@ def _weight_signature(module: Any, weight: Any) -> str:
 
 
 def graph_variant(transformer: Any) -> dict[str, Any]:
-    """Which quantized artifact the denoiser is running, as a stable descriptor rather than a hash of its weights.
-
-    Counts each distinct per-module weight signature, plus the ConvRot marker the prequant loader stamps and any
-    graph-changing state the module tree shows. Deterministic for one config across processes; different for plain
-    vs ConvRot, hosted vs ComfyUI twin vs runtime quantise, torchao vs native layers. Never raises."""
+    """Structural descriptor of the loaded quant artifact (no weight hashing): stable across processes, distinct for
+    plain vs ConvRot, hosted vs ComfyUI vs runtime quantise, torchao vs native. Never raises."""
     variant: dict[str, Any] = {}
     try:
         import torch  # noqa: PLC0415
@@ -428,7 +413,7 @@ def graph_variant(transformer: Any) -> dict[str, Any]:
 
 
 def _has_quantized_layout(variant: dict[str, Any]) -> bool:
-    """True when the tree holds anything but plain dense weights (a ComfyUI single file keys quant as none)."""
+    """A ComfyUI single file keys quant as none, so the tree decides."""
     if variant.get("rotation"):
         return True
     weights = variant.get("weights")
@@ -438,7 +423,7 @@ def _has_quantized_layout(variant: dict[str, Any]) -> bool:
         parts = sig.split("/")
         if len(parts) < 2 or parts[1] not in ("Parameter", "Tensor") or "(" in sig:
             return True
-        # An instance forward alone is not a quantized layout: offload hooks on a dense load install one too.
+        # An instance forward alone is not quantized: offload hooks install one on dense loads too.
         if any(p.startswith(("convrot", "rot", "act_int8")) for p in parts[3:]):
             return True
     return False
@@ -483,15 +468,11 @@ def model_fingerprint(
         },
         "shape_bucket": shape_bucket,
     }
-    # The scheme name alone does not say which artifact loaded: hosted INT8 and INT8-ConvRot (or a ComfyUI twin, or a
-    # runtime quantise) share "int8" but compile different graphs, and a bundle warmed by one then served the other.
-    # Quantized layouts only (a ComfyUI single file engages no scheme, so it is read off the tree), so dense and GGUF
-    # bundles keep their key.
+    # INT8 and INT8-ConvRot share "int8" but compile different graphs. Quantized layouts only: dense / GGUF keys hold.
     if str(quant) != "gguf" and transformer is not None:
         variant = graph_variant(transformer)
         if quant is not None or _has_quantized_layout(variant):
             fp["variant"] = variant
-    # Kill switches that change the traced graph; absent on a default config, so existing keys hold.
     switches = graph_switches()
     if switches:
         fp["switches"] = switches
