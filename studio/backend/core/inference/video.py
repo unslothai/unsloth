@@ -6106,8 +6106,7 @@ class VideoBackend:
         if _auto_seed_yields_to_resident_bf16(
             denoiser_seed_scheme, transformer_quant
         ) and _auto_keeps_resident_bf16(_plan_for_te_scale(te_scale, log = False)[1], target):
-            # The runtime rule below (auto keeps a resident bf16 DiT) applies to a hosted artifact too: seeding it
-            # would change auto's precision on every card that holds bf16, not just skip a runtime quantise.
+            # Auto keeps a resident bf16 DiT; seeding would change auto's precision wherever bf16 fits.
             logger.info(
                 "video.denoiser_prequant: auto keeps the bf16 DiT (it fits resident), so the hosted "
                 "%s checkpoint is not seeded",

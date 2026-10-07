@@ -291,10 +291,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        # fp8 and int8 share one repo at the root, named by prequant_repo_filename (Wan2.2-TI2V-5B-<SCHEME>.pt); a
-        # .safetensors twin, once hosted, is preferred automatically. The fp8 file keeps condition_embedder in bf16 (a
-        # superset of the runtime excludes, which the loader accepts). Resident sizes from Hub file metadata
-        # (2026-08-04): FP8 5,119,620,358 bytes, INT8 5,038,556,145.
+        # fp8 / int8 share one repo, files Wan2.2-TI2V-5B-<SCHEME>.pt. Sizes from Hub metadata (2026-08-04).
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
             ("fp8", "unsloth/Wan2.2-TI2V-5B-FP8"),
@@ -335,8 +332,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
-        # fp8 / int8: one repo, expert 1 under the derived name, expert 2 as <name>-2.pt (archive root
-        # transformer_2_<scheme>). The derived transformer_2 name is never hosted there, so expert 2 needs its row.
+        # fp8 / int8: expert 2 is <name>-2.pt, not the derived transformer_2 name, so it needs its own row.
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),
             ("fp8", "unsloth/Wan2.2-T2V-A14B-FP8"),
@@ -348,8 +344,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ("fp8", "transformer_2", "Wan2.2-T2V-A14B-FP8-2.pt"),
             ("int8", "transformer_2", "Wan2.2-T2V-A14B-INT8-2.pt"),
         ),
-        # BOTH experts: the plan subtracts one denoiser term and this family builds two. fp8 / int8 from Hub file
-        # metadata (2026-08-04): 2 x 14.59 GB and 2 x 14.39 GB.
+        # BOTH experts: the plan subtracts one denoiser term and this family builds two.
         prequant_resident_gb_by_scheme = (("nvfp4", 16.2), ("fp8", 29.2), ("int8", 28.8)),
         aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,

@@ -2481,9 +2481,8 @@ def _validate_checkpoint(
             return False
     # The int8 exclusion set is scheme-derived, so a token-list change would leave old checkpoints with a stale baked
     # set that passes scheme+min_features then crashes at the first denoise. Reject a checkpoint that quantised a
-    # layer the runtime now excludes; absent is accepted. A checkpoint that excludes MORE (a superset: those Linears
-    # stay bf16) is accepted, since load_state_dict(assign=True) takes each tensor as stored and a bf16 Linear runs
-    # at any M. The hosted Wan2.2 fp8 artifacts are that case: they keep ``condition_embedder`` in bf16.
+    # layer the runtime excludes; absent is accepted, and so is a superset (extra bf16 Linears load as stored; the
+    # hosted Wan2.2 fp8 files keep ``condition_embedder`` bf16).
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme

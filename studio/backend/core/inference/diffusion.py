@@ -3678,13 +3678,9 @@ class DiffusionBackend:
                 return None
             if _has_active_lora(loras):
                 return None
-            # 'balanced' streams through group-offload hooks the preflight refuses torchao weights under, so it keeps
-            # the released shards. low_vram and the legacy flag name whole-module offload, which the runtime quantise
-            # already runs torchao under: the rung loop below prices the artifact under that placement and keeps it
-            # only if its weights survive, seeded on the host like an offloading 'auto' plan. Under a forced offload
-            # only the winning rung is tried (a lower one would change the scheme the runtime picks), and a PINNED
-            # scheme the loader serves torchao-free there (native int8) is never seeded: a torchao artifact cannot
-            # feed that path.
+            # 'balanced' group-offload hooks refuse torchao weights. low_vram / cpu_offload (whole-module) seed on the
+            # host when the weights survive, only the winning rung (a lower one would change the runtime's scheme),
+            # and never a pinned scheme the loader serves torchao-free (native int8).
             if normalize_memory_mode(memory_mode) == MEMORY_MODE_BALANCED:
                 return None
             forced_offload = _memory_request_forces_offload(memory_mode, cpu_offload)
