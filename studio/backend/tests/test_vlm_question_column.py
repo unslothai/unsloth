@@ -76,3 +76,10 @@ def test_exact_question_column_wins_over_a_case_variant():
     )
 
     assert [_turns(sample) for sample in out] == list(zip(questions, answers))
+
+
+def test_structured_input_column_is_not_used_as_the_question():
+    answers = ["a red square", "a dark red square"]
+    out = _format({"inputs": [[101, 102], [103]], "caption": answers})
+
+    assert [_turns(sample) for sample in out] == [(HELPER_SENTENCE, a) for a in answers]

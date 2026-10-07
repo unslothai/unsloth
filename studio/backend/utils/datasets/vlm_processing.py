@@ -56,7 +56,7 @@ def generate_smart_vlm_instruction(
         if col is not None:
             # Use it only if it has non-empty content
             sample_content = sample[col]
-            if sample_content and str(sample_content).strip():
+            if isinstance(sample_content, str) and sample_content.strip():
                 return {
                     "instruction": None,
                     "instruction_column": col,
