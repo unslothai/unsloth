@@ -152,12 +152,14 @@ function fixture(
     keyCode = 13,
     metaKey = false,
     ctrlKey = false,
+    repeat = false,
     advance = 1000,
   }: {
     isComposing?: boolean;
     keyCode?: number;
     metaKey?: boolean;
     ctrlKey?: boolean;
+    repeat?: boolean;
     advance?: number;
   } = {}) {
     now += advance;
@@ -168,6 +170,7 @@ function fixture(
       ctrlKey,
       shiftKey: false,
       altKey: false,
+      repeat,
       timeStamp: now,
       nativeEvent: { isComposing },
       preventDefault: () => effects.push("prevent"),
@@ -216,6 +219,17 @@ for (const [name, file, action] of [
     f.key({ keyCode: 229 });
     assert.equal(f.effects.includes("submit"), false);
     f.key({ keyCode: 229, advance: 100 });
+    assert.equal(f.effects.filter((effect) => effect === "submit").length, 1);
+  });
+
+  test(`${name}: a held candidate Enter cannot auto-repeat into submit`, () => {
+    const f = fixture(file, action);
+    f.compose(true);
+    f.key({ isComposing: true });
+    f.compose(false);
+    f.key({ keyCode: 229, repeat: true, advance: 50 });
+    assert.equal(f.effects.includes("submit"), false);
+    f.key({ keyCode: 229, advance: 50 });
     assert.equal(f.effects.filter((effect) => effect === "submit").length, 1);
   });
 

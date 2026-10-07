@@ -83,6 +83,9 @@ export function imeOwnsInputKeydown(
   }
   const msSinceCompositionEnd = event.timeStamp - ime.endedAt;
   ime.endedAt = -Infinity;
+  // A held candidate-confirming Enter can repeat after compositionend. It is still the same
+  // physical press, not the separate Enter that submits the input.
+  if (event.key === "Enter" && event.repeat) return true;
   if (event.nativeEvent.isComposing) return true;
   if (event.keyCode !== 229) {
     // Candidate-confirming Enter can arrive as keyCode 13 mid-composition; swallow it once.
