@@ -445,12 +445,18 @@ pub(crate) fn add_pending<R: Runtime>(
 /// Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
 pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     if cfg!(any(windows, target_os = "macos")) {
-        // `\\?\C:\x` is `C:\x` on Windows.
+        // Compared upper-cased as Windows does (`m\u{17f}i` is `MSI`); on Windows `\\?\C:\x` is
+        // `C:\x` and `\\?\UNC\h\s` is `\\h\s`.
         let plain = |p: &Path| {
-            let text = p.to_string_lossy().to_lowercase();
-            match text.strip_prefix(r"\\?\") {
-                Some(rest) if cfg!(windows) && !rest.starts_with("unc\\") => rest.to_string(),
-                _ => text,
+            let text = p.to_string_lossy().to_uppercase();
+            if !cfg!(windows) {
+                text
+            } else if let Some(share) = text.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{share}")
+            } else if let Some(local) = text.strip_prefix(r"\\?\") {
+                local.to_string()
+            } else {
+                text
             }
         };
         plain(a) == plain(b)
@@ -649,10 +655,9 @@ fn place_new(from: &Path, to: &Path) -> std::io::Result<()> {
         // Another volume (a chosen folder elsewhere) or no hard links (FAT, exFAT): copy.
         Err(_) => {}
     }
-    let parent = to
-        .parent()
-        .ok_or_else(|| std::io::Error::other("no parent folder"))?;
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    // Created like any new file (0666 less the umask on Unix), not a tempfile's 0600.
+    let mut temporary =
+        crate::native_file_dialogs::staged_temp_file(to).map_err(std::io::Error::other)?;
     let mut source = fs::File::open(from)?;
     std::io::copy(&mut source, temporary.as_file_mut())?;
     temporary.as_file().sync_all()?;
@@ -797,6 +802,14 @@ mod tests {
         assert!(same_path(
             Path::new(r"\\?\C:\Users\A\x.zip"),
             Path::new(r"c:\users\a\X.zip")
+        ));
+        assert!(same_path(
+            Path::new(r"\\?\UNC\host\share\x.zip"),
+            Path::new(r"\\HOST\share\X.zip")
+        ));
+        assert!(same_path(
+            Path::new("C:\\d\\payload.m\u{17f}i"),
+            Path::new(r"C:\d\PAYLOAD.MSI")
         ));
     }
 

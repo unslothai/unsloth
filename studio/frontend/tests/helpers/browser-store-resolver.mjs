@@ -19,7 +19,11 @@ const TOAST_STUB =
 
 const AUTH_STUB =
   "data:text/javascript," +
-  encodeURIComponent("export const authFetch = () => { throw new Error(\"no network in tests\"); };");
+  encodeURIComponent(
+    "export const authFetch = (...args) => {" +
+      " if (globalThis.__authFetch) return globalThis.__authFetch(...args);" +
+      " throw new Error(\"no network in tests\"); };",
+  );
 
 export function resolve(specifier, context, next) {
   if (specifier === "@/features/auth") return { url: AUTH_STUB, shortCircuit: true };

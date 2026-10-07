@@ -488,6 +488,49 @@ test("a file a page sends the tab to is asked about for that page, not the file'
   store.closeTab(tabId);
 });
 
+test("Save link as asks again when the file it named by the address turns out to run code", async () => {
+  const { saveLinkAs } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskWhereToSave(true);
+  prefs.setAskBeforeDownloading(false);
+  const g = globalThis as { showSaveFilePicker?: unknown; __authFetch?: unknown };
+  // The picker fails without a cancel, so the save falls back to a plain download by the server's name.
+  g.showSaveFilePicker = async () => {
+    throw new DOMException("no picker here", "NotAllowedError");
+  };
+  // Slower than the wait before asking, so the address's name ("download") is the one approved first.
+  g.__authFetch = () =>
+    new Promise((resolve) =>
+      setTimeout(
+        () =>
+          resolve(
+            new Response(new Blob(["MZ"]), {
+              headers: { "Content-Type": "application/octet-stream", "X-Unsloth-Browser-Filename": "setup.exe" },
+            }),
+          ),
+        1200,
+      ),
+    );
+  try {
+    const saving = saveLinkAs("https://a.example/download");
+    for (let i = 0; i < 40 && useApprovalStore.getState().queue.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const asked = useApprovalStore.getState().queue[0];
+    assert.equal(asked?.name, "setup.exe");
+    assert.equal(asked?.dangerous, true);
+    answerDownload(asked, false, false);
+    await saving;
+    assert.equal(useApprovalStore.getState().queue.length, 0);
+  } finally {
+    delete g.showSaveFilePicker;
+    delete g.__authFetch;
+    prefs.setAskWhereToSave(false);
+    prefs.setAskBeforeDownloading(true);
+  }
+});
+
 test("a blocked site's blob: page can't download past the block", async () => {
   const { approveDownload } = await import("../src/features/browser/download-approval-queue.ts");
   const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");

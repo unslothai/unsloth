@@ -8,6 +8,7 @@ import { toast } from "@/lib/toast";
 import { fileNameFromUrl, isWebUrl, safeDownloadName, withBaseUrl } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
 import { approveDownload } from "./download-approval-queue";
+import { isDangerousDownload } from "./download-safety";
 import { useBrowserHistoryStore } from "./history-store";
 import { type SavedNativeDownload, saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
@@ -135,6 +136,7 @@ export async function saveLinkAs(url: string): Promise<void> {
   // The dialog needs the menu click, which a slow fetch outlasts: ask with the resolved name
   // when the fetch is quick, else with the URL's.
   let target: SaveHandle | null | undefined;
+  let asked: string | undefined;
   if (asksWhereToSave()) {
     const quick = await Promise.race([
       pending.then(
@@ -146,6 +148,7 @@ export async function saveLinkAs(url: string): Promise<void> {
     // A link that already failed has nothing to save: report it without asking for a name.
     if (quick && "error" in quick) throw quick.error;
     const name = quick?.download.name ?? fileNameFromUrl(url);
+    asked = name;
     try {
       if (!(await approved(url, name))) throw new DownloadCancelledError();
       target = await pickSaveTarget(name);
@@ -157,5 +160,10 @@ export async function saveLinkAs(url: string): Promise<void> {
       throw error;
     }
   }
-  await saveBrowserDownload(await pending, target);
+  const download = await pending;
+  // Approved under the address's name: a file that turns out to run code asks again, by its own name.
+  if (asked !== undefined && isDangerousDownload(download.name) && !isDangerousDownload(asked)) {
+    if (!(await approved(url, download.name))) return;
+  }
+  await saveBrowserDownload(download, target);
 }
