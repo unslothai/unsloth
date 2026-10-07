@@ -3,15 +3,9 @@
 
 """Per-file trust for single-file diffusion checkpoints from any Hugging Face repo.
 
-The repo allowlists in ``diffusion.py`` / ``video.py`` exist because ``from_pretrained`` on an
-arbitrary repo can unpickle ``.bin`` / ``.pt`` weights and, with ``trust_remote_code``, import
-``.py`` files from it. A single ``.safetensors`` checkpoint has neither risk: Studio downloads that
-one exact file, the format is a JSON header plus raw tensor bytes that the safetensors parser reads
-without executing anything, and every config, scheduler, tokenizer, VAE and text encoder still comes
-from the family's own trusted base repo. So a ``single_file`` load is judged by its FILE, not its
-repo: a ``.safetensors`` name is admitted from any repo, every other suffix still needs a trusted
-repo, and the downloaded bytes are checked to really be a safetensors container before any loader
-touches them. Pipeline loads and ``base_repo`` stay gated by repo exactly as before.
+The repo allowlists guard ``from_pretrained`` (pickled weights, ``trust_remote_code``). A lone
+``.safetensors`` file has neither risk: only that file is downloaded, it is parsed without
+unpickling, and every config and companion still comes from the family's trusted base repo.
 """
 
 from __future__ import annotations
@@ -24,15 +18,13 @@ from typing import Optional, Union
 
 SAFETENSORS_SUFFIX = ".safetensors"
 
-# The safetensors reference parser refuses headers above 100 MB; matching it keeps a crafted length
-# prefix from turning a header read into an unbounded allocation.
+# Same cap as the safetensors reference parser: a crafted length prefix cannot force a huge read.
 _MAX_HEADER_BYTES = 100 * 1024 * 1024
 
 
 def is_hub_safetensors_single_file(filename: Optional[str]) -> bool:
-    """Whether ``filename`` names a ``.safetensors`` file INSIDE a repo, so it can be loaded from
-    any repo. Repo-relative only: no absolute path, no ``..`` segment, no backslash or NUL, and the
-    final suffix must be ``.safetensors`` (so ``x.safetensors.pt`` or ``x.bin`` never qualify)."""
+    """A repo-relative ``.safetensors`` name: no absolute path, ``..``, backslash or NUL, and the final
+    suffix is ``.safetensors`` (``x.safetensors.pt`` never qualifies)."""
     if not isinstance(filename, str):
         return False
     name = filename.strip()
@@ -48,21 +40,16 @@ def is_hub_safetensors_single_file(filename: Optional[str]) -> bool:
 
 
 def single_file_load_allowed(repo_trusted: bool, kind: str, filename: Optional[str]) -> bool:
-    """The non-GGUF trust decision shared by the image and video validators. A trusted repo keeps
-    every kind it had; an untrusted one gains exactly a ``single_file`` load of a ``.safetensors``
-    name. GGUF is not decided here (it was never repo-gated)."""
+    """Non-GGUF trust decision: a trusted repo keeps every kind; an untrusted one gains only a
+    ``single_file`` load of a ``.safetensors`` name."""
     if repo_trusted:
         return True
     return kind == "single_file" and is_hub_safetensors_single_file(filename)
 
 
 def assert_safetensors_file(path: Union[str, os.PathLike]) -> None:
-    """Raise ValueError unless ``path`` is a well-formed safetensors container: an 8-byte
-    little-endian header length, a JSON object header within the file, and every tensor's
-    ``data_offsets`` inside the data section. Header only, no weight bytes are read and nothing is
-    deserialised beyond JSON, so it is safe to run on a file from any repo. It runs before the
-    loaders so a ``.safetensors`` name over pickle or garbage bytes fails here with a clear message
-    instead of somewhere inside a loader."""
+    """Raise ValueError unless ``path`` is a well-formed safetensors container (header only: length,
+    JSON object, every ``data_offsets`` inside the data section). Runs before any loader opens it."""
     p = Path(path)
     label = p.name
     try:

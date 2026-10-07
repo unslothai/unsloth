@@ -2996,9 +2996,7 @@ class DiffusionBackend:
                 f"multiple transformers), not from a single-file or GGUF checkpoint; "
                 f"select the pipeline repo."
             )
-        # Non-GGUF loads fetch + deserialise weights, so gate to unsloth/ or a local path. The one exception is a
-        # single .safetensors file: it is downloaded alone, parsed without unpickling, and takes every config and
-        # companion from the family base, so it is trusted per file (diffusion_single_file_trust).
+        # Non-GGUF loads deserialise weights: repo-gated, except a lone .safetensors file (diffusion_single_file_trust).
         if kind != "gguf" and not single_file_load_allowed(
             _is_trusted_diffusion_repo(repo_id), kind, gguf_filename
         ):
@@ -5548,8 +5546,7 @@ class DiffusionBackend:
                 # A ComfyUI-quantized file loads through its own path below; a format it cannot run is refused here,
                 # from the header, before planning or reading a weight, rather than loaded with its scales dropped.
                 if kind == "single_file" and not _is_trusted_diffusion_repo(repo_id):
-                    # Admitted per file from an untrusted repo, so prove the bytes are a safetensors container before
-                    # any loader (comfy scan, from_single_file) opens them.
+                    # Admitted per file: prove it is a safetensors container before any loader opens it.
                     assert_safetensors_file(single_file_path)
                 comfy_scan = refuse_comfy_quant(single_file_path) if kind == "single_file" else None
                 # torchao weights from a ComfyUI file: compile like Studio's own quantized transformer

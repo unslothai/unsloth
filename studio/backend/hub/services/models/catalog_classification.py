@@ -660,9 +660,8 @@ def _is_sd_cpp_companion_repo(repo_id: str) -> bool:
 
 
 def _untrusted_repo_single_files_loadable(repo_info, selected: Optional[Path] = None) -> bool:
-    """Whether a cached repo outside the trusted set is still loadable: a ComfyUI-style repo of
-    single ``.safetensors`` files (no pipeline index) loads per file from any repo, while a pipeline
-    repo still needs a trusted owner. Mirrors ``single_file_load_allowed`` in the loaders."""
+    """An untrusted cached repo of single ``.safetensors`` files (no pipeline index) still loads per
+    file; mirrors ``single_file_load_allowed``."""
     try:
         if _repo_has_pipeline_index(repo_info, selected):
             return False

@@ -2746,8 +2746,7 @@ class VideoBackend:
                         "MiniMax-H3 needs the Diffusers revision bundled with this Unsloth "
                         "version. Reinstall Unsloth dependencies and retry."
                     )
-        # A single .safetensors file is trusted per file, from any repo: it is downloaded alone, parsed without
-        # unpickling, and every config and companion still comes from the family base (diffusion_single_file_trust).
+        # A lone .safetensors file is trusted per file, from any repo (diffusion_single_file_trust).
         if kind != "gguf" and not single_file_load_allowed(
             _is_trusted_video_repo(repo_id), kind, gguf_filename
         ):
@@ -5817,8 +5816,7 @@ class VideoBackend:
                 repo_id, gguf_filename, hf_token, local_files_only = local_files_only
             )
             if kind == "single_file" and not _is_trusted_video_repo(repo_id):
-                # Admitted per file from an untrusted repo, so prove the bytes are a safetensors container before a
-                # loader opens them.
+                # Admitted per file: prove it is a safetensors container before a loader opens it.
                 assert_safetensors_file(checkpoint_path)
             size_mib = file_size_mib(str(checkpoint_path))
             if kind == "single_file":
