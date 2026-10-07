@@ -36,12 +36,13 @@ const CURRENCY_REGEX = /\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d])/y;
 const HEADING_LINE_RE = / {0,3}#{1,6}(?=[ \t\r\n]|$)/y;
 const TABLE_ROW_RE = /[ \t]*\|/y;
 const BLOCK_BREAK_RE =
-  /\n[ \t\r]*(?:\n|#{1,6}(?=[ \t\r\n])|[>|]|[-*+][ \t]|1[.)][ \t]|```|~~~)/;
+  /\n[ \t\r]*(?:\n|#{1,6}(?=[ \t\r\n])|[>|]|[-*+][ \t]|1[.)][ \t]|```|~~~|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)(?=\r?(?:\n|$)))/;
 
 /** A `$NAME ... $` span that reads as prose: no math symbols, and the closer starts a word. */
 const VARIABLE_PROSE_RE =
   /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=-]*(?:[\s/:,.;|<>=-]|[\s(]["'(`])$/;
 const NEW_TOKEN_RE = /[\w{\\]/;
+const VARIABLE_DOLLAR = "&#36;";
 
 /**
  * Union of two span lists, each ascending by start (overlap within a list is
@@ -379,6 +380,8 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
  */
 const LINK_DEST_RE =
   /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
+const AUTOLINK_RE =
+  /<(?:[a-z][a-z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>|\b(?:https?:\/\/|www\.)[^\s<]+/gi;
 
 /**
  * Find the destination spans of inline links/images, so a `\(...\)` written with
@@ -394,6 +397,15 @@ function findLinkDestinationRegions(content: string): Array<[number, number]> {
   while ((match = LINK_DEST_RE.exec(content)) !== null) {
     // `indices` is present (the `d` flag); group 1 spans the destination.
     regions.push(match.indices![1]);
+  }
+  return regions;
+}
+
+function findAutolinkRegions(content: string): Array<[number, number]> {
+  const regions: Array<[number, number]> = [];
+  AUTOLINK_RE.lastIndex = 0;
+  for (const match of content.matchAll(AUTOLINK_RE)) {
+    regions.push([match.index, match.index + match[0].length]);
   }
   return regions;
 }
@@ -677,12 +689,16 @@ export function preprocessLaTeX(content: string): string {
   if (!text.includes("$")) return text;
 
   const codeRegions = findCodeBlockRegions(text);
+  const linkRegions = mergeRegions(
+    findLinkDestinationRegions(text),
+    findAutolinkRegions(text),
+  );
   let closer = -1;
   let lineStart = 0;
   let nextNewline = text.indexOf("\n");
 
   return text.replace(DOLLAR_REGEX, (match, offset) => {
-    if (isInRegion(offset, codeRegions)) {
+    if (isInRegion(offset, codeRegions) || isInRegion(offset, linkRegions)) {
       return match;
     }
     // Skip the spans we just created from `\(...\)` so a numeric body like
@@ -709,7 +725,7 @@ export function preprocessLaTeX(content: string): string {
       (next + 1 === text.length || NEW_TOKEN_RE.test(text[next + 1])) &&
       VARIABLE_PROSE_RE.test(text.slice(offset + 1, next))
     ) {
-      return "\\" + match;
+      return VARIABLE_DOLLAR;
     }
     closer = next;
     return match;

@@ -13,6 +13,14 @@ import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
 
+const HTML_ENTITY_TEXT: Record<string, string> = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#x27;": "'",
+};
+
 function render(source: string, isStreaming = false): string {
   return renderToStaticMarkup(
     React.createElement(
@@ -36,12 +44,10 @@ function renderedMath(html: string): string[] {
       /<annotation encoding="application\/x-tex">([\s\S]*?)<\/annotation>/g,
     ),
   ].map((match) =>
-    match[1]
-      .replaceAll("&amp;", "&")
-      .replaceAll("&lt;", "<")
-      .replaceAll("&gt;", ">")
-      .replaceAll("&quot;", '"')
-      .replaceAll("&#x27;", "'"),
+    match[1].replace(
+      /&(?:amp|lt|gt|quot|#x27);/g,
+      (entity) => HTML_ENTITY_TEXT[entity] ?? entity,
+    ),
   );
 }
 
@@ -61,7 +67,11 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ["Use ${HOME} and ${PATH} in scripts.", ["${HOME} and ${PATH}"]],
   ["Set it to $PATH:$HOME/bin now.", ["$PATH:$HOME/bin"]],
   ["#define HOME $HOME\nthen $PATH", ["$HOME", "$PATH"]],
-  ["Try $PATH || $HOME, $HOME > $LOG or $PATH=$HOME/bin.", ["$PATH || $HOME", "$PATH=$HOME/bin"]],
+  ["Use $PATH\n***\nthen $HOME and $USER", ["$PATH", "$HOME and $USER"]],
+  [
+    "Try $PATH || $HOME, $HOME > $LOG or $PATH=$HOME/bin.",
+    ["$PATH || $HOME", "$PATH=$HOME/bin"],
+  ],
   ["PHP reads $_GET and $_POST.", ["$_GET and $"]],
   [
     "Add it to $PATH, then run `echo $HOME`.",
@@ -140,4 +150,17 @@ test("maths and currency next to shell variables keep rendering", () => {
   const withCurrency = render("It costs $5 to set $PATH, then $HOME.");
   assert.deepEqual(renderedMath(withCurrency), []);
   assert.ok(withCurrency.includes("$5 to set $PATH, then $HOME."));
+});
+
+test("shell variables keep literal dollars in raw HTML and URLs", () => {
+  for (const source of [
+    "<pre>$HOME and $USER</pre>",
+    "https://example.com/$HOME/$USER",
+    "<https://example.com/$HOME/$USER>",
+  ]) {
+    const html = render(source);
+    assert.deepEqual(renderedMath(html), [], source);
+    assert.ok(html.includes("$HOME"), `${source} lost its first dollar`);
+    assert.ok(!html.includes("\\$HOME"), `${source} showed an escape slash`);
+  }
 });
