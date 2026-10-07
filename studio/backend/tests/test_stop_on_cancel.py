@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""_stop_on_cancel must let a cancelled upstream read finish closing its connection.
-
-When the client drops a managed-runtime stream (NPU, OpenVINO), Starlette cancels the relay through an
-anyio cancel scope, which cancels every await that follows. The pending read then closes the upstream
-response in its cancellation handler (httpcore does this). If _stop_on_cancel waits for that read with
-asyncio.gather, the gather is cancelled too and cancels the read a second time mid-close: httpcore marks
-the stream closed without closing the socket, and the runtime keeps generating an unread reply.
-"""
+"""_stop_on_cancel must let a cancelled upstream read finish closing its httpcore connection."""
 
 import asyncio
 import threading
@@ -24,10 +17,10 @@ def test_cancelled_read_finishes_closing_the_upstream():
     async def upstream():
         yield "data: first"
         try:
-            # A read that never completes: the runtime is still generating.
+            # the runtime keeps generating while the read is pending
             await asyncio.Event().wait()
         except asyncio.CancelledError:
-            await asyncio.sleep(0.05)  # closing the connection takes an await or two
+            await asyncio.sleep(0.05)  # model connection cleanup that requires another await
             closed.set()
             raise
 
