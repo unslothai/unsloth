@@ -116,7 +116,7 @@ def test_tool_calls_and_empty_message_lists(mapping):
     assert conversations == [
         [
             _user("Weather?"),
-            {"role": "assistant", "content": "", "tool_calls": [_CALL]},
+            {"role": "assistant", "tool_calls": [_CALL]},
             {"role": "tool", "content": "Sunny", "tool_call_id": "c1"},
             _assistant("Sunny"),
         ],
