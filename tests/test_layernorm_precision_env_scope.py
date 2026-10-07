@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""UNSLOTH_HIGH_PRECISION_LAYERNORM must be decided per load, not leak into the next one.
-
-Loading Qwen3.5 / Gemma 3 / Gemma 4 / gpt-oss / Granite-4 set it to "1" for the rest of
-the process, so a later Qwen3 or Llama load got float32 norms beside bf16 projections and
-its forward raised "expected ... float != BFloat16" without autocast. Clearing it per load
-is not enough on its own: the compiler checks norms only on a modeling file's first
-compile, so the second load of the same family must replay that decision.
-"""
+"""UNSLOTH_HIGH_PRECISION_LAYERNORM is per load: a leak gave the next family float32 norms
+("float != BFloat16"), and a cached recompile must replay the family's own decision."""
 
 import os
 import subprocess
