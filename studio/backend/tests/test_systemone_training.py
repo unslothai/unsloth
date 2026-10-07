@@ -176,7 +176,7 @@ def test_training_refuses_a_worker_that_has_not_reaped(resident, cleanup, monkey
 
 def test_gpu_registration_rechecks_training(resident, monkeypatch):
     active = iter([False, True])
-    monkeypatch.setattr(runtime, "_training_active", lambda: next(active))
+    monkeypatch.setattr(runtime, "_training_active", lambda: next(active), raising = False)
     monkeypatch.setattr(systemone_settings, "get_device", lambda: "gpu")
     monkeypatch.setattr(systemone_settings, "get_backend", lambda: "pytorch")
     monkeypatch.setattr(
