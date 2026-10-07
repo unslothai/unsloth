@@ -2,17 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
 
-"""unsloth-run: execute an unslothai/notebooks notebook unchanged, headless.
-
-Resolves the transformers version the notebook wants (install-cell pin, else the
-model-name tier), launches the kernel with that sidecar on PYTHONPATH so the whole
-kernel process is coherent, and executes every cell with nbconvert.
-
-Usage:
-  unsloth-run <notebook.ipynb | URL> [--out OUT.ipynb] [--timeout SECONDS]
-              [--fetch-timeout SECONDS] # URL download stall limit (default 60)
-              [--transformers X.Y.Z]    # force a version, skip auto-detect
-"""
+"""execute notebooks headlessly with one transformers version active per kernel."""
 
 import argparse, json, os, re, shutil, stat, subprocess, sys, tempfile, urllib.parse, urllib.request
 
@@ -25,10 +15,7 @@ except Exception:
 _MODEL_RE = re.compile(r"""from_pretrained\(\s*['"]([^'"]+)['"]""")
 _MODEL_NAME_RE = re.compile(r"""model_name\s*=\s*['"]([^'"]+)['"]""")
 
-# The install-cell scanner lives in unsloth_nb_compat, which is the copy the image puts
-# in site-packages and therefore the only one an IPython kernel can import. Sharing it
-# is what stops this path and the kernel hook from disagreeing about what counts as an
-# install line, which would put the kernel on one sidecar and the hook on another.
+# share the site-packages scanner so this path and the IPython hook select the same sidecar.
 if compat is not None:
     _PIN_RE = compat._PIN_RE
     _INSTALL_RE = compat._INSTALL_RE
@@ -190,18 +177,13 @@ def main():
         out_dir = os.path.dirname(out_path) or "."
         _makedirs_as_host(out_dir)
         if args.notebook.startswith(("http://", "https://")):
-            # A URL has no source tree to run in, so the download stays beside --out:
-            # that is the directory the run's own artifacts should land in.
+            # keep URL inputs beside --out so relative artifacts land in the output directory
             fd, src_path = tempfile.mkstemp(prefix = ".unsloth-run-in-", suffix = ".ipynb", dir = out_dir)
             with os.fdopen(fd, "w") as f:
                 json.dump(nb, f)
             tmp_files.append(src_path)
         else:
-            # nbconvert makes the INPUT notebook's directory the kernel cwd
-            # (Exporter.from_filename sets resources["metadata"]["path"] to it), so a
-            # staged copy under --out would resolve the notebook's relative opens,
-            # local imports and saves against the OUTPUT tree. Execute the original
-            # where it lives; only the result is staged beside --out.
+            # nbconvert uses the input directory as the kernel cwd, so keep local inputs in place
             src_path = args.notebook
         fd, publish_from = tempfile.mkstemp(
             prefix = ".unsloth-run-out-", suffix = ".ipynb", dir = out_dir
@@ -219,12 +201,7 @@ def main():
 
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"
-    # Per-run marker, and ALWAYS a fresh one: an inherited value is never this run's.
-    # The IPython startup hook gives every kernel its own UNSLOTH_NB_TF_MARKER, so
-    # `!unsloth-run nb.ipynb` from a notebook cell inherits the CALLER's. Reusing it
-    # broke both ways: a target with a pin overwrote the caller kernel's pin, and a
-    # target with no pin ran against the caller's stale one. Either way a kernel that
-    # has not imported transformers yet can be handed the wrong sidecar.
+    # nested runs need a fresh marker to avoid overwriting or reusing the caller's transformers pin
     fd, marker = tempfile.mkstemp(prefix = ".unsloth-run-tfmarker-")
     os.close(fd)
     env["UNSLOTH_NB_TF_MARKER"] = marker
@@ -265,13 +242,12 @@ def main():
             try:
                 os.replace(publish_from, out_path)
             except OSError:
-                # rename(2) onto a bind-mounted OUTPUT FILE returns EBUSY even though
-                # the file is writable, and such a mount needs the inode write anyway
+                # bind-mounted output files return EBUSY from rename(2) and require writing the mounted inode
                 try:
                     with open(publish_from, "rb") as staged, open(out_path, "wb") as live:
                         shutil.copyfileobj(staged, live)
                 except OSError:
-                    # keep the result rather than delete it: a run can be hours long
+                    # preserve the result because the run may have taken hours
                     if publish_from in tmp_files:
                         tmp_files.remove(publish_from)
                     print(
