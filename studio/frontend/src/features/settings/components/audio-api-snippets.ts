@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Audio API examples, built without React so the node test runner can check every one.
-
 import {
   AUDIO_CPP_MODELS,
   AUDIO_CPP_REPO,
@@ -28,7 +26,6 @@ export type AudioApiTab = "speak" | "clone" | "transcribe" | "workflows";
 export type AudioRunWorkflow = "separate" | "convert" | "music" | "edit";
 export type AudioApiLang = "curl" | "python" | "javascript";
 export type AudioApiOs = "unix" | "windows";
-/** One model per example: the tabs, with Workflows split by the run it shows. */
 export type AudioApiExample =
   | Exclude<AudioApiTab, "workflows">
   | AudioRunWorkflow;
@@ -47,10 +44,8 @@ export const AUDIO_RUN_WORKFLOWS: readonly AudioRunWorkflow[] = [
 ];
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
-// The OpenAI SDKs require some api_key; the keyless dummy the chat examples use.
 const KEYLESS_KEY_PLACEHOLDER = "not-needed";
 
-/** The key the examples print: the revealed one, else whichever placeholder the server admits. */
 export function audioApiKey(
   apiKey: string | null | undefined,
   server: {
@@ -76,7 +71,7 @@ export function langFromStored(stored: string | null): AudioApiLang {
   return "curl";
 }
 
-/** What to store when a language is picked here: nothing when the chat card's variant already has it. */
+// null: the chat card's stored variant already carries this language.
 export function audioLangToStore(
   stored: string | null,
   lang: AudioApiLang,
@@ -84,7 +79,6 @@ export function audioLangToStore(
   return stored && langFromStored(stored) === lang ? null : lang;
 }
 
-/** Where an Audio page's "Use via API" lands. */
 export function audioApiExampleFor(workflow: AudioCppWorkflow): {
   tab: AudioApiTab;
   run: AudioRunWorkflow | null;
@@ -98,7 +92,6 @@ export function audioApiExampleFor(workflow: AudioCppWorkflow): {
 
 const folder = (name: string) => `${AUDIO_CPP_REPO}/${name}`;
 
-/** Shown when nothing downloaded fits, so the example still has the right shape. */
 export const AUDIO_API_PLACEHOLDER_MODELS: Record<AudioApiExample, string> = {
   speak: folder("Kokoro-82M-GGUF"),
   clone: folder("VoxCPM2-GGUF"),
@@ -109,11 +102,7 @@ export const AUDIO_API_PLACEHOLDER_MODELS: Record<AudioApiExample, string> = {
   edit: folder("DotTTS-Edit-GGUF"),
 };
 
-/**
- * Whether an Audio page's model can run the example. The page can hand over whatever is
- * resident, a chat model included, so once /v1/models answers it must list the model; until
- * then only a catalog model that runs the workflow counts. Separation models are not listed.
- */
+// The page can hand over any resident model (a chat one too), so /v1/models must list it once it answers.
 export function audioApiModelFits(
   models: readonly AudioApiModel[] | null,
   id: string,
@@ -127,13 +116,11 @@ export function audioApiModelFits(
   return !!listed && canRun(listed, example);
 }
 
-// /v1/models gives a task, not workflows, so the audio.cpp catalog says what each model does.
-// Models it does not know fall back to the family hints the Audio pages use.
+// /v1/models gives a task, not workflows: the audio.cpp catalog decides, family hints for unknown repos.
 function canRun(model: AudioApiModel, example: AudioApiExample): boolean {
   if (example === "transcribe") {
     return model.task === "automatic-speech-recognition";
   }
-  // Separation models are not listed in /v1/models yet.
   if (model.task !== "text-to-speech" || example === "separate") return false;
   const known = audioCppModelFor(model.id);
   if (known) return audioCppWorkflowsFor(known).includes(example);
@@ -147,7 +134,6 @@ function canRun(model: AudioApiModel, example: AudioApiExample): boolean {
         isCloneAndConvertFamilyId(model.id) || isConvertOnlyFamilyId(model.id)
       );
     default:
-      // Every edit and music model is in the catalog.
       return false;
   }
 }
@@ -156,17 +142,12 @@ const CATALOG_ORDER = new Map(
   AUDIO_CPP_MODELS.map((model, index) => [model.id.toLowerCase(), index]),
 );
 
-/**
- * The model an example names, or null when none fits. A loaded one first, then the Audio
- * pages' own order (their default picks lead it), then repos the catalog does not know.
- */
 export function pickAudioApiModel(
   models: readonly AudioApiModel[],
   example: AudioApiExample,
 ): string | null {
   const rank = (model: AudioApiModel) => [
     model.loaded ? 0 : 1,
-    // The Transcribe example shows timestamps when a downloaded model returns them.
     example === "transcribe" && !transcribeWithTimestamps(model.id) ? 1 : 0,
     CATALOG_ORDER.get(model.id.toLowerCase()) ?? AUDIO_CPP_MODELS.length,
   ];
@@ -180,8 +161,7 @@ export function pickAudioApiModel(
   return fits[0]?.id ?? null;
 }
 
-// Mirrors ALWAYS_TIMESTAMPED in studio/backend/core/inference/stt_details.py. Qwen3-ASR times
-// its words only once its aligner is downloaded, and other engines answer timestamps with a 400.
+// Mirrors ALWAYS_TIMESTAMPED in studio/backend/core/inference/stt_details.py; other engines 400 on timestamps.
 const TIMESTAMPED_FAMILY_HINT =
   /parakeet[-_]?tdt|moss[-_]?transcribe[-_]?diarize|vibevoice[-_]?asr|kroko/i;
 
@@ -203,7 +183,6 @@ const CLONE_TRANSCRIPT = "The words spoken in me.wav.";
 const EDIT_FROM = "The quick brown fox jumps over the lazy dog.";
 const EDIT_TO = "The quick red fox jumps over the lazy dog.";
 
-// An uploaded input's id, written in each language's own way.
 type Ref = { upload: string };
 type Json = string | number | boolean | Ref | Json[] | { [key: string]: Json };
 
@@ -235,11 +214,9 @@ function scalar(value: string | number | boolean, style: Style): string {
   return style === "powershell" ? text.replace(/[`$]/g, "`$&") : text;
 }
 
-/** Pretty JSON that is also a Python dict, a JS object and a jq program. */
 function render(value: Json, style: Style, indent = ""): string {
   if (isRef(value)) return refExpr(value.upload, style);
   if (typeof value !== "object") return scalar(value, style);
-  // Python's own four spaces; two elsewhere, like the chat examples.
   const inner = `${indent}${style === "python" ? "    " : "  "}`;
   const entries = Array.isArray(value)
     ? value.map((item) => `${inner}${render(item, style, inner)}`)
@@ -255,8 +232,7 @@ function render(value: Json, style: Style, indent = ""): string {
 
 const j = (value: string) => JSON.stringify(value);
 
-// Mirrors the rvc family in audio_cpp_models.py: it converts only to its built-in voices
-// and refuses a target recording.
+// Mirrors the rvc family in audio_cpp_models.py: built-in voices only, a target recording is refused.
 const BUILTIN_VOICE_CONVERTER = /(^|[-_ /.])rvc([-_ /.]|$)/i;
 // Mirrors the music specs there: Stable Audio's SFX build and ControlFoley make no songs.
 const SFX_ONLY_MUSIC = /(^|[-_ /.])sfx([-_ /.]|$)|controlfoley/i;
@@ -333,7 +309,6 @@ function runPlan(workflow: AudioRunWorkflow, model: string): RunPlan {
         },
       };
     default: {
-      // The same edit part the Edit page sends for this family.
       const edit = Object.fromEntries(
         Object.entries(
           EDIT_ADAPTERS[editFamily(model)].buildEdit({
@@ -380,7 +355,6 @@ function powershellUpload(name: string, file: string): string {
   --data-binary "@${file}" | ConvertFrom-Json`;
 }
 
-/** A JSON body for curl: a plain literal, or built by jq when it carries upload ids. */
 function bashBody(body: { [key: string]: Json }, refs: string[]): string {
   if (refs.length === 0) return `'${shSingle(render(body, "json", "  "))}'`;
   const args = refs
@@ -395,12 +369,9 @@ Set-Content -Path body.json -Value $body -Encoding ascii`;
 }
 
 interface ClientNeeds {
-  /** The OpenAI SDK client, for speech and transcriptions. */
   sdk: boolean;
-  /** Studio routes the SDK has no method for: uploads, saved voices, workflow runs. */
   studio: boolean;
   upload: boolean;
-  /** A workflow run answers only when it finishes, which can take longer than 5 minutes. */
   longRuns: boolean;
 }
 

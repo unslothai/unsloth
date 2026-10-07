@@ -104,7 +104,6 @@ export function AudioApiExamples({
   const setStoredTab = useSettingsPanelPrefsStore((s) => s.setApiAudioExample);
   const setStoredLang = useSettingsPanelPrefsStore((s) => s.setApiExampleLang);
   const setStoredOs = useSettingsPanelPrefsStore((s) => s.setApiExampleOs);
-  // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
   const [tab, setTab] = useState<AudioApiTab>(
     AUDIO_API_TABS.find((id) => id === storedPrefs.apiAudioExample) ?? "speak",
@@ -118,10 +117,8 @@ export function AudioApiExamples({
   );
   // null until /v1/models answers, so a slow or failed listing never claims nothing is downloaded.
   const [models, setModels] = useState<AudioApiModel[] | null>(null);
-  // Audio requests load the model they name only with Model auto-switch on. null: unknown.
   const [autoSwitch, setAutoSwitch] = useState<boolean | null>(null);
   const [copied, setCopied] = useState(false);
-  // An Audio page's own model, shown for its example until the user changes the example.
   const [pageModel, setPageModel] = useState<{
     example: AudioApiExample;
     model: string;
@@ -130,7 +127,6 @@ export function AudioApiExamples({
   const audioApiRequested = useSettingsDialogStore((s) => s.audioApiRequested);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
 
-  // "Use via API" on an Audio page: show its workflow and model.
   useEffect(() => {
     if (!audioApiRequested) return;
     const next = audioApiExampleFor(audioApiRequested.workflow);
@@ -152,9 +148,7 @@ export function AudioApiExamples({
     if (scrollTarget !== "api-keys-audio-api") return;
     const section = sectionRef.current;
     if (!section) return;
-    // The sections above load their own data and grow after this mounts, so keep the card
-    // at the top while they settle, until the user scrolls. Consumed only then: clearing
-    // the target re-runs this effect, whose cleanup would stop the pinning straight away.
+    // Consumed only after the user scrolls: clearing it re-runs this effect, whose cleanup stops the pinning.
     const pin = () => section.scrollIntoView({ block: "start" });
     const observer = new ResizeObserver(pin);
     observer.observe(section.parentElement ?? section);
@@ -176,7 +170,6 @@ export function AudioApiExamples({
     };
   }, [scrollTarget]);
 
-  // One fetch: unlike the chat examples, these never follow what is resident.
   useEffect(() => {
     let cancelled = false;
     listOpenAIAudioModels().then(
@@ -223,7 +216,6 @@ export function AudioApiExamples({
   );
   // Separation models are not in /v1/models, so an unpicked one says nothing about the disk.
   const placeholder = models !== null && !picked && example !== "separate";
-  // Not with the placeholder line: there is nothing downloaded to load.
   const needsLoad =
     !placeholder &&
     autoSwitch === false &&

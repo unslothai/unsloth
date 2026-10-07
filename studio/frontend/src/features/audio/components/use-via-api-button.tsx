@@ -15,7 +15,6 @@ import { useT } from "@/i18n";
 import { isAudioCppFolderId } from "../audio-cpp-catalog";
 import type { AudioWorkflowId } from "../workflows";
 
-/** Opens Settings → API keys at the Audio API card, showing this page's workflow and model. */
 export function UseViaApiButton({
   workflow,
   model,
@@ -45,8 +44,6 @@ export function UseViaApiButton({
           className="flex h-[calc(34px*var(--ui-space-scale,1))] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <HugeiconsIcon icon={ApiIcon} className="size-4 shrink-0" />
-          {/* Only where the header has room: the Create/Train pills and the Library link
-              share it, and neither should be cut short for this. */}
           <span className="hidden whitespace-nowrap @[84rem]:inline">
             {label}
           </span>

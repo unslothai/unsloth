@@ -44,7 +44,6 @@ export type SettingsScrollTarget =
   | "resources-caches"
   | "sandbox-permissions";
 
-/** An Audio page asking the API keys tab to show its workflow, with its model when it has one. */
 export interface AudioApiRequest {
   workflow:
     | "speak"
@@ -86,15 +85,13 @@ interface SettingsDialogState {
   // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
   connectionRequested: string | null;
-  // Set by an Audio page's "Use via API". The Audio API card applies it, then clears it.
-  // Same lifetime as archivedRequested.
+  // The Audio API card applies it, then clears it. Same lifetime as archivedRequested.
   audioApiRequested: AudioApiRequest | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
   openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
   /** Open Connections with `providerId`'s edit form already up. */
   openConnectionSettings: (providerId: string) => void;
-  /** Open API keys at the Audio API card, showing `request`'s workflow and model. */
   openAudioApi: (request: AudioApiRequest) => void;
   consumeAudioApiRequest: () => void;
   consumeArchivedChatsRequest: () => void;

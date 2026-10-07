@@ -59,7 +59,6 @@ test("every example names its routes, the server, the key and the model", () => 
       });
       const where = `${example} ${lang} ${os}`;
       for (const path of PATHS[example]) {
-        // The SDKs call speech and transcriptions by method, not path.
         const call =
           lang === "curl"
             ? path
@@ -112,7 +111,6 @@ test("model ids and text are escaped for each language", () => {
     os: "unix",
   });
   assert.ok(js.includes(`model: ${JSON.stringify(model)}`));
-  // bash: the whole body is one single-quoted word.
   const bash = S.buildAudioApiSnippet("speak", {
     ...input,
     lang: "curl",
@@ -123,7 +121,6 @@ test("model ids and text are escaped for each language", () => {
     bash.indexOf("' \\\n  -o"),
   );
   assert.equal(JSON.parse(quoted.replace(/'\\''/g, "'")).model, model);
-  // PowerShell: an expandable here-string, so $ and ` are escaped.
   const ps = S.buildAudioApiSnippet("speak", {
     ...input,
     lang: "curl",
@@ -159,9 +156,7 @@ test("the Edit body follows the model's family", () => {
 test("timestamps are asked for only where the model returns them", () => {
   assert.ok(S.transcribeWithTimestamps(cpp("Parakeet-TDT-0.6B-v3-GGUF")));
   assert.ok(S.transcribeWithTimestamps(cpp("MOSS-Transcribe-Diarize-GGUF")));
-  // Needs its aligner first.
   assert.ok(!S.transcribeWithTimestamps(cpp("Qwen3-ASR-0.6B-GGUF")));
-  // Other engines answer timestamp_granularities with a 400.
   assert.ok(!S.transcribeWithTimestamps("openai/whisper-large-v3-turbo"));
   const input = { base: BASE, apiKey: KEY, lang: "curl", os: "unix" } as const;
   const timed = S.buildAudioApiSnippet("transcribe", {
@@ -199,7 +194,6 @@ test("each example picks a downloaded model that can run it, loaded first", () =
     S.pickAudioApiModel(models, "transcribe"),
     cpp("Parakeet-TDT-0.6B-v3-GGUF"),
   );
-  // Unknown folders come after the catalog's, whatever their name sorts as.
   assert.equal(
     S.pickAudioApiModel(
       [
@@ -218,7 +212,6 @@ test("each example picks a downloaded model that can run it, loaded first", () =
     ),
     cpp("Parakeet-TDT-0.6B-v3-GGUF"),
   );
-  // /v1/models lists no separation models.
   assert.equal(S.pickAudioApiModel(models, "separate"), null);
 });
 
@@ -248,15 +241,11 @@ test("a page's model is used only where it can run the example", () => {
     tts(cpp("Kokoro-82M-GGUF")),
     tts("unsloth/orpheus-3b-0.1-ft"),
   ];
-  // Separation models are never listed, so the catalog decides.
   assert.ok(S.audioApiModelFits(listed, cpp("HTDemucs-GGUF"), "separate"));
-  // A separator left loaded while the Speak page is open.
   assert.ok(!S.audioApiModelFits(listed, cpp("HTDemucs-GGUF"), "speak"));
   assert.ok(!S.audioApiModelFits(listed, cpp("Kokoro-82M-GGUF"), "clone"));
   assert.ok(S.audioApiModelFits(listed, "unsloth/orpheus-3b-0.1-ft", "speak"));
-  // The resident model the page hands over can be a chat model: /v1/models must list it.
   assert.ok(!S.audioApiModelFits(listed, "unsloth/Qwen3-8B-GGUF", "speak"));
-  // Before the listing answers, only a catalog model that runs the workflow counts.
   assert.ok(S.audioApiModelFits(null, cpp("Kokoro-82M-GGUF"), "speak"));
   assert.ok(!S.audioApiModelFits(null, "unsloth/Qwen3-8B-GGUF", "speak"));
 });
@@ -268,7 +257,6 @@ test("the Convert and Music bodies follow what the model accepts", () => {
     lang: "python",
     os: "unix",
   } as const;
-  // RVC converts only to its built-in voices and refuses a target recording.
   const rvc = S.buildAudioApiSnippet("convert", {
     ...input,
     model: cpp("RVC-GGUF"),
@@ -280,7 +268,6 @@ test("the Convert and Music bodies follow what the model accepts", () => {
     model: cpp("SeedVC-MLX-GGUF"),
   });
   assert.ok(seed.includes('"target"') && seed.includes("voice.wav"));
-  // SFX-only music models make no songs.
   for (const name of ["Stable-Audio-3-Small-SFX-GGUF", "ControlFoley-GGUF"]) {
     const sfx = S.buildAudioApiSnippet("music", { ...input, model: cpp(name) });
     assert.ok(sfx.includes('"mode": "sfx"') && !sfx.includes("lyrics"), name);
@@ -326,9 +313,7 @@ test("the key is the revealed one, else the placeholder this server admits", () 
     S.audioApiKey("sk-unsloth-real", { ...local, scope: "full" }),
     "sk-unsloth-real",
   );
-  // Keyless "everything else" admits the audio routes on loopback.
   assert.equal(S.audioApiKey(null, { ...local, scope: "full" }), "not-needed");
-  // The inference scope does not cover them, and a tunnel never accepts the dummy.
   assert.equal(
     S.audioApiKey(null, { ...local, scope: "inference" }),
     "sk-unsloth-YOUR_KEY",
