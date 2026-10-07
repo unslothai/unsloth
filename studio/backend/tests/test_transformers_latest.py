@@ -342,6 +342,9 @@ class TestLatestTransformersSupports:
         assert not tl._snapshot_is_fresh(snapshot)
         snapshot["main_version"] = "5.14.0.dev0"
         assert tl._snapshot_is_fresh(snapshot)
+        # A failed main mapping fetch is retried after the same backoff.
+        snapshot["main_checked"] = False
+        assert not tl._snapshot_is_fresh(snapshot)
 
     def test_corrupt_disk_cache_ignored(self, monkeypatch, tmp_path: Path):
         counter = {}
@@ -782,18 +785,25 @@ class TestInstallLatestTransformers:
             before_swap = None,
         ):
             recorded["version"] = version
+            recorded["source"] = tv._install_source(f"transformers=={version}")
             return True
 
+        monkeypatch.setattr(tl, "_resolve_main_commit", lambda: "a" * 40)
+        monkeypatch.setattr(tl, "_fetch_main_version", lambda ref = "main": "5.14.0.dev0")
         monkeypatch.setattr(tl, "ensure_latest_transformers_venv", _fake_ensure)
         monkeypatch.setattr(tl, "latest_venv_pinned_version", lambda: "5.14.0.dev0")
         result = install_latest_transformers("5.14.0.dev0")
         assert result["success"] is True and "(main)" in result["message"]
         assert recorded["version"] == "5.14.0.dev0"
+        # The archive is the commit whose version was checked, not the moving branch.
+        assert recorded["source"].endswith(f"/archive/{'a' * 40}.zip")
+        assert tv._install_source("transformers==5.14.0.dev0").endswith("refs/heads/main.zip")
 
     def test_main_moved_since_check_rejected(self, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
         seen = iter(["5.14.0.dev0", "5.15.0.dev0"])
-        monkeypatch.setattr(tl, "_fetch_main_version", lambda: next(seen))
+        monkeypatch.setattr(tl, "_fetch_main_version", lambda ref = "main": next(seen))
+        monkeypatch.setattr(tl, "_resolve_main_commit", lambda: "b" * 40)
         monkeypatch.setattr(
             tl,
             "ensure_latest_transformers_venv",
@@ -804,6 +814,19 @@ class TestInstallLatestTransformers:
         result = install_latest_transformers("5.14.0.dev0")
         assert result["success"] is False and "no longer" in result["message"]
         assert result["latest_main_version"] == "5.15.0.dev0"
+
+    def test_unresolvable_main_commit_rejected(self, monkeypatch):
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
+        monkeypatch.setattr(tl, "_resolve_main_commit", lambda: None)
+        monkeypatch.setattr(
+            tl,
+            "ensure_latest_transformers_venv",
+            lambda v, extra_packages = (), before_swap = None: (_ for _ in ()).throw(
+                AssertionError("must not install")
+            ),
+        )
+        result = install_latest_transformers("5.14.0.dev0")
+        assert result["success"] is False and "Could not check" in result["message"]
 
     def test_stale_main_version_rejected(self, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))

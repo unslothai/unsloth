@@ -3343,13 +3343,26 @@ def _pin_spec_name(spec: str) -> str:
 
 # PyPI never hosts a transformers .devN build, so a dev pin means main (the zip needs no git).
 _TRANSFORMERS_MAIN_ARCHIVE = (
-    "transformers @ https://github.com/huggingface/transformers/archive/refs/heads/main.zip"
+    "transformers @ https://github.com/huggingface/transformers/archive/{ref}.zip"
 )
+# The main commit the consented install checked; installs are serialized by the swap reservation.
+_main_archive_commit: str | None = None
+
+
+@contextlib.contextmanager
+def transformers_main_at(commit: str):
+    """Install transformers main from *commit* (not the moving branch) inside this block."""
+    global _main_archive_commit
+    previous, _main_archive_commit = _main_archive_commit, commit
+    try:
+        yield
+    finally:
+        _main_archive_commit = previous
 
 
 def _install_source(pkg: str) -> str:
     if re.fullmatch(r"transformers==[0-9.]+\.dev[0-9]+", pkg):
-        return _TRANSFORMERS_MAIN_ARCHIVE
+        return _TRANSFORMERS_MAIN_ARCHIVE.format(ref = _main_archive_commit or "refs/heads/main")
     return pkg
 
 
@@ -3635,6 +3648,15 @@ def _ensure_venv_t5_latest_exists() -> bool:
     # the sidecar whichever we take: it cannot see sub-file damage itself, and a mapping
     # cached before the damage keeps it off the scanning path. A successful repair clears it.
     _request_latest_repair()
+    if ".dev" in version:
+        # Main moves, so a rebuild would install code the user never agreed to. Stay broken: the
+        # model then reads as unsupported again and the consent dialog offers a fresh install.
+        logger.warning(
+            ".venv_t5_latest (transformers %s from main) is incomplete; load the model again "
+            "to reinstall it.",
+            version,
+        )
+        return False
     if _env_offline():
         logger.warning(
             ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "

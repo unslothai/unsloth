@@ -4258,7 +4258,12 @@ class TestTransformersMainSource:
     def test_dev_pin_installs_from_main_archive(self):
         import utils.transformers_version as tv
 
-        assert tv._install_source("transformers==5.19.0.dev0") == tv._TRANSFORMERS_MAIN_ARCHIVE
+        assert tv._install_source("transformers==5.19.0.dev0").endswith(
+            "/transformers/archive/refs/heads/main.zip"
+        )
+        with tv.transformers_main_at("c" * 40):
+            assert tv._install_source("transformers==5.19.0.dev0").endswith(f"/{'c' * 40}.zip")
+        assert tv._install_source("transformers==5.19.0.dev0").endswith("refs/heads/main.zip")
         assert tv._install_source("transformers==5.18.0") == "transformers==5.18.0"
         assert tv._install_source("tokenizers==0.23.0") == "tokenizers==0.23.0"
 
@@ -4271,3 +4276,20 @@ class TestTransformersMainSource:
         assert "huggingface_hub==1.8.0" not in pkgs and "hf_xet==1.4.2" not in pkgs
         assert pkgs.count("huggingface-hub==1.32.0") == 1 and "hf-xet==1.5.2" in pkgs
         assert pkgs[0] == "transformers==5.19.0.dev0"
+
+    def test_main_sidecar_is_never_repaired_without_consent(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(
+            tv,
+            "_latest_pin_data",
+            lambda: {"version": "5.19.0.dev0", "packages": ["transformers==5.19.0.dev0"]},
+        )
+        monkeypatch.setattr(tv, "_venv_dir_health", lambda d, p: (False, True))
+        monkeypatch.setattr(tv, "_request_latest_repair", lambda: None)
+        monkeypatch.setattr(
+            tv,
+            "_stage_and_swap_latest_venv",
+            lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not reinstall main")),
+        )
+        assert tv._ensure_venv_t5_latest_exists() is False

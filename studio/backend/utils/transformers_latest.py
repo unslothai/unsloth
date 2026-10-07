@@ -34,6 +34,7 @@ persistent ``.venv_t5_latest`` sidecar via
 :func:`utils.transformers_version.ensure_latest_transformers_venv`.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -257,11 +258,11 @@ def _save_snapshot_file(snapshot: dict) -> None:
 def _snapshot_is_fresh(snapshot: dict | None) -> bool:
     if snapshot is None:
         return False
-    # A failed main-version lookup would otherwise hide the main install for the whole TTL.
+    # A failed main lookup (mappings or version) would otherwise hide the main install all day.
     ttl = (
-        _FAILURE_BACKOFF_SECONDS
-        if snapshot.get("main_checked") and not snapshot.get("main_version")
-        else _CACHE_TTL_SECONDS
+        _CACHE_TTL_SECONDS
+        if snapshot.get("main_checked") and snapshot.get("main_version")
+        else _FAILURE_BACKOFF_SECONDS
     )
     return (time.time() - float(snapshot.get("fetched_at", 0))) < ttl
 
@@ -534,11 +535,11 @@ def _canonical_dep_name(name: str) -> str:
 _MAIN_RAW = "https://raw.githubusercontent.com/huggingface/transformers/main"
 
 
-def _fetch_main_version() -> str | None:
-    """``__version__`` on transformers main (a ``.devN`` string), or None."""
+def _fetch_main_version(ref: str = "main") -> str | None:
+    """``__version__`` on transformers *ref* (a ``.devN`` string), or None."""
     from utils.transformers_version import _is_valid_version_string
 
-    body = _fetch_text(f"{_MAIN_RAW}/src/transformers/__init__.py")
+    body = _fetch_text(f"{_MAIN_RAW.rsplit('/', 1)[0]}/{ref}/src/transformers/__init__.py")
     if body is None or body == _FETCH_MISSING:
         return None
     match = re.search(r'^__version__\s*=\s*"([^"]+)"', body, re.MULTILINE)
@@ -549,6 +550,18 @@ def _fetch_main_version() -> str | None:
     ):
         return None
     return match.group(1)
+
+
+_MAIN_REFS = "https://github.com/huggingface/transformers.git/info/refs?service=git-upload-pack"
+
+
+def _resolve_main_commit() -> str | None:
+    """The commit main points at, from git's ref advertisement (not the rate-limited API)."""
+    body = _fetch_text(_MAIN_REFS)
+    if body is None or body == _FETCH_MISSING:
+        return None
+    match = re.search(r"([0-9a-f]{40}) refs/heads/main(?:\x00|\n)", body)
+    return match.group(1) if match else None
 
 
 def _fetch_main_requires() -> list[str] | None:
@@ -768,13 +781,18 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "latest_version": snapshot["pypi_version"],
             "latest_main_version": snapshot.get("main_version"),
         }
-    current_main = _fetch_main_version() if from_main else version
-    if current_main != version:
-        # The sidecar check needs the installed version to equal the pin, and main moves.
+    main_commit = current_main = None
+    if from_main:
+        # Check the version at one commit and install that commit, so main cannot move between.
+        main_commit = _resolve_main_commit()
+        current_main = _fetch_main_version(main_commit) if main_commit else None
+    if from_main and current_main != version:
         return {
             "success": False,
             "version": version,
-            "message": f"transformers main is no longer {version}; retry to install the current main.",
+            "message": f"transformers main is no longer {version}; retry to install the current main."
+            if current_main
+            else "Could not check transformers main; retry.",
             "latest_version": snapshot["pypi_version"],
             "latest_main_version": current_main,
         }
@@ -787,7 +805,13 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             f"{version}: this environment does not satisfy {', '.join(blockers)}. "
             "An Unsloth update is required first.",
         }
-    if not ensure_latest_transformers_venv(version, extra_packages, before_swap = before_swap):
+    from utils.transformers_version import transformers_main_at
+
+    with transformers_main_at(main_commit) if main_commit else contextlib.nullcontext():
+        installed = ensure_latest_transformers_venv(
+            version, extra_packages, before_swap = before_swap
+        )
+    if not installed:
         return {
             "success": False,
             "version": version,
