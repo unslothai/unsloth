@@ -553,7 +553,8 @@ class ClefDecisionModel(torch.nn.Module):
     ):
         head = self.head if head is None else head
         backbone = self._backbone()
-        text_model = backbone.model
+        # GPT-2 style models keep their decoder under base_model_prefix (.transformer), not .model.
+        text_model = getattr(backbone, "model", None) or backbone.base_model
         text_model = getattr(text_model, "language_model", text_model)
         hidden = text_model(
             input_ids = input_ids,
@@ -892,10 +893,19 @@ def _load_clef(
         ).get("base_model_name_or_path")
         if not base:
             raise ValueError(f"Unsloth: {folder} has adapters but does not name their base model.")
+        if full_finetuning:
+            # PEFT would freeze the base and the adapters, leaving only the head to train.
+            raise ValueError(
+                f"Unsloth: {folder} holds LoRA adapters. Save it with save_pretrained_merged and "
+                "full finetune the merged folder instead."
+            )
         config["base_model"] = str(base)
+        if config.get("base_revision"):
+            kwargs.setdefault("revision", config["base_revision"])
     else:
         # A later adapter save sits on these merged weights, not on what they were trained from.
         config["base_model"] = str(model_name or folder)
+        config.pop("base_revision", None)
     fast = _device().type != "cpu"
     if fast:
         from .loader import FastModel
@@ -922,20 +932,23 @@ def _load_clef(
 
         source = config["base_model"] if adapter else str(folder)
         # Clef's own backbones are vision models; ones converted from a text-only LM are not.
+        revision = {"revision": kwargs["revision"]} if adapter and kwargs.get("revision") else {}
         if (
-            getattr(AutoConfig.from_pretrained(source, token = token), "vision_config", None)
+            getattr(
+                AutoConfig.from_pretrained(source, token = token, **revision), "vision_config", None
+            )
             is not None
         ):
             from transformers import AutoModelForImageTextToText as AutoClass
         else:
             from transformers import AutoModelForCausalLM as AutoClass
             AutoProcessor = AutoTokenizer
-        backbone = AutoClass.from_pretrained(source, dtype = dtype or torch.float32, token = token)
+        backbone = AutoClass.from_pretrained(
+            source, dtype = dtype or torch.float32, token = token, **revision
+        )
         if adapter:
             from peft import PeftModel
-            backbone = PeftModel.from_pretrained(
-                backbone, str(folder), is_trainable = not full_finetuning
-            )
+            backbone = PeftModel.from_pretrained(backbone, str(folder), is_trainable = True)
         processor = AutoProcessor.from_pretrained(str(folder))
         if not full_finetuning and not adapter:
             backbone.requires_grad_(False)
@@ -1115,11 +1128,12 @@ def _save_clef(
     save_directory,
     tokenizer,
     token = None,
+    exact = False,
 ) -> None:
     import shutil
 
     output = Path(save_directory)
-    config, weights = _clef_head_weights(self)
+    config, weights = _clef_head_weights(self, exact)
     source = Path(getattr(self, "_unsloth_source_folder", "") or output)
     with _staging(output) as staging:
         encoder = self.encoder
@@ -1179,6 +1193,8 @@ def _save_clef_adapter(
         if config.get("base_model"):
             adapter = json.loads(adapter_config.read_text(encoding = "utf-8"))
             adapter["base_model_name_or_path"] = config["base_model"]
+            if config.get("base_revision"):
+                adapter["revision"] = config["base_revision"]
             adapter_config.write_text(json.dumps(adapter, indent = 2), encoding = "utf-8")
         tokenizer.save_pretrained(str(staging))
         # A processor save can write a config.json of its own; this folder holds no merged weights.
@@ -1191,16 +1207,30 @@ def _load_clef_checkpoint(model, folder: Path) -> None:
     # Resumes a DecisionTrainer checkpoint: the adapters and the float32 head saved by _save.
     from safetensors.torch import load_file
 
-    if (
-        not hasattr(model.encoder, "peft_config")
-        or not (folder / "adapter_model.safetensors").is_file()
-    ):
-        raise NotImplementedError(
-            "Unsloth: only LoRA Clef decision runs resume from a checkpoint; start a new run."
+    if hasattr(model.encoder, "peft_config"):
+        if not (folder / "adapter_model.safetensors").is_file():
+            raise NotImplementedError(
+                f"Unsloth: {folder} holds no LoRA adapters to resume this run from; start a new run."
+            )
+        from peft import set_peft_model_state_dict
+        set_peft_model_state_dict(
+            model.encoder, load_file(str(folder / "adapter_model.safetensors"))
         )
-    from peft import set_peft_model_state_dict
-
-    set_peft_model_state_dict(model.encoder, load_file(str(folder / "adapter_model.safetensors")))
+    else:
+        # A full finetune checkpoints merged weights (_save); tied embeddings may be stored once.
+        shards = sorted(folder.glob("model*.safetensors"))
+        if not shards:
+            raise NotImplementedError(f"Unsloth: {folder} holds no merged weights to resume from.")
+        state = {}
+        for shard in shards:
+            state.update(load_file(str(shard)))
+        missing, unexpected = model.encoder.load_state_dict(state, strict = False)
+        tied = {k for k in missing if "lm_head" in k or "embed" in k}
+        if unexpected or set(missing) - tied:
+            raise RuntimeError(
+                f"Unsloth: {folder} does not match this model "
+                f"(missing {sorted(set(missing) - tied)[:3]}, unexpected {sorted(unexpected)[:3]})."
+            )
     device = next(model.head.parameters()).device
     head = load_file(str(folder / _CLEF_HEAD_FILES[0]), device = str(device))
     model.head.load_state_dict({k: v.float() for k, v in head.items()}, strict = True)
@@ -1440,7 +1470,7 @@ class DecisionTrainer(Trainer):
         if hasattr(self.model.encoder, "peft_config"):
             _save_clef_adapter(self.model, output, tokenizer, exact = True)
         else:
-            _save_clef(self.model, output, tokenizer)
+            _save_clef(self.model, output, tokenizer, exact = True)
         torch.save(self.args, str(output / "training_args.bin"))
 
     def _load_from_checkpoint(
@@ -1757,6 +1787,21 @@ def push_to_hub_merged(
 
 
 # Decision models in Laya's rl_agent_config.json layout: any encoder plus a typed decision head.
+def _lm_subfolder(model_name, subfolder, token, revision, local_files_only) -> str:
+    if Path(model_name).expanduser().is_dir():
+        return str(Path(model_name).expanduser() / subfolder)
+    from huggingface_hub import snapshot_download
+
+    root = snapshot_download(
+        model_name,
+        allow_patterns = [f"{subfolder}/*"],
+        token = token,
+        revision = revision,
+        local_files_only = local_files_only,
+    )
+    return str(Path(root) / subfolder)
+
+
 class FastDecisionModel:
     @staticmethod
     def from_pretrained(
@@ -1783,6 +1828,8 @@ class FastDecisionModel:
         if kwargs.get("decision_head") is not None:
             # A plain language model plus a fresh (or given) decision head: see decision_from_lm.py.
             from .decision_from_lm import load_lm_as_decision_model
+            if subfolder:
+                model_name = _lm_subfolder(model_name, subfolder, token, revision, local_files_only)
             return load_lm_as_decision_model(
                 model_name,
                 max_seq_length = max_seq_length,
