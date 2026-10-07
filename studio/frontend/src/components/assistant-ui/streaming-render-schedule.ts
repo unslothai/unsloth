@@ -241,7 +241,7 @@ function hasShortcutReference(
     ...(prose.match(LINK_DEFINITION_KEY_RE) ?? []),
   ]) {
     const label = DEFINITION_LABEL_RE.exec(definition)?.[1];
-    if (label !== undefined && label[0] !== "^") {
+    if (label !== undefined) {
       labels.add(normalizeLabel(label));
     }
   }
@@ -253,7 +253,6 @@ function hasShortcutReference(
   const uses = normalizeLineEndings(references);
   for (const match of uses.matchAll(SHORTCUT_REFERENCE_RE)) {
     if (
-      match[1][0] !== "^" &&
       !isEscaped(uses, match.index) &&
       labels.has(normalizeLabel(match[1]))
     ) {

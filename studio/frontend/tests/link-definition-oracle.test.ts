@@ -348,6 +348,7 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
     ],
     ["See [1].\n\n[broken", "[1]: /one"],
     ["See [1].\n\n> [broken", "- [1]: /one"],
+    ["See [^source note].", "[^source note]: https://x.test/source"],
     ["Read [SS] first.", "[\u1E9E]: https://x.test/ss"],
     ["Read [Stra\u00DFe] first.", "[STRASSE]: https://x.test/strasse"],
   ]) {
@@ -387,7 +388,6 @@ test("table cells do not share code span delimiters", () => {
 test("a bracketed label that is not a shortcut reference keeps block rendering", () => {
   for (const reply of [
     "Not a link \\[1] here.\n\n[1]: https://x.test\n",
-    "Note [^1].\n\n[^1]: a footnote\n",
     "Cites [2].\n\n[1]: https://x.test/1\n",
     "No uses.\n\n[1]: https://x.test/a\n[1]: https://x.test/b\n",
     "```py\nx = a[1]\n```\n\n[1]: https://x.test\n",
