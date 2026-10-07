@@ -28,7 +28,6 @@ MSYS_NAMESPACE_REASON = (
     "Git Bash (MSYS2) cannot start in the MXC container, which denies the global named-object "
     "directory it creates (microsoft/mxc#1061)."
 )
-# wxc-exec's refusal with the fallback off: the only tier it may use, BaseContainer, is missing here.
 NO_BUILTIN_CONTAINER_REASON = (
     "This Windows has no built-in container (BaseContainer), and the fallback sandbox is off."
 )

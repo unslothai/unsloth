@@ -198,9 +198,7 @@ test("the built-in container row shows only when MXC runs in it", () => {
     ).builtinInUse;
   assert.equal(builtin({ builtinContainer: true }), true);
   assert.equal(builtin({ builtinContainer: false }), false);
-  // An older server, or a probe that could not tell.
   assert.equal(builtin({ builtinContainer: null }), false);
-  // With the fallback on, either tier may run.
   assert.equal(
     builtin({ builtinContainer: true, allowDaclFallback: true }),
     false,
@@ -209,7 +207,6 @@ test("the built-in container row shows only when MXC runs in it", () => {
     builtin({ builtinContainer: true, runtimeInstalled: false }),
     false,
   );
-  // The switch stays, so the fallback can still be turned on.
   const view = windowsView(
     windows({ allowDaclFallback: false, builtinContainer: true }),
     null,

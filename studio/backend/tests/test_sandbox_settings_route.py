@@ -207,7 +207,6 @@ def test_windows_status_carries_the_opt_in_block(host, windows):
             ),
             False,
         ),
-        # Any other failure says nothing about the tier.
         (False, _cap(available = False, backend = "mxc-processcontainer"), None),
         # With the fallback on, wxc-exec may have used either tier.
         (True, _cap(backend = "mxc-processcontainer"), None),
