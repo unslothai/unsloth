@@ -3,7 +3,10 @@
 
 import remend from "remend";
 import { type BlockProps } from "streamdown";
-import { parseMarkdownIntoBlocks } from "../../lib/parse-markdown-blocks.ts";
+import {
+  parseMarkdownBlockDetails,
+  parseMarkdownIntoBlocks,
+} from "../../lib/parse-markdown-blocks.ts";
 
 // How far behind the live edge a block has to be before it can be retained.
 // The block list interleaves "\n\n" separators, so this is about four
@@ -129,7 +132,7 @@ const LINK_DEFINITION_LABEL_RE = new RegExp(
   `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
 const BACKTICK_RUN_RE = /`+/g;
-const BLANK_LINE_RE = /\n(?:[ \t]*>[ \t]*)*\n/g;
+const BLANK_LINE_RE = /\n[ \t]*\n/g;
 
 // find closers from the right so unmatched openers do not rescan the paragraph.
 function codeSpanRegions(text: string): [number, number][] {
@@ -309,6 +312,7 @@ function normalizeLabel(label: string): string {
 function hasShortcutReference(
   definitions: string,
   references: string,
+  exact = true,
 ): boolean {
   const labels = new Set<string>();
   for (const [, label] of definitions.matchAll(LINK_DEFINITION_LABEL_RE)) {
@@ -323,22 +327,25 @@ function hasShortcutReference(
   const uses = references.replace(LINK_DEFINITION_KEY_RE, (definition) =>
     definition.replace(NON_LINE_ENDING_RE, " "),
   );
-  const code = codeSpanRegions(uses);
+  const code = exact ? codeSpanRegions(uses) : [];
   let codeIndex = 0;
   let inlineEnd = -1;
   for (const match of uses.matchAll(LINK_LABEL_USE_RE)) {
-    if (match.index < inlineEnd) continue;
-    while (codeIndex < code.length && code[codeIndex][1] <= match.index) {
-      codeIndex += 1;
-    }
-    if (codeIndex < code.length && code[codeIndex][0] <= match.index) {
-      continue;
+    if (exact) {
+      if (match.index < inlineEnd) continue;
+      while (codeIndex < code.length && code[codeIndex][1] <= match.index) {
+        codeIndex += 1;
+      }
+      if (codeIndex < code.length && code[codeIndex][0] <= match.index) {
+        continue;
+      }
     }
     if (
       match[1][0] !== "^" &&
       !isEscaped(uses, match.index) &&
       labels.has(normalizeLabel(match[1]))
     ) {
+      if (!exact) return true;
       inlineEnd = inlineLinkEnd(uses, match.index + match[0].length);
       if (inlineEnd >= 0) continue;
       return true;
@@ -421,13 +428,21 @@ const HTML_TAG_START_RE = /[a-zA-Z/]/;
 // paying for exactly the one split it already paid for before any of this existed.
 let splitMarkdown: string | null = null;
 let splitBlocks: readonly string[] = [];
+let splitProseBlocks: readonly string[] = [];
 
 function blocksOf(markdown: string): readonly string[] {
   if (splitMarkdown !== markdown) {
     splitMarkdown = markdown;
-    splitBlocks = parseMarkdownIntoBlocks(markdown);
+    const details = parseMarkdownBlockDetails(markdown);
+    splitBlocks = details.blocks;
+    splitProseBlocks = details.proseBlocks;
   }
   return splitBlocks;
+}
+
+function proseBlocksOf(markdown: string): readonly string[] {
+  blocksOf(markdown);
+  return splitProseBlocks;
 }
 
 // Which replies have to be lexed in one piece.
@@ -452,15 +467,14 @@ function documentProse(markdown: string): string | null {
     !hasLinkDefinition(normalized) ||
     !(
       hasLinkReference(normalized) ||
-      hasShortcutReference(normalized, normalized)
+      hasShortcutReference(normalized, normalized, false)
     )
   ) {
     return null;
   }
   const prose = normalizeLineEndings(
-    blocksOf(markdown)
-      .filter((block) => !isCodeBlock(block))
-      .join("\n"),
+    proseBlocksOf(markdown)
+      .join("\n\n"),
   );
   return LINK_DEFINITION_LINE_RE.test(prose) &&
     (hasLinkReference(prose) || hasShortcutReference(prose, prose))

@@ -152,6 +152,48 @@ const mergeTokensIntoBlocks = (tokens: Token[]): string[] => {
   return mergedBlocks;
 };
 
+const collectProseBlocks = (tokens: Token[]): string[] => {
+  const blocks: string[] = [];
+  for (const token of tokens) {
+    if (token.type === "code" || token.type === "space") {
+      continue;
+    }
+    if (token.type === "blockquote") {
+      blocks.push(...collectProseBlocks(token.tokens ?? []));
+      continue;
+    }
+    if (token.type === "list") {
+      for (const item of token.items) {
+        blocks.push(...collectProseBlocks(item.tokens));
+      }
+      continue;
+    }
+    blocks.push(token.raw);
+  }
+  return blocks;
+};
+
+export function parseMarkdownBlockDetails(markdown: string): {
+  blocks: string[];
+  proseBlocks: string[];
+} {
+  const hasFootnoteReference = footnoteReferencePattern.test(markdown);
+  const hasFootnoteDefinition = footnoteDefinitionPattern.test(markdown);
+
+  if (hasFootnoteReference || hasFootnoteDefinition) {
+    return { blocks: [markdown], proseBlocks: [markdown] };
+  }
+
+  const input = markdown.includes("\r")
+    ? markdown.replace(lineEndingPattern, "\n")
+    : markdown;
+  const tokens = lexBlocks(input);
+  return {
+    blocks: mergeTokensIntoBlocks(tokens),
+    proseBlocks: collectProseBlocks(tokens),
+  };
+}
+
 export function parseMarkdownIntoBlocks(markdown: string): string[] {
   const hasFootnoteReference = footnoteReferencePattern.test(markdown);
   const hasFootnoteDefinition = footnoteDefinitionPattern.test(markdown);
@@ -163,6 +205,5 @@ export function parseMarkdownIntoBlocks(markdown: string): string[] {
   const input = markdown.includes("\r")
     ? markdown.replace(lineEndingPattern, "\n")
     : markdown;
-
   return mergeTokensIntoBlocks(lexBlocks(input));
 }
