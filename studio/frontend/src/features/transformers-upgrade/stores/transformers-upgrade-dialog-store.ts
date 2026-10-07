@@ -138,8 +138,15 @@ export const useTransformersUpgradeDialogStore =
           errorMessage: result.message || "Failed to install transformers.",
           serverUnloadedChat:
             get().serverUnloadedChat || Boolean(result.model_unloaded),
-          ...(result.latest_version && upgrade
-            ? { upgrade: { ...upgrade, pypi_version: result.latest_version } }
+          ...(upgrade && (result.latest_version || result.latest_main_version)
+            ? {
+                upgrade: {
+                  ...upgrade,
+                  pypi_version: result.latest_version ?? upgrade.pypi_version,
+                  main_version:
+                    result.latest_main_version ?? upgrade.main_version,
+                },
+              }
             : {}),
         });
       }

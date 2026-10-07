@@ -3293,8 +3293,8 @@ class TestLatestTierForces16Bit:
             "_guard_chat_load_against_training"
         ), "the upgrade check must run before the training guard"
         assert (
-            "supported_in_pypi" in body.split("_guard_chat_load_against_training")[0]
-        ), "an installable upgrade must force 16-bit sizing for the guard"
+            ".installable" in body.split("_guard_chat_load_against_training")[0]
+        ), "an installable upgrade (PyPI or main) must force 16-bit sizing for the guard"
 
     def test_validate_offered_upgrade_preserves_custom_code_4bit(self):
         # A merely-offered (not installed) upgrade must NOT force 16-bit sizing when the

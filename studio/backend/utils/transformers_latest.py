@@ -9,7 +9,7 @@ Unsloth cannot load it today. This module answers, without authentication, code 
 or trust_remote_code:
 
   1. Does the LATEST transformers release on PyPI ship this ``model_type``?
-  2. Does transformers ``main`` on GitHub ship it (dev-only, not yet installable)?
+  2. Does transformers ``main`` on GitHub ship it (installable from main after consent)?
 
 Sources (all unauthenticated; raw.githubusercontent.com is not API rate-limited and
 api.github.com is deliberately never used):
@@ -255,10 +255,15 @@ def _save_snapshot_file(snapshot: dict) -> None:
 
 
 def _snapshot_is_fresh(snapshot: dict | None) -> bool:
-    return (
-        snapshot is not None
-        and (time.time() - float(snapshot.get("fetched_at", 0))) < _CACHE_TTL_SECONDS
+    if snapshot is None:
+        return False
+    # A failed main-version lookup would otherwise hide the main install for the whole TTL.
+    ttl = (
+        _FAILURE_BACKOFF_SECONDS
+        if snapshot.get("main_checked") and not snapshot.get("main_version")
+        else _CACHE_TTL_SECONDS
     )
+    return (time.time() - float(snapshot.get("fetched_at", 0))) < ttl
 
 
 def _refresh_snapshot() -> dict | None:
@@ -758,16 +763,20 @@ def _install_latest_transformers_locked(version: str, before_swap = None) -> dic
             "version": version,
             "message": f"Requested version {version!r} is not the latest transformers "
             f"release ({snapshot['pypi_version']}).",
-            # Lets the consent dialog retry with the release that superseded the
-            # one /validate saw, instead of re-sending the stale version forever.
+            # Lets the consent dialog retry with the release (or main) that superseded
+            # the one /validate saw, instead of re-sending the stale version forever.
             "latest_version": snapshot["pypi_version"],
+            "latest_main_version": snapshot.get("main_version"),
         }
-    if from_main and _fetch_main_version() != version:
+    current_main = _fetch_main_version() if from_main else version
+    if current_main != version:
         # The sidecar check needs the installed version to equal the pin, and main moves.
         return {
             "success": False,
             "version": version,
-            "message": f"transformers main is no longer {version}; reload the model to check again.",
+            "message": f"transformers main is no longer {version}; retry to install the current main.",
+            "latest_version": snapshot["pypi_version"],
+            "latest_main_version": current_main,
         }
     extra_packages, blockers = compat_plan(version)
     if blockers:

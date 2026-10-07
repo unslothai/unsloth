@@ -19821,8 +19821,7 @@ async def validate_model(
             from utils.transformers_version import latest_tier_active_for
             _install_only_upgrade = (
                 transformers_upgrade is not None
-                and transformers_upgrade.supported_in_pypi
-                and transformers_upgrade.pypi_version
+                and transformers_upgrade.installable
                 and not requires_trust_remote_code
             )
             if _install_only_upgrade or await asyncio.to_thread(
@@ -20231,15 +20230,14 @@ async def check_transformers_upgrade_route(
 
     # An offered install lands the model on the latest sidecar, which forces 16-bit (bnb
     # 4-bit feeds quantized experts into unvalidated paths for brand-new architectures).
-    # A dev-only upgrade is never installed, so it changes nothing. Same rule /validate
+    # An upgrade with nothing to install changes nothing. Same rule /validate
     # applies: a model with a custom-code fallback still loads 4-bit on the current
     # transformers and the dialog offers that way out, so a merely offered upgrade
     # cannot be claimed as 16-bit. Only an install-only upgrade, or a sidecar already
     # routing the model, forces it.
     install_only_upgrade = bool(
         transformers_upgrade is not None
-        and transformers_upgrade.supported_in_pypi
-        and transformers_upgrade.pypi_version
+        and transformers_upgrade.installable
         and not requires_trust_remote_code
     )
     # Already on the sidecar: the install is not what would strand the checkpoint, and
@@ -20279,7 +20277,8 @@ async def install_latest_transformers_route(
 
     Called after the user confirms the transformers-upgrade dialog raised by /validate
     (requires_transformers_upgrade). The requested version must match the current latest
-    PyPI release (re-verified server-side); the sidecar then participates in routing on
+    PyPI release, or transformers main when only main ships the architecture (both
+    re-verified server-side); the sidecar then participates in routing on
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
     from utils.transformers_latest import install_latest_transformers
@@ -20479,7 +20478,7 @@ async def install_latest_transformers_route(
         if owns_reservation:
             end_sidecar_swap()
     if not result["success"]:
-        if result.get("latest_version"):
+        if result.get("latest_version") or result.get("latest_main_version"):
             # Structured failure so the dialog can update to the newer release
             # and offer a retry that can actually succeed.
             return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])

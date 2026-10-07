@@ -335,6 +335,14 @@ class TestLatestTransformersSupports:
         result = latest_transformers_supports("dev_only_arch")
         assert result["main_version"] == "5.14.0.dev0"
 
+    def test_failed_main_version_lookup_retries_after_backoff(self):
+        snapshot = {"main_checked": True, "main_version": None, "fetched_at": time.time()}
+        assert tl._snapshot_is_fresh(snapshot)
+        snapshot["fetched_at"] -= tl._FAILURE_BACKOFF_SECONDS + 1
+        assert not tl._snapshot_is_fresh(snapshot)
+        snapshot["main_version"] = "5.14.0.dev0"
+        assert tl._snapshot_is_fresh(snapshot)
+
     def test_corrupt_disk_cache_ignored(self, monkeypatch, tmp_path: Path):
         counter = {}
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory(counter))
@@ -795,6 +803,7 @@ class TestInstallLatestTransformers:
         )
         result = install_latest_transformers("5.14.0.dev0")
         assert result["success"] is False and "no longer" in result["message"]
+        assert result["latest_main_version"] == "5.15.0.dev0"
 
     def test_stale_main_version_rejected(self, monkeypatch):
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen_factory({}))
@@ -807,6 +816,8 @@ class TestInstallLatestTransformers:
         )
         result = install_latest_transformers("5.12.0.dev0")
         assert result["success"] is False
+        # Retry needs the current main, else it re-sends the stale dev version forever.
+        assert result["latest_main_version"] == "5.14.0.dev0"
 
 
 class TestCompatPlan:
