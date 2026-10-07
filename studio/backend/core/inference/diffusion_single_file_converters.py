@@ -47,8 +47,6 @@ def _split_rows(key: str, value: Any, sizes: tuple) -> list:
     return out
 
 
-# --------------------------------------------------------------------------------------------- Krea 2
-
 _KREA2_TOP = {
     "first.weight": "img_in.weight",
     "first.bias": "img_in.bias",
@@ -124,8 +122,6 @@ def krea2_checkpoint_to_diffusers(checkpoint: Any = None, **kwargs: Any) -> dict
     return converted
 
 
-# ---------------------------------------------------------------------------------- HunyuanImage 2.1
-
 _HYIMG_TOP = {
     "img_in.proj": "x_embedder.proj",
     "time_in.in_layer": "time_guidance_embed.timestep_embedder.linear_1",
@@ -179,7 +175,7 @@ _HYIMG_SINGLE = {
 }
 
 _HYIMG_QKV = {
-    # (original fused layer, diffusers q/k/v layers); the fused rows are q, then k, then v.
+    # Fused rows are q, then k, then v.
     "img_attn.qkv": ("attn.to_q", "attn.to_k", "attn.to_v"),
     "txt_attn.qkv": ("attn.add_q_proj", "attn.add_k_proj", "attn.add_v_proj"),
     "self_attn.qkv": ("attn.to_q", "attn.to_k", "attn.to_v"),
@@ -347,7 +343,6 @@ def _cat_rows(first: Any, second: Any) -> Any:
     return out
 
 
-# Transformer class name -> converter, for diffusion.py's registry of classes diffusers lacks.
 CONVERTERS: dict = {
     "Krea2Transformer2DModel": krea2_checkpoint_to_diffusers,
     "HunyuanImageTransformer2DModel": hunyuanimage_checkpoint_to_diffusers,
