@@ -150,7 +150,7 @@ def test_compiled_block_stays_within_the_compile_floor(monkeypatch):
         assert getattr(getattr(qmod, qf._PREPARE), "__unsloth_q21_fused__", False)
         torch._dynamo.reset()
         out = torch.compile(blk)(x, mod_params(x), rotary_emb = rope)
-        again = blk(x, mod_params(x), rotary_emb = rope)  # eager calls keep the stock projections
+        again = blk(x, mod_params(x), rotary_emb = rope)
     assert torch.equal(again, eager)
     assert 3 * DIM in traced
     floor = (ref != eager).sum().item()
