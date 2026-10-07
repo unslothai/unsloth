@@ -481,6 +481,13 @@ def convert_to_vlm_format(
     first_image = next(iter(dataset))[image_column]
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
+    if has_urls:
+        with_image = [i for i, url in enumerate(dataset[image_column]) if url is not None]
+        if len(with_image) < total:
+            logger.info(f"Skipping {total - len(with_image)}/{total} rows without an image")
+            dataset = dataset.select(with_image)
+            total = len(with_image)
+
     # Bare-filename detection: build a basename to repo_path lookup so filename-only images resolve via hf_hub_download during conversion.
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
