@@ -1518,8 +1518,8 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
         return {"llama_cpp_only": True}
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
-    # llama.cpp serves Clef without CUDA or ROCm.
-    if laya_runtime.native_ready(checkpoint):
+    # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
+    if laya_runtime.native_ready(checkpoint) or laya_runtime.mlx_ready(checkpoint):
         return {}
     return {"available": False, "unavailable_reason": reason}
 
