@@ -1324,7 +1324,7 @@ def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
 
 
 def test_graph_cut_options_support_legacy_and_current_builds_and_fail_closed(monkeypatch):
-    # The opposite default to the H3 gate: sd-cli exits non-zero on an unknown option, so "cannot tell" must not emit these.
+    # unknown flags fail closed because sd-cli rejects them.
     monkeypatch.setattr(
         bk,
         "_sd_cpp_probe_output",
@@ -1332,11 +1332,11 @@ def test_graph_cut_options_support_legacy_and_current_builds_and_fail_closed(mon
     )
     assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram", "--stream-layers"}
 
-    # Current builds stream automatically and reject the removed legacy option.
+    # current builds stream automatically and reject the removed --stream-layers flag.
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --max-vram budget\n")
     assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram"}
 
-    # --stream-layers is a no-op without --max-vram, so half a build is not a build to emit on.
+    # --stream-layers requires --max-vram, so a partial advertisement emits neither.
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --stream-layers    residency\n")
     assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
 

@@ -227,9 +227,6 @@ def test_linux_arm64_has_no_prebuilt():
     assert _resolve("Linux", "aarch64") is None
 
 
-# ── Windows ─────────────────────────────────────────────────────────────────
-
-
 def test_windows_auto_picks_avx2():
     assert _resolve("Windows", "AMD64") == "sd-master-8caa3f9-bin-win-avx2-x64.zip"
 
@@ -251,7 +248,6 @@ def test_windows_cpu_selection_with_unsloth_vulkan_asset(accelerator, reverse):
 @pytest.mark.parametrize("accelerator", ["auto", "cpu"])
 @pytest.mark.parametrize("gpu", ["cuda12", "vulkan", "rocm", "sycl", "musa"])
 def test_windows_cpu_selection_never_uses_accelerator_build(accelerator, gpu):
-    # Even an AVX2-labelled GPU build must not enter the CPU preference list.
     assets = [f"sd-master-test-bin-win-{gpu}-avx2-x64.zip"]
     assert (
         resolve_release_asset(assets, system = "Windows", machine = "AMD64", accelerator = accelerator)
