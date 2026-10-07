@@ -3015,6 +3015,14 @@ export const sv = {
           "GPU svarar snabbare men håller sitt minne reserverat tills omstart.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        backend: "Körmiljö",
+        backendAuto: "Automatisk",
+        backendDescription:
+          "Automatisk kör Clef via llama.cpp när modellen har en GGUF-version och faller annars tillbaka på PyTorch. llama.cpp läser också bilder.",
+        backendStatus: "Körmiljö: {backend}",
+        backendNone: "inte tillgänglig",
+        mediaImages: "Läser text och bilder.",
+        mediaText: "Läser bara text.",
         checking: "Kontrollerar …",
         notDownloaded: "Inte hämtad · {size}",
         downloading: "Hämtar …",
@@ -3157,6 +3165,11 @@ export const sv = {
       methodLabel: "Metod",
       methodTooltip:
         "Hur modellen tränas. LoRA och QLoRA uppdaterar små adaptrar i stället för varje vikt.",
+      trainAsLabel: "Träna som",
+      trainAsTooltip:
+        "En språkmodell skriver text. En beslutsmodell väljer ett av alternativen du ger den, med en sannolikhet, och körs i Decision API.",
+      trainAsLanguage: "Språkmodell",
+      trainAsDecision: "Beslutsmodell",
       datasetLabel: "Datauppsättning",
       datasetTooltip: "Träningsdata som används för att finjustera modellen.",
       hfTokenDescription:
@@ -4346,6 +4359,18 @@ export const sv = {
       readVideoFailed: "Det gick inte att läsa videon ({status}).",
       openFileFailed: "Det gick inte att öppna filen",
     },
+  },
+  exportDecision: {
+    title: "Beslutsmodell",
+    description:
+      "{layout}-beslutsmodeller exporteras till GGUF för llama.cpp:s beslutsserver. Välj en eller flera kvantiseringar.",
+    adapterNote: "Den här kontrollpunkten innehåller LoRA-adaptrar; de slås samman före konverteringen.",
+    notEligibleTitle: "GGUF-export är inte tillgänglig",
+    ggufOnly: "Beslutsmodeller exporteras bara till GGUF",
+    existing: "Redan exporterad: {quantizations}",
+    outputNote: "GGUF-filer sparas i körningsmappen: {path}",
+    methodLabel: "GGUF för beslutsmodell",
+    outputLabel: "Besluts-GGUF ({quantizations})",
   },
   decisions: {
     title: "Testa ett beslut",

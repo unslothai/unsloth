@@ -259,6 +259,14 @@
       "reason": "Loads the vendored laya package shipped inside Studio (_VENDORED_LAYA)."
     },
     {
+      "file": "studio/backend/core/systemone/native_worker.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "33b35eda3d46f307",
+      "count": 1,
+      "reason": "Loads the vendored Clef reference (unsloth/_vendor/clef/joint_schema_model.py) from the installed unsloth package or the repo checkout, located via find_spec; a fixed file name, never caller input."
+    },
+    {
       "file": "studio/backend/core/training/account_jobs.py",
       "rule": "dynamic-import",
       "sink": "import_module",
@@ -545,6 +553,14 @@
       "digest": "3738585f7559a2ad",
       "count": 1,
       "reason": "Imports the laya copy vendored in this repository at a fixed path (studio/backend/vendor/laya/__init__.py); never a downloaded or user-supplied file."
+    },
+    {
+      "file": "unsloth/models/decision_gguf.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "6894b59960c95a35",
+      "count": 1,
+      "reason": "Loads Studio's standard-library gguf_export_contract.py from a constant path beside the unsloth package; nothing caller-supplied picks the file."
     },
     {
       "file": "unsloth/models/loader.py",
