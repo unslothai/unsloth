@@ -7831,6 +7831,13 @@ class DiffusionBackend:
         """``comfy_resident_mib`` for a ComfyUI-quantized single file under a resident plan, else None."""
         try:
             from .diffusion_comfy_quant import comfy_resident_mib, scan_comfy_quant
+            from .diffusion_transformer_quant import (
+                DEFAULT_MIN_LINEAR_FEATURES,
+                TQ_FP8,
+                TQ_MXFP8,
+                TQ_NVFP4,
+                divisible_for_scheme,
+            )
 
             scan = scan_comfy_quant(single_file_path)
             if scan is None or scan.problems:
@@ -7841,6 +7848,13 @@ class DiffusionBackend:
                 scan,
                 keep_int8 = comfy_int8_backend(target, name, base) is not None,
                 keep_fp8 = comfy_fp8_backend(target, name, base) is not None,
+                # the loader's runtime filter: layers it skips are priced dequantized
+                min_features = DEFAULT_MIN_LINEAR_FEATURES,
+                fp8_divisible = divisible_for_scheme(TQ_FP8),
+                block_divisible = {
+                    "nvfp4": divisible_for_scheme(TQ_NVFP4),
+                    "mxfp8": divisible_for_scheme(TQ_MXFP8),
+                },
                 **{
                     f"keep_{fmt}": backend is not None
                     for fmt, backend in (

@@ -261,6 +261,10 @@ def test_resident_size_prices_kept_and_dequantized_nvfp4(tmp_path):
     dense = cq.comfy_resident_mib(path, keep_int8 = False, keep_fp8 = False)
     assert dense == 8 + 1  # 2048 x 2048 bf16, plus the scales rounded up
     assert kept == 3  # 2 MiB of codes + 256 KiB of block scales
+    # a layer the loader's filter skips (logical in-features, not the packed byte width) is priced dequantized
+    kw = dict(keep_int8 = False, keep_fp8 = False, keep_nvfp4 = True, block_divisible = {"nvfp4": 16})
+    assert cq.comfy_resident_mib(path, min_features = 2048, **kw) == 3
+    assert cq.comfy_resident_mib(path, min_features = 2049, **kw) == dense
 
 
 class _Block(nn.Module):

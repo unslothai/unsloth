@@ -274,6 +274,7 @@ def comfy_resident_mib(
     exclude_tokens: Any = (),
     min_features: int = 0,
     fp8_divisible: int = 0,
+    block_divisible: Optional[dict] = None,
     key_map: Any = None,
 ) -> Optional[int]:
     """What the loader leaves resident for a ComfyUI-quantized file, priced from its header: a quantized
@@ -311,6 +312,11 @@ def comfy_resident_mib(
                 pass
         return any(t in n for n in names for t in exclude_tokens)
 
+    def _logical(fmt: str, shape: Any) -> Any:
+        if fmt == NVFP4 and len(shape or ()) == 2:
+            return (int(shape[0]), int(shape[1]) * 2)
+        return shape
+
     kept = {}
     for name, layer in scan.layers.items():
         shape = (header.get(name + ".weight") or {}).get("shape")
@@ -321,8 +327,12 @@ def comfy_resident_mib(
             and _fits(shape, 0)
         ) or (
             (layer.format == FP8_E4M3 and keep_fp8 and _fits(shape, fp8_divisible))
-            or (layer.format == NVFP4 and keep_nvfp4)
-            or (layer.format == MXFP8 and keep_mxfp8)
+            or (
+                {NVFP4: keep_nvfp4, MXFP8: keep_mxfp8}.get(layer.format, False)
+                and _fits(
+                    _logical(layer.format, shape), (block_divisible or {}).get(layer.format, 0)
+                )
+            )
         )
     packed = {name + ".weight" for name, layer in scan.layers.items() if layer.format == NVFP4}
     total = 0
