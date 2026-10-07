@@ -345,6 +345,10 @@ class _Orchestrator:
         self.loading_models.discard(name)
         return True
 
+    def cancel_load(self, name):
+        self.loading_models.discard(name)
+        return True
+
 
 @pytest.fixture
 def slots(monkeypatch):
@@ -391,6 +395,36 @@ def test_an_audio_cpp_load_in_flight_is_cancelled(slots, monkeypatch):
     slots.main = _Orchestrator(loading = {"kokoro"})
     assert aupd._unload_audio_cpp_models() is True
     assert slots.main.unloaded == ["kokoro"]
+
+
+def test_a_load_that_publishes_during_the_scan_is_still_found(monkeypatch):
+    from core.inference import audio_cpp_models
+
+    monkeypatch.setattr(audio_cpp_models, "looks_like_audio_cpp", lambda name: name == "kokoro")
+
+    class _Publishing:
+        loading_models = {"kokoro"}
+
+        @property
+        def models(self):
+            # The load finishes right after this read: it leaves loading_models for models.
+            self.loading_models = set()
+            return {}
+
+    assert model_slots.audio_cpp_model_names(_Publishing()) == ["kokoro"]
+
+
+def test_a_kept_slot_load_is_cancelled_before_its_slot_is_dropped(slots, monkeypatch):
+    from core.inference import audio_cpp_models
+
+    monkeypatch.setattr(audio_cpp_models, "looks_like_audio_cpp", lambda name: name == "kokoro")
+    chat = SimpleNamespace(orchestrator = _Orchestrator({"qwen": {"audio_type": None}}))
+    loading = SimpleNamespace(orchestrator = _Orchestrator(loading = {"kokoro"}))
+    model_slots.slots[:] = [chat, loading]
+    assert aupd._unload_audio_cpp_models() is True
+    # A marker left behind would let the load spawn its worker after the drop.
+    assert loading.orchestrator.loading_models == set()
+    assert slots.dropped == [loading]
 
 
 def test_a_kept_audio_cpp_slot_is_dropped(slots):
