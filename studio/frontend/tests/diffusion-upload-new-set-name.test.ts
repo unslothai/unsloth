@@ -33,11 +33,15 @@ test("the prefilled name for a new set is one no set uses yet", () => {
   );
 });
 
+test("the new-set form waits for the set list before it uploads", () => {
+  assert.match(source, /const namesLoading = uploadMode && info === null;/);
+});
+
 test("the new-set form does not upload into a set that already exists", () => {
   const form = source.slice(source.indexOf("{uploadMode ? ("));
   const newSet = form.slice(0, form.indexOf(") : ("));
   assert.equal(
-    newSet.match(/disabled=\{uploading \|\| takenName !== null\}/g)?.length,
+    newSet.match(/disabled=\{uploading \|\| namesLoading \|\| takenName !== null\}/g)?.length,
     2,
   );
   assert.match(newSet, /\{takenName && \(/);
@@ -48,6 +52,8 @@ test("the new-set form does not upload into a set that already exists", () => {
   );
   assert.ok(drop.indexOf("if (takenName)") >= 0);
   assert.ok(drop.indexOf("if (takenName)") < drop.indexOf("await uploadTo("));
+  assert.ok(drop.indexOf("if (namesLoading)") >= 0);
+  assert.ok(drop.indexOf("if (namesLoading)") < drop.indexOf("await uploadTo("));
 });
 
 test("adding to the selected set still uploads into it", () => {
@@ -56,5 +62,5 @@ test("adding to the selected set still uploads into it", () => {
   );
   const buttons = add.slice(0, add.indexOf("</>"));
   assert.match(buttons, /void uploadTo\(dataset, files\)/);
-  assert.doesNotMatch(buttons, /takenName/);
+  assert.doesNotMatch(buttons, /takenName|namesLoading/);
 });

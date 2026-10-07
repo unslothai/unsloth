@@ -763,6 +763,7 @@ export function DiffusionTrainPanel({
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
   // A deleted dataset leaves a name that no longer resolves; fall back to the upload form.
   const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
+  const namesLoading = uploadMode && info === null;
   const takenName = uploadMode ? existingDatasetName(uploadName, info?.datasets ?? []) : null;
   const takenNameMessage = `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;
   // Trainable items in the picked dataset, images and clips alike. caption_count is the folder
@@ -1013,6 +1014,10 @@ export function DiffusionTrainPanel({
       if (!event.dataTransfer.types.includes("Files")) return;
       event.preventDefault();
       setDropActive(false);
+      if (namesLoading) {
+        toast.error("Your image sets are still loading. Drop again in a moment.");
+        return;
+      }
       if (takenName) {
         toast.error(takenNameMessage);
         return;
@@ -1044,7 +1049,7 @@ export function DiffusionTrainPanel({
       }
       await uploadTo(dropTarget, dropped);
     },
-    [dropTarget, uploadTo, takenName, takenNameMessage],
+    [dropTarget, uploadTo, namesLoading, takenName, takenNameMessage],
   );
 
   const onStart = useCallback(async () => {
@@ -1771,13 +1776,13 @@ export function DiffusionTrainPanel({
                       }
                       fileInputRef.current?.click();
                     }}
-                    disabled={uploading || takenName !== null}
+                    disabled={uploading || namesLoading || takenName !== null}
                   >
                     <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Upload"}
                   </Button>
                   <FolderPickButton
-                    disabled={uploading || takenName !== null}
+                    disabled={uploading || namesLoading || takenName !== null}
                     onPick={() => {
                       if (!uploadName.trim()) {
                         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
