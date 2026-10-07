@@ -261,11 +261,9 @@ def test_resident_size_prices_kept_and_dequantized_nvfp4(tmp_path):
     dense = cq.comfy_resident_mib(path, keep_int8 = False, keep_fp8 = False)
     assert dense == 8 + 1  # 2048 x 2048 bf16, plus the scales rounded up
     assert kept == 3  # 2 MiB of codes + 256 KiB of block scales
-    # a layer the loader's filter skips (logical in-features, not the packed byte width) is priced dequantized
     kw = dict(keep_int8 = False, keep_fp8 = False, keep_nvfp4 = True, block_divisible = {"nvfp4": 16})
     assert cq.comfy_resident_mib(path, min_features = 2048, **kw) == 3
     assert cq.comfy_resident_mib(path, min_features = 2049, **kw) == dense
-    # input smoothing has no runtime Linear, so a smoothed layer is priced dequantized too
     smoothed = _layer_file(
         tmp_path,
         "nvfp4",
@@ -283,7 +281,6 @@ def test_lora_and_block_runtime_layers(monkeypatch, tmp_path):
     assert (
         cb.comfy_block_backends(scan, _target("cuda:0"), "krea-2")["mxfp8_backend"] == "scaled_mm"
     )
-    # adapters need dense Linears: a LoRA selected at load dequantizes the block layers
     assert (
         cb.comfy_block_backends(scan, _target("cuda:0"), "krea-2", lora = True)["mxfp8_backend"]
         is None
@@ -607,7 +604,6 @@ def test_a_failed_mxfp8_probe_is_not_cached(monkeypatch):
 
     monkeypatch.setattr(cb, "mx_quantize_activation", boom)
     assert "OutOfMemoryError" in cb.mxfp8_runtime_reason(_target("cuda:0"))
-    # a transient failure leaves the next load free to probe again
     assert cb._MX_PROBE == {}
 
 
