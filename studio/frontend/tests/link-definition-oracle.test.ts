@@ -300,6 +300,8 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
     ["Read [Unsloth\ndocs] first.", "[unsloth docs]: https://docs.unsloth.ai"],
     ["Read [unsloth docs] first.", "[Unsloth\tDocs]: https://docs.unsloth.ai"],
     ["Read [a\\]b] first.", "[a\\]b]: https://x.test/ab"],
+    ["Read [SS] first.", "[\u1E9E]: https://x.test/ss"],
+    ["Read [Stra\u00DFe] first.", "[STRASSE]: https://x.test/strasse"],
   ]) {
     const reply = `${reference}\n\n${definition}\n`;
     assert.ok(asOneDocument(reply) > asBlocks(reply), JSON.stringify(reply));

@@ -151,12 +151,15 @@ const LINK_DEFINITION_LABEL_RE = new RegExp(
 const CODE_SPAN_RE =
   /(?<=(?:^|[^\\])(?:\\\\)*)(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\1(?!`)/g;
 
-function labelPattern(label: string): string {
+const LINK_LABEL_USE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
+
+// micromark's label normalisation, so `[SS]` finds `[ẞ]:` the way the renderer does.
+function normalizeLabel(label: string): string {
   return label
-    .split(/[\t\n\r ]+/)
-    .filter(Boolean)
-    .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("[\\t\\n\\r ]+");
+    .replace(/[\t\n\r ]+/g, " ")
+    .replace(/^ | $/g, "")
+    .toLowerCase()
+    .toUpperCase();
 }
 
 function hasShortcutReference(
@@ -165,21 +168,21 @@ function hasShortcutReference(
 ): boolean {
   const labels = new Set<string>();
   for (const [, label] of definitions.matchAll(LINK_DEFINITION_LABEL_RE)) {
-    const pattern = labelPattern(label);
-    if (pattern !== "" && label[0] !== "^") {
-      labels.add(pattern);
+    const normalized = normalizeLabel(label);
+    if (normalized !== "" && label[0] !== "^") {
+      labels.add(normalized);
     }
   }
   if (labels.size === 0) {
     return false;
   }
-  const use = new RegExp(
-    `\\[[\\t\\n\\r ]*(?:${[...labels].join("|")})[\\t\\n\\r ]*\\]`,
-    "giu",
-  );
   const uses = references.replace(LINK_DEFINITION_LABEL_RE, "");
-  for (const match of uses.matchAll(use)) {
-    if (!isEscaped(uses, match.index)) {
+  for (const match of uses.matchAll(LINK_LABEL_USE_RE)) {
+    if (
+      match[1][0] !== "^" &&
+      !isEscaped(uses, match.index) &&
+      labels.has(normalizeLabel(match[1]))
+    ) {
       return true;
     }
   }
