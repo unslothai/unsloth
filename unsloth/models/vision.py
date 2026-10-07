@@ -154,6 +154,7 @@ from .loader_utils import (
     requested_device_map,
     resolve_auto_block_swap,
     resolve_unsloth_device_map,
+    sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
 # `unsloth.save` imports `.models.loader_utils`, so binding a name out of it here at module
@@ -3539,7 +3540,9 @@ class FastBaseModel:
                     try:
                         with begin_block_swap_load(
                             _offload_layers, device_map, embeddings = bool(_embedding_needed)
-                        ) as (_block_swap_state):
+                        ) as (_block_swap_state), sync_load_when_quantizing(
+                            kwargs.get("quantization_config"), model_config
+                        ):
                             model = auto_model.from_pretrained(
                                 model_name,
                                 config = model_config,

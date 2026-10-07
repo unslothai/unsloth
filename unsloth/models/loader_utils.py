@@ -3064,6 +3064,31 @@ def _bnb_bits_requested(quantization_config):
     return None
 
 
+_ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
+
+
+@contextlib.contextmanager
+def sync_load_when_quantizing(quantization_config, model_config):
+    """Load one tensor at a time while quantizing an unquantized checkpoint on the fly.
+
+    transformers 5.0 to 5.4 reads every tensor on worker threads, at full precision and straight
+    onto the card, while the main thread quantizes them one by one, so a bf16 checkpoint can peak
+    far above its 4bit size. 5.5 goes synchronous in exactly this case; this does the same on the
+    older ones. A pre-quantized checkpoint, or a caller who set the variable, is left alone."""
+    if (
+        quantization_config is None
+        or getattr(model_config, "quantization_config", None) is not None
+        or _ASYNC_LOAD_ENV in os.environ
+    ):
+        yield
+        return
+    os.environ[_ASYNC_LOAD_ENV] = "1"
+    try:
+        yield
+    finally:
+        os.environ.pop(_ASYNC_LOAD_ENV, None)
+
+
 def warn_if_bitsandbytes_quantized_nothing(
     model,
     quantization_config,
