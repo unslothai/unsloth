@@ -56,6 +56,7 @@ from .loader_utils import (
     prepare_device_map,
     requested_device_map,
     _offline_aware_load,
+    _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
 )
@@ -1720,6 +1721,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @_restore_load_scoped_env
     @_offline_aware_load
     @mistral_format_redirect
     @track_explicit_4bit_request

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
+from .family_name_match import normalize_family_name, token_in_name, token_length
 
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
 # refusal names the lattice point above the request, and suggesting one the request model would itself reject is a
@@ -425,7 +426,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 def _token_in_needle(token: str, needle: str) -> bool:
     """Whole path/name segment match, as in diffusion_families (a short alias like
     'ltx' must not match inside an unrelated word)."""
-    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
+    return token_in_name(token, needle)
 
 
 def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optional[VideoFamily]:
@@ -440,13 +441,17 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
         for fam in _FAMILIES:
             if key == fam.name or key in fam.aliases:
                 return fam
+        norm = normalize_family_name(key)
+        for fam in _FAMILIES:
+            if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
+                return fam
         return None
     needle = repo_id.lower()
     best: Optional[tuple[VideoFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
-            if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
-                best = (fam, len(token))
+            if _token_in_needle(token, needle) and (best is None or token_length(token) > best[1]):
+                best = (fam, token_length(token))
     if best is None:
         return None
     fam = best[0]
@@ -874,6 +879,8 @@ def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".
-            if re.search(r"(?<![a-z])" + re.escape(key), needle):
+            if re.search(r"(?<![a-z])" + re.escape(key), needle) or re.search(
+                r"(?<![a-z])" + re.escape(normalize_family_name(key)), normalize_family_name(needle)
+            ):
                 return key
     return None

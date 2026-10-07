@@ -1036,6 +1036,11 @@ def _assert_pick_is_not_speech(
     assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
 
+def _refuse_non_dit_pick(repo_id: str, gguf_filename: Optional[str], page: str) -> None:
+    from .diffusion_content import assert_local_pick_is_dit
+    assert_local_pick_is_dit(repo_id, gguf_filename, page)
+
+
 def _detect_load_family(
     repo_id: str,
     gguf_filename: Optional[str],
@@ -1060,6 +1065,16 @@ def _detect_load_family(
         arch = _picked_gguf_arch(repo_id, gguf_filename)
         if arch:
             fam = detect_video_family(repo_id, override = arch)
+    # A local file's header outranks its name (the name still picks 480p vs 720p).
+    from .diffusion_content import local_pick_file, resolve_family_with_content
+
+    path = local_pick_file(repo_id, gguf_filename)
+    if path:
+        name, _ = resolve_family_with_content(fam.name if fam else None, path, "video")
+        if name is None:
+            return None
+        if fam is None or fam.name != name:
+            fam = detect_video_family("", override = name)
     return fam
 
 
@@ -2616,6 +2631,7 @@ class VideoBackend:
                 f"'{repo_id}' is a GGUF repo: pick one of its .gguf files "
                 "(gguf_filename) instead of loading it as a diffusers pipeline."
             )
+        _refuse_non_dit_pick(repo_id, gguf_filename, "video")
         fam = _detect_load_family(repo_id, gguf_filename, family_override, display_repo_id)
         if fam is None:
             raise ValueError(
@@ -3152,6 +3168,7 @@ class VideoBackend:
                         # An API-initiated load takes the cached checkpoint or fails; it never pulls the multi-GB file
                         # itself.
                         local_files_only = local_files_only,
+                        gguf_header_delta = True,
                     )
                 )
             # An LTX-2.3 checkpoint supplies the VAEs/vocoder/connectors, so the base pull shrinks to scheduler + TE +
@@ -3358,7 +3375,7 @@ class VideoBackend:
             selected_card_identity,
             sd_cpp_accelerator_device_verdict,
             sd_cpp_device_name_for_ordinal,
-            sd_cpp_supports_graph_cut,
+            sd_cpp_graph_cut_options,
             sd_cpp_supports_sage_attn,
         )
         from .sd_cpp_engine import SdCppEngine
@@ -3562,6 +3579,7 @@ class VideoBackend:
                             cancel_event = cancel_event,
                             reuse_other_cache_root = True,
                             local_files_only = local_files_only,
+                            gguf_header_delta = True,
                         )
                     )
                 except Exception as exc:  # noqa: BLE001 -- re-raised below, narrowed by name
@@ -3639,9 +3657,10 @@ class VideoBackend:
                     "again."
                 )
             binary_identity = _sd_cli_identity(binary)
-            # Under the claim like every other probe here; None on the CPU fallback, which has no card to choose
-            # between.
-            supports_graph_cut = native_device != "cpu" and sd_cpp_supports_graph_cut(binary)
+            # probe under the claim; the CPU fallback has no card to select.
+            graph_cut_options = (
+                sd_cpp_graph_cut_options(binary) if native_device != "cpu" else frozenset()
+            )
             # Lossy (INT8 QK^T), so only on an explicit speed_mode="max".
             h3_sage = (
                 native_device != "cpu"
@@ -3697,13 +3716,10 @@ class VideoBackend:
         native_offload = tuple(
             offload_flags(policy, vae_tiling = False, diffusion_fa = True, vae_on_cpu = False)
         )
-        # H3 allocates each module WHOLE on the device (20.5 GB DiT, 17 GB encoder), so --offload-to-cpu alone still
-        # cudaMallocs; not gated on memory mode because auto and fast are what OOM. --max-vram segments on its own, but
-        # upstream ignores --stream-layers unless the params are on the CPU, so it only rides along with
-        # --offload-to-cpu.
-        if supports_graph_cut:
+        # H3's 20.5 GB DiT and 17 GB encoder OOM in auto and fast; --max-vram segments them, and streaming needs CPU offload.
+        if "--max-vram" in graph_cut_options:
             native_offload += GRAPH_CUT_VRAM_FLAGS
-            if "--offload-to-cpu" in native_offload:
+            if "--offload-to-cpu" in native_offload and "--stream-layers" in graph_cut_options:
                 native_offload += GRAPH_CUT_STREAM_FLAGS
         native_env: tuple[tuple[str, str], ...] = ()
         if h3_sage:
@@ -8273,6 +8289,7 @@ class VideoBackend:
                 hf_token,
                 reuse_other_cache_root = True,
                 local_files_only = local_files_only,
+                gguf_header_delta = True,
             )
         )
 

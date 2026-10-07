@@ -159,6 +159,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "browser.importBookmarksSetting",
     "browser.downloadsTitle",
     "browser.askWhereToSaveSetting",
+    "browser.askBeforeDownloadingSetting",
+    "browser.downloadSitesSetting",
     "browser.saveDownloadHistorySetting",
     "browser.browsingDataTitle",
     "browser.saveHistorySetting",
@@ -363,12 +365,9 @@ export function createSettingsSearchIndex({
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
     ],
+    browser: [...SETTINGS_SEARCH_INDEX.browser, "browser.downloadLocationSetting"],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
-    ),
-    // The row is web only.
-    browser: SETTINGS_SEARCH_INDEX.browser.filter(
-      (key) => key !== "browser.askWhereToSaveSetting",
     ),
   };
 }

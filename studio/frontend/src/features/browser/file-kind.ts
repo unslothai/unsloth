@@ -45,3 +45,8 @@ export function browserTabType(name: string, contentType: string): string | null
   if (kind) return kind === "html" ? null : "text/plain";
   return SAFE_TAB_TYPE.test(contentType) ? contentType : null;
 }
+
+export function canShowFile(name: string, contentType: string): boolean {
+  if (documentKind(name, contentType) || mediaKind(name, contentType)) return true;
+  return TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType;
+}
