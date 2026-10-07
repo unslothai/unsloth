@@ -23,9 +23,20 @@ import {
 let savedByKey = new Map<string, PerModelConfig | null>();
 const listeners = new Set<() => void>();
 let detach: (() => void) | null = null;
+// What the cache was read from while unsubscribed, when only a re-read can notice a write.
+let cachedRaw: string | null | undefined;
 
 function invalidate(): void {
   savedByKey = new Map();
+  cachedRaw = undefined;
+}
+
+function storedRaw(): string | null {
+  try {
+    return localStorage.getItem(PER_MODEL_CONFIG_STORAGE_KEY);
+  } catch {
+    return null;
+  }
 }
 
 function settingsKey(target: ModelPickTarget): [string, string | null] {
@@ -38,16 +49,21 @@ export function savedRunSettings(
 ): PerModelConfig | null {
   const [id, variant] = settingsKey(target);
   const key = modelStorageKey(id, variant);
-  // Only trusted while subscribed: nothing invalidates the cache otherwise.
-  const cached = detach ? savedByKey.get(key) : undefined;
+  // Cached either way, since useSyncExternalStore needs a stable snapshot before it subscribes.
+  if (!detach) {
+    const raw = storedRaw();
+    if (raw !== cachedRaw) {
+      invalidate();
+      cachedRaw = raw;
+    }
+  }
+  const cached = savedByKey.get(key);
   if (cached !== undefined) {
     return cached;
   }
   const resolved = resolveInitialConfig(id, variant);
   const value = resolved.remembered ? resolved.config : null;
-  if (detach) {
-    savedByKey.set(key, value);
-  }
+  savedByKey.set(key, value);
   return value;
 }
 
@@ -61,8 +77,11 @@ function notify(): void {
 export function subscribeSavedRunSettings(onChange: () => void): () => void {
   listeners.add(onChange);
   if (!detach && typeof window?.addEventListener === "function") {
-    // Writes made while nobody listened never invalidated the cache.
-    invalidate();
+    // Writes made while nobody listened never invalidated the cache; an unchanged store keeps
+    // the snapshot React already rendered, so subscribing doesn't force a second render.
+    if (storedRaw() !== cachedRaw) {
+      invalidate();
+    }
     const onStorage = (event: StorageEvent) => {
       if (event.key === null || event.key === PER_MODEL_CONFIG_STORAGE_KEY) {
         notify();

@@ -341,3 +341,21 @@ test("an identical re-save from another tab before the forget's response keeps t
     setAuthFetchHandler(null);
   }
 });
+
+test("an unsubscribed read returns the same snapshot until the store changes", () => {
+  store.clear();
+  savePerModelConfig(REPO, QUANT, tuned());
+  const first = savedRunSettings(ggufTarget());
+  assert.ok(first);
+  // useSyncExternalStore reads before it subscribes, and needs the same object back.
+  assert.equal(savedRunSettings(ggufTarget()), first);
+  savePerModelConfig(REPO, QUANT, { ...tuned(), nParallel: 8 });
+  assert.equal(savedRunSettings(ggufTarget())?.nParallel, 8);
+  const stop = subscribeSavedRunSettings(() => {});
+  try {
+    const subscribed = savedRunSettings(ggufTarget());
+    assert.equal(savedRunSettings(ggufTarget()), subscribed);
+  } finally {
+    stop();
+  }
+});
