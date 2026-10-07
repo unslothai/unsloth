@@ -981,8 +981,7 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
 });
 
 test("unclosed backtick runs of many widths do not rescan the paragraph", () => {
-  // Runs of width 1..800 with no closer each: a lazy regex rescans the rest of the paragraph from
-  // every opener, ~900ms at this size. Absolute and loose as above.
+  // widths 1..800 expose lazy-regex tail rescans; 100ms is well below the ~900ms regression.
   let runs = "";
   for (let width = 1; width <= 800; width += 1) {
     runs += `${"`".repeat(width)}a`;
