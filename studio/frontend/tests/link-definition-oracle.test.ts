@@ -391,6 +391,13 @@ test("inline math does not lend its backticks to a later code span", () => {
   );
 });
 
+test("table cells do not share code span delimiters", () => {
+  const reply =
+    "| left | right |\n| --- | --- |\n| `open | [1] |\n| x | close` |\n\n[1]: /one\n";
+  assert.ok(asOneDocument(reply) > asBlocks(reply));
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
 test("a bracketed label that is not a shortcut reference keeps block rendering", () => {
   for (const reply of [
     "Use `[1]` here.\n\n[1]: https://x.test\n",

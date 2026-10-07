@@ -177,6 +177,13 @@ const collectProseBlocks = (
       }
       continue;
     }
+    if (token.type === "table") {
+      proseBlocks.push(token.raw);
+      for (const cell of [...token.header, ...token.rows.flat()]) {
+        referenceProseBlocks.push(cell.text);
+      }
+      continue;
+    }
     proseBlocks.push(token.raw);
     referenceProseBlocks.push(
       token.type === "def"
