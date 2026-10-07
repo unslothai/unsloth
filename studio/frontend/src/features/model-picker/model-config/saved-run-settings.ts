@@ -64,6 +64,10 @@ export function savedRunSettings(
   const resolved = resolveInitialConfig(id, variant);
   const value = resolved.remembered ? resolved.config : null;
   savedByKey.set(key, value);
+  if (!detach) {
+    // The first read can migrate legacy records into the store; that is not a new write.
+    cachedRaw = storedRaw();
+  }
   return value;
 }
 
