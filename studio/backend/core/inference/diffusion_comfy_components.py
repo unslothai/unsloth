@@ -1107,7 +1107,7 @@ def read_model_index(
         candidate = Path(root).expanduser() / "model_index.json"
         try:
             if candidate.is_file():
-                return json.loads(candidate.read_text())
+                return json.loads(candidate.read_text(encoding = "utf-8"))
         except (OSError, ValueError):
             continue
     from huggingface_hub import hf_hub_download
@@ -1119,7 +1119,7 @@ def read_model_index(
         cache_dir = cache_dir,
         local_files_only = local_files_only,
     )
-    return json.loads(Path(local).read_text())
+    return json.loads(Path(local).read_text(encoding = "utf-8"))
 
 
 def scanned_component_bytes(sizes: dict[str, int], components: Iterable[str]) -> dict[str, int]:
