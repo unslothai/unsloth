@@ -60,15 +60,16 @@ test("launch validation checks live membership and rejects an unresolved probe",
   };
   for (const available of [null, [], [2], [0, 1]]) {
     assert.equal(
-      validateTrainingConfig(config, undefined, available).errorKey,
+      validateTrainingConfig(config, undefined, true, available).errorKey,
       "studio.training.validation.gpuSelectionUnavailable",
     );
   }
-  assert.equal(validateTrainingConfig(config, undefined, [2, 5]).ok, true);
+  assert.equal(validateTrainingConfig(config, undefined, true, [2, 5]).ok, true);
   assert.equal(
     validateTrainingConfig(
       { ...config, parallelismMode: "auto", selectedGpuIds: null },
       undefined,
+      true,
       null,
     ).ok,
     true,
