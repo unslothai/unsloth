@@ -196,6 +196,15 @@ def save(values: dict[str, Any]) -> None:
 def gpu_available() -> bool:
     try:
         from utils.hardware.hardware import DeviceType, get_device as detected_device
-        return detected_device() in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX)
+        if detected_device() in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+            return True
+    except Exception:
+        pass
+    if runtime_unavailable_reason() is None:
+        return False
+    # Without torch the detector reports CPU; llama.cpp still serves GGUF-only models on the GPU.
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return bool(LlamaCppBackend._get_gpu_free_memory())
     except Exception:
         return False

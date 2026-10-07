@@ -272,6 +272,9 @@ def _pick_device(binary: str, env: dict[str, str]) -> str:
             order = [int(x) for x in (mask or "").split(",") if x.strip()]
         except ValueError:
             order = []
+            if mask and all(d.startswith("CUDA") for d in devices):
+                from utils.hardware import nvidia
+                order = nvidia.resolve_uuid_mask(mask.strip()) or []
         if len(order) != len(devices):
             order = sorted(by_index)
         if len(order) == len(devices) and all(i in by_index for i in order):

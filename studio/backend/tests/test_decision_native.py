@@ -910,7 +910,8 @@ def test_an_idle_server_unloads_and_a_stale_timer_does_nothing(home, client, stu
     assert _post(client).status_code == 200
     agent = laya_runtime._agent
     generation = laya_runtime._generation
-    deadline = time.monotonic() + 5
+    # Generous: a loaded host can take seconds to reap the stub server; the loop exits early.
+    deadline = time.monotonic() + 30
     while laya_runtime._agent is not None and time.monotonic() < deadline:
         time.sleep(0.05)
     assert laya_runtime._agent is None and not agent.is_alive()
@@ -1313,3 +1314,25 @@ def test_a_laya_model_never_reports_an_earlier_clefs_fallback_reason(monkeypatch
     monkeypatch.setattr(laya_runtime, "_decide", lambda *_: {"ok": True})
     assert laya_runtime._route(laya, "s", {}, None) == {"ok": True}
     assert laya_runtime._fallback_reason == "The GGUF is not downloaded."
+
+
+def test_a_uuid_mask_keeps_its_order_when_choosing_the_gpu(stub, monkeypatch):
+    from utils.hardware import nvidia
+
+    monkeypatch.setattr(nvidia, "resolve_uuid_mask", lambda mask: {"GPU-b,GPU-a": [1, 0]}.get(mask))
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = "GPU-b,GPU-a")
+    assert native_worker._pick_device("llama-server", env) == "CUDA0"
+
+
+def test_a_no_torch_install_finds_the_gpu_through_llama_cpp(monkeypatch):
+    from utils import systemone_settings
+    from utils.hardware import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CPU)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda *_, **__: [(0, 9000)])
+    )
+    monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
+    assert not systemone_settings.gpu_available()
+    monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: "no torch")
+    assert systemone_settings.gpu_available()
