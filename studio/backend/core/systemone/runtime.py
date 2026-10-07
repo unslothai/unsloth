@@ -75,6 +75,11 @@ def accepts_images(checkpoint):
     )
 
 
+def _training_active() -> bool:
+    from core.training.diffusion_training_service import get_diffusion_training_service
+    return laya_runtime._training_active() or get_diffusion_training_service().is_active()
+
+
 def _enter() -> None:
     if not _gate.acquire(timeout = 30):
         raise Unavailable(529, "overloaded", "The Decision API is busy; retry shortly", 1)
@@ -101,9 +106,25 @@ def decide(
 
             if get_device() == "gpu":
                 from core.inference.gpu_arbiter import DECISIONS, GpuOwnerBusyError, acquire_for
+                from core.training.diffusion_training_service import (
+                    TrainingActiveError,
+                    get_diffusion_training_service,
+                )
+
+                if _training_active():
+                    raise Unavailable(
+                        503, "model_unavailable", "GPU Clef is unavailable during training.", 30
+                    )
                 try:
-                    # Atomically register startup without evicting another model.
-                    acquire_for(DECISIONS, lambda: _clef().prepare(checkpoint), allow_evict = False)
+                    with get_diffusion_training_service().gpu_load_admission():
+                        acquire_for(
+                            DECISIONS, lambda: _clef().prepare(checkpoint), allow_evict = False
+                        )
+                except TrainingActiveError as exc:
+                    raise Unavailable(503, "model_unavailable", str(exc), 30) from None
+                except Unavailable:
+                    _clef()._release_gpu_if_idle()
+                    raise
                 except GpuOwnerBusyError:
                     raise Unavailable(
                         409,
@@ -146,6 +167,16 @@ def unload() -> bool:
         return laya_runtime.unload() or result
     finally:
         _gate.release()
+
+
+def unload_for_training() -> None:
+    try:
+        _clef().unload_for_training()
+    except Unavailable as exc:
+        from routes.training_vram import ManagedEngineStillRunning
+        raise ManagedEngineStillRunning(exc.message) from exc
+    if laya_runtime.status()["device"] not in (None, "cpu"):
+        laya_runtime.unload()
 
 
 def shutdown() -> None:

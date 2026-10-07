@@ -366,6 +366,13 @@ def _start_loading(checkpoint):
     if switch:
         unload()
     with _state_lock:
+        from utils.systemone_settings import get_device
+        from .runtime import _training_active
+
+        if get_device() == "gpu" and _training_active():
+            raise Unavailable(
+                503, "model_unavailable", "GPU Clef is unavailable during training.", 30
+            )
         _ensure_not_retiring()
         if _shutdown_requested:
             raise Unavailable(503, "model_unavailable", "The Clef runtime is shutting down.")
@@ -590,6 +597,16 @@ def unload():
         return result
     finally:
         _run_lock.release()
+
+
+def unload_for_training():
+    with _state_lock:
+        if _loading is None and _device_name in (None, "cpu"):
+            _ensure_not_retiring()
+            return False
+    result = _stop(False)
+    _ensure_not_retiring()
+    return result
 
 
 def shutdown():

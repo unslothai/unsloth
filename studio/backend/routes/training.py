@@ -2095,11 +2095,11 @@ async def start_training(
                 logger.warning("Could not unload video model for training: %s", e)
 
             try:
-                from core.systemone import laya_runtime
-                if laya_runtime.status()["device"] not in (None, "cpu"):
-                    logger.info("Unloading the Decision API model to free GPU memory for training")
-                    laya_runtime.unload()
+                from core.systemone import runtime as decision_runtime
+                decision_runtime.unload_for_training()
             except Exception as e:
+                if getattr(e, "blocks_training", False):
+                    raise
                 logger.warning("Could not unload the Decision API model for training: %s", e)
 
             try:
@@ -3125,6 +3125,14 @@ def _free_gpu_for_diffusion_training() -> None:
         gpu_arbiter.release(gpu_arbiter.VIDEO)
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Video pipeline for diffusion training: %s", e)
+
+    try:
+        from core.systemone import runtime as decision_runtime
+        decision_runtime.unload_for_training()
+    except Exception as e:  # noqa: BLE001
+        if getattr(e, "blocks_training", False):
+            raise
+        logger.warning("Could not unload the Decision API model for diffusion training: %s", e)
 
     try:
         # The SDXL trainer footprint cannot be cheaply sized against a resident chat model, so free chat unconditionally
