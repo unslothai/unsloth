@@ -1287,12 +1287,18 @@ export const sv = {
         "Den här Unsloth-servern rapporterar ännu inte sandlådans status. Uppdatera Unsloth för att hantera den här.",
       windowsSection: "Windows-sandlåda (förhandsversion)",
       windowsDescription:
-        "Microsofts MXC-sandlåda, för Windows-versioner utan inbyggd sandlåda.",
-      optInLabel: "Aktivera Windows-sandlådan",
+        "Microsofts MXC-sandlåda. Den använder containern som är inbyggd i Windows, eller en reservsandlåda på Windows-versioner utan den.",
+      builtinLabel: "Inbyggd container",
+      builtinDescription:
+        "Windows-sandlådan körs i Windows inbyggda container, utan något administratörssteg.",
+      builtinInUse: "Används",
+      optInLabel: "Använd reservsandlådan",
       optInDescription:
-        "Python och Terminal kan då bara ändra filer i chattens mapp.",
+        "För Windows-versioner utan den inbyggda containern. Python och Terminal kan då bara ändra filer i chattens mapp.",
+      optInNotNeeded:
+        "Behövs inte på den här datorn, eftersom den inbyggda containern fungerar.",
       disclosure:
-        "Kräver ett engångssteg som administratör, Förbered den här datorn, som måste upprepas efter varje omstart. Medan ett verktyg körs ger Unsloth det tillfällig åtkomst till de mappar det behöver. MXC är fortfarande en förhandsversion, inte en säkerhetsgräns.",
+        "Reservsandlådan kräver ett engångssteg som administratör, Förbered den här datorn, som måste upprepas efter varje omstart. Medan ett verktyg körs ger Unsloth det tillfällig åtkomst till de mappar det behöver. MXC är fortfarande en förhandsversion, inte en säkerhetsgräns.",
       lockedDacl: "Inställt av UNSLOTH_MXC_ALLOW_DACL_FALLBACK",
       grantsLabel: "Snabbare verktygsstarter",
       grantsDescription:
