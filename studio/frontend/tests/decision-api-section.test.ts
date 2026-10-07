@@ -57,7 +57,7 @@ test("a download waits for confirmation before changing the setting", () => {
   );
   assert.doesNotMatch(apply, /startDownload\(/);
   assert.ok(
-    apply.indexOf("resolveSystemOneDownload(nextModel)") <
+    apply.indexOf("resolveSystemOneDownload(nextModel, nextBackend)") <
       apply.indexOf("updateSystemOneSettings(settingsPatch)"),
   );
   assert.match(apply, /expectedEnabled: settings\.enabled/);
@@ -99,7 +99,8 @@ test("the download goes through the manager with the exact files and one scope",
     SECTION,
     /acceptedState === "running" \|\| acceptedState === "complete"/,
   );
-  assert.match(SECTION, /resolveSystemOneDownload\(model\)\.then/);
+  assert.match(SECTION, /resolveSystemOneDownload\(model, backend\)\.then/);
+  assert.match(SECTION, /\[enabled, model, backend, downloadDone\]/);
   assert.match(SECTION, /await resyncSettingsAfterError/);
 });
 

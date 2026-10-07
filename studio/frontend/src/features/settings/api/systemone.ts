@@ -5,6 +5,7 @@ import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type SystemOneDevice = "cpu" | "gpu";
+export type SystemOneBackend = "auto" | "llama.cpp" | "pytorch";
 
 export type SystemOneModel = {
   name: string;
@@ -31,6 +32,12 @@ export type SystemOneSettings = {
   installing: boolean;
   error: string | null;
   mcpUrl: string;
+  backend: SystemOneBackend;
+  nativeCtx: number;
+  effectiveBackend: string | null;
+  loadedBackend: string | null;
+  fallbackReason: string | null;
+  inputModalities: string[];
 };
 
 export type SystemOneConnection = {
@@ -52,6 +59,8 @@ export type SystemOneSettingsPatch = {
   enabled?: boolean;
   model?: string;
   device?: SystemOneDevice;
+  backend?: SystemOneBackend;
+  nativeCtx?: number;
   expectedEnabled?: boolean;
   expectedModel?: string;
 };
@@ -97,6 +106,17 @@ type ApiSystemOneSettings = {
   error: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   mcp_url: string;
+  backend?: SystemOneBackend;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  native_ctx?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  effective_backend?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  loaded_backend?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  fallback_reason?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  input_modalities?: string[];
 };
 
 type ApiSystemOneDownloadPlan = {
@@ -130,9 +150,10 @@ function publishSystemOneSettings(settings: SystemOneSettings) {
 }
 
 function toApiPatch(patch: SystemOneSettingsPatch) {
-  const { expectedEnabled, expectedModel, ...settings } = patch;
+  const { expectedEnabled, expectedModel, nativeCtx, ...settings } = patch;
   return {
     ...settings,
+    ...(nativeCtx !== undefined && { native_ctx: nativeCtx }),
     ...(expectedEnabled !== undefined && {
       expected_enabled: expectedEnabled,
     }),
@@ -164,6 +185,12 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     installing: settings.installing,
     error: settings.error,
     mcpUrl: settings.mcp_url,
+    backend: settings.backend ?? "auto",
+    nativeCtx: settings.native_ctx ?? 16384,
+    effectiveBackend: settings.effective_backend ?? null,
+    loadedBackend: settings.loaded_backend ?? null,
+    fallbackReason: settings.fallback_reason ?? null,
+    inputModalities: settings.input_modalities ?? ["text"],
   };
 }
 
@@ -241,8 +268,12 @@ export async function loadSystemOneConnections(): Promise<
 
 export async function resolveSystemOneDownload(
   model?: string,
+  backend?: SystemOneBackend,
 ): Promise<SystemOneDownloadPlan> {
-  const query = model ? `?${new URLSearchParams({ model })}` : "";
+  const params = new URLSearchParams();
+  if (model) params.set("model", model);
+  if (backend) params.set("backend", backend);
+  const query = params.size ? `?${params}` : "";
   const res = await authFetch(`${SETTINGS_PATH}/resolve${query}`);
   if (!res.ok) {
     throw new Error(
