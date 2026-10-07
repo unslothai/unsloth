@@ -857,6 +857,24 @@ function readThreadScopedSettings(
   return sanitizeThreadScopedSettings(source);
 }
 
+/** What a chat whose snapshot omits `key` runs with: applyThreadScopedSettings falls back to these. */
+export function threadScopedDefault<K extends ThreadScopedSettingKey>(
+  key: K,
+): ThreadScopedSettings[K] | undefined {
+  // No chat paired, so the store holds the installation's values, except a held edit, which is
+  // the pairing chat's: resolved the way applyThreadScopedSettings captures the defaults.
+  if (threadScopedSettingsThreadId === null) {
+    if (!isHeldThreadScopedField(key)) {
+      return readThreadScopedSettings(useChatRuntimeStore.getState())[key];
+    }
+    if (hydratedDefaultsByHeldField.has(key)) {
+      return hydratedDefaultsByHeldField.get(key) as ThreadScopedSettings[K];
+    }
+    return (pairingWindowDefaults ?? globalThreadScopedDefaults)?.[key];
+  }
+  return globalThreadScopedDefaults?.[key];
+}
+
 // Keeps a model load from re-applying the global default over the pills the chat is running with.
 export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   key: K,

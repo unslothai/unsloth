@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getLocale, translate } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { fileNameFromUrl, withBaseUrl } from "./address";
+import { fileNameFromUrl, isWebUrl, withBaseUrl } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
+import { approveDownload } from "./download-approval-queue";
 import { useBrowserHistoryStore } from "./history-store";
 import { saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
 
-export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null };
+export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null; site?: string };
 
 type SaveHandle = {
   name: string;
@@ -23,9 +25,8 @@ function saveFilePicker(): SaveFilePicker | null {
   return typeof picker === "function" ? picker : null;
 }
 
-/** The desktop app always asks; the web build needs the browser's save dialog (Chromium). */
 export function canAskWhereToSave(): boolean {
-  return !isTauri && saveFilePicker() !== null;
+  return isTauri || saveFilePicker() !== null;
 }
 
 function asksWhereToSave(): boolean {
@@ -51,18 +52,39 @@ async function pickSaveTarget(name: string): Promise<SaveHandle | null> {
   }
 }
 
-/** Save a file from the panel and add it to the download history. `target` is a save location
- *  already picked, or null for none; left out, the dialog opens here when Settings asks. */
-export async function saveBrowserDownload(
+function approved(url: string | null, name: string, site?: string): Promise<boolean> {
+  return url && isWebUrl(url) ? approveDownload(url, name, site ?? url) : Promise.resolve(true);
+}
+
+/** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
+export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
+  if (target === undefined) {
+    if (!(await approved(download.url, download.name, download.site))) return;
+    // A save dialog needs a fresh click; a late approval waits for a click on Save instead.
+    if (saveNeedsClick()) {
+      const locale = getLocale();
+      toast(translate("browser.downloadPrompt.ready", { name: download.name }, locale), {
+        action: {
+          label: translate("browser.downloadPrompt.save", {}, locale),
+          onClick: () => void writeDownload(download, undefined),
+        },
+      });
+      return;
+    }
+  }
+  await writeDownload(download, target);
+}
+
+async function writeDownload(
   { blob, name, contentType, url }: BrowserDownload,
-  target?: SaveHandle | null,
+  target: SaveHandle | null | undefined,
 ): Promise<void> {
   let saved: { id: string; name: string } | null = null;
   let picked: SaveHandle | null = null;
   try {
     if (isTauri) {
       // The app keeps the path so Download history can reveal it.
-      saved = await saveNativeDownload(blob, name);
+      saved = await saveNativeDownload(blob, name, useBrowserPrefsStore.getState().askWhereToSave, url);
       if (!saved) return;
     } else {
       picked = target === undefined ? await pickSaveTarget(name) : target;
@@ -121,8 +143,10 @@ export async function saveLinkAs(url: string): Promise<void> {
     ]);
     // A link that already failed has nothing to save: report it without asking for a name.
     if (quick && "error" in quick) throw quick.error;
+    const name = quick?.download.name ?? fileNameFromUrl(url);
     try {
-      target = await pickSaveTarget(quick?.download.name ?? fileNameFromUrl(url));
+      if (!(await approved(url, name))) throw new DownloadCancelledError();
+      target = await pickSaveTarget(name);
     } catch (error) {
       // No save after all: stop the fetch, which the backend drops on disconnect.
       controller.abort();

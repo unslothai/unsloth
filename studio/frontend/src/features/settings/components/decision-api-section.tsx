@@ -25,6 +25,11 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   DOWNLOAD_KIND,
   downloadManager,
   formatBytes,
@@ -35,7 +40,7 @@ import {
 import { translate, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { TaskDone01Icon } from "@hugeicons/core-free-icons";
+import { PlayIcon, TaskDone01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -55,6 +60,7 @@ import {
   DECISION_MODEL_LABELS,
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
+import { DecisionTryDialog } from "./decision-try-dialog";
 import { SettingsRow } from "./settings-row";
 
 const DOWNLOAD_SCOPE = "systemone";
@@ -88,11 +94,13 @@ export function DecisionApiSection(): ReactElement | null {
     model: string;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tryOpen, setTryOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sectionRef = useRef<HTMLElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
 
   const enabled = settings?.enabled ?? false;
+  if (tryOpen && !enabled) setTryOpen(false);
   const model = settings?.model ?? null;
   const plan = planState && planState.model === model ? planState.plan : null;
 
@@ -311,7 +319,7 @@ export function DecisionApiSection(): ReactElement | null {
             className="size-4 text-foreground"
           />
         </div>
-        <div className="flex min-w-0 flex-col gap-0.5">
+        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <h2 className="settings-heading text-base font-semibold font-heading">
             {t("settings.apiKeys.decisionApi.title")}
           </h2>
@@ -319,6 +327,32 @@ export function DecisionApiSection(): ReactElement | null {
             {t("settings.apiKeys.decisionApi.description")}
           </p>
         </div>
+        {settings ? (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <span className="shrink-0">
+                <Button
+                  size="sm"
+                  className="shrink-0 gap-1.5"
+                  disabled={!enabled}
+                  onClick={() => setTryOpen(true)}
+                >
+                  <HugeiconsIcon
+                    icon={PlayIcon}
+                    strokeWidth={2}
+                    className="size-3.5"
+                  />
+                  {t("decisions.tryIt")}
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {enabled ? null : (
+              <TooltipContent side="bottom">
+                {t("decisions.tryItOff")}
+              </TooltipContent>
+            )}
+          </Tooltip>
+        ) : null}
       </div>
 
       {error ? (
@@ -607,6 +641,16 @@ export function DecisionApiSection(): ReactElement | null {
           </p>
         ) : null}
       </div>
+
+      <DecisionTryDialog
+        open={tryOpen && enabled}
+        onOpenChange={setTryOpen}
+        settings={settings}
+        connections={connections ?? []}
+        onRun={() => {
+          loadSystemOneSettings().then(setSettings, () => undefined);
+        }}
+      />
 
       <AlertDialog
         open={confirm !== null}

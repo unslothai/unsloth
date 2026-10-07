@@ -24465,6 +24465,7 @@ def _stt_lifecycle() -> tuple:
 
 
 _stt_download_accounts: dict[str, str] = {}
+_stt_download_id_accounts: dict[str, dict[str, str]] = {}
 _stt_download_lock = threading.Lock()
 _stt_grant_pending: dict[str, threading.Event] = {}
 
@@ -24498,9 +24499,14 @@ def _start_account_stt_download(
             )
         repo = _stt_repo_reference(model, engine)
         account_access.authorize_download(repo, "model", hf_token)
-        module.start_model_download(*args)
+        download_id = module.start_model_download(*args)
         _stt_download_accounts[engine] = current_account_id()
         account = current_account_id()
+        if download_id is not None:
+            attempts = _stt_download_id_accounts.setdefault(engine, {})
+            attempts[str(download_id)] = account
+            while len(attempts) > 64:
+                attempts.pop(next(iter(attempts)))
         settled = _stt_grant_pending[engine] = threading.Event()
 
         def watch():
@@ -24528,6 +24534,7 @@ def _start_account_stt_download(
                 settled.set()
 
         account_thread(target = watch, name = f"stt-grant-{engine}", daemon = True).start()
+        return download_id
 
 
 def retire_stt_downloads() -> None:
@@ -24562,14 +24569,24 @@ def retire_stt_downloads() -> None:
         )
 
 
-def _cancel_account_stt_download(module, engine):
+def _cancel_account_stt_download(
+    module,
+    engine,
+    model = None,
+    download_id = None,
+):
     with _stt_download_lock:
         if (
             account_access.account_scope() is not None
             and _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id()
         ):
             return {"downloading": False, "cancelled": False}
-        cancelled = module.cancel_model_download()
+        if download_id is not None:
+            cancelled = module.cancel_model_download(model, download_id)
+        elif model is not None:
+            cancelled = module.cancel_model_download(model)
+        else:
+            cancelled = module.cancel_model_download()
         return {**module.download_status(), "cancelled": cancelled}
 
 
@@ -24620,8 +24637,22 @@ def _account_stt_status(status):
             for model in section.get("downloaded_models", [])
             if account_access.model_visible(_stt_repo_reference(model, engine))
         ]
+        download = section.get("download", {})
+        attempt_accounts = _stt_download_id_accounts.get(engine, {})
+        completed_download_ids = [
+            download_id
+            for download_id in download.get("completed_download_ids", [])
+            if attempt_accounts.get(download_id) == current_account_id()
+        ]
         if _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
-            section["download"] = {"downloading": False}
+            # Opaque ids tell stale trackers the engine moved on; no other account's model leaks.
+            section["download"] = {
+                "downloading": False,
+                "download_id": download.get("download_id"),
+                "completed_download_ids": completed_download_ids,
+            }
+        else:
+            download["completed_download_ids"] = completed_download_ids
     return status
 
 
@@ -24843,7 +24874,7 @@ async def stt_download(
             validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
             # Pin the download to the commit that was just validated so the
             # repo cannot be swapped between validation and snapshot_download.
-            await asyncio.to_thread(
+            download_id = await asyncio.to_thread(
                 _start_account_stt_download,
                 module,
                 engine,
@@ -24852,14 +24883,14 @@ async def stt_download(
                 validated.get("revision"),
             )
         else:
-            await asyncio.to_thread(
+            download_id = await asyncio.to_thread(
                 _start_account_stt_download, module, engine, payload.model, hf_token
             )
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
-    return JSONResponse(content = module.download_status())
+    return JSONResponse(content = {**module.download_status(), "download_id": download_id})
 
 
 @studio_router.post("/audio/stt/download/cancel")
@@ -24875,7 +24906,13 @@ async def stt_download_cancel(
 
     engine = _resolve_serving_stt_engine(payload.engine if payload else None)
     module = _stt_download_module(engine)
-    status = await asyncio.to_thread(_cancel_account_stt_download, module, engine)
+    status = await asyncio.to_thread(
+        _cancel_account_stt_download,
+        module,
+        engine,
+        payload.model if payload else None,
+        payload.download_id if payload else None,
+    )
     return JSONResponse(content = status)
 
 
@@ -27716,6 +27753,12 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
     leaves a cancelled generation holding the model through a swap's teardown.
     """
 
+    def _retrieve_exception(task: asyncio.Task) -> None:
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+
     async def _cancelled() -> None:
         while not cancel_event.is_set():
             await asyncio.sleep(0.1)
@@ -27734,11 +27777,13 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
                 return
             yield line
     finally:
-        for task in (step, waiter):
-            if task is not None and not task.done():
-                # cancelling the pending read closes the upstream response inside ``agen``.
-                task.cancel()
-                await asyncio.gather(task, return_exceptions = True)
+        pending = [task for task in (step, waiter) if task is not None and not task.done()]
+        for task in pending:
+            task.add_done_callback(_retrieve_exception)
+            task.cancel()
+        if pending:
+            # asyncio.wait leaves cancellation cleanup running when the relay is cancelled.
+            await asyncio.wait(pending)
         try:
             await agen.aclose()
         except RuntimeError:
@@ -45697,6 +45742,7 @@ async def diffusion_download_plan(
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
+        split_local_checkpoint_path,
         resolve_model_kind,
     )
     from core.inference.diffusion_engine_router import predict_engine
@@ -45708,7 +45754,15 @@ async def diffusion_download_plan(
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # Same bare-single-file-directory reinterpretation as the load route, so the plan describes the load that will actually run.
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_model_kind(split[1])
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
@@ -45916,6 +45970,7 @@ async def load_diffusion_model_gated(
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
+        split_local_checkpoint_path,
         resolve_model_kind,
     )
     from core.inference.diffusion_device import (
@@ -45948,7 +46003,15 @@ async def load_diffusion_model_gated(
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # A local On-Device pick can be a bare single-file .safetensors directory; if it holds exactly one checkpoint, reinterpret it as a single_file load so all three paths agree.
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_model_kind(split[1])
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
@@ -46386,7 +46449,7 @@ async def generate_diffusion_image(
                             if request.prompts and index < len(request.prompts)
                             else request.prompt
                         ),
-                        "negative_prompt": request.negative_prompt,
+                        "negative_prompt": result.get("negative_prompt"),
                         # Persist the ACTUAL output size, not the request sliders: the conditioned workflows derive it from the upload.
                         "width": getattr(image, "width", None) or request.width,
                         "height": getattr(image, "height", None) or request.height,
@@ -47493,8 +47556,17 @@ async def _generate_openai_images(
                 ),
             )
 
-        # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
-        steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
+        # Same order as the load (FLUX.1's base is schnell).
+        from core.inference.diffusion_content import content_variant_hint
+
+        steps, guidance = default_generation_params(
+            status.get("gguf_filename"),
+            await asyncio.to_thread(
+                content_variant_hint, status.get("repo_id"), status.get("gguf_filename")
+            ),
+            status.get("repo_id"),
+            status.get("base_repo"),
+        )
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
