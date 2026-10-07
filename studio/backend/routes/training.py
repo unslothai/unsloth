@@ -1280,7 +1280,14 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
     )
     if layout == "clef" or llm:
         from core.systemone.catalog import clef_unsupported_reason
+        from utils.hardware import hardware
 
+        # Runs before _validate_training_platform: name the MLX limit, not a missing GPU.
+        if hardware.get_device() == hardware.DeviceType.MLX:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Decision model training is not supported for MLX training yet.",
+            )
         if (reason := clef_unsupported_reason()) is not None:
             raise HTTPException(status_code = 400, detail = reason)
         request.decision_layout = "llm" if llm else "clef"
