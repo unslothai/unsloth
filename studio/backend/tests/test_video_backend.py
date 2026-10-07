@@ -5172,6 +5172,44 @@ def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     assert plan["total_bytes"] == ckpt["bytes"] + base["bytes"]
 
 
+def test_download_plan_stages_the_companions_of_a_cached_checkpoints_content_variant(
+    monkeypatch, tmp_path
+):
+    # A cached checkpoint whose weights are dev under a distilled name stages the dev companions the load reads.
+    import core.inference.video as vid
+    import core.inference.video_ltx2 as ltx2
+
+    _plan_api_ltx23(monkeypatch)
+    cached = tmp_path / "ltx-2.3-22b-distilled.gguf"
+    monkeypatch.setattr(vid, "_cached_checkpoint_file", lambda repo_id, filename: cached)
+    monkeypatch.setattr(
+        ltx2, "ltx23_checkpoint_variant", lambda path: "dev" if Path(str(path)) == cached else None
+    )
+
+    plan = _ltx23_download_plan()
+
+    files = {e["repo_id"]: e for e in plan["entries"]}["unsloth/LTX-2.3-GGUF"]["files"]
+    assert "vae/ltx-2.3-22b-dev_video_vae.safetensors" in files
+    assert "vae/ltx-2.3-22b-distilled_video_vae.safetensors" not in files
+
+
+def test_wan_a14b_local_base_excludes_both_experts(fake_runtime, monkeypatch):
+    # A paired pick replaces transformer and transformer_2, so a local base needs neither expert's weights.
+    import core.inference.diffusion as diffusion
+
+    seen = []
+    monkeypatch.setattr(
+        diffusion,
+        "_assert_local_base_is_pipeline",
+        lambda base, *, excluded_components = (), **kw: seen.append(tuple(excluded_components)),
+    )
+    VideoBackend().validate_load_request(
+        "QuantStack/Wan2.2-T2V-A14B-GGUF",
+        gguf_filename = "HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf",
+    )
+    assert seen and set(seen[-1]) == {"transformer", "transformer_2"}
+
+
 def _cuda_bf16_target(monkeypatch):
     """Pretend the box can run layerwise fp8, so the pre-cast encoder resolves off-GPU."""
     import torch

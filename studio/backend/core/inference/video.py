@@ -718,6 +718,27 @@ def _is_trusted_video_repo(repo_id: str) -> bool:
     return rid.startswith("unsloth/") or rid in _TRUSTED_NON_GGUF_VIDEO_REPOS
 
 
+def _cached_checkpoint_file(repo_id: str, filename: str) -> Optional[Path]:
+    """``filename`` in a local ``repo_id`` dir, else its cached hub blob (no network; active, legacy and default cache
+    roots), else None."""
+    path = Path(repo_id).expanduser() / filename
+    if path.is_file():
+        return path
+    from huggingface_hub import try_to_load_from_cache
+
+    cached = try_to_load_from_cache(repo_id, filename)
+    if not isinstance(cached, str):
+        from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
+        for root_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+            try:
+                cached = try_to_load_from_cache(repo_id, filename, cache_dir = str(root_fn()))
+            except Exception:  # noqa: BLE001 -- a bad/absent root just falls through
+                cached = None
+            if isinstance(cached, str):
+                break
+    return Path(cached) if isinstance(cached, str) else None
+
+
 def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
     """``general.architecture`` of a picked GGUF, or None. The Video picker admits a GGUF by its
     arch (not its name) -- for a LOCAL dir (``repo_id`` is a directory) AND for a cached HUB repo
@@ -726,29 +747,9 @@ def _picked_gguf_arch(repo_id: str, gguf_filename: str) -> Optional[str]:
     family the picker offered. Reads the local file when present, else the cached hub blob
     (network-free via try_to_load_from_cache). Header-only, bounds-checked."""
     try:
-        from pathlib import Path
-
-        path = Path(repo_id).expanduser() / gguf_filename
-        if not path.is_file():
-            # Not a local dir: resolve a cached HUB blob (no network). Probe active, legacy AND default cache roots, or
-            # a non-active-root GGUF 400s.
-            from huggingface_hub import try_to_load_from_cache
-
-            cached = try_to_load_from_cache(repo_id, gguf_filename)
-            if not isinstance(cached, str):
-                from hub.utils.paths import hf_default_cache_dir, legacy_hf_cache_dir
-                for root_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
-                    try:
-                        cached = try_to_load_from_cache(
-                            repo_id, gguf_filename, cache_dir = str(root_fn())
-                        )
-                    except Exception:  # noqa: BLE001 -- a bad/absent root just falls through
-                        cached = None
-                    if isinstance(cached, str):
-                        break
-            if not isinstance(cached, str):
-                return None
-            path = Path(cached)
+        path = _cached_checkpoint_file(repo_id, gguf_filename)
+        if path is None:
+            return None
         from utils.models.gguf_metadata import read_gguf_architecture
 
         return read_gguf_architecture(str(path))
@@ -2773,7 +2774,11 @@ class VideoBackend:
         # the load.
         from core.inference.diffusion import _assert_local_base_is_pipeline
 
-        excluded = (fam.denoiser_attr,) if kind in ("gguf", "single_file") else ()
+        excluded = (
+            ((fam.denoiser_attr, "transformer_2") if fam.is_moe else (fam.denoiser_attr,))
+            if kind in ("gguf", "single_file")
+            else ()
+        )
         _assert_local_base_is_pipeline(base_repo, excluded_components = excluded)
         if kind in ("gguf", "single_file") and not gguf_filename:
             raise ValueError("A gguf/single_file load needs the checkpoint filename.")
@@ -5040,7 +5045,12 @@ class VideoBackend:
                     # inline, outside the panel's disk preflight.
                     from .video_ltx2 import ltx23_extras_files, LTX23_EXTRAS_REPO
 
-                    wanted = set(ltx23_extras_files(gguf_filename))
+                    # A cached checkpoint's weights name its variant, as at load; else its name decides.
+                    try:
+                        variant_source = _cached_checkpoint_file(repo_id, gguf_filename)
+                    except Exception:  # noqa: BLE001 -- the name decides
+                        variant_source = None
+                    wanted = set(ltx23_extras_files(variant_source or gguf_filename))
                     extras_info = (
                         info
                         if LTX23_EXTRAS_REPO == repo_id
