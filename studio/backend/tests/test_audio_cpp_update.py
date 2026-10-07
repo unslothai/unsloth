@@ -137,6 +137,24 @@ def test_a_host_no_pinned_bundle_covers_has_no_prebuilt(managed, monkeypatch):
     assert aupd.chained_phase_plan()["update_available"] is True
 
 
+@pytest.mark.parametrize("request_, offered", [("vulkan", False), ("auto", True)])
+def test_an_explicit_accelerator_is_not_offered_the_cpu_bundle(
+    managed, monkeypatch, request_, offered
+):
+    # The installer never downgrades an explicit request, so a CPU-only release cannot satisfy it.
+    installer = aupd._installer()
+    pins = {
+        repo: {tag: {f"audio-{tag}-bin-ubuntu-arm64-cpu.tar.gz": "0" * 64}} for repo, tag in _LADDER
+    }
+    monkeypatch.setattr(installer, "load_pins", lambda path = None: pins)
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(aupd.platform, "machine", lambda: "aarch64")
+    _write_record(managed.tree, accelerator = "vulkan", accelerator_request = request_)
+    plan = aupd.chained_phase_plan()
+    assert plan["update_available"] is offered
+    assert plan["skip_reason"] == (None if offered else "no_prebuilt")
+
+
 def test_a_missing_installer_skips_the_offer(managed, monkeypatch):
     monkeypatch.setattr(aupd, "_installer_script", lambda: None)
     assert aupd.chained_phase_plan()["skip_reason"] == "installer_missing"

@@ -84,15 +84,20 @@ def release_status(binary: str, record: dict) -> dict:
     return status
 
 
-def _host_has_prebuilt(ladder: list, accelerator: Optional[str]) -> bool:
-    """Whether any pinned rung publishes a bundle for this host. Offline: the pins list every asset name. A rung without pins (a release the user picked) can only be answered by the online lookup, so it counts as available."""
+def _host_has_prebuilt(
+    ladder: list,
+    accelerator: Optional[str],
+    explicit: Optional[str] = None,
+) -> bool:
+    """Whether any pinned rung publishes a bundle for this host. Offline: the pins list every asset name. A rung without pins (a release the user picked) can only be answered by the online lookup, so it counts as available. An explicit request is never downgraded to CPU by the installer, so only it is checked."""
     installer = _installer()
     pins = installer.load_pins()
+    accels = (explicit,) if explicit else tuple(dict.fromkeys((accelerator or "cpu", "cpu")))
     for repo, tag in ladder:
         names = list((pins.get(repo) or {}).get(tag) or {})
         if not names:
             return True
-        for accel in dict.fromkeys((accelerator or "cpu", "cpu")):
+        for accel in accels:
             if installer.resolve_release_asset(
                 names,
                 system = platform.system(),
@@ -138,7 +143,8 @@ def _plan() -> dict:
     installer = _installer()
     request = record.get("accelerator_request")
     resolved = record.get("accelerator")
-    if not _host_has_prebuilt(ladder, resolved if isinstance(resolved, str) else None):
+    explicit = request if request in installer.ACCELERATORS and request != "auto" else None
+    if not _host_has_prebuilt(ladder, resolved if isinstance(resolved, str) else None, explicit):
         plan["skip_reason"] = "no_prebuilt"
         return plan
     script = _installer_script()
