@@ -160,7 +160,7 @@ test("forget marks a mounted editor's draft unsaved, and undo marks it saved aga
 
 test("an undo before the forget's response keeps the restored record", async () => {
   store.clear();
-  let releaseForget: (() => void) | null = null;
+  const pending: { release?: () => void } = {};
   setAuthFetchHandler((_input, init) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     const response = () =>
@@ -176,7 +176,7 @@ test("an undo before the forget's response keeps the restored record", async () 
       return response();
     }
     return new Promise<Response>((resolve) => {
-      releaseForget = () => resolve(response());
+      pending.release = () => resolve(response());
     });
   });
   try {
@@ -185,8 +185,8 @@ test("an undo before the forget's response keeps the restored record", async () 
     assert.ok(undo);
     assert.equal(undo(), true);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(releaseForget, "the forget is still in flight");
-    releaseForget();
+    assert.ok(pending.release, "the forget is still in flight");
+    pending.release();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const restored = resolveInitialConfig(REPO, QUANT);
     assert.equal(restored.remembered, true);
@@ -203,7 +203,7 @@ test("a save under another alias before the forget's response keeps that record"
   );
   // The loaded sidebar keys a cached GGUF by its snapshot path; the forget clears both spellings.
   const SNAPSHOT = "C:/hf/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/abc123";
-  let releaseForget: (() => void) | null = null;
+  const pending: { release?: () => void } = {};
   setAuthFetchHandler((_input, init) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     const response = () =>
@@ -219,7 +219,7 @@ test("a save under another alias before the forget's response keeps that record"
       return response();
     }
     return new Promise<Response>((resolve) => {
-      releaseForget = () => resolve(response());
+      pending.release = () => resolve(response());
     });
   });
   try {
@@ -228,8 +228,8 @@ test("a save under another alias before the forget's response keeps that record"
     assert.ok(savePerModelConfig(SNAPSHOT, QUANT, tuned()));
     syncModelOverride(SNAPSHOT, QUANT, tuned());
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(releaseForget, "the forget is still in flight");
-    releaseForget();
+    assert.ok(pending.release, "the forget is still in flight");
+    pending.release();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(resolveInitialConfig(SNAPSHOT, QUANT).remembered, true);
     assert.equal(resolveInitialConfig(REPO, QUANT).remembered, false);
@@ -241,7 +241,7 @@ test("a save under another alias before the forget's response keeps that record"
 test("a save from another tab before the forget's response keeps that record", async () => {
   store.clear();
   const SNAPSHOT = "C:/hf/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/abc123";
-  let releaseForget: (() => void) | null = null;
+  const pending: { release?: () => void } = {};
   setAuthFetchHandler((_input, init) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     const response = () =>
@@ -257,7 +257,7 @@ test("a save from another tab before the forget's response keeps that record", a
       return response();
     }
     return new Promise<Response>((resolve) => {
-      releaseForget = () => resolve(response());
+      pending.release = () => resolve(response());
     });
   });
   try {
@@ -268,8 +268,8 @@ test("a save from another tab before the forget's response keeps that record", a
     // The other tab writes the shared localStorage directly; this tab's module never sees it.
     assert.ok(savePerModelConfig(SNAPSHOT, QUANT, tuned()));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(releaseForget, "the forget is still in flight");
-    releaseForget();
+    assert.ok(pending.release, "the forget is still in flight");
+    pending.release();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(resolveInitialConfig(SNAPSHOT, QUANT).config.nParallel, 4);
     assert.equal(resolveInitialConfig(SNAPSHOT, QUANT).remembered, true);
@@ -307,7 +307,7 @@ test("an unchanged alias is still cleared when the forget's response lands", asy
 test("an identical re-save from another tab before the forget's response keeps that record", async () => {
   store.clear();
   const SNAPSHOT = "C:/hf/models--unsloth--gemma-4-12B-it-qat-GGUF/snapshots/abc123";
-  let releaseForget: (() => void) | null = null;
+  const pending: { release?: () => void } = {};
   setAuthFetchHandler((_input, init) => {
     const body = JSON.parse(String(init?.body ?? "{}"));
     const response = () =>
@@ -323,7 +323,7 @@ test("an identical re-save from another tab before the forget's response keeps t
       return response();
     }
     return new Promise<Response>((resolve) => {
-      releaseForget = () => resolve(response());
+      pending.release = () => resolve(response());
     });
   });
   try {
@@ -333,8 +333,8 @@ test("an identical re-save from another tab before the forget's response keeps t
     // Same settings, saved again by the other tab: only the write itself is new.
     assert.ok(savePerModelConfig(SNAPSHOT, QUANT, tuned()));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.ok(releaseForget, "the forget is still in flight");
-    releaseForget();
+    assert.ok(pending.release, "the forget is still in flight");
+    pending.release();
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(resolveInitialConfig(SNAPSHOT, QUANT).remembered, true);
   } finally {
