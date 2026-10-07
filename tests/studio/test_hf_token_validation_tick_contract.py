@@ -161,7 +161,7 @@ def test_training_start_prepares_token_once_before_transport():
     )[0]
     assert "await prepareHfTokenForUse(attempt.hfToken)" in prepare_attempt
     assert re.search(
-        r"buildTrainingStartPayload\(\s*attempt\.config,\s*hfToken,\s*getCachedSystemInfo\(\)",
+        r"buildTrainingStartPayload\(\s*gpuCheck\.config,\s*hfToken,\s*getCachedSystemInfo\(\)",
         submit_attempt,
     )
     assert "payload.hf_token = hfToken" not in submit_attempt
