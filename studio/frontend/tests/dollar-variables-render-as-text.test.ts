@@ -73,6 +73,10 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
     ["$PATH || $HOME", "$PATH=$HOME/bin"],
   ],
   ["PHP reads $_GET and $_POST.", ["$_GET and $"]],
+  ["Use $PATH **and then** $HOME.", ["$PATH", "and then", "$HOME"]],
+  ["\u4f7f\u7528 $PATH\uff0c\u7136\u540e\u68c0\u67e5 $HOME", ["$PATH\uff0c\u7136\u540e\u68c0\u67e5 $HOME"]],
+  ["\u4f7f\u7528$PATH\uff0c\u7136\u540e\u68c0\u67e5$HOME", ["$PATH\uff0c\u7136\u540e\u68c0\u67e5$HOME"]],
+  ["F\u00fcge $PATH hinzu, pr\u00fcfe dann $HOME", ["$PATH hinzu, pr\u00fcfe dann $HOME"]],
   [
     "Add it to $PATH, then run `echo $HOME`.",
     ["$PATH, then run", "echo $HOME"],
@@ -134,6 +138,10 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["- Ends with $\n- The $n$th row and the $m$th column", ["n", "m"]],
   ["We have $sin theta $ and $AB / CD $ here.", ["sin theta ", "AB / CD "]],
   ["Use $HOME/$USER and $\\alpha$ here.", ["\\alpha"]],
+  ["\u8bbe $ABC$ \u4e3a\u4e09\u89d2\u5f62\uff0c$AB = 5$\u3002", ["ABC", "AB = 5"]],
+  ["\u4e09\u89d2\u5f62$ABC$\u4e2d\uff0c$AB$\u8fb9", ["ABC", "AB"]],
+  ["Die Gr\u00f6\u00dfe $AB$ und $CD$", ["AB", "CD"]],
+  ["Write $a * b$ and $AB * CD$.", ["a * b", "AB * CD"]],
 ];
 
 test("real maths still renders", () => {
