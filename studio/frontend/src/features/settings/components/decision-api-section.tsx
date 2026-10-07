@@ -40,6 +40,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
+  type SystemOneBackend,
   type SystemOneConnection,
   type SystemOneDevice,
   type SystemOneDownloadPlan,
@@ -80,6 +81,7 @@ export function DecisionApiSection(): ReactElement | null {
   );
   const [planState, setPlanState] = useState<{
     model: string;
+    backend: SystemOneBackend;
     plan: SystemOneDownloadPlan;
   } | null>(null);
   const [confirm, setConfirm] = useState<{
@@ -94,7 +96,12 @@ export function DecisionApiSection(): ReactElement | null {
 
   const enabled = settings?.enabled ?? false;
   const model = settings?.model ?? null;
-  const plan = planState && planState.model === model ? planState.plan : null;
+  const backend = settings?.backend ?? "auto";
+  // llama.cpp serves a GGUF, PyTorch the safetensors: the download follows the runtime.
+  const plan =
+    planState?.model === model && planState?.backend === backend
+      ? planState.plan
+      : null;
 
   useEffect(() => {
     let live = true;
@@ -152,14 +159,14 @@ export function DecisionApiSection(): ReactElement | null {
   useEffect(() => {
     if (!enabled || !model) return;
     let live = true;
-    resolveSystemOneDownload(model).then(
-      (next) => live && setPlanState({ model, plan: next }),
+    resolveSystemOneDownload(model, backend).then(
+      (next) => live && setPlanState({ model, backend, plan: next }),
       (err) => live && setError(errorMessage(err)),
     );
     return () => {
       live = false;
     };
-  }, [enabled, model, downloadDone]);
+  }, [enabled, model, backend, downloadDone]);
 
   const modelLabel = (name: string) => {
     const connection = connections?.find((c) => c.name === name);
@@ -230,6 +237,7 @@ export function DecisionApiSection(): ReactElement | null {
       // Offer the download on the switch, not on the first request: a first API call should not sit behind a 700 MB transfer.
       const nextEnabled = patch.enabled ?? settings?.enabled;
       const nextModel = patch.model ?? settings?.model;
+      const nextBackend = patch.backend ?? backend;
       const settingsPatch =
         downloadAfter && settings
           ? {
@@ -238,10 +246,9 @@ export function DecisionApiSection(): ReactElement | null {
               expectedModel: settings.model,
             }
           : patch;
-      let resolvedPlan: { model: string; plan: SystemOneDownloadPlan } | null =
-        null;
+      let resolvedPlan: typeof planState = null;
       if (nextEnabled && nextModel && downloadAfter) {
-        const nextPlan = await resolveSystemOneDownload(nextModel);
+        const nextPlan = await resolveSystemOneDownload(nextModel, nextBackend);
         if (!nextPlan.cached) {
           if (nextPlan.error || !nextPlan.repo || nextPlan.files.length === 0) {
             throw new Error(
@@ -256,7 +263,11 @@ export function DecisionApiSection(): ReactElement | null {
           });
           return;
         }
-        resolvedPlan = { model: nextModel, plan: nextPlan };
+        resolvedPlan = {
+          model: nextModel,
+          backend: nextBackend,
+          plan: nextPlan,
+        };
       }
       const next = await updateSystemOneSettings(settingsPatch);
       setSettings(next);
@@ -279,7 +290,11 @@ export function DecisionApiSection(): ReactElement | null {
       const next = await updateSystemOneSettings(accepted.patch);
       setSettings(next);
       if (next.model === accepted.model) {
-        setPlanState({ model: accepted.model, plan: accepted.plan });
+        setPlanState({
+          model: accepted.model,
+          backend: next.backend,
+          plan: accepted.plan,
+        });
       }
     } catch (err) {
       await resyncSettingsAfterError(
@@ -555,6 +570,55 @@ export function DecisionApiSection(): ReactElement | null {
             )}
           </div>
         </SettingsRow>
+
+        {isClefDecisionModel(settings.model) ? (
+          <>
+            <SettingsRow
+              label={t("settings.apiKeys.decisionApi.backend")}
+              description={t("settings.apiKeys.decisionApi.backendDescription")}
+            >
+              <Select
+                value={backend}
+                disabled={busy}
+                onValueChange={(value) =>
+                  void apply({ backend: value as SystemOneBackend }, true)
+                }
+              >
+                <SelectTrigger
+                  className="w-36"
+                  aria-label={t("settings.apiKeys.decisionApi.backend")}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">
+                    {t("settings.apiKeys.decisionApi.backendAuto")}
+                  </SelectItem>
+                  <SelectItem value="llama.cpp">llama.cpp</SelectItem>
+                  <SelectItem value="pytorch">PyTorch</SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingsRow>
+            <p
+              className="pb-3 text-xs text-muted-foreground leading-relaxed"
+              data-decision-backend
+            >
+              {t("settings.apiKeys.decisionApi.backendStatus", {
+                backend:
+                  (settings.loadedModel === settings.model
+                    ? settings.loadedBackend
+                    : settings.effectiveBackend) ??
+                  t("settings.apiKeys.decisionApi.backendNone"),
+              })}
+              {settings.fallbackReason ? ` · ${settings.fallbackReason}` : ""}{" "}
+              {t(
+                settings.inputModalities.includes("image")
+                  ? "settings.apiKeys.decisionApi.mediaImages"
+                  : "settings.apiKeys.decisionApi.mediaText",
+              )}
+            </p>
+          </>
+        ) : null}
 
         {isRemote ? null : (
           <SettingsRow
