@@ -27,7 +27,7 @@ test("expansion is reset wherever the composer is emptied, not only on send", as
 
   for (const clearer of [
     "const queueComposerText = useCallback(",
-    "const queuePastedTextPrompt = useCallback(",
+    "const queueTextAttachmentsPrompt = useCallback(",
   ]) {
     const start = thread.indexOf(clearer);
     assert.notEqual(start, -1, `${clearer} should still exist`);

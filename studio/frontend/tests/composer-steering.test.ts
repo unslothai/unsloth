@@ -7,6 +7,10 @@ import {
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
 } from "../src/features/chat/utils/prompt-queue-model-boundary.ts";
+import {
+  normalizeQueuedPrompt,
+  queuedPromptHasContent,
+} from "../src/features/chat/utils/queued-text-attachments.ts";
 import { snapshotQueuedChatRunSettings } from "../src/features/chat/utils/queued-chat-run-settings.ts";
 import { reorderPromptQueueItems } from "../src/features/chat/utils/prompt-queue-reorder.ts";
 import { steeringInsertionIndex } from "../src/features/chat/utils/composer-preferences.ts";
@@ -111,6 +115,8 @@ function world() {
   let indexing: () => Promise<boolean> = async () => false;
   const noop = () => undefined;
   const deps = {
+    normalizeQueuedPrompt,
+    queuedPromptHasContent,
     promptQueueRuns: runs,
     promptQueueRunOrder: [],
     promptQueueActiveRunIds: new Set(),
