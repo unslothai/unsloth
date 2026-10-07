@@ -2124,9 +2124,7 @@ def test_status_native_reports_supports_controlnet_false():
 def test_native_negative_prompt_reaches_sd_cli_only_when_cfg_runs():
     klein = _loaded_backend("flux.2-klein")
     assert klein.status()["supports_negative_prompt"] is True
-    kw = dict(
-        prompt = "a fox", negative_prompt = "text", width = 256, height = 256, steps = 4, seed = 1
-    )
+    kw = dict(prompt = "a fox", negative_prompt = "text", width = 256, height = 256, steps = 4, seed = 1)
     out = klein.generate(guidance = 4.0, **kw)
     assert klein._engine.calls[-1][1].negative_prompt == "text"
     assert out["negative_prompt"] == "text"
