@@ -3327,6 +3327,8 @@ export const ar = {
       offloadVramBudget: "حد ذاكرة الفيديو (GiB)",
       offloadVramBudgetTooltip: "أقصى ذاكرة فيديو يستخدمها هذا التدريب. الوضع التلقائي يفرّغ طبقات كافية للبقاء تحته، ويمكن لتدريبين مشاركة بطاقة واحدة بأخذ كل منهما جزءًا. اتركه فارغًا لاستخدام البطاقة كاملة.",
       offloadWholeCard: "البطاقة كاملة",
+      offloadVramBudgetGpu: "حد ذاكرة الفيديو لـ GPU {index} (GiB)",
+      offloadVramBudgetPerGpuTooltip: "أقصى ذاكرة فيديو يستخدمها هذا التدريب على {name}. الوضع التلقائي يفرّغ طبقات كافية للبقاء تحت حد كل بطاقة. اتركه فارغًا لاستخدام البطاقة كاملة.",
       prefetchDepth: "عمق الجلب المسبق",
       prefetchDepthTooltip: "عدد الطبقات المفرّغة التي تُنسخ قبل الطبقة الجارية. الوضع التلقائي يبدأ من 1 ولا يحتفظ بعمق أكبر إلا إذا قلّل الانتظار فعلًا.",
       offloadPanelTitle: "الطبقات المفرّغة",
@@ -3341,6 +3343,8 @@ export const ar = {
       offloadPanelDepth: "عمق الجلب المسبق",
       offloadPanelPinned: "مثبّتة",
       offloadPanelSweepNote: "تُظهر النافذة المتحركة ترتيب جلب الطبقات بعد إبطائها لتكون مرئية؛ أما الأرقام فمقاسة في آخر خطوة.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "بطاقة غير معروفة",
       gradCheckpoint: "نقطة تحقق التدرّج",
       gradCheckpointTooltip:
         "مقايضة الحوسبة بالذاكرة عبر إعادة حساب التنشيطات.",

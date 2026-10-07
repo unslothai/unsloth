@@ -3350,6 +3350,8 @@ export const ru = {
       offloadVramBudget: "Бюджет видеопамяти (ГиБ)",
       offloadVramBudgetTooltip: "Максимум видеопамяти для этого обучения. Авто выгружает столько слоёв, чтобы уложиться, и два обучения могут делить одну карту. Пусто: вся карта.",
       offloadWholeCard: "вся карта",
+      offloadVramBudgetGpu: "Бюджет видеопамяти GPU {index} (ГиБ)",
+      offloadVramBudgetPerGpuTooltip: "Максимум видеопамяти для этого обучения на {name}. Авто выгружает столько слоёв, чтобы уложиться в бюджет каждой карты. Пусто: вся карта.",
       prefetchDepth: "Глубина предзагрузки",
       prefetchDepthTooltip: "Сколько выгруженных слоёв копируется заранее. Авто начинает с 1 и держит больший запас, только если он заметно сокращает ожидание копий.",
       offloadPanelTitle: "Выгруженные слои",
@@ -3364,6 +3366,8 @@ export const ru = {
       offloadPanelDepth: "глубина предзагрузки",
       offloadPanelPinned: "закреплено",
       offloadPanelSweepNote: "Движущееся окно показывает порядок загрузки слоёв, замедленно, чтобы его было видно; числа измерены на последнем шаге.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Неизвестная карта",
       gradCheckpoint: "Чекпоинт градиента",
       gradCheckpointTooltip:
         "Обменять вычисления на память, пересчитывая активации.",

@@ -3395,6 +3395,8 @@ export const fr = {
       offloadVramBudget: "Budget VRAM (Gio)",
       offloadVramBudgetTooltip: "La VRAM maximale que cet entraînement peut utiliser. Auto décharge assez de couches pour rester en dessous, et deux entraînements peuvent partager une carte. Vide utilise toute la carte.",
       offloadWholeCard: "toute la carte",
+      offloadVramBudgetGpu: "Budget VRAM GPU {index} (Gio)",
+      offloadVramBudgetPerGpuTooltip: "La VRAM maximale que cet entraînement peut utiliser sur {name}. Auto décharge assez de couches pour rester sous le budget de chaque carte. Vide utilise toute la carte.",
       prefetchDepth: "Profondeur de préchargement",
       prefetchDepthTooltip: "Nombre de couches déchargées copiées avant celle qui s'exécute. Auto commence à 1 et ne garde une réserve plus profonde que si elle réduit l'attente des copies de façon mesurable.",
       offloadPanelTitle: "Couches déchargées",
@@ -3409,6 +3411,8 @@ export const fr = {
       offloadPanelDepth: "profondeur de préchargement",
       offloadPanelPinned: "épinglée",
       offloadPanelSweepNote: "La fenêtre mobile montre l'ordre de chargement des couches, ralenti pour être visible ; les chiffres sont mesurés sur la dernière étape.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Carte inconnue",
       gradCheckpoint: "Checkpoint de gradient",
       gradCheckpointTooltip:
         "Échanger du calcul contre de la mémoire en recalculant les activations.",

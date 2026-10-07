@@ -122,6 +122,8 @@ export interface TrainingConfigState {
   gradientCheckpointing: GradientCheckpointing;
   offloadLayers: OffloadLayers;
   offloadVramGb: number | null;
+  /** Per-GPU budget in GiB keyed by the GPU index /api/system reports; used when several GPUs are visible. */
+  offloadVramGbPerDevice: Record<string, number | null>;
   prefetchDepth: PrefetchDepth;
   randomSeed: number;
   enableWandb: boolean;
@@ -260,6 +262,7 @@ export interface TrainingConfigActions {
   setGradientCheckpointing: (value: GradientCheckpointing) => void;
   setOffloadLayers: (value: OffloadLayers) => void;
   setOffloadVramGb: (value: number | null) => void;
+  setOffloadVramGbForDevice: (gpuIndex: number, value: number | null) => void;
   setPrefetchDepth: (value: PrefetchDepth) => void;
   setRandomSeed: (value: number) => void;
   setEnableWandb: (value: boolean) => void;

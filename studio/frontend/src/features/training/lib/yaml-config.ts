@@ -96,6 +96,7 @@ export function serializeConfigToYaml(
     gradient_checkpointing: state.gradientCheckpointing,
     offload_layers: state.offloadLayers,
     offload_vram_gb: state.offloadVramGb,
+    offload_vram_gb_per_device: state.offloadVramGbPerDevice,
     prefetch_depth: state.prefetchDepth,
     optim: state.optimizerType,
     lr_scheduler_type: state.lrSchedulerType,

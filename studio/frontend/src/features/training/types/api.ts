@@ -63,6 +63,7 @@ export interface TrainingStartRequest {
   gradient_checkpointing: string;
   offload_layers: number | "auto";
   offload_vram_gb: number | null;
+  offload_vram_gb_per_device: (number | null)[] | null;
   prefetch_depth: number | "auto";
   use_rslora: boolean;
   use_loftq: boolean;

@@ -173,6 +173,7 @@ export const DEFAULT_HYPERPARAMS = {
   gradientCheckpointing: "unsloth" as const,
   offloadLayers: 0 as number | "auto",
   offloadVramGb: null as number | null,
+  offloadVramGbPerDevice: {} as Record<string, number | null>,
   prefetchDepth: 2 as number | "auto",
   randomSeed: 3407,
   enableWandb: false,

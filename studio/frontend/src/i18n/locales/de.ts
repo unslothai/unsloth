@@ -3385,6 +3385,8 @@ export const de = {
       offloadVramBudget: "VRAM-Budget (GiB)",
       offloadVramBudgetTooltip: "Der meiste VRAM, den dieser Lauf nutzen darf. Auto lagert genug Schichten aus, um darunter zu bleiben, und zwei Läufe können sich eine Karte teilen. Leer nutzt die ganze Karte.",
       offloadWholeCard: "ganze Karte",
+      offloadVramBudgetGpu: "VRAM-Budget GPU {index} (GiB)",
+      offloadVramBudgetPerGpuTooltip: "Der meiste VRAM, den dieser Lauf auf {name} nutzen darf. Auto lagert genug Schichten aus, um unter dem Budget jeder Karte zu bleiben. Leer nutzt die ganze Karte.",
       prefetchDepth: "Prefetch-Tiefe",
       prefetchDepthTooltip: "Wie viele ausgelagerte Schichten vor der laufenden kopiert werden. Auto beginnt bei 1 und behält eine tiefere Reserve nur, solange sie das Warten auf Kopien messbar verkürzt.",
       offloadPanelTitle: "Ausgelagerte Schichten",
@@ -3399,6 +3401,8 @@ export const de = {
       offloadPanelDepth: "Prefetch-Tiefe",
       offloadPanelPinned: "gepinnt",
       offloadPanelSweepNote: "Das wandernde Fenster zeigt, in welcher Reihenfolge Schichten geholt werden, verlangsamt, damit man es sieht; die Zahlen sind am letzten Schritt gemessen.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Unbekannte Karte",
       gradCheckpoint: "Grad-Checkpoint",
       gradCheckpointTooltip:
         "Rechenaufwand gegen Speicher tauschen, indem Aktivierungen neu berechnet werden.",

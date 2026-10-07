@@ -10,7 +10,8 @@ import { translate } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
 import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
-import { buildTrainingStartPayload } from "../api/mappers";
+import { getCachedSystemInfo } from "@/hooks/use-system";
+import { buildTrainingStartPayload, trainingGpuIndices } from "../api/mappers";
 import {
   TrainingStartError,
   isTrainingStartOutcomeUnknownError,
@@ -60,7 +61,7 @@ type AttemptPhase = "preflight" | "transport" | "finished";
 
 function captureTrainingStartInputs(config: TrainingConfigState) {
   return createTrainingStartInputIdentity(
-    buildTrainingStartPayload(config, null),
+    buildTrainingStartPayload(config, null, trainingGpuIndices(getCachedSystemInfo()?.gpu)),
     config,
   );
 }
@@ -547,7 +548,11 @@ async function submitFreshTrainingRun(
     return attempt.cancel(translate(validation.errorKey));
   }
 
-  const payload = buildTrainingStartPayload(attempt.config, hfToken);
+  const payload = buildTrainingStartPayload(
+    attempt.config,
+    hfToken,
+    trainingGpuIndices(getCachedSystemInfo()?.gpu),
+  );
   if (!attempt.enterTransport()) {
     return false;
   }
