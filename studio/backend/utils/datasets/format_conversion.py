@@ -449,6 +449,8 @@ def convert_to_vlm_format(
                 image_data = Image.open(local_path).convert("RGB")
             else:
                 image_data = Image.open(image_data).convert("RGB")
+        elif image_data is None:
+            raise ValueError("Row has no image")
 
         text_data = sample[text_column]
         if isinstance(text_data, list) and len(text_data) > 0:
