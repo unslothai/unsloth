@@ -76,7 +76,8 @@ def run_conversion_task(model_id: str, format_type: str, output_dir: Path) -> No
     try:
         output_dir.parent.mkdir(parents = True, exist_ok = True)
         with open(log_path, "w", encoding = "utf-8") as log:
-            argv = [sys.executable, "-c", _SCRIPT, model_id, format_type, str(output_dir)]
+            # -P: the server's cwd stays off sys.path, so a folder named "unsloth" there cannot shadow the package.
+            argv = [sys.executable, "-P", "-c", _SCRIPT, model_id, format_type, str(output_dir)]
             proc = spawn_on_lifetime_thread(
                 lambda: subprocess.Popen(
                     argv,

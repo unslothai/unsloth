@@ -39,6 +39,7 @@ def test_status_tracks_stages_and_completion(tmp_path):
         argv = popen.call_args.args[0]
         # passed as argv, not spliced into source; written under exports, not the server's cwd
         assert argv[-3:] == ["a/b", "ov_int4", str(tmp_path / "b-openvino" / "ov_int4")]
+        assert argv[1] == "-P"  # cwd off sys.path
         assert client.get("/api/convert/status", params = {"model_id": "a/b"}).json() == {
             "state": "done",
             "stage": "saving",
