@@ -242,7 +242,6 @@ function trackSttDownloadNow(
     }
     trackedDownloadIds.set(key, options.downloadId);
   }
-  // A newer attempt reuses the poller but refreshes the row and cancel identity.
   if (wasTracking && !changedAttempt) {
     if (options.warmSelectedVoiceModelOnComplete !== false)
       warmSelectedVoiceModelOnComplete.set(key, true);
