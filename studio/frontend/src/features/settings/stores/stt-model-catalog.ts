@@ -166,6 +166,59 @@ export function sttModelName(model: SttModel): string {
   );
 }
 
+/** package folder quant; "" uses the resident or default, while saved keys encode their own. */
+export function sttModelVariant(
+  model: SttModel,
+  variant: string,
+): string | null {
+  return variant && isAudioCppFolderId(model) ? variant : null;
+}
+
+/** folds a quant into the audio runtime model id as `row:variant`. */
+export function withSttVariant(model: SttModel, variant: string): string {
+  const quant = sttModelVariant(model, variant);
+  return quant ? `${model}:${quant}` : model;
+}
+
+/** picks the pinned, loaded, cached, or default quant; resolves loose cache keys like `Q8_0`. */
+export function sttShownVariant(
+  pinned: string | null,
+  loaded: string | null,
+  listing: {
+    default_variant: string | null;
+    variants: readonly { quant: string; downloaded?: boolean }[];
+  } | null,
+): string | null {
+  if (pinned) return pinned;
+  if (!listing) return loaded;
+  if (loaded) {
+    if (listing.variants.some((variant) => variant.quant === loaded)) {
+      return loaded;
+    }
+    const scoped = listing.variants.filter(
+      (variant) => variant.downloaded && variant.quant.endsWith(`/${loaded}`),
+    );
+    if (scoped.length === 1) return scoped[0].quant;
+  }
+  return (
+    listing.variants.find((variant) => variant.downloaded)?.quant ??
+    listing.default_variant
+  );
+}
+
+/** Whether a listing leaves the pinned quant possibly on disk. Only the row with that exact key can
+ *  say no: a cache-only (offline) listing keys cached files by what tells them apart ("ctc/F16" for
+ *  "v3-ctc/F16"), so a key it leaves out may still be cached; the backend matches it on load. */
+export function sttListedQuantDownloaded(
+  listing: { variants: readonly { quant: string; downloaded?: boolean }[] },
+  pinned: string,
+): boolean {
+  return (
+    listing.variants.find((variant) => variant.quant === pinned)?.downloaded !==
+    false
+  );
+}
+
 export function sttModelSize(model: SttModel): string {
   return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
 }

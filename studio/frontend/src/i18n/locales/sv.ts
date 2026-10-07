@@ -1427,6 +1427,9 @@ export const sv = {
         sttModelLabel: "Taligenkänningsmodell",
         sttModelDescription:
           "Välj eller sök efter en STT-modell som ska köras lokalt.",
+        sttQuantLabel: "Kvantisering",
+        sttQuantDescription:
+          "Välj eller sök efter en STT-modell som ska köras lokalt och sedan dess kvantisering.",
         sttDeviceLabel: "Läs in i",
         sttDeviceAuto: "GPU när tillgänglig",
         sttDeviceCpu: "CPU-RAM",

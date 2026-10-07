@@ -44,7 +44,10 @@ import {
   validateSttModel,
 } from "@/features/chat";
 import {
+  type GgufVariantsResponse,
+  ggufVariantDisplayLabel,
   hfApiToken,
+  invalidateGgufVariantsCache,
   listGgufVariants,
   useHfTokenStore,
   useHubModelSearch,
@@ -87,6 +90,9 @@ import {
   isSttModelLanguageCompatible,
   sttModelName,
   sttModelSize,
+  sttListedQuantDownloaded,
+  sttModelVariant,
+  sttShownVariant,
   type TtsEngine,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
@@ -478,6 +484,10 @@ export function VoiceTab() {
   const setDictationEngine = useVoiceSettingsStore((s) => s.setDictationEngine);
   const sttModel = useVoiceSettingsStore((s) => s.sttModel);
   const setSttModel = useVoiceSettingsStore((s) => s.setSttModel);
+  const sttGgufVariant = useVoiceSettingsStore((s) => s.sttGgufVariant);
+  const setSttGgufVariant = useVoiceSettingsStore((s) => s.setSttGgufVariant);
+  // The quant a pinned package folder row runs; null leaves the row's resident or default one.
+  const sttVariant = sttModelVariant(sttModel, sttGgufVariant);
   // Named apart from the `sttDevice` state below, which the sidecar reports back.
   const sttDevicePreference = useVoiceSettingsStore((s) => s.sttDevice);
   const setSttDevicePreference = useVoiceSettingsStore((s) => s.setSttDevice);
@@ -629,31 +639,85 @@ export function VoiceTab() {
   // so one throttled timer or bursty poll set the displayed speed outright.
   // Model whose download this tab watched; completion auto-loads it.
   const watchedDownloadRef = useRef<string | null>(null);
+  // The quant this tab started downloading; an adopted transfer's quant is unknown.
+  const startedDownloadRef = useRef<{
+    model: string;
+    variant: string | null;
+  } | null>(null);
+  // Quant resident for the selected row, so an unpinned Select shows what dictation would run.
+  const [sttLoadedVariant, setSttLoadedVariant] = useState<string | null>(null);
+  // The selected package folder's quants, from the same cached listing the Transcribe picker reads.
+  const [sttVariantListing, setSttVariantListing] = useState<{
+    model: string;
+    listing: GgufVariantsResponse;
+  } | null>(null);
+  const [sttListingNonce, setSttListingNonce] = useState(0);
 
   // Selecting a model (or finishing its download) loads it without a Load
   // click. A model that is not downloaded fails quietly and stays on demand.
-  const autoLoadSttModel = useCallback(async (model: string) => {
-    setSttPhase("loading");
-    try {
-      await loadSttModel(model);
-    } catch {
-      // Not downloaded (or the engine is busy): the status poll resets the phase
-      // and the user still sees the Download button.
-    } finally {
-      setStatusNonce((nonce) => nonce + 1);
-    }
-  }, []);
+  const autoLoadSttModel = useCallback(
+    async (model: string, variant: string | null = null) => {
+      setSttPhase("loading");
+      try {
+        await loadSttModel(model, undefined, undefined, undefined, variant);
+      } catch {
+        // Not downloaded (or the engine is busy): the status poll resets the phase
+        // and the user still sees the Download button.
+      } finally {
+        setStatusNonce((nonce) => nonce + 1);
+      }
+    },
+    [],
+  );
   const sttRepoId = getSttModelRepo(sttModel);
   const hfToken = useHfTokenStore((state) => state.token);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sttListingNonce is the refetch trigger once a quant lands.
+  useEffect(() => {
+    if (!isLocalEngine || !isAudioCppFolderId(sttModel)) return;
+    let cancelled = false;
+    listGgufVariants(sttModel, hfApiToken(hfToken))
+      .then((listing) => {
+        if (!cancelled) setSttVariantListing({ model: sttModel, listing });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isLocalEngine, sttModel, hfToken, sttListingNonce]);
+  const sttVariants =
+    sttVariantListing?.model === sttModel
+      ? sttVariantListing.listing.variants
+      : [];
+  const shownSttVariant = sttShownVariant(
+    sttVariant,
+    sttLoadedVariant,
+    sttVariantListing?.model === sttModel ? sttVariantListing.listing : null,
+  );
+  const shownSttLabel = ggufVariantDisplayLabel(
+    sttVariants.find((variant) => variant.quant === shownSttVariant) ?? {
+      quant: shownSttVariant ?? "",
+    },
+  );
   const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
   const [sttDownloadAvailability, setSttDownloadAvailability] = useState<{
     repoId: string;
     state: SttDownloadAvailability;
   }>({ repoId: "", state: "checking" });
-  const effectiveSttDownloadAvailability =
+  const rowSttDownloadAvailability =
     sttDownloadAvailability.repoId === sttRepoId
       ? sttDownloadAvailability.state
       : "checking";
+  // Status knows rows, not quants: a pinned quant of a row with another one cached is missing, or
+  // failed when its download did, as a row's would.
+  const effectiveSttDownloadAvailability =
+    rowSttDownloadAvailability === "downloaded" &&
+    sttVariant &&
+    sttVariantListing?.model === sttModel &&
+    !sttListedQuantDownloaded(sttVariantListing.listing, sttVariant)
+      ? sttDownload?.error
+        ? "error"
+        : "missing"
+      : rowSttDownloadAvailability;
   useEffect(() => {
     if (!isLocalEngine || !modelSttSupported) {
       return;
@@ -685,6 +749,14 @@ export function VoiceTab() {
           setSttPhase("unavailable");
           return;
         }
+        const rowLoaded = engineStatus.loaded_model === sttModel;
+        setSttLoadedVariant(
+          rowLoaded ? (engineStatus.loaded_variant ?? null) : null,
+        );
+        // A pinned quant is ready only when that quant is the resident one.
+        const loaded =
+          rowLoaded &&
+          (!sttVariant || engineStatus.loaded_variant === sttVariant);
         const download = engineStatus.download;
         setSttDownload(download);
         setSttDownloadAvailability({
@@ -709,13 +781,26 @@ export function VoiceTab() {
         } else {
           const finished = watchedDownloadRef.current;
           watchedDownloadRef.current = null;
+          const started = startedDownloadRef.current;
+          startedDownloadRef.current = null;
+          // Only the quant that landed may load: a quant picked meanwhile is not on disk.
+          const landedPinned =
+            started?.model === finished
+              ? started.variant === sttVariant
+              : sttVariant === null;
+          if (finished === sttModel && isAudioCppFolderId(sttModel)) {
+            // The cached listing still has this quant as not downloaded.
+            invalidateGgufVariantsCache(sttModel);
+            setSttListingNonce((nonce) => nonce + 1);
+          }
           if (
             finished === sttModel &&
             engineStatus.downloaded_models.includes(sttModel) &&
-            engineStatus.loaded_model !== sttModel
+            !loaded &&
+            landedPinned
           ) {
             // The download this tab watched just finished; load the model.
-            void autoLoadSttModel(sttModel);
+            void autoLoadSttModel(sttModel, sttVariant);
             return;
           }
         }
@@ -726,7 +811,7 @@ export function VoiceTab() {
           }, 600);
           return;
         }
-        if (engineStatus.loaded_model === sttModel && !engineStatus.loading) {
+        if (loaded && !engineStatus.loading) {
           setSttDevice(engineStatus.device);
           setSttPhase("ready");
           window.setTimeout(
@@ -754,6 +839,7 @@ export function VoiceTab() {
   }, [
     isLocalEngine,
     sttModel,
+    sttVariant,
     sttRepoId,
     modelSttSupported,
     statusNonce,
@@ -824,8 +910,14 @@ export function VoiceTab() {
   const beginSttDownload = async () => {
     setSttDownloadStarting(true);
     try {
-      await startSttDownload(sttModel, hfApiToken(hfToken));
-      trackSttDownload(sttModel);
+      await startSttDownload(
+        sttModel,
+        hfApiToken(hfToken),
+        undefined,
+        sttVariant,
+      );
+      trackSttDownload(sttModel, { ggufVariant: sttVariant });
+      startedDownloadRef.current = { model: sttModel, variant: sttVariant };
       // The status effect only re-polls while it can see a download. Its last read was before this
       // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
       // Download for the whole transfer.
@@ -842,7 +934,7 @@ export function VoiceTab() {
   const warmSttModel = async () => {
     setSttPhase("loading");
     try {
-      await loadSttModel(sttModel);
+      await loadSttModel(sttModel, undefined, undefined, undefined, sttVariant);
       setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
       setSttPhase("error");
@@ -1126,7 +1218,11 @@ export function VoiceTab() {
           modelSttSupported ? (
             <SettingsRow
               label={t("settings.voice.dictation.sttModelLabel")}
-              description={t("settings.voice.dictation.sttModelDescription")}
+              description={
+                sttVariants.length > 1
+                  ? t("settings.voice.dictation.sttQuantDescription")
+                  : t("settings.voice.dictation.sttModelDescription")
+              }
               // Progress lives in the shared downloads panel; a second bar here
               // said the same thing twice.
               below={
@@ -1224,7 +1320,7 @@ export function VoiceTab() {
                 </div>
               }
             >
-              <div className="w-56">
+              <div className="flex w-56 flex-col gap-1.5">
                 <SttModelPicker
                   value={sttModel}
                   language={dictationLanguage}
@@ -1237,6 +1333,61 @@ export function VoiceTab() {
                     setSttModel(next);
                   }}
                 />
+                {/* A saved key names its own quant, so only package folder rows offer one. */}
+                {sttVariants.length > 1 ? (
+                  // Bound to the pin, not the shown quant: picking the quant that runs now
+                  // must still save it, or an idle unload drops back to another one.
+                  <Select
+                    value={sttVariant ?? ""}
+                    onValueChange={(next) => {
+                      setSttGgufVariant(next);
+                      if (next === shownSttVariant) return;
+                      void unloadSttModel().catch(() => {});
+                      void autoLoadSttModel(sttModel, next);
+                    }}
+                  >
+                    <SelectTrigger
+                      data-testid="stt-quant-trigger"
+                      aria-label={t("settings.voice.dictation.sttQuantLabel")}
+                      className="w-full font-mono text-xs"
+                      size="sm"
+                    >
+                      {/* Unpinned, the value is "" and Radix renders the placeholder. */}
+                      <SelectValue placeholder={shownSttLabel}>
+                        {shownSttLabel}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="end">
+                      {sttVariants.map((variant) => (
+                        <SelectItem
+                          key={variant.quant}
+                          value={variant.quant}
+                          // Size flush right, as in the Agents quant list.
+                          className="[&>span:last-child]:w-full [&>span:last-child]:justify-between"
+                        >
+                          <span className="flex items-center gap-1.5 font-mono text-xs whitespace-nowrap">
+                            {/* The slot stays when empty, so the labels share a column. */}
+                            {variant.downloaded ? (
+                              <span
+                                role="img"
+                                aria-label={t("picker.onDevice")}
+                                className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-status-success"
+                              />
+                            ) : (
+                              <span className="size-[calc(5px*var(--ui-space-scale,1))] shrink-0" />
+                            )}
+                            {ggufVariantDisplayLabel(variant)}
+                          </span>
+                          <span className="text-ui-10 tabular-nums whitespace-nowrap text-muted-foreground">
+                            {audioCppSizeLabel(
+                              variant.download_size_bytes ?? variant.size_bytes,
+                            )}
+                          </span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : null}
               </div>
             </SettingsRow>
           ) : (

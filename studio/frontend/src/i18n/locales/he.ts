@@ -1389,6 +1389,9 @@ export const he = {
         customModelDescription: "שם המודל שנשלח אל /v1/audio/transcriptions.",
         sttModelLabel: "מודל זיהוי דיבור",
         sttModelDescription: "בחר או חפש מודל STT להרצה מקומית.",
+        sttQuantLabel: "קוונטיזציה",
+        sttQuantDescription:
+          "בחר או חפש מודל STT להרצה מקומית, ואז את הקוונטיזציה שלו.",
         sttDeviceLabel: "טען אל",
         sttDeviceAuto: "GPU כאשר זמין",
         sttDeviceCpu: "זיכרון RAM של ה-CPU",

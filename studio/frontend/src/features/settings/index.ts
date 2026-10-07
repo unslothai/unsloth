@@ -117,7 +117,9 @@ export {
   applyDictationDictionary,
   recordRecentDictation,
   sttModelName,
+  sttModelVariant,
   useVoiceSettingsStore,
+  withSttVariant,
 } from "./stores/voice-settings-store";
 export type { Palette, ResolvedTheme, Theme } from "./stores/theme-store";
 

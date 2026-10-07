@@ -1296,6 +1296,9 @@ export const fr = {
         sttModelLabel: "Modèle de reconnaissance vocale",
         sttModelDescription:
           "Choisissez ou recherchez un modèle STT à exécuter en local.",
+        sttQuantLabel: "Quantification",
+        sttQuantDescription:
+          "Choisissez ou recherchez un modèle STT à exécuter en local, puis sa quantification.",
         sttDeviceLabel: "Charger dans",
         sttDeviceAuto: "GPU si disponible",
         sttDeviceCpu: "RAM du CPU",
