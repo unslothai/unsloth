@@ -2917,6 +2917,14 @@ export const he = {
           "GPU עונה מהר יותר, אך שומר את הזיכרון שלו שמור עד להפעלה מחדש.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        backend: "סביבת ריצה",
+        backendAuto: "אוטומטי",
+        backendDescription:
+          "במצב אוטומטי Clef מוגש דרך llama.cpp כשלמודל יש גרסת GGUF, ואחרת דרך PyTorch. llama.cpp קורא גם תמונות.",
+        backendStatus: "סביבת ריצה: {backend}",
+        backendNone: "לא זמין",
+        mediaImages: "קורא טקסט ותמונות.",
+        mediaText: "קורא טקסט בלבד.",
         checking: "בודק…",
         notDownloaded: "לא הורד · {size}",
         downloading: "מוריד…",
@@ -3054,6 +3062,11 @@ export const he = {
       methodLabel: "שיטה",
       methodTooltip:
         "האופן שבו המודל מאומן. LoRA ו-QLoRA מעדכנים מתאמים (Adapters) קטנים במקום את כל המשקולות.",
+      trainAsLabel: "אימון בתור",
+      trainAsTooltip:
+        "מודל שפה כותב טקסט. מודל החלטות בוחר אחת מהאפשרויות שנתת לו, עם הסתברות, ופועל ב-Decision API.",
+      trainAsLanguage: "מודל שפה",
+      trainAsDecision: "מודל החלטות",
       datasetLabel: "מערך נתונים",
       datasetTooltip: "נתוני האימון המשמשים לכוונון עדין של המודל.",
       hfTokenDescription: "נדרש עבור מודלים ומערכי נתונים פרטיים או מוגבלים.",
@@ -4205,6 +4218,18 @@ export const he = {
       readVideoFailed: "לא ניתן לקרוא את הסרטון ({status}).",
       openFileFailed: "לא ניתן לפתוח את הקובץ",
     },
+  },
+  exportDecision: {
+    title: "מודל החלטות",
+    description:
+      "מודלי החלטות מסוג {layout} מיוצאים ל-GGUF עבור שרת ההחלטות של llama.cpp. בחר קוונטיזציה אחת או יותר.",
+    adapterNote: "נקודת ביקורת זו מכילה מתאמי LoRA; הם ממוזגים לפני ההמרה.",
+    notEligibleTitle: "ייצוא GGUF אינו זמין",
+    ggufOnly: "מודלי החלטות מיוצאים ל-GGUF בלבד",
+    existing: "כבר יוצא: {quantizations}",
+    outputNote: "קובצי GGUF נשמרים בתיקיית ההרצה: {path}",
+    methodLabel: "GGUF של מודל החלטות",
+    outputLabel: "GGUF החלטות ({quantizations})",
   },
   decisions: {
     title: "נסו החלטה",
