@@ -11,20 +11,25 @@ __all__ = [
     "effective_temperatures",
     "read_decision_temperatures",
     "write_decision_temperatures",
+    "read_decision_max_head_tokens",
     "export_decision_gguf",
     "save_pretrained_gguf",
     "push_to_hub_gguf",
 ]
 
+import collections
+import contextlib
 import functools
 import importlib.util
 import json
 import math
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -39,6 +44,8 @@ _CLEF_ARCHITECTURES = ("Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM")
 _QTYPES = ("choice", "score", "noul")
 # laya.common.temp_bucket's sizes, written as the llama.cpp converter names them.
 _BUCKETS = {"2": "2", "3-5": "3_5", "6-10": "6_10", "11+": "11"}
+# Followed by "<pid>-": a later export removes the ones whose process died (SIGKILL, power loss).
+_TEMP_PREFIXES = (".unsloth-merged-", ".unsloth-gguf-")
 _CONTRACT_FILE = (
     Path(__file__).resolve().parents[2]
     / "studio"
@@ -227,11 +234,25 @@ def _temperature_fields(reader, gguf) -> tuple:
     return arch, prefix, found
 
 
+def _max_head_tokens(reader, arch) -> Optional[int]:
+    field = reader.fields.get(f"{arch}.decision.max_head_tokens")
+    return None if field is None else int(field.contents())
+
+
 def read_decision_temperatures(gguf_file, gguf_py = None) -> dict:
     gguf, _, _ = _import_gguf(gguf_py)
     reader = gguf.GGUFReader(str(gguf_file), "r")
     try:
         return _temperature_fields(reader, gguf)[2]
+    finally:
+        del reader
+
+
+def read_decision_max_head_tokens(gguf_file, gguf_py = None) -> Optional[int]:
+    gguf, _, _ = _import_gguf(gguf_py)
+    reader = gguf.GGUFReader(str(gguf_file), "r")
+    try:
+        return _max_head_tokens(reader, _temperature_fields(reader, gguf)[0])
     finally:
         del reader
 
@@ -247,16 +268,24 @@ def write_decision_temperatures(
     gguf_file,
     temperatures: dict,
     gguf_py = None,
+    max_head_tokens: Optional[int] = None,
 ) -> bool:
-    """Replaces every <arch>.decision.temperature.* key with `temperatures`; everything else is
-    copied unchanged. Atomic (temp file in the same folder, then os.replace). False if the file
-    already held exactly these values."""
+    """Replaces every <arch>.decision.temperature.* key with `temperatures` (and
+    <arch>.decision.max_head_tokens when given); everything else is copied unchanged. Atomic
+    (temp file in the same folder, then os.replace). False if the file already held these values."""
     gguf, MetadataDetails, copy_with_new_metadata = _import_gguf(gguf_py)
     gguf_file = Path(gguf_file)
     wanted = {name: _positive(value, f"temperature {name}") for name, value in temperatures.items()}
+    if max_head_tokens is not None and (
+        int(max_head_tokens) != max_head_tokens or max_head_tokens < 1
+    ):
+        raise ValueError(
+            f"Unsloth: max_head_tokens = {max_head_tokens!r} is not a positive integer."
+        )
     reader = gguf.GGUFReader(str(gguf_file), "r")
     arch, prefix, found = _temperature_fields(reader, gguf)
-    if _same(found, wanted):
+    head_key = f"{arch}.decision.max_head_tokens"
+    if _same(found, wanted) and max_head_tokens in (None, _max_head_tokens(reader, arch)):
         del reader
         return False
     remove = [prefix + name for name in found]
@@ -264,14 +293,19 @@ def write_decision_temperatures(
         prefix + name: MetadataDetails(gguf.GGUFValueType.FLOAT32, value)
         for name, value in sorted(wanted.items())
     }
+    if max_head_tokens is not None:
+        new[head_key] = MetadataDetails(gguf.GGUFValueType.UINT32, int(max_head_tokens))
     tmp = gguf_file.with_name(f".{gguf_file.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         writer = gguf.GGUFWriter(tmp, arch = arch, endianess = reader.endianess)
         copy_with_new_metadata(reader, writer, new, remove)
         del reader, writer
-        if not _same(read_decision_temperatures(tmp, gguf_py), wanted):
+        if not _same(read_decision_temperatures(tmp, gguf_py), wanted) or max_head_tokens not in (
+            None,
+            read_decision_max_head_tokens(tmp, gguf_py),
+        ):
             raise RuntimeError(
-                f"Unsloth: the decision temperatures did not survive rewriting {gguf_file}."
+                f"Unsloth: the decision metadata did not survive rewriting {gguf_file}."
             )
         shutil.copymode(gguf_file, tmp)
         os.replace(tmp, gguf_file)
@@ -346,6 +380,12 @@ def _quantizer(print_output = False) -> str:
         )[0]
 
 
+class _RunError(RuntimeError):
+    def __init__(self, message: str, output: str):
+        super().__init__(message)
+        self.output = output
+
+
 def _run(
     command: list,
     what: str,
@@ -354,18 +394,32 @@ def _run(
 ) -> None:
     if print_output:
         print("Unsloth: running", " ".join(map(str, command)))
-    result = subprocess.run(
+    # Captured even when echoed, so a failure can be explained from the output.
+    process = subprocess.Popen(
         [str(part) for part in command],
         env = env,
-        stdout = None if print_output else subprocess.PIPE,
+        stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
         encoding = "utf-8",
         errors = "replace",
     )
-    if result.returncode != 0:
-        tail = "\n".join((result.stdout or "").splitlines()[-30:])
-        raise RuntimeError(f"Unsloth: {what} failed (exit {result.returncode}).\n{tail}")
+    lines = collections.deque(maxlen = 500)
+    try:
+        for line in process.stdout:
+            if print_output:
+                print(line, end = "", flush = True)
+            lines.append(line.rstrip("\n"))
+        returncode = process.wait()
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        process.stdout.close()
+    if returncode != 0:
+        tail = "\n".join(list(lines)[-30:])
+        raise _RunError(f"Unsloth: {what} failed (exit {returncode}).\n{tail}", "\n".join(lines))
 
 
 def _convert(
@@ -391,6 +445,22 @@ def _convert(
         raise RuntimeError(f"Unsloth: the llama.cpp converter did not write {outfile}.")
 
 
+def _predates(quantizer: str, method: str) -> RuntimeError:
+    return RuntimeError(
+        f"Unsloth: {quantizer} predates llama.cpp {DECISION_LLAMA_CPP_TAG}, so it cannot "
+        f"quantize decision models to {method}. Update llama.cpp (delete {_llama_cpp_folder()} "
+        "so Unsloth reinstalls it), or export as q8_0, f16 or bf16."
+    )
+
+
+def _kquant_quantizer(kquants: list, print_output = False) -> str:
+    """llama-quantize, refused up front when its llama.cpp folder predates decision models."""
+    quantizer = _quantizer(print_output)
+    if not _supports_decision(_llama_cpp_folder()):
+        raise _predates(quantizer, kquants[0])
+    return quantizer
+
+
 def _quantize(quantizer: str, source: Path, target: Path, method: str, print_output: bool) -> None:
     try:
         _run(
@@ -398,14 +468,72 @@ def _quantize(quantizer: str, source: Path, target: Path, method: str, print_out
             f"quantizing to {method.upper()}",
             print_output,
         )
-    except RuntimeError as error:
-        if "unknown model architecture" in str(error):
-            raise RuntimeError(
-                f"Unsloth: {quantizer} predates llama.cpp {DECISION_LLAMA_CPP_TAG}, so it cannot "
-                f"quantize decision models to {method}. Update llama.cpp (delete {_llama_cpp_folder()} "
-                "so Unsloth reinstalls it), or export as q8_0, f16 or bf16."
-            ) from error
+    except _RunError as error:
+        if "unknown model architecture" in error.output or not _supports_decision(
+            _llama_cpp_folder()
+        ):
+            raise _predates(quantizer, method) from error
         raise
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import psutil
+    except ImportError:
+        # os.kill(pid, 0) terminates the process on Windows.
+        if os.name == "nt":
+            return True
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
+    return psutil.pid_exists(pid)
+
+
+def _remove_abandoned_temp(folder: Path) -> None:
+    try:
+        entries = list(folder.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        prefix = next((p for p in _TEMP_PREFIXES if entry.name.startswith(p)), None)
+        if prefix is None:
+            continue
+        pid = entry.name[len(prefix) :].partition("-")[0]
+        if not pid.isdigit() or int(pid) == os.getpid() or _pid_alive(int(pid)):
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry, ignore_errors = True)
+
+
+def _temp_prefix(prefix: str) -> str:
+    return f"{prefix}{os.getpid()}-"
+
+
+@contextlib.contextmanager
+def _exit_on_sigterm():
+    """SIGTERM (Studio's cancel, `kill`) raises SystemExit, so temp folders and child processes are
+    cleaned up; only where no handler is installed and only on the main thread."""
+    sigterm = getattr(signal, "SIGTERM", None)
+    if (
+        sigterm is None
+        or threading.current_thread() is not threading.main_thread()
+        or signal.getsignal(sigterm) is not signal.SIG_DFL
+    ):
+        yield
+        return
+
+    def _raise(signum, frame):
+        raise SystemExit(128 + signum)
+
+    signal.signal(sigterm, _raise)
+    try:
+        yield
+    finally:
+        signal.signal(sigterm, signal.SIG_DFL)
 
 
 def _has_vision(folder: Path) -> bool:
@@ -442,6 +570,15 @@ def _write_export(output: Path, layout: str, files: dict, source_fingerprint: st
     return data
 
 
+def _laya_max_head_tokens(folder: Path, config: dict) -> int:
+    # The converter writes the raw head_max_len; PyTorch serves FastDecisionModel's normalised one.
+    from .decision import TRAIN_MAX_LEN, _served_lengths
+
+    encoder = folder / "encoder" / "config.json"
+    positions = _read_json(encoder).get("max_position_embeddings") if encoder.is_file() else None
+    return _served_lengths(config, positions or TRAIN_MAX_LEN)[1]
+
+
 def export_decision_gguf(
     checkpoint_folder,
     quantization_method = "q8_0",
@@ -452,6 +589,15 @@ def export_decision_gguf(
     """Converts a merged decision checkpoint (Clef or Laya layout) to GGUF in output_dir
     (default <checkpoint_folder>/gguf): model-<QUANT>.gguf, mmproj-<QUANT>.gguf for a Clef
     vision tower, and export.json, written last. Returns export.json's content."""
+    with _exit_on_sigterm():
+        return _export_decision_gguf(
+            checkpoint_folder, quantization_method, output_dir, source_folder, print_output
+        )
+
+
+def _export_decision_gguf(
+    checkpoint_folder, quantization_method, output_dir, source_folder, print_output
+) -> dict:
     contract = _contract()
     folder = Path(checkpoint_folder)
     quants = _quantizations(quantization_method)
@@ -464,13 +610,15 @@ def export_decision_gguf(
             f"Unsloth: {folder} holds LoRA adapters only; load it with FastDecisionModel and call "
             "save_pretrained_gguf, which merges them first."
         )
-    temperatures = effective_temperatures(_decision_config(folder, layout), layout)
+    config = _decision_config(folder, layout)
+    temperatures = effective_temperatures(config, layout)
+    max_head_tokens = _laya_max_head_tokens(folder, config) if layout == "laya" else None
     source = Path(source_folder) if source_folder is not None else folder
     source_fingerprint = contract.fingerprint(source, layout)
     converter = _converter_dir(print_output)
     gguf_py = converter / "gguf-py"
     kquants = [q for q in quants if q not in _OUTTYPES]
-    quantizer = _quantizer(print_output) if kquants else None
+    quantizer = _kquant_quantizer(kquants, print_output) if kquants else None
     vision = layout == "clef" and _has_vision(folder)
     output = Path(output_dir) if output_dir is not None else folder / contract.EXPORT_DIR
     output.mkdir(parents = True, exist_ok = True)
@@ -483,7 +631,8 @@ def export_decision_gguf(
         return f"mmproj-{(quant if quant in _OUTTYPES else 'q8_0').upper()}.gguf"
 
     files = {}
-    staging = Path(tempfile.mkdtemp(prefix = ".unsloth-gguf-", dir = output.parent))
+    _remove_abandoned_temp(output.parent)
+    staging = Path(tempfile.mkdtemp(prefix = _temp_prefix(".unsloth-gguf-"), dir = output.parent))
     try:
         # Laya weights are float16; Clef's Qwen3.5 backbone is bfloat16.
         intermediate = "bf16" if layout == "clef" else "f16"
@@ -494,7 +643,7 @@ def export_decision_gguf(
             target = staging / model_name(outtype)
             print(f"Unsloth: converting the decision model to {outtype.upper()} GGUF...")
             _convert(converter, folder, outtype, target, False, print_output)
-            write_decision_temperatures(target, temperatures, gguf_py)
+            write_decision_temperatures(target, temperatures, gguf_py, max_head_tokens)
         if kquants:
             print(
                 "Unsloth: k-quants of decision models can move answer probabilities and flip "
@@ -504,7 +653,7 @@ def export_decision_gguf(
             target = staging / model_name(quant)
             print(f"Unsloth: quantizing the decision model to {quant.upper()}...")
             _quantize(quantizer, staging / model_name(intermediate), target, quant, print_output)
-            write_decision_temperatures(target, temperatures, gguf_py)
+            write_decision_temperatures(target, temperatures, gguf_py, max_head_tokens)
         if vision:
             for name in sorted({mmproj_name(q) for q in quants}):
                 outtype = name[len("mmproj-") : -len(".gguf")].lower()
@@ -516,6 +665,12 @@ def export_decision_gguf(
                 raise RuntimeError(
                     f"Unsloth: {model_name(quant)} lost its decision temperatures ({found} != {temperatures})."
                 )
+            if max_head_tokens is not None:
+                head = read_decision_max_head_tokens(staging / model_name(quant), gguf_py)
+                if head != max_head_tokens:
+                    raise RuntimeError(
+                        f"Unsloth: {model_name(quant)} has max_head_tokens {head}, not {max_head_tokens}."
+                    )
             files[quant.upper()] = {
                 "model": model_name(quant),
                 "mmproj": mmproj_name(quant) if vision else None,
@@ -574,23 +729,37 @@ def save_pretrained_gguf(
     """GGUF for llama.cpp's decision server in <save_directory>/gguf: merges into a temporary
     folder, converts, and writes the calibrated temperatures. quantization_method is one of
     DECISION_GGUF_QUANTIZATIONS or a list of them."""
-    from .decision import is_decision_checkpoint
+    with _exit_on_sigterm():
+        return _save_pretrained_gguf(
+            self, save_directory, tokenizer, quantization_method, source_folder, print_output
+        )
 
+
+def _save_pretrained_gguf(
+    self, save_directory, tokenizer, quantization_method, source_folder, print_output
+) -> dict:
     quants = _quantizations(quantization_method)
     eligibility = gguf_eligibility(self)
     if not eligibility["eligible"]:
         raise ValueError(eligibility["reason"])
+    layout = eligibility["layout"]
     # Fail before the merge when llama.cpp cannot convert or quantize.
     _converter_dir(print_output)
-    if any(q not in _OUTTYPES for q in quants):
-        _quantizer(print_output)
+    kquants = [q for q in quants if q not in _OUTTYPES]
+    if kquants:
+        _kquant_quantizer(kquants, print_output)
     output = Path(save_directory)
     output.mkdir(parents = True, exist_ok = True)
-    if source_folder is None and is_decision_checkpoint(output):
-        source_folder = output
-    with tempfile.TemporaryDirectory(prefix = ".unsloth-merged-", dir = output) as merged:
+    _remove_abandoned_temp(output)
+    with tempfile.TemporaryDirectory(prefix = _temp_prefix(".unsloth-merged-"), dir = output) as merged:
         self.save_pretrained_merged(merged, tokenizer)
-        if source_folder is not None and _layout(Path(source_folder)) != eligibility["layout"]:
+        if source_folder is None and _layout(output) == layout:
+            # The folder on disk names the export only if it holds these weights: after an
+            # in-memory calibration or more training it is stale.
+            contract = _contract()
+            if contract.fingerprint(output, layout) == contract.fingerprint(merged, layout):
+                source_folder = output
+        if source_folder is not None and _layout(Path(source_folder)) != layout:
             source_folder = None
         return export_decision_gguf(
             merged,

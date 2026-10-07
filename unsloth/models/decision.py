@@ -1599,6 +1599,17 @@ def _calibrate_clef(config: dict, logits, items) -> dict:
     return {**_metrics(logits, items, per_item), "fitted_types": sorted(fitted)}
 
 
+def _served_lengths(
+    config: dict,
+    positions: int,
+    max_seq_length = None,
+) -> tuple:
+    """(max_len, head_max_len) a Laya checkpoint serves with once loaded."""
+    wanted = max_seq_length or max(int(config.get("max_len", 512)), TRAIN_MAX_LEN)
+    max_len = min(int(positions), int(wanted))
+    return max_len, min(max_len // 2, max(int(config.get("head_max_len", 192)), TRAIN_HEAD_MAX_LEN))
+
+
 def save_pretrained_merged(
     self,
     save_directory,
@@ -1748,10 +1759,8 @@ class FastDecisionModel:
         model.encoder.config.reference_compile = False
 
         positions = int(getattr(model.encoder.config, "max_position_embeddings", TRAIN_MAX_LEN))
-        wanted = max_seq_length or max(int(config.get("max_len", 512)), TRAIN_MAX_LEN)
-        config["max_len"] = min(positions, int(wanted))
-        config["head_max_len"] = min(
-            config["max_len"] // 2, max(int(config.get("head_max_len", 192)), TRAIN_HEAD_MAX_LEN)
+        config["max_len"], config["head_max_len"] = _served_lengths(
+            config, positions, max_seq_length
         )
         model.decision_config = config
 

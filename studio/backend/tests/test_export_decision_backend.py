@@ -236,6 +236,20 @@ def test_laya_exports_through_the_library(env, tmp_path):
     assert _ForbiddenLoader.calls == [] and lib.probes == []
 
 
+def test_a_home_relative_checkpoint_path_is_expanded(env, tmp_path, monkeypatch):
+    mod, lib = env
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    folder = _laya(tmp_path)
+    backend = mod.ExportBackend()
+
+    assert backend.load_checkpoint("~/laya_run")[0]
+    assert backend.export_gguf("x", "q8_0")[0]
+    assert ("eligibility", "~/laya_run") not in lib.calls
+    assert [c for c in lib.calls if c[0] == "eligibility"] == [("eligibility", str(folder))] * 2
+    assert _exports(lib) == [("export", str(folder), ["q8_0"], None, str(folder))]
+
+
 def test_ineligible_clef_fails_the_load_with_the_reason(env, tmp_path):
     mod, lib = env
     folder = _clef_merged(tmp_path, config = {"architectures": ["LlamaForCausalLM"]})
