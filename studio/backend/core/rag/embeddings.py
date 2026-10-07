@@ -106,9 +106,9 @@ def _load_device() -> str:
     )
 
 
-# Matched as a substring of the lowercased model name. EmbeddingGemma's activations overflow float16 and every
+# Matched as a substring of the lowercased model name. EmbeddingGemma-300m's activations overflow float16 and every
 # vector comes back NaN; its model card says to use float32 or bfloat16.
-_FLOAT16_UNSAFE_MODELS = ("embeddinggemma",)
+_FLOAT16_UNSAFE_MODELS = ("embeddinggemma-300m",)
 
 
 def _load_dtype(device: str, name: str) -> str:

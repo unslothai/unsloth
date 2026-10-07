@@ -544,17 +544,36 @@ def test_opted_in_accelerator_loads_float16(monkeypatch, tmp_path):
         ("xpu", False, "float32"),
     ],
 )
-def test_float16_unsafe_model_avoids_float16(monkeypatch, tmp_path, device, native, expected):
+@pytest.mark.parametrize(
+    "name",
+    ["unsloth/EmbeddingGemma-300m", "/models/embeddinggemma-300m-qat-q8_0-unquantized"],
+)
+def test_float16_unsafe_model_avoids_float16(monkeypatch, tmp_path, device, native, expected, name):
     import core.training.diffusion_train_common as dtc
 
     observed = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(embeddings, "_load_device", lambda: device)
     monkeypatch.setattr(dtc, "native_bf16_supported", lambda: native)
     monkeypatch.setattr(dtc, "native_bf16_supported_xpu", lambda: native)
-    _shared_setup_2(monkeypatch, tmp_path, name = "unsloth/EmbeddingGemma-300m")
+    _shared_setup_2(monkeypatch, tmp_path, name = name)
 
     assert observed["device"] == device
     assert list(observed["model_kwargs"].values()) == [expected]
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda", "xpu"])
+@pytest.mark.parametrize("native", [True, False])
+def test_embeddinggemma2_keeps_default_dtype(monkeypatch, tmp_path, device, native):
+    import core.training.diffusion_train_common as dtc
+
+    observed = _shared_setup_1(monkeypatch)
+    monkeypatch.setattr(embeddings, "_load_device", lambda: device)
+    monkeypatch.setattr(dtc, "native_bf16_supported", lambda: native)
+    monkeypatch.setattr(dtc, "native_bf16_supported_xpu", lambda: native)
+    _shared_setup_2(monkeypatch, tmp_path, name = "unsloth/EmbeddingGemma-2")
+
+    assert observed["device"] == device
+    assert list(observed["model_kwargs"].values()) == ["float32" if device == "cpu" else "float16"]
 
 
 def test_accelerator_fallback_loads_float32_on_cpu(monkeypatch, tmp_path):
