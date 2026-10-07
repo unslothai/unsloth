@@ -171,4 +171,8 @@ test("shell variables keep literal dollars in raw HTML and URLs", () => {
     assert.ok(html.includes("$HOME"), `${source} lost its first dollar`);
     assert.ok(!html.includes("\\$HOME"), `${source} showed an escape slash`);
   }
+  // raw-text elements never decode `&#36;`, so their dollars stay as written.
+  const style = render("<style>$primary: red; $secondary: blue;</style>");
+  assert.ok(style.includes("$primary: red; $secondary: blue;"), style);
+  assert.ok(!style.includes("#36;"), style);
 });

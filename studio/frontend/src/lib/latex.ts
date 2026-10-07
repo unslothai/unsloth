@@ -384,6 +384,19 @@ function findLinkDestinationRegions(content: string): Array<[number, number]> {
   return regions;
 }
 
+// raw-text element bodies do not decode character references.
+const RAW_TEXT_ELEMENT_RE =
+  /<(script|style|xmp|iframe|noembed|noframes)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi;
+
+function findRawTextRegions(content: string): Array<[number, number]> {
+  if (!content.includes("<")) return [];
+  const regions: Array<[number, number]> = [];
+  for (const match of content.matchAll(RAW_TEXT_ELEMENT_RE)) {
+    regions.push([match.index, match.index + match[0].length]);
+  }
+  return regions;
+}
+
 function findAutolinkRegions(content: string): Array<[number, number]> {
   const regions: Array<[number, number]> = [];
   AUTOLINK_RE.lastIndex = 0;
@@ -656,6 +669,7 @@ export function preprocessLaTeX(content: string): string {
     findLinkDestinationRegions(text),
     findAutolinkRegions(text),
   );
+  const rawTextRegions = findRawTextRegions(text);
   let closer = -1;
   let lineStart = 0;
   let nextNewline = text.indexOf("\n");
@@ -685,7 +699,8 @@ export function preprocessLaTeX(content: string): string {
       !currency &&
       next !== -1 &&
       (next + 1 === text.length || NEW_TOKEN_RE.test(text[next + 1])) &&
-      VARIABLE_PROSE_RE.test(text.slice(offset + 1, next))
+      VARIABLE_PROSE_RE.test(text.slice(offset + 1, next)) &&
+      !isInRegion(offset, rawTextRegions)
     ) {
       return VARIABLE_DOLLAR;
     }
