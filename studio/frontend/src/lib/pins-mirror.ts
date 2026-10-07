@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Mirrors picker pins to the account's studio.db: an account switch clears "unsloth*" localStorage keys.
+// Mirrors model pins (chat picker and RAG embedding) to the account's studio.db: an account switch
+// clears "unsloth*" localStorage keys.
 
-export type PinList = "pinned" | "connected";
+export type PinList = "pinned" | "connected" | "embedding";
 
 const URL = "/api/settings/pinned-models";
 const STORAGE_KEYS: Record<PinList, string> = {
   pinned: "unsloth_pinned_models",
   connected: "unsloth_pinned_connected_models",
+  embedding: "unsloth_embedding_pins",
 };
 
 const restorers: Partial<Record<PinList, () => void>> = {};

@@ -63,7 +63,7 @@ test("the menu heading carries a Sandbox chip that opens the level picker, Learn
   assert.match(label, /settings\.general\.permissions\.sectionTitle/);
   // "Sandbox High ›": a submenu trigger, not a switch.
   assert.match(label, /<DropdownMenuPrimitive\.SubTrigger/);
-  assert.match(label, /className="sandbox-level-chip\b/);
+  assert.match(label, /className="menu-heading-chip\b/);
   // Click to open: hover must not open the picker.
   assert.match(label, /onPointerMove=\{\(event\) => event\.preventDefault\(\)\}/);
   // Controlled: stays open until a click outside the picker, the chip, or ArrowLeft.

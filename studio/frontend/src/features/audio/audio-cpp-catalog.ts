@@ -56,6 +56,39 @@ const MB = 1024 * 1024;
 
 const folder = (name: string) => `${AUDIO_CPP_REPO}/${name}`;
 const ENGLISH = ["en"] as const;
+const COHERE_TRANSCRIBE_LANGUAGES = [
+  "en",
+  "fr",
+  "de",
+  "es",
+  "it",
+  "pt",
+  "nl",
+  "pl",
+  "el",
+  "ar",
+  "ja",
+  "zh",
+  "vi",
+  "ko",
+] as const;
+const FUN_ASR_LANGUAGES = ["zh", "en", "ja"] as const;
+const GIGAAM_LANGUAGES = ["ru", "en", "kk", "ky", "uz"] as const;
+const VOXTRAL_LANGUAGES = [
+  "en",
+  "fr",
+  "es",
+  "de",
+  "ru",
+  "zh",
+  "ja",
+  "it",
+  "pt",
+  "nl",
+  "ar",
+  "hi",
+  "ko",
+] as const;
 
 export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Kokoro-82M-GGUF"), task: "tts", needsEspeak: true },
@@ -145,17 +178,29 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Nemotron-3.5-ASR-Streaming-0.6B-GGUF"), task: "asr", languages: ENGLISH },
   // Diarizes; Transcribe offers it for the Speakers switch.
   { id: folder("MOSS-Transcribe-Diarize-GGUF"), task: "asr" },
-  { id: folder("Citrinet-ASR-GGUF"), task: "asr" },
-  { id: folder("Cohere-Transcribe-GGUF"), task: "asr" },
-  { id: folder("Fun-ASR-Nano-2512-GGUF"), task: "asr" },
-  { id: folder("GigaAM-ASR-GGUF"), task: "asr" },
+  { id: folder("Citrinet-ASR-GGUF"), task: "asr", languages: ENGLISH },
+  {
+    id: folder("Cohere-Transcribe-GGUF"),
+    task: "asr",
+    languages: COHERE_TRANSCRIBE_LANGUAGES,
+  },
+  {
+    id: folder("Fun-ASR-Nano-2512-GGUF"),
+    task: "asr",
+    languages: FUN_ASR_LANGUAGES,
+  },
+  { id: folder("GigaAM-ASR-GGUF"), task: "asr", languages: GIGAAM_LANGUAGES },
   { id: folder("Granite-Speech-5.0-470M-TurboCTC-GGUF"), task: "asr", languages: ENGLISH },
-  { id: folder("Higgs-Audio-v3-STT-GGUF"), task: "asr" },
+  { id: folder("Higgs-Audio-v3-STT-GGUF"), task: "asr", languages: ENGLISH },
   { id: folder("Hviske-v5.3-GGUF"), task: "asr", languages: ["da"] },
   { id: folder("Kroko-ASR-GGUF"), task: "asr", languages: ENGLISH },
   { id: folder("Niagara-ASR-GGUF"), task: "asr", languages: ENGLISH },
   { id: folder("VibeVoice-ASR-GGUF"), task: "asr" },
-  { id: folder("Voxtral-Mini-4B-Realtime-2602-GGUF"), task: "asr" },
+  {
+    id: folder("Voxtral-Mini-4B-Realtime-2602-GGUF"),
+    task: "asr",
+    languages: VOXTRAL_LANGUAGES,
+  },
 ];
 
 /** Shared-repo folders the pickers leave out, and why; the nightly catalog check fails on an unclassified folder. */
@@ -209,7 +254,7 @@ export function isConvertOnlyFamilyId(id: string | null | undefined): boolean {
   return CONVERT_ONLY_FAMILY_HINT.test(id ?? "");
 }
 
-/** Legacy Settings > Voice keys; the backend still maps each to its folder id (and variant). */
+/** Settings > Voice keys; the backend maps each to its folder id (and variant). */
 export interface AudioCppDictationModel {
   key: string;
   id: string;
@@ -237,6 +282,7 @@ export const AUDIO_CPP_DICTATION_MODELS = [
   dictation("audiocpp-canary-180m-flash", "Canary-180M-Flash-GGUF", 237.9),
   dictation("audiocpp-moonshine-tiny", "Moonshine-Streaming-GGUF", 57.6, "tiny"),
   dictation("audiocpp-moonshine-small", "Moonshine-Streaming-GGUF", 286.7, "small"),
+  dictation("audiocpp-moonshine-medium", "Moonshine-Streaming-GGUF", 301.0, "medium"),
   dictation(
     "audiocpp-nemotron-3.5-asr-0.6b",
     "Nemotron-3.5-ASR-Streaming-0.6B-GGUF",

@@ -7,11 +7,14 @@
 
 import {
   AUDIO_CPP_DICTATION_MODELS,
+  AUDIO_CPP_MODELS,
   AUDIO_CPP_STT_KEYS,
   type AudioCppSttKey,
   audioCppDisplayName,
   audioCppModelFor,
   audioCppSizeLabel,
+  audioCppWorkflowsFor,
+  isAudioCppFolderId,
 } from "../../audio/audio-cpp-catalog.ts";
 
 /** Curated dictation models, mirrored by the backend sidecars. Listed in the
@@ -45,17 +48,37 @@ export const MTMD_STT_MODELS: ReadonlySet<SttModel> = new Set([
 export const AUDIO_CPP_STT_MODELS: ReadonlySet<SttModel> = new Set(
   AUDIO_CPP_STT_KEYS,
 );
-/** Curated models that transcribe only these primary languages; every other
- * curated model is multilingual. Moonshine and Nemotron are English-only, and
- * Canary covers en/de/es/fr. */
+const KEYED_FOLDERS = new Set(
+  AUDIO_CPP_DICTATION_MODELS.map((model) => model.id.toLowerCase()),
+);
+/** The Transcribe page's audio.cpp ASR folders no key above names; dictation
+ * lists them by folder id, in catalog order (the largest come last). */
+export const AUDIO_CPP_STT_FOLDER_IDS: readonly string[] =
+  AUDIO_CPP_MODELS.filter(
+    (model) =>
+      audioCppWorkflowsFor(model).includes("transcribe") &&
+      !KEYED_FOLDERS.has(model.id.toLowerCase()),
+  ).map((model) => model.id);
+/** What the Voice picker lists: the curated models, then every other ASR model
+ * Transcribe offers. */
+export const STT_PICKER_MODELS: readonly SttModel[] = [
+  ...STT_MODELS,
+  ...AUDIO_CPP_STT_FOLDER_IDS,
+];
+/** Models that transcribe only these primary languages; every other model is
+ * multilingual. Moonshine and Nemotron are English-only, Canary covers
+ * en/de/es/fr, and Hviske is Danish. */
 export const STT_MODEL_LANGUAGES: ReadonlyMap<SttModel, readonly string[]> =
   new Map(
-    AUDIO_CPP_DICTATION_MODELS.flatMap((model) => {
-      const languages = audioCppModelFor(model.id)?.languages;
-      return languages ? [[model.key, languages] as const] : [];
+    [
+      ...AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model.id]),
+      ...AUDIO_CPP_STT_FOLDER_IDS.map((id) => [id, id]),
+    ].flatMap(([model, id]) => {
+      const languages = audioCppModelFor(id)?.languages;
+      return languages ? [[model, languages] as const] : [];
     }),
   );
-/** Curated models that only transcribe English. */
+/** Models that only transcribe English. */
 export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set(
   [...STT_MODEL_LANGUAGES]
     .filter(([, languages]) => languages.length === 1 && languages[0] === "en")
@@ -137,7 +160,63 @@ export const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
 };
 
 export function sttModelName(model: SttModel): string {
-  return STT_MODEL_NAMES[model as DefaultSttModel] ?? model;
+  return (
+    STT_MODEL_NAMES[model as DefaultSttModel] ??
+    (isAudioCppFolderId(model) ? audioCppDisplayName(model) : model)
+  );
+}
+
+/** package folder quant; "" uses the resident or default, while saved keys encode their own. */
+export function sttModelVariant(
+  model: SttModel,
+  variant: string,
+): string | null {
+  return variant && isAudioCppFolderId(model) ? variant : null;
+}
+
+/** folds a quant into the audio runtime model id as `row:variant`. */
+export function withSttVariant(model: SttModel, variant: string): string {
+  const quant = sttModelVariant(model, variant);
+  return quant ? `${model}:${quant}` : model;
+}
+
+/** picks the pinned, loaded, cached, or default quant; resolves loose cache keys like `Q8_0`. */
+export function sttShownVariant(
+  pinned: string | null,
+  loaded: string | null,
+  listing: {
+    default_variant: string | null;
+    variants: readonly { quant: string; downloaded?: boolean }[];
+  } | null,
+): string | null {
+  if (pinned) return pinned;
+  if (!listing) return loaded;
+  if (loaded) {
+    if (listing.variants.some((variant) => variant.quant === loaded)) {
+      return loaded;
+    }
+    const scoped = listing.variants.filter(
+      (variant) => variant.downloaded && variant.quant.endsWith(`/${loaded}`),
+    );
+    if (scoped.length === 1) return scoped[0].quant;
+  }
+  return (
+    listing.variants.find((variant) => variant.downloaded)?.quant ??
+    listing.default_variant
+  );
+}
+
+/** Whether a listing leaves the pinned quant possibly on disk. Only the row with that exact key can
+ *  say no: a cache-only (offline) listing keys cached files by what tells them apart ("ctc/F16" for
+ *  "v3-ctc/F16"), so a key it leaves out may still be cached; the backend matches it on load. */
+export function sttListedQuantDownloaded(
+  listing: { variants: readonly { quant: string; downloaded?: boolean }[] },
+  pinned: string,
+): boolean {
+  return (
+    listing.variants.find((variant) => variant.quant === pinned)?.downloaded !==
+    false
+  );
 }
 
 export function sttModelSize(model: SttModel): string {
