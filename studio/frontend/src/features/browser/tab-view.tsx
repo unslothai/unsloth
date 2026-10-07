@@ -13,6 +13,8 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { fileNameFromUrl, hostOf } from "./address";
 import { BrowserFetchError, type BrowserPage, fetchBrowserPage } from "./api";
 import { proxiedFavicon } from "./favicon";
+import { saveBrowserDownload } from "./downloads";
+import { canShowFile } from "./file-kind";
 import { FileView } from "./file-view";
 import { BROWSER_FIND_TARGET, pageLoadedForFind, receiveFindResult } from "./find";
 import { useBrowserHistoryStore } from "./history-store";
@@ -63,24 +65,32 @@ function safeFavicon(url: string | null): string | null {
   }
 }
 
+function pageAddress(tab: BrowserTab | undefined): string | undefined {
+  const entry = tab ? currentEntry(tab) : null;
+  return tab && entry?.kind === "web" ? (tab.displayUrl ?? entry.url) : undefined;
+}
+
 function useFrameMessages(tabId: string, origin: string | null) {
   const t = useT();
   return useCallback(
     (message: FrameMessage) => {
       const store = useBrowserStore.getState();
       switch (message.type) {
-        case "navigate":
+        case "navigate": {
+          const from = pageAddress(store.tabs.find((candidate) => candidate.id === tabId));
           if (message.newTab) {
             store.openUrl(message.url, {
               newTab: true,
               background: message.background && !useBrowserPrefsStore.getState().switchToNewTabs,
               method: message.method,
               body: message.body,
+              from,
             });
           } else {
-            store.navigate(tabId, message, { replace: message.replace });
+            store.navigate(tabId, { url: message.url, method: message.method, body: message.body, from }, { replace: message.replace });
           }
           break;
+        }
         case "external":
           openExternalLink(message.url);
           break;
@@ -279,6 +289,15 @@ function WebPage({
         cachePage(entry, page);
         setState({ status: "ready", page });
         show(page);
+        // A file the panel can't show downloads, as in a browser; fresh loads only, so returning to the tab doesn't ask again.
+        if (page.kind === "raw") {
+          const name = page.fileName ?? fileNameFromUrl(page.url);
+          if (!canShowFile(name, page.contentType)) {
+            // The sending page, else the address asked for (not the redirect target), so another site's "allow" can't cover it.
+            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url });
+            if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
+          }
+        }
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return;

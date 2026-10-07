@@ -271,3 +271,160 @@ test("a page the reader set to 100% keeps it after a fetched file", async () => 
   assert.equal(zoom(), 1);
   useBrowserPrefsStore.getState().setDefaultZoom(1);
 });
+
+test("a site's download answer is remembered, changed and forgotten, per account", async () => {
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const { accountDatabaseName } = await import("../src/lib/account-transition.ts");
+  const sites = useDownloadSitesStore.getState();
+  sites.setSite("example.com", "allow");
+  sites.setSite("example.org", "block");
+  assert.deepEqual(useDownloadSitesStore.getState().sites, { "example.com": "allow", "example.org": "block" });
+  sites.setSite("example.com", "block");
+  sites.setSite("example.org", null);
+  assert.deepEqual(useDownloadSitesStore.getState().sites, { "example.com": "block" });
+  const name = useDownloadSitesStore.persist.getOptions().name;
+  assert.equal(name, accountDatabaseName("unsloth_browser_download_sites"));
+  assert.notEqual(name, "unsloth_browser_download_sites");
+  assert.ok(data.has(name!));
+  const prefs = JSON.parse(data.get("unsloth_browser_prefs") ?? "{}") as { state?: Record<string, unknown> };
+  assert.equal(prefs.state?.downloadSites, undefined);
+  assert.equal(useBrowserPrefsStore.getState().askBeforeDownloading, true);
+  sites.setSite("example.com", null);
+});
+
+test("a remembered answer settles the site's other waiting downloads", async () => {
+  const { approveDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const first = approveDownload("https://a.example/1.zip", "1.zip");
+  const second = approveDownload("https://a.example/2.zip", "2.zip");
+  const other = approveDownload("https://b.example/3.zip", "3.zip");
+  answerDownload(useApprovalStore.getState().queue[0], false, true);
+  assert.equal(await first, false);
+  assert.equal(await second, false);
+  assert.deepEqual(useApprovalStore.getState().queue.map((request) => request.origin), ["https://b.example"]);
+  assert.equal(useDownloadSitesStore.getState().sites["https://a.example"], "block");
+  const fourth = approveDownload("https://b.example/4.zip", "4.zip");
+  answerDownload(useApprovalStore.getState().queue[0], true, false);
+  assert.equal(await other, true);
+  assert.equal(useApprovalStore.getState().queue.length, 1);
+  answerDownload(useApprovalStore.getState().queue[0], true, false);
+  assert.equal(await fourth, true);
+  assert.equal(useDownloadSitesStore.getState().sites["https://b.example"], undefined);
+  useDownloadSitesStore.getState().setSite("https://a.example", null);
+});
+
+test("download answers are kept per origin, never for every site", async () => {
+  const { downloadSiteOf: siteOf } = await import("../src/features/browser/download-approval-queue.ts");
+  // A blob: URL is its creator's; an opaque one, or data: and about:, belongs to no site.
+  assert.equal(siteOf("blob:https://a.example/uuid"), "https://a.example");
+  assert.equal(siteOf("blob:null/uuid"), "");
+  assert.equal(siteOf("data:text/plain,x"), "");
+  assert.equal(siteOf("about:blank"), "");
+  const { approveDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const blob = approveDownload("blob:null/uuid", "file.bin", "blob:null/uuid");
+  const request = useApprovalStore.getState().queue[0];
+  assert.equal(request.origin, "");
+  answerDownload(request, true, true);
+  assert.equal(await blob, true);
+  assert.deepEqual(useDownloadSitesStore.getState().sites, {});
+  const paged = approveDownload("blob:https://cdn.example/uuid", "file.bin", "https://a.example/page");
+  assert.equal(useApprovalStore.getState().queue[0].origin, "https://a.example");
+  answerDownload(useApprovalStore.getState().queue[0], true, true);
+  assert.equal(await paged, true);
+  assert.deepEqual(useDownloadSitesStore.getState().sites, { "https://a.example": "allow" });
+  // Another scheme, port or subdomain is another site: it is asked about again.
+  const { downloadSiteOf } = await import("../src/features/browser/download-approval-queue.ts");
+  assert.equal(downloadSiteOf("https://www.a.example/x"), "https://www.a.example");
+  assert.equal(downloadSiteOf("http://a.example:8443/x"), "http://a.example:8443");
+  const other = approveDownload("http://a.example:8443/f.zip", "f.zip");
+  assert.equal(useApprovalStore.getState().queue.length, 1);
+  answerDownload(useApprovalStore.getState().queue[0], false, false);
+  assert.equal(await other, false);
+  assert.equal(await approveDownload("https://a.example/g.zip", "g.zip"), true);
+  useDownloadSitesStore.getState().setSite("https://a.example", null);
+});
+
+test("a download whose click has expired waits for Save rather than skip the save dialog", async () => {
+  const picked: string[] = [];
+  const written: Blob[] = [];
+  let active = false;
+  // Chromium's picker refuses to open without a recent click.
+  Object.assign(globalThis, {
+    showSaveFilePicker: async ({ suggestedName }: { suggestedName: string }) => {
+      if (!active) throw new DOMException("Must be handling a user gesture", "SecurityError");
+      picked.push(suggestedName);
+      return {
+        name: suggestedName,
+        createWritable: async () => ({ write: async (data: Blob) => void written.push(data), close: async () => {} }),
+      };
+    },
+  });
+  Object.defineProperty(globalThis, "navigator", { value: { userActivation: { get isActive() { return active; } } }, configurable: true });
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskWhereToSave(true);
+  prefs.setAskBeforeDownloading(false);
+  (globalThis as { __toasts?: unknown[] }).__toasts = [];
+  const blob = new Blob(["x"]);
+  await saveBrowserDownload({ blob, name: "setup.dmg", contentType: "application/octet-stream", url: "https://a.example/setup.dmg" });
+  const toasts = (globalThis as { __toasts?: { message: string; options?: { action?: { onClick: () => void } } }[] }).__toasts!;
+  assert.equal(toasts.length, 1);
+  assert.equal(toasts[0].message, "browser.downloadPrompt.ready");
+  assert.deepEqual(picked, []);
+  active = true;
+  toasts[0].options!.action!.onClick();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(picked, ["setup.dmg"]);
+  assert.equal(written.length, 1);
+  prefs.setAskWhereToSave(false);
+  prefs.setAskBeforeDownloading(true);
+  delete (globalThis as { showSaveFilePicker?: unknown }).showSaveFilePicker;
+});
+
+test("a file a page sends the tab to is asked about for that page, not the file's site", async () => {
+  const { useBrowserStore, currentEntry } = await import("../src/features/browser/store.ts");
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const { answerDownload, useApprovalStore } = await import("../src/features/browser/download-approval-queue.ts");
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const store = useBrowserStore.getState();
+  store.openUrl("https://a.example/page", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId!;
+  store.navigate(tabId, { url: "https://b.example/setup.zip", from: "https://a.example/page" });
+  const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId)!;
+  const entry = currentEntry(tab);
+  assert.ok(entry.kind === "web");
+  assert.equal(entry.from, "https://a.example/page");
+  store.navigate(tabId, { url: "https://b.example/other.zip" });
+  const typed = currentEntry(useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId)!);
+  assert.ok(typed.kind === "web" && typed.from === undefined);
+
+  // b.example is trusted, but a.example sent the tab there: still asked, for a.example.
+  useDownloadSitesStore.getState().setSite("https://b.example", "allow");
+  const blob = new Blob(["x"]);
+  const saving = saveBrowserDownload({ blob, name: "setup.zip", contentType: "application/zip", url: "https://b.example/setup.zip", site: entry.from });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const queue = useApprovalStore.getState().queue;
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].origin, "https://a.example");
+  answerDownload(queue[0], false, false);
+  await saving;
+  useDownloadSitesStore.getState().setSite("https://b.example", null);
+  store.closeTab(tabId);
+});
+
+test("a blocked site's blob: page can't download past the block", async () => {
+  const { approveDownload } = await import("../src/features/browser/download-approval-queue.ts");
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskBeforeDownloading(false);
+  useDownloadSitesStore.getState().setSite("https://a.example", "block");
+  assert.equal(await approveDownload("blob:https://a.example/f", "f.zip", "blob:https://a.example/doc"), false);
+  assert.equal(await approveDownload("https://cdn.example/f.zip", "f.zip", "https://b.example/"), true);
+  useDownloadSitesStore.getState().setSite("https://a.example", null);
+  prefs.setAskBeforeDownloading(true);
+});
