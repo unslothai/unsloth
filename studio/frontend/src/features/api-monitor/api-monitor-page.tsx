@@ -582,7 +582,7 @@ export function ApiMonitorPage(): ReactElement {
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const lanUrls = usePlatformStore((s) => s.lanUrls);
   const [unloading, setUnloading] = useState(false);
-  // A picker load in flight would land after the raw unload, which has no lifecycle guard.
+  // block raw unloads while a picker load could finish afterward without a lifecycle guard.
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
@@ -600,11 +600,7 @@ export function ApiMonitorPage(): ReactElement {
     return () => window.removeEventListener("focus", refreshRemoteBase);
   }, []);
 
-  // Manual release so VRAM frees without the idle timer. /unload matches on the
-  // internal id, which the monitor does not carry, so read status. unloadResident owns
-  // the read/unload/recheck sequence: this page's own feature (an API auto-switch) can
-  // swap the model out from under the read, and /unload naming a replaced model is a
-  // successful no-op, so one pass would report success over the model still resident.
+  // read status for /unload's internal id; recheck because an API auto-switch can make it a no-op.
   const unloadActiveModel = async (): Promise<void> => {
     setUnloading(true);
     try {
@@ -716,13 +712,12 @@ export function ApiMonitorPage(): ReactElement {
     detailInFlight,
   ]);
 
-  // The desktop webview's origin is tauri://, and the packaged app picks its port
-  // dynamically. Same source as the Agents tab.
+  // Tauri uses the runtime API base because its tauri:// origin omits the dynamic port.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
   const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
   const serverStatus = data?.status ?? "idle";
-  // Older backends omit the field; only an explicit `false` means recording is off.
+  // older backends omit the field, so only explicit `false` disables recording.
   const loggingDisabled = data?.logging_enabled === false;
   const statusCopy =
     serverStatus === "generating"

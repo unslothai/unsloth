@@ -39,33 +39,23 @@ interface PlatformState {
   appleSilicon: boolean;
   fileManager: FileManager | undefined;
   chatOnly: boolean;
-  // Why chatOnly is set (null when training is enabled), from /api/health.
-  // e.g. "mlx_unavailable" on Apple Silicon -> the UI explains the greyed-out
-  // Train/Export instead of silently disabling them.
+  // /api/health reason for chatOnly; null while training is enabled.
   chatOnlyReason: string | null;
-  // What specifically blocked that reason, when the backend can name it. Today only the
-  // MLX gate does: it is all-or-nothing across mlx, mlx-lm and mlx-vlm, so without this
-  // the greyed-out Train row can only repeat "run `unsloth studio update`".
+  // MLX gate covers mlx, mlx-lm, and mlx-vlm together; record the blocker when known.
   chatOnlyDetail: string | null;
-  // From /api/health (authed): live tunnel URL, direct (non-tunnel) base, and
-  // whether the server was launched with --secure.
+  // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
   secure: boolean;
   lanUrls: string[];
   fetched: boolean;
-  // Last verdict came from a deferred reply (torch-warm kill switch): nothing settles
-  // until a first-use operation detects, so the sidebar polls on this.
+  // torch-warm kill switch defers detection to first use; the sidebar polls.
   detectionDeferred: boolean;
   isChatOnly: () => boolean;
-  // True until /api/health has answered with a server-measured verdict. Before that `chatOnly`
-  // is the browser-platform seed below, not an answer, so anything that would gray a
-  // capability out has to treat it as unknown: rendering the guess blacks out Train and Video
-  // on every Mac from first paint, visually identical to a measured "unsupported".
+  // true until /api/health returns a verdict; guesses cannot gate features.
   capabilitiesUnknown: () => boolean;
 }
 
-// Client-side fallback when backend isn't ready yet.
 function detectLocalPlatform(): DeviceType {
   if (typeof navigator === "undefined") return "linux";
   const platform = navigator.platform.toLowerCase();
@@ -81,9 +71,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   deviceType: localDeviceType,
   appleSilicon: false,
   fileManager: undefined,
-  // A guess from the user agent, kept only as the pre-measurement fallback for the redirects
-  // that must decide something before /api/health answers. Capability gating must read
-  // capabilitiesUnknown() first and hold, not gray a tab out on this.
+  // user-agent guess for redirects; capability gates await the server.
   chatOnly: localDeviceType === "mac",
   chatOnlyReason: null,
   chatOnlyDetail: null,
@@ -94,10 +82,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   fetched: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
-  // `fetched` already means "a server-reported verdict is stored" (see fetchDeviceType), so it
-  // is the unknown/known line; no second flag to keep in step with it. A deferred reply counts
-  // as settled even though it carries no device_type: under the torch-warm kill switch nothing
-  // else is coming this session, so treating it as unknown would spin the tabs forever.
+  // deferred detection is settled because no verdict will arrive this session.
   capabilitiesUnknown: () => {
     const state = get();
     return !state.fetched && !state.detectionDeferred;
