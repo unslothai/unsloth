@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from http.server import BaseHTTPRequestHandler
@@ -400,3 +401,225 @@ def test_external_fit_reserves_tool_schemas():
     fitted, truncation, _ = ri._fit_external_context(messages, payload, tools = tools)
     assert truncation and truncation["dropped_messages"] > 0
     assert fitted[-1]["content"] == "latest question"
+
+
+class _ServedWindowHandler(_Handler):
+    """An OpenAI-compatible server that reports its window the way a self-hosted engine does."""
+
+    models: list[dict] = []
+    props: dict | None = None
+    key: str | None = None
+    gets: list[str] = []
+
+    def do_GET(self) -> None:  # noqa: N802
+        type(self).gets.append(self.path)
+        if self.key is not None and self.headers.get("Authorization") != f"Bearer {self.key}":
+            status, body = 401, {"error": "unauthorized"}
+        elif self.path == "/v1/models":
+            status, body = 200, {"object": "list", "data": self.models}
+        elif self.path.startswith("/props") and self.props is not None:
+            status, body = 200, self.props
+        else:
+            status, body = 404, {"error": "not found"}
+        raw = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+
+def _served(**attrs):
+    ep_mod._served_windows.clear()
+    return type("Served", (_ServedWindowHandler,), {"gets": [], **attrs})
+
+
+def _llama_server():
+    # llama-server -c 16384 -np 2: n_ctx is the per-slot window, n_ctx_train the trained maximum.
+    return _served(
+        models = [
+            {
+                "id": "qwen3-next",
+                "aliases": ["qwen3-next"],
+                "owned_by": "llamacpp",
+                "meta": {"n_ctx": 8_192, "n_ctx_train": 262_144},
+            }
+        ]
+    )
+
+
+def _fits(sent: dict, window: int) -> bool:
+    return estimate_messages_tokens_conservative(sent["messages"]) + sent["max_tokens"] <= window
+
+
+def test_a_llama_server_connection_compacts_to_the_window_the_server_reports():
+    chunks, sent = _proxy(
+        "llama_cpp",
+        _long_chat(),
+        handler = _llama_server(),
+        model = "qwen3-next",
+        context_overflow = "truncate_oldest",
+    )
+    assert len(sent["messages"]) < len(_long_chat())
+    assert sent["messages"][-1]["content"] == "latest question"
+    assert _fits(sent, 8_192)
+    [truncation] = _truncations(chunks)
+    assert truncation["fits"] is True
+
+
+def test_a_custom_connection_to_vllm_compacts_to_max_model_len():
+    vllm = _served(models = [{"id": "a-model", "owned_by": "vllm", "max_model_len": 8_192}])
+    chunks, sent = _proxy("custom", _long_chat(), handler = vllm, context_overflow = "truncate_oldest")
+    assert len(sent["messages"]) < len(_long_chat())
+    assert _fits(sent, 8_192)
+    assert len(_truncations(chunks)) == 1
+
+
+def test_a_lora_adapter_uses_its_base_model_window():
+    vllm = _served(
+        models = [
+            {"id": "base", "owned_by": "vllm", "max_model_len": 8_192},
+            {"id": "my-lora", "owned_by": "vllm", "parent": "base"},
+        ]
+    )
+    _, sent = _proxy(
+        "vllm", _long_chat(), handler = vllm, model = "my-lora", context_overflow = "truncate_oldest"
+    )
+    assert len(sent["messages"]) < len(_long_chat())
+    assert _fits(sent, 8_192)
+
+
+def test_an_older_llama_server_is_read_from_props_for_the_model():
+    old = _served(
+        models = [{"id": "a-model", "owned_by": "llamacpp", "meta": {"n_ctx_train": 262_144}}],
+        props = {"default_generation_settings": {"n_ctx": 8_192}},
+    )
+    _, sent = _proxy("llama_cpp", _long_chat(), handler = old, context_overflow = "truncate_oldest")
+    assert len(sent["messages"]) < len(_long_chat())
+    assert _fits(sent, 8_192)
+    assert old.gets == ["/v1/models", "/props?model=a-model"]
+
+
+def test_a_window_the_request_states_is_kept_over_the_served_one():
+    server = _llama_server()
+    _, sent = _proxy(
+        "llama_cpp",
+        _long_chat(),
+        handler = server,
+        model = "qwen3-next",
+        context_overflow = "truncate_oldest",
+        context_window = 4_096,
+    )
+    assert _fits(sent, 4_096)
+    assert server.gets == []
+
+
+def test_a_server_that_reports_no_window_gets_the_whole_chat():
+    silent = _served(models = [{"id": "a-model", "owned_by": "someone"}])
+    chunks, sent = _proxy(
+        "custom", _long_chat(), handler = silent, context_overflow = "truncate_oldest"
+    )
+    assert len(sent["messages"]) == len(_long_chat())
+    assert _truncations(chunks) == []
+
+
+def test_auto_compact_off_never_reads_the_served_window():
+    server = _llama_server()
+    _, sent = _proxy("llama_cpp", _long_chat(), handler = server, model = "qwen3-next")
+    assert len(sent["messages"]) == len(_long_chat())
+    assert server.gets == []
+
+
+def test_a_hosted_provider_is_not_probed_for_a_window():
+    server = _llama_server()
+    _, sent = _proxy(
+        "openrouter",
+        _long_chat(),
+        handler = server,
+        model = "qwen3-next",
+        context_overflow = "truncate_oldest",
+    )
+    assert len(sent["messages"]) == len(_long_chat())
+    assert server.gets == []
+
+
+def test_a_tool_enabled_llama_server_chat_compacts_to_the_reported_window(monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    # The tool loop polls for a disconnect and would stop before reaching the provider.
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    _, sent = _proxy(
+        "llama_cpp",
+        _long_chat(),
+        handler = _llama_server(),
+        model = "qwen3-next",
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+    )
+    assert sent["tools"]
+    assert len(sent["messages"]) < len(_long_chat())
+    assert sent["messages"][-1]["content"] == "latest question"
+
+
+def test_an_unauthorized_read_does_not_hide_the_window_from_a_valid_key():
+    server = _served(
+        models = [{"id": "a-model", "owned_by": "vllm", "max_model_len": 8_192}], key = "good"
+    )
+    windows: list = []
+
+    with _Server(handler = server) as upstream:
+
+        async def go() -> None:
+            for key in ("bad", "good", "bad", "good"):
+                client = ep_mod.ExternalProviderClient(
+                    provider_type = "vllm", base_url = upstream.base_url, api_key = key
+                )
+                windows.append(await client.served_context_window("a-model"))
+
+        _run(go)
+    assert windows == [None, 8_192, None, 8_192]
+    # Each credential is read once, then served from the cache.
+    assert len(server.gets) == 2
+
+
+def test_a_refused_connection_is_not_remembered():
+    # A server that is down or restarting must be read again on the next turn once it is back up.
+    ep_mod._served_windows.clear()
+    windows: list = []
+
+    async def go() -> None:
+        client = ep_mod.ExternalProviderClient(
+            provider_type = "llama_cpp", base_url = "http://127.0.0.1:9/v1", api_key = None
+        )
+        windows.append(await client.served_context_window("a-model"))
+
+    _run(go)
+    assert windows == [None]
+    assert ep_mod._served_windows == {}
+
+
+def test_a_stalled_server_costs_one_deadline_and_is_remembered(monkeypatch):
+    ep_mod._served_windows.clear()
+    monkeypatch.setattr(ep_mod, "_SERVED_WINDOW_TIMEOUT_S", 0.2)
+    reads: list[str] = []
+
+    async def stalled(self, model):
+        reads.append(model)
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(ep_mod.ExternalProviderClient, "_read_served_window", stalled)
+    windows: list = []
+
+    async def go() -> None:
+        for _ in range(2):
+            client = ep_mod.ExternalProviderClient(
+                provider_type = "custom", base_url = "http://127.0.0.1:9/v1", api_key = None
+            )
+            windows.append(await client.served_context_window("a-model"))
+
+    _run(go)
+    assert windows == [None, None]
+    assert reads == ["a-model"]

@@ -7,6 +7,7 @@
 import asyncio
 import base64
 import contextlib
+import hashlib
 import io
 import json as _json
 import math
@@ -51,6 +52,28 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # caution as the flag above: "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
 # "openai" is absent because it routes to /v1/responses, which reports usage on its own.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "llama_cpp", "openrouter", "kimi", "lemonade"})
+
+# Self-hosted servers whose context window is a launch flag (llama-server -c, vLLM --max-model-len), so no model
+# catalogue can know it. "custom" is how NInfer, SGLang, or a llama.cpp or vLLM server without its preset registers.
+_SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
+# Short, so a server restarted with another window is read again within a turn or two.
+_SERVED_WINDOW_TTL_S = 60.0
+_SERVED_WINDOW_TIMEOUT_S = 5.0
+_served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _reported_window(entry: dict[str, Any]) -> Optional[int]:
+    # llama-server reports its per-slot window as meta.n_ctx (meta.n_ctx_train is the trained maximum); vLLM, SGLang
+    # and NInfer report max_model_len.
+    meta = entry.get("meta")
+    return _positive_int(meta.get("n_ctx") if isinstance(meta, dict) else None) or _positive_int(
+        entry.get("max_model_len")
+    )
+
 
 # llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
 _REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
@@ -7400,19 +7423,7 @@ class ExternalProviderClient:
         """GET /models to discover available models. Returns dicts with at least 'id'. All providers
         expose /models with the OpenAI {"data": [...]} shape, Anthropic included."""
         try:
-            response = await _client().get(
-                f"{self.base_url}/models",
-                headers = self._auth_headers(),
-                timeout = self._timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-            # Some local servers (Ollama with no models) return data: null.
-            models: list[dict[str, Any]] = []
-            if isinstance(data, dict):
-                raw_models = data.get("data") or []
-                if isinstance(raw_models, list):
-                    models = [model for model in raw_models if isinstance(model, dict)]
+            data, models = await self._models_payload(self._timeout)
             if self.provider_type == "ollama":
                 # Only /api/tags carries the per-model "thinking" capability.
                 if not models:
@@ -7427,6 +7438,75 @@ class ExternalProviderClient:
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
+        """GET /models: the decoded body and its dict entries under "data"."""
+        response = await _client().get(
+            f"{self.base_url}/models", headers = self._auth_headers(), timeout = timeout
+        )
+        response.raise_for_status()
+        data = response.json()
+        # Some local servers (Ollama with no models) return data: null.
+        raw = data.get("data") if isinstance(data, dict) else None
+        return data, [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+    async def _read_served_window(self, model: str) -> Optional[int]:
+        _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)
+        by_id = {e["id"]: e for e in entries if isinstance(e.get("id"), str)}
+        entry = by_id.get(model) or next(
+            (e for e in entries if isinstance(e.get("aliases"), list) and model in e["aliases"]),
+            # A single-model llama-server answers whatever id the request names.
+            entries[0] if len(entries) == 1 else None,
+        )
+        if entry is None:
+            return None
+        window = _reported_window(entry)
+        parent = entry.get("parent")
+        if window is None and isinstance(parent, str) and parent in by_id:
+            # A vLLM or SGLang LoRA adapter runs in its base model's window.
+            window = _reported_window(by_id[parent])
+        if window is not None or entry.get("owned_by") != "llamacpp":
+            return window
+        # Builds before meta.n_ctx (b9500) report the same per-slot value on /props. ?model= routes the read in
+        # router mode and is ignored otherwise.
+        entry_id = entry.get("id")
+        props = await _client().get(
+            f"{self.base_url.removesuffix('/v1')}/props",
+            params = {"model": entry_id if isinstance(entry_id, str) else model},
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        props.raise_for_status()
+        body = props.json()
+        settings = body.get("default_generation_settings") if isinstance(body, dict) else None
+        return _positive_int(settings.get("n_ctx") if isinstance(settings, dict) else None)
+
+    async def served_context_window(self, model: str) -> Optional[int]:
+        """The context window a self-hosted server runs ``model`` with, or None when it reports none. Cached
+        briefly per server, credential and model, None included, so a silent server costs one read a minute."""
+        if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
+            return None
+        now = time.monotonic()
+        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        cached = _served_windows.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        window = None
+        try:
+            # One deadline for both reads: the first token waits on this.
+            window = await asyncio.wait_for(
+                self._read_served_window(model), timeout = _SERVED_WINDOW_TIMEOUT_S
+            )
+        except httpx.ConnectError as exc:
+            # A server that is down or restarting is read again on the next turn, not a minute later.
+            logger.info("No served context window from %s: %s", self.provider_type, exc)
+            return None
+        except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
+            logger.info("No served context window from %s: %r", self.provider_type, exc)
+        for stale in [k for k, (expiry, _) in _served_windows.items() if expiry <= now]:
+            del _served_windows[stale]
+        _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
+        return window
 
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
