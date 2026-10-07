@@ -520,6 +520,36 @@ def test_llm_output_scans_skip_decision_outputs(studio_home):
     assert [name for name, _, _ in scan_checkpoints(str(root))] == ["llama_merged_1"]
 
 
+def test_export_checkpoint_list_includes_decision_runs(studio_home):
+    from routes import models as models_routes
+    from utils.models.checkpoints import list_preview_targets
+    from utils.paths import outputs_root
+
+    root = outputs_root()
+    laya = _fake_output(root, "laya_done_1")
+    (laya / "rl_agent_config.json").write_text(
+        json.dumps({"encoder": "answerdotai/ModernBERT-base", "training": {"base": "laya-tiny"}}),
+        encoding = "utf-8",
+    )
+    _fake_output(root, "laya_half_2", complete = False)
+    clef = root / "clef_merged_3"
+    clef.mkdir()
+    for name in ("config.json", "joint_head_config.json", "joint_head.safetensors"):
+        (clef / name).write_text("{}", encoding = "utf-8")
+
+    app = FastAPI()
+    app.include_router(models_routes.router, prefix = "/api/models")
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    response = TestClient(app).get("/api/models/checkpoints", params = {"outputs_dir": str(root)})
+    assert response.status_code == 200, response.text
+    listed = {m["name"]: m for m in response.json()["models"]}
+    assert sorted(listed) == ["clef_merged_3", "laya_done_1"]
+    assert listed["laya_done_1"]["base_model"] == "laya-tiny"
+    assert listed["laya_done_1"]["checkpoints"][0]["path"] == str(laya)
+    # Chat preview still lists only what chat can load.
+    assert [t["run"] for t in list_preview_targets(str(root))] == ["clef_merged_3"]
+
+
 def test_model_config_offers_an_llm_as_a_decision_model(studio_home):
     import asyncio
 
