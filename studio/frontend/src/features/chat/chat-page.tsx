@@ -3391,6 +3391,15 @@ export function ChatPage({
     clearAutoOpenedArtifacts();
   }, [artifactViewKey]);
 
+  const shownChatKey =
+    view.mode === "single"
+      ? `single:${view.threadId ?? activeThreadId ?? view.newThreadNonce ?? "new"}`
+      : artifactViewKey;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
+  useEffect(() => {
+    useBrowserStore.getState().closeChatPages();
+  }, [shownChatKey]);
+
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
   const [pendingHubAutoLoad, setPendingHubAutoLoad] =

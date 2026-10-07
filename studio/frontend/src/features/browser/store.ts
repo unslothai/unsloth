@@ -289,6 +289,7 @@ type BrowserState = {
   setMuted: (tabId: string, muted: boolean) => void;
   closeOtherTabs: (tabId: string) => void;
   closeTabsToRight: (tabId: string) => void;
+  closeChatPages: () => void;
   openUrl: (
     url: string,
     options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string; from?: string },
@@ -480,6 +481,11 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const index = tabs.findIndex((tab) => tab.id === tabId);
       if (index < 0) return;
       for (const tab of tabs.slice(index + 1)) get().closeTab(tab.id);
+    },
+    closeChatPages: () => {
+      for (const tab of get().tabs) {
+        if (tab.openKey?.startsWith("file:html:")) get().closeTab(tab.id);
+      }
     },
     openUrl: (url, options) => {
       if (!isWeb(url)) return;
