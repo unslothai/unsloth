@@ -170,6 +170,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
 // outside React state so it survives both, and is shared across tabs in this browser.
 const HANDLED_RELOAD_STORAGE_KEY = "unsloth_llama_update_reload_handled_at";
 const OFFER_SUPPRESSION_STORAGE_KEY = "unsloth_llama_update_offer_suppression";
+const OFFER_SUPPRESSION_EVENT = "unsloth:llama-update-offer-suppression";
 
 type OfferSuppression =
   | { kind: "dismissed"; offerKey: string }
@@ -233,7 +234,7 @@ function getOfferSuppression(): OfferSuppression | null {
   }
 }
 
-function persistOfferSuppression(suppression: OfferSuppression | null): void {
+function publishOfferSuppression(suppression: OfferSuppression | null): void {
   try {
     if (suppression) {
       localStorage.setItem(
@@ -244,8 +245,13 @@ function persistOfferSuppression(suppression: OfferSuppression | null): void {
       localStorage.removeItem(OFFER_SUPPRESSION_STORAGE_KEY);
     }
   } catch {
-    return;
+    // Storage can be unavailable in restricted browser contexts.
   }
+  window.dispatchEvent(
+    new CustomEvent<OfferSuppression | null>(OFFER_SUPPRESSION_EVENT, {
+      detail: suppression,
+    }),
+  );
 }
 
 function getHandledReloadAt(): string | null {
@@ -344,7 +350,7 @@ export function useLlamaUpdateCheck({
   const clearSuppression = useCallback(() => {
     if (!suppressionRef.current) return;
     suppressionRef.current = null;
-    persistOfferSuppression(null);
+    publishOfferSuppression(null);
     armSnoozeTimer();
   }, [armSnoozeTimer]);
 
@@ -524,11 +530,18 @@ export function useLlamaUpdateCheck({
   // storage event only fires in other tabs (never the one that wrote it), so this recheck fires
   // promptly there without this tab redundantly re-triggering itself.
   useEffect(() => {
+    const acceptSuppression = (suppression: OfferSuppression | null) => {
+      if (suppressionRef.current === suppression) return;
+      suppressionRef.current = suppression;
+      if (enabled && statusRef.current) presentStatus(statusRef.current);
+      else armSnoozeTimer();
+    };
+    const onSuppression = (event: Event) => {
+      acceptSuppression((event as CustomEvent<OfferSuppression | null>).detail);
+    };
     const onStorage = (event: StorageEvent) => {
       if (event.key === OFFER_SUPPRESSION_STORAGE_KEY) {
-        suppressionRef.current = parseOfferSuppression(event.newValue);
-        if (enabled && statusRef.current) presentStatus(statusRef.current);
-        else armSnoozeTimer();
+        acceptSuppression(parseOfferSuppression(event.newValue));
         return;
       }
       if (
@@ -540,8 +553,12 @@ export function useLlamaUpdateCheck({
         readStatus(true).then(surfaceIfAvailable);
       }
     };
+    window.addEventListener(OFFER_SUPPRESSION_EVENT, onSuppression);
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener(OFFER_SUPPRESSION_EVENT, onSuppression);
+      window.removeEventListener("storage", onStorage);
+    };
   }, [enabled, readStatus, surfaceIfAvailable, presentStatus, armSnoozeTimer]);
 
   useEffect(() => {
@@ -559,7 +576,7 @@ export function useLlamaUpdateCheck({
       offerKey: offerKey(current),
     };
     suppressionRef.current = suppression;
-    persistOfferSuppression(suppression);
+    publishOfferSuppression(suppression);
     presentStatus(current);
   }, [presentStatus]);
 
@@ -572,7 +589,7 @@ export function useLlamaUpdateCheck({
       until: Date.now() + SNOOZE_DELAY_MS,
     };
     suppressionRef.current = suppression;
-    persistOfferSuppression(suppression);
+    publishOfferSuppression(suppression);
     presentStatus(current);
   }, [presentStatus]);
 
