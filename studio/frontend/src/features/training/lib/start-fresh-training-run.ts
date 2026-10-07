@@ -279,6 +279,7 @@ export async function startFreshTrainingRun(): Promise<boolean> {
         validateTrainingConfig(
           config,
           usePlatformStore.getState().deviceType,
+          isAccountOwner(),
           availableGpuIds,
         ),
     });

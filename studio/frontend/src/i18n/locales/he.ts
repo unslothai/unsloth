@@ -3085,6 +3085,13 @@ export const he = {
         "קובצי מערך הנתונים הוסרו ממכשיר זה, ולכן האימון יוריד אותם מחדש.",
     },
     preview: {
+      automaticGpu: "אוטומטי — GPU נבחר בעת ההפעלה",
+      noGpuSelected: "לא נבחר GPU",
+      perGpu: "לכל GPU",
+      gpus: "GPUs",
+      globalBatch: "גלובלי",
+      gpuDevice: "GPU {index}: {name}",
+      totalVram: "סה״כ: {total} GiB",
       title: "תצוגה מקדימה של הרצה",
       ready: "מוכן",
       notReady: "לא מוכן",
@@ -3396,6 +3403,25 @@ export const he = {
       },
     },
     params: {
+      hardware: "חומרה",
+      gpuPlacement: "הקצאת GPU",
+      gpuPlacementTooltip:
+        "בחר בחירה אוטומטית, GPU יחיד, פיצול מודל או DDP מקבילי-נתונים. DDP משכפל את המודל בכל GPU נבחר.",
+      hardwareModeAutoLabel: "אוטומטי",
+      hardwareModeSingleLabel: "GPU יחיד",
+      hardwareModeShardingLabel: "פיצול מודל",
+      hardwareModeDdpLabel: "DDP (מקבילי-נתונים)",
+      hardwareModeAuto: "Studio בוחר אוטומטית את ה-GPU התואם הפחות עמוס.",
+      hardwareModeSingle: "עותק מודל אחד על GPU נבחר אחד.",
+      hardwareModeSharding:
+        "מודל אחד מפוצל על פני ה-GPUs הנבחרים. זה מאחד VRAM; זה אינו DDP.",
+      hardwareModeDdp:
+        "עותק מודל אחד לכל GPU נבחר. הגרדיאנטים מסונכרנים; כל GPU נבחר חייב להכיל את המודל.",
+      liveInventory: "מלאי חי:",
+      memoryAvailable: "{free} / {total} GiB פנויים",
+      memoryUnknown: 'זיכרון פנוי לא ידוע / {total} GiB סה"כ',
+      noSelectableGpu: "אין GPU עם אינדקס פיזי יציב זמין לבחירה מפורשת.",
+      multipleGpusRequired: "בחר לפחות שני GPUs עבור מצב זה.",
       mode: {
         simple: "פשוט",
         advanced: "מתקדם",
@@ -3506,6 +3532,9 @@ export const he = {
       chooseDataset: "בחר מערך נתונים",
       chooseModelAndDataset: "בחר מודל ומערך נתונים",
       validation: {
+        multipleGpusRequired: "בחר לפחות שני GPUs עבור מצב זה.",
+        singleGpuRequired: "בחר GPU אחד בדיוק עבור אימון ב-GPU יחיד.",
+        gpuSelectionUnavailable: "ה-GPUs הנבחרים אינם זמינים. רענן את בחירת החומרה ונסה שוב.",
         s3MultimodalUnsupported:
           "מערכי נתונים מ-S3 אינם נתמכים עדיין לאימון ראייה.",
         s3BucketRequired: "הזן תחילה שם של דלי S3.",

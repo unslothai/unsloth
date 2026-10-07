@@ -180,14 +180,14 @@ test("an unresolved refresh keeps automatic placement valid but rejects explicit
     abortIfInputsChanged: () => false,
     getConfig: () => automaticConfig,
     validate: (config: typeof automaticConfig, available: number[] | null) =>
-      validateTrainingConfig(config, undefined, available),
+      validateTrainingConfig(config, undefined, true, available),
   });
   const explicitResult = await validateRefreshedTrainingGpuSelection({
     refresh: async () => null,
     abortIfInputsChanged: () => false,
     getConfig: () => explicitConfig,
     validate: (config: typeof explicitConfig, available: number[] | null) =>
-      validateTrainingConfig(config, undefined, available),
+      validateTrainingConfig(config, undefined, true, available),
   });
 
   assert.equal(autoResult.kind, "valid");
