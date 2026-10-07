@@ -268,3 +268,14 @@ test("swapping menu views moves focus into the new view", () => {
   );
   assert.match(KB_BUTTON, /<DropdownMenuContent\s+ref=\{contentRef\}/);
 });
+
+test("unpinning a row that leaves the list hands focus to a neighbour row", () => {
+  assert.match(MENU_PICKER, /const leaving =\s*isPinned && model !== current && model !== settings\.defaultEmbeddingModel;/);
+  assert.match(MENU_PICKER, /togglePin\(model\);\s*if \(neighbour\) requestAnimationFrame\(\(\) => neighbour\.focus\(\)\);/);
+  assert.match(MENU_PICKER, /function neighbourRowItem\(el: HTMLElement\)/);
+});
+
+test("a switch that lands after the list unmounted does not change the menu view", () => {
+  assert.match(MENU_PICKER, /if \(mountedRef\.current\) onBack\(\);/);
+  assert.match(MENU_PICKER, /return \(\) => \{\s*mountedRef\.current = false;\s*\};/);
+});

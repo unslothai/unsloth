@@ -4,7 +4,7 @@
 import { PinIcon, PinOffIcon, RemoveCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   DropdownMenuItem,
@@ -36,6 +36,18 @@ const HEADING_LINK_CLASS =
 // Fixed width, so the pin sits in the same place on every row, ticked or not.
 const TRAILING_SLOT_CLASS =
   "flex w-[calc(var(--ui-icon-size)+2px)] shrink-0 items-center justify-center";
+
+/** The model item of the row after (else before) the one holding `el`. */
+function neighbourRowItem(el: HTMLElement): HTMLElement | null {
+  const row = el.closest(".menu-row-with-action");
+  for (const step of ["nextElementSibling", "previousElementSibling"] as const) {
+    for (let next = row?.[step]; next; next = next[step]) {
+      if (next.classList.contains("menu-row-with-action"))
+        return next.querySelector<HTMLElement>('[role^="menuitem"]');
+    }
+  }
+  return null;
+}
 
 /** "Model <name> ›" chip in the RAG menu heading. Swaps the menu to the model list. */
 export function EmbeddingModelMenuChip({ onOpen }: { onOpen: () => void }) {
@@ -84,6 +96,14 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
   const [switching, setSwitching] = useState<string | null>(null);
   const [ejecting, setEjecting] = useState(false);
+  // A slow switch can land after the menu closed and reopened; only the live list may navigate.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Fresh residency, so Eject reflects a model indexing just loaded.
   useEffect(() => {
@@ -132,9 +152,9 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
           description: t("settings.general.rag.reindexWarning"),
         });
       }
-      onBack();
+      if (mountedRef.current) onBack();
     } finally {
-      setSwitching(null);
+      if (mountedRef.current) setSwitching(null);
     }
   };
 
@@ -234,7 +254,14 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
                     data-row-action={true}
                     onSelect={(event) => {
                       event.preventDefault();
+                      // Unpinning an extra row removes the focused item; hand focus to a neighbour.
+                      const leaving =
+                        isPinned && model !== current && model !== settings.defaultEmbeddingModel;
+                      const neighbour = leaving
+                        ? neighbourRowItem(event.currentTarget as HTMLElement)
+                        : null;
                       togglePin(model);
+                      if (neighbour) requestAnimationFrame(() => neighbour.focus());
                     }}
                     // As on Recents: grey, unpin glyph once pinned. Shown on row hover or focus, always on touch.
                     className="pointer-events-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 outline-hidden transition-colors group-hover/row:opacity-100 group-has-[[data-highlighted]]/row:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] data-[highlighted]:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[highlighted]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
