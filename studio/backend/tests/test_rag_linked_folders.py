@@ -423,6 +423,52 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home,
         )
 
 
+@pytest.mark.parametrize("relative", [".obsidian", "notes/.obsidian", ".cache"])
+def test_scan_does_not_enter_dot_directories(tmp_path, monkeypatch, relative):
+    source = tmp_path / "vault"
+    hidden = source / relative
+    (hidden / "plugins").mkdir(parents = True)
+    (hidden / "plugins" / "manifest.json").write_text("{}", encoding = "utf-8")
+    visible = source / "notes" / "v1.0"
+    visible.mkdir(parents = True, exist_ok = True)
+    (visible / "note.md").write_text("visible note", encoding = "utf-8")
+    original_scandir = os.scandir
+
+    def guarded_scandir(path):
+        assert Path(path) != hidden, "Hidden directories must not be traversed"
+        return original_scandir(path)
+
+    monkeypatch.setattr(folder_sync.os, "scandir", guarded_scandir)
+    found, _ = folder_sync._scan(str(source))
+    assert set(found) == {"notes/v1.0/note.md"}
+
+
+@requires_sqlite_vec
+@pytest.mark.parametrize("already_indexed", [False, True])
+def test_sync_removes_documents_in_a_dot_directory(
+    rag_home, stub_embeddings, already_indexed
+):
+    source, folder = _folder(rag_home)
+    notes = source / "notes"
+    notes.mkdir()
+    (notes / "note.txt").write_text("hiddencontenttoken", encoding = "utf-8")
+    (source / "visible.txt").write_text("visiblecontenttoken", encoding = "utf-8")
+    assert _run(folder["id"])["discovered"] == 2
+
+    notes.rename(source / ".obsidian")
+    if already_indexed:
+        # Reproduce a mapping left by the scanner before dot directories were excluded.
+        folder_sync._rename_mapping(folder["id"], "notes/note.txt", ".obsidian/note.txt")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["discovered"] == 1
+    assert result["deleted"] == 1
+    with _connection() as conn:
+        assert not store.search_lexical(conn, folder["scope"], "hiddencontenttoken", 5)
+        assert store.search_lexical(conn, folder["scope"], "visiblecontenttoken", 5)
+    assert (source / ".obsidian" / "note.txt").is_file()
+
+
 def test_scan_skips_revisited_directory_identity(rag_home, monkeypatch):
     source = rag_home / "cycle"
     loop = source / "loop"

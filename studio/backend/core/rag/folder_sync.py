@@ -76,7 +76,12 @@ _LOCKFILES = frozenset(
 
 
 def _is_ignored_scan_dir(name: str, path: str) -> bool:
-    return name.lower() in _IGNORE_SCAN_DIRS or os.path.exists(os.path.join(path, "pyvenv.cfg"))
+    # Hidden subtrees include application configuration and plugins (for example .obsidian).
+    return (
+        name.startswith(".")
+        or name.lower() in _IGNORE_SCAN_DIRS
+        or os.path.exists(os.path.join(path, "pyvenv.cfg"))
+    )
 
 
 def _is_ignored_scan_file(name: str) -> bool:
@@ -1217,6 +1222,9 @@ def _source_reappeared(root: str, relative_path: str) -> bool:
         raise _FolderChanged("Linked folder mapping has an invalid relative path")
     current = root
     for index, part in enumerate(parts):
+        # Previously indexed dot directories are now excluded even if they still exist.
+        if index < len(parts) - 1 and part.startswith("."):
+            return False
         current = os.path.join(current, part)
         try:
             current_stat = os.lstat(current)
