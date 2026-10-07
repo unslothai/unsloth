@@ -2,10 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
-import {
-  diskCleanupAgentPrompt,
-  isDiskFullInstallError,
-} from "@/components/tauri/disk-space-prompt";
+import { diskCleanupAgentPrompt } from "@/components/tauri/disk-space-prompt";
 import { LogDetails } from "@/components/tauri/log-details";
 import {
   installProgressMessage,
@@ -26,6 +23,7 @@ interface StartupScreenProps {
   status: BackendStatus;
   logs: string[];
   error: string | null;
+  diskFull: boolean;
   currentStepIndex: number;
   progressDetail: string | null;
   startupMessage: StartupMessage;
@@ -193,14 +191,16 @@ function ClosingContent() {
 
 function InstallErrorContent({
   error,
+  diskFull,
   onRetryInstall,
   onCopyDiagnostics,
 }: {
   error: string | null;
+  diskFull: boolean;
   onRetryInstall: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
-  if (error && isDiskFullInstallError(error)) {
+  if (diskFull && error) {
     return (
       <DiskFullInstallDialog error={error} onRetryInstall={onRetryInstall} />
     );
@@ -396,6 +396,7 @@ export function StartupScreen({
   status,
   logs,
   error,
+  diskFull,
   currentStepIndex,
   progressDetail,
   startupMessage,
@@ -425,6 +426,7 @@ export function StartupScreen({
         return (
           <InstallErrorContent
             error={error}
+            diskFull={diskFull}
             onRetryInstall={onRetryInstall}
             onCopyDiagnostics={onCopyDiagnostics}
           />

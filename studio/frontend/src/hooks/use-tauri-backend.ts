@@ -152,6 +152,7 @@ export function useTauriBackend() {
   const statusRef = useRef<BackendStatus>(status);
   const [logs, setLogs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [installDiskFull, setInstallDiskFull] = useState(false);
   // Guard against double startServer calls
   const startingRef = useRef(false);
   // Guard against double stopServer calls
@@ -206,18 +207,21 @@ export function useTauriBackend() {
     stopManagedEnvironmentWait();
     statusRef.current = nextStatus;
     setStatus(nextStatus);
+    setInstallDiskFull(false);
     syncTrayStatus(nextStatus);
   }
 
   function setBackendError(
     nextError: string,
     nextStatus: BackendStatus = "error",
+    diskFull = false,
   ) {
     if (authFailureRef.current) return;
     stopManagedEnvironmentWait();
     statusRef.current = nextStatus;
     setStatus(nextStatus);
     setError(nextError);
+    setInstallDiskFull(diskFull);
     syncTrayStatus(nextStatus);
   }
 
@@ -755,8 +759,8 @@ export function useTauriBackend() {
         setProgressDetail(e.payload);
       });
 
-      register<string>("install-failed", (e) => {
-        setBackendError(e.payload, "install-error");
+      register<{ message: string; diskFull: boolean }>("install-failed", (e) => {
+        setBackendError(e.payload.message, "install-error", e.payload.diskFull);
       });
 
       register<string>("repair-progress", (e) => {
@@ -869,7 +873,7 @@ export function useTauriBackend() {
   }, []);
 
   return {
-    status, logs, error, isExternalServer, closing,
+    status, logs, error, installDiskFull, isExternalServer, closing,
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,
