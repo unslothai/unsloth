@@ -508,7 +508,9 @@ def glow_over(page, fixture_js: str) -> str:
         pass
     glow = page.evaluate(GLOW_JS)
     close_all(page)
-    page.evaluate("() => document.querySelectorAll('[data-glow-fixture]').forEach((el) => el.remove())")
+    page.evaluate(
+        "() => document.querySelectorAll('[data-glow-fixture]').forEach((el) => el.remove())"
+    )
     return glow
 
 
