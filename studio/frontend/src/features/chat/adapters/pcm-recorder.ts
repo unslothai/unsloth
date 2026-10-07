@@ -291,7 +291,11 @@ class StartFallbackRecorder implements SegmentRecorder {
     try {
       this.recorder.start(timesliceMs);
     } catch (error) {
-      if ((error as { name?: unknown } | null)?.name !== "NotSupportedError") {
+      // An ended stream is refused with the same error name and is not the engine's fault.
+      if (
+        (error as { name?: unknown } | null)?.name !== "NotSupportedError" ||
+        !this.stream.active
+      ) {
         throw error;
       }
       mediaRecorderRefusedStart = true;
