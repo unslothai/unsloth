@@ -605,3 +605,36 @@ def test_media_gate_follows_the_catalog_task(tmp_path, monkeypatch, task, expect
     from hub.services.models import catalog_classification
     monkeypatch.setattr(catalog_classification, "_gguf_file_task", lambda path, hints: task)
     assert delta._is_media_gguf(tmp_path / "x.gguf", "u/m", "x.gguf") is expected
+
+
+@pytest.mark.parametrize("module", ["httpx", "httpx2"])
+@pytest.mark.parametrize("status, ok", [(206, True), (200, False)])
+def test_range_fetcher_streams_on_the_hub_session(monkeypatch, module, status, ok):
+    seen = []
+
+    class Resp:
+        status_code = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            seen.append("read")
+            return b"x" * 10
+
+    session = type("Client", (), {"__module__": module})()
+    session.stream = lambda method, url, **kw: seen.append(kw["headers"]["Range"]) or Resp()
+    import huggingface_hub.utils as hf_utils
+
+    monkeypatch.setattr(hf_utils, "get_session", lambda: session)
+    fetch = delta.hub_range_fetcher("u/m", NAME, None, revision = COMMIT_NEW)
+    if ok:
+        assert fetch(0, 9) == b"x" * 10
+    else:
+        with pytest.raises(ValueError):
+            fetch(0, 9)
+        assert "read" not in seen
+    assert seen[0] == "bytes=0-9"

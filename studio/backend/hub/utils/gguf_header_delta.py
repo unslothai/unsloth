@@ -490,23 +490,13 @@ def hub_range_fetcher(
     def fetch(start: int, end: int) -> bytes:
         headers = dict(base_headers)
         headers["Range"] = f"bytes={start}-{end}"
-        session = get_session()
-        if type(session).__module__.split(".")[0] == "httpx":
-            with session.stream(
-                "GET", url, headers = headers, follow_redirects = True, timeout = _RANGE_TIMEOUT
-            ) as resp:
-                if resp.status_code != 206:
-                    raise ValueError(f"range request answered {resp.status_code}")
-                return resp.read()
-        resp = session.get(
-            url, headers = headers, allow_redirects = True, stream = True, timeout = _RANGE_TIMEOUT
-        )
-        try:
+        # httpx (huggingface_hub 1.x) and httpx2 (2.x) share this API.
+        with get_session().stream(
+            "GET", url, headers = headers, follow_redirects = True, timeout = _RANGE_TIMEOUT
+        ) as resp:
             if resp.status_code != 206:
                 raise ValueError(f"range request answered {resp.status_code}")
-            return resp.content
-        finally:
-            resp.close()
+            return resp.read()
 
     return fetch
 
