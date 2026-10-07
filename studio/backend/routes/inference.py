@@ -24498,7 +24498,7 @@ def _start_account_stt_download(
             )
         repo = _stt_repo_reference(model, engine)
         account_access.authorize_download(repo, "model", hf_token)
-        module.start_model_download(*args)
+        download_id = module.start_model_download(*args)
         _stt_download_accounts[engine] = current_account_id()
         account = current_account_id()
         settled = _stt_grant_pending[engine] = threading.Event()
@@ -24528,6 +24528,7 @@ def _start_account_stt_download(
                 settled.set()
 
         account_thread(target = watch, name = f"stt-grant-{engine}", daemon = True).start()
+        return download_id
 
 
 def retire_stt_downloads() -> None:
@@ -24562,14 +24563,24 @@ def retire_stt_downloads() -> None:
         )
 
 
-def _cancel_account_stt_download(module, engine):
+def _cancel_account_stt_download(
+    module,
+    engine,
+    model = None,
+    download_id = None,
+):
     with _stt_download_lock:
         if (
             account_access.account_scope() is not None
             and _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id()
         ):
             return {"downloading": False, "cancelled": False}
-        cancelled = module.cancel_model_download()
+        if download_id is not None:
+            cancelled = module.cancel_model_download(model, download_id)
+        elif model is not None:
+            cancelled = module.cancel_model_download(model)
+        else:
+            cancelled = module.cancel_model_download()
         return {**module.download_status(), "cancelled": cancelled}
 
 
@@ -24843,7 +24854,7 @@ async def stt_download(
             validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
             # Pin the download to the commit that was just validated so the
             # repo cannot be swapped between validation and snapshot_download.
-            await asyncio.to_thread(
+            download_id = await asyncio.to_thread(
                 _start_account_stt_download,
                 module,
                 engine,
@@ -24852,14 +24863,14 @@ async def stt_download(
                 validated.get("revision"),
             )
         else:
-            await asyncio.to_thread(
+            download_id = await asyncio.to_thread(
                 _start_account_stt_download, module, engine, payload.model, hf_token
             )
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
-    return JSONResponse(content = module.download_status())
+    return JSONResponse(content = {**module.download_status(), "download_id": download_id})
 
 
 @studio_router.post("/audio/stt/download/cancel")
@@ -24875,7 +24886,13 @@ async def stt_download_cancel(
 
     engine = _resolve_serving_stt_engine(payload.engine if payload else None)
     module = _stt_download_module(engine)
-    status = await asyncio.to_thread(_cancel_account_stt_download, module, engine)
+    status = await asyncio.to_thread(
+        _cancel_account_stt_download,
+        module,
+        engine,
+        payload.model if payload else None,
+        payload.download_id if payload else None,
+    )
     return JSONResponse(content = status)
 
 

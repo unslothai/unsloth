@@ -73,7 +73,6 @@ import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import {
-  isTrackingSttDownload,
   trackSttDownload,
 } from "../lib/stt-download-mirror";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -770,8 +769,11 @@ export function VoiceTab() {
         if (download.downloading) {
           // Adopt a transfer that outlived the page that started it, so it
           // still shows in the download panel.
-          if (download.model && !isTrackingSttDownload(download.model)) {
-            trackSttDownload(download.model);
+          if (download.model) {
+            trackSttDownload(download.model, {
+              ggufVariant: download.variant,
+              downloadId: download.download_id,
+            });
           }
           watchedDownloadRef.current = download.model;
           // Keep the status line fresh.
@@ -910,13 +912,16 @@ export function VoiceTab() {
   const beginSttDownload = async () => {
     setSttDownloadStarting(true);
     try {
-      await startSttDownload(
+      const download = await startSttDownload(
         sttModel,
         hfApiToken(hfToken),
         undefined,
         sttVariant,
       );
-      trackSttDownload(sttModel, { ggufVariant: sttVariant });
+      trackSttDownload(sttModel, {
+        ggufVariant: sttVariant,
+        downloadId: download.download_id,
+      });
       startedDownloadRef.current = { model: sttModel, variant: sttVariant };
       // The status effect only re-polls while it can see a download. Its last read was before this
       // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows

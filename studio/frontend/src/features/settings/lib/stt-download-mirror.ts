@@ -42,6 +42,8 @@ const trackers = new SttDownloadTrackers();
 const warmSelectedVoiceModelOnComplete = new Map<string, boolean>();
 // The quant each tracked download fetches, when its starter knew it.
 const trackedVariants = new Map<string, string | null>();
+const trackedDownloadIds = new Map<string, string | null>();
+const trackedStartedAt = new Map<string, number>();
 
 function trackerKey(model: SttModel, engine?: SttEngine): string {
   return engine && engine !== "transformers" ? `${engine}:${model}` : model;
@@ -90,6 +92,8 @@ function settle(
   warmSelectedVoiceModelOnComplete.delete(key);
   const tracked = trackedVariants.get(key);
   trackedVariants.delete(key);
+  trackedDownloadIds.delete(key);
+  trackedStartedAt.delete(key);
   // Only warm what the user is still pointed at. Selecting another model or
   // quant, or leaving local dictation, during the download means this one is
   // not wanted and loading it would undo the unload that switch performed.
@@ -113,6 +117,8 @@ async function poll(
   startedAt: number,
   engine?: SttEngine,
 ): Promise<void> {
+  const key = trackerKey(model, engine);
+  const requestedDownloadId = trackedDownloadIds.get(key);
   let status: Awaited<ReturnType<typeof fetchSttStatus>>;
   try {
     status = await fetchSttStatus(
@@ -123,11 +129,27 @@ async function poll(
     // A dropped poll is not a failed download; the next one decides.
     return;
   }
-  const key = trackerKey(model, engine);
   if (!trackers.has(key)) return;
+  if (trackedDownloadIds.get(key) !== requestedDownloadId) return;
 
   const engineStatus = sttEngineStatusFor(status, model, engine);
   const download = engineStatus?.download;
+  if (
+    requestedDownloadId &&
+    download?.download_id &&
+    requestedDownloadId !== download.download_id
+  ) {
+    const elapsed = Date.now() - (trackedStartedAt.get(key) ?? startedAt);
+    if (elapsed > START_GRACE_MS) {
+      settle(
+        model,
+        "error",
+        translate("settings.voice.dictation.sttDownloadFailed"),
+        engine,
+      );
+    }
+    return;
+  }
 
   if (download?.downloading && download.model === model) {
     updateExternalJob(jobKey(model, engine), {
@@ -151,7 +173,7 @@ async function poll(
     settle(model, "complete", undefined, engine);
     return;
   }
-  if (Date.now() - startedAt > START_GRACE_MS) {
+  if (Date.now() - (trackedStartedAt.get(key) ?? startedAt) > START_GRACE_MS) {
     settle(
       model,
       "error",
@@ -159,15 +181,6 @@ async function poll(
       engine,
     );
   }
-}
-
-/** Whether a download is already mirrored, so a poller can adopt one that
- * started before this page load without duplicating the row. */
-export function isTrackingSttDownload(
-  model: SttModel,
-  engine?: SttEngine,
-): boolean {
-  return trackers.has(trackerKey(model, engine ?? sttEngineFor(model)));
 }
 
 /**
@@ -182,24 +195,43 @@ export function trackSttDownload(
     repoId?: string;
     /** The quant this download fetches, so a quant picked meanwhile is not warmed. */
     ggufVariant?: string | null;
+    /** The backend attempt this row may cancel. */
+    downloadId?: string | null;
   } = {},
 ): void {
   const resolvedEngine = options.engine ?? sttEngineFor(model);
   const key = trackerKey(model, resolvedEngine);
-  // Starting/adopting the same transfer from another surface must not reset
-  // its visible progress or replace its poller/completion policy.
-  if (trackers.has(key)) {
+  const wasTracking = trackers.has(key);
+  const previousDownloadId = trackedDownloadIds.get(key);
+  const changedAttempt =
+    options.downloadId !== undefined &&
+    previousDownloadId !== options.downloadId;
+  if (options.ggufVariant !== undefined) {
+    trackedVariants.set(key, options.ggufVariant);
+  }
+  if (options.downloadId !== undefined) {
+    if (trackedDownloadIds.get(key) !== options.downloadId) {
+      trackedStartedAt.set(key, Date.now());
+    }
+    trackedDownloadIds.set(key, options.downloadId);
+  }
+  // Another owner of the same attempt keeps its progress and poller. A newer
+  // attempt reuses the poller but refreshes the row and cancellation identity.
+  if (wasTracking && !changedAttempt) {
     if (options.warmSelectedVoiceModelOnComplete !== false)
       warmSelectedVoiceModelOnComplete.set(key, true);
     return;
   }
-  warmSelectedVoiceModelOnComplete.set(
-    key,
-    options.warmSelectedVoiceModelOnComplete ?? true,
-  );
-  if (options.ggufVariant !== undefined) {
-    trackedVariants.set(key, options.ggufVariant);
+  if (wasTracking && !changedAttempt) {
+    if (options.warmSelectedVoiceModelOnComplete !== false)
+      warmSelectedVoiceModelOnComplete.set(key, true);
+  } else {
+    warmSelectedVoiceModelOnComplete.set(
+      key,
+      options.warmSelectedVoiceModelOnComplete ?? true,
+    );
   }
+  if (!trackedStartedAt.has(key)) trackedStartedAt.set(key, Date.now());
   startExternalJob({
     key: jobKey(model, resolvedEngine),
     repoId: options.repoId ?? getSttModelRepo(model),
@@ -207,7 +239,12 @@ export function trackSttDownload(
     expectedBytes: 0,
     cancel: async () => {
       try {
-        await cancelSttDownload(model, resolvedEngine);
+        await cancelSttDownload(
+          model,
+          resolvedEngine,
+          trackedVariants.get(key),
+          trackedDownloadIds.get(key),
+        );
       } catch (error) {
         toast.error(
           translate("settings.voice.dictation.sttCancelDownloadFailed"),
@@ -219,6 +256,7 @@ export function trackSttDownload(
       }
     },
   });
+  if (wasTracking) return;
   const startedAt = Date.now();
   const timer = window.setInterval(() => {
     void poll(model, startedAt, resolvedEngine);

@@ -694,6 +694,7 @@ class _SnapshotDownloadState:
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
+        self._download_id: Optional[str] = None
         self._repo: Optional[str] = None
         self._revision: Optional[str] = None
         self._hub_cache: Optional[Path] = None
@@ -710,6 +711,7 @@ class _SnapshotDownloadState:
             snapshot = {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
+                "download_id": self._download_id,
                 "error": self._error,
                 "cancelled": self._cancelled,
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
@@ -729,13 +731,20 @@ class _SnapshotDownloadState:
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if show_progress else None
         return snapshot
 
-    def cancel(self) -> bool:
+    def cancel(
+        self, model_id: Optional[str] = None, download_id: Optional[str] = None
+    ) -> bool:
         """Stop an in-flight download. False when none was running.
 
         Partial blobs stay cached, so a restart resumes from them.
         """
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
+                return False
+            if download_id is not None:
+                if self._download_id != download_id:
+                    return False
+            elif model_id is not None and self._model_id != model_id:
                 return False
             self._cancelled = True
             process = self._process
@@ -814,14 +823,14 @@ class _SnapshotDownloadState:
         model_id: str,
         hf_token: Optional[str] = None,
         revision: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         model_id = resolve_model_id(model_id)
         hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
                     if not self._cancelled:
-                        return
+                        return str(self._download_id)
                     raise SttModelIdError(
                         f"'{model_id}' is still cancelling; try again in a moment."
                     )
@@ -830,6 +839,7 @@ class _SnapshotDownloadState:
                     "downloading; wait for it to finish."
                 )
             self._model_id = model_id
+            self._download_id = uuid.uuid4().hex
             self._repo = resolve_model_repo(model_id)
             self._revision = None
             self._hub_cache = hub_cache
@@ -846,6 +856,7 @@ class _SnapshotDownloadState:
             )
             self._thread = thread
             thread.start()
+            return str(self._download_id)
 
     def _run(
         self,
@@ -939,16 +950,22 @@ def start_model_download(
     model: Optional[str],
     hf_token: Optional[str] = None,
     revision: Optional[str] = None,
-) -> None:
-    _download_state.start(resolve_model_id(model), hf_token, revision = revision)
+) -> str:
+    return _download_state.start(resolve_model_id(model), hf_token, revision = revision)
 
 
 def download_status() -> dict:
     return _download_state.status()
 
 
-def cancel_model_download() -> bool:
-    return _download_state.cancel()
+def cancel_model_download(
+    model: Optional[str] = None, download_id: Optional[str] = None
+) -> bool:
+    try:
+        model_id = resolve_model_id(model) if model is not None else None
+    except SttModelIdError:
+        return False
+    return _download_state.cancel(model_id, download_id)
 
 
 def _training_active() -> bool:

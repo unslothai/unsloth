@@ -462,6 +462,7 @@ class _GgmlDownloadState:
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
+        self._download_id: Optional[str] = None
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._etag: Optional[str] = None
@@ -475,6 +476,7 @@ class _GgmlDownloadState:
             snapshot = {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
+                "download_id": self._download_id,
                 "error": self._error,
                 "cancelled": self._cancelled,
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
@@ -494,13 +496,20 @@ class _GgmlDownloadState:
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot
 
-    def cancel(self) -> bool:
+    def cancel(
+        self, model_id: Optional[str] = None, download_id: Optional[str] = None
+    ) -> bool:
         """Stop an in-flight download. False when none was running.
 
         The partial blob stays cached, so a restart resumes from it.
         """
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
+                return False
+            if download_id is not None:
+                if self._download_id != download_id:
+                    return False
+            elif model_id is not None and self._model_id != model_id:
                 return False
             self._cancelled = True
             process = self._process
@@ -546,14 +555,14 @@ class _GgmlDownloadState:
         self,
         model_id: str,
         hf_token: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         model_id = resolve_ggml_model_id(model_id)
         hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
                     if not self._cancelled:
-                        return
+                        return str(self._download_id)
                     raise SttModelIdError(
                         f"'{model_id}' is still cancelling; try again in a moment."
                     )
@@ -562,6 +571,7 @@ class _GgmlDownloadState:
                     "downloading; wait for it to finish."
                 )
             self._model_id = model_id
+            self._download_id = uuid.uuid4().hex
             self._error = None
             self._total_bytes = None
             self._etag = None
@@ -576,6 +586,7 @@ class _GgmlDownloadState:
             )
             self._thread = thread
             thread.start()
+            return str(self._download_id)
 
     def _run(
         self,
@@ -686,16 +697,22 @@ class _GgmlDownloadState:
 _download_state = _GgmlDownloadState()
 
 
-def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> None:
-    _download_state.start(resolve_ggml_model_id(model), hf_token)
+def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> str:
+    return _download_state.start(resolve_ggml_model_id(model), hf_token)
 
 
 def download_status() -> dict:
     return _download_state.status()
 
 
-def cancel_model_download() -> bool:
-    return _download_state.cancel()
+def cancel_model_download(
+    model: Optional[str] = None, download_id: Optional[str] = None
+) -> bool:
+    try:
+        model_id = resolve_ggml_model_id(model) if model is not None else None
+    except SttModelIdError:
+        return False
+    return _download_state.cancel(model_id, download_id)
 
 
 def _pcm_to_wav_bytes(decoded_audio) -> bytes:

@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.inference import stt_download_worker as worker_mod
+from core.inference import stt_audiocpp_sidecar as audiocpp_mod
 from core.inference import stt_ggml_sidecar as ggml_mod
 from core.inference import stt_mtmd_sidecar as mtmd_mod
 from core.inference import stt_sidecar as snapshot_mod
@@ -150,6 +151,123 @@ def test_restarting_a_cancelling_download_is_not_a_silent_no_op(state_factory, m
     finally:
         release.set()
         state._thread.join(timeout = 5)
+
+
+@pytest.mark.parametrize(
+    "state_factory, active_model, stale_model",
+    [
+        (snapshot_mod._SnapshotDownloadState, "unsloth/whisper-small", "unsloth/whisper-tiny"),
+        (ggml_mod._GgmlDownloadState, "small", "tiny"),
+        (mtmd_mod._MtmdDownloadState, "qwen3-asr-1.7b", "qwen3-asr-0.6b"),
+        (
+            audiocpp_mod._AudioCppDownloadState,
+            "homebrew/repo:new-quant",
+            "homebrew/repo:old-quant",
+        ),
+        (
+            audiocpp_mod._AudioCppDownloadState,
+            "audiocpp-moonshine-small",
+            "audiocpp-moonshine-tiny",
+        ),
+    ],
+)
+def test_a_stale_cancel_cannot_stop_a_newer_download(
+    state_factory, active_model, stale_model, monkeypatch
+):
+    state = state_factory()
+    release = threading.Event()
+    process = SimpleNamespace(poll = lambda: None)
+    stopped = []
+    monkeypatch.setattr(worker_mod, "terminate_download", stopped.append)
+    state._model_id = active_model
+    state._download_id = "new-download"
+    state._process = process
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+    try:
+        assert state.status()["download_id"] == "new-download"
+        assert state.cancel(active_model, "old-download") is False
+        assert state.cancel(stale_model) is False
+        assert state._cancelled is False
+        assert stopped == []
+        assert state.cancel(active_model, "new-download") is True
+        assert state._cancelled is True
+        assert stopped == [process]
+    finally:
+        release.set()
+        state._thread.join(timeout = 5)
+
+
+def test_the_download_identity_is_authoritative_for_an_audio_variant(monkeypatch):
+    state = audiocpp_mod._AudioCppDownloadState()
+    release = threading.Event()
+    process = SimpleNamespace(poll = lambda: None)
+    stopped = []
+    monkeypatch.setattr(worker_mod, "terminate_download", stopped.append)
+    state._model_id = "homebrew/repo:new-quant"
+    state._download_id = "new-download"
+    state._process = process
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+    try:
+        assert state.status()["variant"] == "new-quant"
+        assert state.cancel("homebrew/repo", "new-download") is True
+        assert stopped == [process]
+    finally:
+        release.set()
+        state._thread.join(timeout = 5)
+
+
+def test_a_bare_audio_row_remains_a_legacy_cancel_target(monkeypatch):
+    state = audiocpp_mod._AudioCppDownloadState()
+    release = threading.Event()
+    process = SimpleNamespace(poll = lambda: None)
+    stopped = []
+    monkeypatch.setattr(worker_mod, "terminate_download", stopped.append)
+    state._model_id = "homebrew/repo:new-quant"
+    state._process = process
+    state._thread = threading.Thread(target = release.wait, daemon = True)
+    state._thread.start()
+    try:
+        assert state.cancel("homebrew/repo") is True
+        assert stopped == [process]
+    finally:
+        release.set()
+        state._thread.join(timeout = 5)
+
+
+def test_cancel_route_forwards_the_request_identity():
+    from routes import inference
+
+    cancelled = []
+    module = SimpleNamespace(
+        cancel_model_download = lambda model, download_id: cancelled.append(
+            (model, download_id)
+        )
+        or False,
+        download_status = lambda: {"downloading": True, "model": "new"},
+    )
+
+    result = inference._cancel_account_stt_download(
+        module, "transformers", "old", "old-download"
+    )
+
+    assert cancelled == [("old", "old-download")]
+    assert result["cancelled"] is False
+
+
+def test_start_account_download_returns_the_attempt_identity(monkeypatch):
+    from routes import inference
+
+    monkeypatch.setattr(inference.account_access, "account_scope", lambda: None)
+    module = SimpleNamespace(start_model_download = lambda *args: "attempt-a")
+
+    assert (
+        inference._start_account_stt_download(
+            module, "transformers", "small", None, "a" * 40
+        )
+        == "attempt-a"
+    )
 
 
 def test_a_worker_that_ignores_sigterm_is_killed():

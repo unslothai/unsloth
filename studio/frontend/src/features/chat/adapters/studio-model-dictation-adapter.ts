@@ -239,6 +239,10 @@ export async function transcribeAudioBlob(
 export interface SttDownloadStatus {
   downloading: boolean;
   model: string | null;
+  /** opaque identity of this download attempt */
+  download_id?: string | null;
+  /** active audiocpp quant; absent for other engines */
+  variant?: string | null;
   error: string | null;
   /** whether the user stopped the last download */
   cancelled?: boolean;
@@ -408,7 +412,7 @@ export async function startSttDownload(
   hfToken?: string,
   engine?: SttEngine,
   ggufVariant?: string | null,
-): Promise<void> {
+): Promise<SttDownloadStatus> {
   const resolvedEngine = engine ?? sttEngineFor(model);
   const response = await authFetch("/api/inference/audio/stt/download", {
     method: "POST",
@@ -428,6 +432,7 @@ export async function startSttDownload(
     } | null;
     throw new Error(body?.detail ?? `HTTP ${response.status}`);
   }
+  return (await response.json()) as SttDownloadStatus;
 }
 
 /** Stop an in-flight model download. Partial files stay cached, so starting the same download
@@ -435,17 +440,28 @@ export async function startSttDownload(
 export async function cancelSttDownload(
   model: string,
   engine?: SttEngine,
+  ggufVariant?: string | null,
+  downloadId?: string | null,
 ): Promise<void> {
+  const resolvedEngine = engine ?? sttEngineFor(model);
   const response = await authFetch("/api/inference/audio/stt/download/cancel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, engine: engine ?? sttEngineFor(model) }),
+    body: JSON.stringify({
+      model,
+      engine: resolvedEngine,
+      ...sttVariantBody(resolvedEngine, ggufVariant),
+      ...(downloadId ? { download_id: downloadId } : {}),
+    }),
   });
+  const body = (await response.json().catch(() => null)) as
+    | (Partial<SttDownloadStatus> & { detail?: string })
+    | null;
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
     throw new Error(body?.detail ?? `HTTP ${response.status}`);
+  }
+  if (body?.downloading && body.cancelled === false) {
+    throw new Error("The download changed before cancellation completed.");
   }
 }
 

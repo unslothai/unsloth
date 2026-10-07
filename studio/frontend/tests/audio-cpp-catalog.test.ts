@@ -516,7 +516,11 @@ test("an Audio-page ASR pick sends its quant; other engines and saved keys send 
     adapter,
     /return engine === "audiocpp" && ggufVariant\s*\?[\s\S]*\{ gguf_variant: ggufVariant \}\s*:\s*\{\};/,
   );
-  assert.equal(adapter.match(/\.\.\.sttVariantBody\(resolvedEngine, ggufVariant\)/g)?.length, 2);
+  assert.equal(adapter.match(/\.\.\.sttVariantBody\(resolvedEngine, ggufVariant\)/g)?.length, 3);
+  assert.match(
+    adapter,
+    /body\?\.downloading && body\.cancelled === false[\s\S]*download changed before cancellation completed/,
+  );
   const page = readAudioWorkspaceSource();
   assert.match(page, /sttGgufVariants\.current\.set\(id\.toLowerCase\(\), meta\.ggufVariant\)/);
   assert.match(
@@ -527,6 +531,10 @@ test("an Audio-page ASR pick sends its quant; other engines and saved keys send 
     page.match(/controller\.signal,\s*undefined,\s*ggufVariant,/g)?.length,
     2,
   );
+  assert.match(
+    page,
+    /trackSttDownload\(sidecarKey, \{[\s\S]*ggufVariant,[\s\S]*downloadId: download\.download_id,[\s\S]*\}\)/,
+  );
   // Settings > Voice sends its saved quant only for package folders.
   const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
   assert.match(
@@ -534,6 +542,10 @@ test("an Audio-page ASR pick sends its quant; other engines and saved keys send 
     /await startSttDownload\(\s*sttModel,\s*hfApiToken\(hfToken\),\s*undefined,\s*sttVariant,\s*\);/,
   );
   assert.match(voiceTab, /const sttVariant = sttModelVariant\(sttModel, sttGgufVariant\);/);
+  assert.match(
+    voiceTab,
+    /trackSttDownload\(download\.model, \{[\s\S]*ggufVariant: download\.variant,[\s\S]*downloadId: download\.download_id/,
+  );
 });
 
 const GIGAAM = `${AUDIO_CPP_REPO}/GigaAM-ASR-GGUF`;
@@ -613,7 +625,10 @@ test("every Settings dictation path carries the saved quant", () => {
     mirror,
     /\(tracked === undefined \? variant === null : tracked === variant\)/,
   );
-  assert.match(voiceTab, /trackSttDownload\(sttModel, \{ ggufVariant: sttVariant \}\)/);
+  assert.match(
+    voiceTab,
+    /trackSttDownload\(sttModel, \{\s*ggufVariant: sttVariant,\s*downloadId: download\.download_id,/,
+  );
   // The tab's own watcher loads a landed download only when it is still the pinned quant.
   assert.match(voiceTab, /startedDownloadRef\.current = \{ model: sttModel, variant: sttVariant \};/);
   assert.match(
@@ -621,7 +636,10 @@ test("every Settings dictation path carries the saved quant", () => {
     /started\?\.model === finished\s*\?\s*started\.variant === sttVariant\s*:\s*sttVariant === null;/,
   );
   assert.match(voiceTab, /!loaded &&\s*landedPinned\s*\)/);
-  assert.match(prompt, /trackSttDownload\(request\.model, \{\s*ggufVariant: request\.ggufVariant \?\? null,\s*\}\)/);
+  assert.match(
+    prompt,
+    /trackSttDownload\(request\.model, \{\s*ggufVariant: request\.ggufVariant \?\? null,\s*downloadId: download\.download_id,/,
+  );
   assert.match(mirror, /sttModelVariant\(model, sttGgufVariant\)/);
   assert.match(mirror, /outcome === "complete" && isAudioCppFolderId\(model\)[\s\S]*invalidateGgufVariantsCache\(model\)/);
 
