@@ -563,3 +563,21 @@ def test_the_image_gguf_prefetch_opts_in(monkeypatch):
     )
     assert calls and calls[0][0] == "qwen-image-2.1-Q4_K_M.gguf"
     assert calls[0][1].get("gguf_header_delta") is True
+
+
+@pytest.mark.parametrize(
+    "task, expected",
+    [
+        ("text-to-image", True),
+        ("text-to-video", True),
+        ("image-diffusion-unsupported", True),
+        ("text-generation", False),
+        ("text-to-speech", False),
+        (None, False),
+    ],
+)
+def test_media_gate_follows_the_catalog_task(tmp_path, monkeypatch, task, expected):
+    from hub.services.models import catalog_classification
+
+    monkeypatch.setattr(catalog_classification, "_gguf_file_task", lambda path, hints: task)
+    assert delta._is_media_gguf(tmp_path / "x.gguf", "u/m", "x.gguf") is expected

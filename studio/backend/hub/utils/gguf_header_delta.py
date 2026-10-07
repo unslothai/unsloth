@@ -46,7 +46,9 @@ _COPY_CHUNK = 16 << 20
 _DISK_MARGIN = 256 << 20
 _METADATA_TIMEOUT = 10.0
 _RANGE_TIMEOUT = 60.0
-_MEDIA_TASKS = frozenset({"text-to-image", "text-to-video"})
+# The catalog's image / video GGUF tasks. "image-diffusion-unsupported" is still an image / video model, one this install
+# cannot run yet (a diffusers or sd.cpp too old for the family), so it is rebuilt like the rest.
+_MEDIA_TASKS = frozenset({"text-to-image", "text-to-video", "image-diffusion-unsupported"})
 
 _SCALAR_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 _STRING, _ARRAY, _UINT32 = 8, 9, 4
