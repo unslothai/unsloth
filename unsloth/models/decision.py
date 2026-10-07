@@ -31,6 +31,7 @@ from ._utils import (
     is_bfloat16_supported,
 )
 from .loader_utils import is_distributed
+from ._decision_fast import compiled_encoder, pad_length
 
 TRAIN_MAX_LEN, TRAIN_HEAD_MAX_LEN = 1024, 256
 HOLDOUT_MAX = 400
@@ -209,6 +210,14 @@ def _amp_dtype(device):
     return torch.bfloat16 if device.type == "xpu" else None
 
 
+def _no_cudnn_attention():
+    # cuDNN SDPA rebuilds its bf16 plan for every new sequence length, about 100x slower steps on a B200.
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+    return sdpa_kernel(
+        [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+    )
+
+
 def _gradient_checkpointing(model, use_gradient_checkpointing) -> None:
     device = next(model.parameters()).device
     # Unsloth's offloaded checkpointing needs an accelerator, and its re-entrant backward breaks DDP (#3713).
@@ -225,6 +234,45 @@ def _gradient_checkpointing(model, use_gradient_checkpointing) -> None:
             model.encoder.enable_input_require_grads()
     else:
         model.encoder.gradient_checkpointing_disable()
+
+
+def _lean_lora_forward(self, x, *args, **kwargs):
+    adapter = self._unsloth_adapter
+    if (
+        self.disable_adapters
+        or self.merged
+        or args
+        or kwargs
+        or (
+            not torch.is_autocast_enabled(x.device.type)
+            and x.dtype != self.lora_A[adapter].weight.dtype
+        )
+    ):
+        return self._unsloth_peft_forward(x, *args, **kwargs)
+    # PEFT's maths without its per-call checks, its round trip of x through the fp32 adapter
+    # dtype, and the multiply when scaling is 1.
+    lora = self.lora_B[adapter](self.lora_A[adapter](x))
+    scaling = self.scaling[adapter]
+    return self.base_layer(x) + (lora if scaling == 1 else lora * scaling)
+
+
+def _lean_lora(encoder) -> None:
+    # Plain LoRA (one adapter, no dropout, DoRA or other variant) skips PEFT's per-call checks and casts.
+    from peft.tuners.lora.layer import Linear
+
+    # Unsloth's compiler (a FastModel load earlier in this process) already gave PEFT a compiled forward.
+    if Linear.forward.__name__ == "unsloth_forward":
+        return
+    for module in encoder.modules():
+        if type(module) is not Linear or len(module.lora_A) != 1 or module.lora_variant:
+            continue
+        adapter = next(iter(module.lora_A))
+        if not isinstance(module.lora_dropout[adapter], torch.nn.Identity):
+            continue
+        # Bound methods, so the deepcopy that merges for saving rebinds them to the copy.
+        module._unsloth_adapter = adapter
+        module._unsloth_peft_forward = module.forward
+        module.forward = types.MethodType(_lean_lora_forward, module)
 
 
 def _parsed(value):
@@ -1027,6 +1075,14 @@ class DecisionTrainer(Trainer):
                 kwargs["data_collator"] = DecisionDataCollator(pad_token_id)
         self.head_learning_rate = head_learning_rate
         super().__init__(model = model, args = args, **kwargs)
+        backward = self.accelerator.backward
+
+        def _backward(loss, **backward_kwargs):
+            # Checkpointed layers rerun their forward here, so they need the forward's attention.
+            with _no_cudnn_attention():
+                return backward(loss, **backward_kwargs)
+
+        self.accelerator.backward = _backward
 
     @contextlib.contextmanager
     def _dataset_field_order(self):
@@ -1048,6 +1104,19 @@ class DecisionTrainer(Trainer):
         with self._dataset_field_order():
             return super().predict(*args, **kwargs)
 
+    def train(self, *args, **kwargs):
+        forwards = self.args.max_steps * self.args.gradient_accumulation_steps
+        if forwards <= 0 and self.train_dataset is not None:
+            batches = math.ceil(len(self.train_dataset) / self.args.train_batch_size)
+            forwards = int(batches * self.args.num_train_epochs)
+        amp_dtype = torch.bfloat16 if self.args.bf16 else torch.float16 if self.args.fp16 else None
+        try:
+            max_length = max(len(item["input_ids"]) for item in self.train_dataset)
+        except (TypeError, KeyError, ValueError):
+            max_length = None
+        with compiled_encoder(self.model, forwards, amp_dtype, max_length):
+            return super().train(*args, **kwargs)
+
     def _get_train_sampler(self, train_dataset = None):
         dataset = self.train_dataset if train_dataset is None else train_dataset
         # With one micro-batch per step, length grouping would make each step one question type.
@@ -1066,7 +1135,9 @@ class DecisionTrainer(Trainer):
     ):
         target = inputs.pop("target")
         ordinal = inputs.pop("ordinal", None)
-        logits, _ = model(**inputs)
+        inputs = pad_length(model, inputs)
+        with _no_cudnn_attention():
+            logits, _ = model(**inputs)
         mask = inputs["marker_mask"]
         loss = _decision_loss(
             logits,
@@ -1079,7 +1150,7 @@ class DecisionTrainer(Trainer):
         )
         if self._reference_head is not None:
             unwrapped = self.accelerator.unwrap_model(model)
-            with torch.no_grad(), unwrapped.encoder.disable_adapter():
+            with torch.no_grad(), unwrapped.encoder.disable_adapter(), _no_cudnn_attention():
                 reference, _ = unwrapped(**inputs, head = self._reference_head)
             log_ref = torch.log_softmax(reference.float().masked_fill(~mask, -1e4), -1)
             log_p = torch.log_softmax(logits.float().masked_fill(~mask, -1e4), -1)
@@ -1126,15 +1197,20 @@ def _logits(
     collate = DecisionDataCollator(pad_token_id)
     was_training = model.training
     model.eval()
-    out = []
+    # Similar lengths share a batch, so little is padded; logits go back in the callers' order.
+    order = sorted(range(len(items)), key = lambda i: len(items[i]["input_ids"]))
+    out = [None] * len(items)
     for start in range(0, len(items), batch_size):
-        chunk = items[start : start + batch_size]
+        indices = order[start : start + batch_size]
+        chunk = [items[i] for i in indices]
         batch = collate(chunk)
         batch.pop("target")
-        with torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None):
+        autocast = torch.autocast(device.type, dtype = amp_dtype, enabled = amp_dtype is not None)
+        with autocast, _no_cudnn_attention():
             logits, _ = model(**{k: v.to(device) for k, v in batch.items()})
         logits = logits.float().cpu()
-        out.extend(logits[row, : len(item["markers"])] for row, item in enumerate(chunk))
+        for row, i in enumerate(indices):
+            out[i] = logits[row, : len(items[i]["markers"])]
     model.train(was_training)
     return out
 
@@ -1498,6 +1574,7 @@ class FastDecisionModel:
                 **kwargs,
             ),
         )
+        _lean_lora(model.encoder)
         _gradient_checkpointing(model, use_gradient_checkpointing)
         return model
 

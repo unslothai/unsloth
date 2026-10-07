@@ -78,6 +78,7 @@ export async function showRunResult({
       const blob = await fetchAudioBlob(clip.url);
       setFallbackClip({
         url: URL.createObjectURL(blob),
+        blob,
         prompt: text,
         model: response.model,
         saved: true,
