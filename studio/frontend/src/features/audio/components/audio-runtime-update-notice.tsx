@@ -60,9 +60,8 @@ export function AudioRuntimeUpdateNotice({
         result.message?.trim() || `audio.cpp updated to ${update.expected}.`,
       );
     } else {
-      toast.error(
-        `audio.cpp update failed: ${result.error ?? "unknown error"}`,
-      );
+      // The shared job may have failed in its llama.cpp or whisper.cpp phase.
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }
 

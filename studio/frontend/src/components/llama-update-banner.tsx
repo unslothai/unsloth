@@ -175,9 +175,8 @@ export function LlamaUpdateBanner({
         }),
       );
     } else if (result) {
-      toast.error(
-        `${component} update failed: ${result.error ?? "unknown error"}`,
-      );
+      // The failing phase need not be the component the card names.
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }
 
