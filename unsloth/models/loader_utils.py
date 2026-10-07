@@ -3653,8 +3653,6 @@ LOAD_SCOPED_ENV_VARS = ("UNSLOTH_HIGH_PRECISION_LAYERNORM",)
 
 
 def _restore_load_scoped_env(fn):
-    """Restore LOAD_SCOPED_ENV_VARS to their pre-load values when the load returns or raises."""
-
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
         saved = {name: os.environ.get(name) for name in LOAD_SCOPED_ENV_VARS}
