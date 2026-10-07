@@ -826,12 +826,14 @@ def _is_kwargs_mixer(module) -> bool:
     return "implementation" in _hub_closure(globs.get("causal_conv1d_fn"))
 
 
-def _kwargs_kernels_available(modules) -> Optional[str]:
+def _kwargs_kernels_available(modules, recurrent_ids = ()) -> Optional[str]:
     for module in modules:
         globs = getattr(inspect.getmodule(type(module)), "__dict__", {})
         kernels = {n: globs[n] for n in _KWARGS_KERNELS if callable(globs.get(n))}
         if "causal_conv1d_fn" not in kernels:
             return f"{type(module).__name__}: no module-level conv kernel"
+        if id(module) in recurrent_ids and len(kernels) < 2:
+            return f"{type(module).__name__}: no module-level recurrent kernel"
         for name, fn in kernels.items():
             closure = _hub_closure(fn)
             # The hub wrapper drops kwargs its bound implementation does not name, silently.
@@ -855,11 +857,12 @@ def _install_kwargs_probes(namespace) -> None:
         def probe(
             *args,
             _fn = fn,
+            _name = name,
             _param = param,
             **kwargs,
         ):
             if _KWARGS_TRACE[0] is not None:
-                _KWARGS_TRACE[0].append(kwargs.get(_param) is not None)
+                _KWARGS_TRACE[0].append((_name, kwargs.get(_param) is not None))
             return _fn(*args, **kwargs)
 
         probe._unsloth_varlen_probe_of = fn
@@ -883,8 +886,8 @@ def _wrap_kwargs_mixer_forward(module) -> None:
             out = forward_orig(*args, **kwargs)
         finally:
             trace, _KWARGS_TRACE[0] = _KWARGS_TRACE[0], outer
-        # Every boundary-capable kernel this mixer ran must have received the boundary.
-        if trace and all(trace):
+        # Every boundary-capable kernel this mixer ran, a recurrent one included, must have received it.
+        if all(ok for _, ok in trace) and any(n != "causal_conv1d_fn" for n, _ in trace):
             module._unsloth_varlen_kwargs_hit = True
         return out
 
@@ -964,7 +967,7 @@ def _wrap_short_conv_forward(module) -> None:
         finally:
             trace, _KWARGS_TRACE[0] = _KWARGS_TRACE[0], outer
         # A probed (hub) conv kernel must itself have received seq_idx; the torch fallback drops it.
-        if kwargs.get("seq_idx") is not None and all(trace):
+        if kwargs.get("seq_idx") is not None and all(ok for _, ok in trace):
             module._unsloth_varlen_conv_hit = True
         return out
 
@@ -1095,7 +1098,9 @@ def patch_hybrid_linear_attention_varlen(model) -> bool:
 
     hub_short_convs = [m for m in short_conv_modules if _uses_hub_conv(m)]
     if kwargs_modules or hub_short_convs:
-        reason = _kwargs_kernels_available(kwargs_modules + hub_short_convs)
+        reason = _kwargs_kernels_available(
+            kwargs_modules + hub_short_convs, recurrent_ids = {id(m) for m in kwargs_modules}
+        )
         if reason is not None:
             return _hybrid_reject(reason)
     if gated_delta_modules:

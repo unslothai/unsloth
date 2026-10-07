@@ -2575,6 +2575,20 @@ def test_patch_varlen_kwargs_mixer_rejects_torch_fallback(monkeypatch):
         sys.modules.pop(name, None)
 
 
+def test_patch_varlen_kwargs_mixer_rejects_missing_recurrent_kernel(monkeypatch):
+    # A conv-only kernel table would let the first-forward handshake pass on the conv probe alone.
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    import sys
+
+    name = "fake_modeling_kwargs_gdn_noscan"
+    try:
+        model, _ = _kwargs_gdn_model(name, accelerated = True)
+        del sys.modules[name].torch_chunk_gated_delta_rule
+        assert patch_hybrid_linear_attention_varlen(model) is False
+    finally:
+        sys.modules.pop(name, None)
+
+
 def test_packed_mask_builder_gets_per_sequence_positions():
     seen = []
 
