@@ -168,6 +168,31 @@ test("terminal recovery reads cache writes from either provider's usage shape", 
   );
 });
 
+test("terminal recovery prices a tool loop's context, not its summed completions", () => {
+  const metadata = recoveredGenerationFinalMetadata({
+    current: { generationSettled: true },
+    run: {
+      id: "run-tools",
+      requestPayload: { model: "local/model" },
+      createdAt: 100,
+      startedAt: 120,
+      completedAt: 1120,
+    },
+    usage: {
+      prompt_tokens: 140,
+      completion_tokens: 40,
+      total_tokens: 180,
+      context_tokens: 150,
+    },
+    timings: {},
+    firstChunkAt: 220,
+    totalChunks: 4,
+  });
+  const usage = metadata.contextUsage as { totalTokens: number; completionTokens: number };
+  assert.equal(usage.totalTokens, 150);
+  assert.equal(usage.completionTokens, 40);
+});
+
 test("terminal recovery restores final local usage and timing metadata", () => {
   const metadata = recoveredGenerationFinalMetadata({
     current: { generationSettled: true },
