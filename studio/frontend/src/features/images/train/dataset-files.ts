@@ -228,6 +228,19 @@ export function existingStemClash(files: File[], existing: string[]): DatasetCol
   return null;
 }
 
+export function existingDatasetName(name: string, datasets: { name: string }[]): string | null {
+  const folded = name.trim().toLowerCase();
+  return datasets.find((d) => d.name.toLowerCase() === folded)?.name ?? null;
+}
+
+export function freeDatasetName(datasets: { name: string }[]): string {
+  let name = "my-images";
+  for (let i = 2; existingDatasetName(name, datasets); i += 1) {
+    name = `my-images-${i}`;
+  }
+  return name;
+}
+
 // readEntries yields at most 100 entries per call and ends with an empty batch.
 function readAllEntries(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> {
   return new Promise((resolve, reject) => {

@@ -84,8 +84,10 @@ import {
   DATASET_FILE_ACCEPT,
   DATASET_IMAGE_EXTS,
   chunkDatasetUpload,
+  existingDatasetName,
   existingStemClash,
   filesFromDataTransfer,
+  freeDatasetName,
   metadataKeyedOnSubfolders,
   oversizedChunk,
   selectDatasetFiles,
@@ -761,6 +763,8 @@ export function DiffusionTrainPanel({
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
   // A deleted dataset leaves a name that no longer resolves; fall back to the upload form.
   const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
+  const takenName = uploadMode ? existingDatasetName(uploadName, info?.datasets ?? []) : null;
+  const takenNameMessage = `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;
   // Trainable items in the picked dataset, images and clips alike. caption_count is the folder
   // total over both kinds, so every ratio must be against this and not image_count.
   const selectedItemCount = selectedDataset ? datasetItemCount(selectedDataset) : 0;
@@ -1009,6 +1013,10 @@ export function DiffusionTrainPanel({
       if (!event.dataTransfer.types.includes("Files")) return;
       event.preventDefault();
       setDropActive(false);
+      if (takenName) {
+        toast.error(takenNameMessage);
+        return;
+      }
       if (uploadInFlight.current) {
         toast.error("An upload is already running. Wait for it to finish, then drop again.");
         return;
@@ -1036,7 +1044,7 @@ export function DiffusionTrainPanel({
       }
       await uploadTo(dropTarget, dropped);
     },
-    [dropTarget, uploadTo],
+    [dropTarget, uploadTo, takenName, takenNameMessage],
   );
 
   const onStart = useCallback(async () => {
@@ -1639,6 +1647,9 @@ export function DiffusionTrainPanel({
                     if (ex) void importExample(ex);
                     return;  // the controlled value stays put while the import runs
                   }
+                  if (v === UPLOAD_DATASET && existingDatasetName(uploadName, info?.datasets ?? [])) {
+                    setUploadName(freeDatasetName(info?.datasets ?? []));
+                  }
                   setDataset(v);
                   setGridOpen(false);
                 }}
@@ -1760,13 +1771,13 @@ export function DiffusionTrainPanel({
                       }
                       fileInputRef.current?.click();
                     }}
-                    disabled={uploading}
+                    disabled={uploading || takenName !== null}
                   >
                     <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Upload"}
                   </Button>
                   <FolderPickButton
-                    disabled={uploading}
+                    disabled={uploading || takenName !== null}
                     onPick={() => {
                       if (!uploadName.trim()) {
                         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
@@ -1776,6 +1787,9 @@ export function DiffusionTrainPanel({
                     }}
                   />
                 </div>
+                {takenName && (
+                  <p className="text-ui-11 leading-snug text-destructive">{takenNameMessage}</p>
+                )}
                 <p className="text-ui-11 leading-snug text-muted-foreground">
                   {isTauri ? "Pick files or a folder." : "Pick files or a folder, or drop them here."}{" "}
                   Images, or clips for the video families. A caption file beside one (cat.png and
