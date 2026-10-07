@@ -317,10 +317,12 @@ def adopt_int4_packed_linears(
             leftover.append(name)
             continue
         scheme = _scheme_for_module(ct_config, name, module)
+        group = int(scheme.weights.group_size or 0) or module.in_features
         if (
             int(scheme.weights.num_bits) not in (2, 4, 8)
             or shapes["weight_packed"][0][0] != module.out_features
             or "weight_scale" not in shapes
+            or shapes["weight_scale"][0][-1] != -(-module.in_features // group)
         ):
             leftover.append(name)
             continue
