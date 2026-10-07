@@ -87,7 +87,7 @@ _BUILTINS = set(dir(builtins)) | {
 @dataclass
 class Binding:
     kind: str  # 'import' | 'importfrom' | 'def' | 'class' | 'other'
-    target: str | None = None  # canonical import target id, else None
+    target: str | None = None
 
 
 @dataclass
@@ -126,8 +126,8 @@ class _Builder(ast.NodeVisitor):
 
     def __init__(self):
         self.module = Scope("module", "<module>", None)
-        self.uses: list[tuple[Scope, str, int]] = []  # hard loads
-        # annotations: count as "used" but never as "unresolved" (forward refs)
+        self.uses: list[tuple[Scope, str, int]] = []
+        # Annotations count as used but never unresolved (forward refs).
         self.soft_uses: list[tuple[Scope, str, int]] = []
 
     # `Optional["Dict[str, 'T']"]` is two deep; nothing real goes further.
@@ -149,8 +149,7 @@ class _Builder(ast.NodeVisitor):
         """
         if node is None:
             return
-        # Literal[...] holds values, not type names. Skipping its args is what keeps this from crediting an
-        # unrelated import, the one direction that loses a real finding.
+        # Literal[...] holds values, not type names; crediting them would hide a real finding.
         if isinstance(node, ast.Subscript) and _is_literal_ref(node.value):
             self._visit_annotation(node.value, scope, _depth, _lineno)
             return
@@ -160,7 +159,7 @@ class _Builder(ast.NodeVisitor):
             try:
                 inner = ast.parse(node.value.strip(), mode = "eval").body
             except (SyntaxError, ValueError):
-                return  # Prose, as in Annotated[int, "docs"]. Nothing to credit.
+                return
             self._visit_annotation(inner, scope, _depth + 1, _lineno or node.lineno)
             return
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
@@ -210,14 +209,13 @@ class _Builder(ast.NodeVisitor):
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             self._bind_name(scope, node.name, Binding("def"))
-            # decorators / defaults evaluate in the ENCLOSING scope
+            # Decorators and defaults evaluate in the enclosing scope.
             for d in node.decorator_list:
                 self._visit_expr(d, scope)
             self._visit_arg_defaults(node.args, scope)
             child = Scope("function", f"{scope.qualname}.{node.name}", scope)
             self._bind_type_params(node, child)
             self._bind_args(node.args, child)
-            # arg + return annotations: soft uses
             for a in self._all_args(node.args):
                 self._visit_annotation(a.annotation, child)
             self._visit_annotation(getattr(node, "returns", None), child)
@@ -243,7 +241,7 @@ class _Builder(ast.NodeVisitor):
                     self._visit_expr(case.guard, scope)
                 self._visit_body(case.body, scope)
             return
-        if isinstance(node, getattr(ast, "TryStar", ())):  # py3.11 except*
+        if isinstance(node, getattr(ast, "TryStar", ())):
             self._visit_body(node.body, scope)
             for h in node.handlers:
                 if h.type is not None:
@@ -254,7 +252,7 @@ class _Builder(ast.NodeVisitor):
             self._visit_body(node.orelse, scope)
             self._visit_body(node.finalbody, scope)
             return
-        if isinstance(node, getattr(ast, "TypeAlias", ())):  # py3.12 `type X = ...`
+        if isinstance(node, getattr(ast, "TypeAlias", ())):
             if isinstance(node.name, ast.Name):
                 self._bind_name(scope, node.name.id, Binding("other"))
             self._visit_annotation(node.value, scope)
@@ -268,12 +266,10 @@ class _Builder(ast.NodeVisitor):
                 self._visit_annotation(node.annotation, scope)
             for t in targets:
                 self._bind_targets(scope, t)
-                # AugAssign target is also a load
                 if isinstance(node, ast.AugAssign):
                     self._record_loads(t, scope)
                 else:
-                    # A subscript or attribute target LOADS everything but the outermost
-                    # binding: `overrides[dependency] = fn` reads both names.
+                    # `overrides[dependency] = fn` loads both names.
                     if not isinstance(t, ast.Name):
                         self._record_loads(t, scope)
             return
@@ -386,7 +382,7 @@ class _Builder(ast.NodeVisitor):
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
             child = Scope("comp", f"{scope.qualname}.<comp>", scope)
             for i, gen in enumerate(node.generators):
-                # first iterable evaluates in the enclosing scope
+                # First iterable evaluates in the enclosing scope.
                 self._visit_expr(gen.iter, scope if i == 0 else child)
                 self._bind_targets(child, gen.target)
                 for cond in gen.ifs:
@@ -410,9 +406,6 @@ class _Builder(ast.NodeVisitor):
 
     def run(self, tree: ast.Module) -> None:
         self._visit_body(tree.body, self.module)
-
-
-# ---------------------------------------------------------------- resolution
 
 
 def _any_star(scope: Scope) -> bool:
@@ -471,14 +464,11 @@ def _legb_chain(scope: Scope) -> list[Scope]:
     chain = [scope]
     p = scope.parent
     while p is not None:
-        if p.kind != "class" or p.parent is None:  # skip class scopes, keep module
+        if p.kind != "class" or p.parent is None:
             if p.kind != "class":
                 chain.append(p)
         p = p.parent
     return chain
-
-
-# ---------------------------------------------------------------- analysis
 
 
 def _analyze(src: str):
@@ -496,7 +486,6 @@ def _analyze(src: str):
             tids = {bd.target for bd in binds if bd.target}
             targets_by_scope.setdefault(scope.qualname, set()).update(tids)
             target_by_use.setdefault((scope.qualname, name), set()).update(tids)
-    # soft uses (annotations): contribute to "used" only, never "unresolved"
     for scope, name, _ln in b.soft_uses:
         status, binds = _resolve(scope, name)
         if status == "import":
@@ -523,7 +512,6 @@ def _analyze(src: str):
             ):
                 ambiguous.setdefault(scope.qualname, set()).add(n)
 
-    # scope tree isn't stored; approximate with module only.
     walk_scopes(module)
     return {
         "unresolved": unresolved,
@@ -582,7 +570,6 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
         after_module_targets |= tids
     added_module_targets = after_module_targets - before_module_targets
 
-    # 1. UNRESOLVED-NEW
     for scope, names in b["unresolved"].items():
         new = names - a["unresolved"].get(scope, set())
         for n in sorted(new):
@@ -594,22 +581,14 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 )
             )
 
-    # 2. HOISTED-IMPORT-UNUSED (core botched-hoist / wrong-rename signal)
-    #    A module-level import in AFTER that NO load resolves to, that was either newly added by this change OR
-    #    actually used before. Excludes relocation and stable re-exports.
+    # Module-level import no load resolves to, that is new or was used before.
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
-            continue  # resolved -> fine
-        # `from __future__ import ...` is a compiler directive, not a runtime binding: the name is
-        # never loaded, so it can never "resolve" to a use. Skip it so a legitimately-added future
-        # import (e.g. `annotations` for lazy PEP 604 on py3.9) is not flagged.
+            continue
+        # __future__ imports are compiler directives and never loaded.
         if all(t.startswith("from:__future__:") for t in tids):
             continue
-        # A name listed in __all__ in a package __init__ is an intentional public re-export: it is loaded by importers,
-        # not by this module, so "no load resolves to it here" is expected.
-        # Scoped to __init__.py deliberately: applied to every module defining __all__ it exempts 224 names across 27
-        # non-package modules and disables rename-clash detection for them, one of the two bugs this tool exists to
-        # catch.
+        # __all__ re-exports are exempt only in package __init__.py; broader would hide rename clashes.
         if n in after_exported and _is_package_init(path):
             continue
         newly_added = bool(tids - before_module_targets)
@@ -628,13 +607,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 )
             )
 
-    # 3. TARGET-CHANGED (same scope+name resolves to a different import target)
-    #    Only a *swap* is dangerous: a BEFORE target no longer reachable in AFTER means a reference was silently
-    #    re-pointed. A pure superset growth (tbefore <= tafter) is the benign `import pkg.subA` + `import pkg.subB`
-    #    case: both bind the same top-level name and only add submodule attributes, so nothing is lost, skip it.
-    #    A deliberate *relocation* is also benign: when a name keeps its spelling but its import source moves A -> B in
-    #    THIS diff, the swap is intentional, not a silent re-point. The dangerous case, resolving to a target that
-    #    already existed before (shadow/clash), is NOT exempted.
+    # Only a swap is dangerous; superset growth and an in-diff relocation are benign.
     removed_module_targets = before_module_targets - after_module_targets
     for key, tafter in b["target_by_use"].items():
         tbefore = a["target_by_use"].get(key)
@@ -652,7 +625,6 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 )
             )
 
-    # 4. MODULE-DUP-IMPORT introduced
     for n in sorted(b["module_dup"] - a["module_dup"]):
         findings.append(
             (
@@ -662,14 +634,12 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             )
         )
 
-    # 5. AMBIGUOUS-BIND introduced (module scope)
     for scope, names in b["ambiguous"].items():
         new = names - a["ambiguous"].get(scope, set())
         for n in sorted(new):
             findings.append(("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}"))
 
-    # 6. TARGET-MISSING (informational): a scope stopped resolving to an import target. Real bugs are covered above;
-    #    remaining cases are relocated code.
+    # Informational: remaining cases are relocated code.
     for scope, tbefore in a["targets_by_scope"].items():
         tafter = b["targets_by_scope"].get(scope, set())
         for t in sorted(tbefore - tafter):
@@ -682,22 +652,16 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     return findings
 
 
-# ---------------------------------------------------------------- self-test
-
 _SELF_TESTS = {
     "dangling_alias": (
-        # before: inline aliased import, used as _b
         "import os\ndef f():\n    import glob as _b\n    return _b.glob('*')\n",
-        # after: hoisted to canonical, but reference NOT normalized -> _b dangles
         "import os\nimport glob\ndef f():\n    return _b.glob('*')\n",
         "BLOCKER",
     ),
     "rename_clash": (
-        # before: _b is a deliberate alias; `b` already means something else
         "import re as _b\nb = 123\ndef f():\n    return _b.compile('x'), b\n",
-        # after: someone normalized _b -> b ; now f().b is the int, re is lost
         "import re\nb = 123\ndef f():\n    return b.compile('x'), b\n",
-        "BLOCKER",  # TARGET-MISSING from:.. or import:re in f
+        "BLOCKER",
     ),
     "clean_rename": (
         "def f():\n    import glob as _g\n    return _g.glob('*')\n",
@@ -715,13 +679,11 @@ _SELF_TESTS = {
         "BLOCKER",
     ),
     "local_var_clash": (
-        # _b renamed to b, but b is a LOCAL var in f -> import silently unused
         "def f(b):\n    import re as _b\n    return _b.compile(b)\n",
-        "import re\ndef f(b):\n    return b.compile(b)\n",  # 'b' is the param, not the module
+        "import re\ndef f(b):\n    return b.compile(b)\n",
         "BLOCKER",
     ),
     "substring_safe": (
-        # correct _copy->copy rename while config_copy var exists: NO false positive
         "def f(config):\n"
         "    import copy as _copy\n"
         "    config_copy = _copy.deepcopy(config)\n"
@@ -733,7 +695,6 @@ _SELF_TESTS = {
         None,
     ),
     "attr_access_not_a_use": (
-        # x._b is attribute access, not a use of name _b; removing import _b is fine
         "import os\ndef f(x):\n    import sys as _b\n    return x._b + _b.argv[0]\n",
         "import os\nimport sys\ndef f(x):\n    return x._b + sys.argv[0]\n",
         None,
@@ -756,7 +717,6 @@ _SELF_TESTS = {
         "BLOCKER",
         "pkg/__init__.py",
     ),
-    # A TYPE_CHECKING import reached only through a forward reference IS used.
     "forward_ref_string_annotation_counts_as_a_use": (
         "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
         "from typing import TYPE_CHECKING, Optional\n"
@@ -766,7 +726,6 @@ _SELF_TESTS = {
         "    return x\n",
         None,
     ),
-    # Two strings deep; each layer is parsed.
     "nested_forward_ref_counts_as_a_use": (
         "from typing import TYPE_CHECKING, Optional\ndef f(x) -> Optional[int]:\n    return x\n",
         "from typing import TYPE_CHECKING, Optional\n"
@@ -776,7 +735,6 @@ _SELF_TESTS = {
         "    return x\n",
         None,
     ),
-    # `app.dependency_overrides[dep] = lambda: ...` is how FastAPI route tests are written.
     "a_subscript_key_on_the_left_hand_side_is_a_use": (
         "app = {}\n",
         "from .deps import dependency\napp = {}\napp[dependency] = 1\n",
@@ -792,7 +750,6 @@ _SELF_TESTS = {
         "from .deps import settings\ndef f(v):\n    settings.value = v\n",
         None,
     ),
-    # The other direction: Literal['T'] is a VALUE, so it must NOT credit an import T.
     "a_literal_value_is_not_a_use_of_that_name": (
         "from typing import TYPE_CHECKING, Literal\ndef f(x) -> Literal['a']:\n    return x\n",
         "from typing import TYPE_CHECKING, Literal\n"
@@ -802,7 +759,6 @@ _SELF_TESTS = {
         "    return x\n",
         "BLOCKER",
     ),
-    # Prose is not a type, and a parse error there is not a finding.
     "unparseable_annotation_string_is_ignored": (
         "from typing import Annotated\ndef f(x: Annotated[int, 'ok']) -> int:\n    return x\n",
         "from typing import Annotated\n"
@@ -816,7 +772,6 @@ _SELF_TESTS = {
 def _self_test() -> int:
     ok = True
     for name, case in _SELF_TESTS.items():
-        # A case may supply its own path; the __all__ skip is scoped to package __init__.py.
         before, after, expect = case[0], case[1], case[2]
         path = case[3] if len(case) > 3 else f"<{name}>"
         findings = compare(before, after, path)
@@ -953,7 +908,7 @@ def main() -> int:
             print(f"SKIP {path}: not found at {args.after}")
             continue
         if before is None:
-            before = ""  # new file
+            before = ""
         findings = compare(before, after, path)
         blockers = [f for f in findings if f[0] == "BLOCKER"]
         warns = [f for f in findings if f[0] == "WARN"]

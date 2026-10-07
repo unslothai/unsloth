@@ -77,7 +77,6 @@ def _any(*words: str) -> str:
     return "(?:" + "|".join(words) + ")"
 
 
-# ---- trigger vocabulary, built from fragments -------------------------------------------------
 _DLLIMPORT = _J(("Dll", "Import"))
 _MEM_APIS = [
     _J(p)
@@ -260,7 +259,6 @@ def _check_hidden_bypass(path, lines, text):
     hidden_array = re.compile(r"(?i)['\"]-WindowStyle['\"]\s*,\s*['\"]Hidden['\"]")
 
     def joined(i: int) -> str:
-        # An argv list formatted one element per line: `"-WindowStyle",` then `"Hidden",`.
         return " ".join(x.strip().strip(",").strip("'\"") for x in _window(lines, i, 3, 3))
 
     out = []
@@ -336,7 +334,6 @@ def _check_system_copy(path, lines, text):
         )
         if not is_copy:
             continue
-        # The source may sit on the lines after a call split across several.
         near = [x for x in _window(lines, i, 12, 3) if not _is_comment(x)]
         if any(sysdir.search(x) for x in near):
             out.append((i + 1, "error"))
@@ -395,8 +392,7 @@ def _check_non_pe_exe(path, lines, text):
     return out
 
 
-# Our own documented one-liner is printed and quoted all over the repository; it is the user's
-# command to run, not something these files execute. Anything else piped into the engine is flagged.
+# Our own documented one-liner is quoted all over the repo; anything else piped in is flagged.
 _FIRST_PARTY = re.compile(
     r"(?i)https?://(?:(?:www\.)?unsloth\.ai|raw\.githubusercontent\.com/unslothai|github\.com/unslothai)/"
 )
@@ -410,7 +406,6 @@ def _inside_literal(line: str, position: int) -> bool:
 def _check_remote_exec(path, lines, text):
     piped = re.compile(r"(?i)(https?://[^\s|'\"`]+|\)|\$[\w:]+)['\"]?\s*(\|)\s*" + _IEX + r"\b")
     wrapped = re.compile(r"(?i)\b" + _IEX + r"\s*\(+\s*" + _DOWNLOADERS)
-    # `irm <url> -UseBasicParsing | iex`: options between the download and the pipe.
     fetched = re.compile(
         r"(?i)\b"
         + _DOWNLOADERS
@@ -420,8 +415,7 @@ def _check_remote_exec(path, lines, text):
     )
     out = []
     for i, line in enumerate(lines):
-        # Only our own one-liner is excused, and only where it is text: a comment, or a
-        # string that prints or quotes it. Executed, it is the same shape as anyone else's.
+        # Only excused where it is text (a comment or a printed string); executed, it is flagged.
         quoted_doc = _is_comment(line)
         hit = False
         for match in piped.finditer(line):
@@ -671,9 +665,9 @@ RULES = [
         "use the interpreter's own module entry point (python3 -m zipfile -e ARCHIVE DIR), unzip or tar",
         applies = lambda p: not p.endswith((".py", ".rs", ".js", ".mjs", ".cjs", ".ts", ".tsx")),
         needles = tuple(_J(p) for p in (("ext", "ract"), ("unpack_", "archive"))),
-        # Options may take an argument (-W ignore) or be combined with the command flag (-Ic). The
-        # call has to sit inside the quoted program (escaped quotes included, not a later command or
-        # comment) after an archive name, so an HTML node's .extract() is not an archive.
+        # Options may take an argument (-W ignore) or combine with the command flag (-Ic). The call must
+        # sit inside the quoted program (escaped quotes included, not a later command or comment) after
+        # an archive name, so an HTML node's .extract() is not an archive.
         line_patterns = [
             r"(?i)\b(?:python[0-9.]*|py|node|perl|ruby)(?:\.exe)?"
             r"(?:\s+--?[\w-]+(?:\s+[^\s'\"-][^\s'\"]*)?)*?\s+-[a-z]*[ce]\s*(['\"])(?:\\.|(?!\1)[^\n])*?"
@@ -687,7 +681,7 @@ RULES = [
     ),
 ]
 RULES_BY_ID = {rule.id: rule for rule in RULES}
-# PowerShell resolves commands, members and parameters in any case, and so do Windows paths.
+# PowerShell commands, members, parameters and Windows paths are case-insensitive.
 _COMPILED = {rule.id: [re.compile(p, re.I) for p in rule.line_patterns] for rule in RULES}
 
 
@@ -739,7 +733,7 @@ def _in_scope(relative: str) -> bool:
         return False
     if EXCLUDED_PARTS & set(relative.split("/")[:-1]) or relative.startswith(EXCLUDED_PREFIXES):
         return False
-    # This gate and its test describe every shape by construction.
+    # This gate and its test contain every shape by construction.
     return relative not in ("scripts/lint_av_shapes.py", "tests/security/test_lint_av_shapes.py")
 
 
@@ -769,7 +763,6 @@ def collect(paths: list[str] | None) -> list[Finding]:
         for given in paths:
             path = Path(given) if Path(given).is_absolute() else Path.cwd() / given
             if not path.is_file():
-                # A named file that is missing means less was checked than was asked for.
                 raise SystemExit(f"{given}: does not exist, so nothing was checked")
             try:
                 relative = path.resolve().relative_to(REPO_ROOT).as_posix()
@@ -778,7 +771,6 @@ def collect(paths: list[str] | None) -> list[Finding]:
             found.extend(scan_text(relative, _read(path)))
         return found
     candidates = [f for f in _tracked_files() if _in_scope(f)]
-    # About 6000 files and 115 MB: one process per core keeps the whole-repo run to a few seconds.
     from concurrent.futures import ProcessPoolExecutor
 
     with ProcessPoolExecutor() as pool:
@@ -843,7 +835,6 @@ def main() -> int:
     if arguments.self_test:
         return self_test()
     if arguments.update and arguments.paths:
-        # The baseline covers the whole repository; rebuilding it from a few files would drop the rest.
         print("--update rewrites the whole baseline and cannot be combined with --paths")
         return 2
 
@@ -876,7 +867,6 @@ def main() -> int:
             if severities.get((file, rule, digest)) == "error":
                 group["severity"] = "error"
         for group in groups.values():
-            # Only an error group has to be justified; a warning never fails the build.
             if group["severity"] == "warn" and group["reason"] == "REVIEW ME":
                 group["reason"] = "pre-existing warning"
         document["groups"] = list(groups.values())
@@ -935,7 +925,6 @@ def main() -> int:
             k for k in allowed if (k[0], k[1]) in error_groups and observed.get(k, 0) < allowed[k]
         )
         if stale:
-            # An entry that outlives its line would quietly re-permit whatever lands on that digest next.
             print(
                 f"{len(stale)} baseline entr(y/ies) allow more than the code still has. Run --update:"
             )
@@ -950,7 +939,6 @@ def main() -> int:
     return problems
 
 
-# ---- self-test: every rule fires on its shape and stays quiet on the rewrite --------------------
 def _fixtures() -> list[tuple[str, str, str, bool]]:
     """(rule, file name, text, should fire). Built here, in memory, never written to disk."""
     q = '"'
@@ -1088,7 +1076,6 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             + '"',
             False,
         ),
-        # Options before the command flag, with an argument or combined with it.
         (
             "AV016",
             "t.sh",
@@ -1133,7 +1120,6 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             + "()'",
             False,
         ),
-        # Reading or checking an archive unpacks nothing.
         (
             "AV016",
             "t.sh",
@@ -1160,7 +1146,6 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             "zipfile." + _J(("Zip", "File")) + "(path)." + _J(("extract", "all")) + "(dest)",
             False,
         ),
-        # Spellings PowerShell accepts that a first cut of these rules missed.
         (
             "AV002",
             "t.ps1",
@@ -1304,7 +1289,6 @@ def _fixtures() -> list[tuple[str, str, str, bool]]:
             + "'\nrequests.post(u)\n",
             True,
         ),
-        # Suppression is honoured outside the shipped installers and ignored inside them.
         (
             "AV015",
             "t.ps1",

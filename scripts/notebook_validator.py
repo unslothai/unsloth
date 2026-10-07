@@ -80,22 +80,17 @@ COLAB_PIP_FREEZE_URL = (
 )
 COLAB_FALLBACK_FILE = DATA_DIR / "colab_pip_freeze.gpu.txt"
 
-# Oracle files snapshotted from googlecolab/backend-info; colab-diff reports NEW/REMOVED/CHANGED, so a base image rotation reaches CI within ~24h.
-# The image's Python, from the os-info oracle. Markers only, so an unreadable snapshot just
-# replays every requirement.
+# The image's Python, from the os-info oracle; an unreadable snapshot replays every requirement.
 _COLAB_OS_INFO_FILE = DATA_DIR / "colab_os_info.gpu.txt"
-# The prerelease suffix is part of the version: pip skips `python_full_version >= "3.13.0"`
-# on 3.13.0rc1, and truncating to 3.13.0 replayed requirements the image never installs.
+# Keep the prerelease suffix: pip skips `python_full_version >= "3.13.0"` on 3.13.0rc1.
 _COLAB_PYTHON_RE = re.compile(
     r"^Python\s+(\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?)",
     re.MULTILINE,
 )
-# The numeric release at the front of one, which is what `python_version` names.
 _PYTHON_RELEASE_RE = re.compile(r"\d+(?:\.\d+)*")
 
 
-# Follows `lint --colab-pin` so the Python version and the package snapshot come from the
-# SAME capture; otherwise markers are judged against a different image's interpreter.
+# Follows `lint --colab-pin` so Python version and package snapshot come from the same capture.
 _COLAB_ORACLE_DIR: pathlib.Path = DATA_DIR
 
 
@@ -123,7 +118,7 @@ def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
     if not full:
         return None
     release = _PYTHON_RELEASE_RE.match(full).group(0)
-    suffix = full[len(release) :]  # `rc1`, `.dev3`; `python_version` never carries one
+    suffix = full[len(release) :]
     parts = release.split(".")
     return {
         "python_version": ".".join(parts[:2]),
@@ -132,14 +127,12 @@ def _marker_environment(colab: dict[str, str]) -> dict[str, str] | None:
         "platform_system": "Linux",
         "platform_machine": "x86_64",
         "os_name": "posix",
-        # A top-level requirement selects no extra, so `extra` is empty and any
-        # `extra == "..."` marker is false. Omitting it replayed requirements pip ignores.
+        # A top-level requirement selects no extra, so `extra == "..."` markers are false.
         "extra": "",
     }
 
 
-# `Marker.evaluate` fills any omitted field from the RUNNING process, so a marker naming one
-# of these would be judged against this machine and the answer would move between runners.
+# Marker.evaluate fills omitted fields from the running process, so pin them all here.
 _MARKER_VARIABLES = frozenset(
     {
         "os_name",
@@ -224,7 +217,6 @@ def _marker_truth(text: str, environment: dict[str, str]) -> bool | None:
     terms, operators = _split_marker(text)
     if len(terms) > 1:
         values = [_marker_truth(term, environment) for term in terms]
-        # `and` binds tighter than `or`, so the conjunctions fold first.
         groups: list[list[bool | None]] = [[values[0]]]
         for operator, value in zip(operators, values[1:]):
             if operator == "and":
@@ -245,7 +237,7 @@ def _marker_truth(text: str, environment: dict[str, str]) -> bool | None:
         return _marker_truth(term[1:-1], environment)
     named = _marker_variables(term)
     if not named or named - environment.keys():
-        return None  # nothing to judge on, or a field the oracle cannot answer for
+        return None
     from packaging.markers import Marker
 
     return bool(Marker(term).evaluate(environment))
@@ -256,24 +248,19 @@ COLAB_ORACLE_FILES: dict[str, str] = {
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
     "os-info-gpu.txt": "colab_os_info.gpu.txt",
 }
-# The pip oracle fails --strict, since the rules resolve against it. os-info is rule-bearing too (its Python line), so both refresh together and COLAB_STRICT_ORACLE_KEYS makes that one line strict. The rest is advisory: an Ubuntu bump nothing consults must not redden CI.
+# The pip oracle and the os-info Python line are strict; other oracle drift is advisory.
 COLAB_STRICT_ORACLE = "pip-freeze.gpu.txt"
-# Keys within a non-strict oracle that are rule-bearing anyway. `python` is the one
-# _parse_os_lines emits for the "Python 3.13.15" line.
 COLAB_STRICT_ORACLE_KEYS: dict[str, frozenset[str]] = {
     "os-info-gpu.txt": frozenset({"python"}),
 }
 COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
-
-# ----- Compat tables. PRs add rows as new releases land. ----- #
 
 # Lockstep rows only: torchcodec 0.12+ is ABI-stable against torch >=2.11 and is handled by
 # the short-circuit in rule_inst_004_torchcodec_torch rather than by a row here.
 TORCHCODEC_ABI_STABLE_TORCH = "2.11"
 TORCHCODEC_ABI_STABLE_CODEC = "0.12"
 
-# torch.minor -> set of compatible torchcodec.minor strings.
-# Source: pytorch/torchcodec compatibility matrix on its README.
+# torch.minor -> compatible torchcodec minors, from the torchcodec README matrix.
 # Mirrors import_fixes._TORCH_TORCHCODEC_MINORS (test_torchcodec_torch_compat asserts equality).
 TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.11": {"0.11"},
@@ -285,12 +272,10 @@ TORCH_TORCHCODEC: dict[str, set[str]] = {
     "2.5": {"0.1"},
 }
 
-# When peft >= trigger is on the resolved set, torchao >= floor must also be.
 PEFT_TORCHAO_FLOOR: list[dict[str, str]] = [
     {"trigger_peft": "0.19", "torchao_floor": "0.16.0"},
 ]
 
-# git+ allowlist: install lines that legitimately fetch from GitHub. Anything else flags R-INST-001.
 GIT_PLUS_ALLOWLIST = (
     "github.com/SparkAudio/Spark-TTS",
     "github.com/state-spaces/mamba",
@@ -299,8 +284,6 @@ GIT_PLUS_ALLOWLIST = (
     "github.com/unslothai/unsloth",
 )
 
-# ----- Findings ----- #
-
 
 @dataclasses.dataclass
 class Finding:
@@ -308,15 +291,12 @@ class Finding:
     file: str
     cell: int | None = None
     line: int | None = None
-    severity: str = "error"  # error | warning
+    severity: str = "error"
     message: str = ""
     hint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
-
-
-# ----- Notebook walking ----- #
 
 
 def iter_notebooks(
@@ -359,9 +339,7 @@ def code_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
     return out
 
 
-# A shell line that runs pip. Anchored on `!` so a `pip install` inside a Python string is not
-# a cell, open after it so chained and compound commands are. `-mpip` counts too: `\b` finds no
-# boundary between the `m` and the `p`, so those cells went undiscovered.
+# Anchored on `!` so a pip string in Python is not a cell; `-mpip` counts (no \b before p).
 _PIP_CELL_RE = re.compile(
     r"^[ \t]*!.*(?:\b(?:uv\s+)?pip|-m(?:uv\s+)?pip)\s+(?:install|uninstall)\b",
     re.MULTILINE,
@@ -376,14 +354,13 @@ def install_cells(nb: dict[str, Any]) -> list[tuple[int, str]]:
         if first and first[0].strip().startswith("%%capture"):
             out.append((i, src))
             continue
-        # Glued, since a `\\` continuation can put the `!` and the pip call on different
-        # physical lines.
+        # Glued, since a `\` continuation can split the `!` from the pip call.
         if any(_PIP_CELL_RE.search(line) for _, line in _glue_line_continuations(src)):
             out.append((i, src))
     return out
 
 
-# Colab oracle only applies to notebooks that run on Colab; AMD, Kaggle, DGX-Spark have their own preinstalls and the Colab-vs-cell rules don't apply.
+# The Colab oracle applies only to notebooks that run on Colab.
 def target_environment(notebook_name: str) -> str:
     parts = pathlib.PurePath(notebook_name).parts
     base = parts[-1] if parts else notebook_name
@@ -393,13 +370,11 @@ def target_environment(notebook_name: str) -> str:
     if base.startswith("AMD-") or "_AMD_" in base:
         return "amd"
     if base.startswith("HuggingFace Course-") or base.startswith("HuggingFace_Course-"):
-        return "colab"  # HF Course notebooks still run on Colab.
+        return "colab"
     if "DGX_Spark" in base:
         return "dgx_spark"
     return "colab"
 
-
-# ----- Pip-freeze parsing ----- #
 
 PINNED_RE = re.compile(r"^\s*([A-Za-z0-9._-]+)\s*==\s*([^\s;#]+)")
 
@@ -428,8 +403,7 @@ def version_minor(v: str) -> str:
     return ".".join(parts[:2]) if len(parts) >= 2 else parts[0]
 
 
-# `1.2.3rc1`, `1.2.3.dev0`, `1.2.3a2`, `1.2.3b1`: PEP 440 orders every one of these BELOW the
-# plain `1.2.3` they lead up to.
+# PEP 440 orders every one of these below the plain release.
 _PRERELEASE_RE = re.compile(r"(?:a|b|c|rc|alpha|beta|pre|preview|dev)\d*$", re.IGNORECASE)
 
 
@@ -456,8 +430,7 @@ def at_least(version: str, floor: str) -> bool:
 
     Dotted digits alone read `2.11.0rc1` as 2.11.0.1, above `2.11`, which approved a pairing
     outside the ABI-stable contract."""
-    # The suffix goes before the digits are read, or `2.11.0rc1` compares as 2.11.0.1 and
-    # sorts ABOVE 2.11 on the strength of its prerelease number.
+    # Split the suffix first, or 2.11.0rc1 compares as 2.11.0.1.
     core, prerelease = _split_prerelease(version)
     order = cmp_versions(core, floor)
     if order != 0:
@@ -465,8 +438,6 @@ def at_least(version: str, floor: str) -> bool:
     return not prerelease
 
 
-# PEP 440 orders `dev` < `a` < `b` < `rc`, all below the release; `c`, `alpha`, `beta` and
-# `pre`/`preview` normalize into that same order.
 _PRERELEASE_ORDER = {
     "dev": 0,
     "a": 1,
@@ -504,13 +475,11 @@ def cmp_versions(a: str, b: str) -> int:
         return tuple(int(x) for x in re.findall(r"\d+", normalise_version(_split_prerelease(v)[0])))
 
     ta, tb = to_tuple(a), to_tuple(b)
-    # PEP 440 zero-pads the shorter release, so `0.11` == `0.11.0`. Raw tuples sorted `0.11`
-    # BELOW `0.11.0`, discarding a ceiling-derived minor when the floor spelled its patch.
+    # PEP 440 zero-pads the shorter release, so 0.11 == 0.11.0.
     width = max(len(ta), len(tb))
     ta = ta + (0,) * (width - len(ta))
     tb = tb + (0,) * (width - len(tb))
-    # The suffix decides only a tie on the release core: `0.12.0rc1` sits below `0.12.0` and
-    # above `0.11.9`, which reading its digits as another component got backwards.
+    # The suffix only breaks a tie on the release core.
     ka, kb = ta + _prerelease_key(a), tb + _prerelease_key(b)
     if ka < kb:
         return -1
@@ -519,23 +488,18 @@ def cmp_versions(a: str, b: str) -> int:
     return 0
 
 
-# ----- Install-cell parsing ----- #
-
-
 @dataclasses.dataclass
 class PipInvocation:
-    tool: str  # "pip" | "uv-pip"
-    flags: set[str]  # {'--no-deps', '--upgrade', '--force-reinstall', ...}
-    packages: list[str]  # raw package specifiers (e.g. 'transformers==5.5.0')
+    tool: str
+    flags: set[str]
+    packages: list[str]
     raw: str
     line_no: int = 0
-    action: str = "install"  # "install" | "uninstall"
+    action: str = "install"
     conditional: bool = False  # the fallback side of an `||`: runs only if the left failed
 
 
-# `python -m pip` parses as bare `pip`, or a matched cell yields nothing and R-INST-001 misses
-# a `git+` install. In step with unsloth_nb_pip_magic.py::_PY_M_PIP; the braced and path forms
-# are matched too, since transformers see the raw text before IPython expands it.
+# `python -m pip` parses as bare pip; in step with unsloth_nb_pip_magic.py::_PY_M_PIP.
 _INTERPRETER_RE = r"""(?:
         (?:python[0-9.]*|py)
       | ["']?\{\s*sys\.executable\s*\}["']?
@@ -543,24 +507,14 @@ _INTERPRETER_RE = r"""(?:
       | '(?:[^']*[/\\])python[0-9.]*(?:\.exe)?'
       | \S*[/\\]python[0-9.]*(?:\.exe)?
     )"""
-# `-m uv pip` as well as `-m pip`: unsloth_nb_pip_magic rewrites `(pip|uv)` after the
-# module flag, and uv's pip-compatible interface really is spelled `uv pip <action>`.
+# `-m uv pip` too: unsloth_nb_pip_magic rewrites `(pip|uv)` after the module flag.
 PIP_LINE_RE = re.compile(
-    # `python [option] ... [-m mod ...]`: interpreter options may sit before `-m`, and without
-    # them `python -I -m pip install git+...` matched nothing. Options only, or a script path
-    # would read as the module flag.
-    # `!\s*!` for bash's negation and IPython's `!!` capture: `! ! pip install git+...` still
-    # runs pip, and requiring exactly one leading bang matched nothing.
+    # Interpreter options may precede -m. `!\s*!` covers bash negation and IPython `!!`.
     r"^\s*!(?:\s*!)*\s*(?P<tool>(?:uv\s+)?pip|"
     + _INTERPRETER_RE
-    # `-W arg` and `-X opt` take an operand, attached or separate, so requiring every intervening
-    # word to start with `-` missed `python -W ignore -m pip ...`. The operand form is tried first.
-    # `-h`, `-V` and `-?` print and exit, and `-c cmd` "terminates option list", so nothing behind
-    # them is an interpreter option: `python -V -m pip install git+...` only reports the version.
-    # The long spellings never matched this arm, which requires a letter after the dash.
+    # -W/-X take an operand; -h, -V, -? and -c end option parsing, so nothing after is an option.
     + r"(?:\s+-[WX]\s*\S+|\s+--check-hash-based-pycs\s+\S+|\s+-(?![hVc?])[A-Za-z]\w*)*"
-    # `-m mod` may be written attached: `python -mpip install ...` runs pip, and requiring a
-    # separate word after `-m` missed it in both this pattern and cell discovery.
+    # `-m` may be attached: `python -mpip`.
     + r"\s+-m\s*(?:uv\s+)?pip)\s+"
     r"(?P<action>install|uninstall)\b(?P<rest>.*)$",
     re.IGNORECASE | re.VERBOSE,
@@ -585,16 +539,13 @@ def parse_pip_line(line: str, line_no: int = 0) -> PipInvocation | None:
     m = PIP_LINE_RE.match(line)
     if not m:
         return None
-    # `uv pip` and `python -m uv pip` are both uv; a plain `python3 -m pip` is not, and
-    # must not be read as uv because "uv" appears somewhere in the interpreter path.
+    # Do not read a plain `python3 -m pip` as uv because "uv" appears in the interpreter path.
     tool = "uv-pip" if re.search(r"(?:^|\s)uv\s+pip\b", m.group("tool"), re.IGNORECASE) else "pip"
     rest = m.group("rest")
-    # Strip trailing comment.
     rest = re.split(r"(?<!\S)#", rest, maxsplit = 1)[0]
     try:
         tokens = shlex.split(rest, posix = True)
     except ValueError:
-        # f-string interpolation like {xformers}: replace braces with placeholders.
         rest_safe = re.sub(r"\{[^}]+\}", "PLACEHOLDER", rest)
         try:
             tokens = shlex.split(rest_safe, posix = True)
@@ -646,35 +597,23 @@ def _glue_line_continuations(text: str) -> list[tuple[int, str]]:
     return out
 
 
-# Words introducing a compound command. A pip call behind one still runs, so it has to parse;
-# `if pip install ...` is the test and is reached whenever the line is, while a `then` or `do`
-# body runs only if that test said so.
-# Words that run the command after them rather than being it, so `env FOO=1 pip install ...`
-# installs as the bare form does. No `builtin`: `builtin pip ...` is not a shell builtin and
-# runs nothing. `time` is bash's reserved word; only an explicit path reaches the GNU binary.
+# Exec prefixes run the command after them (`env FOO=1 pip ...`). Bare `time` is bash's reserved
+# word; only an explicit path reaches GNU time.
 _GNU_TIME = "/usr/bin/time"
 _SHELL_EXEC_PREFIXES = frozenset({"command", "env", "exec", "nohup", "time", "sudo", _GNU_TIME})
-# The subset bash resolves in-process. Everything else here is an external program, and an
-# `exec` behind one is an argument to it rather than the builtin.
+# Resolved in-process by bash; after any other prefix, `exec` is just an argument.
 _SHELL_RESOLVED_PREFIXES = frozenset({"command", "exec", "time"})
-# External programs, so an absolute path names the same one. Not `time`: the reserved word and
-# `/usr/bin/time` take different options, which `_GNU_TIME` already tells apart.
+# External programs, so an absolute path names the same one.
 _PATH_QUALIFIED_PREFIXES = frozenset({"env", "nohup", "sudo"})
-# Options that make a prefix report something and exit instead of running its operands.
 _PREFIX_TERMINAL_FLAGS = frozenset({"--help", "--version"})
-# Per prefix, the options that turn it into a lookup rather than an execution. sudo(8) has
-# `-v/--validate` "without running a command" and `-l/--list`, which displays a path; unwrapping
-# past either fabricated an install from a line that never reaches pip.
+# Options that turn a prefix into a lookup rather than an execution (validate, list).
 _PREFIX_LOOKUP_FLAGS: dict[str, frozenset[str]] = {
     "command": frozenset({"-v", "-V"}),
     "sudo": frozenset({"-v", "--validate", "-l", "--list", "-V", "-h"}),
 }
-# `PATH+=:/opt/bin cmd` is an assignment prefix too: bash runs the child with the appended
-# value, so leaving the `+=` word standing made it the supposed executable.
+# `PATH+=:/opt/bin cmd` is an assignment prefix too.
 _ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_]\w*\+?=")
-# Per prefix, the options taking a SEPARATE operand; everything else starting with `-` is a
-# lone flag and `--` ends them. In `env -u pip pip install ...` the first `pip` is the variable
-# being unset. env's split-string operand is the command it runs, not a value to discard.
+# Options taking a separate operand; env's split-string operand is the command it runs.
 _ENV_SPLIT_STRING_FLAGS = frozenset({"-S", "--split-string"})
 
 
@@ -708,8 +647,6 @@ _PREFIX_OPERAND_FLAGS: dict[str, frozenset[str]] = {
             "--other-user",
             "-h",
             "--host",
-            # sudo(8): `-D`/`--chdir`, `-R`/`--chroot`, `-T`/`--command-timeout`. Missing them left the
-            # operand standing as the supposed executable.
             "-D",
             "--chdir",
             "-R",
@@ -719,9 +656,7 @@ _PREFIX_OPERAND_FLAGS: dict[str, frozenset[str]] = {
         }
     ),
     "exec": frozenset({"-a"}),
-    # Bare `time` is bash's reserved word, `time [-p] pipeline`: it takes none of GNU time's
-    # options, so `time -f %e pip install ...` runs a command named `-f`. The GNU binary keeps its
-    # own entry, reached only through an explicit path.
+    # Bash's reserved `time` takes none of GNU time's options.
     "time": frozenset(),
     _GNU_TIME: frozenset({"-f", "--format", "-o", "--output"}),
     "command": frozenset(),
@@ -742,13 +677,10 @@ def _split_first_word(text: str) -> tuple[str, str]:
         index += 1
     word: list[str] = []
     quote = ""
-    depth = 0  # open `$(` nesting
-    # Open `${ }` expansions. bash keeps `TOKEN=${TOKEN:-a b}` as ONE assignment word, and
-    # tracking only `$(` ended the word at that space, leaving `b}` as the executable.
+    depth = 0
+    # Track `${ }` too: bash keeps `TOKEN=${TOKEN:-a b}` as one word.
     brace = 0
-    # A `case` arm's pattern ends in an UNBALANCED `)`, so inside an open case that `)` delimits
-    # the arm rather than closing the substitution. Popping on it truncated the assignment word in
-    # `TOKEN=$(case x in x) printf a;; esac) pip install ...` and made the install look conditional.
+    # Inside an open case an unbalanced `)` ends the arm pattern, not the substitution.
     case_depth = 0
     backtick = False
     while index < length:
@@ -765,7 +697,6 @@ def _split_first_word(text: str) -> tuple[str, str]:
             index += 1
             word.append(text[index])
         elif backtick:
-            # Only an unescaped backtick closes it; the escape above already consumed `\``.
             if ch == "`":
                 backtick = False
             word.append(ch)
@@ -776,15 +707,14 @@ def _split_first_word(text: str) -> tuple[str, str]:
                 brace -= 1
             word.append(ch)
         elif depth:
-            # A substitution's own whitespace and quotes belong to the word: ending it at the space in
-            # `TOKEN=$(printf '%s' 'a b') pip install ...` left `'%s'` as the supposed executable.
+            # A substitution's whitespace and quotes belong to the word.
             if ch in "'\"":
                 quote = ch
             elif ch == "(":
                 depth += 1
             elif ch == ")":
                 if not (case_depth and depth == 1):
-                    depth -= 1  # otherwise it is an arm pattern and the word continues
+                    depth -= 1
             elif ch.isalpha() and not text[index - 1 : index].isalnum():
                 keyword = _LEADING_WORD_RE.match(text, index)
                 if keyword is not None:
@@ -833,8 +763,7 @@ def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str,
             text = rest
             continue
         if _REDIRECTION_RE.match(word):
-            # A redirection may sit before the command name: `>/tmp/log pip install ...` runs pip, and
-            # stopping here left the redirection standing as the executable.
+            # A redirection may precede the command name.
             prefixed = True
             text = _split_first_word(rest)[1] if _REDIRECTION_RE.fullmatch(word) else rest
             continue
@@ -842,9 +771,7 @@ def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str,
         if name.endswith("/time"):
             name = _GNU_TIME  # an explicit path runs the BINARY, which takes GNU's options
         elif "/" in name and name.rsplit("/", 1)[1] in _PATH_QUALIFIED_PREFIXES:
-            # `/usr/bin/env pip install ...` runs pip as the bare form does, and stopping at the path left
-            # the install invisible. Only the external programs: `command` and `exec` are builtins, so a
-            # path spelling of either names some other file.
+            # Path-qualified external prefixes only; command and exec are builtins.
             name = name.rsplit("/", 1)[1]
         if name not in _SHELL_EXEC_PREFIXES:
             break
@@ -855,13 +782,12 @@ def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str,
         while rest:
             token, tail = _split_first_word(rest)
             if token == "--":
-                rest = tail  # end of options; what follows is the command
+                rest = tail
                 break
             if token == "-" or not token.startswith("-"):
                 break
             if name == "env" and token.startswith("-S") and len(token) > 2:
-                # `-S, --split-string=S` takes a MANDATORY operand, so the attached `env -S'pip install' pkg`
-                # is valid and runs pip; exact membership missed it.
+                # env -S takes a mandatory operand, so an attached `-S'pip install'` is valid.
                 raw = rest[: len(rest) - len(tail)].strip()
                 rest = f"{_env_split_string(raw[2:])} {tail}".strip()
                 break
@@ -872,17 +798,13 @@ def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str,
             if token in _PREFIX_TERMINAL_FLAGS or token in _PREFIX_LOOKUP_FLAGS.get(
                 name, frozenset()
             ):
-                # `env --help pip install ...` prints help and exits, and `command -v pip` only reports a
-                # path; unwrapping past either fabricated an install.
+                # `env --help` and `command -v` do not run their operands.
                 return text, prefixed
             if "=" in token and token.startswith("--"):
-                rest = tail  # `--unset=NAME` carries its operand inline
+                rest = tail
                 continue
             if name == "env" and token in _ENV_SPLIT_STRING_FLAGS:
-                # GNU env's `-S, --split-string=S` operand IS the command, so consuming it the way `-u NAME`
-                # is consumed left nothing to parse. Unquoted, since env splits on unquoted whitespace.
-                # `env -S'cmd args' [ARG]...` appends the following ARGs to the split string, which is how
-                # `#!/usr/bin/env -S perl -w` reaches `perl -w script.pl`; dropping them lost the packages.
+                # env -S's operand is the command; following ARGs are appended to it.
                 trailing = _split_first_word(tail)[1]
                 raw = tail[: len(tail) - len(trailing)]
                 rest = f"{_env_split_string(raw)} {trailing}".strip()
@@ -895,7 +817,6 @@ def _strip_exec_prefixes(text: str, seen: list[str] | None = None) -> tuple[str,
     return text, prefixed
 
 
-# A bare shell word, used to spot `case` / `esac` while scanning a substitution body.
 _LEADING_WORD_RE = re.compile(r"[A-Za-z_]\w*")
 _SHELL_TEST_KEYWORDS = frozenset({"if", "while", "until", "for", "case"})
 _SHELL_BODY_KEYWORDS = frozenset({"then", "elif", "else", "do"})
@@ -931,9 +852,7 @@ def _unquoted_arm_close(text: str) -> int | None:
             if depth:
                 depth -= 1
             elif opened:
-                # A `(` opened and closed before this bracket, so the text starts with a substitution rather
-                # than an arm label, and reading the trailing `)` as an arm close marked the install
-                # conditional.
+                # A `(` closed before this bracket means a substitution, not an arm label.
                 return None
             elif index:
                 return index
@@ -971,7 +890,7 @@ def _final_bracket_closes_substitution(text: str) -> bool:
             i += 2
             continue
         if ch == "(" and depth:
-            depth += 1  # a nested plain group inside a substitution
+            depth += 1
         elif ch == ")" and depth:
             depth -= 1
             if depth == 0 and i == len(text) - 1:
@@ -980,9 +899,7 @@ def _final_bracket_closes_substitution(text: str) -> bool:
     return False
 
 
-# `name() {`, `name () {` and `function name {`. The parens must be EMPTY, so `time (pip
-# install x)` is not a definition. A body runs only when called, so it is exposed as
-# conditional.
+# Function headers need empty parens; a body runs only when called, so it is conditional.
 _FUNCTION_NAME_RE = re.compile(r"(?:function\s+)?[A-Za-z_]\w*")
 _FUNCTION_DEF_RE = re.compile(
     r"(?:function\s+[A-Za-z_]\w*\s*(?:\(\s*\))?|[A-Za-z_]\w*\s*\(\s*\))\s*"
@@ -997,18 +914,12 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     pip install ...` is the test and is reached whenever the line is."""
     stripped = command.strip()
     bang = stripped.startswith("!")
-    # Bash's negation is a reserved WORD, so `! false` inverts the status while `!false` names a
-    # command; collapsing the space made the two identical.
+    # `! false` negates while `!false` names a command.
     spaced = bang and stripped[1:2].isspace()
     if bang:
         stripped = stripped[1:].lstrip()
-    # A grouping bracket is noise, but the `)` closing a `$( )` belongs to the command: a bare
-    # rstrip(")}") left `echo $(pip install ...` unreadable. A lone `}` from a group spanning a
-    # separator still strips.
-    # `{` opens a group only as its OWN token, so `{ pip install x; }` is a group while IPython's
-    # `{sys.executable}` is one word and stripping it hid the pip command. `(` needs no such space.
-    # `setup() { pip install git+... ; }` keeps its name in front of the body, hiding the install
-    # from PIP_LINE_RE. Strip the header and let the group handling below read the body.
+    # Keep the `)` that closes a `$( )`; `{` opens a group only as its own token ({sys.executable}
+    # is one word). Strip a function header so the body is read.
     definition = _FUNCTION_DEF_RE.match(stripped)
     if definition is not None:
         stripped = stripped[definition.end() :].lstrip()
@@ -1026,40 +937,33 @@ def _unwrap_shell_group(command: str) -> tuple[str, bool]:
     stripped = _open_groups(stripped)
     while stripped[-1:] in (")", "}") and not _final_bracket_closes_substitution(stripped):
         stripped = stripped[:-1].rstrip()
-    conditional = definition is not None  # the body runs only when the function is called
+    conditional = definition is not None
     while True:
-        # Any whitespace, not a literal space: `then\tpip install ...` is the same command to
-        # the shell, and leaving `then\tpip` as one word hides it from every rule.
+        # Any whitespace: `then\tpip` is the same command to the shell.
         parts = stripped.split(maxsplit = 1)
         if not parts or parts[0].lower() not in _SHELL_KEYWORDS:
             break
         conditional = conditional or parts[0].lower() in _SHELL_BODY_KEYWORDS
-        # A keyword can sit in front of a group: `if (pip install ...); then` exposes the `(`
-        # only once `if` comes off, and leaving it there hid the install from PIP_LINE_RE.
+        # A keyword can precede a group: `if (pip install ...); then`.
         stripped = _open_groups(parts[1].strip()) if len(parts) > 1 else ""
-        # And in front of a DEFINITION: `then f(){ pip install ...; }` matched no header with `then`
-        # still there. A definition's body is conditional however it was reached.
+        # Or a definition: `then f(){ pip install ...; }`.
         behind = _FUNCTION_DEF_RE.match(stripped)
         if behind is not None:
             definition = behind
             conditional = True
             stripped = _open_groups(stripped[behind.end() :].lstrip())
-    # A `case` arm label, quoted or bare. Only the matching arm runs, so the command is
-    # conditional. The label ends at the first unquoted `)` with nothing open before it.
+    # A case arm label: only the matching arm runs, so the command is conditional.
     close = _unquoted_arm_close(stripped)
     if close is not None:
         stripped = stripped[close + 1 :].strip()
         conditional = True
-    # `env -u VAR pip install ...`, `nohup pip ...`, `A=1 pip ...`: each prefix's options and
-    # operands are consumed positionally, so the executable is whatever word survives.
     stripped, _prefixed = _strip_exec_prefixes(stripped)
     if not (bang and stripped):
         return stripped, conditional
     return (f"! {stripped}" if spaced else f"!{stripped}"), conditional
 
 
-# `${name:-word}` and friends expand the word only on the branch the parameter's state
-# selects, so a substitution inside one is conditional. `${name}` opens no branch.
+# `${name:-word}` expands word only on one branch, so substitutions in it are conditional.
 _CONDITIONAL_EXPANSION_RE = re.compile(r"\$\{[A-Za-z_]\w*(?:\[[^\]]*\])?:?[-+=?]")
 
 
@@ -1071,8 +975,7 @@ def _conditional_expansion_spans(command: str) -> list[tuple[int, int]]:
         quote = ""
         while j < len(command) and depth:
             ch = command[j]
-            # `\}` and `'}'` are literal text in the default word, not the closer; counting them ended the
-            # span early and read a later `$( )` as unconditional.
+            # `\}` and `'}'` are literal text in the default word, not the closer.
             if ch == "\\" and quote != "'" and j + 1 < len(command):
                 j += 2
                 continue
@@ -1108,11 +1011,11 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
     while i < len(command):
         ch = command[i]
         if ch == "\\" and quote != "'":
-            i += 2  # escaped: `\\$(` is a literal dollar
+            i += 2
             continue
         if quote == "'":
             if ch == "'":
-                quote = ""  # single quotes make the text literal, so nothing runs in there
+                quote = ""
             i += 1
             continue
         if ch in "\"'":
@@ -1126,8 +1029,7 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
         if opens:
             depth, j = 1, i + 2
             inner_quote = ""
-            # Inside an open case the `)` in `$(case x in x) pip install ...;; esac)` delimits the arm
-            # rather than closing the substitution, and popping on it ended the body at `x)`.
+            # Inside an open case the `)` delimits the arm rather than closing the substitution.
             case_depth = 0
             while j < len(command) and depth:
                 inner = command[j]
@@ -1143,7 +1045,7 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
                     depth += 1
                 elif inner == ")":
                     if not (case_depth and depth == 1):
-                        depth -= 1  # otherwise it is an arm pattern; the body stays open
+                        depth -= 1
                 elif inner.isalpha() and not command[j - 1 : j].isalnum():
                     word = _LEADING_WORD_RE.match(command, j)
                     if word is not None:
@@ -1156,8 +1058,7 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
                 bodies.append(command[i + 2 : j - 1 if depth == 0 else j])
             i = j
         elif ch == "`":
-            # The first UNESCAPED backtick closes it: a legacy nested substitution writes its inner
-            # delimiters `\\`` so they do not close the outer one, and `find` stopped at the escape.
+            # The first unescaped backtick closes it; nested ones are written escaped.
             j = i + 1
             while j < len(command):
                 if command[j] == "\\":
@@ -1168,8 +1069,7 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
                 j += 1
             if j >= len(command):
                 break
-            # Unescape before recording it: inside backticks the shell strips one level, and without that
-            # the nested substitution never opens.
+            # Unescape one level, as the shell does inside backticks.
             if in_branch(i) == conditional:
                 bodies.append(command[i + 1 : j].replace("\\`", "`").replace("\\\\", "\\"))
             i = j + 1
@@ -1181,15 +1081,12 @@ def _substitution_bodies(command: str, conditional: bool = False) -> list[str]:
 def _piece_is_pip(piece: str) -> bool:
     """Is this chunk of a chained line a pip command? `!` only ever leads the first piece,
     and the splitter re-adds it to the rest, so it is normalised before asking."""
-    # The bang first: `_strip_exec_prefixes` reads words, and `!env` glued together matched no
-    # prefix name, so `!env X=1 pip install ...` did not read as pip.
+    # Strip the bang first so `!env X=1 pip ...` matches the env prefix.
     stripped = _strip_exec_prefixes(piece.strip().lstrip("!").strip())[0].strip()
     return bool(stripped) and bool(PIP_LINE_RE.match("!" + stripped))
 
 
-# A redirection operator, optionally with its fd and its target attached (`2>&1`, `>/x`).
 _REDIRECTION_RE = re.compile(r"^\d*(?:>>|>&|&>|<<<|<<|<>|>|<)")
-# `exec`'s own options. `-a` names the argv[0] to pass on and takes an operand.
 _EXEC_LONE_FLAGS = frozenset({"-c", "-l"})
 
 
@@ -1203,8 +1100,7 @@ def _command_execs(command: str) -> bool:
     rest = _strip_exec_prefixes(command.lstrip("!").strip(), seen)[0]
     if "exec" not in seen:
         return False
-    # `env exec true` asks env for a PROGRAM called exec, which does not exist, so the parent
-    # shell carries on. Only the prefixes bash resolves in-process keep the builtin's meaning.
+    # `env exec` looks for a program called exec, so only in-process prefixes keep the builtin.
     if any(name not in _SHELL_RESOLVED_PREFIXES for name in seen[: seen.index("exec")]):
         return False
     while rest:
@@ -1218,10 +1114,9 @@ def _command_execs(command: str) -> bool:
             rest = _split_first_word(tail)[1]
             continue
         if _REDIRECTION_RE.match(word):
-            # `> /x` carries its target as the next word; `>/x` already has it.
             rest = _split_first_word(tail)[1] if _REDIRECTION_RE.fullmatch(word) else tail
             continue
-        return True  # a utility to hand the shell over to
+        return True
     return False
 
 
@@ -1230,15 +1125,12 @@ def _command_ends_shell(command: str) -> bool:
 
     `exec NAME` replaces it and `exit` terminates it; recognising only the first reported `exit 0;
     pip install git+...` as a reachable install."""
-    # `{ exit; ... }` is a brace group: it runs in the SAME shell, so a terminator inside it
-    # ends the line. `( exit )` is a subshell and does not, which is why only `{` is stripped.
+    # `{ exit; }` runs in the same shell and ends the line; `( exit )` is a subshell and does not.
     opened = command.lstrip("!").strip()
     while True:
         if opened.startswith("{") and (len(opened) == 1 or opened[1].isspace()):
             opened = opened[1:].lstrip()
             continue
-        # `then exit` is still an exit. The caller weighs the branch condition separately, so
-        # only a body that is actually taken hands anything over.
         word, rest = _split_first_word(opened)
         if word.lower() in _SHELL_BODY_KEYWORDS:
             opened = rest.lstrip()
@@ -1248,15 +1140,13 @@ def _command_ends_shell(command: str) -> bool:
         return True
     seen: list[str] = []
     rest = _strip_exec_prefixes(opened, seen)[0]
-    # Same rule as `exec`: `env exit 0` asks env for a PROGRAM called exit, which does not exist.
-    # Only the prefixes bash resolves in-process keep the builtin.
+    # Same rule as exec: `env exit 0` looks for a program called exit.
     if any(name not in _SHELL_RESOLVED_PREFIXES for name in seen):
         return False
     return _split_first_word(rest)[0] == "exit"
 
 
-# `true` and `:` are documented as always succeeding, so an `&&` after one is always reached.
-# Treating every non-pip command as a possibly-failing probe dropped the install behind them.
+# `true` and `:` always succeed, so an `&&` after one is always reached.
 _ALWAYS_SUCCEEDS = frozenset({"true", ":"})
 
 
@@ -1274,9 +1164,8 @@ def _piece_success_model(
 
     `!` inverts the pipeline's status, so `! false` succeeds and the `&&` behind it always runs,
     while `! pip install x` fails under the replay's model of pip succeeding."""
-    text = _unwrap_shell_group(piece)[0]  # `( ... )` exits with its last command's status
-    # Only the FIRST command of a cell carries the notebook's bang, `!cmd` or `! cmd`. Elsewhere a
-    # leading `!` is bash's negation, which the loop below counts.
+    text = _unwrap_shell_group(piece)[0]
+    # Only the first command carries the notebook bang; elsewhere `!` is bash negation.
     if notebook_bang and text.startswith("!"):
         text = text[1:].lstrip()
     text, negations = _strip_negations(text)
@@ -1287,13 +1176,10 @@ def _piece_success_model(
     elif word == "false":
         model = False
     elif word in ("return", "exit") and _split_first_word(stripped)[1].strip().isdigit():
-        # `help return`: "exit with the return value specified by N", so `setup() { return 0; };
-        # setup && pip install ...` always installs. A BARE `return` carries the previous command's
-        # status, which nothing here names.
+        # `return 0` makes the call succeed; a bare return carries an unknown previous status.
         model = _split_first_word(stripped)[1].strip() == "0"
     elif functions is not None and word in functions:
-        # A call exits with its body's status, so `f() { pip install x; }; f && ...` reaches
-        # the tail under the same pip-succeeds model a bare `pip install x &&` rests on.
+        # A call exits with its body's status.
         model = functions[word]
     else:
         model = None
@@ -1356,8 +1242,7 @@ def _close_group(
     as the ungrouped form does; discarding the inner state marked y conditional. The pending text
     is the command still in hand, which no separator has flushed."""
     if _unwrap_shell_group(pending)[0].strip():
-        # Fold it through the group's own list rather than replacing the status: in
-        # `(false && pip install x)` the trailing command was short-circuited.
+        # Fold through the group's own list: `(false && pip install x)` short-circuits.
         last_ok[-1] = _left_hand_status(models, prev_ops, pending, None, notebook_bang)
     inner_model = last_ok.pop()
     inner = inner_model is True
@@ -1368,8 +1253,7 @@ def _close_group(
         assured[-1] = assured[-1] and inner
     else:
         assured[-1] = assured[-1] or inner
-    # Three-valued too, for the `||` reachability fold: `{ false; } || pip install x` always
-    # reaches the install, and discarding the group's KNOWN failure marked it conditional.
+    # Three-valued: `{ false; } || pip install x` always reaches the install.
     models[-1] = (
         inner_model if prev_ops[-1] == "" else _fold_status(models[-1], prev_ops[-1], inner_model)
     )
@@ -1391,8 +1275,7 @@ def _fold_pending(
     failure it is, and reprocessing read its last lexical `true`."""
     if spoken_for or not _unwrap_shell_group(pending)[0].strip():
         return
-    # `negations` is the `!` in front of the PIPELINE this piece ends, which turns its status
-    # around: `! true | true` fails, and folding the raw `true` carried a list bash does not.
+    # `!` negates the whole pipeline's status.
     piece = _negated(_piece_success_model(pending, None, notebook_bang), negations)
     _fold_and_or(assured, prev_ops, piece is True)
 
@@ -1426,11 +1309,11 @@ def _fold_status(left: bool | None, op: str, right: bool | None) -> bool | None:
     folded status, not the piece nearest the operator, decides whether `c` runs."""
     if op == "&&":
         if left is None:
-            return False if right is False else None  # `? && false` fails either way
-        return right if left else False  # a failed left skips right and keeps the failure
+            return False if right is False else None
+        return right if left else False
     if left is None:
-        return True if right is True else None  # `? || true` succeeds either way
-    return True if left else right  # a succeeded left skips right and keeps the success
+        return True if right is True else None
+    return True if left else right
 
 
 def _left_hand_status(
@@ -1446,8 +1329,7 @@ def _left_hand_status(
     Called at each `&&`/`||` so the operator sees the status of everything to its left, not just
     the piece beside it."""
     if spoken_for or not _unwrap_shell_group(pending)[0].strip():
-        # A group just closed and the text in hand is its bare bracket. The level ALREADY
-        # carries the group's status; folding the bracket as an unknown command wiped it.
+        # A group just closed; the level already carries its status.
         return models[-1]
     piece = _piece_success_model(pending, functions, notebook_bang)
     models[-1] = piece if prev_ops[-1] == "" else _fold_status(models[-1], prev_ops[-1], piece)
@@ -1465,16 +1347,14 @@ def _for_list_is_nonempty(text: str) -> bool:
 
     Only a LITERAL list answers: `$LIST` and a glob may both expand to nothing, while `for x in a
     b` runs, so its body is reached as surely as a bare command."""
-    # Shell whitespace, not a literal `" in "`: `for x\tin\ta` is the same loop to bash,
-    # and finding no list there marked a body that certainly runs as conditional.
+    # Shell whitespace: `for x\tin\ta` is the same loop.
     match = re.search(r"\sin\s", text)
     if match is None:
         return False
     words = text[match.end() :].split()
     if not words or not any(words):
         return False
-    # Quoting decides what a metacharacter means: `for x in '*'` iterates over one literal star,
-    # while a bare `*` is a glob that may match nothing.
+    # Quoting decides meaning: '*' is one literal, a bare * is a glob that may match nothing.
     return not any(_word_may_vanish(word) for word in words)
 
 
@@ -1515,8 +1395,7 @@ def _invoked_name(piece: str) -> str:
         text = text[header.end() :].lstrip().lstrip("({").lstrip()
     while True:
         word, rest = _split_first_word(text)
-        # `A=1 f`, `2>/dev/null f` and the reserved word `time f` all still call the function;
-        # only the wrappers that go looking for an EXECUTABLE do not.
+        # Assignments, redirections and reserved `time` still call the function; exec wrappers do not.
         if (
             word.lower() in _SHELL_BODY_KEYWORDS
             or word == "time"
@@ -1550,8 +1429,7 @@ def _leading_shell_keywords(piece: str) -> list[str]:
     if text.startswith("!"):
         text = text[1:].lstrip()
     text = text.lstrip("({").lstrip()
-    # `setup() { if true; then ...` opens a compound INSIDE a definition, and reading the header
-    # as the first word hid the `if`, losing the body's known outcome.
+    # A compound may open inside a definition header line.
     definition = _FUNCTION_DEF_RE.match(text)
     if definition is not None:
         text = text[definition.end() :].lstrip().lstrip("({").lstrip()
@@ -1580,68 +1458,49 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     out: list[tuple[str, bool]] = []
     buf: list[str] = []
     quote = ""
-    # One flag per open group, plus the base list. A command is conditional when any level
-    # above it is in a fallback tail, so an inner list cannot clear an outer one.
+    # One flag per open group; an inner list cannot clear an outer fallback tail.
     tails = [False]
-    # Per open `(`/`{`: does it hold a FUNCTION BODY? Unlike `tails` this survives a separator
-    # inside the body, since `;` starts a new and-or list but does not leave the definition.
+    # Per open group: does it hold a function body? Survives separators inside the body.
     def_levels = [False]
-    # The function each open `{` defines, and per flushed piece the innermost one it sits in. A
-    # body is conditional until its function is CALLED, by a later command in the same line, so the
-    # ownership has to survive to the second pass.
+    # A body is conditional until its function is called later in the line, so keep ownership.
     def_names: list[str | None] = [None]
     owners: list[str | None] = []
     nodef: list[bool] = []
     assumed: list[bool] = []
-    # Each definition's exit status once its closing brace is reached. Bash requires the
-    # definition to precede the call, so a single left-to-right pass always has it in hand.
+    # Bash requires definition before call, so one left-to-right pass has the status in hand.
     func_status: dict[str, bool | None] = {}
-    # Definition keys per name, in the order they appear.
     instances: dict[str, list[str]] = {}
     definitions = 0
-    # Per level: whether the last command flushed there is modelled as succeeding. A group
-    # exits with that status, which is what the enclosing `&&` reads.
+    # Per level: is the last flushed command modelled as succeeding (the group's exit status).
     last_ok: list[bool | None] = [None]
-    # Per level: has this and-or list already run a pip command? `A && B` leaves B
-    # unconditional only when something to its left is one.
+    # Per level: has this and-or list already run pip (`A && B` is unconditional only then).
     list_has_pip = [False]
-    # Per level: the operator that joined the piece in hand to the list before it. `||` succeeds
-    # when either side did and `&&` only when both, which `list_has_pip` alone cannot recover.
+    # Per level: the operator joining the piece in hand to the list before it.
     prev_ops = [""]
-    # Per level: the folded exit status of the and-or list to the LEFT of the piece in hand,
-    # three-valued because only a CERTAIN failure makes a `||` tail unconditional.
+    # Per level: folded status of the list to the left; three-valued, only certain failure counts.
     list_models: list[bool | None] = [None]
     buf_conditional = False
-    # One entry per open `(`/`{`: True when it opened a grouping. A `)` closing a `$( )` is
-    # inside a word, so a `#` after it is a literal, not a comment.
+    # True when a `(`/`{` opened a grouping; a `$( )` close is inside a word.
     groupings: list[bool] = []
-    # Per level: how many `case` statements are open. An arm's pattern ends in an UNBALANCED `)`,
-    # so while one is open that bracket delimits the arm rather than closing the level, and popping
-    # on it read an unconditional pip call as conditional.
+    # Per level: open case statements, whose arm patterns end in an unbalanced `)`.
     case_depths: list[int] = [0]
     grouping_closed = False
-    # A `( )` or `{ }` closed and nothing has been flushed since: the level's status already
-    # carries it, so folding the text in hand again wiped what the group contributed.
+    # A group closed with nothing flushed since: do not fold the text in hand again.
     closed_pending = False
-    # `!` in front of a pipeline belongs to the whole pipeline, so it has to outlive the pipe
-    # that ended its first command.
+    # A leading `!` belongs to the whole pipeline, so it outlives the first pipe.
     pipe_negations = 0
     in_pipeline = False
-    # Inside the empty parens of a function header, whose brackets open no group.
     func_parens = False
-    # Per level: was this tail made unconditional by the pip-succeeds assumption? Reporting an
-    # install on that basis is intended; cutting a path on it is not.
+    # Per level: tail made unconditional only by the pip-succeeds assumption (report, never cut).
     assumed_tail = [False]
-    # An open legacy `` `...` `` substitution: its operators belong to the inner command, so
-    # without this the `;` inside one split the line into an unreadable fragment.
+    # Operators inside a legacy backtick substitution belong to the inner command.
     in_backtick = False
     i = 0
 
     def in_sub() -> bool:
         return in_backtick or not all(groupings)
 
-    # The operator that ENDED each piece. `exec` under `|` or `&` runs in a subshell, so the
-    # parent shell reaches the next command and the list must not be truncated there.
+    # `exec` under `|` or `&` runs in a subshell, so the list continues.
     seps: list[str] = []
 
     def flush(separator: str = "") -> None:
@@ -1651,8 +1510,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         out.append((text, buf_conditional))
         seps.append(separator)
         owners.append(next((name for name in reversed(def_names) if name), None))
-        # The same flag WITHOUT the definition. Calling a function makes its body reachable,
-        # not unguarded: `setup() { false && pip install x; }; setup` still runs no pip.
+        # Without the definition: calling a function makes its body reachable, not unguarded.
         nodef.append(any(tails))
         assumed.append(any(assumed_tail))
         buf = []
@@ -1662,8 +1520,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         ch = line[i]
         in_substitution = in_sub()
         if not quote and ch.isalpha() and not (buf and buf[-1].isalnum()):
-            # Tracked ahead of the dispatch below: the `in_substitution` branch swallows a substitution's
-            # characters whole, so a `case` opened in one would never be seen there.
+            # Tracked before dispatch: the substitution branch swallows characters whole.
             keyword = _LEADING_WORD_RE.match(line, i)
             if keyword is not None:
                 if keyword.group(0) == "case":
@@ -1675,8 +1532,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf.append(line[i + 1])
             i += 2
         elif ch == "`" and quote != "'":
-            # Backticks expand inside double quotes as well, so this is checked before the
-            # quote branch; only single quotes make them literal.
+            # Backticks expand inside double quotes too.
             in_backtick = not in_backtick
             buf.append(ch)
             i += 1
@@ -1690,7 +1546,6 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf.append(ch)
             i += 1
         elif ch in ")}" and in_substitution and not (ch == ")" and case_depths[-1]):
-            # Close it here, before the guard below would swallow the bracket.
             grouping_closed = groupings.pop() if groupings else True
             if len(case_depths) > 1:
                 case_depths.pop()
@@ -1702,8 +1557,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     def_levels.pop()
                     closing = def_names.pop()
                     if closing:
-                        # A group exits with its last list's status, which `_close_group` is
-                        # about to fold; record it here, before the pop loses it.
+                        # Record the group's status before the pop loses it.
                         func_status[closing.split("#")[0]] = last_ok[-1]
                 _close_group(list_has_pip, prev_ops, last_ok, list_models, "".join(buf), not out)
                 closed_pending = True
@@ -1715,18 +1569,15 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             or line[i - 1] in ";&|"
             or (line[i - 1] in ")}" and grouping_closed)
         ):
-            break  # an operator, or a bracket that closed a grouping, ends a word
+            break
         elif in_substitution:
-            buf.append(ch)  # its separators are its own; the body is split on its own later
+            buf.append(ch)
             i += 1
         elif line.startswith("||", i):
-            # `false || pip install ...` always reaches the fallback, so only an UNKNOWN left side opens a
-            # tail, and the left side is the whole list: `true || false || pip install ...` skips it.
+            # Only an unknown left side opens a `||` tail, and the left side is the whole list.
             left_model = _left_hand_status(
                 list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
             )
-            # The pipeline this operator closes exits with its last command's status, turned
-            # around by the `!` in front of the whole thing.
             left_model = _negated(left_model, pipe_negations)
             if pipe_negations % 2:
                 list_models[-1] = left_model
@@ -1740,18 +1591,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             buf_conditional = any(tails) or any(def_levels)
             i += 2
         elif line.startswith("&&", i):
-            # `A && B` runs B only when A succeeded, so B is conditional unless the list to its left
-            # contains a pip command, which the replay models as succeeding. The whole list, not the last
-            # piece: the left operand of `A || B && C` is `(A || B)`, which succeeds when either ran.
-            #
-            # The exception is the point: `pip install a && pip install b` is the ordinary idiom and
-            # dropping its second half would cost more coverage than it saves. What this fixes is a probe
-            # guard, `nvidia-smi && pip install torch==2.12.0`, which installs nothing on a CPU box.
+            # `A && B` runs B only if A succeeded; B is unconditional only if a pip command is to its left
+            # (modelled as succeeding), so `nvidia-smi && pip install ...` stays conditional.
             left_and = _left_hand_status(
                 list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
             )
-            # The pipeline this operator closes exits with its last command's status, turned
-            # around by the `!` in front of the whole thing.
             left_and = _negated(left_and, pipe_negations)
             if pipe_negations % 2:
                 list_models[-1] = left_and
@@ -1760,37 +1604,31 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             )
             pipe_negations, in_pipeline = 0, False
             prev_ops[-1] = "&&"
-            # Reaching this tail rests on the replay's own model of pip succeeding, which is
-            # fine for reporting an install but must not make anything UNREACHABLE.
+            # Relies on pip-succeeds: fine for reporting an install, never for making anything unreachable.
             assumed_tail[-1] = assumed_tail[-1] or _piece_assumes_pip("".join(buf))
             flush("&&")
-            # A left side modelled as CERTAIN success reaches the tail as surely as the pip
-            # idiom does: `f() { pip install x; }; f && ...` and `true && ...` both run it.
+            # A certain-success left side reaches the tail too (`true && ...`).
             tails[-1] = not (list_has_pip[-1] or left_and is True)
             buf_conditional = any(tails) or any(def_levels)
             i += 2
         elif (
             ch == ";"
             or (
-                # `A & B` backgrounds A and runs B, `A | B` runs both: unconditional either way.
                 ch in "&|"
-                # `>&`, `<&`, `&>` and `>|` are redirections rather than separators: `0<&1 pip install ...` is
-                # one command, and splitting on its `&` left `1 pip install ...`, which reads as no pip.
+                # `>&`, `<&`, `&>` and `>|` are redirections, not separators.
                 and not (
                     ch == "&" and (line[i - 1 : i] in ("<", ">") or line[i + 1 : i + 2] == ">")
                 )
                 and not (ch == "|" and line[i - 1 : i] == ">")
             )
         ):
-            # A separator ends the and-or LIST, and a group exits with that list's status rather than its
-            # last lexical command's: `{ false && pip install x; }` fails, because the install never ran.
+            # A group exits with its list's folded status, not its last lexical command's.
             folded = _left_hand_status(
                 list_models, prev_ops, "".join(buf), func_status, not out, closed_pending
             )
             if ch == "|":
                 if not in_pipeline:
-                    # Only the head carries it: `a | ! b` is a syntax error, so no later
-                    # segment can introduce one.
+                    # `a | ! b` is a syntax error, so only the head carries a negation.
                     pipe_negations = _pipeline_negations("".join(buf), not out)
                     in_pipeline = True
             else:
@@ -1803,12 +1641,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             list_has_pip[-1] = False
             list_models[-1] = None
             assumed_tail[-1] = False
-            prev_ops[-1] = ""  # a new and-or list starts here
+            prev_ops[-1] = ""
             buf_conditional = any(tails) or any(def_levels)
             i += 1
         else:
-            # `f()` is a function header, not a group: pushing a level for its empty parens marked the
-            # whole body as "a group just closed" and lost the definition's status. Ordinary characters.
+            # `f()` is a function header, not a group.
             if (
                 ch == "("
                 and _FUNCTION_NAME_RE.fullmatch(_behind_keywords("".join(buf)))
@@ -1816,26 +1653,22 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             ):
                 func_parens = True
             if ch == ")" and func_parens:
-                func_parens = False  # the header's own bracket, matching the skip above
+                func_parens = False
             elif ch in "({":
-                # `$(`, `<(`, `>(` open a substitution running its own commands; a bare `(` groups this
-                # line's. `${ }` expands a WORD and runs nothing, so splitting on the `||` in
-                # `${X:-a||pip install ...}` invents a command bash never runs.
+                # `$(`, `<(`, `>(` run commands; `${ }` expands a word and runs nothing.
                 groupings.append(
                     not (
                         (ch == "(" and buf and buf[-1] in "$<>")
                         or (ch == "{" and buf and buf[-1] == "$")
                     )
                 )
-                # `setup() { :; pip install ...; }` defines a function nobody called, and the header sits in
-                # the piece that opens the brace, so flagging that piece alone freed every later command.
+                # An uncalled function body stays conditional through every later command in it.
                 tails.append(False)
                 assumed_tail.append(False)
                 header = _FUNCTION_DEF_RE.fullmatch(_behind_keywords("".join(buf)))
                 def_levels.append(ch == "{" and header is not None)
                 if ch == "{" and header:
-                    # One key per DEFINITION, not per name: `f(){ a; }; f; f(){ b; }` calls the FIRST body, and
-                    # keying by name compared the call against the last definition of `f`.
+                    # One key per definition: `f(){ a; }; f; f(){ b; }` calls the first body.
                     name = _function_name(header.group(0))
                     definitions += 1
                     key = f"{name}#{definitions}"
@@ -1849,16 +1682,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 last_ok.append(None)
                 case_depths.append(0)
                 if not "".join(buf).strip():
-                    buf_conditional = any(tails) or any(
-                        def_levels
-                    )  # the group opens before the command
+                    buf_conditional = any(tails) or any(def_levels)
             elif ch in ")}" and not (ch == ")" and case_depths[-1]):
                 grouping_closed = groupings.pop() if groupings else True
                 if len(case_depths) > 1:
                     case_depths.pop()
                 if len(tails) > 1:
-                    # The command in hand belongs to the level being closed, so its flag stays
-                    # what it was; the pop only affects what comes after.
+                    # The command in hand belongs to the closing level; the pop affects only what follows.
                     tails.pop()
                     if len(assumed_tail) > 1:
                         assumed_tail.pop()
@@ -1878,65 +1708,46 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
     flush()
     (head, head_conditional), *rest = out
     head_text, head_keyword = _unwrap_shell_group(head)
-    # One entry per piece in `out`, empties included: dropping them before the zip slid every later
-    # pair by one and left a `case`'s last arms unscanned. Filtered after the pairing.
+    # Keep empty pieces until after the zip, or later pairs slide by one.
     commands = [(head_text, head_conditional or head_keyword)]
-    # The keyword alone, without the piece's own flag folded in: entering a called function removes
-    # the definition from that flag, and the combined one double-counted it.
+    # The keyword flag alone; the piece's own flag would double-count a called definition.
     kw_flags = [head_keyword]
     for piece, flag in rest:
         text, keyword = _unwrap_shell_group(piece.strip())
-        # A space when the command itself starts with bash's negation: glued to the notebook bang,
-        # `! false` read as a command named `!false` and the negation was lost.
+        # Keep the space so `! false` is not read as a command `!false`.
         commands.append(
             (f"!{' ' if text.startswith('!') else ''}{text}" if text else "", flag or keyword)
         )
         kw_flags.append(keyword)
-    # `echo $(pip install x)` runs the install while the outer command is not pip, so the inner one
-    # is a command of its own. Read off the raw pieces: the unwrap above strips an assignment
-    # prefix like ``X=`pip install y` ``.
+    # `echo $(pip install x)` runs the install, so inner substitutions are commands too.
     ordered: list[tuple[str, bool]] = []
-    # An unconditional `exec` or `exit` ends the shell, so every OUTER command after it is
-    # unreachable. Its own substitutions expanded first, and one inside a `$( )` replaces only that
-    # subshell, so this applies at this level alone.
+    # An unconditional exec or exit makes every later outer command unreachable.
     handed_over = False
     seps = seps + [""] * (len(out) - len(seps))
-    # One flag per open compound statement: True once its BODY has started. `if false; then echo x;
-    # pip install ...; fi` runs neither command, but only the piece carrying the `then` was flagged.
+    # One flag per open compound: True once its body has started.
     body_levels: list[bool] = []
-    # Per open compound: what its test is modelled as returning, or None when unknown. A body
-    # whose test can never succeed is unreachable rather than conditional.
+    # Per open compound: its test's modelled result; a never-true test makes the body unreachable.
     test_models: list[bool | None] = []
-    # Per open compound, over the arms so far: did every one certainly fail, and was every one
-    # KNOWN? Together they decide an `elif` test and an `else` branch, which neither the arm in hand
-    # nor a plain inversion can tell.
+    # Per open compound: did every arm so far certainly fail, and was each known (for elif/else).
     arms_failed: list[bool] = []
     arms_known: list[bool] = []
-    # Per open compound: the word that opened it, whether the arm in hand is even reached, and
-    # whether the condition folded so far leans on the pip-succeeds assumption.
+    # Per open compound: opener word, whether the arm is reached, and whether pip-success was assumed.
     openers: list[str] = []
     arm_reached: list[bool] = []
     cond_assumed: list[bool] = []
-    # The same condition folded with pip's status left UNKNOWN. Comparing the two says whether the
-    # pip-succeeds assumption decided it, which a sticky flag could not.
+    # The condition folded with pip's status unknown, to tell whether the assumption decided it.
     cond_models: list[bool | None] = []
-    # Where each function's body landed in `ordered`, and the names invoked unconditionally.
     body_entries: dict[str, list[tuple[int, bool]]] = {}
-    # Per function body, the names it invokes unconditionally WITHIN that body. Reached only
-    # once the body itself is, which is what makes the call graph transitive.
+    # Per body, names it invokes unconditionally; reached only once the body is, so transitive.
     body_invokes: dict[str, set[tuple[str, int]]] = {}
     called: set[tuple[str, int]] = set()
     maybe_called: set[tuple[str, int]] = set()
-    # Depth of open compounds at an unconditional `break`/`continue`. Bash jumps past `done`, so
-    # the rest of that body never runs; loop-local, unlike `exit`, which ends the shell.
+    # Open-compound depth at an unconditional break/continue; loop-local, unlike exit.
     broke_at: int | None = None
-    # Functions whose body has hit an unconditional `return`, and the last piece index each
-    # definition occupies. `return` ends the BODY, not the shell, and a call resolves against the
-    # definition in force at that point: bash fails `f` written before `f()`.
+    # `return` ends the body, not the shell; a call resolves against the definition in force then.
     returned: set[str] = set()
     def_last_index: dict[str, int] = {}
-    # Functions whose body ends the SHELL, and where each name was first called. The terminator is
-    # conditional while it is only a definition, so the effect applies when the call is resolved.
+    # Functions whose body ends the shell; applied when the call is resolved.
     ends_shell: set[str] = set()
     call_at: dict[str, int] = {}
     for index, ((piece, flag), (text, command_flag), separator) in enumerate(
@@ -1945,13 +1756,11 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         if handed_over:
             break
         keywords = _leading_shell_keywords(piece)
-        # The SELECTOR of a `case` runs before any arm is chosen, so a substitution in it is
-        # unconditional even though the arms it opens are not.
+        # A case selector runs before any arm, so a substitution in it is unconditional.
         opens_case = "case" in keywords
         for keyword in keywords:
             if keyword == "case":
-                # Every command between here and its `esac` sits in some arm and only the matching arm runs.
-                # No body keyword opens one, so the level is active from the word itself.
+                # Everything until esac sits in some arm, so the level is active from the word itself.
                 body_levels.append(True)
                 test_models.append(None)
                 arms_failed.append(False)
@@ -1961,9 +1770,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 cond_assumed.append(False)
                 cond_models.append(None)
             elif keyword in _SHELL_TEST_KEYWORDS:
-                body_levels.append(False)  # the test itself runs whenever the line does
+                body_levels.append(False)
                 test_models.append(None)
-                arms_failed.append(True)  # no arm has run yet
+                arms_failed.append(True)
                 arms_known.append(True)
                 openers.append(keyword)
                 arm_reached.append(True)
@@ -1973,16 +1782,14 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 if body_levels:
                     body_levels[-1] = True
                     if keyword in ("then", "do"):
-                        # The condition is complete: fold it in, invert an `until`, and let
-                        # the arm bookkeeping see the RESULT rather than the first piece.
+                        # Condition complete: fold it, invert an until, and record the result.
                         model = test_models[-1]
                         if openers[-1] == "until" and model is not None:
                             model = not model
                         if not arm_reached[-1]:
                             model = None
                         elif model is False and cond_assumed[-1]:
-                            # The condition is false only because the replay assumes pip succeeds, and
-                            # `if ! pip install x; then ...` does run its body when that install fails.
+                            # False only via the pip-succeeds assumption; `if ! pip install x` can run its body.
                             model = None
                         if openers[-1] in ("if", "until", "while"):
                             arms_known[-1] = (
@@ -1992,15 +1799,13 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         test_models[-1] = model
                         cond_models[-1] = model
                     elif keyword == "else":
-                        # `else` runs exactly when every arm failed. Inverting the arm in hand
-                        # answered that only for a bare `if`/`else`.
+                        # `else` runs exactly when every arm failed.
                         test_models[-1] = (
                             True if arms_failed[-1] else (False if arms_known[-1] else None)
                         )
                         cond_models[-1] = test_models[-1]
                     elif keyword == "elif":
-                        # Its test is reached only when every earlier arm failed, and while it
-                        # is being read the level is back in a test region.
+                        # An elif test is reached only when every earlier arm failed.
                         arm_reached[-1] = arms_failed[-1]
                         body_levels[-1] = False
                         openers[-1] = "if"
@@ -2008,8 +1813,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         test_models[-1] = True if arms_failed[-1] else None
                         cond_models[-1] = test_models[-1]
                 else:
-                    # A body word with no open compound above it: every stack grows together, or the matching
-                    # `fi` pops one that was never pushed and the lint run dies on an IndexError.
+                    # Keep stacks in step, or the matching fi pops an unpushed level (IndexError).
                     body_levels.append(True)
                     test_models.append(None)
                     arms_failed.append(False)
@@ -2019,7 +1823,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     cond_assumed.append(False)
                     cond_models.append(None)
             elif body_levels:
-                body_levels.pop()  # fi / done / esac
+                body_levels.pop()
                 test_models.pop()
                 arms_failed.pop()
                 arms_known.pop()
@@ -2027,24 +1831,18 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 arm_reached.pop()
                 cond_assumed.pop()
                 cond_models.pop()
-        # `flag` alone is the separator-level state: a substitution inside a compound body or a case
-        # arm is expanded only when that body runs.
-        # A level speaks only once its BODY has started, and says the outcome of the branch in hand:
-        # `if true` certainly runs, `if false` never does, anything else is a path the notebook may
-        # take. A false branch still has to be inverted for `else`, which does run.
+        # A level speaks only once its body has started: `if true` runs, `if false` never does,
+        # anything else may run. A false branch is inverted for else.
         active = [model for level, model in zip(body_levels, test_models) if level]
         if any(model is False for model in active):
-            continue  # this branch can never be taken, so nothing in it runs
+            continue
         if broke_at is not None:
             if len(body_levels) < broke_at:
-                broke_at = None  # the loop closed; what follows `done` runs again
+                broke_at = None
             else:
-                continue  # still inside the loop the `break` jumped out of
-        # `command_flag` is the `then`/`else`/arm-label the piece carries, which means "conditional"
-        # only because the branch usually is; when the branch is KNOWN to be taken it says nothing. A
-        # case arm always leaves a None in `active`, so this can never clear an arm label.
-        # An `elif` whose earlier arms all certainly failed is a TEST, and a test runs whenever the
-        # statement does.
+                continue
+        # A then/else/arm flag means conditional only if the branch is not known to be taken.
+        # An elif after certain failures is a test, which runs whenever the statement does.
         reached_test = bool(body_levels) and not body_levels[-1] and arm_reached[-1]
         certain_branch = reached_test or (bool(active) and all(model is True for model in active))
         piece_conditional = (
@@ -2052,8 +1850,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             or (command_flag and not certain_branch)
             or any(model is not True for model in active)
         )
-        # A `case` selector sits in the same piece as the first arm, so the arm body keeps the
-        # level this piece opened while the substitutions ahead of it do not.
+        # The case selector shares a piece with the first arm.
         selector = (
             zip(body_levels[:-1], test_models[:-1]) if opens_case else zip(body_levels, test_models)
         )
@@ -2062,26 +1859,20 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
         )
         for inner in _substitution_bodies(piece):
             for inner_text, inner_flag in _split_chained(f"!{inner}"):
-                # A substitution inherits the parent's functions, so `f(){ pip install ...; }; echo $(f)`
-                # calls f. The recursive parse cannot see the definition, so the CALL is recorded here, where
-                # the reachability walk resolves it. One the notebook may not expand reaches the body
-                # without making anything in it certain.
+                # A substitution inherits the parent's functions; record the call for the reachability walk.
                 if sub_conditional or inner_flag:
                     maybe_called.add((_invoked_name(inner_text), index))
                 else:
                     called.add((_invoked_name(inner_text), index))
                 ordered.append((inner_text, sub_conditional or inner_flag))
-        # `${READY:-$(pip install ...)}` expands its word only when READY is unset, so the
-        # install inside it is a path the notebook MAY take, never one it certainly does.
+        # `${READY:-$(pip install ...)}` may run, never certainly.
         for inner in _substitution_bodies(piece, conditional = True):
             for inner_text, _ in _split_chained(f"!{inner}"):
                 maybe_called.add((_invoked_name(inner_text), index))
                 ordered.append((inner_text, True))
         if text:
-            # `if false` / `while false` / `until true` never reach their body, so what follows is
-            # unreachable rather than conditional and an install from it is not a finding.
-            # Still reading a condition: fold this piece into it, or `if false || true; then ...` stores
-            # the `false` alone. The inversion and arm bookkeeping happen when `then`/`do` closes it.
+            # A never-true test makes the body unreachable, not conditional. Fold condition pieces until
+            # then/do closes it.
             if body_levels and not body_levels[-1]:
                 model = (
                     _for_list_is_nonempty(text) or None
@@ -2095,10 +1886,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     if joiner not in ("&&", "||")
                     else _fold_status(test_models[-1], joiner, model)
                 )
-                # Only while the assumption still DECIDES the condition: `if false && pip install x` fails
-                # whatever pip does, and a sticky flag marked an `else` bash always runs conditional. Folding
-                # the condition again with pip unknown answers it, the two differing exactly when the
-                # assumption is load-bearing, which `if ! pip install x` still is.
+                # Only while the pip-success assumption still decides the condition.
                 unassumed = None if _piece_assumes_pip(text) else model
                 cond_models[-1] = (
                     unassumed
@@ -2106,15 +1894,9 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                     else _fold_status(cond_models[-1], joiner, unassumed)
                 )
                 cond_assumed[-1] = cond_models[-1] is not test_models[-1]
-            # A bare `setup` invokes it. Only the FIRST word: `setup --dry-run` calls it, `echo setup`
-            # does not.
-            # The RAW first word: `env f`, `nohup f` and `command f` look for an executable named f, so
-            # none reaches a shell function, and entering the body let its `exit` truncate the line.
+            # Only the raw first word calls a function; env/nohup/command look for an executable.
             invoked = _invoked_name(piece)
-            # What this command's flag would be with the definition entered; every other reason it is
-            # conditional still stands.
-            # `command_flag` on the HEADER piece is the definition itself, which entering the function
-            # removes; on any other piece it is a real `then` or arm label.
+            # The flag with the definition entered; on a header piece command_flag is the definition.
             header_match = _FUNCTION_DEF_RE.match(piece.lstrip("!").strip())
             header_piece = header_match is not None
             header_span = (
@@ -2129,11 +1911,10 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             )
             owner = owners[index]
             if owner is not None:
-                # Keyed by DEFINITION, not by name: `f(){ ...; }; f; f(){ :; }` calls the first body, which
-                # comparing against the final definition left conditional.
+                # Keyed by definition, not name: a call uses the definition in force at that point.
                 def_last_index[owner] = index
                 if owner in returned:
-                    continue  # the body already returned; nothing after it in this function runs
+                    continue
                 body_entries.setdefault(owner, []).append((len(ordered), entered))
                 if not entered:
                     body_invokes.setdefault(owner, set()).add((invoked, index))
@@ -2143,8 +1924,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                         not assumed[index]
                         and separator not in ("|", "&")
                         and _command_ends_shell(
-                            # The header shares this piece and has to come off before the terminator behind it is
-                            # visible. Still the RAW body: the unwrap producing `text` strips `exec` with it.
+                            # Strip the header to see the terminator; raw body, since unwrapping strips exec.
                             piece[header_span:] if header_piece else piece
                         )
                     ):
@@ -2152,17 +1932,14 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             elif not piece_conditional:
                 called.add((invoked, index))
                 if separator not in ("|", "&"):
-                    # `f | cat` runs f in a subshell, so a terminator inside it ends only
-                    # that subshell and the parent shell reaches the next command.
+                    # `f | cat` runs f in a subshell, so its terminator does not end the parent.
                     call_at.setdefault(invoked, len(ordered))
             ordered.append((text, piece_conditional))
-            # The RAW piece: `_unwrap_shell_group` strips `exec` out of `text` with every other
-            # transparent prefix. An `exec` bash may never reach hands nothing over, so the body condition
-            # counts here as much as the separator one.
+            # Use the raw piece: unwrapping strips exec. An unreached exec hands nothing over.
             handed_over = (
                 not piece_conditional
-                and not assumed[index]  # only certainly-reached terminators cut the list
-                and separator not in ("|", "&")  # a subshell; the parent shell carries on
+                and not assumed[index]
+                and separator not in ("|", "&")
                 and _command_ends_shell(piece)
             )
             if (
@@ -2171,26 +1948,18 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 and _split_first_word(_strip_exec_prefixes(text.lstrip("!").strip())[0].strip())[0]
                 in ("break", "continue")
             ):
-                # It jumps out of the innermost LOOP, not always the compound it sits in: in `while ...; do
-                # if ...; then break; fi; ...; done` the `fi` closes long before the body it skipped ends.
-                # Only inside a loop: bash reports "break: only meaningful in a `for', `while' or `until'
-                # loop" and carries on, so binding the jump to an enclosing `if` dropped commands that run.
+                # break leaves the innermost loop, not the enclosing if; outside a loop bash ignores it.
                 loop = [n for n, word in enumerate(openers) if word in ("while", "until", "for")]
                 if loop:
-                    # `break n` jumps out of the n-th enclosing loop, so `break 2` in a nested body leaves both
-                    # and the outer body stops too. A count past the nesting leaves every loop, as bash does.
+                    # `break n` leaves n enclosing loops; a count past the nesting leaves all.
                     _, _, level = (
                         _strip_exec_prefixes(text.lstrip("!").strip())[0].strip().partition(" ")
                     )
                     depth = int(level.strip()) if level.strip().isdigit() else 1
                     broke_at = loop[max(len(loop) - depth, 0)] + 1
 
-    # A defined body is conditional until something calls it: `setup() { pip install x; }; setup`
-    # definitely installs, and leaving it conditional dropped the pairing from the replay.
-    # `outer() { inner; }; outer` reaches `inner` only after `outer` is replayed, so the call graph
-    # is walked to a fixed point.
-    # A call only reaches a definition that already exists: `f || true; f() { ... }` fails at the
-    # call, so the name alone is not enough.
+    # A body is conditional until called; walk the call graph to a fixed point. A call reaches
+    # only a definition that already exists.
     def _definition_in_force(name: str, at: int) -> str | None:
         """The definition of `name` complete before position `at`, or None."""
         best = None
@@ -2211,9 +1980,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
             if key is not None and key not in reached:
                 reached.add(key)
                 pending_calls.append(key)
-    # A call the notebook MAY make, inside `${READY:-$(f)}` say, reaches the body without making
-    # anything in it certain: leaving it out pruned a body bash can run, and `called` would have
-    # replayed it as unconditional.
+    # A maybe-call (inside ${X:-$(f)}) reaches the body without making it certain.
     soft = {
         key
         for name, at in maybe_called
@@ -2228,8 +1995,7 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 reached.add(key)
                 soft.add(key)
                 soft_pending.append(key)
-    # A body nobody calls is UNREACHABLE, not merely conditional: bash defines `f` and stops, and
-    # the all-path rules read conditional commands, so leaving it in reported a phantom source.
+    # An uncalled body is unreachable, not conditional.
     unreached: set[int] = set()
     for name, entries in body_entries.items():
         for position, entered in entries:
@@ -2239,7 +2005,6 @@ def _split_chained(line: str) -> list[tuple[str, bool]]:
                 ordered[position] = (ordered[position][0], entered)
             else:
                 unreached.add(position)
-    # The call itself hands the shell over, so nothing the caller writes after it can run.
     cut = min(
         (
             call_at[key.split("#")[0]]
@@ -2275,7 +2040,6 @@ def iter_pip_invocations(install_cell: str) -> Iterator[PipInvocation]:
                 yield inv
 
 
-# Spec parsing: only what we need (no full PEP 440).
 SPEC_RE = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)(?:\[[^\]]*\])?(?P<rest>.*)$")
 OP_VERSION_RE = re.compile(r"(==|>=|<=|!=|~=|>|<)\s*([0-9][^,;\s]*)")
 
@@ -2283,7 +2047,7 @@ OP_VERSION_RE = re.compile(r"(==|>=|<=|!=|~=|>|<)\s*([0-9][^,;\s]*)")
 @dataclasses.dataclass
 class SpecParts:
     name: str
-    pins: list[tuple[str, str]]  # list of (op, version)
+    pins: list[tuple[str, str]]
     raw: str
 
 
@@ -2315,9 +2079,6 @@ def explicit_pin(spec: SpecParts) -> str | None:
     return None
 
 
-# ----- PyPI metadata cache ----- #
-
-
 def pypi_metadata(name: str, version: str) -> dict[str, Any] | None:
     PYPI_CACHE_DIR.mkdir(parents = True, exist_ok = True)
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", f"{name.lower()}__{version}")
@@ -2346,7 +2107,6 @@ def transitive_constraint(name: str, version: str, target: str) -> tuple[str | N
     requires = info.get("requires_dist") or []
     target_l = target.lower()
     for req in requires:
-        # Examples: 'tokenizers (<=0.23.0,>=0.22.0)', 'tokenizers <=0.23.0,>=0.22.0', 'tokenizers (>=0.22.0,<=0.23.0); python_version >= "3.9"'
         head = req.split(";", 1)[0].strip()
         m = re.match(r"^([A-Za-z0-9._-]+)\s*\(?([^)]*)?\)?\s*$", head)
         if not m:
@@ -2384,9 +2144,6 @@ def constraint_satisfied(version: str, ops: list[tuple[str, str]]) -> bool:
     return True
 
 
-# ----- Resolved set ----- #
-
-
 def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     """Merge install-cell constraints with Colab pip-freeze (cell wins). Resolution order per package: (1) exact `==V` pin, (2) upper-bound `<=V` (pip picks the highest allowed = V), (3) Colab fallback. Lower-bound `>=V` is intentionally NOT reflected (it does not lower an already-higher Colab version); R-INST-003 models that via `_install_cell_lower_bound`."""
     out = dict(colab)
@@ -2397,15 +2154,12 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
         if _is_dry_run(inv):
             continue
         if inv.action == "uninstall":
-            # The cell removed it, so the environment it leaves behind has no such package and neither
-            # should this: ignoring the verb left the rules judging something `pip uninstall` had just
-            # deleted. The accumulated bound goes too, or a later reinstall inherits it.
+            # Uninstall removes the package and its accumulated bound, or a reinstall inherits it.
             for raw in inv.packages:
                 sp = parse_spec(raw)
                 if sp is None:
                     continue
-                # PEP 503 makes `huggingface_hub` and `huggingface-hub` one project and the snapshot is keyed
-                # the second way, so popping the spelling as written left the removed package in place.
+                # PEP 503: pop both the written and canonical spellings.
                 for key in {sp.name, _canonical_project(sp.name)}:
                     out.pop(key, None)
                     pinned.discard(key)
@@ -2422,7 +2176,6 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
                 elif op == "<=" and sp.name not in pinned:
                     if sp.name not in upper_bounds or cmp_versions(ver, upper_bounds[sp.name]) < 0:
                         upper_bounds[sp.name] = ver
-    # Apply upper bounds where Colab's preinstall violates them.
     for name, ub in upper_bounds.items():
         if name in pinned:
             continue
@@ -2432,11 +2185,7 @@ def resolved_set(install_cell: str, colab: dict[str, str]) -> dict[str, str]:
     return out
 
 
-# ----- Rules ----- #
-
-
-# A `git+` target runs to the next shell or quoting boundary. Case-insensitive: pip
-# normalises `Git+https://` to the same link.
+# Case-insensitive: pip normalises `Git+https://`.
 _GIT_SOURCE_RE = re.compile(r"""git\+[^\s'"]+""", re.IGNORECASE)
 
 
@@ -2445,25 +2194,19 @@ def _git_source_repository(source: str) -> str:
 
     Matched as a path, not a substring: an arbitrary repository can carry
     `github.com/unslothai/unsloth` inside its own path, which a substring test reads as permission."""
-    # The raw scan keeps a substitution's closing bracket, and `unsloth.git)` matched no allowlist
-    # entry, so a permitted install was reported. Quotes and brackets are shell syntax, never part
-    # of a repository path.
+    # Quotes and brackets are shell syntax, never part of a repository path.
     source = source.strip().rstrip(")}`\"'")
     remainder = source.split("+", 1)[1] if "+" in source else source
-    # pip normalises the scheme, so the comparison is on the lowered host and path below.
     remainder = remainder.split("://", 1)[-1]
     host, _, path = remainder.partition("/")
-    host = host.rsplit("@", 1)[-1]  # drop any credentials
+    host = host.rsplit("@", 1)[-1]
     path = path.split("#", 1)[0].split("?", 1)[0]
-    # The LAST `@` after the repo path is the revision delimiter (pip VCS docs), so splitting at
-    # the first read `unslothai/unsloth@fake/../../attacker/repo@main` as the allowlisted repo.
+    # The last `@` is the revision delimiter, so `repo@fake/../../x@main` cannot pass.
     path = path.rsplit("@", 1)[0].rstrip("/")
-    # `unsloth.GIT` is the same repository: the host and path are lowered further down, so a
-    # case-sensitive strip left `.GIT` on and the entry then matched nothing.
+    # Case-insensitive `.git` strip, since host and path are lowered below.
     if path.lower().endswith(".git"):
         path = path[: -len(".git")]
-    # Resolve `.` and `..` as a URL client does, or `unslothai/unsloth/../../attacker/repo`
-    # reads as an allowlisted prefix.
+    # Resolve `.` and `..` as a URL client does, or traversal reads as an allowlisted prefix.
     segments: list[str] = []
     for segment in path.split("/"):
         if segment in ("", "."):
@@ -2501,8 +2244,7 @@ def rule_inst_001_git_plus(install_cell: str, file: str, cell_idx: int) -> list[
                 continue
             sources += _GIT_SOURCE_RE.findall(command)
             sources += [arg for arg in inv.packages if arg.lower().startswith("git+")]
-        # Per source, not per line: one allowlisted repository beside a prohibited one must
-        # not clear the whole line.
+        # Per source, not per line: one allowlisted repo must not clear a prohibited one.
         if not sources or all(_git_source_is_allowed(source) for source in sources):
             continue
         findings.append(
@@ -2536,11 +2278,10 @@ def _removed_by_cell(
             if sp is None or _canonical_project(sp.name) != wanted:
                 continue
             if _is_dry_run(inv):
-                continue  # `--dry-run` reports what pip WOULD do and changes nothing
+                continue
             if inv.action == "install" and not _requirement_applies(raw, environment):
-                continue  # pip skips a requirement its marker excludes, so nothing is put back
-            # Replayed in order: `pip uninstall x; pip install x` leaves x installed, and answering on the
-            # first uninstall claimed a removal pip puts straight back.
+                continue
+            # Replayed in order: `pip uninstall x; pip install x` leaves x installed.
             removed = inv.action == "uninstall"
     return removed
 
@@ -2561,7 +2302,6 @@ def rule_inst_002_no_deps_transitive(
             v = explicit_pin(sp)
             if v is None:
                 continue
-            # Check transitive constraints on a curated short list of pkgs.
             for target in (
                 "tokenizers",
                 "torchao",
@@ -2613,10 +2353,9 @@ def _install_cell_lower_bound(
     best: str | None = None
     for inv in unconditional_pip_invocations(install_cell):
         if _is_dry_run(inv):
-            continue  # pip makes no environment changes, so it places no floor on anything
+            continue
         if inv.action == "uninstall":
-            # The cell removed it, so no earlier line still places a floor on it. Keeping the
-            # bound let R-INST-003 accept an environment the package is no longer in.
+            # The cell removed it, so no earlier line still floors it.
             if any(
                 (sp := parse_spec(raw)) is not None and sp.name == target for raw in inv.packages
             ):
@@ -2627,7 +2366,7 @@ def _install_cell_lower_bound(
             if sp is None or sp.name != target:
                 continue
             if not _requirement_applies(raw, environment):
-                continue  # pip skips it, so it satisfies no floor
+                continue
             for op, ver in sp.pins:
                 if op in ("==", ">="):
                     if best is None or cmp_versions(ver, best) > 0:
@@ -2650,8 +2389,7 @@ def _compatible_release_ceiling(version: str) -> str | None:
     return ".".join(head)
 
 
-# pip takes an archive URL or path as an install target while parse_spec skips anything with a
-# `://`, so a wheel read as no install. PEP 427 puts the version in the filename's second field.
+# pip accepts archive URLs/paths; PEP 427 puts the version in the filename's second field.
 _ARCHIVE_RE = re.compile(
     r"(?P<name>[A-Za-z0-9._-]+?)-(?P<version>\d[^-]*?)(?:-.*)?\.(?:whl|tar\.gz|zip)$",
     re.IGNORECASE,
@@ -2665,9 +2403,7 @@ def _archive_requirement(argument: str) -> tuple[str, str | None] | None:
     `torchcodec @ https://.../v0.13.0.zip`: the package is replaced, by something this cannot name."""
     named, sep, reference = argument.partition("@")
     if sep and "://" in reference:
-        # A PEP 508 marker rides on the end of a direct reference, and left in place it made the
-        # archive regex fail, so the package read as replaced by an unknown version. Only for that
-        # branch, where the URL is delimited; a `;` in a bare path is a legal character.
+        # Strip a PEP 508 marker from a delimited URL; `;` is legal in a bare path.
         reference = reference.split(";", 1)[0]
         argument = reference.strip()
         named = named.strip().split("[", 1)[0].replace("_", "-").lower()
@@ -2735,7 +2471,6 @@ def _window_names_one_minor(
     if ceiling is None:
         return False
     next_minor = _compatible_release_ceiling(f"{version_minor(floor)}.0")
-    # Padded: `<0.11.0` and `<0.11` name the same boundary.
     return next_minor is not None and cmp_releases(ceiling, next_minor) <= 0
 
 
@@ -2760,7 +2495,6 @@ def _spec_window(
                 floor = ver
                 floor_excludes_itself = op == ">"
             elif cmp_releases(ver, floor) == 0 and op == ">":
-                # Same version, stricter operator: intersecting them keeps the exclusion.
                 floor_excludes_itself = True
         elif op == "<=":
             if cap is None or cmp_versions(ver, cap) < 0:
@@ -2775,8 +2509,7 @@ def _spec_window(
     return exact, floor, cap, ceiling, exclusions, floor_excludes_itself
 
 
-# Flags that stop pip treating what is installed as satisfying an unbounded requirement, so
-# it resolves from the index instead of leaving the version alone.
+# Flags that make pip resolve from the index instead of keeping what is installed.
 _RESOLVE_ANYWAY_LONG = frozenset({"--upgrade", "--force-reinstall", "--ignore-installed"})
 _RESOLVE_ANYWAY_SHORT = frozenset({"U", "I"})
 
@@ -2818,7 +2551,6 @@ def _highest_minor_below(ceiling: str) -> str:
         return f"{major}.{minor}"
     if minor >= 1:
         return f"{major}.{minor - 1}"
-    # `<2.0` lands somewhere in the 1.x line, and which minor that is only the index knows.
     return ""
 
 
@@ -2849,25 +2581,22 @@ def _effective_version(
     exact_known = True
     for inv in unconditional_pip_invocations(install_cell):
         if "--dry-run" in inv.flags:
-            # A resolution probe leaves the environment exactly as it was, so replaying its bounds
-            # reported a version the cell never installed.
+            # A resolution probe leaves the environment unchanged.
             continue
-        # One command names a project once as far as pip is concerned: it intersects repeated
-        # arguments into a single requirement, so they have to be one window here too.
+        # pip intersects repeated arguments into one requirement, so treat them as one window.
         pins: list[tuple[str, str]] = []
         named = False
         replaced_unnamed = False
         for raw in inv.packages:
             if not _requirement_applies(raw, environment):
-                continue  # pip skips it, so its bounds never move anything
-            # Before parse_spec, which reads `./torchcodec-0.13.0-...whl` as a project called
-            # `.` and hides the archive behind a name that never matches.
+                continue
+            # Before parse_spec, which reads `./x-1.0.whl` as a project called `.`.
             archive = _archive_requirement(raw)
             if archive is not None:
                 if archive[0] == target:
                     named = True
                     if archive[1] is None:
-                        replaced_unnamed = True  # installed, by something with no version here
+                        replaced_unnamed = True
                     else:
                         pins.append(("==", archive[1]))
                 continue
@@ -2879,102 +2608,76 @@ def _effective_version(
         if not named:
             continue
         if inv.action == "uninstall":
-            current = None  # removed; a later install can put it back
+            current = None
             continue
         if not pins and not replaced_unnamed and _forces_resolution(inv.flags):
-            # A bare name with any of these takes whatever the index offers, and nothing
-            # here names which release that is.
             current, exact_known = None, True
             continue
         if replaced_unnamed:
             current, exact_known = None, True
             continue
         exact, floor, cap, ceiling, exclusions, exclusive_floor = _spec_window(pins)
-        # Where an install lands when it has to move, or None when nothing names it.
         landing = floor if _window_names_one_minor(floor, ceiling, cap) else None
         if landing is not None and _split_prerelease(landing)[1]:
-            # `~=0.12.0rc1` admits the stable 0.12 releases too and pip takes the newest candidate, so the
-            # window names the MINOR rather than the prerelease, which PEP 440 sorts below the ABI floor.
-            # Only where the window admits it: `>=0.12.0a1,<0.12.0rc1` stops below every stable 0.12.
+            # `~=0.12.0rc1` admits stable 0.12 too, so name the minor, but only where the window admits it.
             core = _split_prerelease(landing)[0]
             if (cap is None or cmp_versions(core, cap) <= 0) and (
                 ceiling is None or cmp_versions(core, ceiling) < 0
             ):
                 landing = core
         if landing is None and ceiling is not None:
-            # A wider window still names the MINOR pip moves to, which is what the callers
-            # compare; without it `<0.10.5` and `>=0.8,<0.11` came back unknown.
             below = _highest_minor_below(ceiling)
             if below and (floor is None or cmp_versions(below, floor) >= 0):
                 landing = below
-        # A requirement satisfies EVERY specifier it carries, so an inclusive cap the exclusive ceiling
-        # rules out is not where pip lands: `>=0.8,<=0.11,<0.10` takes the newest of 0.8 to 0.9.x.
+        # Every specifier applies, so an inclusive cap the exclusive ceiling excludes is not the landing.
         cap_exact = True
         if cap is not None and ceiling is not None and cmp_versions(cap, ceiling) >= 0:
             cap, cap_exact = landing, landing is not None
         if exact is not None:
             current, exact_known = exact, True
         elif current is None or _forces_resolution(inv.flags):
-            forced_off = current is not None  # got here by --upgrade over an installed one
-            # `--upgrade` takes the newest available version, so an installed release that merely SATISFIES
-            # the range is not where it lands: `-U "torchcodec>=0.10,<0.12"` on 0.10 moves to 0.11.
-            # Absent, so the install puts it there and the only question is where: `<=V` names it exactly,
-            # a floor says how low, and an exclusive ceiling names nothing, the release below it being
-            # only in the index.
+            forced_off = current is not None
+            # `--upgrade` takes the newest admitted version, not the installed one. Absent: `<=V` names it,
+            # a floor bounds it, and an exclusive ceiling names nothing.
             if cap is not None:
                 current, exact_known = cap, cap_exact
             elif landing is not None and floor is not None:
-                # pip takes the newest release a BOUNDED window admits, so `>=0.10,<0.12` lands on 0.11, not on
-                # its floor. A ceiling with no floor under it stays unknown, as above: nothing bounds the guess.
+                # pip takes the newest release a bounded window admits.
                 current, exact_known = landing, True
             elif floor is not None:
-                # `>V` does not admit V itself, but an INEXACT bound is only read by checks that hold for every
-                # release at or above it, so one extra version can only under-report. Dropping it entirely left
-                # `pip install "torch>2.11"` beside torchcodec 0.10 unreported.
+                # An inexact floor is only read by checks that hold above it, so `>V` may include V.
                 current, exact_known = floor, False
             elif (
                 forced_off
                 and landing is not None
                 and cmp_versions(version_minor(current), landing) == 0
             ):
-                # `--upgrade "x<0.12"` on an installed 0.11 cannot leave the 0.11 line: not above the ceiling,
-                # and an upgrade does not go below what is there. The minor is the granularity these rules
-                # compare, so dropping it hid a pairing every admitted release breaks.
+                # An upgrade with a ceiling cannot leave the installed minor.
                 current, exact_known = landing, True
             elif forced_off:
-                # `--upgrade` moves to the newest available release, so what is installed is not where it
-                # lands, and with a ceiling and no floor nothing names the landing either.
                 current, exact_known = None, True
         elif floor is not None and (
             cmp_versions(floor, current) > 0
-            # `>V` is not satisfied by V itself, so equality still forces a move.
             or (exclusive_floor and cmp_versions(floor, current) == 0)
         ):
             if cap is not None:
-                current, exact_known = cap, cap_exact  # `<=V` allows V, so V is what pip picks
+                current, exact_known = cap, cap_exact
             elif landing is not None:
-                current, exact_known = landing, True  # the window pins the minor
+                current, exact_known = landing, True
             else:
-                # At least the floor, possibly newer. `>V` excludes V itself, but as above an inexact bound
-                # carrying one extra version is sound, and discarding it silenced the rule.
                 current, exact_known = floor, False
         elif cap is not None and cmp_versions(current, cap) > 0:
-            current, exact_known = cap, cap_exact  # `<=V` allows V, so V is what pip picks
+            current, exact_known = cap, cap_exact
         elif ceiling is not None and cmp_versions(current, ceiling) >= 0:
             current, exact_known = landing, True
-        # Whatever is left still has to satisfy the requirement's own exclusions.
         if current is not None and any(_version_is_excluded(current, ver) for ver in exclusions):
-            # `>=0.11,<0.12,!=0.11.0` stays in the 0.11 line, so only an exclusion covering the whole minor
-            # takes the landing away. The landing comes off the CEILING alone, so it is checked against the
-            # rest of the window: `<=0.10.0,!=0.10.0,<0.12` can only resolve below 0.10.
+            # Only an exclusion covering the whole minor removes the landing; check it against the window.
             if (
                 landing is not None
                 and (cap is None or cmp_versions(landing, cap) <= 0)
                 and (ceiling is None or cmp_versions(landing, ceiling) < 0)
                 and (floor is None or cmp_versions(landing, floor) >= 0)
                 and not any(_exclusion_covers_minor(landing, ver) for ver in exclusions)
-                # An inclusive cap pins the landing to that exact release, so excluding it leaves nothing in
-                # the minor: `<0.12,<=0.11,!=0.11.0` cannot resolve to any 0.11.
                 and not (
                     cap is not None
                     and cmp_versions(landing, cap) == 0
@@ -3024,7 +2727,6 @@ def _codec_works_above(torch_floor: str, codec_minor: str) -> bool:
     A floor is normally too weak to judge, since the row that applies depends on where pip lands,
     but not when every candidate is excluded: `torch>=2.11` with `torchcodec==0.10` fails on 2.11
     and on everything past it, whichever release pip picks."""
-    # Past the table, only the ABI rule can apply, and it needs a codec at or above its floor.
     if at_least(codec_minor, TORCHCODEC_ABI_STABLE_CODEC):
         return True
     return any(
@@ -3045,28 +2747,21 @@ def rule_inst_004_torchcodec_torch(
     )
     if not torch_v or not codec_v:
         return findings
-    # torchcodec 0.12+ is ABI-stable against torch >=2.11 (its build sets TORCH_TARGET_VERSION to
-    # 2.11), so that half of the matrix is open-ended rather than a finite set of minors. Without
-    # it the 2.11 row would flag torchcodec 0.12 through 0.15, all of which upstream supports.
-    # An inexact version is a floor, which is enough for a check that only asks whether both
-    # sides clear a floor of their own.
-    # An inexact codec is a FLOOR, and a prerelease floor admits the stable release above it, so
-    # `torchcodec>=0.12.0rc1` may land on 0.12 itself. Compared as written it stayed below the ABI
-    # floor and fired on an upgrade range whose every stable member is fine.
+    # torchcodec 0.12+ is ABI-stable against torch >= 2.11 (TORCH_TARGET_VERSION 2.11).
+    # An inexact prerelease floor admits the stable release above it.
     codec_clears_abi = at_least(codec_v, TORCHCODEC_ABI_STABLE_CODEC) or (
         not codec_exact and cmp_versions(version_minor(codec_v), TORCHCODEC_ABI_STABLE_CODEC) >= 0
     )
     if at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH) and codec_clears_abi:
-        return findings  # ABI-stable pairing, not locked to one torch minor
+        return findings
     t_minor = version_minor(torch_v)
     c_minor = version_minor(codec_v)
     allowed = TORCH_TORCHCODEC.get(t_minor)
     if allowed is None:
         if not at_least(torch_v, TORCHCODEC_ABI_STABLE_TORCH):
-            return findings  # torch older than the table — don't flag
+            return findings
         if not codec_exact and not at_least(c_minor, TORCHCODEC_ABI_STABLE_CODEC):
-            return findings  # a newer codec above this floor would be ABI-stable and fine
-        # Past the ABI floor with a pre-0.12 codec: locked to an older torch minor.
+            return findings
         findings.append(
             Finding(
                 rule = "R-INST-004",
@@ -3079,8 +2774,7 @@ def rule_inst_004_torchcodec_torch(
         )
         return findings
     if not torch_exact:
-        # The row that applies depends on which torch the floor resolves to, unless no release at or
-        # above it can take this codec at all, which fails whichever torch pip picks.
+        # The row depends on which torch the floor resolves to, unless no release above it fits.
         if codec_exact and not _codec_works_above(t_minor, c_minor):
             findings.append(
                 Finding(
@@ -3094,7 +2788,6 @@ def rule_inst_004_torchcodec_torch(
             )
         return findings
     if not codec_exact and cmp_versions(c_minor, sorted(allowed)[-1]) <= 0:
-        # Some release at or above the floor is in the row, so nothing is proven.
         return findings
     if c_minor not in allowed:
         findings.append(
@@ -3191,9 +2884,6 @@ def rule_inst_006_double_bang(install_cell: str, file: str, cell_idx: int) -> li
     return findings
 
 
-# ----- AST-level rules over user-facing cells ----- #
-
-
 class _APIScanner(ast.NodeVisitor):
     """Scan user-facing code cells for known deprecated patterns. R-API-001 (`for_training`/`for_inference`) is intentionally absent: those helpers are still live as of 2026-05 (PR #221 removed them cosmetically, not as a deprecation). R-API-004 catches actual removals dynamically."""
 
@@ -3203,7 +2893,6 @@ class _APIScanner(ast.NodeVisitor):
         self.findings: list[Finding] = []
 
     def visit_Call(self, node: ast.Call) -> None:
-        # SFTConfig with suboptimal optim (R-API-003). PR #221 also stripped gradient_checkpointing kwargs from some vision notebooks, but they are still accepted by live TRL (trl==0.25.1) so that was cosmetic; R-API-004 catches real drift.
         if isinstance(node.func, ast.Name) and node.func.id == "SFTConfig":
             for kw in node.keywords:
                 if (
@@ -3241,8 +2930,6 @@ def scan_user_cells(nb: dict[str, Any], file: str) -> list[Finding]:
     return findings
 
 
-# ----- DONT_UPDATE_EXCEPTIONS coverage ----- #
-
 POLICY_CLAUSES_DEFAULT = [
     # (id, regex, applies_to_predicate_on_install_cell_text)
     (
@@ -3274,8 +2961,7 @@ def rule_l12_exceptions_coverage(notebooks_dir: pathlib.Path) -> list[Finding]:
             continue
         nb = load_notebook(path)
         for idx, cell in install_cells(nb):
-            # install_cells is a text heuristic, so `!echo "pip install peft"` reaches here running no pip
-            # and `applies` then demands a clause the notebook has no install to carry.
+            # install_cells is a text heuristic; `!echo "pip install x"` runs no pip.
             if not any(True for _ in iter_pip_invocations(cell)):
                 continue
             for cid, pat, applies in clauses:
@@ -3310,25 +2996,19 @@ def _extract_dont_update_exceptions(update_script: pathlib.Path) -> list[str]:
     return out
 
 
-# ----- Drift ----- #
-
-
 def cmd_drift(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     update_script = nbdir / "update_all_notebooks.py"
     if not update_script.is_file():
         print(f"FAIL: {update_script} not found", file = sys.stderr)
         return 2
-    # Stash any pre-existing dirty state, run the updater, diff, restore.
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd = nbdir).decode().strip()
     subprocess.run(
         ["git", "-C", str(nbdir), "stash", "--include-untracked"],
         check = False,
         capture_output = True,
     )
-    # The restore MUST run even on SystemExit/KeyboardInterrupt, else the
-    # working tree stays rolled back into the stash. A bare try/finally keeps
-    # the original exception while still running the cleanup (stash pop).
+    # try/finally so the stash pop runs even on SystemExit or KeyboardInterrupt.
     findings: list[Finding] = []
     rc: int
     try:
@@ -3373,7 +3053,6 @@ def cmd_drift(args: argparse.Namespace) -> int:
                         )
                 rc = 0 if not findings else 1
     finally:
-        # Restore the working tree (both commands run regardless of exit path).
         subprocess.run(
             ["git", "-C", str(nbdir), "checkout", "."],
             check = False,
@@ -3388,9 +3067,6 @@ def cmd_drift(args: argparse.Namespace) -> int:
     return rc
 
 
-# ----- Convert ----- #
-
-
 def cmd_convert(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     out = pathlib.Path(args.out).resolve()
@@ -3399,7 +3075,6 @@ def cmd_convert(args: argparse.Namespace) -> int:
     if not converter.is_file():
         print(f"FAIL: {converter} not found", file = sys.stderr)
         return 2
-    # Convert in batches; the script accepts multiple notebooks at once.
     notebooks = list(iter_notebooks(nbdir, include_templates = True))
     failed: list[Finding] = []
     BATCH = 32
@@ -3426,13 +3101,9 @@ def cmd_convert(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
-# ----- Lint (combined) ----- #
-
-
 def cmd_lint(args: argparse.Namespace) -> int:
     nbdir = pathlib.Path(args.notebooks_dir).resolve()
     colab_path = pathlib.Path(args.colab_pin).resolve() if args.colab_pin else COLAB_FALLBACK_FILE
-    # Pair the marker oracle with the package snapshot actually being used.
     _set_colab_oracle_dir(colab_path.parent)
     colab = parse_pip_freeze(colab_path)
     if not colab:
@@ -3458,20 +3129,14 @@ def cmd_lint(args: argparse.Namespace) -> int:
             continue
         rel = str(path.relative_to(nbdir))
         env = target_environment(rel)
-        # Colab oracle applies only to Colab notebooks; other targets get the environment-agnostic rules only (their preinstalls aren't tracked).
         oracle = colab if env == "colab" else {}
         cells = install_cells(nb)
-        # Per-cell forbid-pattern checks.
         for idx, cell in cells:
             findings += rule_inst_001_git_plus(cell, rel, idx)
             findings += rule_inst_006_double_bang(cell, rel, idx)
-        # Whole-notebook rules: install steps may span multiple cells, so merge
-        # before resolving compat against Colab.
+        # Install steps may span cells, so merge before resolving.
         merged = "\n".join(c for _, c in cells)
-        # A cell can look like an install and resolve nothing: `!echo "pip install foo"` runs no pip,
-        # and `!command -v uv || pip install foo` runs it only on the fallback side. The compat rules
-        # replay UNCONDITIONAL invocations, so both would compare the oracle against itself and report
-        # the base image. R-INST-001 still sees the conditional path: it runs per cell, before this.
+        # Compat rules replay only unconditional invocations; R-INST-001 already saw conditional ones.
         if not any(True for _ in unconditional_pip_invocations(merged)):
             merged = ""
         if env == "colab" and merged:
@@ -3486,16 +3151,10 @@ def cmd_lint(args: argparse.Namespace) -> int:
     return 0 if not any(f.severity == "error" for f in findings) else 1
 
 
-# ----- Exceptions coverage ----- #
-
-
 def cmd_exceptions(args: argparse.Namespace) -> int:
     findings = rule_l12_exceptions_coverage(pathlib.Path(args.notebooks_dir).resolve())
     _emit(findings)
     return 0 if not findings else 1
-
-
-# ----- API surface scan ----- #
 
 
 def cmd_api(args: argparse.Namespace) -> int:
@@ -3543,9 +3202,6 @@ def cmd_api(args: argparse.Namespace) -> int:
     return 0 if not findings else 1
 
 
-# ----- Orchestrator ----- #
-
-
 def cmd_all(args: argparse.Namespace) -> int:
     rcs: list[int] = []
     rcs.append(cmd_drift(argparse.Namespace(notebooks_dir = args.notebooks_dir)))
@@ -3571,8 +3227,7 @@ def _fetch_oracle(url: str) -> bytes | None:
         return None
 
 
-# The packages the R-INST rules seed on. A pin file missing them makes every rule return early,
-# so a truncated 200 is refused rather than acknowledged: "parsed" is not "usable".
+# The R-INST rules seed on these, so a truncated payload is refused.
 _COLAB_PIP_REQUIRED = frozenset(
     {"torch", "torchcodec", "peft", "torchao", "transformers", "tokenizers"}
 )
@@ -3597,7 +3252,7 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
     """Pull the latest Colab pip-freeze.gpu.txt and write to disk. --all refreshes every oracle file into --snapshot-dir instead, which is how a colab-diff drift report is acknowledged in one command."""
     if args.all:
         snapshot_dir = pathlib.Path(args.snapshot_dir).resolve()
-        # Fetch everything before writing anything: writing as we go would let a transient failure leave a mixed-generation directory, and the tripwire would go quiet on a failed refresh.
+        # Fetch all before writing, so a transient failure cannot leave mixed generations.
         payloads: dict[str, bytes] = {}
         skipped: list[str] = []
         for upstream_name, snapshot_name in COLAB_ORACLE_FILES.items():
@@ -3609,8 +3264,7 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
             if data is None:
                 reason = "could not be fetched"
             elif rule_bearing and not _oracle_payload_is_usable(upstream_name, data):
-                # Acknowledging a payload the rules cannot read is worse than not acknowledging: colab-diff
-                # compares the two parses, so a format change written in leaves both sides equally empty.
+                # A payload the rules cannot read would leave both diff sides equally empty.
                 reason = "carries no key the rules can read"
             if reason is None:
                 payloads[snapshot_name] = data
@@ -3622,16 +3276,12 @@ def cmd_refresh_colab(args: argparse.Namespace) -> int:
                     file = sys.stderr,
                 )
                 return 2
-            # Advisory oracle: nothing resolves a rule against it, so a transient upstream failure leaves
-            # the stale snapshot in place rather than reddening the daily cron.
+            # Advisory oracle: keep the stale snapshot on a transient upstream failure.
             print(f"::notice::skipping {upstream_name}: {reason}")
             skipped.append(upstream_name)
         snapshot_dir.mkdir(parents = True, exist_ok = True)
-        # The set lands together or not at all. Each write is atomic on its own, but a failure part way
-        # through left a fresh package list beside a stale Python version, and the workflow's `|| echo`
-        # fallback then linted against it while reporting the committed snapshot.
-        # Copies first, then writes: restoring by writing the bytes back needs the room the failure
-        # just proved is missing. A rename cannot fail that way, the copy being on the same filesystem.
+        # The set lands together or not at all; copy aside first, since restoring by rewrite needs
+        # the space the failure proved missing.
         preserved: dict[str, pathlib.Path] = {}
         for name in payloads:
             live = snapshot_dir / name
@@ -3737,12 +3387,9 @@ def _diff_oracle(
     return new, removed, changed
 
 
-# Per oracle and key, what the consumer needs the VALUE to look like. `_parse_os_lines` emits a
-# `python` key for any line starting with `Python` while `_colab_python_version` accepts only
-# `Python <digits>`, so a reformat leaves both sides equal and markers quietly disabled.
+# Expected value shape per oracle key, so a reformat cannot quietly disable markers.
 _STRICT_KEY_VALUE_RE: dict[tuple[str, str], "re.Pattern[str]"] = {
-    # Matches what _COLAB_PYTHON_RE reads, prerelease included, so a rotation the parse
-    # would truncate cannot be acknowledged as usable.
+    # Matches what _COLAB_PYTHON_RE reads, prerelease included.
     ("os-info-gpu.txt", "python"): re.compile(
         r"^\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?(?:\.post\d+)?(?:\.dev\d+)?(?:\s|$)"
     ),
@@ -3770,8 +3417,7 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
                 upstream_text = r.read().decode("utf-8", errors = "replace")
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
             if upstream_name == COLAB_STRICT_ORACLE or upstream_name in COLAB_STRICT_ORACLE_KEYS:
-                # Not compared is not "no drift": passing here reported success for a check that never ran. An
-                # advisory file stays a warning, as its drift does.
+                # Not compared does not mean no drift.
                 any_diff = True
                 strict_diff = True
                 print(f"::error::colab-diff: could not fetch {url}: {e}")
@@ -3779,9 +3425,7 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
                 print(f"::warning::colab-diff: could not fetch {url}: {e}")
             continue
         if not snap_path.exists():
-            # An absent snapshot is not "nothing to compare": without os-info's Python line markers
-            # silently replay every requirement, so the strict-key declaration is consulted HERE, before
-            # the continue, or --strict passed on a file that was never committed.
+            # Check strict keys before the continue, or --strict passes on a missing snapshot.
             strict_file = upstream_name == COLAB_STRICT_ORACLE
             strict_keys = COLAB_STRICT_ORACLE_KEYS.get(upstream_name, frozenset())
             if strict_file or strict_keys:
@@ -3805,8 +3449,7 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             f"diff={n} (new={len(new)} removed={len(removed)} changed={len(changed)}) ==="
         )
         strict_keys = COLAB_STRICT_ORACLE_KEYS.get(upstream_name, frozenset())
-        # Present in BOTH, not merely equal: a format change acknowledged into the snapshot leaves the
-        # two parses identical and empty of the key, so no-drift passed while markers were disabled.
+        # Strict keys must be present in both, not merely equal.
         missing_keys = sorted(
             k
             for k in strict_keys
@@ -3835,11 +3478,7 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
         elif drifted_strict_keys:
             strict_diff = True
             print(f"  (rule-bearing key drifted: {', '.join(drifted_strict_keys)})")
-        # Every package in the pip oracle is rule-bearing -- the rules resolve a notebook's
-        # installs against it -- so the caps below hide entries a reviewer may be looking for.
-        # transformers 5.15.0 -> 5.16.1 sat past the CHANGED cap in the drift that prompted
-        # --full, reading as though it had not moved at all. Name the flag in the elision so
-        # the output says how to see the rest instead of leaving it to be guessed at.
+        # Every pip-oracle package is rule-bearing, so name --full in the elision.
         cap_new = len(new) if args.full else 50
         cap_removed = len(removed) if args.full else 50
         cap_changed = len(changed) if args.full else 80
@@ -3873,9 +3512,6 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             "refresh-colab --all --snapshot-dir scripts/data` at your convenience."
         )
     return 0
-
-
-# ----- Helpers ----- #
 
 
 def _emit(findings: list[Finding]) -> None:

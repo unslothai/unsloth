@@ -1,25 +1,7 @@
-# Workflow-trigger lint. Refuses two patterns that together powered the
-# TanStack GHSA-g7cv-rxg3-hmpx supply-chain compromise:
-#
-#   1. `pull_request_target` -- runs a fork's workflow YAML against the
-#      base repository's secrets. There is no safe use of this trigger
-#      for a public open-source project.
-#
-#   2. Shared cache keys between PR-triggered workflows and the publish
-#      workflow. A fork PR can poison the cache; the publish workflow
-#      then restores the poisoned cache on next run.
-#
-# This lives in its own workflow, not inside security-audit.yml, for one
-# reason: `on.pull_request` here carries NO `paths` / `paths-ignore`
-# filter, and must never gain one. A gate that only runs for some PRs
-# does not gate workflow changes, which is exactly what it exists to
-# review. security-audit.yml is a heavy nightly audit whose filters are
-# tuned for cost; coupling this lint to them once already opened that
-# hole. scripts/lint_workflow_triggers.py enforces the invariant on
-# whichever workflow runs it, so this file cannot quietly re-acquire a
-# filter.
-#
-# Cheap pure-Python lint, runs in seconds. Fail-closed.
+# Refuses `pull_request_target` (fork YAML runs with base-repo secrets) and cache keys
+# shared between PR workflows and publish (a fork PR can poison what publish restores).
+# Its pull_request trigger must NEVER gain a paths filter (enforced by
+# scripts/lint_workflow_triggers.py). Fail-closed.
 
 name: Workflow trigger lint
 
@@ -40,10 +22,7 @@ jobs:
   workflow-trigger-lint:
     name: workflow-trigger lint (pull_request_target / cache-poisoning)
     runs-on: ubuntu-latest
-    # Raised from 5 when this job absorbed 12 more guard modules. Serial they are
-    # 209s on a 192-core box and 119s at -n 4, which is what a GitHub runner has;
-    # 5 minutes left no headroom for a slower runner and would have failed on
-    # timeout rather than on anything real.
+    # ~2 min at -n 4; headroom for slow runners.
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
@@ -68,63 +47,23 @@ jobs:
           python-version: '3.12'
 
       - name: Install PyYAML
-        # pytest and PyYAML are pinned to the versions security-audit.yml pinned them
-        # to when `pytest tests/security` lived there. That suite exercises
-        # scripts/lint_workflow_triggers.py as a SUBPROCESS and asserts on its exit
-        # semantics, so a pytest or PyYAML that resolves differently changes what it is
-        # asserting against. xdist and vermin stay unpinned: neither is under test.
+        # Pinned: tests/security asserts on the lint script's subprocess exit semantics.
         run: pip install pyyaml==6.0.2 pytest==9.0.3 pytest-xdist vermin
 
       - name: Lint workflow triggers + cache keys
         run: python3 scripts/lint_workflow_triggers.py
 
-      # What the dropped interpreter legs used to catch, as far as a static check can.
-      # A pull request runs only the newest leg now, so nothing EXECUTES the backend on
-      # the oldest one until the push to main. ast.parse at a feature_version covers
-      # syntax and nothing else, which would miss the actual shape of this regression:
-      # reaching for a stdlib name that does not exist yet, like the `anext` in
-      # core/research_runs.py that already requires 3.10. vermin reads both, so a symbol
-      # added after the floor fails here in seconds rather than on main in 23 minutes.
-      # No paths filter on this workflow, so it sees every pull request.
+      # Static floor check (syntax and stdlib symbols via vermin) since PRs only execute the
+      # newest interpreter.
       - name: Backend still runs on the oldest interpreter the matrix claims
         run: python3 scripts/lint_backend_python_floor.py
 
-      # ONE pytest invocation, not one per file.
-      #
-      # These were 9 separate steps, each paying interpreter startup and collection to
-      # run a single module -- and each new guard added a tenth, an eleventh. Collapsed
-      # into one call, which also lets pytest share collection across them. This repo's
-      # conftest is expensive to import, so a step per module pays that cost every time:
-      # over the 17 modules this started with, 53.9s as one invocation against 300.8s as
-      # one each. `-n 4` then uses the cores the runner already has: 304 tests, 128s
-      # serial against 68s at -n 4, identical results either way.
-      #
-      # Pinned to 4 rather than `auto` deliberately. ubuntu-latest is a 4-core runner, so
-      # on CI the two are the same, but `auto` scales to the host and each xdist worker
-      # re-imports that expensive conftest. Measured on a 192-core machine: `auto` spawned
-      # 192 workers and took 327s, worse than running serially. A fixed width is the same
-      # everywhere and cannot be made pathological by the machine it lands on.
-      #
-      # tests/security rides along on the same invocation. It held its own ubuntu-latest
-      # runner in security-audit.yml for 72s of work behind a queue measured at 11096s,
-      # and the same argument that put the lockfile and load-orchestrator lanes into Lint
-      # CI applies: work with a narrow trigger, moved into a job that was going to occupy
-      # a runner on this commit anyway, can only reduce the slots a commit takes. Here the
-      # trigger widens too, since this workflow has no paths filter and
-      # security-audit.yml's pull_request does.
-      #
-      # This host and not Lint CI, where the other absorbed lanes went. Lint CI installs
+      # One pytest invocation (conftest is expensive to import), -n 4 fixed rather than `auto`,
+      # which spawns a worker per core. tests/security rides along. Not in Lint CI, which installs
       # shellcheck from apt, so its harden-runner has to permit escalation and an apt
-      # mirror; a security gate moved there would run under a policy weaker than the one
-      # it has today. This workflow's harden-runner block is byte-for-byte identical to
-      # the one the job carried, so nothing about its isolation changes.
-      #
-      # The list grew as much as it shrank. Every module here reads a workflow file, so
-      # the edit that breaks it is by definition a workflow-only edit, and this is the
-      # only job in the repo with no paths filter. Ten guards were sitting outside it,
-      # collected first by Backend CI's unfiltered push on main -- after the change had
-      # already merged. tests/studio/test_workflow_guards_run_unfiltered.py keeps the
-      # list honest so the next one is not forgotten too.
+      # mirror; a security gate there would run under a weaker harden-runner policy.
+      # Every module here reads a workflow file, so it belongs in this unfiltered job
+      # (tests/studio/test_workflow_guards_run_unfiltered.py).
       - name: Workflow guard suites
         run: |
           python3 -m pytest -q -n 4 \
@@ -191,23 +130,9 @@ jobs:
             --ignore=tests/security/test_inherited_custom_dtype_is_neutralized.py
 
 
-  # The four security suites the job above has to --ignore. That job installs four
-  # packages on purpose and these import torch and transformers, so they were
-  # excluded there and named by no other job: a repository-wide search of workflow
-  # pytest commands finds nothing else running them. They were therefore not running
-  # in CI at all, which makes a regression in the hardening they cover mergeable
-  # behind a green tick.
-  #
-  # In THIS workflow rather than security-audit.yml, which is where the job first
-  # landed. `tests/studio/test_short_job_absorption.py` states the rule: the security
-  # suites run here now, and a second runner for the same work in security-audit.yml
-  # is the duplication that rule exists to stop. This job is not that duplication -
-  # it runs the four files the other job cannot - and it inherits this workflow's
-  # unfiltered `on.pull_request`, which is a wider trigger than the one it had.
-  #
-  # CPU torch from the dedicated index. These suites never touch a device - they
-  # parse source, stub `requests` and read env vars - so the CPU wheel is the whole
-  # dependency and it keeps the job to a couple of minutes.
+  # The four security suites the job above must --ignore (they import torch and
+  # transformers). They run here per tests/studio/test_short_job_absorption.py. CPU torch
+  # is enough: they never touch a device.
   security-regression-suites:
     name: security suites (torch-dependent)
     runs-on: ubuntu-latest
@@ -218,9 +143,7 @@ jobs:
         with:
           egress-policy: block
           disable-sudo: true
-          # PyPI plus the CPU torch index, and GitHub for the checkout. These tests
-          # are network-free themselves; `tests/security/conftest.py` blocks sockets
-          # for the duration, so nothing here is dialed once pytest starts.
+          # Tests are network-free: tests/security/conftest.py blocks sockets.
           allowed-endpoints: >
             api.github.com:443
             github.com:443
@@ -246,26 +169,13 @@ jobs:
             --index-url https://download.pytorch.org/whl/cpu \
             --extra-index-url https://pypi.org/simple \
             torch
-          # unsloth-zoo as well. All three suites import `unsloth.models`, which runs
-          # `unsloth/__init__.py`, and that raises ImportError outright when the zoo
-          # distribution is absent - `UNSLOTH_ZOO_DISABLE_GPU_INIT` does not bypass it.
-          # Without this the job would fail during collection rather than run.
-          # Triton as well: unsloth/kernels and unsloth_zoo's compiler and loss_utils
-          # import it at module scope and the CPU torch wheel does not supply it.
-          # `UNSLOTH_ALLOW_CPU=1` bypasses device probing, not those imports, so without
-          # this the job fails during collection.
+          # unsloth-zoo: `unsloth/__init__.py` raises without it. triton: imported at module scope
+          # and not supplied by the CPU torch wheel.
           python -m pip install --quiet transformers peft pytest unsloth-zoo triton
 
-      # Named one by one, not as a directory. The point of this job is those three
-      # files, and pyproject.toml sets testpaths = ["tests/security"], so a bare
-      # pytest here would silently widen into the suites the light runner already
-      # covers and the failure of THIS job would stop meaning what it says.
-      # `ubuntu-latest` has no accelerator, and every one of these files imports
-      # `unsloth.models`, which reaches `get_device_type()`. `UNSLOTH_ALLOW_CPU=1` is
-      # this repo's documented flag for importing on a driverless host, and it is what
-      # the rest of the CPU CI already uses. `UNSLOTH_ZOO_DISABLE_GPU_INIT` is not a
-      # substitute: it is a zoo flag, and against the released zoo this job installs it
-      # skips the init that binds `DEVICE_TYPE`, so `compiler.py` fails to import.
+      # Named one by one: testpaths is tests/security, so a bare pytest would widen silently.
+      # UNSLOTH_ALLOW_CPU=1 allows importing without a device; UNSLOTH_ZOO_DISABLE_GPU_INIT is not a
+      # substitute (it skips binding DEVICE_TYPE, so compiler.py fails to import).
       - name: Run the torch-dependent security suites
         env:
           UNSLOTH_ALLOW_CPU: '1'

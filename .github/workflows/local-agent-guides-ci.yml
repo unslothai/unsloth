@@ -1,70 +1,32 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Local Agent Guides CI
-# =====================
-# Detects when our local-agent setup recipes drift out of sync with
-# `unsloth run`. Boots a real `unsloth run --disable-tools` server and
-# drives the coding agents end to end through the *exact* recipes defined
-# in unsloth_cli/commands/start.py (the in-repo source of truth -- there
-# is no docs/ tree). Wherever start.py has a recipe we drive the agent
-# via `unsloth start <agent> --no-launch` and execute what it prints, so
-# the test self-updates against start.py and catches silent recipe drift.
-#
-# Source-of-truth files this workflow guards:
-#   unsloth_cli/commands/start.py   the `unsloth start <agent>` recipes
-#   unsloth_cli/commands/studio.py    the `unsloth run` banner (API Key line)
-#
-# Failure taxonomy (each surfaced with a distinct ::error:: + the agent name
-# + the start.py location, so a red X is immediately triageable):
-#   (a) Unsloth server/API regression -- the dialect HTTP preflight fails
-#       BEFORE the agent runs (or the server never becomes healthy).
-#   (b) Agent package install failed   -- npm/curl install of the CLI failed.
-#   (c) Guide drift                    -- preflight passed + install ok, but
-#       the documented `unsloth start` flow produced no/garbled output.
-#
-# Agents covered (8): claude, codex, hermes, openclaw, opencode, pi, dsh, vibe.
-#   - All eight have a `unsloth start <agent>` recipe, so each cell obtains its
-#     env + command from `unsloth start <agent> --no-launch` and runs THAT
-#     (self-updating: a recipe change is exercised automatically).
+# Boots a real `unsloth run --disable-tools` server and drives each coding agent through the exact
+# recipe `unsloth start <agent> --no-launch` prints (unsloth_cli/commands/start.py), catching recipe drift.
+# Failure classes: (a) server/API preflight, (b) agent install, (c) guide drift.
 
 name: Local Agent Guides CI
 
 on:
-  # Off-peak weekly, deliberately a NON-:00 minute to dodge the top-of-hour
-  # GitHub-hosted-runner stampede.
+  # Non-:00 minute to avoid the top-of-hour runner stampede.
   schedule:
     - cron: '37 7 * * 1'
   workflow_dispatch:
-  # This workflow's cache saves are gated to refs/heads/main, and unlike the
-  # other ten workflows in that change it had no main-ref trigger at all, so
-  # main's copy of the 4.6GB GGUF could only ever be written by the Monday
-  # cron. That is a poor match for a 7-day unused-cache retention on a repo
-  # sitting at 99.3% of its 50 GiB budget: once LRU evicts main's copy, every PR
-  # re-downloads until the next cron repairs it. Seed it on merge instead,
-  # behind the same paths filter as the pull_request trigger below so this
-  # only runs when the guarded sources actually change.
+  # Cache saves are main-only, so a main push seeds the GGUF cache (same paths filter as PRs).
   push:
     branches: [main]
     paths:
-      # The import closure of `unsloth run` (studio.py:31-33, __init__.py:70-77) plus the
-      # recipe files at the package root; only unsloth_cli/tests/** is left out.
+      # Import closure of `unsloth run` plus the recipe files; only unsloth_cli/tests/** is excluded.
       - 'unsloth_cli/*'
       - 'unsloth_cli/commands/*.py'
-      # inference.py declares every endpoint the preflight curls (/v1/models,
-      # /v1/chat/completions, /v1/messages, /v1/responses); routes/** made the other
-      # twenty route modules pay the full matrix for edits never requested here.
+      # inference.py declares every endpoint the preflight curls.
       - 'studio/backend/routes/inference.py'
       - 'studio/backend/main.py'
       - 'studio/backend/core/inference/llama_cpp.py'
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
-      # Every connection cell installs through install-unsloth-local, and install.sh
-      # --local hands off to studio/setup.sh, which runs the installer modules below.
-      # They pick the llama-server binary that serve-unsloth-run.sh and
-      # assert-prompt-cache.sh measure; pyproject.toml and the backend requirements
-      # decide what is installed.
+      # install.sh --local runs studio/setup.sh and these installer modules, which pick the measured llama-server.
       - 'studio/setup.sh'
       - 'studio/install_*.py'
       - 'studio/prebuilt_core.py'
@@ -74,7 +36,7 @@ on:
       - 'studio/backend/requirements/**'
       - '.github/scripts/retry-with-apt-lock.sh'
       # The install step in this workflow is `uses:` on that composite action,
-      # so an edit to the action changes what this workflow actually runs.
+      # so edits to the action must trigger this workflow.
       - '.github/actions/install-unsloth-local/action.yml'
       # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
@@ -85,7 +47,6 @@ on:
       - '.github/scripts/assert-prompt-cache.sh'
       - '.github/scripts/agent-guides-install.sh'
       - '.github/scripts/agent-guides-drive.sh'
-      # Every GGUF download in every job goes through it.
       - '.github/scripts/hf-download-with-retry.sh'
       - '.github/scripts/ci-connect-prompt.txt'
       - '.github/scripts/ci-min-system-prompt.txt'
@@ -94,19 +55,13 @@ on:
       - 'unsloth_cli/*'
       - 'unsloth_cli/commands/*.py'
       - 'studio/backend/routes/inference.py'
-      # Contracts this workflow asserts that live outside routes/: the
-      # /api/health endpoint, the llama-server KV-cache log behavior, and the
-      # request/response schemas the agent dialects depend on.
+      # Contracts asserted here that live outside routes/ (/api/health, KV-cache logs, dialect schemas).
       - 'studio/backend/main.py'
       - 'studio/backend/core/inference/llama_cpp.py'
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
-      # Every connection cell installs through install-unsloth-local, and install.sh
-      # --local hands off to studio/setup.sh, which runs the installer modules below.
-      # They pick the llama-server binary that serve-unsloth-run.sh and
-      # assert-prompt-cache.sh measure; pyproject.toml and the backend requirements
-      # decide what is installed.
+      # install.sh --local runs studio/setup.sh and these installer modules, which pick the measured llama-server.
       - 'studio/setup.sh'
       - 'studio/install_*.py'
       - 'studio/prebuilt_core.py'
@@ -130,53 +85,25 @@ on:
       - '.github/scripts/ci-min-system-prompt.txt'
 
 concurrency:
-  # The event is part of the group so a scheduled run and a push to main cannot
-  # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
-  # only one pending run, so without this a merge burst silently drops the nightly:
-  # cancel-in-progress protects the running run, never the pending one.
+  # The event is in the group so a merge burst on main cannot drop the scheduled run (queue keeps one pending).
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
-# Secret handling on pull_request: these jobs check out and run PR-controlled code
-# (install.sh, .github/scripts/**), so HF_TOKEN (an external HF credential) is gated
-# off pull_request at each step below -- public GGUF repos still download anonymously.
-# GH_TOKEN (GITHUB_TOKEN) is kept: it is the job-scoped contents:read token and
-# install_llama_prebuilt.py needs it for the GitHub releases API (else 403s).
+# PR runs execute PR-controlled code, so HF_TOKEN is withheld on pull_request (public GGUFs still
+# download). GH_TOKEN (job-scoped, contents: read) stays: install_llama_prebuilt.py needs it for the releases API.
 
 env:
-  # Determinism precedent (studio-inference-smoke.yml): temp 0 + fixed seed.
   UNSLOTH_SEED: '3407'
-  # A single invoke must never hang the runner on a headless TTY prompt. With
-  # prefill-shrinking flags (minimal system prompt + restricted tools) a turn on
-  # a 4B model finishes in a couple of minutes on CPU; this also caps how long a
-  # still-large-prompt agent burns before failing. Well under the 6h job cap.
-  #
-  # Raised from 600. Those flags shrink what the SERVER puts in front of the model;
-  # they do not touch a preamble the client assembles for itself, and Codex's is
-  # several thousand tokens before the prompt is appended. Measured on this image at
-  # 16.1 tok/s, that is ~460s of prompt processing to answer "pong" -- inside 600s on
-  # paper, but only just, and the leg that has to survive it is the one that was
-  # failing 88% of the time. The cap exists to stop a hang, not to enforce a
-  # performance budget, so it is sized off the slowest legitimate turn rather than
-  # the fastest. It only ever costs wall-clock on a run that was going to fail.
+  # Stops a headless TTY hang. Sized for the slowest legit turn: Codex's client preamble alone takes
+  # ~460s of prompt processing on CPU.
   AGENT_INVOKE_TIMEOUT: '1200'
 
 jobs:
-  # ═════════════════════════════════════════════════════════════════════
-  # Job 1: connection
-  #   Per-agent: serve gemma-3-270m, HTTP-preflight the agent's dialect,
-  #   install the agent, run `unsloth start <agent> --no-launch`, execute
-  #   the emitted recipe with a trivial prompt, assert a non-empty reply.
-  #   Runs on PR + weekly + dispatch. Each matrix cell is its own runner so
-  #   it serves exactly one model on its own port.
-  # ═════════════════════════════════════════════════════════════════════
+  # Job 1: connection. Per agent: serve, preflight the dialect, install, run the start.py recipe,
+  # assert a non-empty reply. One runner per cell, one model per port.
   connection:
     name: connection (${{ matrix.agent }}, ${{ matrix.opencode_channel }})
     runs-on: ubuntu-latest
@@ -194,12 +121,8 @@ jobs:
           - agent: opencode
             opencode_channel: v2
     env:
-      # gemma-4-E4B (128K context, capable enough to drive every agent for a
-      # trivial reply; the 270m model produced empty/failed responses for
-      # codex/openclaw). Hermes' 64K context floor no longer constrains the model
-      # choice: write_hermes_config claims the floor for smaller windows and
-      # scales compaction back to the real window. Served as a flat
-      # GGUF file (the -MTP- repo ships no separate draft, so this is plain 4B).
+      # gemma-4-E4B: the 270m model gave empty replies for codex/openclaw. Flat GGUF; the -MTP- repo
+      # ships no separate draft.
       GGUF_REPO: unsloth/gemma-4-E4B-it-GGUF
       GGUF_FILE: gemma-4-E4B-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18901'
@@ -209,15 +132,8 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
-        # Bounded and retried through the shared helper: an unbounded apt step does
-        # not fail, it spends the job's whole budget and is reported as "cancelled"
-        # with no reason and every later step skipped. update and install go as one
-        # unit, since retrying the install after a stalled update re-reads the same
-        # broken package list.
-        # Two long attempts, not three short ones. 150s killed apt mid-`update`
-        # against a mirror that was degraded rather than dead, and every attempt
-        # then hit the same wall -- three kills and no result. The bound exists to
-        # stop an infinite hang, not to race a slow mirror.
+        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
+        # since short ones kill a slow but working mirror.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -246,7 +162,7 @@ jobs:
         id: download-gguf
         if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         env:
-          # Gated off PR (see note above); public GGUF still downloads.
+          # Withheld on PRs (see env note); public GGUFs still download.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
@@ -254,19 +170,8 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
 
       - name: Save GGUF model file
-        # Save on main only. Caches created on a PR ref are scoped to that
-        # merge ref -- per GitHub's docs they "can only be restored by re-runs
-        # of the pull request" -- while every PR *can* restore from the default
-        # branch. So a PR-scoped save helps almost nothing and competes for the
-        # per-repo cache budget, and when that budget is exceeded GitHub evicts
-        # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
-        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
-        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
-        # refs, and every one of those keys already has a copy on main, so the
-        # PR-scoped duplicates are redundant by construction. That is the thrash
-        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
-        # next PR misses.
+        # Save on main only: PR-scoped caches only serve that PR and push main's shared copies out of the
+        # LRU-evicted, nearly full repo cache budget.
         if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -277,14 +182,12 @@ jobs:
         uses: ./.github/actions/install-unsloth-local
         with:
           gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Gated off PR (see note above); public GGUF still downloads.
+          # Withheld on PRs (see env note); public GGUFs still download.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
-      # ── boot the server under test (factored helper) ──────────────────
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          # Wipe, not reset-password: since #7573 the reset rotates in place and
-          # prints the new passphrase, which would land unmasked in the job log.
+          # Wipe instead of reset-password: the reset prints the new passphrase into the job log.
           rm -rf ~/.unsloth/studio/auth
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
@@ -292,9 +195,7 @@ jobs:
             --extra "--seed $UNSLOTH_SEED --temp 0" \
             --health-timeout 900
 
-      # ── (a) server/API preflight: prove the dialect works BEFORE the agent ─
-      # Distinct error class. If this step fails it is a SERVER regression,
-      # not the agent's or the guide's fault, and the agent steps never run.
+      # A failure here is a server regression (class a); the agent steps never run.
       - name: Preflight the agent's API dialect (class-a isolation)
         env:
           AGENT: ${{ matrix.agent }}
@@ -310,7 +211,6 @@ jobs:
           [ "$code" = "200" ] || preflight_fail "/v1/models returned HTTP $code"
           case "$AGENT" in
             claude)
-              # Anthropic Messages dialect.
               code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/messages" \
                 -H "Authorization: Bearer $K" -H 'content-type: application/json' \
                 --max-time 120 \
@@ -326,10 +226,7 @@ jobs:
               [ "$code" = "200" ] || preflight_fail "/v1/responses returned HTTP $code"
               ;;
             *)
-              # OpenAI Chat Completions dialect (hermes/opencode/pi/openclaw).
-              # OpenClaw's start.py recipe writes an "openai-completions"
-              # provider (write_openclaw_config), so it uses this path, not
-              # /v1/messages.
+              # OpenAI Chat Completions (hermes/opencode/pi/openclaw; openclaw's recipe writes an openai-completions provider).
               code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/chat/completions" \
                 -H "Authorization: Bearer $K" -H 'content-type: application/json' \
                 --max-time 120 \
@@ -339,19 +236,13 @@ jobs:
           esac
           echo "preflight OK for $AGENT"
 
-      # ── (b) install the agent CLI (hardened npm/curl, retried) ─────────
       - name: Install agent CLI (class-b isolation)
         env:
           AGENT: ${{ matrix.agent }}
           OPENCODE_CHANNEL: ${{ matrix.opencode_channel }}
         run: bash .github/scripts/agent-guides-install.sh "$AGENT"
 
-      # ── (c) drive the agent via start.py and assert a reply ──────────
-      # For the 5 agents with a start.py recipe we run
-      # `unsloth start <agent> --no-launch`, eval its env/unset exports,
-      # then run the printed command with a hard timeout (no headless-TTY
-      # hang). Pi has no connect recipe, so it is driven by hand and the
-      # cell asserts that absence is the (known) reason.
+      # Apply the env from `unsloth start <agent> --no-launch`, then run the printed command with a hard timeout.
       - name: Drive ${{ matrix.agent }} via unsloth start (class-c isolation)
         env:
           AGENT: ${{ matrix.agent }}
@@ -362,13 +253,7 @@ jobs:
         run: |
           mkdir -p logs/studio-logs
           cp -r "$HOME/.unsloth/studio/logs/." logs/studio-logs/ 2>/dev/null || true
-          # Redact the key across the WHOLE logs/ tree, not just studio-logs:
-          # serve-unsloth-run.sh records the `unsloth run` banner (which prints
-          # `API Key: <key>`) into logs/unsloth-run-<port>.log, and the upload
-          # step publishes all of logs/, so scrubbing only studio-logs would leak
-          # the bearer token in the retained artifact.
-          # Sweep EVERY uploaded path, not just logs/ -- redacted-configs/ and
-          # agent-workdir/ are published by the same upload step.
+          # Redact the key in every uploaded path: the `unsloth run` banner prints `API Key: <key>` into logs/.
           if [ -n "${UNSLOTH_API_KEY:-}" ]; then
             grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
               sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
@@ -378,8 +263,7 @@ jobs:
       - name: Stop Unsloth
         if: always()
         run: |
-          # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
-          # `kill 0` signal this step's whole process group and abort cleanup.
+          # An unset or zero PID would make `kill 0` signal this step's whole process group.
           if [ -n "${UNSLOTH_SERVER_PID:-}" ] && [ "${UNSLOTH_SERVER_PID}" != "0" ]; then
             kill "${UNSLOTH_SERVER_PID}" 2>/dev/null || true
           fi
@@ -397,31 +281,15 @@ jobs:
             redacted-configs/
           retention-days: 7
 
-  # ═════════════════════════════════════════════════════════════════════
-  # Job 2: file-edit
-  #   The deterministic 2-turn hello.py test on Qwen3.5-4B (smaller models
-  #   can't reliably drive the heavyweight agents' edit flows). Weekly +
-  #   dispatch only -- it is the slow, model-heavy job and must not gate PRs.
-  # ═════════════════════════════════════════════════════════════════════
+  # Job 2: file-edit. Deterministic 2-turn hello.py test on Qwen3.5-4B; slow, so weekly + dispatch only.
   file-edit:
     name: file-edit (${{ matrix.agent }})
-    # Weekly / dispatch only, stated explicitly rather than as "not a PR".
-    # The main push trigger above exists solely to seed the cache that the
-    # save steps are now gated to main for, and `connection` already writes
-    # the identical key (same GGUF_REPO and GGUF_FILE), so this job seeds
-    # nothing new. Left as `!= 'pull_request'` a push would newly start its
-    # 2-job matrix at 60 minutes each, which is runtime the seeding does not
-    # need and which this job was never meant to spend outside its cron.
+    # Not run on main pushes: `connection` already seeds the identical cache key.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # hermes and openclaw drive a multi-turn tool loop that a CPU-only runner
-    # cannot finish in time (e.g. openclaw holds its 300s session-write-lock past
-    # expiry; each turn re-prefills the tool prompt at ~16 tok/s). Their endpoint
-    # wiring + generation are already hard-gated by the connection job, so the
-    # file-edit cell is best-effort here -- it still runs and uploads logs, but a
-    # timeout does not fail the workflow. Drop best_effort (or move e2e to a GPU
-    # runner) to make it blocking again.
+    # hermes/openclaw tool loops cannot finish on CPU in time; connection already hard-gates their
+    # wiring, so these cells are best-effort.
     continue-on-error: ${{ matrix.best_effort || false }}
     strategy:
       fail-fast: false
@@ -437,8 +305,6 @@ jobs:
           - agent: dsh
             best_effort: true
     env:
-      # gemma-4-E4B served as a flat GGUF file (cache size tracks the .gguf 1:1,
-      # no xet-chunk inflation; the -MTP- repo ships no separate draft file).
       GGUF_REPO: unsloth/gemma-4-E4B-it-GGUF
       GGUF_FILE: gemma-4-E4B-it-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18902'
@@ -448,15 +314,8 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
-        # Bounded and retried through the shared helper: an unbounded apt step does
-        # not fail, it spends the job's whole budget and is reported as "cancelled"
-        # with no reason and every later step skipped. update and install go as one
-        # unit, since retrying the install after a stalled update re-reads the same
-        # broken package list.
-        # Two long attempts, not three short ones. 150s killed apt mid-`update`
-        # against a mirror that was degraded rather than dead, and every attempt
-        # then hit the same wall -- three kills and no result. The bound exists to
-        # stop an infinite hang, not to race a slow mirror.
+        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
+        # since short ones kill a slow but working mirror.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -485,7 +344,7 @@ jobs:
         id: download-gguf
         if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
         env:
-          # Gated off PR (see note above); public GGUF still downloads.
+          # Withheld on PRs (see env note); public GGUFs still download.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
@@ -503,7 +362,7 @@ jobs:
         uses: ./.github/actions/install-unsloth-local
         with:
           gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Gated off PR (see note above); public GGUF still downloads.
+          # Withheld on PRs (see env note); public GGUFs still download.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
@@ -528,9 +387,7 @@ jobs:
           code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/models" \
             -H "Authorization: Bearer $K") || true
           [ "$code" = "200" ] || preflight_fail "/v1/models returned HTTP $code"
-          # Probe the same dialect the agent will use, so a streaming/messages
-          # regression in the weekly run is reported as class (a) here instead of
-          # surfacing later as guide drift (mirrors the connection job).
+          # Probe the agent's own dialect so a server regression reports as class (a), not guide drift.
           case "$AGENT" in
             claude)
               code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/messages" \
@@ -547,7 +404,6 @@ jobs:
               [ "$code" = "200" ] || preflight_fail "/v1/responses returned HTTP $code"
               ;;
             *)
-              # OpenAI Chat Completions dialect (hermes/opencode/pi/openclaw).
               code=$(curl -s -o /tmp/pf.json -w '%{http_code}' "$B/v1/chat/completions" \
                 -H "Authorization: Bearer $K" -H 'content-type: application/json' \
                 --max-time 120 \
@@ -572,13 +428,7 @@ jobs:
         run: |
           mkdir -p logs/studio-logs
           cp -r "$HOME/.unsloth/studio/logs/." logs/studio-logs/ 2>/dev/null || true
-          # Redact the key across the WHOLE logs/ tree, not just studio-logs:
-          # serve-unsloth-run.sh records the `unsloth run` banner (which prints
-          # `API Key: <key>`) into logs/unsloth-run-<port>.log, and the upload
-          # step publishes all of logs/, so scrubbing only studio-logs would leak
-          # the bearer token in the retained artifact.
-          # Sweep EVERY uploaded path, not just logs/ -- redacted-configs/ and
-          # agent-workdir/ are published by the same upload step.
+          # Redact the key in every uploaded path: the `unsloth run` banner prints `API Key: <key>` into logs/.
           if [ -n "${UNSLOTH_API_KEY:-}" ]; then
             grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
               sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
@@ -588,8 +438,7 @@ jobs:
       - name: Stop Unsloth
         if: always()
         run: |
-          # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
-          # `kill 0` signal this step's whole process group and abort cleanup.
+          # An unset or zero PID would make `kill 0` signal this step's whole process group.
           if [ -n "${UNSLOTH_SERVER_PID:-}" ] && [ "${UNSLOTH_SERVER_PID}" != "0" ]; then
             kill "${UNSLOTH_SERVER_PID}" 2>/dev/null || true
           fi
@@ -608,16 +457,8 @@ jobs:
             redacted-configs/
           retention-days: 7
 
-  # ═════════════════════════════════════════════════════════════════════
-  # Job: resume
-  #   Does a conversation started with `unsloth start <agent>` survive exit
-  #   and resume? This drives the REAL launch path (not the --no-launch
-  #   recipe the other jobs use). A plain launch relocates the agent home to
-  #   a temp dir wiped on exit, so codex/pi cannot resume; --persist routes the
-  #   session to the stable Unsloth agents dir so it persists. opencode/claude
-  #   keep their session data in a fixed user dir, so they persist either way.
-  #   Dispatch-only: it is an end-to-end experiment, not a PR gate.
-  # ═════════════════════════════════════════════════════════════════════
+  # Job: resume. Drives the real launch path: plain launch puts codex/pi homes in a temp dir wiped on
+  # exit, --persist keeps them; opencode/claude persist either way. Dispatch-only.
   resume:
     name: resume (${{ matrix.agent }})
     if: github.event_name == 'workflow_dispatch'
@@ -626,10 +467,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # codex/pi relocate their whole home (resume broken without --persist);
-        # opencode/claude keep session data in a fixed dir (resume already works).
-        # One agent from each class proves the split end to end; openclaw/hermes
-        # share codex's relocation mechanism and are covered by the unit tests.
+        # One agent per class; openclaw/hermes share codex's relocation and are unit-tested.
         agent: [codex, opencode, claude, pi]
     env:
       GGUF_REPO: unsloth/gemma-4-E4B-it-GGUF
@@ -641,15 +479,8 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
-        # Bounded and retried through the shared helper: an unbounded apt step does
-        # not fail, it spends the job's whole budget and is reported as "cancelled"
-        # with no reason and every later step skipped. update and install go as one
-        # unit, since retrying the install after a stalled update re-reads the same
-        # broken package list.
-        # Two long attempts, not three short ones. 150s killed apt mid-`update`
-        # against a mirror that was degraded rather than dead, and every attempt
-        # then hit the same wall -- three kills and no result. The bound exists to
-        # stop an infinite hang, not to race a slow mirror.
+        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
+        # since short ones kill a slow but working mirror.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -786,15 +617,8 @@ jobs:
             redacted-configs/
           retention-days: 7
 
-  # ═════════════════════════════════════════════════════════════════════
-  # Job 3: prompt-cache
-  #   (a) curl 2-turn /v1/chat/completions: assert turn-2 cached_tokens > 0
-  #       (server prompt-cache sanity).
-  #   (b) Claude Code attribution A/B: with CLAUDE_CODE_ATTRIBUTION_HEADER=0
-  #       expect a llama-server KV-cache HIT on turn 2; without it expect a
-  #       MISS. If it inverts, the guide flag is stale.
-  #   PR + weekly + dispatch (cheap, gemma-3-270m).
-  # ═════════════════════════════════════════════════════════════════════
+  # Job 3: prompt-cache. (a) turn-2 cached_tokens > 0; (b) Claude Code with
+  # CLAUDE_CODE_ATTRIBUTION_HEADER=0 hits the KV cache on turn 2, without it misses.
   prompt-cache:
     name: prompt-cache (gemma-3-270m)
     runs-on: ubuntu-latest
@@ -811,15 +635,8 @@ jobs:
           persist-credentials: false
 
       - name: Linux deps for llama.cpp prebuilt
-        # Bounded and retried through the shared helper: an unbounded apt step does
-        # not fail, it spends the job's whole budget and is reported as "cancelled"
-        # with no reason and every later step skipped. update and install go as one
-        # unit, since retrying the install after a stalled update re-reads the same
-        # broken package list.
-        # Two long attempts, not three short ones. 150s killed apt mid-`update`
-        # against a mirror that was degraded rather than dead, and every attempt
-        # then hit the same wall -- three kills and no result. The bound exists to
-        # stop an infinite hang, not to race a slow mirror.
+        # Bounded and retried: an unbounded apt hang cancels the job with no reason. Two long attempts,
+        # since short ones kill a slow but working mirror.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -836,9 +653,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
-      # Linux, macOS and Windows, so the key carries no `runner.os`, and
-      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
+      # The hf-cache tree is identical across OSes, so the key has no runner.os (enableCrossOsArchive).
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -852,7 +667,7 @@ jobs:
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
         env:
-          # Gated off PR (see note above); public GGUF still downloads.
+          # Withheld on PRs (see env note); public GGUFs still download.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
@@ -871,7 +686,7 @@ jobs:
         uses: ./.github/actions/install-unsloth-local
         with:
           gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Gated off PR (see note above); public GGUF still downloads.
+          # Withheld on PRs (see env note); public GGUFs still download.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Serve unsloth run --disable-tools (gemma-3-270m)
@@ -882,10 +697,7 @@ jobs:
             --port "$STUDIO_PORT" --log-dir logs \
             --extra "--seed $UNSLOTH_SEED --temp 0"
 
-      # (a) server prompt-cache sanity on the OpenAI chat path. The helper runs
-      # the 2-turn probe internally (turn 2 reuses turn 1's prefix) and asserts
-      # turn-2 usage.prompt_tokens_details.cached_tokens > 0. This is the hard
-      # gate -- it proves llama.cpp KV reuse is surfaced on /v1/chat/completions.
+      # Hard gate: llama.cpp KV reuse must surface as cached_tokens on /v1/chat/completions.
       - name: Server prompt-cache sanity (cached_tokens > 0)
         run: bash .github/scripts/assert-prompt-cache.sh api "$UNSLOTH_BASE_URL" "$UNSLOTH_API_KEY"
 
@@ -894,12 +706,7 @@ jobs:
           AGENT: claude
         run: bash .github/scripts/agent-guides-install.sh claude
 
-      # (b) Claude attribution A/B against the llama-server log. This is the most
-      # environment-sensitive check (it depends on the bundled llama.cpp's
-      # slot-reuse log wording and on claude --continue reusing the prefix), so
-      # it is non-blocking until calibrated on the first scheduled run; the
-      # server cache sanity above is the hard gate. The step still prints the
-      # observed HIT/MISS so drift is visible in the log + artifacts.
+      # Non-blocking: depends on llama-server log wording and claude --continue prefix reuse.
       - name: Claude attribution A/B (HIT with header=0, MISS without)
         continue-on-error: true
         run: bash .github/scripts/agent-guides-drive.sh attribution-ab claude
@@ -909,13 +716,7 @@ jobs:
         run: |
           mkdir -p logs/studio-logs
           cp -r "$HOME/.unsloth/studio/logs/." logs/studio-logs/ 2>/dev/null || true
-          # Redact the key across the WHOLE logs/ tree, not just studio-logs:
-          # serve-unsloth-run.sh records the `unsloth run` banner (which prints
-          # `API Key: <key>`) into logs/unsloth-run-<port>.log, and the upload
-          # step publishes all of logs/, so scrubbing only studio-logs would leak
-          # the bearer token in the retained artifact.
-          # Sweep EVERY uploaded path, not just logs/ -- redacted-configs/ and
-          # agent-workdir/ are published by the same upload step.
+          # Redact the key in every uploaded path: the `unsloth run` banner prints `API Key: <key>` into logs/.
           if [ -n "${UNSLOTH_API_KEY:-}" ]; then
             grep -rlF "$UNSLOTH_API_KEY" logs redacted-configs agent-workdir 2>/dev/null | while IFS= read -r f; do
               sed -i "s#${UNSLOTH_API_KEY}#<REDACTED>#g" "$f" 2>/dev/null || true
@@ -925,8 +726,7 @@ jobs:
       - name: Stop Unsloth
         if: always()
         run: |
-          # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
-          # `kill 0` signal this step's whole process group and abort cleanup.
+          # An unset or zero PID would make `kill 0` signal this step's whole process group.
           if [ -n "${UNSLOTH_SERVER_PID:-}" ] && [ "${UNSLOTH_SERVER_PID}" != "0" ]; then
             kill "${UNSLOTH_SERVER_PID}" 2>/dev/null || true
           fi

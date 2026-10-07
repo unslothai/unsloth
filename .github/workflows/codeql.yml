@@ -1,14 +1,5 @@
-# CodeQL code scanning (advanced setup; replaces the repository's default setup).
-#
-# Coverage matches default setup: the same four languages, the default query suite and the
-# remote threat model. Every push to main and the weekly schedule analyse all four, which keeps
-# main's baseline current for each language. GitHub warns against path filters on push for
-# CodeQL, since each analysis is compared with the previous commit's, so push has none.
-#
-# What changes is pull requests: a PR analyses only the languages whose files it touches. A
-# language the PR does not touch cannot gain or lose an alert, and its analysis on main stays
-# the reference. Anything the changes job cannot classify (the file list fails to load, more
-# than 3000 files, or this workflow itself changes) analyses all four.
+# Advanced setup. Push and schedule analyse all languages (no path filters on push, as GitHub
+# advises); PRs analyse only touched languages, or all four when unclassifiable.
 name: CodeQL
 
 on:
@@ -20,9 +11,7 @@ on:
     - cron: "17 4 * * 1"
   workflow_dispatch:
 
-# One group per commit on main (a queued run in a shared group is cancelled by the next push, so a
-# merge burst would leave commits unanalysed); per branch / PR elsewhere, where a newer push
-# supersedes the older run.
+# Per-commit groups on main so a merge burst does not cancel queued analyses.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -62,8 +51,7 @@ jobs:
             echo "could not list the PR's files: analysing all languages"
             exit 0
           fi
-          # grep reads a here-string, not a pipe: with pipefail, grep -q closing a pipe early
-          # makes the writer's SIGPIPE turn a match into a miss on long file lists.
+          # Here-string, not a pipe: grep -q closing early causes SIGPIPE under pipefail.
           count=$(grep -c . <<< "$files" || true)
           if [ "$count" -ge 3000 ] || grep -qxE '\.github/workflows/codeql\.ya?ml|\.github/codeql/.*' <<< "$files"; then
             echo "languages=$all" >> "$GITHUB_OUTPUT"

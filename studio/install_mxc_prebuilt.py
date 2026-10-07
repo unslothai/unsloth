@@ -133,7 +133,7 @@ def install_mxc_release(install_dir: Path) -> bool:
             try:
                 with tarfile.open(archive, "r:gz") as bundle:
                     for target, entry in _validate_archive_entries(bundle).items():
-                        # Streamed by name, never tar.extract: the member path is not trusted.
+                        # Never tar.extract: the member path is not trusted.
                         source = bundle.extractfile(entry)
                         if source is None:
                             raise MxcInstallError(f"the approved {target} member is unreadable")
@@ -272,9 +272,8 @@ def _host_prep_script(executable: Path, arguments: list[str]) -> str:
         "  try { [IO.Directory]::Delete($dir, $true) } catch { }",
         "}",
     )
-    # One line for -Command: a statement ends in "; ", an opened block in a space.
     script = "".join(line.strip() + (" " if line.endswith("{") else "; ") for line in lines)
-    # Only single-quoted literals: a double quote would be stripped by command-line parsing.
+    # A double quote would be stripped by command-line parsing.
     if '"' in script:
         raise MxcInstallError("the host-prep path cannot be passed to PowerShell")
     return script.rstrip("; ")
@@ -291,10 +290,9 @@ def _run_host_prep(executable: Path, step: str) -> int:
     arguments = [step, "--quiet"] if step == "prepare-null-device" else [step]
     system = _system_directory()
     powershell = os.path.join(system, "WindowsPowerShell", "v1.0", "powershell.exe")
-    # Inline text, never a script file: the elevated process must not read anything a user can rewrite.
+    # Inline text, never a script file: the elevated process must not read user-writable files.
     script = _host_prep_script(executable, arguments)
     launcher = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]
-    # Measured 3 to 7 minutes on a CI runner: it propagates an ACE across the whole system drive.
     print(f"[mxc-prebuilt] running wxc-host-prep {step}; this can take several minutes")
     if _is_elevated():
         code = subprocess.run(

@@ -172,9 +172,7 @@ def main() -> None:
         if os.path.isdir(conversion):
             shutil.copytree(conversion, os.path.join(install_dir, "conversion"), dirs_exist_ok = True)
 
-    # Studio's freshness check wants the install_llama_prebuilt.py schema: "tag" is the
-    # NORMALIZED BASE build, "release_tag" the full release. No timestamp, so layers
-    # stay identical.
+    # Matches install_llama_prebuilt.py's schema. No timestamp, so layers stay identical.
     marker_path = os.path.join(install_dir, "UNSLOTH_PREBUILT_INFO.json")
     try:
         with open(marker_path) as f:
@@ -193,9 +191,8 @@ def main() -> None:
         f"release_tag={marker['release_tag']} published_repo={RELEASE_REPO}"
     )
 
-    # Mirror into build/bin/ so Studio's setup.sh sees a complete local build and skips
-    # its source-build fallback, which would compile CPU-only llama.cpp over the baked
-    # CUDA bundle. Hardlinks keep the $ORIGIN rpath.
+    # Mirror into build/bin/ so setup.sh skips its CPU-only source build. Hardlinks keep the
+    # $ORIGIN rpath.
     build_bin = os.path.join(install_dir, "build", "bin")
     os.makedirs(build_bin, exist_ok = True)
     for entry in os.listdir(install_dir):

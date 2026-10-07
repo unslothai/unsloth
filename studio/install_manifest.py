@@ -31,34 +31,23 @@ from urllib.parse import urlsplit
 from typing import Dict, List, Optional, Sequence, Tuple
 
 MANIFEST_NAME = "unsloth_install_manifest.json"
-# Where remove_manifest parks the completion manifest. Only the dependency pass reads it, as
-# evidence of the LAST completed pass; verify_install, the setup fast path and the desktop preflight
-# never do, so a venv without a live manifest still reads as half-built.
+# Only the dependency pass reads it; verify_install and the fast path never do.
 PREVIOUS_MANIFEST_NAME = "unsloth_install_manifest.previous.json"
-# Serialises the three writers below ACROSS processes. The CLI guards two updates of one venv,
-# but the shells and the installer can be driven directly, and the MLX probe rewrites the
-# manifest minutes after the pass ends: unserialised, one writer's replace can land between
-# another's remove and its mutations and recreate a completion marker over a half-built venv.
+# Serialises writers across processes: the MLX probe rewrites the manifest minutes after the pass,
+# and an unserialised replace could recreate a completion marker over a half-built venv.
 LOCK_NAME = "unsloth_install_manifest.lock"
-# Held for a whole pass by the installer, and only ever tested, never waited on: see pass_lock.
 PASS_LOCK_NAME = "unsloth_install_pass.lock"
-# How long a writer waits for a peer before going ahead unserialised, matching msvcrt's
-# LK_LOCK. These writers take milliseconds, and a peer killed holding the lock must not wedge
-# every later update.
+# A peer killed holding the lock must not wedge every later update.
 LOCK_WAIT_SECONDS = 10.0
 MANIFEST_SCHEMA = 1
 
 # Canonical truthy set for UNSLOTH_NO_TORCH, matching install.ps1 / install.sh.
 NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")
 
-# The manifest is dropped before every dependency pass, so it cannot answer for a run killed mid-pass; this marker
-# outlives it, or an interrupted GGUF-only install reads as a stale venv.
-# Companion to the no_torch manifest key, next to setup.ps1's .unsloth-studio-owned; the next update then tries to
-# delete the venv it is running out of.
+# Outlives the manifest (dropped before every pass), so an interrupted GGUF-only install is not stale.
 NO_TORCH_MARKER = ".unsloth-no-torch"
 
 # Fingerprinted into the manifest, relative to studio/backend/requirements/.
-# Editing one (a --local install) invalidates it and forces a dependency pass.
 TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "studio.txt",
     "base.txt",
@@ -69,12 +58,10 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "single-env/data-designer.txt",
 )
 
-# The import chain studio/backend/run.py walks on startup.
 BOOT_REQUIREMENT_FILE = "studio.txt"
 
-# Every file the dependency pass reads, recorded under the additive `pass_inputs` key. NOT folded
-# into TRACKED_REQUIREMENT_FILES: verify_install compares that whole dict, so one new name would
-# report every install in the field as changed and buy each a repair pass.
+# NOT in TRACKED_REQUIREMENT_FILES: verify_install compares that dict, so a new name would
+# mark every install changed.
 PASS_INPUT_FILES: Tuple[str, ...] = TRACKED_REQUIREMENT_FILES + (
     "diffusers-pin.txt",
     "triton-kernels.txt",
@@ -83,9 +70,7 @@ PASS_INPUT_FILES: Tuple[str, ...] = TRACKED_REQUIREMENT_FILES + (
     "single-env/overrides-darwin-arm64.txt",
 )
 
-# Written beside a sidecar directory by setup.sh / setup.ps1 and by the runtime self-heal in
-# studio/backend/utils/transformers_version.py. Absent means not ours to delete, so not current
-# either: a rebuild is the only repair, and it starts with rm.
+# Absent means not ours to delete, so not current either.
 SIDECAR_OWNED_MARKER = ".unsloth-studio-owned"
 
 
@@ -216,12 +201,8 @@ def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path
 
     wanted = _canonical(dist_name)
     paths = _metadata_scan_paths()
-    # The listing cache is keyed on the directory's st_mtime, so a dist-info added since an earlier
-    # scan in this process stays invisible while that mtime holds (two writes in one tick; exFAT 2s,
-    # HFS+ 1s), and a damaged install verifies as healthy. Via an INSTANCE: invalidate_caches only
-    # became a classmethod in 3.11.9 / 3.12.3 (gh-116811), and importlib.invalidate_caches() gained
-    # its delegation there too, so before those neither the class call nor the caller works. 3.9
-    # resolves it to MetaPathFinder's no-op, which is right: its FastPath does not cache.
+    # The listing cache is keyed on directory mtime, so a new dist-info can stay invisible.
+    # Via an INSTANCE: invalidate_caches is a classmethod only from 3.11.9 / 3.12.3.
     if getattr(MetadataPathFinder, "invalidate_caches", None) is not None:
         MetadataPathFinder().invalidate_caches()
     kwargs = {"path": paths} if paths else {}
@@ -240,9 +221,6 @@ def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path
                 continue
         except Exception:
             pass
-        # A nameless or unreadable matching record is itself a conflict. Wheel
-        # metadata directory names escape name separators as underscores, so
-        # splitting off the final version is unambiguous.
         stem = record_path.name if record_path is not None else ""
         path_name, separator, _version = stem.removesuffix(".dist-info").rpartition("-")
         if stem.endswith(".dist-info") and separator and _canonical(path_name) == wanted:
@@ -341,9 +319,7 @@ def _publish_json(
     try:
         with os.fdopen(descriptor, "w", encoding = "utf-8") as handle:
             handle.write(text)
-        # mkstemp creates at 0600, where write_text gave the umask default (0644 on a stock
-        # box). Narrowing it is a change nobody asked for, so keep the mode the manifest
-        # already has, or the umask default: a tightening the user chose stays theirs.
+        # mkstemp creates 0600; keep the manifest's existing mode or the umask default.
         try:
             mode = path.stat().st_mode & 0o777
         except OSError:
@@ -383,8 +359,7 @@ def _manifest_lock(root: Optional[Path] = None):
     handle = None
     locked = False
     try:
-        # O_NOFOLLOW where it exists, or a symlink on the reserved name would be followed and
-        # open a file somewhere else. Never O_TRUNC: nothing is written, the lock is the fd.
+        # O_NOFOLLOW so a symlink on the reserved name is not followed.
         descriptor = os.open(
             (root or venv_root()) / LOCK_NAME,
             os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -397,8 +372,7 @@ def _manifest_lock(root: Optional[Path] = None):
         try:
             import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
 
-            # Non-blocking with a deadline, never a bare LOCK_EX: that waits forever on a
-            # peer suspended while holding it.
+            # Non-blocking with a deadline: LOCK_EX waits forever on a suspended peer.
             deadline = time.monotonic() + LOCK_WAIT_SECONDS
             while True:
                 try:
@@ -406,8 +380,7 @@ def _manifest_lock(root: Optional[Path] = None):
                     locked = True
                     break
                 except OSError as exc:
-                    # Only contention is worth waiting out. A mount that does not implement
-                    # locking answers at once and would cost the deadline on every write.
+                    # Mounts without locking answer at once and must not cost the deadline on every write.
                     if exc.errno not in (
                         errno.EWOULDBLOCK,
                         errno.EAGAIN,
@@ -423,8 +396,6 @@ def _manifest_lock(root: Optional[Path] = None):
                 import msvcrt  # noqa: PLC0415 - the Windows half of the same thing
 
                 handle.seek(0)
-                # LK_LOCK retries for ~10 s and then raises; an update that waits longer than
-                # that on a stale lock has to proceed, or a crashed peer strands every later run.
                 msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
                 locked = True
             except (ImportError, OSError):
@@ -432,8 +403,6 @@ def _manifest_lock(root: Optional[Path] = None):
         except (OSError, ValueError):
             locked = False
     try:
-        # The flag, not just the block: a writer that may only publish while it really holds the
-        # lock has to be able to ask, and the two that must never fail an install can ignore it.
         yield locked
     finally:
         _release_lock(handle, locked)
@@ -491,8 +460,6 @@ def pass_lock(root: Optional[Path] = None):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 locked = True
             except OSError as exc:
-                # Only these mean a peer holds it. Anything else is a mount that does not
-                # implement locking, which must not cost every step its evidence.
                 contended = exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES)
         except ImportError:
             try:
@@ -530,8 +497,6 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
         return _remove_manifest_locked(root, path, parked)
 
 
-# What "not there" looks like, which is what pathlib ignored before 3.14: the name is absent,
-# a path component is not a directory, the descriptor is bad, or a symlink chain does not land.
 _ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
 
 
@@ -548,7 +513,6 @@ def manifest_is_present(path: Path) -> bool:
     except OSError as exc:
         return exc.errno not in _ABSENT_ERRNOS
     except ValueError:
-        # A path this interpreter cannot encode holds no manifest.
         return False
     return True
 
@@ -557,17 +521,11 @@ def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> b
     try:
         os.replace(path, parked)
     except FileNotFoundError:
-        # No live manifest: an interrupted run took it. Nothing was parked by this call, so a
-        # copy on the reserved name is that dead run's and must go the same way, or the pass
-        # reads it as evidence and refuses behind one it cannot clear -- on Windows after
-        # setup.ps1's mutations. Losing a dead run's evidence only costs a full pass.
+        # A copy on the reserved name belongs to a dead run; remove it or the pass refuses behind it.
         consume_previous_manifest(root)
         return not manifest_is_present(parked)
     except OSError:
-        # The rename was refused. Clear the reserved name and retry before falling back to
-        # the unlink: setup.ps1 reads True as permission to replace pip, torch and triton, and
-        # the pass refuses behind a parked copy it cannot clear. Dropping the live manifest
-        # first would put that refusal after the mutations, on a venv that cannot verify.
+        # Clear the reserved name and retry before unlinking: setup.ps1 reads True as permission to mutate.
         consume_previous_manifest(root)
         if manifest_is_present(parked):
             return False
@@ -619,10 +577,7 @@ def read_previous_manifest(root: Optional[Path] = None) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-# The keys write_manifest owns and the only ones verify_install, the setup fast path and
-# desktop-capabilities decide on. Additive evidence (`extra`, update_manifest kwargs) may never
-# shadow one: rewriting `package_version` would falsely validate an install, and absent means
-# "unknown", which evidence must not invent. ONE constant, or the two writers would disagree.
+# Additive evidence may never shadow these keys; one constant so both writers agree.
 PROTECTED_MANIFEST_KEYS: Tuple[str, ...] = (
     "schema",
     "completed_at_ms",
@@ -636,8 +591,6 @@ PROTECTED_MANIFEST_KEYS: Tuple[str, ...] = (
     "no_torch",
     "expected_torch_tag",
     "expected_torch_tag_pinned",
-    # Validated on write (NVIDIA's own https channel, no userinfo/query/fragment) and read back
-    # as an index to install from, so caller-composed evidence must not be able to name it.
     "woa_torch_index",
 )
 
@@ -664,31 +617,23 @@ def write_manifest(
         "platform": f"{sys.platform}-{platform.machine()}",
         "prefix": str(venv_root()),
         "steps_total": steps_total,
-        # The venv's own copy wins over the caller's: verify_install reads the installed package's requirements, so
-        # recording the installer's would compare two trees and call a finished install stale.
+        # verify_install reads the installed package's requirements, so record the venv's copy.
         "requirement_files": requirement_digests(installed_requirements_root(root) or req_root),
     }
-    # Additive, so MANIFEST_SCHEMA does not move and existing manifests stay valid. Absent means
-    # "unknown", NOT False: only a manifest written by a build that knew the key can answer. Recorded
-    # because install.ps1 / install.sh export UNSLOTH_NO_TORCH for their own run only, so a later
-    # `unsloth studio update` would otherwise reinstall torch into a GGUF-only venv.
+    # Absent means "unknown", NOT False. Recorded because UNSLOTH_NO_TORCH is exported for one run only,
+    # so a later update would reinstall torch into a GGUF-only venv.
     if no_torch is not None:
         payload["no_torch"] = bool(no_torch)
-    # The FLAVOR, never the index URL it came from: a pinned index can carry a token in its userinfo, query or fragment,
-    # and this file lives in the venv and is read back by verify-install, desktop-capabilities and the setup fast path.
+    # The FLAVOR, never the index URL: a pinned index can carry a token.
     if expected_torch_tag:
         payload["expected_torch_tag"] = str(expected_torch_tag).strip().lower()
-    # Whether that flavor was NAMED by whoever ran the install, or merely what the selection
-    # landed on: setup.ps1 picks /cpu automatically on a GPU-less host and publishes it exactly
-    # as it publishes a pinned one, and reading the automatic case as deliberate leaves a later
-    # eGPU with no repair offered. Absent means unknown, as with every other additive key.
+    # setup.ps1 picks /cpu automatically on GPU-less hosts; only a named flavor is deliberate.
     if expected_torch_tag_pinned is not None:
         payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
-    # Windows on ARM has no CUDA wheels on download.pytorch.org, so a fresh shell cannot re-derive.
-    # Only NVIDIA's own channels, with no userinfo, query or fragment: a mirror is not persisted.
+    # Windows on ARM has no CUDA wheels on download.pytorch.org. Only NVIDIA's channels are persisted.
     if woa_torch_index:
         candidate = str(woa_torch_index).strip()
-        # urlsplit raises on a malformed authority, which would break the never-raises contract. Scheme and host compare case-insensitively (RFC 3986); the path keeps its case.
+        # urlsplit raises on a malformed authority, breaking the never-raises contract.
         try:
             parsed = urlsplit(candidate)
             _woa_ok = (
@@ -700,28 +645,20 @@ def write_manifest(
             )
         except ValueError:
             _woa_ok = False
-        # netloc, not hostname: hostname strips ":443", so a value with a port is refused. Equality drops userinfo with it.
+        # netloc, not hostname: hostname strips ":443", so a value with a port is refused.
         if _woa_ok:
             payload["woa_torch_index"] = "https://pypi.nvidia.com" + parsed.path.rstrip("/")
-    # The dependency pass's own evidence (`pass_inputs`, `step_results`, `pip_check_ok`, ...):
-    # additive, never authoritative, every consumer re-verifies on disk. None is dropped so "absent
-    # means unknown" holds, and nothing may shadow a field verify_install reads.
     for key, value in (extra or {}).items():
         if value is None or key in payload or key in PROTECTED_MANIFEST_KEYS:
             continue
         payload[key] = value
     path = manifest_path(root)
     try:
-        # The lock the other two writers take: this marker means the install finished and must
-        # not interleave with another process dropping it. The temp copy is written under it
-        # too, since that name belongs to whichever writer holds the lock.
         with _manifest_lock(root):
             _publish_json(path, payload)
-    # TypeError/ValueError too: `extra` is caller-composed, and raising here would abort a pass
-    # that has already installed everything, leaving a venv with no manifest at all.
+    # `extra` is caller-composed; raising here would leave a finished venv with no manifest.
     except (OSError, TypeError, ValueError):
         return None
-    # The parked copy described the previous pass; the live file now does.
     try:
         previous_manifest_path(root).unlink()
     except OSError:
@@ -749,22 +686,16 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
         return False
     path = manifest_path(root)
     try:
-        # Read, merge and replace inside the lock. The caller spends minutes gathering this
-        # (the MLX probe waits up to 180 s), so a manifest read before that can be a different
-        # one by now: another updater may have removed it and finished a new pass, and merging
-        # into the old copy would put its fields back.
+        # Read, merge and replace inside the lock: the caller's data may be minutes old.
         with _manifest_lock(root) as locked:
             if not locked:
-                # Advisory evidence only. A peer that timed out this lock is mid-pass, and
-                # publishing beside it could put its removed marker back over a half-built
-                # venv. Losing what this merges costs one probe.
+                # A peer that timed out this lock is mid-pass; publishing could restore its removed marker.
                 return False
             data = read_manifest(root)
             if data is None:
                 return False
             data.update(values)
-            # only_if_present: a peer on an older build of this module removes without taking
-            # the lock, so the file is checked as late as it can be.
+            # Older peers remove without the lock, so check presence as late as possible.
             if not _publish_json(path, data, only_if_present = True):
                 return False
     except (OSError, TypeError, ValueError):
@@ -775,7 +706,6 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
 def read_manifest(root: Optional[Path] = None) -> Optional[dict]:
     try:
         raw = manifest_path(root).read_text(encoding = "utf-8")
-    # UnicodeDecodeError is a ValueError.
     except (OSError, ValueError):
         return None
     try:
@@ -818,11 +748,8 @@ def recorded_no_torch(root: Optional[Path] = None) -> Optional[bool]:
         value = manifest.get("no_torch")
         if isinstance(value, bool):
             return value
-        # Tolerate a hand-edited manifest that used a string.
         if isinstance(value, str):
             return value.strip().lower() in NO_TORCH_TRUTHY
-    # No manifest (dropped before the dependency pass, or the install was killed
-    # during it) or one predating the key: the marker is the durable answer.
     try:
         if no_torch_marker_path(root).exists():
             return True
@@ -867,10 +794,7 @@ def recorded_torch_flavor_was_pinned(root: Optional[Path] = None) -> bool:
     manifest = read_manifest(root)
     if manifest is None:
         return False
-    # An ACTUAL boolean. bool("false") is True, so a migrated or hand-edited manifest
-    # carrying the string would read as a deliberate pin and suppress the repair on a
-    # host that never chose one. Anything that is not a bool is unknown provenance, and
-    # the safe answer for unknown is the same False an absent key gets.
+    # An ACTUAL boolean: bool("false") is True.
     return manifest.get("expected_torch_tag_pinned") is True
 
 
@@ -913,7 +837,6 @@ def _marker_applies(marker: str) -> bool:
     try:
         from packaging.markers import Marker
     except Exception:
-        # No packaging: assume it applies. Over-reporting costs one extra pass.
         return True
     try:
         return bool(Marker(marker).evaluate())
@@ -975,10 +898,7 @@ def missing_requirements(
     return missing
 
 
-# A closure walk that never finishes (a wedged network mount) is a full pass on every update.
-# Generous: 400 distributions cost well under a second in memory.
 CLOSURE_SCAN_BUDGET_SECONDS = 10.0
-# Belt to the deadline's braces: a cycle that never repeats a (name, extras) key still stops.
 _CLOSURE_MAX_VISITS = 20000
 
 
@@ -999,30 +919,23 @@ def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
     try:
         index: Dict[str, Tuple[str, List[str]]] = {}
         for dist in distributions(path = _metadata_scan_paths()):
-            # An interrupted pip upgrade leaves the old metadata renamed to ~ame-1.0.dist-info
-            # with its payload gone. pip ignores those; so must this, or a closure reads an
-            # unimportable package as installed and its step skips the reinstall that repairs it.
+            # An interrupted pip upgrade leaves ~ame-1.0.dist-info with no payload; pip ignores those.
             if _is_pip_backup(dist):
                 continue
             try:
                 name = dist.metadata["Name"]
                 version = dist.version
             except Exception:
-                # Unreadable metadata is damage other checks report; it must not take the index
-                # down.
                 continue
             if not name or not version:
                 continue
             key = _canonical(str(name))
-            # First wins, as sys.path precedence does; a duplicate is metadata_conflict()'s to
-            # report.
             if key in index:
                 continue
             try:
                 requires = list(dist.requires or [])
             except Exception:
-                # Fails closed: unreadable Requires-Dist is not a leaf, or a step would skip a
-                # closure it never walked.
+                # Fails closed, or a step would skip a closure it never walked.
                 return None
             index[key] = (str(version), requires)
         return index
@@ -1077,14 +990,12 @@ def closure_unmet_requirements(
         return ["<requirements unreadable>"]
 
     deadline = time.monotonic() + budget_seconds if budget_seconds > 0 else None
-    # (raw requirement, the extras in scope for it); the top level has no extra.
     pending: List[Tuple[str, Tuple[str, ...]]] = []
     for line in lines:
         text = line.split("#", 1)[0].strip()
         if not text:
             continue
         if text.startswith("-"):
-            # A pip flag; an `-r` include would hide requirements from this walk entirely.
             return [f"<flag line: {text}>"]
         pending.append((text, ("",)))
 
@@ -1111,8 +1022,6 @@ def closure_unmet_requirements(
             if not applies:
                 continue
         if requirement.url:
-            # A direct reference is satisfied by whatever landed; _direct_reference_is_installed
-            # answers for the one --no-deps step that has one.
             return [f"{requirement.name} (direct reference)"]
         key = _canonical(requirement.name)
         record = index.get(key)
@@ -1122,8 +1031,6 @@ def closure_unmet_requirements(
             continue
         version, requires = record
         if requirement.specifier and not requirement.specifier.contains(version, prereleases = True):
-            # Recorded, and the walk goes on: what an installed distribution requires is still
-            # closure.
             entry = f"{requirement.name} {version}"
             if entry not in unmet:
                 unmet.append(entry)
@@ -1132,9 +1039,7 @@ def closure_unmet_requirements(
         if visit_key in seen:
             continue
         seen.add(visit_key)
-        # foo[bar] puts "bar" in scope for foo's `extra == "bar"` markers. Both spellings: PEP 685
-        # normalisation inside markers is newer than many wheels, and matching only "all-files"
-        # would drop an `extra == "all_files"` subtree.
+        # Both spellings: PEP 685 marker normalisation is newer than many wheels.
         child_contexts = ("", *extras, *requirement.extras)
         pending.extend((child, child_contexts) for child in requires)
     return unmet
@@ -1168,18 +1073,14 @@ def violated_constraints(
         if not specifier or not _marker_applies(marker):
             continue
         if metadata_conflict(installed_versions(name)):
-            # Two records, or an unreadable one: a record violating the pin can stand behind one
-            # that meets it. Ambiguous is stale, not absent; the skipped step is what would fix it.
             violated.append(name)
             continue
         version = _installed_version(name, installed)
-        # Absent is not a violation; unparseable metadata is, since the skipped step would fix it.
         if version and not _version_satisfies(version, specifier):
             violated.append(name)
     return violated
 
 
-# Shared between wheels, so one uninstall deletes another's recorded files.
 # Mirrors _SHARED_NON_RUNTIME_ROOTS in unsloth_cli/_studio_deps.py.
 _SHARED_NON_RUNTIME_ROOTS = frozenset(
     (
@@ -1197,17 +1098,13 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
     )
 )
 
-# `_move_launcher_aside` renames this before setup, so setup.ps1's deep check
-# sees it missing on every healthy Windows update. Nothing else is staged, so
-# nothing else is excused, or a stray sibling could hide any quarantine.
+# `_move_launcher_aside` renames this before setup; nothing else is excused.
 _STAGED_LAUNCHER_NAME = "unsloth.exe"
 _STAGED_LAUNCHER_SUFFIXES = (".update-stale", ".update-backup", ".deleteme")
 
-# Rewritten in place by our own setup: the size claim is waived, absence is not.
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
-# `npm run build` in the installed tree rehashes every asset, so RECORD names
-# files our own setup deleted. Skipped whole: they are gone, not shorter.
+# `npm run build` rehashes every asset, so RECORD names files our setup deleted.
 _INSTALLER_REGENERATED_TREES = (("studio", "frontend", "dist"),)
 
 
@@ -1258,7 +1155,6 @@ def _venv_anchor(site_packages: Path) -> Optional[Path]:
         current = site_packages.resolve()
     except OSError:
         return None
-    # site-packages is 2 (Windows) or 3 (posix) below the prefix.
     for _ in range(4):
         if (current / "pyvenv.cfg").is_file():
             return current
@@ -1268,8 +1164,7 @@ def _venv_anchor(site_packages: Path) -> Optional[Path]:
     return None
 
 
-# Neither installer wraps the scan in a timeout, so a stalled mount would wedge
-# setup. Warm cost of the largest real case is ~65ms.
+# Neither installer wraps the scan in a timeout, so a stalled mount would wedge setup.
 PAYLOAD_SCAN_BUDGET_SECONDS = 5.0
 
 
@@ -1310,8 +1205,6 @@ def damaged_payload_files(
 
     worker = threading.Thread(target = scan, daemon = True)
     worker.start()
-    # The walk's deadline is the ordinary way out and reports what it found;
-    # this margin only bounds the wait for a call that is not coming back.
     worker.join(budget_seconds + 1.0)
     return done[0] if done else []
 
@@ -1347,8 +1240,7 @@ def _scan_payload_files(
             except Exception:
                 continue
             if not record:
-                # uv and pip write RECORD last, so a .dist-info without one was interrupted; only
-                # egg-info never had one. Unreadable still says nothing.
+                # uv and pip write RECORD last, so a .dist-info without one was interrupted.
                 dist_path = str(getattr(dist, "_path", "") or "")
                 if dist_path.endswith(".dist-info"):
                     found.append(f"{name}: RECORD is missing")
@@ -1361,7 +1253,6 @@ def _scan_payload_files(
                 anchor = None
             # csv, not splitlines: a quoted field may hold a newline
             for row in csv.reader(io.StringIO(record, newline = "")):
-                # Every row: batching this let one slow mount overrun 5s by a minute.
                 if deadline is not None and time.monotonic() > deadline:
                     return found
                 rel = row[0] if row else ""
@@ -1379,9 +1270,7 @@ def _scan_payload_files(
                     continue
                 try:
                     target = dist.locate_file(rel)
-                    # `..` is ordinary for console scripts and data files.
-                    # Bounded rather than skipped: a quarantined `bin/unsloth`
-                    # leaves the tree intact and the command gone.
+                    # `..` is ordinary for console scripts; bounded so a quarantined `bin/unsloth` is still caught.
                     if ".." in parts and (anchor is None or not _within(Path(target), anchor)):
                         continue
                     info = target.stat()
@@ -1389,10 +1278,8 @@ def _scan_payload_files(
                     if not _staged_beside(target):
                         found.append(f"{rel} is missing")
                 except NotADirectoryError:
-                    # Not a FileNotFoundError: a parent replaced by a file.
                     found.append(f"{rel} is not reachable")
                 except OSError:
-                    # Unreadable is not missing, and a reinstall cannot fix it.
                     continue
                 else:
                     if not stat.S_ISREG(info.st_mode):
@@ -1453,8 +1340,6 @@ def verify_install(
     elif manifest.get("schema") != MANIFEST_SCHEMA:
         reason = "studio_install_manifest_schema"
     else:
-        # `update --package X` records X, so comparing against unsloth would
-        # report a permanent version change.
         manifest_package = manifest.get("package") or package_name
         if installed is None:
             companions = () if _canonical(manifest_package) == "unsloth-zoo" else ("unsloth-zoo",)
@@ -1467,9 +1352,6 @@ def verify_install(
             _canonical(manifest_package) != "unsloth-zoo" and "unsloth-zoo" in foreign_conflicts
         )
         recorded = manifest.get("package_version")
-        # Every check below compares against `current`, which an absent
-        # distribution passes -- as does a manifest written with no version at
-        # all, which is what write_manifest records for one already gone.
         vanished = not current
         if core_conflict or local_conflict:
             reason = "studio_install_metadata_conflict"
@@ -1481,19 +1363,11 @@ def verify_install(
             manifest_ok = True
 
     if manifest_ok and not deps_ok:
-        # Install finished but the boot deps are gone: venv edited afterwards.
         reason = "studio_deps_missing"
 
-    # Last: the only check that touches the filesystem.
     if manifest_ok and deps_ok and deep and (installed is None or scan_paths):
-        # Reused, not re-read: a manifest rewritten mid-run would make the scan
-        # disagree with the checks that already passed.
         scan_package = (manifest or {}).get("package") or package_name
-        # unsloth-zoo only for the default install: `--package X` installs X
-        # alone, so its neighbours are not ours to repair.
         companions = ("unsloth-zoo",) if _canonical(scan_package) == "unsloth" else ()
-        # No dist-info leaves the scan nothing to walk, and no check above ever
-        # looked at the companion's version.
         if not vanished:
             for companion in companions:
                 present = (
@@ -1519,13 +1393,9 @@ def verify_install(
     }
 
 
-# Sidecar directories: flat `pip --target` trees the training worker prepends to sys.path; nothing
-# here may import from one. MIRRORED from `_venv_dir_is_valid` + `_sidecar_scan_impl` in
-# studio/backend/utils/transformers_version.py, which the stdlib-only installer cannot import. Keep
-# them in sync: the runtime self-heal rebuilds on every request otherwise.
+# MIRRORED from `_venv_dir_is_valid` + `_sidecar_scan_impl` in
+# studio/backend/utils/transformers_version.py, which the stdlib-only installer cannot import. Keep in sync.
 
-# Version-tagged extension suffixes (.cpython-313-darwin.so, .cp313-win_amd64.pyd, .cpython-314t-*).
-# Untagged and pypy/graalpy/debug spellings report nothing rather than guess.
 _EXT_VERSION_TAG_RE = re.compile(r"\.(?:cpython-|cp)(\d{2,}t?)\b")
 # Stable-ABI binaries: fine on a GIL build, a SIGSEGV on a free-threaded one.
 _ABI3_EXT_RE = re.compile(r"\.abi3\.(?:so|pyd)$")
@@ -1559,7 +1429,6 @@ def _sidecar_payload_present(root: Path, dist) -> bool:
         return False
     for entry in recorded:
         parts = tuple(part for part in str(entry).replace("\\", "/").split("/") if part)
-        # `..` escapes the tree (pip records ../../bin/hf) and metadata is not payload.
         if (
             not parts
             or ".." in parts
@@ -1586,8 +1455,6 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
         return None
     canonical = _canonical(name)
     module = canonical.replace("-", "_")
-    # The package tree itself, as _venv_dir_is_valid checks it: a dist-info outlives its payload.
-    # Two stats answer most pins; the RECORD fallback is for names that are not a directory.
     directory_present = any((root / candidate).is_dir() for candidate in (module, canonical))
     found: List[str] = []
     payload_present = False
@@ -1600,13 +1467,10 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
             if _canonical(dist_name) != canonical:
                 continue
             found.append(dist.version or "")
-            # Only when the directory probe came up empty: reading a RECORD per pin per update is
-            # what the stats avoid.
             if not directory_present and not payload_present:
                 payload_present = _sidecar_payload_present(root, dist)
     except Exception:
         return f"{name} metadata unreadable"
-    # An optional package absent, or a bare dist-info, is the top-up's business, not a rebuild.
     if canonical in OPTIONAL_SIDECAR_PACKAGES and (
         not found or (not directory_present and not payload_present)
     ):
@@ -1650,16 +1514,13 @@ def _sidecar_damaged_files(
         return []
     for dist_info in dist_infos:
         name = dist_info.name.split("-")[0]
-        # Stricter than _sidecar_scan_impl on purpose: setup can rebuild to converge, the runtime cannot.
         try:
             record = (dist_info / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except FileNotFoundError:
-            # No RECORD under a pinned dist-info is an interrupted install the size check cannot see.
             if _canonical(name) in required_names:
                 recordless.append(f"{name}: RECORD is missing")
             continue
         except OSError:
-            # Unreadable says nothing about damage.
             continue
         try:
             rows = list(csv.reader(io.StringIO(record)))
@@ -1672,8 +1533,6 @@ def _sidecar_damaged_files(
             if ".dist-info/" in rel or ".egg-info/" in rel or rel.endswith(".pyc"):
                 continue
             parts = tuple(part for part in rel.replace("\\", "/").split("/") if part)
-            # Console scripts (pip records ../../bin/hf, uv bin/hf) fail CLOSED on a healthy
-            # sidecar; nothing here is ever on PATH.
             if (
                 rel.startswith("/")
                 or (len(rel) > 1 and rel[1] == ":")
@@ -1683,7 +1542,6 @@ def _sidecar_damaged_files(
                 continue
             target = root / rel
             key = os.path.normcase(str(target))
-            # Before the filter: a dropped row still owns its path.
             owners[key] = owners.get(key, 0) + 1
             if len(parts) > 1 and parts[0] in _SHARED_NON_RUNTIME_ROOTS:
                 continue
@@ -1699,7 +1557,6 @@ def _sidecar_damaged_files(
     if len(found) >= limit:
         return found
     for name, rel, recorded, target, key in entries:
-        # Every row: a batched deadline let one slow mount overrun it by a minute.
         if deadline is not None and time.monotonic() > deadline:
             return found
         try:
@@ -1707,18 +1564,14 @@ def _sidecar_damaged_files(
         except (FileNotFoundError, NotADirectoryError):
             found.append(f"{name}: {rel} is missing")
         except OSError:
-            # Unreadable is not gone; a wrong answer costs a several-hundred-MB refetch.
             continue
         else:
             if not stat.S_ISREG(info.st_mode):
                 found.append(f"{name}: {rel} is not a regular file")
-            # A path two distributions claim makes the SIZES ambiguous: larger is a collision, not
-            # damage.
+            # A path two distributions claim makes sizes ambiguous: a collision, not damage.
             elif owners[key] == 1 and recorded is not None and info.st_size < recorded:
                 found.append(f"{name}: {rel} is {info.st_size} bytes, expected {recorded}")
             elif rel.endswith((".so", ".pyd")):
-                # The BASENAME alone: a tagged directory (pkg.cp312.libs/) says nothing about the
-                # file.
                 base = rel.replace("\\", "/").rsplit("/", 1)[-1]
                 match = _EXT_VERSION_TAG_RE.search(base)
                 if match and match.group(1) != ext_tag:
@@ -1735,7 +1588,7 @@ def _sidecar_damaged_files(
     return found
 
 
-# Mirrors transformers_version: the escape hatch for a false positive must hold on the setup side too.
+# Mirrors transformers_version: the false-positive escape hatch must hold on the setup side too.
 OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
 SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
 
@@ -1785,9 +1638,8 @@ def sidecar_is_current(
     return True, ""
 
 
-# CLI shim: one `sidecar_is_current` for both shells, whose reimplementations drifted last time.
-# Exit 0 current, 1 not, 2 unimplemented. Both shells also require the marker line: an
-# install_manifest.py without this block exits 0 with no output.
+# Exit 0 current, 1 not, 2 unimplemented. Shells also require the marker line: an older
+# install_manifest.py exits 0 with no output.
 _SIDECAR_CLI_MARKER = "sidecar:"
 
 

@@ -37,9 +37,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-#: IMAGE_FILE_MACHINE_ARM64. The wheels this signs are win_arm64.
 MACHINE_ARM64 = 0xAA64
-#: Data directory index 4 is the Certificate Table -- a non-zero size means "already signed".
+# A non-zero Certificate Table size means already signed.
 CERTIFICATE_TABLE_INDEX = 4
 
 
@@ -77,7 +76,7 @@ def is_signed(blob: bytes) -> bool:
     if magic_at + 2 > len(blob):
         return False
     magic = struct.unpack_from("<H", blob, magic_at)[0]
-    # PE32+ has 8 more bytes of fixed fields before the data directory than PE32 does.
+    # PE32+ has 8 more bytes of fixed fields before the data directory than PE32.
     directory_at = magic_at + (112 if magic == 0x20B else 96) + CERTIFICATE_TABLE_INDEX * 8
     if directory_at + 8 > len(blob):
         return False
@@ -132,8 +131,7 @@ def sign_wheel(
             if is_signed(blob):
                 skipped.append(name)
                 continue
-            # Signed on disk under its own name: signtool and trusted-signing-cli both work
-            # in place, and the suffix decides which subject interface package is used.
+            # The file suffix decides which subject interface package the signer uses.
             staged = work / Path(name).name
             staged.write_bytes(blob)
             sign_file(staged, signer)
@@ -151,8 +149,6 @@ def sign_wheel(
         if record_name is None:
             raise SystemExit(f"{wheel.name}: no .dist-info/RECORD")
 
-        # Member order preserved: the installer does not care, but a diff between the signed
-        # and unsigned wheel should show the signatures and nothing else.
         with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as out:
             lines = []
             for name in names:

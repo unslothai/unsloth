@@ -6,10 +6,7 @@ updates:
     schedule:
       interval: "weekly"
     cooldown:
-      # github-actions refs are git tags / SHAs, not semver -- the
-      # `semver-minor-days` / `semver-patch-days` knobs are rejected
-      # by Dependabot's validator for this ecosystem. Only the
-      # `default-days` floor applies.
+      # Semver cooldown knobs are rejected for github-actions; only default-days applies.
       default-days: 7
     groups:
       actions:
@@ -18,15 +15,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  # Removed a stray `package-ecosystem: "bun"` entry for
-  # /studio/frontend: that path has no bun.lock / bun.lockb, so
-  # Dependabot's bun ecosystem silently no-ops on it. The actual
-  # lockfile committed at /studio/frontend is package-lock.json
-  # (npm), and the npm entry further below already catches
-  # npm_and_yarn security advisories for that directory. Version
-  # updates for /studio/frontend stay suppressed (open-pull-
-  # requests-limit: 0 in that entry) -- security PRs flow through
-  # regardless. Add a real bun entry IF and WHEN bun.lock lands.
+  # No bun entry: /studio/frontend has no bun.lock, so it would silently no-op.
 
   - package-ecosystem: "npm"
     directory: "/studio/backend/core/data_recipe/oxc-validator"
@@ -43,8 +32,6 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  # pip + cargo grouped weekly; the *-security siblings batch
-  # advisories that would otherwise each open their own PR.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -67,13 +54,8 @@ updates:
       default-days: 7
       semver-minor-days: 3
       semver-patch-days: 3
-    # Tauri renders Unsloth on Linux through GTK3 and the gtk-rs GTK3
-    # bindings are archived at 0.18.2, so `gtk`/`gdk` will never ship
-    # 0.19+. Moving `glib`/`gdk-pixbuf` past 0.18 puts two
-    # incompatible copies in the tree and native_clipboard.rs stops
-    # compiling: `gtk::Clipboard::wait_for_image` returns a 0.18
-    # `Pixbuf` our `gdk_pixbuf` no longer accepts. This also
-    # suppresses security PRs above 0.18, leaving alerts only.
+    # gtk-rs GTK3 bindings are frozen at 0.18; newer glib/gdk-pixbuf break native_clipboard.rs.
+    # This also suppresses security PRs above 0.18, leaving alerts only.
     ignore:
       - dependency-name: "glib"
         versions: [">= 0.19"]
@@ -86,16 +68,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  # /studio/frontend npm dependencies. Version-update PRs are
-  # deliberately suppressed (open-pull-requests-limit: 0) -- the
-  # frontend dep tree is large, the lockfile is the authoritative
-  # pin, and `min-release-age=7` in studio/frontend/.npmrc already
-  # blocks fresh tarballs at install time. Security advisories
-  # arrive via GitHub's npm_and_yarn channel and are NOT capped by
-  # `open-pull-requests-limit` per Dependabot's documented
-  # behaviour; they flow through this entry, group together, and
-  # still respect the cooldown below so we never ingest a tarball
-  # that was hot-published less than 3 days ago.
+  # Version updates suppressed (limit 0); security PRs still flow and are not capped by the limit.
   - package-ecosystem: "npm"
     directory: "/studio/frontend"
     schedule:

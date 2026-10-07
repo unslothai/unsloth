@@ -66,8 +66,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
-# Put studio/ on sys.path so install_llama_prebuilt / prebuilt_core resolve whether run as a script
-# from any cwd or imported by the tests.
 _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
@@ -75,8 +73,7 @@ if _STUDIO_DIR not in sys.path:
 import install_llama_prebuilt as llama  # noqa: E402
 import prebuilt_core as core  # noqa: E402
 
-# Shared machinery re-exported as module globals; the wrappers below resolve these by bare name at
-# call time so tests can monkeypatch them here.
+# Re-exported as globals so tests can monkeypatch them here.
 PrebuiltFallback = core.PrebuiltFallback
 BusyInstallConflict = core.BusyInstallConflict
 auth_headers = llama.auth_headers
@@ -101,18 +98,13 @@ llama_detect_host = llama.detect_host
 installed_llama_runtime = llama.installed_llama_runtime
 installed_llama_ggml_tree = llama.installed_llama_ggml_tree
 
-# Late-binding seam for prebuilt_core: name lookups hit this module's globals first, so
-# monkeypatches apply, then the core defaults.
 _OPS = core.ModuleOps(globals())
 
 
-# Resolver mode keeps stdout to the JSON payload only (setup.sh parses it); main() flips this on
-# for the install path so setup surfaces progress.
+# Resolver mode keeps stdout JSON-only (setup.sh parses it).
 _LOG_TO_STDOUT = False
 
 
-# Raised by prebuilt_core when a fetched release cannot be trusted; re-exported so this
-# module's callers can name it without importing core.
 ReleaseIntegrityError = core.ReleaseIntegrityError
 
 
@@ -139,27 +131,19 @@ SCHEMA_VERSION = 1
 USER_AGENT = "unsloth-studio-whisper-prebuilt"
 
 DEFAULT_PUBLISHED_REPO = "unslothai/whisper.cpp"
-# Release assets published by the fork's prebuilt CI.
 MANIFEST_ASSET_NAME = "whisper-prebuilt-manifest.json"
 SHA256_ASSET_NAME = "whisper-prebuilt-sha256.json"
 
 METADATA_FILENAME = "UNSLOTH_WHISPER_PREBUILT_INFO.json"
 
-# Backends the installer can select: accelerator identities for the slim pairing (which llama ggml
-# module must exist) and the marker. Only "cpu" can match a fat artifact, the pinned escape hatch.
+# Only "cpu" can match a fat artifact (the pinned escape hatch).
 SUPPORTED_BACKENDS = ("cpu", "cuda", "metal", "vulkan", "rocm")
 
-# Fallback on a GPU-selection miss: retry with cpu so the slim bundle can pair via the llama cpu
-# modules, or the published fat CPU bundle installs on a pinned pre-slim release.
 FALLBACK_BACKEND = "cpu"
 
-# Backends whose slim (ggml-less) whisper bundle can ride the installed llama.cpp prebuilt's ggml
-# runtime. All are eligible: the next whisper release ships only slim bundles.
 SLIM_ELIGIBLE_BACKENDS = ("cpu", "cuda", "metal", "rocm", "vulkan")
 
 # ggml backend module the llama bin dir must provide per accelerator.
-# llama's x64 cpu bundles ship per-arch libggml-cpu-<variant> modules and macOS a single libggml-cpu, so the cpu globs
-# cover both; a backend with no glob for the host os (metal off macOS) is never slim there.
 SLIM_BACKEND_MODULE_GLOBS = {
     "cpu": {
         "linux": "libggml-cpu*.so*",
@@ -173,10 +157,7 @@ SLIM_BACKEND_MODULE_GLOBS = {
     "vulkan": {"linux": "libggml-vulkan.so*", "windows": "ggml-vulkan.dll"},
 }
 
-# Everything the slim wiring mirrors from the llama bin dir: core ggml sonames plus every dlopen'd
-# backend module. libomp* rides along because llama's clang-built slices link ggml against the LLVM
-# OpenMP runtime and ship it in the bundle, so the loader can never find it on the host; Linux x64
-# and macOS ship none, so the globs match nothing there.
+# libomp*: llama's clang-built slices link ggml against bundled LLVM OpenMP.
 SLIM_GGML_LIBRARY_GLOBS = (
     "libggml*",
     "ggml*.dll",
@@ -190,23 +171,17 @@ SLIM_ROCM_LIBRARY_GLOBS = (
     "libhsa*.so*",
     "libroc*.so*",
 )
-# Kernel catalogs a linux ROCm llama bundle can ship, mirrored into the whisper bin dir so the
-# packaged libraries find their Tensile kernels beside them.
 SLIM_ROCM_RUNTIME_DIRS = ("hipblaslt", "rocblas")
-# Of those, the ones a paired runtime must actually carry.
 SLIM_ROCM_REQUIRED_RUNTIME_DIRS = ("rocblas",)
-# 3: libomp*.so*/dylib joined the wiring.
+# Bump when the wiring set changes.
 SLIM_RUNTIME_WIRING_VERSION = 3
 
 INSTALL_STAGING_ROOT_NAME = ".staging"
 
-# Master switch for the staged runtime smoke test, off by default so a bundle whose GPU forward
-# pass JIT-compiles kernels does not stall every install. The check and its CPU-asset retry are
-# intact: set True to re-enable.
+# Off by default: GPU kernel JIT on the first forward pass stalls installs.
 _RUN_STAGED_PREBUILT_VALIDATION = False
 
 
-# ── Host detection (probes shared with install_llama_prebuilt) ──
 @dataclass(frozen = True)
 class HostInfo:
     system: str
@@ -220,8 +195,7 @@ class HostInfo:
     has_usable_nvidia: bool = False
     has_rocm: bool = False
     rocm_gfx: str | None = None
-    # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
-    # Enforces a macOS artifact's min_os so a bundle that cannot load on this OS version is never picked.
+    # Enforces a macOS artifact's min_os.
     macos_version: tuple[int, int] | None = None
 
 
@@ -284,8 +258,7 @@ def apply_host_overrides(
         )
     updates: dict[str, Any] = {}
     if has_rocm or rocm_gfx:
-        # --rocm-gfx implies --has-rocm (llama parity); otherwise the host stays on
-        # its CUDA/CPU path and never picks the ROCm bundle. Drop CUDA detection too.
+        # --rocm-gfx implies --has-rocm (llama parity) and drops CUDA detection.
         updates["has_rocm"] = True
         updates["has_usable_nvidia"] = False
     if rocm_gfx:
@@ -298,7 +271,6 @@ def host_platform_tokens(host: HostInfo) -> tuple[str, str]:
     return host.whisper_os, host.whisper_arch
 
 
-# ── Backend selection ──
 def auto_detect_backend(host: HostInfo) -> str:
     return core.auto_detect_backend(_OPS, host)
 
@@ -307,7 +279,6 @@ def resolve_backend(host: HostInfo, requested: str | None, *, cpu_fallback: bool
     return core.resolve_backend(_OPS, host, requested, cpu_fallback = cpu_fallback)
 
 
-# ── Asset naming (pure, unit tested) ──
 def whisper_asset_name(release_tag: str, host: HostInfo, accel: str) -> str:
     """e.g. whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz.
 
@@ -319,7 +290,6 @@ def whisper_asset_name(release_tag: str, host: HostInfo, accel: str) -> str:
     return f"whisper-{tag}-{host.whisper_os}-{host.whisper_arch}-{accel}{host.archive_ext}"
 
 
-# ── Manifest (release-side artifact catalogue; generic parser in the core) ──
 def validate_schema_version(payload: dict[str, Any], *, label: str) -> None:
     core.validate_schema_version(
         payload, label = label, schema_version = SCHEMA_VERSION, error = PrebuiltFallback
@@ -350,7 +320,6 @@ def artifacts_for_host(
     return _artifacts_for_host(manifest, host, backend)
 
 
-# ── Slim selection (paired with the installed llama.cpp ggml runtime) ──
 def _llama_ggml_commit(tag: str) -> str | None:
     """The "-mix-" suffix of a fork tag "b<upstream_build>-mix-<suffix>".
 
@@ -439,13 +408,10 @@ def llama_runtime_pairs(
         return False
     if installed_tag == required_tag:
         return True
-    # An install predating ggml_tree has no tree locally, so read it from that
-    # tag's published release rather than stranding the install on a suffix
-    # comparison that ignores ggml.
+    # Pre-ggml_tree install: read the tree from that tag's published release.
     if not (isinstance(installed_ggml_tree, str) and installed_ggml_tree):
         if isinstance(installed_repo, str) and installed_repo:
             installed_ggml_tree = published_llama_ggml_tree(installed_tag, installed_repo)
-    # Only probe the required release once the installed side actually resolved
     if installed_ggml_tree and not (isinstance(required_ggml_tree, str) and required_ggml_tree):
         required_ggml_tree = published_llama_ggml_tree(required_tag)
     if installed_ggml_tree and required_ggml_tree:
@@ -461,7 +427,7 @@ def _ships_gpu_ggml_module(llama_bin_dir: Path, os_key: str) -> bool:
     upstream-sourced install, so the files on disk decide."""
     for backend, per_os in SLIM_BACKEND_MODULE_GLOBS.items():
         glob = per_os.get(os_key)
-        # is_file(): a versioned alias still counts, a directory or dangling link does not.
+        # is_file(): a versioned alias counts, a directory or dangling link does not.
         if backend != "cpu" and glob and any(path.is_file() for path in llama_bin_dir.glob(glob)):
             return True
     return False
@@ -540,10 +506,7 @@ def slim_pairing_for_artifact(
         return None
     required_sonames = [str(name) for name in sonames]
     if host.is_windows and _ships_windows_gpu_ggml_module(llama_bin_dir):
-        # The shared Windows manifest lists libomp only because the cpu bundle's ggml links against it, so
-        # requiring it for a GPU bundle only mis-rejects; link_ggml_runtime still wires it. Dropping the
-        # aarch64 name too is safe only while llama publishes no Windows arm64 GPU bundle, whose
-        # clang-built ggml really does need LLVM OpenMP: re-check this gate before adding one.
+        # Windows libomp is needed only by the cpu bundle; re-check if llama ships a win-arm64 GPU bundle.
         required_sonames = [
             name
             for name in required_sonames
@@ -555,13 +518,8 @@ def slim_pairing_for_artifact(
         and _ships_gpu_ggml_module(llama_bin_dir, "linux")
         and _ggml_stack_imports_libomp(llama_bin_dir, backend) is False
     ):
-        # Same shape as the Windows case above: the arm64 manifest names libomp only because
-        # the cpu bundle's ggml links it, so CUDA (GNU libgomp) was rejected for a file it
-        # never needs. Evidence, not arch -- the arm64 Vulkan bundle really does import it.
-        # `is False`, not `is not True`: dropping this on no evidence is unrecoverable, since
-        # the sidecar sends the loader error to DEVNULL and serving never falls back.
-        # arm64 only: linux-x64 ggml really imports its bundled libomp
-        # (test_linux_slim_still_requires_manifest_libomp).
+        # arm64: libomp is required only by the cpu bundle. `is False`: dropping it on no evidence
+        # is unrecoverable. linux-x64 really imports it (test_linux_slim_still_requires_manifest_libomp).
         required_sonames = [name for name in required_sonames if not _is_linux_libomp_soname(name)]
     missing = [name for name in required_sonames if not (llama_bin_dir / name).is_file()]
     if missing:
@@ -668,8 +626,7 @@ def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> s
     installed_tag = runtime[1]
     installed_tree = installed_llama_ggml_tree()
     installed_repo = installed_llama_tree_repo()
-    # Normalise the tree: llama_runtime_pairs treats a non-string as absent, but
-    # an unhashable one (list/dict) would blow up the set first.
+    # Unhashable tree values (list/dict) would break the set.
     required_pairs = {
         (
             artifact.get("requires_llama_tag"),
@@ -704,7 +661,6 @@ def select_artifact_with_fallback(
     return select_artifact_with_cpu_fallback(manifest, host, backend)
 
 
-# ── Release checksum index (trust anchor: the release's own sha256 asset) ──
 def parse_release_checksums(repo: str, release_tag: str, payload: Any) -> dict[str, str]:
     return core.parse_release_checksums(_OPS, repo, release_tag, payload)
 
@@ -722,7 +678,6 @@ def expected_sha256_for(
     return core.expected_sha256_for(_OPS, checksums, asset_name, manifest_sha256 = manifest_sha256)
 
 
-# ── Verified download (retries once on checksum mismatch) ──
 def download_file_verified(
     url: str, destination: Path, *, expected_sha256: str, label: str
 ) -> None:
@@ -731,7 +686,6 @@ def download_file_verified(
     )
 
 
-# ── GitHub release resolution ──
 def github_release(repo: str, tag: str) -> dict[str, Any]:
     return core.github_release(_OPS, repo, tag, error = PrebuiltFallback)
 
@@ -744,7 +698,6 @@ def asset_download_url(bundle: ReleaseBundle, asset_name: str) -> str:
     return core.asset_download_url(_OPS, bundle, asset_name)
 
 
-# ── Download-host fast path (resolve + fetch the JSON assets with no GitHub API) ──
 def _download_host_latest_release_tag(repo: str) -> str | None:
     return core.download_host_latest_release_tag(_OPS, repo)
 
@@ -775,7 +728,6 @@ def _resolve_release_via_download_host(
     return core.resolve_release_via_download_host(_OPS, repo, published_release_tag)
 
 
-# ── Archive extraction (core's guarded extractor + tar exec-bit restore) ──
 def extract_archive(archive_path: Path, destination: Path) -> None:
     """Shared guarded extraction, then restore tar exec bits (the extractor writes
     plain files; whisper-server must stay executable)."""
@@ -783,7 +735,6 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
     core.restore_tar_exec_bits(archive_path, destination)
 
 
-# ── Install layout ──
 def server_binary_name(host: HostInfo) -> str:
     return "whisper-server.exe" if host.is_windows else "whisper-server"
 
@@ -872,7 +823,6 @@ def validate_staged_server(staged_root: Path, host: HostInfo) -> None:
     _validate_staged_server(staged_root, host)
 
 
-# ── Slim install wiring (llama ggml runtime into the whisper bin dir) ──
 def _elf_needed(path: Path) -> set[str] | None:
     """Read ELF DT_NEEDED names when a standard inspection tool is available."""
     commands = (("readelf", "-d"), ("objdump", "-p"))
@@ -909,16 +859,13 @@ def _runtime_library_sources(llama_bin_dir: Path, backend: str | None) -> list[P
         path for pattern in patterns for path in llama_bin_dir.glob(pattern) if path.is_file()
     }
     if backend == "rocm":
-        # Windows llama HIP/ROCm prebuilts use a flat *.dll runtime overlay.
-        # Mirror that complete no-SDK closure, not only filenames containing
-        # ggml, hip, or roc: transitive runtime DLLs can have unrelated names.
+        # Windows ROCm: mirror the whole flat DLL closure; transitive DLLs have unrelated names.
         windows_dlls = {path for path in llama_bin_dir.glob("*.dll") if path.is_file()}
         if windows_dlls:
             sources.update(windows_dlls)
             return sorted(sources)
 
-        # Linux can inspect DT_NEEDED and copy the exact packaged closure. Fall
-        # back to the ROCm globs only when standard ELF tools are unavailable.
+        # Linux: copy the DT_NEEDED closure; ROCm globs only when ELF tools are missing.
         by_name = {path.name: path for path in llama_bin_dir.iterdir() if path.is_file()}
         pending = list(sources)
         inspected_hip = False
@@ -985,8 +932,7 @@ def link_ggml_runtime(
         )
     whisper_bin_dir.mkdir(parents = True, exist_ok = True)
     for source in sources:
-        # Follows a libggml.so.0 -> libggml.so.0.x symlink to its inode, so every
-        # created name is a real hardlink surviving a dir swap.
+        # Hardlink to the resolved inode so links survive llama's dir swap.
         _link_or_copy(source, whisper_bin_dir / source.name)
     return [source.name for source in sources]
 
@@ -995,8 +941,6 @@ def link_runtime_directories(
     llama_bin_dir: Path, whisper_bin_dir: Path, *, backend: str, host: HostInfo
 ) -> list[str]:
     """Mirror GPU kernel catalogs that packaged ROCm libraries load at runtime."""
-    # Windows ROCm prebuilts are a flat DLL overlay. The hipblaslt/rocblas
-    # catalog directories are part of the Linux ROCm bundle layout only.
     if backend != "rocm" or host.is_windows:
         return []
     linked: list[str] = []
@@ -1010,8 +954,6 @@ def link_runtime_directories(
         )
         if not files:
             if not required:
-                # hipBLASLt has no kernels for this target, and llama pairs without the catalog and runs, so
-                # whisper must pair the same way.
                 log(f"slim install: paired ROCm runtime ships no {name} kernel catalog; skipping")
                 continue
             missing = "is missing its" if not source_root.is_dir() else "has an empty"
@@ -1047,13 +989,11 @@ def prepare_runtime_payload(staged_root: Path, host: HostInfo, selection: Any) -
     )
 
 
-# ── Metadata / marker ──
 def metadata_path(install_dir: Path) -> Path:
     return install_dir / METADATA_FILENAME
 
 
-# Every bin layout this installer produces, walked whatever the host says: the backfill runs from
-# settle_kept_install, which prebuilt_core hands the install directory alone.
+# Walk every bin layout: settle_kept_install passes only the install dir.
 _RUNTIME_RECORD_BIN_DIRS = (("build", "bin"), ("build", "bin", "Release"))
 _RUNTIME_RECORD_SERVER_NAMES = ("whisper-server", "whisper-server.exe")
 
@@ -1106,27 +1046,25 @@ def _runtime_file_records(
     for parts in _RUNTIME_RECORD_BIN_DIRS:
         bin_dir = install_dir.joinpath(*parts)
         for name in linked_libraries or ():
-            # Bare filenames only: a marker naming ../.. must not send the record outside the install.
+            # Bare filenames only: a marker naming ../.. must not escape the install.
             if not isinstance(name, str) or not name or Path(name).name != name:
                 continue
             record = _stat_record(bin_dir / name)
             if record is not None:
                 records[(bin_dir / name).relative_to(install_dir).as_posix()] = record
         for name in linked_runtime_directories or ():
-            # Same bare-name rule: rglob on a marker-supplied path would walk out of the install.
             if not isinstance(name, str) or not name or Path(name).name != name:
                 continue
             runtime_dir = bin_dir / name
             if not runtime_dir.is_dir():
                 continue
             for path in sorted(runtime_dir.rglob("*")):
-                # Files only; stat follows symlinks, which is what the loader does too.
                 if not path.is_file():
                     continue
                 record = _stat_record(path)
                 if record is not None:
                     records[path.relative_to(install_dir).as_posix()] = record
-        # Last, so a server the wiring loop happened to match is upgraded to the hashed tier.
+        # Last, so a server matched by the wiring loop gets the hashed tier.
         for name in _RUNTIME_RECORD_SERVER_NAMES:
             candidate = bin_dir / name
             record = _stat_record(candidate)
@@ -1135,7 +1073,7 @@ def _runtime_file_records(
             try:
                 record["sha256"] = sha256_file(candidate)
             except (OSError, MemoryError) as exc:
-                # No record at all: a size-only tier would keep a same-size corrupt server forever.
+                # No record at all: a size-only tier would keep a same-size corrupt server.
                 log(f"could not hash {name} for the runtime record ({exc}); not recording")
                 return {}
             records[candidate.relative_to(install_dir).as_posix()] = record
@@ -1206,7 +1144,6 @@ def _runtime_files_match(install_dir: Path, marker: "dict[str, Any]") -> bool:
         except OSError as exc:
             log(f"existing install at {install_dir} rejected: {relative} is unreadable ({exc})")
             return False
-    # An unrecorded file is not evidence against the install; a RECORDED one that vanished is.
     return True
 
 
@@ -1230,8 +1167,6 @@ def selection_from_artifact(
     )
     if artifact.get("install_kind") != "slim":
         return selection
-    # A slim selection carries its pairing so the install wiring and marker know
-    # which llama runtime provides the ggml libraries.
     runtime = installed_llama_runtime()
     if runtime is None or not llama_runtime_pairs(
         runtime[1],
@@ -1283,7 +1218,7 @@ def kept_install_needs_settling(install_dir: Path) -> bool:
     marker = load_prebuilt_metadata(install_dir)
     if not marker:
         return False
-    # Empty counts as absent: _runtime_file_records answers {} for a server it could not hash.
+    # Empty counts as absent: an unhashable server yields {}.
     if not marker.get("runtime_files"):
         return True
     if marker.get("install_kind") != "slim":
@@ -1337,11 +1272,10 @@ def _backfill_runtime_file_records(install_dir: Path) -> None:
         linked if isinstance(linked, list) else None,
         runtime_dirs if isinstance(runtime_dirs, list) else None,
     )
-    # An empty record is not evidence, and writing one would fail closed on every later update.
+    # Writing an empty record would fail closed on every later update.
     if not records:
         return
     marker["runtime_files"] = records
-    # llama's writer: same atomic temp-and-replace, mode and owner kept, never raises.
     if llama._write_marker(metadata_path(install_dir), marker):
         log(f"existing {COMPONENT} install reused; recorded {len(records)} payload files")
 
@@ -1379,7 +1313,6 @@ def _wiring_matches_live_llama(install_dir: Path, marker: dict) -> bool:
         except OSError:
             return False
         if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino):
-            # Copied rather than hardlinked, or genuinely stale. Only the bytes can say.
             try:
                 if a.st_size != b.st_size or core.sha256_file(ours) != core.sha256_file(theirs):
                     return False
@@ -1413,10 +1346,7 @@ def _backfill_slim_pairing_record(install_dir: Path) -> None:
     marker = load_prebuilt_metadata(install_dir)
     if not marker or marker.get("install_kind") != "slim":
         return
-    # Only record a pairing this install can be SHOWN to have. Without this the backfill
-    # writes whichever llama is live at the moment it runs, which is a guess whenever llama
-    # changed before whisper's first migration or while another installer held llama's own
-    # lock, and the runtime-id check then trusts the guess forever.
+    # Only record a pairing the wiring proves; otherwise the guess is trusted forever.
     if not _wiring_matches_live_llama(install_dir, marker):
         log(
             f"existing {COMPONENT} install reused; its wiring does not match the live "
@@ -1438,7 +1368,6 @@ def _backfill_slim_pairing_record(install_dir: Path) -> None:
         added.append(f"{key}={value}")
     if not added:
         return
-    # llama's writer: same atomic temp-and-replace, mode and owner kept, never raises.
     if llama._write_marker(metadata_path(install_dir), marker):
         log(f"existing {COMPONENT} install reused; recorded its pairing ({', '.join(added)})")
 
@@ -1484,10 +1413,7 @@ def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
                 f"libraries ({', '.join(missing[:4])}); reinstalling"
             )
             return False
-        # Which llama INSTALL, not which source tree: a per-gfx ROCm reselection swaps the asset
-        # within one release, and the hardlinks survive llama's directory swap on purpose, so the
-        # previous GPU's kernels stay wired while every other check passes. Absent is a pre-key
-        # marker, which settle_kept_install records rather than re-downloading.
+        # Per llama install, not tree: a per-gfx ROCm reselection keeps the tree id but swaps kernels.
         recorded_runtime_id = marker.get("paired_llama_runtime_id")
         if isinstance(recorded_runtime_id, str) and recorded_runtime_id:
             if recorded_runtime_id != installed_paired_runtime_id():
@@ -1497,8 +1423,7 @@ def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
                 )
                 return False
         runtime_dirs = marker.get("linked_runtime_directories")
-        # Subset plus required, not equality: a target without hipBLASLt kernels wires rocblas alone and is
-        # complete (#8364), while an unknown name or a missing rocblas still means stale wiring.
+        # Subset plus required: a target without hipBLASLt wires rocblas alone.
         if (
             marker.get("backend") == "rocm"
             and not host.is_windows
@@ -1523,13 +1448,10 @@ def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
                 f"({', '.join(str(name) for name in missing_dirs[:4])}); reinstalling"
             )
             return False
-    # The only check here that reads the payload's BYTES: a whisper-server truncated to a non-zero
-    # length is still a non-empty executable. Absent on a pre-record marker, which is kept and
-    # backfilled under the lock, so upgrading from an older Studio never re-downloads.
+    # Only check that reads payload bytes: a truncated server is still a non-empty executable.
     return _runtime_files_match(install_dir, marker)
 
 
-# ── Orchestration ──
 def resolve_newest_release_tag(repo: str) -> str:
     return core.resolve_newest_release_tag(_OPS, repo)
 
@@ -1550,8 +1472,7 @@ def fetch_release_for_install(
     except PrebuiltFallback:
         raise
     except (OSError, ValueError, RuntimeError) as exc:
-        # install_prebuilt's keep path reads only PrebuiltFallback, so without this wrap an offline
-        # update printed "prebuilt install failed" over an intact tree.
+        # The keep path catches only PrebuiltFallback.
         raise PrebuiltFallback(
             f"could not fetch release {repo}@{published_release_tag or 'latest'}: {exc}"
         ) from exc
@@ -1564,7 +1485,6 @@ class WhisperReleasePlan:
     artifact: dict[str, Any]
     resolved_backend: str
     used_fallback: bool
-    # The macOS release walk-back behind bundle (core.WalkBack); None when bundle is the newest.
     walk_back: core.WalkBack | None = None
 
 
@@ -1678,7 +1598,6 @@ def _release_plan_for_host(
     requested_specific_tag = whisper_tag.strip().lower() not in ("", "latest")
     first_bundle: ReleaseBundle | None = None
     first_error: PrebuiltFallback | None = None
-    # An upstream version pin searches manifests directly.
     if not requested_specific_tag or published_release_tag:
         first_bundle, first_checksums = fetch_release_for_install(
             published_repo, published_release_tag = published_release_tag
@@ -1694,8 +1613,7 @@ def _release_plan_for_host(
             except PrebuiltFallback as exc:
                 first_error = exc
             else:
-                # Integrity validation happens only after compatibility succeeds.
-                # Its failures are never eligible for release walkback.
+                # Integrity failures are never eligible for release walkback.
                 return _plan_bundle(
                     host,
                     first_bundle,
@@ -1713,7 +1631,6 @@ def _release_plan_for_host(
         assert first_error is not None
         raise first_error
 
-    # An API limit or network failure is "could not answer", which the keep path handles.
     try:
         compatible_tags = _published_release_tags(published_repo)
     except (OSError, RuntimeError) as exc:
@@ -1728,8 +1645,7 @@ def _release_plan_for_host(
         if not _bundle_matches_whisper_tag(bundle, whisper_tag):
             continue
         try:
-            # Establish host compatibility before fetching or trusting this candidate's checksum index: once
-            # selected, integrity failures must stop the install rather than silently downgrade again.
+            # Check compatibility before trusting the checksum index: integrity failures must not downgrade.
             select_artifact_with_cpu_fallback(bundle.manifest, host, requested_backend)
         except PrebuiltFallback:
             continue
@@ -1752,7 +1668,6 @@ def _release_plan_for_host(
             else None
         )
         if walk_back is not None:
-            # So the marker-only check holds the install while that release is newest for this macOS.
             plan = replace(
                 plan,
                 walk_back = walk_back,
@@ -1847,9 +1762,7 @@ def _existing_install_is_intact(
         return None
     if marker.get("backend") != requested_backend:
         return None
-    # A bundle for another architecture (a home directory carried between machines) is not intact.
-    # A marker predating the recorded os/arch is read from its asset name, a convention a custom
-    # repository need not follow.
+    # A bundle for another arch is not intact; old markers infer os/arch from the asset name.
     os_token, arch_token = host_platform_tokens(host)
     recorded_os, recorded_arch = marker.get("os"), marker.get("arch")
     if isinstance(recorded_os, str) and isinstance(recorded_arch, str):
@@ -1862,7 +1775,6 @@ def _existing_install_is_intact(
             or f"-{os_token}-{arch_token}-" not in recorded_asset
         ):
             return None
-    # An install restored onto an older Mac has the right tokens and fails at load time.
     min_os = marker.get("min_os")
     coverage = marker.get("coverage")
     if min_os is None and isinstance(coverage, dict):
@@ -1873,24 +1785,19 @@ def _existing_install_is_intact(
     recorded_release = marker.get("release_tag")
     if not isinstance(recorded_release, str) or not recorded_release:
         return None
-    # A marker without a fingerprint is not a record of a finished install.
     recorded_fingerprint = marker.get("install_fingerprint")
     if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
         return None
-    # ...and self-consistent: with no plan to compare against, this is what stands between a
-    # release_tag edited over an old binary and "current". Predating it recomputes to None.
+    # Self-consistency guards against a release_tag edited over an old binary.
     if core.marker_install_fingerprint(marker) != recorded_fingerprint:
         return None
-    # A slim install is only as intact as the llama ggml it hardlinks; predating the key is full path once.
     if marker.get("install_kind") == "slim":
         recorded_tree = marker.get("paired_llama_ggml_tree")
         if not isinstance(recorded_tree, str) or not recorded_tree:
             return None
         if recorded_tree != installed_llama_ggml_tree():
             return None
-    # ...and the payload record itself: this path never asks the network and never starts
-    # whisper-server, so the recorded digests are the only evidence the bytes are the installed
-    # ones. Predating the record is full path once, as with paired_llama_ggml_tree above.
+    # Recorded digests are the only evidence here; this path never runs whisper-server.
     if not marker.get("runtime_files") or not isinstance(marker.get("runtime_files"), dict):
         return None
     if not installed_tree_is_intact(install_dir, host):
@@ -1898,7 +1805,6 @@ def _existing_install_is_intact(
     return marker
 
 
-# What the fork appends to the upstream tag it packages: v1.9.2 -> v1.9.2-unsloth.17.
 _PACKAGING_SUFFIX = "-unsloth."
 
 
@@ -1923,8 +1829,7 @@ def _api_newest_release_tag_for_upstream(
         tag = release.get("tag_name") if isinstance(release, dict) else None
         if not isinstance(tag, str):
             continue
-        # The upstream part can carry a hyphen (v1.9.2-rc1), so the tag is neither cut at its first
-        # hyphen nor matched on any: both read v1.9.2-rc1-unsloth.2 as a packaging of v1.9.2.
+        # The upstream part can contain a hyphen (v1.9.2-rc1).
         packaged = _normalized_upstream_tag(tag)
         if (
             tag == recorded_release
@@ -1932,8 +1837,6 @@ def _api_newest_release_tag_for_upstream(
             or packaged.startswith(wanted + _PACKAGING_SUFFIX)
         ):
             matching.append(release)
-    # Repo-aware selectability: whisper is never ggml-org/llama.cpp, so this is the
-    # plain drafts-and-prereleases-dropped rule it has always had.
     return llama._newest_release_tag_from_releases(repo, matching)
 
 
@@ -1974,10 +1877,6 @@ def existing_install_current_without_plan(
     pinned = (published_release_tag or "").strip()
     requested = (whisper_tag or "latest").strip().lower()
     if requested not in ("", "latest"):
-        # An upstream pin, checked even with a release pin: the full path refuses a pinned release
-        # targeting another upstream version (_bundle_matches_whisper_tag). This fork publishes
-        # several packagings of one upstream tag and takes the newest, so without a release pin the
-        # upstream_tag alone cannot answer.
         if _normalized_upstream_tag(
             str(marker.get("upstream_tag") or "")
         ) != _normalized_upstream_tag(whisper_tag):
@@ -1986,9 +1885,7 @@ def existing_install_current_without_plan(
         if pinned != recorded_release:
             return False
     elif requested not in ("", "latest"):
-        # The newest packaging of THAT version, which /releases/latest cannot name once a newer
-        # upstream ships: ask the release list, by tag name, which only the fork's convention
-        # supports; a custom repository is matched by manifest on the full path.
+        # /releases/latest cannot name an older version's newest packaging; custom repos match by manifest.
         if published_repo != DEFAULT_PUBLISHED_REPO:
             return False
         newest = _api_newest_release_tag_for_upstream(published_repo, whisper_tag, recorded_release)
@@ -2005,10 +1902,8 @@ def existing_install_current_without_plan(
         if not latest:
             return False
         if latest != recorded_release and not core.walk_back_stands(marker, host, latest):
-            # A recorded macOS walk-back stands while the newest release is still the skipped one on
-            # the same OS version; a newer release or an OS upgrade re-decides it.
             return False
-    # "already matches" is the substring setup.sh:3635 and setup.ps1:6109 grep for.
+    # "already matches" is the substring setup.sh and setup.ps1 grep for.
     log(
         f"existing {COMPONENT} install already matches {recorded_release} "
         f"({marker.get('backend')}); nothing to do"
@@ -2055,21 +1950,11 @@ def install_prebuilt(
             requested_backend = requested_backend,
         )
     except (ReleaseCompatibilityError, core.ReleaseIntegrityError):
-        # The lookup ANSWERED, so keeping would paper over a real answer. Two kinds:
-        # ReleaseCompatibilityError, no published bundle pairs with this host's llama.cpp runtime
-        # (real release skew, setup names both tags from exit 2); and ReleaseIntegrityError, the
-        # release was fetched and found untrustworthy -- an asset outside the checksum index, or a
-        # manifest digest disagreeing with it. Reporting "update unavailable, existing prebuilt
-        # kept" over a tamper signal would turn it into a routine offline notice.
+        # Compatibility and integrity errors are real answers; never report a tamper signal as 'kept'.
         raise
     except PrebuiltFallback as exc:
-        # llama.cpp's rule: a lookup that could not answer says nothing about the tree on disk. A
-        # strict offline update used to print "prebuilt install failed" over a healthy install.
-        # Anything this RUN asked for that keeping would ignore fails instead. Not --has-rocm or
-        # --rocm-gfx (both entrypoints forward DETECTED hardware on every AMD host); not
-        # --published-repo, --backend or --cpu-fallback (a backend request), which
-        # _existing_install_is_intact compares against the marker. UNSLOTH_WHISPER_FORCE_COMPILE
-        # counts: setup.sh runs the source build only after a nonzero exit.
+        # A lookup that could not answer keeps the tree, unless this run explicitly asked for something.
+        # UNSLOTH_WHISPER_FORCE_COMPILE counts: setup.sh source-builds only after a nonzero exit.
         explicit_release_request = (
             force
             or bool((published_release_tag or "").strip())
@@ -2088,15 +1973,12 @@ def install_prebuilt(
         )
         if marker is None:
             raise
-        # "keeping the existing complete install" is the substring setup.sh and setup.ps1 grep for
-        # llama's identical outcome. Not "already matches" or "installed": both name a release this
-        # run never fetched.
+        # "keeping the existing complete install" is the substring setup.sh and setup.ps1 grep for.
         log(
             f"{COMPONENT} update unavailable, existing prebuilt kept; keeping the "
             f"existing complete install of {marker.get('release_tag')}"
         )
-        # llama.cpp's wording, so update_flow reads both installers alike. log_lines: a multi-line
-        # reason is otherwise indistinguishable from unprefixed diagnostics.
+        # llama.cpp's wording, so update_flow reads both installers alike.
         log_lines(f"prebuilt update reason: {exc}".splitlines())
         return EXIT_SUCCESS
     if plan.selection is None:  # pragma: no cover - install plans always verify
@@ -2169,8 +2051,6 @@ def resolve_prebuilt(
     return payload
 
 
-# The declarative form of everything above, for descriptor-driven consumers; the shipped CLI runs
-# through this module's wrappers so the monkeypatch seams stay intact.
 DESCRIPTOR = core.ComponentDescriptor(
     component = COMPONENT,
     log_prefix = "whisper-prebuilt",
@@ -2276,7 +2156,6 @@ def main(argv: list[str] | None = None) -> int:
         emit_resolver_output(payload, output_format = args.output_format)
         return EXIT_SUCCESS
 
-    # Install path: progress logs go to stdout so setup surfaces them.
     _LOG_TO_STDOUT = True
 
     if not args.install_dir:
@@ -2301,8 +2180,6 @@ def main(argv: list[str] | None = None) -> int:
         log(f"incompatible release: {exc}")
         return EXIT_INCOMPATIBLE
     except PrebuiltFallback as exc:
-        # One prefixed line each: a multi-line reason is otherwise indistinguishable
-        # from unprefixed diagnostics for whoever reads this output back.
         log_lines(f"prebuilt install failed: {exc}".splitlines())
         return EXIT_ERROR
     except Exception as exc:  # noqa: BLE001

@@ -58,40 +58,25 @@ from pathlib import Path
 HOME = Path.home()
 STUDIO = HOME / ".unsloth" / "studio"
 BACKEND_LOGS = STUDIO / "logs"
-# The interface's heartbeat. /api/export/status is the load-bearing member: it is polled every 5s
-# from an effect with an EMPTY dependency list, mounted unconditionally at the app root, with no
-# setting and no `document.hidden` check. Every OTHER poll here is behind something the user
-# controls, so a hit from one is good evidence the webview is alive but its SILENCE is not a
-# symptom; reading it as one made an earlier version report FROZE on a stock install.
-# /api/auth/status is deliberately absent: it fetches on navigation with a 30s TTL, never on a
-# timer, so scoring it would invent a freeze out of somebody sitting still. The native shell
-# requests only /api/liveness and /api/health, so every hit here comes from the webview.
+# /api/export/status is the only unconditional 5s heartbeat; other polls are user-gated.
+# /api/auth/status is excluded: it fetches on navigation, not a timer.
 INTERFACE = re.compile(
     r"/api/(?:export/status|inference/monitor|inference/status"
     r"|inference/images/status|inference/video/status|inference/audio/stt/status)"
 )
 LIVENESS = re.compile(r"/api/liveness")
-# The webview's sign-in traffic.
 SESSION = re.compile(r"/api/auth/(?:status|login|logout|refresh)\b")
-# Printed by the desktop shell (main.rs) before anything else, through a stderr logger
 SHELL_STARTED = re.compile(r"Unsloth desktop app starting")
-# `{reason}; set VAR=1 VAR2=1 for WebKitGTK compatibility`, the app's own record of the renderer workaround it chose for
-# itself.
 RENDERER_APPLIED = re.compile(r"set ((?:[A-Za-z_][A-Za-z_0-9]*=1\s*)+)for WebKitGTK compatibility")
 
-# Overridable so CI can exercise this script end to end in a couple of minutes.
 WARMUP = int(os.environ.get("UNSLOTH_FREEZE_WARMUP", 90))
 WINDOW = int(os.environ.get("UNSLOTH_FREEZE_WINDOW", 150))
 POLL_EVERY = 15
-# Both counters flat for this long, with the app still running, is not a healthy run: the
-# backend stopped being recorded. Three poll intervals, so a single missed sample is not it.
+# Three poll intervals so a single missed sample is not stale.
 STALE_AFTER = 3 * POLL_EVERY
-# desktop_candidate_ports() in studio/src-tauri/src/desktop_backend_owner.rs: the shell
-# walks 8888..=8908 and takes the first free one, so checking two of them would miss a
-# leftover backend on any of the other nineteen and hand the next candidate an orphan.
+# Must match desktop_candidate_ports() in desktop_backend_owner.rs (8888..=8908).
 PORTS = tuple(range(8888, 8909))
 
-# Each entry is (label, extra environment, why it is being tried).
 CANDIDATES = [
     ("control (no override)", {}, "baseline; everything below is compared against this"),
     (
@@ -114,7 +99,6 @@ CANDIDATES = [
 
 CANDIDATE_VARS = tuple(sorted({k for _, extra, _ in CANDIDATES for k in extra}))
 
-# Every renderer override the APP reads.
 RENDERER_OVERRIDE_VARS = (
     "GDK_BACKEND",
     "UNSLOTH_WEBKIT_DISABLE_COMPOSITING",
@@ -125,7 +109,6 @@ RENDERER_OVERRIDE_VARS = (
 )
 CLEARED_VARS = tuple(sorted(set(CANDIDATE_VARS) | set(RENDERER_OVERRIDE_VARS)))
 
-# Applied to the app this script launches, and to nothing else.
 MEASUREMENT_ENV = {
     "UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS": "0",
     "UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS": "0",
@@ -203,8 +186,7 @@ def find_desktop_app() -> list[str] | None:
     found += [str(q) for q in sorted(hits, key = lambda q: q.stat().st_mtime, reverse = True)]
     if not found:
         return None
-    # An AppImage arrives without the execute bit, so prefer a startable candidate but still return one, or Popen raises
-    # PermissionError before anything is measured or written.
+    # An AppImage arrives without +x; still return one so Popen does not raise.
     return [next((c for c in found if is_executable(c)), found[0])]
 
 
@@ -471,8 +453,7 @@ def classify(
         )
 
     if exited == 0 and ran_for <= 20:
-        # A clean, immediate exit is almost always the single-instance guard (another copy already open,
-        # so this launch handed over and quit), and calling that "crashed" would be wrong and alarming.
+        # A clean immediate exit is usually the single-instance guard, not a crash.
         return (
             "SKIPPED: the app exited immediately and cleanly, which usually means "
             "another copy of Unsloth is already running. Close it and re-run"
@@ -483,7 +464,6 @@ def classify(
             f"closed the window, just re-run and leave it open"
         )
     if exited is not None and not has_display:
-        # Over plain SSH there is nothing to draw on.
         return (
             f"CANNOT RUN: the app exited (code {exited}) and there is no display to draw "
             f"on. Run this from a desktop session, not over plain SSH"
@@ -492,8 +472,6 @@ def classify(
         return f"CRASHED: the app exited on its own (code {exited})"
 
     if n_mon == 0 and n_live == 0:
-        # Do not guess the cause: the preflight line the app already printed says which of the two it is, and naming the
-        # wrong one sends the user off fixing nothing.
         if not preflight and not shell_started:
             reason = (
                 "the desktop shell never started. If you launched `unsloth studio`, that "
@@ -515,13 +493,11 @@ def classify(
         return f"NO SIGNAL: this run measured nothing, because {reason}"
 
     if n_live == 0:
-        # The whole oracle is "watchdog alive, interface silent".
         return (
             "NO SIGNAL: the native watchdog never polled, so there is no independent "
             "signal to tell a frozen interface from a healthy one"
         )
     if n_mon == 0:
-        # NOT a freeze, however much it looks like one.
         return (
             "NO SIGNAL: the interface was never heard from at all, so a frozen webview "
             "cannot be told apart from one that was never able to poll. Check that you "
@@ -529,13 +505,7 @@ def classify(
             "this started"
         )
 
-    # Did the interface stop polling partway through while the watchdog carried on? That is the reported
-    # symptom, and a total that looks healthy can still hide it.
-    # Only after the warmup boundary: on a cold launch the native watchdog is answering before the webview
-    # has finished loading, so the very first samples always show a still interface count and a rising
-    # watchdog count, and comparing them reported healthy runs as FROZE at the moment they finished starting.
-    # A freeze does not recover, so a gap the interface polls its way out of is a delayed request rather
-    # than the symptom.
+    # Only after warmup: on a cold launch the watchdog answers before the webview loads.
     post = [s for s in samples if s[0] >= warmup]
     resumed_at = _last_rise(post, 1)
     watchdog_last = _last_rise(post, 2)
@@ -545,12 +515,7 @@ def classify(
                 continue
             stalled_at = post[i][0]
             if session_at is not None and session_at >= stalled_at:
-                # The heartbeat is gated on holding a session token, so losing the session stops it as thoroughly as a
-                # freeze does and the counters look identical. What separates them is that the webview went on making
-                # requests after the heartbeat stopped, and a frozen webview cannot ask anything, so this is the app
-                # falling back to its login screen. A positive signal rather than a doubt: it does not narrow the FROZE
-                # arm, and a session cleared without a single request reaching the backend is still reported as a
-                # freeze.
+                # Requests after the heartbeat stopped mean a sign-out; a frozen webview cannot ask.
                 return (
                     f"SIGNED OUT: the interface stopped polling at about {stalled_at}s, but "
                     f"it was still asking the backend about your session at about "
@@ -564,7 +529,6 @@ def classify(
                     f"FROZE: the interface stopped polling at about {stalled_at}s "
                     f"while the watchdog kept going"
                 )
-            # Short of that, this candidate is unsettled.
             return (
                 f"SUSPECT: the interface stopped polling at about {stalled_at}s, but the "
                 f"watchdog only kept going for another {sustained}s after that, short of "
@@ -574,14 +538,11 @@ def classify(
                 f"itself"
             )
 
-    # Both loops stopped together while the shell stayed up: neither counter moving means neither can be compared, and
-    # this used to fall through to OK and report a dead run as healthy.
     end = samples[-1][0] if samples else 0
     mon_rise, live_rise = _last_rise(samples, 1), _last_rise(samples, 2)
     if len(samples) >= 4 and end >= warmup:
         quiet_for = end - max(mon_rise or 0, live_rise or 0)
-        # Inclusive: STALE_AFTER is three poll intervals, and the strict comparison let the exact boundary case through
-        # to OK, which is the one case the constant was picked to name.
+        # Inclusive: the exact boundary is the case STALE_AFTER names.
         if quiet_for >= STALE_AFTER:
             return (
                 f"NO SIGNAL: nothing was recorded for the last {quiet_for}s of the run, "
@@ -589,8 +550,6 @@ def classify(
                 f"answering or stopped being logged before the window ended"
             )
 
-    # The interface cannot be observed until it has a backend and a session, so a run whose counters first move in the
-    # last few samples has no flat interval to find and passed the ratio test as OK.
     heard_from = _first_heard(samples, 1)
     watched = (end - heard_from) if heard_from is not None else 0
     if heard_from is not None and watched < STALE_AFTER:
@@ -623,9 +582,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
     if cleared:
         print(f"    unset for this candidate: {', '.join(cleared)}", flush = True)
     before = backend_offsets()
-    # To a FILE, never subprocess.PIPE: nothing reads the pipe while the app runs, so once it filled
-    # the 64 KiB buffer it would block on its own stdout and this script would hang the app it is
-    # measuring.
+    # To a file, never PIPE: an unread pipe fills and hangs the app being measured.
     app_log = Path(tempfile.mkstemp(suffix = ".log", prefix = "unsloth-freeze-")[1])
     try:
         proc = subprocess.Popen(
@@ -636,10 +593,7 @@ def run_candidate(label, extra, why, cmd) -> dict:
             start_new_session = True,
         )
     except OSError as exc:
-        # The execute bit says the kernel may try, not that the try succeeds: a wrong-arch build, a
-        # truncated AppImage, a missing `#!` interpreter or a noexec mount all fail at execve, and Popen
-        # raises OSError, which the candidate loop does not catch, ending the whole diagnostic with
-        # nothing measured. Record it as this candidate's result so the rest still run.
+        # Popen raises OSError at execve (wrong arch, noexec); record it so other candidates still run.
         why_failed = scrub(str(exc.strerror or exc))
         print(f"    CANNOT RUN: {why_failed}", flush = True)
         return {
@@ -666,9 +620,6 @@ def run_candidate(label, extra, why, cmd) -> dict:
     started = time.monotonic()
     at_exec, samples, exited, ran_for = {}, [], None, 0
     interrupted = False
-    # When the webview was last seen asking about the session, and how many such requests
-    # that was. Kept beside the samples rather than in them: it is not a heartbeat, it is
-    # the one thing that can tell a sign-out apart from a freeze. See SESSION.
     session_seen, session_at = 0, None
 
     print(f"    launching, then watching for {_span(WARMUP + WINDOW)}.", flush = True)
@@ -706,7 +657,6 @@ def run_candidate(label, extra, why, cmd) -> dict:
     finally:
         alive = proc.poll() is None
         if not alive and exited is None:
-            # It died between the loop's last poll and this one.
             exited = proc.returncode
             if not ran_for:
                 ran_for = round(time.monotonic() - started)
@@ -752,7 +702,6 @@ def run_candidate(label, extra, why, cmd) -> dict:
         "candidate": label,
         "why": why,
         "env": extra,
-        # What was taken away, not just what was added.
         "cleared_env": cleared,
         "verdict": verdict,
         "preflight": scrub(preflight) if preflight else "(not seen)",
@@ -760,8 +709,6 @@ def run_candidate(label, extra, why, cmd) -> dict:
         "env_at_exec": at_exec,
         "interface_polls": n_mon,
         "watchdog_polls": n_live,
-        # When the webview last asked about the session, so a reader can see for
-        # themselves why a stall was or was not read as a sign-out. See SESSION.
         "session_seen_at": session_at,
         "exit_code": exited,
         "samples": samples,
@@ -829,7 +776,6 @@ def main() -> int:
             f"  python3 {Path(__file__).name} ~/Applications/Unsloth-Desktop.AppImage"
         )
         return 2
-    # Checked here, not left to the launch. subprocess.Popen raises PermissionError
     if not is_executable(cmd[0]):
         print(
             f"{cmd[0]} is not executable, so it cannot be launched.\n\n"
@@ -848,7 +794,6 @@ def main() -> int:
     )
     print("Use the app normally during each one. Ctrl-C skips to the next candidate.\n")
 
-    # Only refuse over a listener this script would actually stop.
     if studio_backend_pids():
         print("An Unsloth backend is already listening on an Unsloth port. That is either")
         print("Unsloth running right now, or a backend left behind by an earlier run, and")
@@ -882,8 +827,7 @@ def main() -> int:
             except KeyboardInterrupt:
                 print("\n  skipped by user", flush = True)
     finally:
-        # Closing the app does not stop the backend it started, so without this the reporter's next launch attaches to a
-        # backend nothing is recording.
+        # Closing the app leaves its backend running; stop it before the next candidate.
         print("\n  stopping any backend left behind by the last candidate", flush = True)
         stop_leftover_backend()
 
@@ -892,8 +836,6 @@ def main() -> int:
         json.dumps(
             {
                 "host": json.loads(scrub(json.dumps(facts))),
-                # Stated, not just commented: every launch ran with the access-log suppressors off, which is the only
-                # reason the interface heartbeat appears at all.
                 "measurement_env": MEASUREMENT_ENV,
                 "results": results,
             },

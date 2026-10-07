@@ -108,7 +108,7 @@ def run(
         except Exception as exc:  # noqa: BLE001
             print(f"    [{tag}] compile {type(exc).__name__}: {str(exc)[:80]}", flush = True)
     try:
-        _gen(pipe, steps, seed, res, guidance)  # warmup / compile
+        _gen(pipe, steps, seed, res, guidance)
     except Exception as exc:  # noqa: BLE001
         import traceback
 

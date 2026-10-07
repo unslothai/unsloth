@@ -1,76 +1,36 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Three end-to-end smoke phases that boot a freshly-installed Unsloth and
-# exercise the surfaces real users hit through the OpenAI / Anthropic
-# SDKs and curl. Each phase picks the smallest model that exercises the
-# behaviour under test and primes its own model cache via actions/cache.
-# All three run sequentially on ONE runner and share a single
-# install.sh --local --no-torch bootstrap, matching what
-# studio-windows-inference-smoke.yml already does.
-#
-#   1. OpenAI, Anthropic API tests            port 18888
-#        gemma-3-270m-it UD-Q4_K_XL (~254 MiB).
-#        Password rotation via /api/auth/change-password (old fails,
-#        new works), then OpenAI + Anthropic Python SDKs against /v1/*
-#        with temperature=0 and a fixed seed. Asserts the four-turn
-#        conversation is deterministic across two runs.
-#
-#   2. Tool calling Tests                     port 18889
-#        Qwen3.5-2B UD-Q4_K_XL (~1.28 GiB). OpenAI function calling,
-#        server-side tools (python, terminal, web_search) via
-#        enable_tools / enabled_tools, and enable_thinking on/off.
-#
-#   3. JSON, images                           port 18890
-#        Qwen3-VL-2B-Instruct UD-Q4_K_XL (~1.1 GiB) + mmproj-F16 (~780 MiB).
-#        response_format JSON-schema decoding and OpenAI image_url
-#        (data URI) plus Anthropic source/base64 image inputs.
-#
-# Each phase gates on the shared install rather than on the phase before it,
-# so a phase-1 failure still lets phases 2 and 3 report. That is what the three
-# separate jobs gave for free and what the bundle has to reproduce by hand.
+# Three phases on one runner sharing one `install.sh --local --no-torch`: SDK chat
+# determinism (18888), tool calling (18889), JSON schema + images (18890).
+# Each phase gates on the shared install, not the previous phase.
 
 name: Unsloth GGUF CI
 
 on:
   pull_request:
     paths:
-      # What the three phases exercise: the backend's OpenAI and Anthropic surfaces over
-      # a llama.cpp prebuilt, the installer that lays them down and the CLI that boots
-      # them. Not studio/** plus unsloth/**: the install is --no-torch so the training
-      # library is not importable here, the frontend is never served (UNSLOTH_API_ONLY),
-      # and src-tauri is never touched.
+      # The backend's OpenAI/Anthropic surfaces, the installer and the CLI; the install is
+      # --no-torch and the frontend is never served.
       - 'studio/backend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
-      # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
       - 'studio/node_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
       - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
       - 'install.sh'
       - 'pyproject.toml'
-      # Reached by the installer this workflow already triggers on, so a commit touching
-      # only one of these changes what the job runs while matching nothing else in the
-      # list. install.sh --local hands off to the checked-out studio/setup.sh
-      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
-      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      # Reached by the installers this workflow triggers on.
       - 'studio/nvidia_probe.py'
       - '.github/workflows/studio-inference-smoke.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
-      # Every server boot in this workflow shells out to that script, so an edit
-      # to it changes what this workflow actually runs.
       - '.github/scripts/boot-studio-api-only.sh'
-      # Same for the /api/health wait that runs after a boot.
       - '.github/scripts/wait-for-health.sh'
-      # Every model download in every phase goes through it.
       - '.github/scripts/hf-download-with-retry.sh'
-      # Phase 1 drives both SDKs through this script.
       - '.github/scripts/studio_smoke/multi_turn_chat.py'
-      # The install step in this workflow is `uses:` on that composite action,
-      # so an edit to the action changes what this workflow actually runs.
+      # The install step in this workflow is `uses:` on that composite action.
       - '.github/actions/install-unsloth-local/action.yml'
-      # Reached through install-unsloth-local, which uses the dist and uv cache pairs.
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
       - '.github/actions/uv-cache-restore/action.yml'
@@ -99,85 +59,30 @@ on:
       - '.github/actions/frontend-dist-save/action.yml'
       - '.github/actions/uv-cache-restore/action.yml'
       - '.github/actions/uv-cache-save/action.yml'
-  # Manual trigger for pre-warming HF_HOME caches on main, or re-running
-  # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  # On main GitHub still cancels PENDING runs when a newer one queues.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  # One job, three phases -- the Linux port of the layout Windows and macOS
-  # already use (studio-windows-inference-smoke.yml, studio-mac-inference-smoke.yml).
-  # These were three ubuntu-latest jobs differing only in model, port and test
-  # body; checkout, apt, setup-node, setup-python and `install.sh --local
-  # --no-torch` were identical in all three.
-  #
-  # This reverses the note in studio-windows-inference-smoke.yml that said the
-  # trade was not worth making on ubuntu because "setup is ~1.9 min against ~3.0
-  # min of tests" and the added sequential wall time would cost more feedback
-  # latency than the slots are worth. The arithmetic was right; its premise --
-  # that the three jobs start together -- is not what the runners actually do.
-  #
-  # Measured on main. Run 32089506294 started two jobs at 02:40:11 and the third
-  # at 02:46:52, a 6m41s wait for the third slot, and finished at 02:52:57: a
-  # 12m46s wall for ~6 min of work. Run 32089558062 staggered all three
-  # (02:47:32 / 02:50:01 / 02:54:06). Across 18 recent multi-job runs on main the
-  # median gap between a run's first and last job start was 175s, and 13 of the
-  # 18 exceeded 60s. The sequential wall time the note was trying to avoid is
-  # already being paid, in the queue, plus two extra setups.
-  #
-  # Measured bundled, on a staging repo with an EMPTY actions cache, so every
-  # model downloaded cold: 6m03s for all three phases. 105s of that is the now-
-  # shared setup (checkout 4s, apt 9s, node 1s, python 2s, install.sh 88s, SDKs
-  # 6s), which the three jobs each paid separately; the phases themselves are
-  # 26s / 179s / 36s. That is at or under the 6m05 the longest of the three jobs
-  # took on its own, on a third of the runners -- so this is not the "slower but
-  # cheaper" trade it looked like before it was measured. It also gives back 2 of
-  # the 60 concurrent slots, which is what makes the contended case rarer for
-  # every other workflow.
-  #
-  # Each phase keeps its own model cache directory, HF_HOME, port, server log,
-  # uploaded artifact and step timeouts, and each is gated on the SHARED preamble
-  # rather than on the phase before it, so a failure still points at one phase,
-  # earlier phases' logs survive it, and later phases still run -- the same
-  # independence the three jobs had.
+  # One job, three phases: the three jobs already waited on each other in the queue, so
+  # bundling costs no wall time and saves two runners. Each phase keeps its own cache,
+  # port, log and artifact and gates on the shared preamble.
   inference-smoke:
     name: GGUF inference smoke (API, tools, vision)
     runs-on: ubuntu-latest
-    # Was 25 + 25 + 30 across three runners. Sequentially they share one
-    # install, so the sum is well under 60, but a cold model cache on the
-    # vision phase is the slow case. Every step that can block also carries
-    # its own `timeout-minutes`: the job cap alone is not a substitute,
-    # because hf-download-with-retry.sh retries forever by design and named
-    # the enclosing step's timeout as its bound.
+    # hf-download-with-retry.sh retries forever, so every blocking step has its own timeout.
     timeout-minutes: 60
     env:
-      # Only what every phase shares. Model, GGUF file, port and HF_HOME are
-      # set per phase via $GITHUB_ENV instead of here: if a phase-specific key
-      # were also declared at job level, whether the later $GITHUB_ENV write
-      # wins is not something the Actions docs pin down, and a phase quietly
-      # talking to the previous phase's port would be a nasty way to find out.
-      #
-      # Unbuffered stdio so a phase that dies mid-step leaves its output in the
-      # log rather than in a lost 8KB pipe buffer. Three phases share one log
-      # now, so "which phase was running" has to be readable from the tail.
+      # Phase-specific vars go to $GITHUB_ENV per phase, never here: precedence against job env
+      # is not documented.
       PYTHONUNBUFFERED: '1'
-      # hf-xet's chunk directory defaults to a path under HF_HOME, which is what
-      # the phase-1 and phase-3 cache entries save. Those chunks are scratch --
-      # re-derivable from the blobs sitting next to them -- so pinning them
-      # outside the workspace keeps each hf-cache* tree closer to 1:1 with the
-      # model files it holds. hf-download-with-retry.sh already sets
-      # HF_XET_CHUNK_CACHE_SIZE_BYTES=0, so this mainly covers the downloads
-      # Unsloth itself makes at load time, which do not go through that script.
+      # Keep hf-xet chunk scratch out of the cached HF_HOME trees.
       HF_XET_CACHE: ${{ github.workspace }}/xet-scratch
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -186,15 +91,8 @@ jobs:
 
 
       - name: Linux deps for llama.cpp prebuilt
-        # Bounded and retried through the shared helper: an unbounded apt step does
-        # not fail, it spends the job's whole budget and is reported as "cancelled"
-        # with no reason and every later step skipped. update and install go as one
-        # unit, since retrying the install after a stalled update re-reads the same
-        # broken package list.
-        # Two long attempts, not three short ones. 150s killed apt mid-`update`
-        # against a mirror that was degraded rather than dead, and every attempt
-        # then hit the same wall -- three kills and no result. The bound exists to
-        # stop an infinite hang, not to race a slow mirror.
+        # Bounded and retried: a hung apt step is reported as `cancelled` with no reason.
+        # update + install retry as one unit; two long attempts, since slow mirrors are common.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -213,13 +111,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Cross-OS shared entry. The tree under `hf-cache` is byte-identical on
-      # Linux, macOS and Windows, so the key carries no `runner.os`, and
-      # enableCrossOsArchive lets Windows (which tars with --force-local) join it.
-
-      # Deliberately NO `if:`, so this rides the implicit success() and a failed
-      # preamble still stops the job here, exactly as it did when this was three
-      # jobs. Every phase below gates on this step's outcome.
+      # No `if:`: a failed preamble stops the job; every phase gates on this step's outcome.
       - name: Install Unsloth (--local, --no-torch)
         id: install
         timeout-minutes: 25
@@ -229,22 +121,14 @@ jobs:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
-      # Needed by phases 1 and 3 only; the tool-calling phase drives the API
-      # with curl and never imports them, which is why phase 2 does not gate
-      # on this.
+      # Phases 1 and 3 only; phase 2 uses curl.
       - name: Install OpenAI + Anthropic Python SDKs
         id: sdks
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 10
         run: pip install 'openai>=1.50,<4' 'anthropic>=1,<2'
 
-      # Phase 1's environment and model cache sit HERE, after the shared
-      # preamble, not before it. They used to run before the installer, which is
-      # where they sat when phase 1 was its own job -- harmless then, because a
-      # priming failure only killed that one job. Once the installer is shared,
-      # the same failure would skip it under the implicit success() and every
-      # later phase's gate would evaluate false. Ordering the shared setup first
-      # keeps a phase-1 resource failure phase-local.
+      # Phase 1 setup sits after the shared preamble so its failure stays phase-local.
       - name: Phase 1 environment (OpenAI, Anthropic API)
         if: ${{ !cancelled() && steps.sdks.outcome == 'success' }}
         run: |
@@ -279,19 +163,8 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        # Save on main only. Caches created on a PR ref are scoped to that
-        # merge ref -- per GitHub's docs they "can only be restored by re-runs
-        # of the pull request" -- while every PR *can* restore from the default
-        # branch. So a PR-scoped save helps almost nothing and competes for the
-        # per-repo cache budget, and when that budget is exceeded GitHub evicts
-        # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
-        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
-        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
-        # refs, and every one of those keys already has a copy on main, so the
-        # PR-scoped duplicates are redundant by construction. That is the thrash
-        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
-        # next PR misses.
+        # Save on main only: PR-scoped caches only serve that PR and evict main's shared copies
+        # from the near-full repo cache budget.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -324,16 +197,13 @@ jobs:
           NEW="CIRotated-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
           echo "::add-mask::$OLD"
           echo "::add-mask::$NEW"
-          # 1. Login with the bootstrap password.
           OLD_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
             -H 'content-type: application/json' \
             -d "{\"username\":\"unsloth\",\"password\":\"$OLD\"}" | jq -r .access_token)
           [ -n "$OLD_TOKEN" ] && [ "$OLD_TOKEN" != "null" ] || { echo "bootstrap login failed"; exit 1; }
-          # 2. Rotate to a fresh random password.
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/change-password" \
             -H "Authorization: Bearer $OLD_TOKEN" -H 'content-type: application/json' \
             -d "{\"current_password\":\"$OLD\",\"new_password\":\"$NEW\"}" > /dev/null
-          # 3. Old password must now be rejected (HTTP 401).
           OLD_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
             -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
             -H 'content-type: application/json' \
@@ -342,7 +212,6 @@ jobs:
             echo "::error::Login with old password returned $OLD_STATUS, expected 401"
             exit 1
           fi
-          # 4. New password must succeed; capture the JWT for downstream steps.
           NEW_TOKEN=$(curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/auth/login" \
             -H 'content-type: application/json' \
             -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
@@ -355,19 +224,8 @@ jobs:
         timeout-minutes: 10
         if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.rotate-api.outcome == 'success' }}
         run: |
-          # speculative_type=off and n_parallel=1 are what make the determinism
-          # assertion in the next step answerable. llama-server's README: "the
-          # logits are not guaranteed to be bit-for-bit identical for different
-          # batch" sizes. A non-MTP GGUF otherwise takes the --spec-default branch,
-          # which is live n-gram drafting, not the absence of a drafter: the server
-          # logs "draft acceptance = 0.46875 (30 accepted / 64 generated)". Its
-          # draft pool is built from text the server has already seen, so the FIRST
-          # turn-1 request after a load drafts nothing and decodes one token at a
-          # time while every later one verifies a ~32-token draft in one batch, and
-          # check(runner(), runner()) always compares the cold replay against a warm
-          # one. n_parallel=1 also drops --kv-unified, whose shared-pool occupancy is
-          # a second input to the batch. The other phases of this workflow keep both
-          # defaults, so the shipped path stays covered.
+          # speculative_type=off and n_parallel=1 make the determinism check valid: n-gram drafting
+          # and --kv-unified change batch shapes between runs. Other phases keep the defaults.
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
             -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
             --max-time 600 \
@@ -391,7 +249,6 @@ jobs:
           ss -tln | grep ":${STUDIO_PORT}" || true
 
       - name: Upload logs
-        # Always upload so green runs are still reviewable.
         if: always()
         # Diagnostic only: a transient artifact-service drop must not fail a green job.
         continue-on-error: true
@@ -403,10 +260,6 @@ jobs:
             logs/install.log
           retention-days: 7
 
-  # ─────────────────────────────────────────────────────────────────────
-  # Job 2: Tool calling Tests
-  # ─────────────────────────────────────────────────────────────────────
-
       - name: Phase 2 environment (tool calling)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -414,8 +267,7 @@ jobs:
           echo "GGUF_FILE=Qwen3.5-2B-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
           echo "STUDIO_PORT=18889" >> "$GITHUB_ENV"
           echo "STUDIO_LOG=logs/studio_tools.log" >> "$GITHUB_ENV"
-          # Phase 2 passes an absolute .gguf path to /api/inference/load and
-          # never touches HF_HOME, but it must not inherit phase 1's either.
+          # Must not inherit phase 1's HF_HOME.
           echo "HF_HOME=${{ github.workspace }}/hf-cache-tools" >> "$GITHUB_ENV"
 
       - name: Restore GGUF model file
@@ -453,14 +305,8 @@ jobs:
         id: boot-tools
         timeout-minutes: 5
         if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.download-gguf.outcome != 'failure' }}
-        # We deliberately use the API-only mode rather than
-        # `unsloth studio run` because the latter calls
-        # `set_tool_policy(...)` with a resolved bool: on loopback the
-        # default resolves to True, which forces every request through
-        # the server-side agentic loop and breaks the standard
-        # function-calling test below. API-only mode leaves
-        # tool_policy=None so each request's `enable_tools` field is
-        # honoured.
+        # API-only mode leaves tool_policy=None so each request's `enable_tools` is honoured;
+        # `unsloth studio run` would force the agentic loop on loopback.
         run: |
           bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT" --log "$STUDIO_LOG"
 
@@ -967,12 +813,10 @@ jobs:
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
           ss -tln | grep ":${STUDIO_PORT}" || true
-          # Capture backend + llama-server logs so a 500 has a server-side traceback.
           mkdir -p logs/server-logs
           cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
 
       - name: Upload logs
-        # Always upload so green runs are still reviewable.
         if: always()
         # Diagnostic only: a transient artifact-service drop must not fail a green job.
         continue-on-error: true
@@ -985,10 +829,6 @@ jobs:
             logs/server-logs/
           retention-days: 7
 
-  # ─────────────────────────────────────────────────────────────────────
-  # Job 3: JSON, images
-  # ─────────────────────────────────────────────────────────────────────
-
       - name: Phase 3 environment (JSON, images)
         if: ${{ !cancelled() && steps.sdks.outcome == 'success' }}
         run: |
@@ -998,11 +838,8 @@ jobs:
           echo "MMPROJ_FILE=mmproj-F16.gguf" >> "$GITHUB_ENV"
           echo "STUDIO_PORT=18890" >> "$GITHUB_ENV"
           echo "STUDIO_LOG=logs/studio_vision.log" >> "$GITHUB_ENV"
-          # Its own directory, not phase 1's `hf-cache`. Phase 1's entry is
-          # byte-shared with the macOS and Windows gemma phases under a key with
-          # no `runner.os`, and actions/cache identifies an entry by key AND a
-          # hash of `path`, so phase 1 keeps `hf-cache` untouched and the vision
-          # phase (whose key is already Linux-scoped) is the one that moves.
+          # Own directory: phase 1's hf-cache entry is shared cross-OS, and actions/cache keys on
+          # the path hash too.
           echo "HF_HOME=${{ github.workspace }}/hf-cache-vision" >> "$GITHUB_ENV"
 
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
@@ -1039,9 +876,7 @@ jobs:
         id: boot-vision
         timeout-minutes: 5
         if: ${{ !cancelled() && steps.sdks.outcome == 'success' && steps.prime-hf-vision.outcome != 'failure' }}
-        # See phase 2's comment: API-only mode keeps tool_policy=None so
-        # response_format requests aren't routed through the agentic
-        # tool loop.
+        # API-only keeps tool_policy=None (see phase 2).
         run: |
           bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT" --log "$STUDIO_LOG"
 
@@ -1071,9 +906,8 @@ jobs:
             -H 'content-type: application/json' \
             -d "{\"username\":\"unsloth\",\"password\":\"$NEW\"}" | jq -r .access_token)
           echo "API_KEY=$TOKEN" >> "$GITHUB_ENV"
-          # Retry: llama-server startup can race process teardown after a
-          # failed attempt. Keep curl out of a pipe so HTTP failures are not
-          # masked by jq.
+          # Retry: llama-server startup can race teardown. Keep curl out of a pipe so jq cannot
+          # mask HTTP failures.
           LOAD_OK=0
           for attempt in 1 2 3; do
             HTTP=$(curl -s -o /tmp/load.json -w '%{http_code}' \
@@ -1271,7 +1105,6 @@ jobs:
           ss -tln | grep ":${STUDIO_PORT}" || true
 
       - name: Upload logs
-        # Always upload so green runs are still reviewable.
         if: always()
         # Diagnostic only: a transient artifact-service drop must not fail a green job.
         continue-on-error: true

@@ -32,7 +32,6 @@ from pathlib import Path
 OLD = '"-std=c++17"'
 NEW = '"-std=c++20"'
 
-# Two in the HIP branch, two in the CUDA branch: the "cxx" list and the nvcc list of each.
 EXPECTED_OCCURRENCES = 4
 
 

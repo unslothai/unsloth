@@ -100,8 +100,7 @@ def run(mode, steps, seed, res):
     torch.cuda.empty_cache()
 
     if mode == "prequant":
-        # Local checkpoints are refused unless allowlisted;
-        # CKPT is operator-supplied and trusted.
+        # CKPT is operator-supplied and trusted, so allowlist its directory.
         ckpt_dir = os.path.dirname(os.path.realpath(CKPT))
         existing = os.environ.get(ALLOW_LOCAL_PREQUANT_PATH_ENV, "")
         os.environ[ALLOW_LOCAL_PREQUANT_PATH_ENV] = (
@@ -128,7 +127,7 @@ def run(mode, steps, seed, res):
         load_peak = torch.cuda.max_memory_allocated() / 1e9
         marker = getattr(transformer, "_unsloth_runtime_quant", None)
         print(f"[prequant] load_gpu_peak={load_peak:.1f} GB  marker={marker}", flush = True)
-    else:  # runtime
+    else:
         transformer = transformer_cls.from_pretrained(
             BASE, subfolder = "transformer", torch_dtype = torch.bfloat16
         ).to("cuda")
@@ -139,7 +138,6 @@ def run(mode, steps, seed, res):
         scheme = quantize_transformer(pipe, _target(torch.bfloat16), mode = "fp8", logger = LOGGER)
         load_peak = torch.cuda.max_memory_allocated() / 1e9
         print(f"[runtime] engaged={scheme}  load_gpu_peak={load_peak:.1f} GB", flush = True)
-        # Persist the dense reference peak so a later prequant run can enforce its VRAM win.
         _RUNTIME_PEAK_FILE.write_text(f"{load_peak:.6f}")
 
     img, dt = _gen(pipe, steps, seed, res)
@@ -150,7 +148,6 @@ def run(mode, steps, seed, res):
     if mode != "prequant":
         return 0
 
-    # Enforce both invariants so a broken checkpoint fails loudly instead of merely completing.
     ref_path = OUT / "runtime.png"
     if not ref_path.exists():
         print("FAIL: runtime reference image missing; run --mode runtime first", flush = True)

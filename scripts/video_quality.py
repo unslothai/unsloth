@@ -37,9 +37,6 @@ DEFAULT_PROMPT = (
 _PERFECT_MATCH_PSNR = 100.0
 
 
-# ── frame metrics (pure numpy; frames are uint8 HxWx3 arrays) ────────────────
-
-
 def _gray(frame: Any) -> Any:
     import numpy as np
     f = np.asarray(frame, dtype = np.float64)
@@ -118,12 +115,11 @@ def clip_metrics(
     """All frame metrics for one candidate clip vs the reference clip."""
     import numpy as np
 
-    # A truncated candidate is gated FAIL, not prefix-compared: good early frames would mask the missing tail.
+    # A truncated candidate fails: good early frames would mask the missing tail.
     ref_count, cand_count = len(ref_frames), len(cand_frames)
     frame_count_mismatch = ref_count != cand_count
     n = min(ref_count, cand_count)
     if n == 0:
-        # An empty/corrupt decode must gate as FAIL, not crash the whole run.
         return {
             "frames_compared": 0,
             "ref_frame_count": ref_count,
@@ -166,7 +162,7 @@ def audio_metrics(ref_audio: Optional[Any], cand_audio: Optional[Any]) -> dict[s
         return float(np.sqrt((arr**2).mean())) if arr.size else 0.0
 
     ref_rms, cand_rms = _rms(ref_audio), _rms(cand_audio)
-    # NaN compares False against any threshold, so call it out: a NaN track is a collapse.
+    # NaN compares False against any threshold, so flag it as a collapse.
     silent_collapse = (
         ref_rms is not None
         and ref_rms >= 1e-3
@@ -191,9 +187,6 @@ def verdict(metrics: dict[str, Any], audio: dict[str, Any]) -> str:
     return "PASS"
 
 
-# ── mp4 decode (PyAV, same dependency the backend encodes with) ─────────────
-
-
 def decode_mp4(mp4_bytes: bytes, workdir: Path, name: str) -> tuple[list[Any], Optional[Any]]:
     """Frames (uint8 arrays) + mono audio samples (float array or None) from bytes."""
     import av
@@ -212,9 +205,6 @@ def decode_mp4(mp4_bytes: bytes, workdir: Path, name: str) -> tuple[list[Any], O
             audio = np.concatenate([c.reshape(c.shape[0], -1).mean(axis = 0) for c in chunks])
     container.close()
     return frames, audio
-
-
-# ── configuration plumbing ───────────────────────────────────────────────────
 
 
 def parse_spec(spec: str) -> dict[str, str]:
@@ -253,8 +243,7 @@ def run_config(
         "attention_backend": spec.get("attention_backend"),
         "transformer_cache": spec.get("transformer_cache"),
         "transformer_quant": spec.get("transformer_quant"),
-        # On MiniMax-H3 the conditioner precision is a backend default, so "the released bfloat16 encoder" is a spec
-        # value rather than the absence of one.
+        # On MiniMax-H3 the conditioner precision is a backend default, so it is a spec value.
         "text_encoder_quant": spec.get("text_encoder_quant"),
     }
     t0 = time.monotonic()
@@ -363,9 +352,6 @@ def run_gate(args: Any) -> int:
     return 0 if all(r["verdict"] != "FAIL" for r in rows) else 1
 
 
-# ── selftest (CPU-only, synthetic clips, no torch/model) ────────────────────
-
-
 def selftest() -> int:
     import numpy as np
 
@@ -416,7 +402,6 @@ def selftest() -> int:
     shifted = clip_metrics(ref, make_clip(offset = 0.5))
     check(shifted["ssim_mean"] < same["ssim_mean"], "content shift lowers ssim")
 
-    # A truncated render with a pixel-identical prefix must still FAIL on the frame-count mismatch.
     truncated = clip_metrics(ref, make_clip()[: n // 2])
     check(
         truncated["frame_count_mismatch"] is True

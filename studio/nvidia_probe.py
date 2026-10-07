@@ -32,7 +32,7 @@ class NvidiaLibraryInventory:
     source: str  # "nvml" or "cuda"
     cuda_driver_version: tuple[int, int] | None
     driver_version: str
-    # index, uuid, name, compute_cap ("8.9"); NVML order is physical and unmasked.
+    # NVML order is physical and unmasked.
     devices: list[dict[str, str]] = field(default_factory = list)
 
 
@@ -64,14 +64,13 @@ def _load(kind: str) -> ctypes.CDLL | None:
 
 
 def _split_cuda_version(packed: int) -> tuple[int, int] | None:
-    # 13010 -> (13, 1), as CUDA packs it.
     if packed <= 0:
         return None
     return packed // 1000, (packed % 1000) // 10
 
 
 class _NvmlMemory(ctypes.Structure):
-    # nvmlMemory_t (v1): bytes, in this order.
+    # nvmlMemory_t (v1) field order.
     _fields_ = [
         ("total", ctypes.c_ulonglong),
         ("free", ctypes.c_ulonglong),
@@ -164,8 +163,7 @@ def _probe_nvml() -> dict | None:
                     "memory_free_mib": str(memory.free // (1024 * 1024)),
                 }
             )
-            # MIG slices, so a CUDA_VISIBLE_DEVICES=MIG-... assignment can be named: same
-            # parent index and capability, their own uuid and memory, marked "mig".
+            # MIG slices, so a CUDA_VISIBLE_DEVICES=MIG-... assignment can be named.
             for mig, mig_uuid, mig_memory in _mig_children(nvml, handle):
                 devices.append(
                     {
