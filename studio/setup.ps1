@@ -2851,6 +2851,12 @@ function Test-VCRedistInstalled {
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     if ($StageRoot) { step "vcredist" "missing; unchanged during staging" "Yellow"; return }
+    # The run that handed off to this copy already tried, and its installer prompts for UAC.
+    if ($env:UNSLOTH_SETUP_RERUN -eq '1') {
+        step "vcredist" "missing; already tried earlier in this update" "Yellow"
+        substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
+        return
+    }
     Write-StudioLine "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
     if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
         try {

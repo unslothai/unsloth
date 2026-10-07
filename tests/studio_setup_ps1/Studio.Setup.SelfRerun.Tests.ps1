@@ -311,8 +311,40 @@ Describe 'elevation prompts across the rerun' {
         Should -Invoke Start-Process -Times $Expected -Exactly
     }
 
+    It 'the VC++ runtime install runs at top level before the handoff' {
+        $calls = @($script:Ast.FindAll({ param($n)
+            $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Ensure-VCRedist' }, $true))
+        $calls.Count | Should -Be 1
+        $calls[0].Extent.StartOffset | Should -BeLessThan $script:HandoffAt
+        $calls[0].Parent.Parent.Parent | Should -BeOfType [System.Management.Automation.Language.ScriptBlockAst]
+    }
+
+    It 'VC++ runtime: tries on a first run and not on the rerun (<Guard>)' -ForEach @(
+        @{ Guard = ''; Expected = 1 }, @{ Guard = '1'; Expected = 0 }
+    ) {
+        . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Ensure-VCRedist')))
+        function Test-VCRedistInstalled { $false }
+        function Refresh-Environment { }
+        function Invoke-SetupCommand { param([scriptblock]$Block) }
+        Mock Invoke-SetupCommand { }
+        Mock Get-Command { [pscustomobject]@{ Name = 'winget' } } -ParameterFilter { $Name -eq 'winget' }
+        Mock Invoke-WebRequest { throw 'offline' }
+        if ($Guard) { $env:UNSLOTH_SETUP_RERUN = $Guard }
+        $StageRoot = $null
+        Ensure-VCRedist
+        Should -Invoke Invoke-SetupCommand -Times $Expected -Exactly
+        Should -Invoke Invoke-WebRequest -Times $Expected -Exactly
+    }
+
     # Resolve-CudaToolkit only runs for a llama.cpp source build, after the handoff, so a first pass
     # that hands off never reaches this prompt and the rerun must still ask.
+    It 'CUDA .targets is only reached after the handoff' {
+        $calls = @($script:Ast.FindAll({ param($n)
+            $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Resolve-CudaToolkit' }, $true))
+        $calls.Count | Should -BeGreaterThan 0
+        foreach ($call in $calls) { $call.Extent.StartOffset | Should -BeGreaterThan $script:HandoffAt }
+    }
+
     It 'CUDA .targets: still asks on the rerun (<Guard>)' -ForEach @(
         @{ Guard = '' }, @{ Guard = '1' }
     ) {
