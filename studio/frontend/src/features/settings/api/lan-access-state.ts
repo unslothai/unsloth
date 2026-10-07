@@ -98,6 +98,11 @@ export function normalizeLanAccessStatus(
   };
 }
 
+// a launch bind (-H 0.0.0.0, Docker) is often opened through a forwarded localhost port
+export function lanApiUrls(status: LanAccessStatus): string[] {
+  return status.managedBy === "settings" ? status.urls : [];
+}
+
 export function keylessLanAccessDescription(
   status: LanAccessStatus | null,
 ): string {

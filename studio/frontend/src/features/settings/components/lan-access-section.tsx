@@ -37,6 +37,7 @@ import {
   lanAccessErrorMessage,
   lanAccessPortReadOnly,
   lanAccessStopDisconnectsOrigin,
+  lanApiUrls,
   validLanAccessPort,
 } from "@/features/settings/api/lan-access-state";
 import { isTauri } from "@/lib/api-base";
@@ -247,7 +248,7 @@ export function LanAccessSection() {
 
   const applyStatus = useCallback((next: LanAccessStatus) => {
     setStatus(next);
-    usePlatformStore.setState({ lanUrls: next.urls });
+    usePlatformStore.setState({ lanUrls: lanApiUrls(next) });
   }, []);
 
   useEffect(() => {
