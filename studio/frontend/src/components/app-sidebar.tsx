@@ -72,7 +72,7 @@ import {
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
-// Deep imports on purpose: the Images index re-exports ImagesPage, which would undo its code split.
+// deep imports avoid the Images index because its ImagesPage re-export would undo the code split.
 /* eslint-disable no-restricted-imports */
 import {
   isWorkflowEnabled,
@@ -653,12 +653,11 @@ function NavItem({
             </Badge>
           )}
           {spinner && (
-            // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows' pr-4: one spinner column.
+            // mr-1.5 plus the row's pr-2.5 makes 16px, matching the chat row spinner column.
             <Spinner className="ml-auto mr-1.5 size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
           )}
         </SidebarMenuButton>
         {spinner && (
-          // Collapsed (icon-only) rail: small spinner badge over the icon corner.
           <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
         )}
         {overlay}
@@ -923,8 +922,7 @@ function MoreMenuItem({
   return (
     <DropdownMenuItem
       disabled={disabled}
-      // Whenever there is one: gated on `disabled` it dropped the tooltip of a row that is
-      // still being measured, which is enabled and has something to say.
+      // keep the tooltip while capability measurement leaves the row enabled.
       title={tooltip}
       onSelect={onSelect}
       onPointerEnter={disabled ? undefined : onIntent}
@@ -974,7 +972,7 @@ function AudioMoreSubmenu({
         title={tooltip}
         onPointerEnter={disabled ? undefined : onIntent}
         onFocus={disabled ? undefined : onIntent}
-        // A click opens Audio itself; hover and the keyboard still open the workflows.
+        // click opens Audio; hover and keyboard still open the workflows.
         onClick={(event) => {
           if (disabled) return;
           event.preventDefault();

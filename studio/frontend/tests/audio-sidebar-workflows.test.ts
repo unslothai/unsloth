@@ -178,7 +178,7 @@ test("a nav row's New pill sits beside its label, clear of the trailing disclosu
     "function NavItem(",
     "const WORKFLOW_UNAVAILABLE",
   );
-  // No ml-auto: a trailing pill would sit under the overlay's chevron.
+  // no ml-auto: a trailing pill would sit under the overlay's chevron.
   assert.match(
     item,
     /<Badge\s+variant="secondary"\s+className="group-data-\[collapsible=icon\]:hidden"\s*>\s*\{badge\}/,
