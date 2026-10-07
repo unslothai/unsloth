@@ -150,21 +150,38 @@ def _open_url_download(url):
         return path, fd
 
 
-def _drop_run_privileges():
+def _host_run_ids():
     uid = os.environ.pop("UNSLOTH_RUN_UID", None)
     gid = os.environ.pop("UNSLOTH_RUN_GID", None)
     if uid is None and gid is None:
-        return
+        return None
     if uid is None or gid is None or not uid.isdigit() or not gid.isdigit():
         raise SystemExit("UNSLOTH_RUN_UID and UNSLOTH_RUN_GID must be non-negative integers")
-    uid, gid = int(uid), int(gid)
-    if os.geteuid() == uid and os.getegid() == gid:
-        return
-    if os.geteuid() != 0:
-        raise SystemExit("unsloth-run cannot switch to the requested host UID/GID")
-    os.setgroups([group for group in os.getgroups() if group != 0])
-    os.setgid(gid)
-    os.setuid(uid)
+    return int(uid), int(gid)
+
+
+def _root_owned_state(root):
+    state = {}
+    for parent, dirs, files in os.walk(root, followlinks = False):
+        for name in dirs + files:
+            path = os.path.join(parent, name)
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            if st.st_uid == 0:
+                state[os.path.relpath(path, root)] = (st.st_dev, st.st_ino, st.st_ctime_ns)
+    return state
+
+
+def _restore_output_ownership(root, before, uid, gid):
+    for relative, identity in _root_owned_state(root).items():
+        if before.get(relative) == identity:
+            continue
+        try:
+            os.chown(os.path.join(root, relative), uid, gid, follow_symlinks = False)
+        except (OSError, TypeError):
+            pass
 
 
 def main():
@@ -186,7 +203,7 @@ def main():
     pin, model = _scan(nb)
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
-    _drop_run_privileges()
+    host_ids = _host_run_ids()
 
     tmp_files = []
     publish_from = None
@@ -216,6 +233,9 @@ def main():
     else:
         src_path = args.notebook
         out_path = src_path
+
+    kernel_dir = os.path.dirname(os.path.abspath(src_path)) or "."
+    ownership_before = _root_owned_state(kernel_dir) if host_ids is not None else None
 
     env = dict(os.environ)
     env["UNSLOTH_NB_SHIM"] = "1"
@@ -275,6 +295,8 @@ def main():
                     )
                     raise
     finally:
+        if host_ids is not None:
+            _restore_output_ownership(kernel_dir, ownership_before, *host_ids)
         for p in tmp_files:
             try:
                 os.remove(p)

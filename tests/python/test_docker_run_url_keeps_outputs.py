@@ -129,22 +129,42 @@ def test_a_url_download_takes_the_owner_of_the_directory_it_lands_in(runner, mon
     assert owners == [(st.st_uid, st.st_gid)]
 
 
-def test_unsloth_run_drops_to_the_requested_host_user(runner, monkeypatch):
-    calls = []
+def test_unsloth_run_reads_and_hides_the_requested_host_owner(runner, monkeypatch):
     monkeypatch.setenv("UNSLOTH_RUN_UID", "1234")
     monkeypatch.setenv("UNSLOTH_RUN_GID", "5678")
-    monkeypatch.setattr(runner.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(runner.os, "getegid", lambda: 0)
-    monkeypatch.setattr(runner.os, "getgroups", lambda: [0, 44])
-    monkeypatch.setattr(runner.os, "setgroups", lambda groups: calls.append(("groups", groups)))
-    monkeypatch.setattr(runner.os, "setgid", lambda gid: calls.append(("gid", gid)))
-    monkeypatch.setattr(runner.os, "setuid", lambda uid: calls.append(("uid", uid)))
 
-    runner._drop_run_privileges()
+    assert runner._host_run_ids() == (1234, 5678)
 
-    assert calls == [("groups", [44]), ("gid", 5678), ("uid", 1234)]
     assert "UNSLOTH_RUN_UID" not in os.environ
     assert "UNSLOTH_RUN_GID" not in os.environ
+
+
+def test_unsloth_run_chowns_only_new_or_changed_root_outputs(runner, monkeypatch, tmp_path):
+    before = {
+        "untouched": (1, 10, 100),
+        "changed": (1, 20, 100),
+    }
+    after = {
+        "untouched": (1, 10, 100),
+        "changed": (1, 20, 200),
+        "new/model.bin": (1, 30, 200),
+    }
+    owners = []
+    monkeypatch.setattr(runner, "_root_owned_state", lambda _root: after)
+    monkeypatch.setattr(
+        runner.os,
+        "chown",
+        lambda path, uid, gid, **kwargs: owners.append(
+            (os.path.relpath(path, tmp_path), uid, gid, kwargs)
+        ),
+    )
+
+    runner._restore_output_ownership(str(tmp_path), before, 1234, 5678)
+
+    assert owners == [
+        ("changed", 1234, 5678, {"follow_symlinks": False}),
+        ("new/model.bin", 1234, 5678, {"follow_symlinks": False}),
+    ]
 
 
 def _run_sh_argv(tmp_path, *command):
