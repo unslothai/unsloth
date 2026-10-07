@@ -39,7 +39,9 @@ def _fake_smi(where, calls):
 def _host(monkeypatch, *, system, which, wsl_file):
     monkeypatch.setattr(nvidia.platform, "system", lambda: system)
     monkeypatch.setattr(nvidia.shutil, "which", lambda _name: which)
-    monkeypatch.setattr(nvidia.os.path, "isfile", lambda p: wsl_file and p == nvidia._WSL_NVIDIA_SMI)
+    monkeypatch.setattr(
+        nvidia.os.path, "isfile", lambda p: wsl_file and p == nvidia._WSL_NVIDIA_SMI
+    )
     nvidia._uuid_mask_cache.clear()
 
 
@@ -55,7 +57,9 @@ def _queries():
 def test_wsl_nvidia_smi_off_path_answers_every_query(monkeypatch):
     calls = []
     _host(monkeypatch, system = "Linux", which = None, wsl_file = True)
-    monkeypatch.setattr(nvidia.gpu_query, "run_nvidia_smi", _fake_smi({nvidia._WSL_NVIDIA_SMI}, calls))
+    monkeypatch.setattr(
+        nvidia.gpu_query, "run_nvidia_smi", _fake_smi({nvidia._WSL_NVIDIA_SMI}, calls)
+    )
     assert _queries() == {"count": 1, "primary": True, "visible": 1, "uuid": [0]}
     assert set(calls) == {nvidia._WSL_NVIDIA_SMI}
 
@@ -64,7 +68,9 @@ def test_nvidia_smi_on_path_is_still_the_one_spawned(monkeypatch):
     calls = []
     _host(monkeypatch, system = "Linux", which = "/usr/bin/nvidia-smi", wsl_file = True)
     # Both spellings reach the same binary through PATH.
-    monkeypatch.setattr(nvidia.gpu_query, "run_nvidia_smi", _fake_smi({"nvidia-smi", "/usr/bin/nvidia-smi"}, calls))
+    monkeypatch.setattr(
+        nvidia.gpu_query, "run_nvidia_smi", _fake_smi({"nvidia-smi", "/usr/bin/nvidia-smi"}, calls)
+    )
     assert _queries() == {"count": 1, "primary": True, "visible": 1, "uuid": [0]}
 
 
@@ -104,7 +110,14 @@ def test_a_core_ultra_record_establishes_a_mismatch(monkeypatch, tmp_path):
     monkeypatch.setattr(hw, "_torch_reports_an_xpu_runtime", lambda: False)
     monkeypatch.setattr(hw, "_vendors_masked_off", lambda: set())
     (tmp_path / "device").write_text("0x64a0\n", encoding = "utf-8")
-    lnl = [{"vendor": "intel", "name": None, "index": 0, "xpu_class": hw._intel_pci_device_is_xpu_class(str(tmp_path))}]
+    lnl = [
+        {
+            "vendor": "intel",
+            "name": None,
+            "index": 0,
+            "xpu_class": hw._intel_pci_device_is_xpu_class(str(tmp_path)),
+        }
+    ]
     assert hw._devices_that_can_establish_a_mismatch(lnl) == lnl
 
 
