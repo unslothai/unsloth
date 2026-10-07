@@ -295,3 +295,71 @@ def test_backbone_stays_on_one_device_unless_the_caller_places_it(monkeypatch):
         with pytest.raises(Captured):
             decision_from_lm._load_backbone(TINY_QWEN3, 64, None, False, False, None, False, kwargs)
     assert seen == [{"": f"cuda:{index}"}, "auto"]
+
+
+def test_full_finetuning_never_gets_a_4bit_config(monkeypatch):
+    from unsloth.models import decision, decision_from_lm, loader
+
+    seen = []
+
+    class Captured(Exception):
+        pass
+
+    def capture(*args, **kwargs):
+        seen.append(kwargs.get("quantization_config"))
+        raise Captured
+
+    monkeypatch.setattr(decision, "_device", lambda: torch.device("cuda"))
+    monkeypatch.setattr(loader.FastModel, "from_pretrained", capture)
+    with pytest.raises(Captured):
+        decision_from_lm._load_backbone(TINY_QWEN3, 64, None, True, True, None, False, {})
+    assert seen == [None]
+
+
+def test_cpu_load_honours_revision_and_offline(monkeypatch):
+    import transformers
+
+    from unsloth.models import decision, decision_from_lm
+
+    seen = []
+
+    class Captured(Exception):
+        pass
+
+    def capture(*args, **kwargs):
+        seen.append({k: kwargs.get(k) for k in ("revision", "local_files_only")})
+        raise Captured
+
+    monkeypatch.setattr(decision, "_device", lambda: torch.device("cpu"))
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", capture)
+    with pytest.raises(Captured):
+        decision_from_lm._load_backbone(
+            TINY_QWEN3,
+            64,
+            None,
+            False,
+            False,
+            None,
+            False,
+            {"revision": "abc", "local_files_only": True},
+        )
+    assert seen == [{"revision": "abc", "local_files_only": True}]
+
+
+def test_a_plain_lm_in_a_subfolder_loads_from_it(tmp_path, monkeypatch):
+    from unsloth.models import decision_from_lm
+
+    seen = []
+
+    class Captured(Exception):
+        pass
+
+    def capture(model_name, **kwargs):
+        seen.append(model_name)
+        raise Captured
+
+    monkeypatch.setattr(decision_from_lm, "load_lm_as_decision_model", capture)
+    (tmp_path / "lm").mkdir()
+    with pytest.raises(Captured):
+        FastDecisionModel.from_pretrained(str(tmp_path), subfolder = "lm", decision_head = "clef")
+    assert seen == [str(tmp_path / "lm")]

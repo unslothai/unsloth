@@ -236,3 +236,47 @@ def test_mixture_from_preloaded_rows_is_balanced_and_refuses_eval_only_sources()
         _check(row)
     with pytest.raises(ValueError, match = "Decision Index"):
         dd.build_decision_mixture({"bfcl": []}, n_rows = 1)
+
+
+def test_renamed_ids_never_overwrite_another_question():
+    row = {
+        "source": "custom",
+        "state": "s",
+        "questions": {
+            "first": {"type": "noul", "instructions": "a?"},
+            "q1": {"type": "noul", "instructions": "b?"},
+        },
+        "gold": {"first": True, "q1": False},
+        "_variants": {"first": {"ids": ["q1"]}},
+    }
+    # Dropped instructions restrict renames to the variant ids: "first" takes "q1" every time.
+    config = dd.AugmentConfig(rename_question_ids = 1.0, derived_questions = 0.0, drop_instructions = 1.0)
+    out = dd.augment_row(row, random.Random(0), config)
+    assert sorted(out["gold"].values()) == [False, True]
+
+
+def test_a_one_level_score_gets_no_derived_threshold():
+    row = {
+        "source": "custom",
+        "state": "s",
+        "questions": {"level": {"type": "score", "criteria": ["only"]}},
+        "gold": {"level": 0},
+    }
+    out = dd.augment_row(row, random.Random(0), dd.AugmentConfig(derived_questions = 1.0))
+    assert list(out["questions"]) == ["level"]
+
+
+def test_canonical_subsampling_leaves_the_input_row_alone():
+    names = [f"intent_{i}" for i in range(100)]
+    row = list(dd.convert_intent("banking77", "label")([{"text": "hello", "label": 57}], names))[0]
+    dd.canonical_row(row, max_options = 10)
+    assert len(row["questions"]["intent"]["criteria"]) == 100
+
+
+def test_mixture_returns_the_requested_rows_when_shares_round_down():
+    pools = {
+        name: list(dd.SOURCES[name].convert(*SYNTHETIC[name]))
+        for name in ("banking77", "boolq", "sst5")
+    }
+    for n_rows in (5, 31, 32):
+        assert len(dd.build_decision_mixture(pools, n_rows = n_rows, seed = 0)) == n_rows
