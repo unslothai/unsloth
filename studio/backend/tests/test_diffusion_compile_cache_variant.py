@@ -203,7 +203,6 @@ def test_a_bundle_saved_for_one_variant_is_a_miss_for_the_other(monkeypatch, tmp
 
 
 def test_protect_steps_auto_is_not_its_default(monkeypatch):
-    # Unset means no protection; "auto" protects the head and last step.
     m = _int8()
     k0 = _key(m)
     monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "auto")
