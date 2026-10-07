@@ -1,15 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pair the two expert files of a dual-expert (Wan2.2-A14B) video DiT by name.
+"""Pair the two expert files of a dual-expert (Wan2.2-A14B) video DiT by their high/low noise token.
 
-Single-file distributions ship each expert as its own checkpoint, differing only in a noise
-token: ComfyUI's ``wan2.2_t2v_high_noise_14B_fp8_scaled.safetensors`` / ``..._low_noise_...``,
-or ``HighNoise/Wan2.2-T2V-A14B-HighNoise-Q4_K_M.gguf`` / ``LowNoise/...-LowNoise-...``. Picking
-either one names both: the partner is the same path with every high token swapped for low (or
-the reverse), case kept. The high-noise expert is the pipeline's ``transformer`` (it runs the
-early, high-noise steps), the low-noise one its ``transformer_2``, as in the diffusers layout and
-Studio's hosted per-expert checkpoints.
+The high-noise expert is the pipeline's ``transformer`` (early steps), the low-noise one ``transformer_2``.
 """
 
 from __future__ import annotations

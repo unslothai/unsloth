@@ -2813,7 +2813,6 @@ class VideoBackend:
                 try:
                     resolve_local_gguf_child(root, gguf_filename or "")
                     if fam.is_moe:
-                        # The partner expert has to be there too, before the handoff.
                         resolve_local_gguf_child(root, moe_partner_filename(gguf_filename) or "")
                 except Exception as exc:  # noqa: BLE001 -- surface as client input error
                     raise ValueError(str(exc)) from exc
@@ -3185,7 +3184,6 @@ class VideoBackend:
                 )
                 partner = moe_partner_filename(kwargs["gguf_filename"])
                 if getattr(fam, "is_moe", False) and kind != "pipeline" and partner:
-                    # A dual-expert pick names both files: the partner expert comes down here too, cancellable.
                     hf_hub_download_with_xet_fallback(
                         kwargs["repo_id"],
                         partner,
@@ -4789,7 +4787,6 @@ class VideoBackend:
             if (
                 kind != "pipeline"
                 # An H3 single file (a ComfyUI denoiser) replaces the partition it serves, transformer_ref/ included.
-                # A dual-expert pick's pair replaces transformer_2/ as well.
                 and name.startswith(("transformer/", "transformer_2/", h3_denoiser_prefix))
                 # transformer/config.json is the exception: from_single_file(config = <repo id>, subfolder =
                 # "transformer") reads it off the Hub, so a load that promised to download nothing needs it staged.
@@ -4853,7 +4850,6 @@ class VideoBackend:
                 skip_te_components = skip_te_components + ("text_encoder",)
             if gguf_filename and not Path(repo_id).expanduser().exists():
                 info = api.model_info(repo_id, files_metadata = True)
-                # A dual-expert pick pulls its partner expert as well (the name pairs nothing elsewhere).
                 wanted = _checkpoint_files(gguf_filename, kind)
                 for sibling in info.siblings or []:
                     if sibling.rfilename in wanted and sibling.size:
@@ -5852,11 +5848,9 @@ class VideoBackend:
         comfy_keep = (
             transformer_quant is None or normalize_transformer_quant(transformer_quant) is not None
         )
-        # The second expert of a dual-expert pick (transformer_2), paired by name, and how its file loads.
         partner_path: Optional[Path] = None
         partner_scan = None
-        # The LTX-2.3 variant its weights carry ("ltx-2.3-22b-distilled" / "-dev"), ahead of every name in the recipe
-        # lookups: a distilled file named without "distilled" must not get the dev recipe. None: the name decides.
+        # LTX-2.3 variant read from the weights; outranks the file name in recipe lookups (None: the name decides).
         variant_id: Optional[str] = None
         ltx_keys = None
         if kind != "pipeline":
@@ -5917,8 +5911,7 @@ class VideoBackend:
 
             transformer_mib, comfy_scan = _price_checkpoint(checkpoint_path)
             if getattr(fam, "is_moe", False):
-                # Both experts stay loaded (offload streams them), so the plan prices the pair; the planner splits the
-                # denoiser total per expert.
+                # Both experts stay loaded, so price the pair; the planner splits the total per expert.
                 partner_path = self._resolve_moe_partner_path(
                     repo_id, gguf_filename, hf_token, local_files_only = local_files_only
                 )
@@ -6443,7 +6436,6 @@ class VideoBackend:
                 transformer = _load_expert(checkpoint_path, comfy_scan, "transformer")
                 experts: dict[str, Any] = {"transformer": transformer}
                 if partner_path is not None:
-                    # The low-noise expert of a paired pick, loaded the same way into transformer_2.
                     experts["transformer_2"] = _load_expert(
                         partner_path, partner_scan, "transformer_2"
                     )
@@ -6503,7 +6495,6 @@ class VideoBackend:
             else None
         )
         if partner_info:
-            # A paired pick reports both experts' layer counts.
             comfy_info = dict(comfy_info)
             for key in ("int8", "fp8", "dequantized"):
                 comfy_info[key] = int(comfy_info.get(key) or 0) + int(partner_info.get(key) or 0)

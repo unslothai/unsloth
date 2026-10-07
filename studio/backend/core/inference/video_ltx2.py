@@ -611,10 +611,8 @@ def _load_extras_file(
     return load_file(path)
 
 
-# Content fingerprint of a 2.3 DiT: sha256 (first 16 hex) of ``proj_out.bias`` (128 values) as bfloat16 bits. The
-# release headers do not tell the variants apart (same keys, shapes and config JSON; only an encrypted training blob
-# differs), but this bias is retrained by each and is never quantized, so the Lightricks fp8 files, ComfyUI int8 / fp8
-# repacks and GGUFs (stored F32 / F16 / BF16) carry the same 128 bf16 values as the release they came from.
+# sha256[:16] of ``proj_out.bias`` as bf16 bits: headers match across 2.3 variants, but this bias is retrained per
+# release and never quantized, so fp8 / int8 / GGUF repacks carry the release's values.
 LTX23_PROJ_OUT_BIAS_SHA = {
     "b6a06f88015c612b": "distilled",  # ltx-2.3-22b-distilled (and -distilled-fp8)
     "140a7d077a306ea9": "distilled",  # ltx-2.3-22b-distilled-1.1
