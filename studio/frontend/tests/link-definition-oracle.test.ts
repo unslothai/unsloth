@@ -383,6 +383,12 @@ test("inline math does not lend its backticks to a later code span", () => {
     markdownRenderScope("Math $a ` b$ [1] `\n\n[1]: /one\n"),
     "document",
   );
+  assert.equal(
+    markdownRenderScope(
+      "Cost $\n\nMath $a ` b$ [1] `\n\n[1]: /one\n",
+    ),
+    "document",
+  );
 });
 
 test("a bracketed label that is not a shortcut reference keeps block rendering", () => {

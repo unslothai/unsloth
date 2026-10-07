@@ -491,14 +491,27 @@ function inlineHtmlRegions(text: string): [number, number][] {
 const DOLLAR_RUN_RE = /\$+/g;
 
 function inlineMathRegions(text: string): [number, number][] {
-  const runs = Array.from(text.matchAll(DOLLAR_RUN_RE), (match) => ({
-    start: match.index,
-    end: match.index + match[0].length,
-    width: match[0].length,
-  }));
+  const breaks = Array.from(text.matchAll(BLANK_LINE_RE), (match) => match.index);
+  let paragraph = 0;
+  const runs = Array.from(text.matchAll(DOLLAR_RUN_RE), (match) => {
+    while (paragraph < breaks.length && breaks[paragraph] < match.index) {
+      paragraph += 1;
+    }
+    return {
+      start: match.index,
+      end: match.index + match[0].length,
+      width: match[0].length,
+      paragraph,
+    };
+  });
   const closers = new Array<number>(runs.length).fill(-1);
   const nearest = new Map<number, number>();
+  let currentParagraph = -1;
   for (let index = runs.length - 1; index >= 0; index -= 1) {
+    if (runs[index].paragraph !== currentParagraph) {
+      nearest.clear();
+      currentParagraph = runs[index].paragraph;
+    }
     closers[index] = nearest.get(runs[index].width) ?? -1;
     nearest.set(runs[index].width, index);
   }
