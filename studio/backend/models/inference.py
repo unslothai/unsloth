@@ -548,6 +548,10 @@ class SttLoadRequest(BaseModel):
             "sub-variant such as 'tiny'. Omitted picks the model's default."
         ),
     )
+    download_id: Optional[str] = Field(
+        None,
+        description = "Opaque identity of the download attempt being cancelled",
+    )
 
     @model_validator(mode = "after")
     def _fold_audio_gguf_variant(self):
