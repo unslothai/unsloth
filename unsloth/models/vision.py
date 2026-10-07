@@ -95,6 +95,7 @@ def _generation_padding_side(config):
 from ..kernels import (
     post_patch_loss_function,
 )
+from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ._utils import (
     __version__,
     importlib_version,
@@ -123,6 +124,7 @@ from ._utils import (
     arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
+    _is_seq2seq_lm_config,
 )
 from ._utils import *
 from ._uma_safetensors import is_integrated_unified_memory_gpu
@@ -200,7 +202,6 @@ from unsloth_zoo.patching_utils import patch_model_and_tokenizer
 from unsloth_zoo.training_utils import prepare_model_for_training
 
 from unsloth_zoo.utils import Version
-from transformers import __version__ as transformers_version
 
 import types
 import functools
@@ -680,6 +681,41 @@ def _unsloth_generate_accepts_kwarg(model, key):
     return key in model_args
 
 
+def _is_scaled_word_embedding_forward(cls, forward):
+    """Exactly transformers' `*ScaledWordEmbedding.forward` over nn.Embedding.forward: the op
+    reproduces only that product (Unsloth's float32 Gemma patch, or any extra work, is declined)."""
+    import ast
+    import inspect
+    import textwrap
+
+    owner = next((c for c in cls.__mro__ if c.__dict__.get("forward") is forward), None)
+    if (
+        owner is None
+        or getattr(super(owner, cls), "forward", None) is not torch.nn.Embedding.forward
+    ):
+        return False
+    if hasattr(forward, "__wrapped__"):
+        return False
+    fn = ast.parse(textwrap.dedent(inspect.getsource(forward))).body[0]
+    body = [
+        n
+        for n in fn.body
+        if not (isinstance(n, ast.Expr) and isinstance(getattr(n, "value", None), ast.Constant))
+    ]
+    expected = ast.parse(
+        "super().forward(input_ids) * self.embed_scale.to(self.weight.dtype)", mode = "eval"
+    ).body
+    return (
+        isinstance(fn, ast.FunctionDef)
+        and not fn.decorator_list
+        and [a.arg for a in fn.args.args] == ["self", "input_ids"]
+        and not (fn.args.vararg or fn.args.kwarg or fn.args.kwonlyargs or fn.args.defaults)
+        and len(body) == 1
+        and isinstance(body[0], ast.Return)
+        and ast.dump(body[0].value) == ast.dump(expected)
+    )
+
+
 def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_device):
     # Lookup runs on the weight's current device (CPU when offloaded); the output returns to the decoder device read live from output_embeddings, so it tracks model.to() moves. A meta or missing lm_head falls back to return_device.
     if embed_tokens is None:
@@ -716,6 +752,83 @@ def _install_offload_embedding_hooks(embed_tokens, output_embeddings, return_dev
     if disable is not None:
         _unsloth_offload_pre_hook = disable(_unsloth_offload_pre_hook)
         _unsloth_offload_post_hook = disable(_unsloth_offload_post_hook)
+
+    # Compiled inference uses unsloth_zoo's opaque op (no graph break) only where it is exact.
+    op = None
+    cls_forward = type(embed_tokens).forward
+    scaled = False
+    if cls_forward is not torch.nn.Embedding.forward and isinstance(
+        embed_tokens, torch.nn.Embedding
+    ):
+        try:
+            scaled = isinstance(
+                getattr(embed_tokens, "embed_scale", None), torch.Tensor
+            ) and _is_scaled_word_embedding_forward(type(embed_tokens), cls_forward)
+        except Exception:
+            scaled = False
+    base_forward = torch.nn.Embedding.forward
+    if (
+        disable is not None
+        and isinstance(embed_tokens, torch.nn.Embedding)
+        # Not patched globally before install.
+        and getattr(base_forward, "__module__", None) == "torch.nn.modules.sparse"
+        and getattr(base_forward, "__qualname__", None) == "Embedding.forward"
+        and not hasattr(base_forward, "__wrapped__")
+        and (cls_forward is base_forward or scaled)
+        and embed_tokens.max_norm is None
+        and not embed_tokens.sparse
+        and "forward" not in embed_tokens.__dict__
+    ):
+        try:
+            from unsloth_zoo.offloaded_embedding import offloaded_embedding as op
+        except Exception:
+            op = None
+
+    if op is not None:
+        slow_pre_hook, slow_post_hook = _unsloth_offload_pre_hook, _unsloth_offload_post_hook
+
+        def _use_op(module, input_ids):
+            # No grad only: the op skips forward hooks (enable_input_require_grads) checkpointing needs.
+            weight = module.weight
+            return (
+                torch.compiler.is_compiling()
+                and not torch.is_grad_enabled()
+                and not weight.requires_grad
+                and module.max_norm is None
+                # Other pre-hooks expect ids already on the table's device.
+                and len(module._forward_pre_hooks) == 1
+                and isinstance(input_ids, torch.Tensor)
+                and weight.device != input_ids.device
+                and type(module).forward is cls_forward
+            )
+
+        def _unsloth_offload_pre_hook(module, args):
+            if len(args) == 1 and _use_op(module, args[0]):
+                return args
+            return slow_pre_hook(module, args)
+
+        def _unsloth_offload_post_hook(module, args, output):
+            if (
+                torch.compiler.is_compiling()
+                and not torch.is_grad_enabled()
+                and isinstance(output, torch.Tensor)
+                and output.device == _decoder_device()
+            ):
+                return output
+            return slow_post_hook(module, args, output)
+
+        def _unsloth_offload_forward(self, *args, **kwargs):
+            if len(args) == 1 and not kwargs and _use_op(self, args[0]):
+                return op(
+                    args[0], self.weight, self.padding_idx, self.embed_scale if scaled else None
+                )
+            return type(self).forward(self, *args, **kwargs)
+
+        import types
+
+        embed_tokens.forward = types.MethodType(_unsloth_offload_forward, embed_tokens)
+        embed_tokens._unsloth_offload_op_forward = True
+
     embed_tokens.register_forward_pre_hook(_unsloth_offload_pre_hook, prepend = True)
     embed_tokens.register_forward_hook(_unsloth_offload_post_hook, prepend = True)
     embed_tokens._unsloth_offload_hooks_installed = True
@@ -973,6 +1086,10 @@ VLLM_SUPPORTED_VLM = [
     # reaches this gate even for the text-only checkpoints.
     "qwen3_5",
     "idefics3",
+    # Exact-membership gate: "qwen3_5" does not match qwen3_5_moe.
+    "qwen3_5_moe",
+    "gemma4",
+    "gemma4_text",
 ]
 
 
@@ -984,6 +1101,29 @@ def _zoo_supports_idefics3_fast_inference():
             "model.text_model.layers.{kk}.self_attn.q_proj"
             in get_model_layer_config()["standard_layers"]
         )
+    except Exception:
+        return False
+
+
+# Need an unsloth_zoo that rebuilds MoE blocks from vLLM.
+VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
+# Dense Gemma-4 shares the model type but aborts in vLLM's audio-encoder profiling, and in
+# 4-bit hits a bnb loader vLLM >= 0.28 moved out of tree. Only MoE checkpoints pass.
+VLLM_MOE_ONLY_VLM = ("gemma4", "gemma4_text")
+
+
+def _is_sparse_moe_config(config):
+    text_config = getattr(config, "text_config", None) or config
+    return bool(
+        getattr(text_config, "num_experts", None) or getattr(text_config, "enable_moe_block", False)
+    )
+
+
+def _zoo_supports_moe_fast_inference():
+    # Older unsloth_zoo releases leave every expert a 1-wide placeholder in the training model.
+    try:
+        from unsloth_zoo.empty_model import extract_moe_layers  # noqa: F401
+        return True
     except Exception:
         return False
 
@@ -2795,6 +2935,27 @@ class FastBaseModel:
                     "Unsloth: Idefics3 fast_inference needs a newer unsloth_zoo. "
                     "Please run `pip install --upgrade unsloth_zoo`."
                 )
+        # Outside the VLM block: text_only = True has is_vlm_config False.
+        if (
+            fast_inference
+            and any(arch in VLLM_MOE_ONLY_VLM for arch in model_types)
+            and not _is_sparse_moe_config(auto_config)
+        ):
+            raise RuntimeError(
+                f"Unsloth: fast_inference = True is only supported for the MoE {model_type_arch} "
+                "checkpoints (such as gemma-4-26B-A4B), not the dense ones yet. "
+                "Please set fast_inference = False."
+            )
+        if (
+            fast_inference
+            and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
+            and _is_sparse_moe_config(auto_config)
+            and not _zoo_supports_moe_fast_inference()
+        ):
+            raise RuntimeError(
+                f"Unsloth: {model_type_arch} fast_inference needs a newer unsloth_zoo. "
+                "Please run `pip install --upgrade unsloth_zoo`."
+            )
 
         if any(arch in VLLM_NON_LORA_VLM for arch in model_types):
             # mllama is still only in vllm v0, and vLLM V0 does not support LoRA on multimodal models. TODO: revisit once vLLM V1 supports Llama 3.2 (mllama).
@@ -3216,7 +3377,11 @@ class FastBaseModel:
         elif load_in_16bit:
             bnb_config = None
         elif not load_in_4bit and not load_in_8bit and not full_finetuning:
-            print("Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA.")
+            # FastModel passes load_in_4bit = False with a quantization_config, which still quantizes.
+            if user_quantization_config is None:
+                print(
+                    "Unsloth: QLoRA and full finetuning all not selected. Switching to 16bit LoRA."
+                )
 
         if full_finetuning:
             os.environ["UNSLOTH_ENABLE_FULL_FINETUNING"] = "1"
@@ -3502,6 +3667,27 @@ class FastBaseModel:
                         load_in_4bit,
                         load_in_8bit,
                         load_in_16bit,
+                    )
+
+                from unsloth_zoo.utils import get_quant_type
+
+                # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
+                if (
+                    (
+                        load_in_4bit
+                        or load_in_8bit
+                        or str(model_name).lower().endswith("-bnb-4bit")
+                        or get_quant_type(model_config) == "bitsandbytes"
+                    )
+                    and any(arch in VLLM_ZOO_MOE_VLM for arch in model_types)
+                    and _is_sparse_moe_config(model_config)
+                ):
+                    raise NotImplementedError(
+                        f"Unsloth: fast_inference = True does not support bitsandbytes weights (load_in_4bit / load_in_8bit = True "
+                        "or a prequantized bnb-4bit checkpoint) for the sparse MoE "
+                        f"model {model_type_arch}: vLLM's bitsandbytes MoE experts cannot be shared with the "
+                        "training model, and vLLM does not serve LoRA on bitsandbytes MoE experts.\n"
+                        "Load in 16-bit (load_in_4bit = False, load_in_8bit = False), or set fast_inference = False."
                     )
 
                 allowed_args = inspect.getfullargspec(load_vllm).args
@@ -3942,6 +4128,7 @@ class FastBaseModel:
                     f"Unsloth: could not check the dispatch hooks "
                     f"({type(_exc).__name__}: {_exc})."
                 )
+        _install_bnb_nf4_override()
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
@@ -3991,9 +4178,12 @@ class FastBaseModel:
 
         if isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM)):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
+        if task_type == TaskType.CAUSAL_LM and _is_seq2seq_lm_config(
+            getattr(model, "config", None)
+        ):
+            # Also multimodal encoder-decoders (T5Gemma2), which load through the VLM path.
+            task_type = TaskType.SEQ_2_SEQ_LM
         if _is_text_seq2seq_config(getattr(model, "config", None)):
-            if task_type == TaskType.CAUSAL_LM:
-                task_type = TaskType.SEQ_2_SEQ_LM
             # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
             finetune_vision_layers = True
             # get_peft_regex misses T5's q/k/v/o/wi/wo and BART's fc1/fc2, so list the Linear leaves (minus the LM head) ourselves.
@@ -4152,7 +4342,7 @@ class FastBaseModel:
         max_seq_length = model.max_seq_length
         # Passing loftq_config = None gives an error.
         loftq_config = validate_loftq_config(
-            loftq_config, lora_dropout, bias, init_lora_weights, model
+            loftq_config, lora_dropout, bias, init_lora_weights, model, r
         )
 
         # Prefer the caller's ORIGINAL explicit leaf list over the scoped regex so an attention-only request does not train experts, but only while MLP and language families are both in scope: with finetune_mlp_modules or finetune_language_layers False the scoped regex already dropped the experts.
@@ -4243,6 +4433,8 @@ class FastBaseModel:
                 n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - n, _total_layers))
 
+        validate_init_target_parameters(init_lora_weights, target_parameters)
+
         local_variables = {
             **locals(),
             **kwargs,
@@ -4316,7 +4508,13 @@ class FastBaseModel:
 
             _LoraModel._create_and_replace = _patched_car
 
-        model = _get_peft_model(model, lora_config)
+        from .lora_init import fast_lora_init, record_fast_pissa
+
+        with fast_lora_init() as fast:
+            model = _get_peft_model(model, lora_config)
+        if fast["pissa"]:
+            record_fast_pissa(model)
+        snapshot_residual_lora_init(model, init_lora_weights)
 
         # PEFT may have wrapped an endpoint this load repaired; the hook stays on base_layer and the adapter branch reads the caller's tensor.
         try:
@@ -4442,6 +4640,7 @@ class FastBaseModel:
             float32_mixed_precision = float32_mixed_precision,
             patch_modules_to_save = True,
         )
+        freeze_peft_variant_weights(model)
         if full_finetuning:
             # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
             _freeze_unused_siblings(model)

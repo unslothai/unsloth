@@ -3,18 +3,85 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown, parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
   IncrementalMarkdownCache,
+  hasIncompleteLinkRepair,
   markdownRenderKey,
   markdownRenderScope,
   parseMarkdownIntoRenderableBlocks,
+  repairStreamingMarkdown,
   withoutStreamdownAnimationPlugin,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
+
+test("an unfinished link stays literal instead of showing Streamdown's blocked placeholder", () => {
+  const cache = new IncrementalMarkdownCache();
+  for (const source of [
+    "See [example",
+    "See [example](",
+    "See [example](https://exa",
+  ]) {
+    const render = cache.update(source);
+    assert.equal(render.markdown, source);
+    assert.equal(hasIncompleteLinkRepair(source), true);
+    const html = renderToStaticMarkup(
+      createElement(
+        Streamdown,
+        {
+          mode: "streaming",
+          parseIncompleteMarkdown: false,
+          parseMarkdownIntoBlocksFn: render.parseMarkdownIntoBlocks,
+        },
+        render.markdown,
+      ),
+    );
+    assert.doesNotMatch(html, /\[blocked\]|streamdown:incomplete-link/);
+    assert.match(html, /See \[example/);
+  }
+
+  const list = new IncrementalMarkdownCache().update("- >= 16 GB\n\nSee [foo");
+  assert.equal(list.markdown, "- \\>= 16 GB\n\nSee [foo");
+
+  const scoped = new IncrementalMarkdownCache();
+  const body = Array.from({ length: 8 }, (_, i) => `Paragraph ${i}.`).join(
+    "\n\n",
+  );
+  const head = `Read [docs][r] first.\n\n${body}\n\n`;
+  scoped.update(head);
+  const both = `${head}[r]: https://example.com\n\nSee [foo`;
+  const scopedRender = scoped.update(both);
+  assert.equal(
+    (scoped as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
+  assert.deepEqual(
+    scopedRender.parseMarkdownIntoBlocks(scopedRender.markdown),
+    parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(both)),
+  );
+
+  const complete = "See [example](https://example.com)";
+  assert.equal(cache.update(complete).markdown, complete);
+  assert.equal(hasIncompleteLinkRepair(complete), false);
+  assert.equal(
+    hasIncompleteLinkRepair("literal streamdown:incomplete-link"),
+    false,
+  );
+  const unsafe = "See [example](javascript:alert)";
+  const html = renderToStaticMarkup(
+    createElement(
+      Streamdown,
+      { mode: "streaming", parseIncompleteMarkdown: false },
+      unsafe,
+    ),
+  );
+  assert.match(html, /\[blocked\]/);
+});
 
 test("only Streamdown's animation transformer is removed", () => {
   const first = () => undefined;
@@ -133,7 +200,7 @@ test("incremental blocks match a full Streamdown split at every prefix", () => {
       const render = cache.update(input);
       assert.deepEqual(
         render.parseMarkdownIntoBlocks(render.markdown),
-        parseMarkdownIntoRenderableBlocks(remend(input)),
+        parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(input)),
         `block mismatch at prefix ${length} of ${JSON.stringify(source)}`,
       );
     }

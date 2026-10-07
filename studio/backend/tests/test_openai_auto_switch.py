@@ -8497,7 +8497,7 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
     event_loop_thread = threading.get_ident()
     calls = []
 
-    def _add(path):
+    def _add(path, recursive = None):
         calls.append(("add", threading.get_ident()))
         return {"id": 7, "path": path, "created_at": "fake"}, True
 
@@ -8515,7 +8515,7 @@ def test_async_scan_folder_routes_offload_storage_and_invalidation(monkeypatch):
 
     async def _run():
         folder = await model_routes.add_scan_folder_endpoint(
-            SimpleNamespace(path = "/models/custom"), current_subject = "tester"
+            SimpleNamespace(path = "/models/custom", recursive = None), current_subject = "tester"
         )
         removed = await model_routes.remove_scan_folder_endpoint(7, current_subject = "tester")
         return folder, removed
@@ -9314,6 +9314,18 @@ def test_mlx_kv_quant_survives_the_whole_override_projection():
         kwargs = settings.model_override_load_kwargs({"mlx_kv_quant": "tq-4"}, is_gguf = is_gguf)
         assert kwargs["mlx_kv_quant"] == "tq-4"
         assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_quant == "tq-4"
+
+
+def test_mlx_int8_prefill_is_stored_only_when_on_and_reaches_the_load(monkeypatch):
+    _mock_override_store(monkeypatch)
+    assert settings.normalize_model_override({"mlx_int8_prefill": False}) == {}
+    _put("org/m", mlx_int8_prefill = True)
+    stored = settings.get_model_overrides()["org/m"]
+    assert stored == {"mlx_int8_prefill": True}
+    kwargs = settings.model_override_load_kwargs(stored, is_gguf = False)
+    assert LoadRequest(model_path = "org/m", **kwargs).mlx_int8_prefill is True
+    _put("org/m", mlx_int8_prefill = False)
+    assert "org/m" not in settings.get_model_overrides()
 
 
 def _idle_backend(kw, monkeypatch, *, user_loaded):
@@ -11807,6 +11819,52 @@ def test_speech_switch_admission(monkeypatch, audio_type, context, text, instruc
     else:
         asyncio.run(call)
         assert len(recorder.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "workflow, speech_type, workflows, admitted",
+    [
+        ("separate", None, ["separate"], True),
+        ("separate", None, [], False),
+        ("clone", "audiocpp_tts", ["speak"], False),
+        ("clone", "audiocpp_tts", ["speak", "clone"], True),
+    ],
+)
+def test_audio_workflow_switch_admission(monkeypatch, workflow, speech_type, workflows, admitted):
+    backend, recorder = _speech_case(monkeypatch, speech_type, gguf = False)
+    seen = []
+    monkeypatch.setattr(
+        inference_route, "_target_audio_workflows", lambda *a: seen.append(a) or workflows
+    )
+    call = inference_route._maybe_auto_switch_model(
+        "org/B-GGUF",
+        object(),
+        "tester",
+        require_speech = speech_type is not None,
+        require_audio_workflow = workflow,
+    )
+    if admitted:
+        asyncio.run(call)
+        assert len(recorder.calls) == 1
+    else:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(call)
+        assert error.value.status_code == 400
+        assert error.value.detail["error"]["param"] == "model"
+        # Refused before the resident model is evicted.
+        assert recorder.calls == [] and backend.model_identifier == "org/A-GGUF"
+    assert seen == [("/local/B", speech_type)]
+
+
+def test_target_audio_workflows_reads_audio_cpp_targets_from_the_cache(monkeypatch):
+    from core.inference import audio_cpp_models
+
+    sep = SimpleNamespace(workflows = {"separate": None})
+    monkeypatch.setattr(audio_cpp_models, "resolve", lambda target, network: sep)
+    workflows = inference_route._target_audio_workflows
+    assert workflows("audio-cpp/audio.cpp-gguf/HTDemucs-6stems-GGUF", None) == ["separate"]
+    assert workflows("/local/csm", "csm") == ["speak"]
+    assert workflows("/local/chat", None) == []
 
 
 @pytest.mark.parametrize("audio_type", ["snac", "bicodec", "dac", "higgs_tts2"])

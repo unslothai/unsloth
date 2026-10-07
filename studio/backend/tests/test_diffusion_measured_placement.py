@@ -396,13 +396,13 @@ def _family_names():
     "budget,total", [(21432, 24576), (13638, 16376), (9550, 12288), (5450, 8188)]
 )
 def test_only_measured_family_moves(q21_pipe, speed, budget, total):
-    """Every other supported family keeps its flat plan byte for byte, on every speed tier and budget."""
+    """Every unmeasured family keeps its flat plan byte for byte, on every speed tier and budget."""
     names = _family_names()
     assert "qwen-image-2.1" in names and len(names) > 5
     plan = _flat_plan(budget, total)
     for family in names:
         new = _refine(q21_pipe, plan, family = family, speed = speed)
-        if family == "qwen-image-2.1" and speed in ("default", "max"):
+        if family in ("qwen-image-2.1", "flux.1", "z-image") and speed in ("default", "max"):
             continue
         assert new is plan, family
 
@@ -511,6 +511,130 @@ def test_partial_release_frees_only_what_the_request_needs(monkeypatch):
     assert placed == ["cuda"] * 5 + ["cpu"]
     restore()
     assert all(next(b.parameters()).device.type == "cuda" for b in net.blocks)
+
+
+def _resident_hooked(torch, net):
+    from diffusers.hooks import apply_group_offloading
+
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    return net
+
+
+def _hookless_int8_transformer(monkeypatch):
+    """A resident int8 torchao transformer with no offload hooks (the 16 GB tier), its input and reference output."""
+    torch, _ = _cuda_offload_model()
+    pytest.importorskip("torchao")
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if not hasattr(cfg, "version"):
+        pytest.skip("torchao predates versioned configs")
+    cfg.version = 2
+    torch.manual_seed(0)
+    net = (
+        torch.nn.Sequential(
+            torch.nn.Linear(256, 512),
+            torch.nn.Sequential(*[torch.nn.Linear(512, 512) for _ in range(3)]),
+        )
+        .cuda()
+        .to(torch.bfloat16)
+    )
+    quantize_(net[1], cfg)
+    net.requires_grad_(False)
+    x = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = net(x)
+    return torch, net, x, ref
+
+
+def test_a_hookless_resident_transformer_takes_hooks_on_demand(monkeypatch):
+    """The 16 GB tier keeps the int8 transformer resident without offload hooks; an oversized request (an edit's
+    reference) gives it hooks, every group resident, so release_resident_groups can stream part of it."""
+    torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert dm.resident_group_mib(pipe) == 0
+    assert dm.hook_resident_denoiser(pipe, "cuda")
+    assert dm.resident_group_mib(pipe) > 0
+    assert not dm.hook_resident_denoiser(pipe, "cuda")  # already hooked
+    with torch.no_grad():
+        assert torch.equal(net(x), ref)
+        restore = dm.release_resident_groups(pipe, 1)
+        assert restore is not None
+        for _ in range(2):
+            assert torch.equal(net(x), ref)
+        restore()
+        assert torch.equal(net(x), ref)
+
+
+def test_an_unpinnable_resident_transformer_keeps_no_hooks(monkeypatch):
+    """Without room to pin it the apply would copy the whole transformer to pageable host RAM and stream it without
+    a copy stream, which the load refuses for torchao too; the request is refused as before instead."""
+    torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", raising = False)
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 0)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert not dm.hook_resident_denoiser(pipe, "cuda")
+    assert not dm._offload_groups(net)
+    assert dm.resident_group_mib(pipe) == 0
+    assert all(p.device.type == "cuda" for p in net.parameters())
+    with torch.no_grad():
+        assert torch.equal(net(x), ref)
+
+
+@pytest.mark.parametrize("failure", ["raises", "swallowed"])
+def test_a_failed_hook_install_leaves_the_transformer_resident(monkeypatch, failure):
+    """The apply moves the groups' weights to their host copies; a failure after it puts them back on the card,
+    whether the residency step raises or (as _keep_groups_resident does) reports it as 0 MiB kept."""
+    torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
+    from core.inference.diffusion_offload_prefetch import module_prefetcher
+
+    keep = dm._keep_groups_resident
+
+    def _fail(*args, **kwargs):
+        assert module_prefetcher(net) is not None  # fails after the prefetcher's install
+        if failure == "raises":
+            raise RuntimeError("injected")
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("injected")
+
+        with monkeypatch.context() as m:
+            m.setattr(dm, "_storage_nbytes", _boom)
+            assert keep(*args, **kwargs) == 0  # the real helper swallows it
+        return 0
+
+    monkeypatch.setattr(dm, "_keep_groups_resident", _fail)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert not dm.hook_resident_denoiser(pipe, "cuda")
+    assert not dm._offload_groups(net)
+    assert module_prefetcher(net) is None
+    assert not net._forward_pre_hooks and not net._forward_hooks
+    with torch.no_grad():
+        for _ in range(2):
+            assert torch.equal(net(x), ref)
+
+
+def test_generate_hooks_the_resident_transformer_only_when_the_release_falls_short():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    at = src.index("releasable_mib = resident_group_mib(state.pipe)")
+    assert "if guard_condition_pixels > 0 and extra_mib > releasable_mib:" in src[at : at + 200]
+    assert "hook_resident_denoiser(state.pipe," in src[at : at + 600]
+    assert (
+        src.index("restore_resident = release_resident_groups(state.pipe, extra_mib, logger)") > at
+    )
 
 
 def test_measured_request_extra(monkeypatch):

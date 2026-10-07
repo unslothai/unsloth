@@ -220,12 +220,34 @@ _TAURI_CORS_ORIGINS = (
     "http://127.0.0.1:5173",
 )
 
+_LOOPBACK_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?$"
+
+
+def _is_desktop_cors_lockdown(api_only: bool, secure: bool) -> bool:
+    """Secure mode publishes the API over Cloudflare, so only plain api-only is locked down."""
+    return api_only and not secure
+
 
 def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
-    """Allowed CORS origins. Default is any-origin (["*"]); api-only locks down to the Tauri desktop app, except in secure mode where the API is published over Cloudflare and must stay reachable from remote browser origins."""
-    if api_only and not secure:
-        return list(_TAURI_CORS_ORIGINS)
-    return ["*"]
+    """Tauri origins plus UNSLOTH_CORS_ORIGINS under lockdown, else ["*"] (never narrowed: the webview would lose access when a tunnel drops)."""
+    if not _is_desktop_cors_lockdown(api_only, secure):
+        return ["*"]
+    custom = [
+        origin.strip()
+        for origin in os.environ.get("UNSLOTH_CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    return list(dict.fromkeys(list(_TAURI_CORS_ORIGINS) + custom))
+
+
+def cors_origin_regex_for_mode(*, api_only: bool, secure: bool) -> str | None:
+    """Loopback-any-port regex, only with UNSLOTH_CORS_ALLOW_LOOPBACK=1 under lockdown.
+    Never an operator regex: Origin is matched pre-auth, so a nested quantifier is a ReDoS."""
+    if not _is_desktop_cors_lockdown(api_only, secure):
+        return None
+    if os.environ.get("UNSLOTH_CORS_ALLOW_LOOPBACK") == "1":
+        return _LOOPBACK_ORIGIN_REGEX
+    return None
 
 
 def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> None:

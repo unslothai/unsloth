@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from core.systemone import native_worker
-from core.systemone.clef_runtime import ClefWorkerError, ClefWorkerInputError
+from core.systemone.owned_runtime import ClefWorkerError, ClefWorkerInputError
 
 
 @pytest.fixture

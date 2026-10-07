@@ -11,6 +11,8 @@ const {
   audioFileProblem,
   audioSourceReducer,
   INITIAL_AUDIO_SOURCE_STATE,
+  micAudioConstraints,
+  micErrorMessage,
   REFERENCE_EXPIRED_MESSAGE,
 } = await import("../src/features/audio/hooks/audio-source-state.ts");
 const { AUDIO_INPUT_MAX_BYTES, selectionExpired } = await import(
@@ -257,6 +259,44 @@ test("a superseded microphone request releases its stream", () => {
   assert.match(
     hook,
     /const abortAll = useCallback\(\(\) => \{\s*acquisition\.current \+= 1;/,
+  );
+});
+
+test("recording uses the Settings → Voice microphone and falls back when it is gone", () => {
+  assert.deepEqual(micAudioConstraints("default"), {
+    echoCancellation: true,
+    noiseSuppression: true,
+  });
+  assert.deepEqual(micAudioConstraints(null), micAudioConstraints("default"));
+  assert.deepEqual(micAudioConstraints("usb-mic"), {
+    echoCancellation: true,
+    noiseSuppression: true,
+    deviceId: { exact: "usb-mic" },
+  });
+  assert.match(
+    hook,
+    /stream = await openMicrophone\(\s*useVoiceSettingsStore\.getState\(\)\.micDeviceId,\s*\);/,
+  );
+  assert.match(
+    hook,
+    /if \(deviceId === "default" \|\| !isMissingDeviceError\(error\)\) throw error;\s*return navigator\.mediaDevices\.getUserMedia\(\{\s*audio: micAudioConstraints\(null\),/,
+  );
+  assert.match(hook, /message: micErrorMessage\(error, isTauri\)/);
+  // A failed recording never picked a file, so its way out is uploading one.
+  assert.match(card, /\{tab === "record" \? "Upload a file" : "Try another file"\}/);
+});
+
+test("a blocked microphone and a missing one say different things", () => {
+  const named = (name: string) => Object.assign(new Error("x"), { name });
+  // Firefox and WebKit throw plain objects, so the name is what counts.
+  assert.match(micErrorMessage({ name: "NotAllowedError" }, false), /blocked\. Allow it for this page/);
+  assert.match(micErrorMessage(named("NotAllowedError"), true), /Open Settings > Voice and click Allow microphone/);
+  assert.match(micErrorMessage(named("NotFoundError"), false), /^No microphone was found\./);
+  assert.match(micErrorMessage({ name: "OverconstrainedError" }, true), /^No microphone was found\./);
+  assert.match(micErrorMessage(named("NotReadableError"), false), /in use or unavailable/);
+  assert.equal(
+    micErrorMessage(new Error("boom"), false),
+    "Could not use the microphone. Allow access, or upload a file instead.",
   );
 });
 

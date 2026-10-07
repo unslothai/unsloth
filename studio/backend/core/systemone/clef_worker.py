@@ -17,8 +17,8 @@ from typing import Any
 MAX_CONTEXT_TOKENS = 16_384
 # Overflow guard for the reference encoder's max_length argument.
 _UNBOUNDED_ENCODE_LENGTH = (1 << 31) - 1
-_SOURCE_SHA256 = "96a08c84e38ae5b17cddb1b5310d0479442fcacee39ecd8f0381e1d6313ae2e0"
-_VENDORED_CLEF = Path(__file__).resolve().parent.parent.parent / "vendor" / "clef"
+_SOURCE_SHA256 = "0e304cf7c6500e8bb59bef7e2afd2c6373f82596dfb3b57d1aa93c175e2dc3a3"
+_VENDORED_CLEF = Path(__file__).resolve().parents[4] / "unsloth" / "_vendor" / "clef"
 
 
 class ClefWorkerError(RuntimeError):
@@ -33,7 +33,6 @@ def _send(response_queue, response: dict[str, Any]) -> None:
     try:
         response_queue.put(response)
     except (OSError, ValueError):
-        # The parent has gone away; returning lets the process release its context.
         return
 
 
@@ -45,6 +44,10 @@ def _cancelled(cancel_event) -> None:
 def _reference_module():
     """Load the audited, byte-pinned Apache source without trust_remote_code."""
     source = _VENDORED_CLEF / "joint_schema_model.py"
+    if not source.is_file():
+        spec = importlib.util.find_spec("unsloth")
+        if spec is not None and spec.origin:
+            source = Path(spec.origin).parent / "_vendor" / "clef" / "joint_schema_model.py"
     try:
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
     except OSError as exc:
@@ -65,12 +68,12 @@ def _reference_module():
     except BaseException:
         sys.modules.pop(name, None)
         raise
-
+    from .laya_runtime import _utf8_open
+    module.open = _utf8_open
     return module
 
 
 def _actual_device(torch, requested_device: str) -> tuple[str, Any, bool]:
-    """Return one concrete device and its dtype; never use an auto/multi-GPU map."""
     backends = (
         ("cuda", getattr(torch, "cuda", None)),
         ("xpu", getattr(torch, "xpu", None)),
@@ -90,7 +93,6 @@ def _actual_device(torch, requested_device: str) -> tuple[str, Any, bool]:
 
 
 def _load(snapshot_path: str, requested_device: str, cancel_event):
-    """Load only from a complete local snapshot, using CPU fp32 or GPU reduced precision."""
     _cancelled(cancel_event)
     path = Path(snapshot_path)
     if not path.is_dir():
@@ -120,7 +122,6 @@ def _load(snapshot_path: str, requested_device: str, cancel_event):
 
 
 def _decode_images(images: list[bytes]) -> list[Any]:
-    """Decode route-validated image bytes into independent PIL images in the child."""
     if not isinstance(images, list):
         raise ValueError("images must be a list of image bytes")
     decoded = []
@@ -165,7 +166,6 @@ def _decide(
     images: list[bytes],
     cancel_event,
 ) -> dict[str, Any]:
-    """Run one joint-schema forward and reproduce Clef's SystemOne wire response."""
     if not isinstance(questions, dict) or not questions:
         raise ValueError("at least one question is required")
     _cancelled(cancel_event)

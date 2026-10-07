@@ -74,10 +74,14 @@ def get_enabled() -> bool:
 def get_model() -> str:
     if model_locked():
         return _env(ENV_MODEL)
-    from core.systemone.catalog import CHECKPOINTS, parse_connection
+    from core.systemone.catalog import CHECKPOINTS, fine_tune, parse_connection
 
     stored = _owner_setting(MODEL_KEY)
-    return stored if stored in CHECKPOINTS or parse_connection(stored) else DEFAULT_MODEL
+    if stored in CHECKPOINTS or parse_connection(stored):
+        return stored
+    if isinstance(stored, str) and fine_tune(stored) is not None:
+        return stored
+    return DEFAULT_MODEL
 
 
 def get_device() -> str:
@@ -99,7 +103,12 @@ def validate(
     device: str | None = None,
     backend: str | None = None,
 ) -> dict[str, Any]:
-    from core.systemone.catalog import CHECKPOINTS, decision_connections, parse_connection
+    from core.systemone.catalog import (
+        CHECKPOINTS,
+        decision_connections,
+        fine_tune,
+        parse_connection,
+    )
 
     values: dict[str, Any] = {}
     if enabled is not None:
@@ -110,11 +119,19 @@ def validate(
         if model_locked():
             raise ValueError(f"The Decision API model is set by {ENV_MODEL}.")
         connection = parse_connection(model)
-        if model not in CHECKPOINTS and not (
-            connection
-            and any(
-                row["id"] == connection.provider_id and connection.model in models
-                for row, models in decision_connections()
+        tuned = None if model in CHECKPOINTS else fine_tune(model)
+        if tuned is not None:
+            # Stored under the prefix for the folder's layout, whichever one the caller used.
+            model = tuned.name
+        if (
+            model not in CHECKPOINTS
+            and tuned is None
+            and not (
+                connection
+                and any(
+                    row["id"] == connection.provider_id and connection.model in models
+                    for row, models in decision_connections()
+                )
             )
         ):
             raise ValueError(f"Unknown Decision API model: {model}")

@@ -15,6 +15,7 @@ NAMES = (
     "_training_reserve_bytes",
     "_auto_block_swap_indices",
     "install_block_swap",
+    "_attach_block_swap",
     "trim_config_for_block_swap",
 )
 
@@ -52,7 +53,9 @@ def _load(
         "find_decoder_layers": lambda m: m.layers,
         "auto_swap_indices": lambda layers, reserve, depth: auto_pick,
         "_offload_embedding_for_room": lambda model: False,
-        "estimate_training_reserve_bytes": lambda config, seq_len, extra_bytes = 0: 2**30,
+        "estimate_training_reserve_bytes": lambda config, seq_len, batch_size = 1, extra_bytes = 0: 2
+        ** 30,
+        "_AUTO_OFFLOAD_BATCH_SIZE": 2,
         "torch": types.SimpleNamespace(cuda = types.SimpleNamespace(is_available = lambda: cuda)),
     }
     for name in NAMES:

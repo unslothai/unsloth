@@ -104,6 +104,8 @@ _FRAME_HTML = r"""<!doctype html>
   <body>
     <script>
       const boot = (cfg) => {
+        // Captured before the page's scripts run, so they can't swap it.
+        const compile = Function;
         // about:srcdoc has an opaque origin, and data: and blob: URLs share it.
         const shellOrigin = location.origin === "null" ? null : location.origin;
         let pageUrl = cfg.url || location.href;
@@ -425,10 +427,234 @@ _FRAME_HTML = r"""<!doctype html>
           };
         })();
         if (cfg.muted) setMuted(true);
-        // Annotate: the panel marks parts of the page to ask about. While it is on, pointer input
-        // is the panel's: the page only reports the block under the pointer, what a click or drag
-        // marks, and where the marks sit as it scrolls.
-        const annotation = (() => {
+        // Annotate: the panel marks parts of the page to ask about (_ANNOTATE_JS). Its code comes from
+        // the panel when annotate mode turns on, so pages never annotated don't parse it. Until then
+        // only the latest on/off and numbering are kept, to apply once it is installed.
+        let annotation = null, wanted = null, numbers = null;
+        const install = (code) => {
+          if (annotation || typeof code !== "string" || code.length > 262144) return;
+          try { annotation = compile("post", code)(post); } catch { return; }
+          if (wanted?.on) annotation.start(wanted.color);
+          if (numbers) annotation.number(numbers);
+          wanted = numbers = null;
+        };
+        // The page as it is now, for printing: scripts' DOM, typed values and canvases included.
+        // Printed from a copy in a separate frame, as this sandbox can't open the print dialog.
+        const snapshot = () => {
+          try {
+            const source = document.documentElement;
+            const copy = source.cloneNode(true);
+            const twins = (selector) => [source.querySelectorAll(selector), copy.querySelectorAll(selector)];
+            const [fields, fieldCopies] = twins("input, textarea, select");
+            fields.forEach((field, index) => {
+              const twin = fieldCopies[index];
+              if (!twin) return;
+              if (field.tagName === "TEXTAREA") twin.textContent = field.value;
+              else if (field.tagName === "SELECT") [...twin.options].forEach((option, at) => option.toggleAttribute("selected", Boolean(field.options[at]?.selected)));
+              else if (field.type === "checkbox" || field.type === "radio") twin.toggleAttribute("checked", field.checked);
+              else if (field.type !== "password" && field.type !== "file") twin.setAttribute("value", field.value);
+            });
+            const [canvases, canvasCopies] = twins("canvas");
+            canvases.forEach((canvas, index) => {
+              const twin = canvasCopies[index];
+              if (!twin) return;
+              try {
+                const image = document.createElement("img");
+                for (const name of ["class", "style", "width", "height"]) if (twin.hasAttribute(name)) image.setAttribute(name, twin.getAttribute(name));
+                image.src = canvas.toDataURL();
+                twin.replaceWith(image);
+              } catch {}
+            });
+            // Styles added through the CSSOM (CSS-in-JS) aren't in the markup.
+            const [styles, styleCopies] = twins("style");
+            styles.forEach((style, index) => {
+              try {
+                const rules = style.sheet ? [...style.sheet.cssRules].map((rule) => rule.cssText).join("\n") : null;
+                if (rules && styleCopies[index]) styleCopies[index].textContent = rules;
+              } catch {}
+            });
+            try {
+              const adopted = (document.adoptedStyleSheets || []).flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText));
+              if (adopted.length) {
+                const extra = document.createElement("style");
+                extra.textContent = adopted.join("\n");
+                (copy.querySelector("head") || copy).appendChild(extra);
+              }
+            } catch {}
+            for (const node of copy.querySelectorAll("script, [data-unsloth-annotate]")) node.remove();
+            const html = "<!doctype html>" + copy.outerHTML;
+            return html.length <= 8 * 1024 * 1024 ? html : null;
+          } catch {
+            return null;
+          }
+        };
+
+        // Find in page for Studio's find bar: every visible match of the query, case-insensitive,
+        // painted with the same two highlights as the chat's (all matches, then the active one) and
+        // counted back to the bar. Highlights sit over the text, so the page itself is not changed.
+        const finder = (() => {
+          const MAX = 1000;
+          const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SELECT", "OPTION", "TEXTAREA"]);
+          const painted = typeof Highlight === "function" && typeof CSS !== "undefined" && CSS.highlights;
+          let ranges = [];
+          let active = -1;
+          let styled = false;
+          const style = () => {
+            if (styled || !painted) return;
+            styled = true;
+            const sheet = document.createElement("style");
+            sheet.textContent = "::highlight(unsloth-find){background-color:#ffd84d;color:#1a1a1a}::highlight(unsloth-find-active){background-color:#ff8c1a;color:#1a1a1a}";
+            (document.head || document.documentElement).appendChild(sheet);
+          };
+          const shown = (element) => {
+            if (typeof element.checkVisibility === "function") return element.checkVisibility({ visibilityProperty: true });
+            return element.getClientRects().length > 0;
+          };
+          const collect = (query) => {
+            const needle = query.toLowerCase();
+            const found = [];
+            if (!document.body) return found;
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+              acceptNode: (node) => {
+                const element = node.parentElement;
+                if (!element || SKIP.has(element.tagName) || element.closest("[data-unsloth-annotate]")) return NodeFilter.FILTER_REJECT;
+                return NodeFilter.FILTER_ACCEPT;
+              },
+            });
+            for (let node = walker.nextNode(); node && found.length < MAX; node = walker.nextNode()) {
+              const text = node.nodeValue || "";
+              const lower = text.toLowerCase();
+              // Lowercasing can change a few characters' lengths; those nodes would map wrongly.
+              if (lower.length !== text.length) continue;
+              let at = lower.indexOf(needle);
+              if (at < 0 || !shown(node.parentElement)) continue;
+              while (at >= 0 && found.length < MAX) {
+                const range = document.createRange();
+                range.setStart(node, at);
+                range.setEnd(node, at + needle.length);
+                found.push(range);
+                at = lower.indexOf(needle, at + needle.length);
+              }
+            }
+            return found;
+          };
+          const paint = () => {
+            if (!painted) return;
+            style();
+            if (ranges.length) CSS.highlights.set("unsloth-find", new Highlight(...ranges));
+            else CSS.highlights.delete("unsloth-find");
+            if (ranges[active]) CSS.highlights.set("unsloth-find-active", new Highlight(ranges[active]));
+            else CSS.highlights.delete("unsloth-find-active");
+          };
+          const reveal = () => {
+            const range = ranges[active];
+            if (!range) return;
+            const rect = range.getBoundingClientRect();
+            if (rect.top < 48 || rect.bottom > innerHeight - 24 || rect.left < 0 || rect.right > innerWidth) {
+              range.startContainer.parentElement?.scrollIntoView({ block: "center", inline: "nearest" });
+            }
+            // Without highlights, the selection marks the match instead.
+            if (!painted) {
+              const selection = getSelection();
+              selection?.removeAllRanges();
+              selection?.addRange(range);
+            }
+          };
+          const report = () => post({ type: "findResult", count: ranges.length, active });
+          return {
+            search: (query) => {
+              ranges = query ? collect(query) : [];
+              // From where the reader is: the first match at or below the top of the view.
+              const below = ranges.findIndex((range) => range.getBoundingClientRect().bottom >= 0);
+              active = ranges.length ? Math.max(below, 0) : -1;
+              paint();
+              reveal();
+              report();
+            },
+            step: (delta) => {
+              if (ranges.length) {
+                active = (active + delta + ranges.length) % ranges.length;
+                paint();
+                reveal();
+              }
+              report();
+            },
+          };
+        })();
+        // Commands from the panel, relayed by the shell (the only parent this page has).
+        window.addEventListener("message", (event) => {
+          if (event.source !== parent) return;
+          const data = event.data;
+          if (!data || data.type !== "unsloth:browser-command") return;
+          if (data.command === "annotateInstall") install(data.code);
+          else if (data.command === "annotate") {
+            if (!annotation) wanted = { on: data.on === true, color: data.color };
+            else if (data.on === true) annotation.start(data.color);
+            else annotation.stop();
+          }
+          else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
+          else if (data.command === "annotateNumbers") annotation ? annotation.number(data.numbers) : (numbers = data.numbers);
+          else if (data.command === "zoom") applyZoom(data.value);
+          else if (data.command === "mute") setMuted(data.on === true);
+          else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
+          else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
+          else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
+        });
+        // The panel may have asked for annotate before this page could hear it.
+        post({ type: "annotate", event: "ready" });
+      };
+      const escapeAttr = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+      const inject = (html, tags) => {
+        const at = (match) => match.index + match[0].length;
+        const head = /<head\b[^<>]*>/i.exec(html);
+        if (head) return html.slice(0, at(head)) + tags + html.slice(at(head));
+        const root = /<html\b[^<>]*>/i.exec(html) || /^\s*<!doctype[^>]*>/i.exec(html);
+        if (root) return html.slice(0, at(root)) + "<head>" + tags + "</head>" + html.slice(at(root));
+        return "<head>" + tags + "</head>" + html;
+      };
+      let page = null;
+      window.addEventListener("message", (event) => {
+        // Relay the page's messages; the panel only trusts this window.
+        if (page && event.source === page.contentWindow) {
+          if (event.data && event.data.source === "unsloth-browser") parent.postMessage(event.data, "*");
+          return;
+        }
+        if (event.source !== parent) return;
+        const data = event.data;
+        if (page) {
+          if (data && data.type === "unsloth:browser-command") page.contentWindow.postMessage(data, "*");
+          return;
+        }
+        // Only the parent may drive the shell, once.
+        if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
+        const cfg = { url: data.url || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
+        const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
+        page = document.createElement("iframe");
+        page.setAttribute("sandbox", "allow-scripts allow-forms");
+        page.srcdoc = inject(data.html, base + script);
+        document.body.appendChild(page);
+        // A script navigation the page's hooks missed (no Navigation API) hits the lock below; the
+        // report only names the origin, so the panel can say what happened but not follow it.
+        let blocked = false;
+        document.addEventListener("securitypolicyviolation", (event) => {
+          if (blocked || event.effectiveDirective !== "frame-src") return;
+          blocked = true;
+          parent.postMessage({ source: "unsloth-browser", type: "scriptNavigation" }, "*");
+        });
+        const lock = document.createElement("meta");
+        lock.httpEquiv = "Content-Security-Policy";
+        lock.content = "frame-src 'none'";
+        document.head.appendChild(lock);
+      });
+    </script>
+  </body>
+</html>"""
+
+# Annotate, the body of a function of `post` that the page shell's `install` runs on the panel's
+# request: while it is on, pointer input is the panel's, and the page only reports the block under
+# the pointer, what a click or drag marks, and where the marks sit as it scrolls.
+_ANNOTATE_JS = r"""
           // Clicks mark these whole; anything else marks the nearest element that holds text itself.
           const BLOCK = "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, dt, dd, figcaption, caption, img, picture, video, svg, button, label, a[href], input, textarea, select";
           // A list item marks its own line, not the lists nested under it.
@@ -748,214 +974,7 @@ _FRAME_HTML = r"""<!doctype html>
             marks.clear();
           };
           return { start, stop, forget, number };
-        })();
-        // The page as it is now, for printing: scripts' DOM, typed values and canvases included.
-        // Printed from a copy in a separate frame, as this sandbox can't open the print dialog.
-        const snapshot = () => {
-          try {
-            const source = document.documentElement;
-            const copy = source.cloneNode(true);
-            const twins = (selector) => [source.querySelectorAll(selector), copy.querySelectorAll(selector)];
-            const [fields, fieldCopies] = twins("input, textarea, select");
-            fields.forEach((field, index) => {
-              const twin = fieldCopies[index];
-              if (!twin) return;
-              if (field.tagName === "TEXTAREA") twin.textContent = field.value;
-              else if (field.tagName === "SELECT") [...twin.options].forEach((option, at) => option.toggleAttribute("selected", Boolean(field.options[at]?.selected)));
-              else if (field.type === "checkbox" || field.type === "radio") twin.toggleAttribute("checked", field.checked);
-              else if (field.type !== "password" && field.type !== "file") twin.setAttribute("value", field.value);
-            });
-            const [canvases, canvasCopies] = twins("canvas");
-            canvases.forEach((canvas, index) => {
-              const twin = canvasCopies[index];
-              if (!twin) return;
-              try {
-                const image = document.createElement("img");
-                for (const name of ["class", "style", "width", "height"]) if (twin.hasAttribute(name)) image.setAttribute(name, twin.getAttribute(name));
-                image.src = canvas.toDataURL();
-                twin.replaceWith(image);
-              } catch {}
-            });
-            // Styles added through the CSSOM (CSS-in-JS) aren't in the markup.
-            const [styles, styleCopies] = twins("style");
-            styles.forEach((style, index) => {
-              try {
-                const rules = style.sheet ? [...style.sheet.cssRules].map((rule) => rule.cssText).join("\n") : null;
-                if (rules && styleCopies[index]) styleCopies[index].textContent = rules;
-              } catch {}
-            });
-            try {
-              const adopted = (document.adoptedStyleSheets || []).flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText));
-              if (adopted.length) {
-                const extra = document.createElement("style");
-                extra.textContent = adopted.join("\n");
-                (copy.querySelector("head") || copy).appendChild(extra);
-              }
-            } catch {}
-            for (const node of copy.querySelectorAll("script, [data-unsloth-annotate]")) node.remove();
-            const html = "<!doctype html>" + copy.outerHTML;
-            return html.length <= 8 * 1024 * 1024 ? html : null;
-          } catch {
-            return null;
-          }
-        };
-
-        // Find in page for Studio's find bar: every visible match of the query, case-insensitive,
-        // painted with the same two highlights as the chat's (all matches, then the active one) and
-        // counted back to the bar. Highlights sit over the text, so the page itself is not changed.
-        const finder = (() => {
-          const MAX = 1000;
-          const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SELECT", "OPTION", "TEXTAREA"]);
-          const painted = typeof Highlight === "function" && typeof CSS !== "undefined" && CSS.highlights;
-          let ranges = [];
-          let active = -1;
-          let styled = false;
-          const style = () => {
-            if (styled || !painted) return;
-            styled = true;
-            const sheet = document.createElement("style");
-            sheet.textContent = "::highlight(unsloth-find){background-color:#ffd84d;color:#1a1a1a}::highlight(unsloth-find-active){background-color:#ff8c1a;color:#1a1a1a}";
-            (document.head || document.documentElement).appendChild(sheet);
-          };
-          const shown = (element) => {
-            if (typeof element.checkVisibility === "function") return element.checkVisibility({ visibilityProperty: true });
-            return element.getClientRects().length > 0;
-          };
-          const collect = (query) => {
-            const needle = query.toLowerCase();
-            const found = [];
-            if (!document.body) return found;
-            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-              acceptNode: (node) => {
-                const element = node.parentElement;
-                if (!element || SKIP.has(element.tagName) || element.closest("[data-unsloth-annotate]")) return NodeFilter.FILTER_REJECT;
-                return NodeFilter.FILTER_ACCEPT;
-              },
-            });
-            for (let node = walker.nextNode(); node && found.length < MAX; node = walker.nextNode()) {
-              const text = node.nodeValue || "";
-              const lower = text.toLowerCase();
-              // Lowercasing can change a few characters' lengths; those nodes would map wrongly.
-              if (lower.length !== text.length) continue;
-              let at = lower.indexOf(needle);
-              if (at < 0 || !shown(node.parentElement)) continue;
-              while (at >= 0 && found.length < MAX) {
-                const range = document.createRange();
-                range.setStart(node, at);
-                range.setEnd(node, at + needle.length);
-                found.push(range);
-                at = lower.indexOf(needle, at + needle.length);
-              }
-            }
-            return found;
-          };
-          const paint = () => {
-            if (!painted) return;
-            style();
-            if (ranges.length) CSS.highlights.set("unsloth-find", new Highlight(...ranges));
-            else CSS.highlights.delete("unsloth-find");
-            if (ranges[active]) CSS.highlights.set("unsloth-find-active", new Highlight(ranges[active]));
-            else CSS.highlights.delete("unsloth-find-active");
-          };
-          const reveal = () => {
-            const range = ranges[active];
-            if (!range) return;
-            const rect = range.getBoundingClientRect();
-            if (rect.top < 48 || rect.bottom > innerHeight - 24 || rect.left < 0 || rect.right > innerWidth) {
-              range.startContainer.parentElement?.scrollIntoView({ block: "center", inline: "nearest" });
-            }
-            // Without highlights, the selection marks the match instead.
-            if (!painted) {
-              const selection = getSelection();
-              selection?.removeAllRanges();
-              selection?.addRange(range);
-            }
-          };
-          const report = () => post({ type: "findResult", count: ranges.length, active });
-          return {
-            search: (query) => {
-              ranges = query ? collect(query) : [];
-              // From where the reader is: the first match at or below the top of the view.
-              const below = ranges.findIndex((range) => range.getBoundingClientRect().bottom >= 0);
-              active = ranges.length ? Math.max(below, 0) : -1;
-              paint();
-              reveal();
-              report();
-            },
-            step: (delta) => {
-              if (ranges.length) {
-                active = (active + delta + ranges.length) % ranges.length;
-                paint();
-                reveal();
-              }
-              report();
-            },
-          };
-        })();
-        // Commands from the panel, relayed by the shell (the only parent this page has).
-        window.addEventListener("message", (event) => {
-          if (event.source !== parent) return;
-          const data = event.data;
-          if (!data || data.type !== "unsloth:browser-command") return;
-          if (data.command === "annotate") data.on === true ? annotation.start(data.color) : annotation.stop();
-          else if (data.command === "annotateForget") annotation.forget(Number(data.id));
-          else if (data.command === "annotateNumbers") annotation.number(data.numbers);
-          else if (data.command === "zoom") applyZoom(data.value);
-          else if (data.command === "mute") setMuted(data.on === true);
-          else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
-          else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
-          else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
-        });
-        // The panel may have asked for annotate before this page could hear it.
-        post({ type: "annotate", event: "ready" });
-      };
-      const escapeAttr = (value) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-      const inject = (html, tags) => {
-        const at = (match) => match.index + match[0].length;
-        const head = /<head\b[^<>]*>/i.exec(html);
-        if (head) return html.slice(0, at(head)) + tags + html.slice(at(head));
-        const root = /<html\b[^<>]*>/i.exec(html) || /^\s*<!doctype[^>]*>/i.exec(html);
-        if (root) return html.slice(0, at(root)) + "<head>" + tags + "</head>" + html.slice(at(root));
-        return "<head>" + tags + "</head>" + html;
-      };
-      let page = null;
-      window.addEventListener("message", (event) => {
-        // Relay the page's messages; the panel only trusts this window.
-        if (page && event.source === page.contentWindow) {
-          if (event.data && event.data.source === "unsloth-browser") parent.postMessage(event.data, "*");
-          return;
-        }
-        if (event.source !== parent) return;
-        const data = event.data;
-        if (page) {
-          if (data && data.type === "unsloth:browser-command") page.contentWindow.postMessage(data, "*");
-          return;
-        }
-        // Only the parent may drive the shell, once.
-        if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
-        const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
-        const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
-        page = document.createElement("iframe");
-        page.setAttribute("sandbox", "allow-scripts allow-forms");
-        page.srcdoc = inject(data.html, base + script);
-        document.body.appendChild(page);
-        // A script navigation the page's hooks missed (no Navigation API) hits the lock below; the
-        // report only names the origin, so the panel can say what happened but not follow it.
-        let blocked = false;
-        document.addEventListener("securitypolicyviolation", (event) => {
-          if (blocked || event.effectiveDirective !== "frame-src") return;
-          blocked = true;
-          parent.postMessage({ source: "unsloth-browser", type: "scriptNavigation" }, "*");
-        });
-        const lock = document.createElement("meta");
-        lock.httpEquiv = "Content-Security-Policy";
-        lock.content = "frame-src 'none'";
-        document.head.appendChild(lock);
-      });
-    </script>
-  </body>
-</html>"""
+"""
 
 
 # Print shell: the panel posts it a copy of the page (`snapshot` above), which it shows without
@@ -1115,6 +1134,16 @@ def _prepare_page(page: str, url: str) -> tuple[str, str, Optional[dict]]:
     return _META_TAG_RE.sub(strip_meta, page), base_url, refresh
 
 
+# unsloth.ai's Cloudflare skips its bot challenge for requests carrying this. Only its own hosts get
+# it: the challenge can't be solved from the proxied frame, and other sites have no use for it.
+_STUDIO_HEADERS = {"X-Unsloth-Studio": "1"}
+
+
+def _studio_headers(host: str) -> dict:
+    host = host.lower().rstrip(".")
+    return _STUDIO_HEADERS if host == "unsloth.ai" or host.endswith(".unsloth.ai") else {}
+
+
 def _fetch(
     request: BrowserFetchRequest, cancel_event: threading.Event
 ) -> tuple[Optional[str], bytes, str, dict]:
@@ -1132,6 +1161,7 @@ def _fetch(
         post_data = (request.body or "").encode() if request.method == "POST" else None,
         meta_out = meta,
         cancel_event = cancel_event,
+        host_headers = _studio_headers,
     )
     return error, body if isinstance(body, bytes) else b"", content_type, meta
 
@@ -1252,6 +1282,20 @@ async def browser_frame():
         headers = {
             "Cache-Control": "no-store",
             "Content-Security-Policy": _FRAME_CSP,
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/annotate.js", include_in_schema = False)
+async def browser_annotate_script():
+    """The page shell's annotate code, sent into a page when annotate mode turns on; static like ``/frame``."""
+    return Response(
+        content = _ANNOTATE_JS,
+        media_type = "text/javascript; charset=utf-8",
+        headers = {
+            "Cache-Control": "no-cache",
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
         },

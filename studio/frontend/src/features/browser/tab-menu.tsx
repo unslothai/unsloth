@@ -22,6 +22,7 @@ import { useChatRuntimeStore } from "@/features/chat";
 import { resetToNewChat } from "@/features/library";
 import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { ForkIcon } from "@/lib/fork-icon";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import {
@@ -41,7 +42,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { GitBranchIcon } from "lucide-react";
 import { type ComponentType, Fragment, type ReactNode } from "react";
 import { hostOf } from "./address";
 import { callNative, useNativeBrowser } from "./native-support";
@@ -235,10 +235,10 @@ export function TabMenuItems({
       url ? (
         <P.Sub key="fork">
           <P.SubTrigger>
-            <GitBranchIcon strokeWidth={1.75} className={ICON} />
+            <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />
             <span>{t("browser.tabMenu.fork")}</span>
           </P.SubTrigger>
-          <P.SubContent className="unsloth-plus-menu sidebar-row-menu w-48">
+          <P.SubContent className="browser-menu unsloth-plus-menu sidebar-row-menu w-48">
             <Row P={P} icon={BubbleChatAddIcon} onSelect={() => forkToChat(navigate, { tab, url }, false)}>
               {t("browser.tabMenu.forkNewChat")}
             </Row>

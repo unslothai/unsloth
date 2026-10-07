@@ -94,11 +94,11 @@ def _evict_video() -> None:
 
 
 def _evict_decisions() -> None:
-    from core.systemone import clef_runtime
+    from core.systemone import owned_runtime
     from core.systemone.laya_runtime import Unavailable
     try:
-        clef_runtime.ensure_can_unload()
-        clef_runtime.unload()
+        owned_runtime.ensure_can_unload()
+        owned_runtime.unload()
     except Unavailable:
         # A typed decision in flight, including another account's, must not be killed.
         raise GpuOwnerBusyError(DECISIONS) from None

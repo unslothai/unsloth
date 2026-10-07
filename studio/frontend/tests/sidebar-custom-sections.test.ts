@@ -703,12 +703,12 @@ test("the sidebar and account menus share one flat surface and type; other menus
   );
   const tagged = ":is\\(\\.unsloth-plus-menu, \\.app-user-menu\\)\\.sidebar-menu\\[data-slot\\]";
   // No shadow in dark mode, over the shared menu shadow's !important. Light mode keeps it.
-  assert.match(css, new RegExp(`\\.dark ${tagged} \\{\\n\\s*box-shadow: none !important;`));
+  assert.match(css, new RegExp(`\\.dark ${tagged},\\n\\s*\\.dark \\.app-user-menu\\.menu-soft-surface-up \\{\\n\\s*box-shadow: none !important;`));
   assert.doesNotMatch(css, new RegExp(`\\n\\t${tagged} \\{\\n\\s*box-shadow: none`));
   assert.match(
     css,
     new RegExp(
-      `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 7%\\);\\n\\s*color: #fff;`,
+      `\\.dark ${tagged} \\{\\n\\s*background-color: color-mix\\(in srgb, var\\(--card\\), white 6\\.5%\\);\\n\\s*color: #fff;`,
     ),
   );
   // The system face at 14px, scaled, on sidebar rows and account rows alike.

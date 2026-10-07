@@ -95,15 +95,6 @@ tests/test_systemone.py`, which compares the fast path against `laya.Agent.predi
 
 ## Cloudflare Clef (Apache-2.0)
 
-`clef/joint_schema_model.py` originates from the identical source in both audited releases:
-
-- [Clef Flash](https://huggingface.co/Cloudflare/clef-flash/tree/17f0b0ad64efb65d273590632833508766b2aae6)
-- [Clef](https://huggingface.co/Cloudflare/clef/tree/2f3de3dd85f379784083b0814d997ab627200f0c)
-
-`clef_manifest.json` pins the source and `clef/LICENSE`, copied from Flash's
-Apache-2.0 release (neither release ships a NOTICE). `core/systemone/clef_worker.py`
-checks the source hash before loading it by file path in the owned child process.
-The sole local patch names UTF-8 on the joint-head config read; the manifest records
-both upstream and patched hashes. No snapshot Python or `trust_remote_code` is executed.
-Update the manifest and both model revision records
-together, then repeat the source audit and real joint-head text/image validation.
+Unsloth's Decision API reuses the hash-pinned reference source and license in `unsloth/_vendor/clef`.
+`core/systemone/clef_worker.py` loads it by file path in the owned child process,
+with UTF-8 config reads; no snapshot Python or `trust_remote_code` is executed.

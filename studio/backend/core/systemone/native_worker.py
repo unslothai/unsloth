@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from .clef_runtime import (
+from .owned_runtime import (
     CANCEL_GRACE_S,
     LOAD_WAIT_S,
     RUN_WAIT_S,
@@ -75,7 +75,6 @@ def _resolve_binary() -> str | None:
 
 
 def native_availability() -> dict[str, bool | str | None]:
-    """Native selection status, including a stable reason for PyTorch fallback."""
     binary = _resolve_binary()
     if binary is None:
         return {"available": False, "reason": "llama-server is not installed.", "binary": None}
@@ -90,7 +89,7 @@ def native_availability() -> dict[str, bool | str | None]:
 
 def _request_gap(questions: object, images: object) -> str | None:
     if images:
-        return "Native llama.cpp Clef does not support images; use the PyTorch runtime."
+        return "Unsloth's native Clef bundle does not support images without a projector; use the PyTorch runtime."
     if not isinstance(questions, Mapping):
         return "questions must be an object"
     for question in questions.values():
@@ -108,7 +107,6 @@ def _request_gap(questions: object, images: object) -> str | None:
 
 
 def supports_request(questions: object, images: object) -> bool:
-    """Native-only schema capability; false lets the parent select PyTorch first."""
     return _request_gap(questions, images) is None
 
 
@@ -336,7 +334,6 @@ class NativeWorker:
         return self._process is not None and self._process.poll() is None
 
     def close(self, graceful_timeout: float = 0.0) -> bool:
-        """Terminate only this adapter's owned server and forget it after reaping."""
         with self._lock:
             self._closed = True
             self._cancelled.set()

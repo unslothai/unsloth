@@ -75,11 +75,7 @@ def _image(data_url: Any) -> bytes:
 def prepare(
     state: Any, images: list[str] | None, *, accepts_images: bool
 ) -> tuple[Any, list[bytes]]:
-    """Extract chat image_url parts without silently dropping any media.
-
-    Structured JSON remains ordinary state. Only message content parts carry a media
-    contract; a JSON object describing an audio file is not itself an audio upload.
-    """
+    """Extract message image parts; ordinary structured JSON is not a media upload."""
     urls: list[Any] = list(images or [])
     cleaned = state
     if isinstance(state, list):

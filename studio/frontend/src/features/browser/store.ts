@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type DocumentAnnotations, useChatArtifactsStore } from "@/features/chat";
+import type { DocumentAnnotations } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
-import { PageCache } from "./page-cache";
+import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
+import { defaultZoom } from "./prefs-store";
 
 export type BrowserEntry =
   | { kind: "newtab" }
@@ -18,6 +19,8 @@ export type BrowserEntry =
       contentType: string;
       /** Show as text even if named .html (text extracted from a document). */
       plainText?: boolean;
+      /** The tab's openKey while this entry shows, so Back restores it. */
+      openKey?: string;
     };
 
 export type InternalPage = "history" | "downloads" | "bookmarks";
@@ -30,10 +33,9 @@ export type ChatDock = "minimized" | "composer" | "expanded";
 
 export type RequestEdits = (prompt: string) => void;
 
-/** Resolves false when the composer refused them (it says why), so the marks stay. */
-export type SendAnnotations = (annotations: DocumentAnnotations) => Promise<boolean>;
-
-export type OpenInCanvas = (file: { title: string; code: string }) => void;
+/** Resolves false when the composer refused them (it says why), so the marks stay.
+ *  `files` (an annotation screenshot) go in the same message. */
+export type SendAnnotations = (annotations: DocumentAnnotations, files?: File[]) => Promise<boolean>;
 
 /** Stages a file in the chat's composer; false when it refused it (it says why). */
 export type AttachToChat = (file: File) => Promise<boolean>;
@@ -110,7 +112,9 @@ export function setNativeWebHistory(native: boolean): void {
 const MAX_HISTORY = 50;
 
 // Loaded pages by history entry, so back and forward skip the fetch. Reload drops only its own entry.
-const pageCache = new PageCache<BrowserEntry>();
+// Fewer on a low-memory machine.
+const cacheLimit = cacheLimits(reportedDeviceMemory());
+const pageCache = new PageCache<BrowserEntry>(cacheLimit.maxPages, cacheLimit.maxTotalBytes);
 
 const entryIds = new WeakMap<BrowserEntry, number>();
 let nextEntryId = 0;
@@ -155,7 +159,8 @@ function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserT
     loading: false,
     reloadKey: 0,
     openKey,
-    zoom: 1,
+    // Files open fitted; the default zoom is for web pages.
+    zoom: entry.kind === "file" ? 1 : defaultZoom(),
     nativeHistory: null,
     nativeError: null,
     customTitle: null,
@@ -172,6 +177,8 @@ function copyTab(tab: BrowserTab): BrowserTab {
     ...createTab({ kind: "newtab" }),
     history: tab.history.map((entry) => {
       const copy = { ...entry };
+      // The original keeps its key; a copy going Back must not claim it.
+      if (copy.kind === "file") delete copy.openKey;
       // A form result is not sent again unasked just because the tab was copied.
       if (entry.kind === "web" && entry.method === "POST") sentPosts.add(copy);
       return copy;
@@ -245,7 +252,6 @@ type BrowserState = {
   /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
   requestEdits: RequestEdits | null;
   sendAnnotations: SendAnnotations | null;
-  openInCanvas: OpenInCanvas | null;
   attachToChat: AttachToChat | null;
   annotateTabId: string | null;
   setAnnotating: (tabId: string | null) => void;
@@ -308,7 +314,26 @@ type BrowserState = {
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
   tabs.map((tab) => (tab.id === tabId ? update(tab) : tab));
 
+/** Zoom on entering `entry`, by opening it or going back or forward. A web page reached from a new
+ *  tab, a history page or an unzoomed file starts at the default; a file reached from an unzoomed
+ *  web page shows at 100%. A zoom the reader chose carries over, and Back/Forward (`traversal`)
+ *  skip the new tab rule, so a page keeps the zoom its new tab entry carried. */
+function zoomFor(tab: BrowserTab, entry: BrowserEntry, traversal = false): number {
+  const from = tab.history[tab.index];
+  if (!from) return tab.zoom;
+  const preferred = defaultZoom();
+  const at = (zoom: number) => Math.abs(tab.zoom - zoom) < 0.001;
+  if (entry.kind === "web") {
+    const unzoomedFile = from.kind === "file" && at(1);
+    const blank = !traversal && (from.kind === "newtab" || from.kind === "internal");
+    return blank || unzoomedFile ? preferred : tab.zoom;
+  }
+  if (entry.kind === "file" && from.kind === "web" && at(preferred)) return 1;
+  return tab.zoom;
+}
+
 function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): BrowserTab {
+  const zoom = zoomFor(tab, entry);
   const history = tab.history.slice(0, replace ? tab.index : tab.index + 1);
   history.push(entry);
   if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
@@ -323,6 +348,7 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     loading: entry.kind === "web",
     openKey: null,
     nativeError: null,
+    zoom,
   };
 }
 
@@ -330,23 +356,20 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
   const entry = tab.history[index] ?? { kind: "newtab" };
   return {
     ...tab,
+    zoom: zoomFor(tab, entry, true),
     index,
     title: entry.kind === "file" ? entry.name : "",
     favicon: null,
     documentType: null,
     displayUrl: null,
     loading: entry.kind === "web",
+    openKey: entry.kind === "file" ? (entry.openKey ?? null) : null,
     nativeError: null,
   };
 }
 
-function showPanel(): void {
-  useChatArtifactsStore.getState().closeArtifactSurface();
-}
-
 export const useBrowserStore = create<BrowserState>((set, get) => {
   const openTab = (tab: BrowserTab, background = false, after?: string) => {
-    showPanel();
     set((state) => {
       const at = after ? state.tabs.findIndex((other) => other.id === after) : -1;
       const tabs = [...state.tabs];
@@ -362,7 +385,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
   const focusExisting = (openKey: string): boolean => {
     const existing = get().tabs.find((tab) => tab.openKey === openKey);
     if (!existing) return false;
-    showPanel();
     set((state) => ({ open: true, activeTabId: existing.id, openSequence: state.openSequence + 1 }));
     return true;
   };
@@ -380,7 +402,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     chatSide: "left",
     requestEdits: null,
     sendAnnotations: null,
-    openInCanvas: null,
     attachToChat: null,
     annotateTabId: null,
     setAnnotating: (annotateTabId) => set({ annotateTabId }),
@@ -397,7 +418,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         get().newTab();
         return;
       }
-      showPanel();
       set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
     },
     closePanel: () => set({ open: false, fullView: false, annotateTabId: null }),
@@ -417,7 +437,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     openPinned: (pinnedId, url, title) => {
       const shown = get().tabs.find((tab) => tab.pinnedId === pinnedId);
-      showPanel();
       if (shown) {
         set((state) => ({ open: true, activeTabId: shown.id, openSequence: state.openSequence + 1 }));
         return;
@@ -455,7 +474,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const { activeTabId } = get();
       if (options?.newTab === false && activeTabId) {
         get().navigate(activeTabId, { url: target });
-        showPanel();
         set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
         return;
       }
@@ -472,6 +490,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         name: name || "Untitled",
         contentType: contentType || blob.type,
         plainText,
+        ...(openKey ? { openKey } : {}),
       };
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {

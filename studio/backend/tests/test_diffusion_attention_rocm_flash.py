@@ -240,3 +240,149 @@ def test_cudnn_head_dim_probe_still_answers_fp32_at_bf16(monkeypatch):
     )
     assert att._run_cudnn_head_dim_probe("cpu", torch.float32, 128) is True
     assert seen == [torch.bfloat16]
+
+
+# ``auto`` -> flash for FLUX.2-klein on ROCm gfx11 (measured on gfx1151); every other family and arch unchanged.
+
+
+def _klein():
+    return types.SimpleNamespace(name = "flux.2-klein")
+
+
+def _arch(monkeypatch, arch = "gfx1151"):
+    monkeypatch.setattr(att, "_rocm_gfx_arch", lambda target: arch)
+
+
+def test_rocm_auto_flash_for_klein_on_gfx11(monkeypatch):
+    calls = _rocm(monkeypatch)
+    _arch(monkeypatch)
+    assert (
+        select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) == "flash"
+    )
+    assert (
+        select_attention_backend(_target(), None, speed_active = True, family = "flux.2-klein")
+        == "flash"
+    )
+    # unset speed (ROCm resolves it to `off`): the default path, so flash too
+    assert (
+        select_attention_backend(
+            _target(), "auto", speed_active = False, family = _klein(), speed_unset = True
+        )
+        == "flash"
+    )
+    # an explicit `off` stays native (the bit-identical reference path)
+    assert select_attention_backend(_target(), "auto", speed_active = False, family = _klein()) is None
+    assert calls == [("cuda:0", "torch.bfloat16")]
+
+
+@pytest.mark.parametrize("family", ["flux.1", "flux.2", "z-image", "qwen-image", "sdxl", None])
+def test_rocm_auto_stays_native_for_unmeasured_families(monkeypatch, family):
+    calls = _rocm(monkeypatch)
+    _arch(monkeypatch)
+    fam = None if family is None else types.SimpleNamespace(name = family)
+    assert select_attention_backend(_target(), "auto", speed_active = True, family = fam) is None
+    assert (
+        select_attention_backend(
+            _target(), "auto", speed_active = False, family = fam, speed_unset = True
+        )
+        is None
+    )
+    assert calls == []
+
+
+def test_rocm_gfx_arch_reads_the_selected_card(monkeypatch):
+    import torch
+
+    asked = []
+
+    def props(index):
+        asked.append(index)
+        return types.SimpleNamespace(gcnArchName = "gfx1100" if index == 1 else "gfx90a")
+
+    monkeypatch.setattr(torch.cuda, "get_device_properties", props)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    target = types.SimpleNamespace(device = "cuda", torch_device = "cuda:1", dtype = "torch.bfloat16")
+    assert att._rocm_gfx_arch(target) == "gfx1100"
+    assert asked == [1]
+
+
+@pytest.mark.parametrize("arch", ["gfx942", "gfx90a", "gfx1201", "gfx1030", ""])
+def test_rocm_auto_klein_flash_gfx11_only(monkeypatch, arch):
+    calls = _rocm(monkeypatch)
+    _arch(monkeypatch, arch)
+    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
+    assert calls == []
+
+
+def test_rocm_auto_klein_without_flash_attn_is_silent(monkeypatch, caplog):
+    calls = _rocm(monkeypatch, flash_attn = False)
+    _arch(monkeypatch)
+    logged = []
+    monkeypatch.setattr(
+        att, "_module_logger", lambda: types.SimpleNamespace(warning = lambda *a: logged.append(a))
+    )
+    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
+    assert calls == [] and logged == []
+
+
+def test_rocm_auto_klein_failed_probe_stays_native(monkeypatch):
+    _rocm(monkeypatch, probe = False)
+    _arch(monkeypatch)
+    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
+
+
+def test_rocm_auto_klein_explicit_native_wins(monkeypatch):
+    calls = _rocm(monkeypatch)
+    _arch(monkeypatch)
+    for alias in ("native", "sdpa"):
+        assert (
+            select_attention_backend(_target(), alias, speed_active = True, family = _klein()) is None
+        )
+    assert calls == []
+
+
+def test_nvidia_auto_klein_unchanged(monkeypatch):
+    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
+    monkeypatch.setattr(att, "_cudnn_attention_supported", lambda: True)
+    assert (
+        select_attention_backend(_target(), "auto", speed_active = True, family = _klein())
+        == "_native_cudnn"
+    )
+    for unset in (False, True):
+        assert (
+            select_attention_backend(
+                _target(), "auto", speed_active = False, family = _klein(), speed_unset = unset
+            )
+            is None
+        )
+
+
+def test_image_load_passes_the_family():
+    import ast
+    import pathlib
+
+    src = pathlib.Path(att.__file__).with_name("diffusion.py").read_text(encoding = "utf-8")
+    calls = [
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "select_attention_backend"
+    ]
+    with_family = [c for c in calls if any(k.arg == "family" for k in c.keywords)]
+    # the load-time pick and the eager re-pick; the pre-lock preinstall needs no family (no ROCm pip install)
+    assert len(with_family) == 2
+    assert sum(any(k.arg == "speed_unset" for k in c.keywords) for c in with_family) == 1
+
+
+def test_auto_attention_reason_names_the_engaged_kernel():
+    assert att.auto_attention_reason(None) == "diffusers default"
+    assert att.auto_attention_reason("_native_cudnn") == "cuDNN fused attention upgrade"
+    assert "cuDNN" not in att.auto_attention_reason("flash")
+    assert "ROCm flash" in att.auto_attention_reason("flash")
+
+
+def test_status_reason_is_derived_from_the_engaged_backend():
+    src = open(
+        att.__file__.replace("diffusion_attention.py", "diffusion.py"), encoding = "utf-8"
+    ).read()
+    assert src.count("auto_attention_reason(attention_engaged)") == 2
+    assert '"cuDNN fused attention upgrade"' not in src

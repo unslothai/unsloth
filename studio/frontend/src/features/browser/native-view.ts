@@ -1,30 +1,32 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Desktop app web pages: a native view per tab (src-tauri/src/browser_webview.rs) over its placeholder,
- * so bot checks work. It sits above the DOM, so it hides while a menu or dialog covers it.
- */
+/** desktop web pages use per-tab native views for bot checks; native views cover the DOM, so overlays use snapshots. */
 
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
+import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
-import { type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
+import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
 export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
 
 const EVENT = "unsloth-browser";
 const MAX_VIEWS = 4;
 const DOCK_GAP = 8;
-// Catches moves that resize nothing.
+// keep the page visible during capture, but hide it without a snapshot after this timeout.
+const SNAPSHOT_WAIT_MS = 250;
+// Sonner toast width plus edge offsets, reserving a column beside the page.
+const TOAST_COLUMN = 380;
+// catch layout shifts that do not trigger resize observers.
 const RECHECK_MS = 300;
-// Pages can open tabs without a click here: a few a minute across all pages, then the user decides.
+// cap clickless tab creation across all pages, then require user confirmation.
 const NEW_TABS_PER_WINDOW = 3;
 const NEW_TAB_WINDOW_MS = 60_000;
 
@@ -44,6 +46,7 @@ type NativeEvent =
       size: number | null;
       done: boolean;
       success: boolean;
+      downloadId: string | null;
     };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
@@ -168,7 +171,13 @@ function onNativeEvent(event: NativeEvent): void {
       if (!event.done) {
         toast(t("browser.native.downloading", { name: event.name }));
       } else if (event.success) {
-        history.recordDownload({ name: event.name, url: event.url, size: event.size ?? 0, contentType: "" });
+        history.recordDownload({
+          name: event.name,
+          url: event.url,
+          size: event.size ?? 0,
+          contentType: "",
+          nativeId: event.downloadId ?? undefined,
+        });
         toast.success(t("browser.native.downloaded", { name: event.name }));
       } else {
         toast.error(t("browser.native.downloadFailed", { name: event.name }));
@@ -237,10 +246,9 @@ export async function nativeFind(tabId: string, query: string, backwards: boolea
   return call<boolean>("browser_view_find", { tabId, query, backwards }).catch(() => false);
 }
 
-// Studio UI that covers the panel. Not tooltips, or every hover would blank the page; toasts only
-// when they carry an action (a mailto: or popup prompt), which would be unclickable under the page.
+// exclude upward-opening tooltips to avoid hiding the native page on every hover; overlapping toasts still cover it.
 const OVERLAY_SELECTOR =
-  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast]:has([data-action])';
+  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast]';
 
 function intersects(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -274,19 +282,36 @@ function visibleRect(element: HTMLElement): DOMRect | null {
   return new DOMRect(rect.left, rect.top, rect.width, bottom - rect.top);
 }
 
-type Desired = { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds } | null;
+type Desired =
+  | { tabId: string; url: string; entry: number; zoom: number; bounds: Bounds }
+  | { tabId: string; covered: true }
+  | null;
+
+function placeholder(tabId: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(`[data-native-page="${CSS.escape(tabId)}"]`);
+}
+
+let toastInset: string | null = null;
+
+// native views cover DOM toasts, so reserve a left column when the page reaches the right edge or Run settings.
+function insetToasts(rect: DOMRect | null): void {
+  const style = document.documentElement.style;
+  // read the inline value set by watchChatSettingsInset; it is absent when the panel is closed or the row is narrow.
+  const settings = Number.parseFloat(style.getPropertyValue(CHAT_SETTINGS_INSET_VAR)) || 0;
+  const room = rect && rect.right >= window.innerWidth - settings - 2 && rect.left >= TOAST_COLUMN;
+  const next = room ? `${Math.round(window.innerWidth - rect.left)}px` : null;
+  if (next === toastInset) return;
+  toastInset = next;
+  if (next) style.setProperty(BROWSER_PAGE_INSET_VAR, next);
+  else style.removeProperty(BROWSER_PAGE_INSET_VAR);
+}
 
 function desiredView(): Desired {
-  const state = useBrowserStore.getState();
-  if (!state.open) return null;
-  const tab = state.tabs.find((candidate) => candidate.id === state.activeTabId);
-  if (!tab || tab.nativeError) return null;
-  const entry = currentEntry(tab);
-  if (entry.kind !== "web") return null;
-  const element = document.querySelector<HTMLElement>(`[data-native-page="${CSS.escape(tab.id)}"]`);
-  if (!element || element.offsetParent === null) return null;
-  const rect = visibleRect(element);
-  if (!rect || covered(rect)) return null;
+  const page = pageRect();
+  insetToasts(page?.rect ?? null);
+  if (!page) return null;
+  const { tab, entry, rect } = page;
+  if (covered(rect)) return { tabId: tab.id, covered: true };
   return {
     tabId: tab.id,
     url: entry.url,
@@ -300,6 +325,19 @@ function desiredView(): Desired {
       viewportWidth: window.innerWidth,
     },
   };
+}
+
+function pageRect(): { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "web" }>; rect: DOMRect } | null {
+  const state = useBrowserStore.getState();
+  if (!state.open) return null;
+  const tab = state.tabs.find((candidate) => candidate.id === state.activeTabId);
+  if (!tab || tab.nativeError) return null;
+  const entry = currentEntry(tab);
+  if (entry.kind !== "web") return null;
+  const element = placeholder(tab.id);
+  if (!element || element.offsetParent === null) return null;
+  const rect = visibleRect(element);
+  return rect ? { tab, entry, rect } : null;
 }
 
 function pruneViews(shown: string | null): void {
@@ -338,8 +376,45 @@ export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<bo
   });
 }
 
+// keep the last frame on the placeholder so overlays do not leave the panel blank.
+let snapshot: { tabId: string; element: HTMLElement; url: string } | null = null;
+let shownBounds: Bounds | null = null;
+
+function clearSnapshot(): void {
+  if (!snapshot) return;
+  const { style } = snapshot.element;
+  for (const property of ["background-image", "background-position", "background-size", "background-repeat"]) {
+    style.removeProperty(property);
+  }
+  URL.revokeObjectURL(snapshot.url);
+  snapshot = null;
+}
+
+async function paintSnapshot(tabId: string): Promise<void> {
+  const bounds = shownBounds;
+  const element = placeholder(tabId);
+  if (shownView !== tabId || !bounds || !element) return;
+  const started = generation;
+  const png = await Promise.race([
+    call<ArrayBuffer>("browser_capture", { tabId }).catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), SNAPSHOT_WAIT_MS)),
+  ]);
+  if (!png?.byteLength || !element.isConnected || started !== generation) return;
+  const url = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  // align snapshots to the visible native bounds because the chat dock can shorten the view.
+  const box = element.getBoundingClientRect();
+  element.style.backgroundImage = `url(${url})`;
+  element.style.backgroundPosition = `${bounds.x - box.left}px ${bounds.y - box.top}px`;
+  element.style.backgroundSize = `${bounds.width}px ${bounds.height}px`;
+  element.style.backgroundRepeat = "no-repeat";
+  snapshot = { tabId, element, url };
+}
+
 async function applyView(desired: Desired): Promise<void> {
-  if (!desired) {
+  if (!desired || "covered" in desired) {
+    // keep the snapshot if an overlay reopens during capture.
+    if (snapshot?.tabId !== desired?.tabId) clearSnapshot();
+    if (desired) await paintSnapshot(desired.tabId);
     setShownView(null);
     await call("browser_view_show", { tabId: null });
     return;
@@ -357,8 +432,10 @@ async function applyView(desired: Desired): Promise<void> {
   try {
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
+    clearSnapshot();
+    shownBounds = bounds;
     setShownView(tabId);
-    // A new address for an existing view. Recorded once it went through, so Retry tries again.
+    // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
       await call("browser_view_navigate", { tabId, url });
       if (stale()) return;
@@ -428,9 +505,7 @@ export function startNativeViews(): () => void {
     frame = 0;
     const desired = desiredView();
     pruneViews(desired?.tabId ?? null);
-    const element = desired
-      ? document.querySelector<HTMLElement>(`[data-native-page="${CSS.escape(desired.tabId)}"]`)
-      : null;
+    const element = desired ? placeholder(desired.tabId) : null;
     if (element !== resized) {
       if (resized) resizeObserver.unobserve(resized);
       if (element) resizeObserver.observe(element);
@@ -459,10 +534,12 @@ export function startNativeViews(): () => void {
     resizeObserver.disconnect();
     window.removeEventListener("resize", schedule);
     window.clearInterval(interval);
-    // Closed, not just hidden: a hidden page would keep running scripts and playing media.
+    // close pages because hidden native views keep scripts and media running.
     generation += 1;
     pending = null;
     setShownView(null);
+    clearSnapshot();
+    insetToasts(null);
     for (const tabId of [...views.keys()]) closeView(tabId);
   };
 }

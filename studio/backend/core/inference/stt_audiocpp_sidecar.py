@@ -181,13 +181,20 @@ def resolve_audio_cpp_stt_model(
     try:
         require_runnable(found, "asr")
     except AudioCppModelError as exc:
+        # cached rows omit absent quants, so callers treat a selected missing quant as downloadable.
+        if not network and (variant or ref_variant):
+            row = resolve(base, None, hf_token, network = False)
+            if row is not None and row.task == "asr" and row.unsupported is None:
+                raise SttModelNotDownloadedError(
+                    f"STT model '{base}' ({variant or ref_variant}) is not downloaded. Download "
+                    "it in Settings, then Voice, before loading it."
+                ) from exc
         raise SttModelIdError(str(exc)) from exc
     return found
 
 
 def resolve_audio_cpp_stt_model_id(model: Optional[str]) -> str:
-    """The name dictation reports for ``model``: a legacy key stays that key (Settings compares
-    against it), anything else becomes its row id."""
+    """keeps legacy keys for Settings comparisons; all other names become row ids."""
     if model is None or not str(model).strip():
         return DEFAULT_AUDIO_CPP_STT_MODEL
     base, variant = split_variant_ref(str(model).strip())
@@ -727,6 +734,7 @@ class AudioCppSttSidecar:
         self,
         entry: AudioCppModel,
         on_phase: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
         from core.inference import audio_cpp_backend
 
@@ -739,7 +747,9 @@ class AudioCppSttSidecar:
         _notify(on_phase, "downloading_aligner")
         try:
             aligner = audio_cpp_backend._resolve_companion(entry, QWEN3_ALIGNER, network = True)
-            audio_cpp_backend.AudioCppBackend._download_missing(aligner, None)
+            audio_cpp_backend.AudioCppBackend._download_missing(aligner, None, cancel_event)
+        except AudioCppRequestCancelledError:
+            raise SttTranscriptionCancelledError("Transcription cancelled.") from None
         except Exception as exc:  # noqa: BLE001 - every failure reads the same to the user
             reason = sanitize_runtime_detail(str(exc)) or type(exc).__name__
             logger.warning("audio.cpp: timestamp aligner download failed: %s", reason)
@@ -808,7 +818,7 @@ class AudioCppSttSidecar:
             model_path = self._ensure_model_downloaded(entry)
             served = entry
             if aligned:
-                self._ensure_aligner_downloaded(entry, on_phase)
+                self._ensure_aligner_downloaded(entry, on_phase, request_cancel_event)
                 served = self._with_aligner(entry)
             cancel_event = (
                 request_cancel_event if request_cancel_event is not None else threading.Event()
@@ -887,11 +897,13 @@ class AudioCppSttSidecar:
         self,
         model: Optional[str],
         on_phase: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
-        """Runs before the load so a 1.1 GB download holds neither the load lock nor dictation."""
+        """Runs before the load so a 1.1 GB download holds neither the load lock nor dictation.
+        Takes the request's cancel event: this is the call that does the first download."""
         entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         if entry.family in _ALIGNED_FAMILIES:
-            self._ensure_aligner_downloaded(entry, on_phase)
+            self._ensure_aligner_downloaded(entry, on_phase, cancel_event)
 
     def transcribe_path(
         self,

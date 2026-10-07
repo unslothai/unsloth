@@ -4,7 +4,7 @@
 // Stays mounted across tab switches (__root.tsx), so `active` gates polling, popovers and the recorder.
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
-import { SparklesIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { LibraryPageLink } from "@/components/media-page-link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -33,6 +33,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import {
   type AudioGalleryClip,
+  audioInputAlive,
   fetchAudioBlob,
   uploadAudioInput,
 } from "./api";
@@ -54,13 +55,15 @@ import {
   isMusicGenerationModel,
 } from "./catalog";
 import type { ClipSendHandlers } from "./components/clip-card";
+import { sendClipToMusic } from "./components/music-send-to";
+import { SaveVoiceDialog } from "./components/save-voice-dialog";
 import { WorkflowTitleMenu } from "./components/workflow-title-menu";
 import { galleryCache, useAudioGallery, useWorkflowHistory } from "./hooks/use-audio-gallery";
 import { useAudioHandoff } from "./hooks/use-audio-handoff";
 import { useAudioModelSlot } from "./hooks/use-audio-model-slot";
 import { useCloneGeneration } from "./hooks/use-clone-generation";
 import { useConvertGeneration } from "./hooks/use-convert-generation";
-import { useEditGeneration } from "./hooks/use-edit-generation";
+import { adoptEditSource, useEditGeneration } from "./hooks/use-edit-generation";
 import { useSeparateGeneration } from "./hooks/use-separate-generation";
 import { useSpeechGeneration } from "./hooks/use-speech-generation";
 import { useSttSidecar } from "./hooks/use-stt-sidecar";
@@ -108,17 +111,25 @@ import {
   transcribeLanguagesFor,
 } from "./transcribe-languages";
 import { type AudioPickerRow, audioRowMatchesWorkflow } from "./picker-filter";
-import { useAudioCloneStore } from "./stores/audio-clone-store";
+import {
+  referenceTranscript,
+  useAudioCloneStore,
+} from "./stores/audio-clone-store";
 import { useAudioConvertStore } from "./stores/audio-convert-store";
 import { useAudioEditStore } from "./stores/audio-edit-store";
+import { useAudioSeparateStore } from "./stores/audio-separate-store";
+import { useAudioVoicesStore } from "./stores/audio-voices-store";
 import { useAudioWorkspaceStore } from "./stores/audio-workspace-store";
+import { clipSendTargets, transcriptSendTargets } from "./send-targets";
 import { AudioToolPanels } from "./tools/tool-panel-host";
+import type { TranscriptSource } from "./transcript-model";
 import {
   type AudioWorkflowId,
   audioWorkflowTab,
   clipWorkflow,
   loadedModelRunsWorkflow,
   slotForWorkflow,
+  workflowForLoadedModel,
 } from "./workflows";
 
 const SPEAKERS_MODEL_REPO = `${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`;
@@ -134,37 +145,56 @@ const HUB_TASKS_BY_MODE = {
   transcribe: ["automatic-speech-recognition"],
 } as const;
 
+let reuseSeq = 0;
+const EXPIRED_AT = new Date(0).toISOString();
+
 const RECOMMENDED_MUSIC_MODELS = ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"];
 
 function reuseConvertInputs(clip: AudioGalleryClip) {
   const store = useAudioConvertStore.getState();
   const sourceId = clip.source_clip_id ?? clip.source_input_id ?? null;
   const name = clip.source_name ?? "Recording";
-  if (sourceId) {
-    store.setSource({
-      kind: clip.source_clip_id ? "clip" : "input",
-      id: sourceId,
-      name,
-      durationS: null,
-    });
-  }
+  const kept = sourceId
+    ? {
+        kind: clip.source_clip_id ? ("clip" as const) : ("input" as const),
+        id: sourceId,
+        name,
+        durationS: null,
+      }
+    : null;
   // An upload expires within a day; the clip kept what it converted, so upload that copy again.
-  if (!clip.source_clip_id && clip.source_saved) {
+  // Empty until the live id lands (the old id let Generate race the upload); expired on failure.
+  reuseSeq += 1;
+  if (!clip.source_clip_id && clip.source_saved && sourceId) {
+    const seq = reuseSeq;
+    const untouched = () => seq === reuseSeq && useAudioConvertStore.getState().source === null;
+    store.setSource(null);
     void fetchAudioBlob(
       `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/source/file`,
     )
       .then((blob) => uploadAudioInput(blob, name))
-      .then((record) => {
-        if (useAudioConvertStore.getState().source?.id !== sourceId) return;
-        store.setSource({
-          kind: "input",
-          id: record.id,
-          name,
-          durationS: record.duration_s,
-          expiresAt: record.expires_at,
-        });
-      })
-      .catch(() => undefined);
+      .then(
+        (record) => {
+          if (!untouched()) return;
+          store.setSource({
+            kind: "input",
+            id: record.id,
+            name,
+            durationS: record.duration_s,
+            expiresAt: record.expires_at,
+          });
+        },
+        () => {
+          // The re-upload can fail for a transient reason: the kept id is expired only on a 404.
+          if (!untouched() || !kept) return;
+          void audioInputAlive(kept.id).then((alive) => {
+            if (untouched())
+              store.setSource(alive ? kept : { ...kept, expiresAt: EXPIRED_AT });
+          });
+        },
+      );
+  } else if (kept) {
+    store.setSource(kept);
   }
   const target = clip.voice_id
     ? { kind: "voice" as const, id: clip.voice_id }
@@ -173,7 +203,16 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
       : clip.target_input_id
         ? { kind: "input" as const, id: clip.target_input_id }
         : null;
-  if (target) {
+  if (target?.kind === "input") {
+    // No kept copy to re-upload: check it still exists, else it reads as ready until a 404.
+    const seq = reuseSeq;
+    const named = { ...target, name: clip.reference_name ?? "Target voice", durationS: null };
+    store.setTarget(null);
+    void audioInputAlive(target.id).then((alive) => {
+      if (seq !== reuseSeq || useAudioConvertStore.getState().target !== null) return;
+      store.setTarget(alive ? named : { ...named, expiresAt: EXPIRED_AT });
+    });
+  } else if (target) {
     store.setTarget({
       ...target,
       name: clip.reference_name ?? "Target voice",
@@ -284,6 +323,7 @@ export function AudioPage({
     selectedSttRepoRef,
     sttStatusRefreshGeneration,
     audioCppRuntime,
+    runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
     setLastSttRepo,
@@ -348,6 +388,7 @@ export function AudioPage({
     loadMore,
     selectClip,
     handleDeleteClip,
+    handleDeleteGroup,
     handleArchiveClip,
     handleTogglePin,
     historyReorder,
@@ -686,8 +727,16 @@ export function AudioPage({
   useEffect(() => {
     if (adoptedLoadedModel.current || status === null) return;
     adoptedLoadedModel.current = true;
-    if (modeRef.current === "speak" && ttsLoaded && musicGeneration) {
-      useAudioWorkspaceStore.getState().adoptWorkflow("music");
+    // A reload opens the loaded model's page (HTDemucs opens Separate); a link or tab pick still wins.
+    if (modeRef.current === "speak" && ttsLoaded) {
+      const workspace = useAudioWorkspaceStore.getState();
+      workspace.adoptWorkflow(
+        workflowForLoadedModel({
+          current: workspace.workflow,
+          audioWorkflows: status.audio_workflows,
+          music: musicGeneration,
+        }),
+      );
     }
   }, [status, ttsLoaded, musicGeneration]);
 
@@ -713,46 +762,112 @@ export function AudioPage({
     () => handleClearGallery(ttsWorkflow),
     [handleClearGallery, ttsWorkflow],
   );
+  // Switching pages mid-run would stop the run in progress; wait for it instead.
+  const runBusy = useCallback(() => {
+    if (busyRef.current === null) return false;
+    toast.info("Wait for the current audio task to finish, then send it.");
+    return true;
+  }, [busyRef]);
   const handleSendToConvert = useCallback(
-    (clip: AudioGalleryClip) => {
+    (clip: AudioGalleryClip, name = clip.prompt) => {
       if (!transitionWorkflow("convert")) return;
       useAudioConvertStore.getState().setSource({
         kind: "clip",
         id: clip.id,
-        name: clip.prompt,
+        name,
         durationS: clip.duration_s ?? null,
       });
     },
     [transitionWorkflow],
   );
   const sendHandlersFor = useCallback(
-    (clip: AudioGalleryClip): ClipSendHandlers => ({
-      clone: () => {
-        if (transitionWorkflow("clone"))
-          adoptReference(clipReference({ ...clip, workflow: clipWorkflow(clip) }));
-      },
-      convert: () => handleSendToConvert(clip),
-      transcribe: () => {
-        // Switching mid-run would stop the run in progress; wait for it instead.
-        if (busyRef.current !== null) {
-          toast.info("Wait for the current audio task to finish, then send the clip.");
-          return;
-        }
-        if (!transitionWorkflow("transcribe")) return;
-        // The clip goes in by id, as "From history" does; the run keeps the page's own settings.
-        useAudioTranscribeStore.setState({
-          source: {
+    (clip: AudioGalleryClip): ClipSendHandlers => {
+      const reference = () =>
+        clipReference({ ...clip, workflow: clipWorkflow(clip) });
+      const handlers: ClipSendHandlers = {
+        clone: () => {
+          if (transitionWorkflow("clone")) adoptReference(reference());
+        },
+        edit: () => {
+          if (transitionWorkflow("edit")) adoptEditSource(reference());
+        },
+        convert: () => handleSendToConvert(clip),
+        separate: () => {
+          if (!transitionWorkflow("separate")) return;
+          useAudioSeparateStore.getState().setSource({
             kind: "clip",
             id: clip.id,
             name: clip.prompt || "Generated clip",
             durationS: clip.duration_s,
-            transcript: clip.prompt || null,
-            language: null,
+          });
+        },
+        transcribe: () => {
+          if (!transitionWorkflow("transcribe")) return;
+          // The clip goes in by id, as "From history" does; the run keeps the page's own settings.
+          useAudioTranscribeStore.setState({
+            source: {
+              kind: "clip",
+              id: clip.id,
+              name: clip.prompt || "Generated clip",
+              durationS: clip.duration_s,
+              transcript: clip.prompt || null,
+              language: null,
+            },
+          });
+        },
+      };
+      return Object.fromEntries(
+        clipSendTargets(clip, ttsWorkflow).map((id) => [
+          id,
+          () => {
+            if (!runBusy()) handlers[id]?.();
           },
-        });
-      },
-    }),
-    [transitionWorkflow, busyRef, handleSendToConvert],
+        ]),
+      );
+    },
+    [transitionWorkflow, runBusy, handleSendToConvert, ttsWorkflow],
+  );
+  const sendTranscriptHandlersFor = useCallback(
+    (transcript: {
+      text: string;
+      source?: TranscriptSource | null;
+      duration: number | null;
+    }): ClipSendHandlers => {
+      const { text, source, duration } = transcript;
+      // Its transcript comes along, so Edit and Clone skip transcribing it again.
+      const selection = source
+        ? { ...source, durationS: duration, transcript: text, language: null }
+        : null;
+      const handlers: ClipSendHandlers = {
+        speak: () => {
+          if (transitionWorkflow("speak")) setPrompt(text);
+        },
+        edit: () => {
+          if (!(selection && transitionWorkflow("edit"))) return;
+          adoptEditSource(selection);
+          useAudioEditStore
+            .getState()
+            .setTranscript(text.trim(), selection.id);
+        },
+        clone: () => {
+          if (!(selection && transitionWorkflow("clone"))) return;
+          adoptReference(selection);
+          // Replaces typed text for an earlier reference; blank past 30 s (Clone sends only the start).
+          useAudioCloneStore
+            .getState()
+            .applyTranscript(selection, referenceTranscript(selection).trim());
+        },
+      };
+      return Object.fromEntries(
+        transcriptSendTargets({ text, source, duration }).map((id) => [
+          id,
+          () => {
+            if (!runBusy()) handlers[id]?.();
+          },
+        ]),
+      );
+    },
+    [transitionWorkflow, runBusy, setPrompt],
   );
   const handleUseTextAgain = useCallback(
     (clip: AudioGalleryClip) => {
@@ -765,8 +880,35 @@ export function AudioPage({
     },
     [transitionWorkflow, setPrompt],
   );
+  const [voiceClip, setVoiceClip] = useState<{
+    id: string;
+    name: string;
+    transcript: string;
+  } | null>(null);
+  const [savingVoice, setSavingVoice] = useState(false);
+  useEffect(() => {
+    if (!active) return;
+    return () => setSavingVoice(false);
+  }, [active]);
+  const handleSaveVoice = useCallback((clip: AudioGalleryClip) => {
+    setVoiceClip({
+      id: clip.id,
+      // A clip's text is no name; the voice it was made from is, when it has one.
+      name: (clip.reference_name ?? "").replace(/\.[a-z0-9]{2,4}$/i, ""),
+      transcript: referenceTranscript(
+        clipReference({ ...clip, workflow: clipWorkflow(clip) }),
+      ),
+    });
+    setSavingVoice(true);
+  }, []);
   const handleSendStem = useCallback(
     async (target: SendTarget, clip: AudioGalleryClip, name: string) => {
+      if (target.workflow === "voice") {
+        setVoiceClip({ id: clip.id, name, transcript: "" });
+        setSavingVoice(true);
+        return;
+      }
+      if (runBusy()) return;
       if (target.workflow === "clone") {
         if (!transitionWorkflow("clone")) return;
         // Adopted like any other clip, so the old reference's transcript does not stay attached.
@@ -778,12 +920,15 @@ export function AudioPage({
         });
         return;
       }
+      if (target.workflow === "convert") {
+        handleSendToConvert(clip, name);
+        return;
+      }
+      if (target.workflow === "music") {
+        sendClipToMusic(clip, "edit", name);
+        return;
+      }
       if (target.workflow === "transcribe") {
-        // As in sendHandlersFor: switching mid-run would stop the run in progress.
-        if (busyRef.current !== null) {
-          toast.info("Wait for the current audio task to finish, then send the stem.");
-          return;
-        }
         if (!transitionWorkflow("transcribe")) return;
         // A stem is a history clip, so it goes in by id like any other.
         useAudioTranscribeStore.setState({
@@ -798,7 +943,7 @@ export function AudioPage({
         });
       }
     },
-    [transitionWorkflow, busyRef],
+    [transitionWorkflow, runBusy, handleSendToConvert],
   );
 
   const pageModelLoaded =
@@ -1391,6 +1536,26 @@ export function AudioPage({
       <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
       {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
       {active && <GuidedTour {...tour.tourProps} />}
+      <SaveVoiceDialog
+        open={active && savingVoice}
+        onOpenChange={setSavingVoice}
+        mode="create"
+        initial={{
+          name: voiceClip?.name ?? "",
+          transcript: voiceClip?.transcript ?? "",
+          language: "",
+        }}
+        onSubmit={async (details) => {
+          if (!voiceClip) return;
+          const voice = await useAudioVoicesStore.getState().save({
+            source: { clip_id: voiceClip.id },
+            name: details.name,
+            transcript: details.transcript || null,
+            language: details.language || null,
+          });
+          toast.success(`Saved ${voice.name}. Pick it under Saved voice next time.`);
+        }}
+      />
       {/* Keep the tabs centered over the preview at every width. The model rail holds at its
           (draggable) width when space permits and shrinks only to preserve the controls. */}
       <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
@@ -1525,10 +1690,9 @@ export function AudioPage({
               settingsFadeClass,
             )}
           >
-            {/* One child, so the scroll fades see the rail grow (they watch only the first child): with
-                the heading first, opening Advanced left the bottom fade over the last controls. */}
+            {/* keep one child because scroll fades watch only the first child. */}
             <div className="flex flex-col gap-4">
-              {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
+              {/* match Images and Video headings to keep media panes level (#7986). */}
               <div className="mb-2 grid gap-1.5">
                 <WorkflowTitleMenu
                   workflow={pageWorkflow}
@@ -1540,6 +1704,31 @@ export function AudioPage({
                 <p className="text-xs leading-snug text-muted-foreground">
                   {capabilityLine}
                 </p>
+                {runtimeUpdate ? (
+                  <p
+                    role="status"
+                    className="mt-1 flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
+                  >
+                    <HugeiconsIcon
+                      icon={Alert02Icon}
+                      className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                    />
+                    <span>
+                      Your audio runtime is{" "}
+                      <span className="whitespace-nowrap">
+                        {runtimeUpdate.installed}
+                      </span>
+                      ; this Studio expects{" "}
+                      <span className="whitespace-nowrap">
+                        {runtimeUpdate.expected}
+                      </span>
+                      . Some models may not work until you update. Stop Studio,{" "}
+                      run{" "}
+                      <code className="font-mono">unsloth studio update</code>,
+                      then start Studio again.
+                    </span>
+                  </p>
+                ) : null}
               </div>
 
               {mode === "speak" ? (
@@ -1779,6 +1968,7 @@ export function AudioPage({
                 speakerNames={speakerNames}
                 renameSpeaker={renameSpeaker}
                 selectRecord={selectRecord}
+                sendHandlersFor={sendTranscriptHandlersFor}
               />
               <output aria-live="polite" aria-atomic="true" className="sr-only">
                 {transcribeAnnouncement}
@@ -1791,6 +1981,7 @@ export function AudioPage({
                   workflow: ttsWorkflow,
                   peaksById,
                   sendHandlersFor,
+                  onSaveVoice: handleSaveVoice,
                   pending:
                     busy === "generating" && generationPresentation
                       ? {
@@ -1845,6 +2036,7 @@ export function AudioPage({
                     onPickModel={pickRecommendedModel}
                     separate={separate}
                     onSendStem={handleSendStem}
+                    handleDeleteGroup={handleDeleteGroup}
                   />
                 ) : ttsWorkflow === "clone" ? (
                   <CloneOutput

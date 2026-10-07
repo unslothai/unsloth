@@ -32,7 +32,7 @@ import {
   scopedVariant,
   useDownloadManagerStore,
 } from "@/features/hub";
-import { type TranslationKey, translate, useT } from "@/i18n";
+import { translate, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { TaskDone01Icon } from "@hugeicons/core-free-icons";
@@ -51,17 +51,16 @@ import {
   updateSystemOneSettings,
   validateSystemOneSettings,
 } from "../api/systemone";
+import {
+  DECISION_MODEL_LABELS,
+  isClefDecisionModel,
+} from "../lib/decision-model-labels";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { SettingsRow } from "./settings-row";
 
 const DOWNLOAD_SCOPE = "systemone";
 const POLL_MS = 5000;
 const RECOMMENDED_MODEL = "laya-multilingual";
-const MODEL_LABELS: Record<string, TranslationKey> = {
-  "laya-multilingual": "settings.apiKeys.decisionApi.modelMultilingual",
-  "laya-english": "settings.apiKeys.decisionApi.modelEnglish",
-  "laya-typed-decisions": "settings.apiKeys.decisionApi.modelTypedDecisions",
-};
 const ENV_DISABLE = "UNSLOTH_SYSTEMONE_DISABLE";
 const ENV_MODEL = "UNSLOTH_SYSTEMONE_MODEL";
 const ENV_DEVICE = "UNSLOTH_SYSTEMONE_DEVICE";
@@ -178,11 +177,11 @@ export function DecisionApiSection(): ReactElement | null {
   }, [enabled, model, backend, downloadDone]);
 
   const modelLabel = (name: string) => {
-    const option = connections?.find((c) => c.name === name);
-    if (option) return `${option.provider} · ${option.model}`;
-    if (name === "clef-flash") return "Clef Flash · 9B";
-    if (name === "clef") return "Clef · 27B";
-    return MODEL_LABELS[name] ? t(MODEL_LABELS[name]) : name;
+    const connection = connections?.find((c) => c.name === name);
+    if (connection) return `${connection.provider} · ${connection.model}`;
+    const option = settings?.models.find((m) => m.name === name);
+    if (option?.kind === "fine_tune" && option.label) return option.label;
+    return DECISION_MODEL_LABELS[name] ? t(DECISION_MODEL_LABELS[name]) : name;
   };
 
   const resyncSettingsAfterError = async (message: string) => {
@@ -374,6 +373,7 @@ export function DecisionApiSection(): ReactElement | null {
   const isRemote = settings.model.startsWith("connection:");
   const remote = connections?.find((c) => c.name === settings.model);
   const knownModel = current !== undefined || isRemote;
+  const longLabel = isRemote || current?.kind === "fine_tune";
   const connectionGroups = [
     ...new Set(connections?.map((c) => c.providerId)),
   ].map((id) => connections?.filter((c) => c.providerId === id) ?? []);
@@ -415,14 +415,17 @@ export function DecisionApiSection(): ReactElement | null {
   } else if (!plan.cached && plan.error) {
     tone = "error";
     status = plan.error;
-  } else if (plan.cached) {
-    tone = "ready";
-    status = t("settings.apiKeys.decisionApi.downloaded");
-  } else {
+  } else if (!plan.cached) {
     status = t("settings.apiKeys.decisionApi.notDownloaded", {
       size: formatBytes(sizeBytes),
     });
     action = "download";
+  } else {
+    tone = "ready";
+    status =
+      current?.kind === "fine_tune"
+        ? t("settings.apiKeys.decisionApi.ready")
+        : t("settings.apiKeys.decisionApi.downloaded");
   }
 
   return (
@@ -522,11 +525,11 @@ export function DecisionApiSection(): ReactElement | null {
               >
                 <SelectTrigger
                   className={cn(
-                    isRemote ? "w-64" : "w-48",
+                    longLabel ? "w-64" : "w-48",
                     "max-[420px]:flex-1",
                   )}
                   aria-label={t("settings.apiKeys.decisionApi.model")}
-                  title={isRemote ? modelLabel(settings.model) : undefined}
+                  title={longLabel ? modelLabel(settings.model) : undefined}
                 >
                   <SelectValue className="min-w-0">
                     <span className="truncate">
@@ -540,12 +543,19 @@ export function DecisionApiSection(): ReactElement | null {
                       {t("settings.apiKeys.decisionApi.thisMachine")}
                     </SelectLabel>
                     {settings.models.map((option) => (
-                      <SelectItem key={option.name} value={option.name}>
+                      <SelectItem
+                        key={option.name}
+                        value={option.name}
+                        disabled={!option.available}
+                        title={option.unavailableReason ?? undefined}
+                      >
                         <span className="flex items-center gap-2">
                           {modelLabel(option.name)}
-                          <span className="text-ui-10 tabular-nums text-muted-foreground">
-                            {formatBytes(option.downloadBytes)}
-                          </span>
+                          {option.kind === "fine_tune" ? null : (
+                            <span className="text-ui-10 tabular-nums text-muted-foreground">
+                              {formatBytes(option.downloadBytes)}
+                            </span>
+                          )}
                           {option.name === RECOMMENDED_MODEL ? (
                             <span className="rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:text-emerald-400">
                               {t("settings.apiKeys.decisionApi.recommended")}
@@ -700,8 +710,8 @@ export function DecisionApiSection(): ReactElement | null {
             </AlertDialogMedia>
             <AlertDialogTitle>
               {t(
-                isClefModel(confirm?.model)
-                  ? "settings.apiKeys.decisionApi.downloadClefTitle"
+                isClefDecisionModel(confirm?.model ?? settings.model)
+                  ? "settings.apiKeys.decisionApi.downloadConfirmTitleModel"
                   : "settings.apiKeys.decisionApi.downloadConfirmTitle",
                 { model: modelLabel(confirm?.model ?? settings.model) },
               )}

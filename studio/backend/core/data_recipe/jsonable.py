@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -109,7 +110,13 @@ def to_jsonable(value: Any) -> Any:
         if isinstance(value, np.ndarray):
             return value.tolist()
         if isinstance(value, np.generic):
-            return value.item()
+            value = value.item()
+            if not isinstance(value, float):
+                return value
+
+    # pandas' missing number is NaN; Starlette refuses NaN/inf, so one blank cell 500'd the page.
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
 
     if isinstance(value, dict):
         return {str(k): to_jsonable(v) for k, v in value.items()}

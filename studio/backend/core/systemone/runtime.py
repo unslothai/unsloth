@@ -17,8 +17,8 @@ _fallback_reason = None
 
 
 def _clef():
-    from . import clef_runtime
-    return clef_runtime
+    from . import owned_runtime
+    return owned_runtime
 
 
 def select_checkpoint(
@@ -40,7 +40,7 @@ def select_checkpoint(
         for q in (questions or {}).values()
     )
     if images or schema_gap:
-        reason = "Native Clef currently supports text with nonempty instructions and multi-level scores only."
+        reason = "Unsloth's native Clef path supports text with nonempty instructions and multi-level scores only."
         if preference == "llama.cpp":
             raise Unavailable(400, "api_usage_error", reason + " Select Auto or PyTorch.")
     else:

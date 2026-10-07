@@ -3882,7 +3882,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/stt_mtmd_sidecar.py",
         "core/inference/stt_transformers_worker.py",
         "core/rag/embed_llama_server.py",
-        "core/systemone/clef_runtime.py",
+        "core/systemone/owned_runtime.py",
         "core/systemone/native_worker.py",
         "core/training/training.py",
     }

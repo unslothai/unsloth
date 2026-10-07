@@ -106,6 +106,28 @@ def _load_device() -> str:
     )
 
 
+# Matched as a substring of the lowercased model name. EmbeddingGemma's activations overflow float16 and every
+# vector comes back NaN; its model card says to use float32 or bfloat16.
+_FLOAT16_UNSAFE_MODELS = ("embeddinggemma",)
+
+
+def _load_dtype(device: str, name: str) -> str:
+    """float32 on CPU, where fp16 BERT raises "not implemented for Half" and encode() answers by swapping the
+    whole process to llama-server. float16 on an accelerator, except for models that cannot run in it: those
+    get bf16 where the device has it natively, else float32."""
+    if device == "cpu":
+        return "float32"
+    if not any(m in name.lower() for m in _FLOAT16_UNSAFE_MODELS):
+        return "float16"
+    from core.training.diffusion_train_common import (
+        native_bf16_supported,
+        native_bf16_supported_xpu,
+    )
+
+    native = native_bf16_supported_xpu() if device == "xpu" else native_bf16_supported()
+    return "bfloat16" if native else "float32"
+
+
 _torchao_stub_done = False
 # Its own lock, not _lock: that one is held across a whole model construction, so borrowing it made
 # a preflight probe wait out someone else's download.
@@ -507,7 +529,8 @@ def _gate_st_custom_modules() -> None:
 
 def _get(model_name: str | None = None):
     """Cached SentenceTransformer, (re)loading on a name change. Loaded in fp16 on an
-    accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU."""
+    accelerator for a ~1.5x speedup at negligible accuracy loss, fp32 on CPU; see ``_load_dtype``
+    for the models that cannot run in fp16."""
     account_path(model_name, reference = True)
     global _model, _name
     name = model_name or config.effective_embedding_model()
@@ -534,9 +557,7 @@ def _get(model_name: str | None = None):
             st_kwargs = dict(
                 device = device,
                 cache_folder = active_hf_hub_cache(),
-                # Keyed on the device we load on: fp16 BERT on CPU raises "not implemented for Half", which encode()
-                # answers by swapping the whole process to llama-server.
-                model_kwargs = dtype_kwargs("float32" if device == "cpu" else "float16"),
+                model_kwargs = dtype_kwargs(_load_dtype(device, name)),
             )
             if managed_account():
                 st_kwargs["token"] = False
