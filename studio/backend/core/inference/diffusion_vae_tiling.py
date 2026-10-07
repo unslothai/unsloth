@@ -67,11 +67,11 @@ def axis_weights(
     shared edge, linear over the next ``ramp``. Overlaps >= 16 put every pixel >= 8 latents inside some tile, so a
     margin under 8 keeps the sum positive."""
     size = min(tile, length) * scale
-    pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale
-    total = torch.zeros(length * scale, dtype = torch.float64, device = device)
+    pos = (torch.arange(size, dtype = torch.float64, device = "cpu") + 0.5) / scale
+    total = torch.zeros(length * scale, dtype = torch.float64, device = "cpu")
     weights = []
     for s in starts:
-        w = torch.ones(size, dtype = torch.float64, device = device)
+        w = torch.ones(size, dtype = torch.float64, device = "cpu")
         if s > 0:
             w = torch.minimum(w, ((pos - margin) / ramp).clamp(0, 1))
         if s + tile < length:
@@ -80,7 +80,11 @@ def axis_weights(
         weights.append(w)
     if float(total.min()) <= 0.0:
         raise ValueError(f"tiles {starts} leave pixels without weight on a {length}-latent axis")
-    return [(w / total[s * scale : s * scale + size]).float() for w, s in zip(weights, starts)]
+    # float64 on CPU: MPS has no float64.
+    return [
+        (w / total[s * scale : s * scale + size]).float().to(device)
+        for w, s in zip(weights, starts)
+    ]
 
 
 def _decode_tile(vae: Any, z: Any) -> Any:
