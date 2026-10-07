@@ -1010,6 +1010,24 @@ def hf_hub_download_with_xet_fallback(
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Cancelled")
         return path
+    if str(filename).lower().endswith(".gguf"):
+        # A republished GGUF whose tensors did not change is rebuilt from the cached older copy instead of
+        # re-downloaded. Its sha256 matches the Hub's, so it already is the newer blob ``force_download`` asks for.
+        try:
+            from hub.utils.gguf_header_delta import reuse_for_hub_download
+
+            if reuse_for_hub_download(
+                repo_id,
+                filename,
+                token,
+                repo_type = repo_type,
+                revision = revision,
+                cache_dir = cache_dir,
+                cancel_event = cancel_event,
+            ).placed:
+                force_download = False
+        except Exception:  # noqa: BLE001 - an optimisation only: the normal download follows
+            pass
     # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait()
     optional: dict[str, Any] = {}
     if stall_timeout is not None:
