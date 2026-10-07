@@ -36,7 +36,8 @@ def is_hub_safetensors_single_file(filename: Optional[str]) -> bool:
     if any(part in ("", ".", "..") for part in parts):
         return False
     leaf = parts[-1]
-    return leaf.lower().endswith(SAFETENSORS_SUFFIX) and len(leaf) > len(SAFETENSORS_SUFFIX)
+    # Case-sensitive like diffusers' load_state_dict: x.SafeTensors would fall through to torch.load.
+    return leaf.endswith(SAFETENSORS_SUFFIX) and len(leaf) > len(SAFETENSORS_SUFFIX)
 
 
 def single_file_load_allowed(repo_trusted: bool, kind: str, filename: Optional[str]) -> bool:

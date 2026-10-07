@@ -57,7 +57,7 @@ def _write_safetensors(
 
 @pytest.mark.parametrize(
     "name",
-    [IMAGE_FILE, VIDEO_FILE, "model.safetensors", "a/b/MODEL.SafeTensors"],
+    [IMAGE_FILE, VIDEO_FILE, "model.safetensors", "a/b/MODEL.safetensors"],
 )
 def test_safetensors_repo_relative_names_qualify(name):
     assert is_hub_safetensors_single_file(name)
@@ -78,6 +78,9 @@ def test_safetensors_repo_relative_names_qualify(name):
         " model.safetensors",
         "a//b.safetensors",
         "model.gguf",
+        # diffusers matches the suffix case-sensitively and sends anything else to torch.load.
+        "a/b/MODEL.SafeTensors",
+        "model.SAFETENSORS",
         "model_index.json",
         "pipeline.py",
     ],

@@ -668,7 +668,7 @@ def _untrusted_repo_single_files_loadable(repo_info, selected: Optional[Path] = 
         from core.inference.diffusion_single_file_trust import SAFETENSORS_SUFFIX
         for revision in getattr(repo_info, "revisions", None) or ():
             for cached in getattr(revision, "files", None) or ():
-                if str(getattr(cached, "file_name", "")).lower().endswith(SAFETENSORS_SUFFIX):
+                if str(getattr(cached, "file_name", "")).endswith(SAFETENSORS_SUFFIX):
                     return True
     except Exception:  # noqa: BLE001 -- a classification failure keeps the row untrusted
         return False
