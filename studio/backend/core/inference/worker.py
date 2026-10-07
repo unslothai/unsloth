@@ -962,6 +962,9 @@ class _Stops:
     def __contains__(self, request_id) -> bool:
         return request_id in self._stopped
 
+    def unread(self) -> bool:
+        return self._ledger is not None and self._ledger.snapshot(self._written)[1] is not None
+
 
 class _StopWhileItRuns:
     def __init__(self, cancel_event, stops, request_id: str):
@@ -1483,11 +1486,11 @@ class _ResidentBatch:
             if request_id in stopped:
                 self.cancel(request_id)
 
-    def step(self) -> None:
+    def step(self, waiting = None) -> None:
         if self.session is None or not self.session.rows_in_flight:
             return
         try:
-            for handle, snapshot in self.session.step():
+            for handle, snapshot in self.session.step(waiting):
                 self._report(handle, snapshot)
         except Exception as exc:
             logger.error("Batched generation error: %s", exc, exc_info = True)
@@ -2074,6 +2077,7 @@ def run_inference_process(
         warmth = _MLXIdleWarmth()
         deferred: list[dict] = []
         stops = _Stops(stop_ledger, resp_queue, batch, deferred)
+        waiting = lambda: stops.unread() or not cmd_queue.empty()
         if stop_ledger is not None:
             stop_ledger.worker_reads_this()
         while True:
@@ -2082,7 +2086,7 @@ def run_inference_process(
             if not tearing_down:
                 if batch.rows_in_flight:
                     warmth.active()
-                batch.step()
+                batch.step(waiting)
             from_deferred = False
             if _held_head_leaves_the_hold(batch, deferred):
                 cmd = deferred.pop(0)

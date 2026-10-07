@@ -6362,10 +6362,12 @@ class _TwoRowStream:
     ):
         self._events, self._retired, self.withdrawn = events, set(retired), []
 
-    def step(self):
-        return iter(self._events)
+    def iter_step(self, waiting):
+        yield from self._events
+        self.exhausted = True
 
     def withdraw(self, row):
+        assert self.exhausted, "the batch cannot change mid-step"
         self.withdrawn.append(row)
         if row in self._retired:
             return None

@@ -3686,7 +3686,7 @@ class _TextBatchSession:
         )
         return plan.think_prefix
 
-    def step(self):
+    def step(self, waiting = None):
         """Report what the batch produced, retiring every reply that ended."""
         began = time.perf_counter()
         prompt_events, events = self.generator.next()
@@ -3968,9 +3968,15 @@ class _VisionBatchSession:
         )
         return plan.think_prefix
 
-    def step(self):
-        now = None
-        for event in self.stream.step():
+    def step(self, waiting = None):
+        now, stopped = None, {}
+        # Only a speculative step spans many tokens, reported as they are decoded; only its unsloth-zoo has the call.
+        # The batch cannot change mid-step, so a row that stopped itself ends the step and leaves after it.
+        for event in (
+            self.stream.iter_step(lambda: bool(stopped) or (waiting is not None and waiting()))
+            if self._speculative is not None
+            else self.stream.step()
+        ):
             row = self._by_row.get(event.index)
             if row is None:
                 continue
@@ -3992,6 +3998,9 @@ class _VisionBatchSession:
                 self._record(row, result, len(result.token_ids) + (result.finish_reason == "stop"))
                 yield from self._retire(row, cancelled = row.cancelled)
             elif row.cancelled:
+                stopped[row.handle] = row
+        for row in stopped.values():
+            if row.handle in self._rows:
                 yield from self._retake(row)
 
     def withdraw(self, handles):
