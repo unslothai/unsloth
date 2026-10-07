@@ -317,6 +317,18 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
       "Read <foo`bar@example.com> [1] ` first.",
       "[1]: https://x.test/one",
     ],
+    [
+      "Read [a [b]](https://x.test/`tag) [1] ` first.",
+      "[1]: https://x.test/one",
+    ],
+    [
+      'Read <span title="`"> [1] ` first.',
+      "[1]: https://x.test/one",
+    ],
+    [
+      'Read <span hidden title="`"> [1] ` first.',
+      "[1]: https://x.test/one",
+    ],
     ["> `open\n>\n> [1]\n> `", "[1]: https://x.test/one"],
     ["> `open\n> # heading\n> [1]\n> `", "[1]: https://x.test/one"],
     [
@@ -342,6 +354,9 @@ test("a bracketed label that is not a shortcut reference keeps block rendering",
     "Use ``a [1] b`` here.\n\n[1]: https://x.test\n",
     "Use `[site](https://x.test) [1]` here.\n\n[1]: https://x.test/unused\n",
     "Use ``<https://x.test/`> [1]`` here.\n\n[1]: https://x.test/unused\n",
+    "Use ``[a [b]](https://x.test/`tag) [1]`` here.\n\n[1]: https://x.test/unused\n",
+    'Use ``<span title="`"> [1]`` here.\n\n[1]: https://x.test/unused\n',
+    "Use <span title=`bad> [1] ` here.\n\n[1]: https://x.test/unused\n",
     "Use [1](https://x.test/inline).\n\n[1]: https://x.test/unused\n",
     "Use [1](https://x.test/a_(b)).\n\n[1]: https://x.test/unused\n",
     "Use [1](foo(and(bar))).\n\n[1]: https://x.test/unused\n",

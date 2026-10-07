@@ -333,16 +333,35 @@ function inlineLinkEnd(text: string, from: number): number {
 
 function inlineLinkRegions(text: string): [number, number][] {
   const regions: [number, number][] = [];
-  let coveredEnd = -1;
-  for (const match of text.matchAll(LINK_LABEL_USE_RE)) {
-    if (match.index < coveredEnd || isEscaped(text, match.index)) {
+  const brackets: { start: number; containsLink: boolean }[] = [];
+  for (let at = 0; at < text.length; at += 1) {
+    if (text[at] === "\\") {
+      at += 1;
       continue;
     }
-    const end = inlineLinkEnd(text, match.index + match[0].length);
-    if (end >= 0) {
-      regions.push([match.index, end]);
-      coveredEnd = end;
+    if (text[at] === "[") {
+      brackets.push({ start: at, containsLink: false });
+      continue;
     }
+    if (text[at] !== "]" || brackets.length === 0) continue;
+
+    const bracket = brackets.pop() as {
+      start: number;
+      containsLink: boolean;
+    };
+    if (bracket.containsLink) continue;
+    const end = inlineLinkEnd(text, at + 1);
+    if (end < 0) continue;
+
+    regions.push([bracket.start, end]);
+    const image =
+      bracket.start > 0 &&
+      text[bracket.start - 1] === "!" &&
+      !isEscaped(text, bracket.start - 1);
+    if (!image) {
+      for (const parent of brackets) parent.containsLink = true;
+    }
+    at = end - 1;
   }
   return regions;
 }
@@ -374,10 +393,113 @@ function autolinkRegions(text: string): [number, number][] {
   return regions;
 }
 
-function opaqueInlineRegions(text: string): [number, number][] {
-  const candidates = [...inlineLinkRegions(text), ...autolinkRegions(text)].sort(
-    (left, right) => left[0] - right[0],
+function isHtmlWhitespace(char: string | undefined): boolean {
+  return (
+    char === " " ||
+    char === "\t" ||
+    char === "\n" ||
+    char === "\r" ||
+    char === "\f"
   );
+}
+
+function htmlDelimitedEnd(
+  text: string,
+  from: number,
+  opener: string,
+  closer: string,
+): number {
+  if (!text.startsWith(opener, from)) return -1;
+  const end = text.indexOf(closer, from + opener.length);
+  return end < 0 ? -1 : end + closer.length;
+}
+
+function inlineHtmlEnd(text: string, from: number): number {
+  let end = htmlDelimitedEnd(text, from, "<!--", "-->");
+  if (end >= 0) return end;
+  end = htmlDelimitedEnd(text, from, "<?", "?>");
+  if (end >= 0) return end;
+  end = htmlDelimitedEnd(text, from, "<![CDATA[", "]]>");
+  if (end >= 0) return end;
+
+  let at = from + 1;
+  if (text[at] === "!") {
+    at += 1;
+    const nameStart = at;
+    while (/[A-Za-z]/u.test(text[at] ?? "")) at += 1;
+    if (at === nameStart || !isHtmlWhitespace(text[at])) return -1;
+    const close = text.indexOf(">", at + 1);
+    return close < 0 ? -1 : close + 1;
+  }
+
+  if (text[at] === "/") {
+    at += 1;
+    if (!/[A-Za-z]/u.test(text[at] ?? "")) return -1;
+    for (at += 1; /[A-Za-z0-9_:-]/u.test(text[at] ?? ""); at += 1) {
+      // scan the tag name
+    }
+    while (isHtmlWhitespace(text[at])) at += 1;
+    return text[at] === ">" ? at + 1 : -1;
+  }
+
+  if (!/[A-Za-z]/u.test(text[at] ?? "")) return -1;
+  for (at += 1; /[A-Za-z0-9_-]/u.test(text[at] ?? ""); at += 1) {
+    // scan the tag name
+  }
+  for (;;) {
+    const beforeWhitespace = at;
+    while (isHtmlWhitespace(text[at])) at += 1;
+    if (text[at] === ">") return at + 1;
+    if (text[at] === "/" && text[at + 1] === ">") return at + 2;
+    if (at === beforeWhitespace || !/[A-Za-z_:]/u.test(text[at] ?? "")) {
+      return -1;
+    }
+    for (at += 1; /[A-Za-z0-9_.:-]/u.test(text[at] ?? ""); at += 1) {
+      // scan the attribute name
+    }
+    let valueAt = at;
+    while (isHtmlWhitespace(text[valueAt])) valueAt += 1;
+    if (text[valueAt] !== "=") continue;
+    at = valueAt + 1;
+    while (isHtmlWhitespace(text[at])) at += 1;
+    const quote = text[at];
+    if (quote === '"' || quote === "'") {
+      const close = text.indexOf(quote, at + 1);
+      if (close < 0) return -1;
+      at = close + 1;
+      continue;
+    }
+    const valueStart = at;
+    while (
+      text[at] !== undefined &&
+      !isHtmlWhitespace(text[at]) &&
+      !'"\'=<>`'.includes(text[at])
+    ) {
+      at += 1;
+    }
+    if (at === valueStart) return -1;
+  }
+}
+
+function inlineHtmlRegions(text: string): [number, number][] {
+  const regions: [number, number][] = [];
+  for (let at = text.indexOf("<"); at >= 0; at = text.indexOf("<", at + 1)) {
+    if (isEscaped(text, at)) continue;
+    const end = inlineHtmlEnd(text, at);
+    if (end >= 0) {
+      regions.push([at, end]);
+      at = end - 1;
+    }
+  }
+  return regions;
+}
+
+function opaqueInlineRegions(text: string): [number, number][] {
+  const candidates = [
+    ...inlineLinkRegions(text),
+    ...autolinkRegions(text),
+    ...inlineHtmlRegions(text),
+  ].sort((left, right) => left[0] - right[0]);
   const regions: [number, number][] = [];
   for (const candidate of candidates) {
     const previous = regions.at(-1);
