@@ -159,7 +159,11 @@ const collectReferenceProse = (
   out: { referenceProse: string[]; definitions: string[] },
 ): { referenceProse: string[]; definitions: string[] } => {
   for (const token of tokens) {
-    if (token.type === "code" || token.type === "space") {
+    // Indented code stays: Marked and remark disagree on some list continuations.
+    if (
+      (token.type === "code" && token.codeBlockStyle !== "indented") ||
+      token.type === "space"
+    ) {
       continue;
     }
     if (token.type === "def") {

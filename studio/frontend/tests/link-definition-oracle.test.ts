@@ -349,6 +349,7 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
     ["See [1].\n\n[broken", "[1]: /one"],
     ["See [1].\n\n> [broken", "- [1]: /one"],
     ["See [^source note].", "[^source note]: https://x.test/source"],
+    ["> [1]: /url\n2. item\n\n    See [1].", "[2]: /two"],
     ["Read [SS] first.", "[\u1E9E]: https://x.test/ss"],
     ["Read [Stra\u00DFe] first.", "[STRASSE]: https://x.test/strasse"],
   ]) {
