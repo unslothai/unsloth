@@ -64,9 +64,12 @@ export function embeddingModelName(model: string): string {
   return id.slice(Math.max(id.lastIndexOf("/"), id.lastIndexOf("\\")) + 1) || id;
 }
 
-/** Owner of a repo id, or "" for a bare name. */
+/** Owner of a repo id, or "" for a local path. A slashless name is a `sentence-transformers/`
+ *  alias, as the backend resolves it. */
 export function embeddingModelOwner(model: string): string {
   const id = model.trim();
+  // The path forms the backend's is_local_path reads as local without touching disk.
+  if (!id || /^[/.~]/.test(id) || id.includes("\\") || id.includes(":")) return "";
   const slash = id.indexOf("/");
-  return slash > 0 && !id.startsWith("/") && !id.startsWith(".") ? id.slice(0, slash) : "";
+  return slash === -1 ? "sentence-transformers" : id.slice(0, slash);
 }

@@ -422,7 +422,8 @@ export function DocumentsRagSection(): ReactElement {
           ) : undefined
         }
       >
-        <div className="flex items-start gap-2 max-[360px]:w-full">
+        {/* Wraps the Download button above the picker when the panel is too narrow for both. */}
+        <div className="flex max-w-full flex-wrap items-start justify-end gap-2 max-[360px]:w-full">
           {forceCandidate ? (
             <Button
               variant="outline"
@@ -446,7 +447,7 @@ export function DocumentsRagSection(): ReactElement {
             </Button>
           ) : null}
           {/* Status sits in the picker's column, so it lines up under the model name. */}
-          <div className="flex flex-col gap-1 max-[360px]:w-full">
+          <div className="flex max-w-full flex-col gap-1 max-[360px]:w-full">
             <EmbeddingModelPicker
               value={embeddingModel?.embeddingModel ?? ""}
               onSelect={(model) => void applyEmbeddingModel(model, false)}
@@ -460,7 +461,7 @@ export function DocumentsRagSection(): ReactElement {
               loaded={embeddingModel?.loaded}
               // Any resident embedder, not just this one: switching does not release the old one.
               onEject={embeddingModel?.backendLoaded ? () => void unload() : undefined}
-              className="w-[calc(260px*var(--ui-space-scale,1))] max-[360px]:w-full"
+              className="w-[calc(260px*var(--ui-space-scale,1))] max-w-full max-[360px]:w-full"
             />
             {notLoaded ? (
               <span className="flex items-center gap-1.5 px-3.5 text-xs leading-snug text-muted-foreground">

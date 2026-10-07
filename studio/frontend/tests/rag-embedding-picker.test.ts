@@ -126,7 +126,11 @@ test("model names and owners read from repo ids and local paths", () => {
   assert.equal(embeddingModelName("bge-small"), "bge-small");
   assert.equal(embeddingModelOwner("unsloth/bge-small-en-v1.5"), "unsloth");
   assert.equal(embeddingModelOwner("/models/my-embedder"), "");
-  assert.equal(embeddingModelOwner("bge-small"), "");
+  assert.equal(embeddingModelOwner("./my-embedder"), "");
+  assert.equal(embeddingModelOwner("~/models/e"), "");
+  assert.equal(embeddingModelOwner("C:\\models\\e"), "");
+  // Slashless names load from sentence-transformers/, not from disk.
+  assert.equal(embeddingModelOwner("all-MiniLM-L6-v2"), "sentence-transformers");
 });
 
 test("the menu lists current, default, then pinned models, each once", () => {
@@ -245,4 +249,14 @@ test("composer pins are their own menu items, so the keyboard reaches them", () 
   );
   assert.doesNotMatch(MENU_PICKER, /tabIndex=\{-1\}/);
   assert.match(read("../src/index.css"), /\.menu-row-with-action:has\(\[data-row-action\]:is\(:hover, \[data-highlighted\]\)\)/);
+});
+
+test("pins show without hover on touch screens", () => {
+  assert.match(PICKER, /"opacity-0 group-hover\/row:opacity-100 \[@media\(hover:none\)\]:opacity-100"/);
+  assert.match(MENU_PICKER, /group-has-\[\[data-highlighted\]\]\/row:opacity-100 \[@media\(hover:none\)\]:opacity-100/);
+});
+
+test("the embedding controls wrap and fit narrow settings panels", () => {
+  assert.match(SECTION, /flex max-w-full flex-wrap items-start justify-end gap-2/);
+  assert.match(SECTION, /w-\[calc\(260px\*var\(--ui-space-scale,1\)\)\] max-w-full/);
 });

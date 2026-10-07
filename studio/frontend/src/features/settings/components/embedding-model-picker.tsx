@@ -310,9 +310,9 @@ export function EmbeddingModelPicker({
                           aria-label={t(
                             pinned ? "settings.general.rag.unpin" : "settings.general.rag.pin",
                           )}
-                          // As on Recents: grey, unpin glyph once pinned. Hover only until then.
+                          // As on Recents: grey, unpin glyph once pinned. Hover only until then; always shown on touch.
                           className={`mr-1 ml-1 flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
-                            pinned ? "" : "opacity-0 group-hover/row:opacity-100"
+                            pinned ? "" : "opacity-0 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100"
                           }`}
                         >
                           <HugeiconsIcon
