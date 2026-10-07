@@ -24658,8 +24658,6 @@ def _audio_cpp_runtime_status() -> dict:
         return dict(_AUDIO_CPP_RUNTIME_MISSING)
     try:
         from utils import audio_cpp_update
-
-        # the in-app update offers the same answer, so the notice and the update card agree.
         status.update(audio_cpp_update.release_status(binary, record))
     except Exception as exc:  # noqa: BLE001 - cannot tell is not outdated
         logger.debug("audio.cpp release lookup failed: %s", exc)
