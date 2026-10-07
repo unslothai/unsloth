@@ -65,6 +65,21 @@ def runtime_unavailable_reason() -> str | None:
     return None
 
 
+def clef_pytorch_unavailable_reason() -> str | None:
+    if reason := runtime_unavailable_reason():
+        return reason
+    from importlib.metadata import PackageNotFoundError, version
+    from packaging.version import Version
+
+    try:
+        supported = Version(version("transformers")) >= Version("5.5.0")
+    except PackageNotFoundError:
+        supported = False
+    if not supported:
+        return "Clef PyTorch needs Transformers 5.5.0 or newer. Update Unsloth before enabling it."
+    return None
+
+
 def get_enabled() -> bool:
     if enabled_locked():
         return False
@@ -164,20 +179,14 @@ def validate(
             except runtime.Unavailable as exc:
                 raise ValueError(exc.message) from None
             uses_torch = not runtime._clef().is_native(selected)
-        if uses_torch and (reason := runtime_unavailable_reason()):
-            raise ValueError(reason)
-        if uses_torch and isinstance(checkpoint, ClefCheckpoint):
-            from importlib.metadata import PackageNotFoundError, version
-            from packaging.version import Version
-
-            try:
-                supported = Version(version("transformers")) >= Version("5.5.0")
-            except PackageNotFoundError:
-                supported = False
-            if not supported:
-                raise ValueError(
-                    "Clef PyTorch needs Transformers 5.5.0 or newer. Update Studio before enabling it."
-                )
+        if uses_torch:
+            reason = (
+                clef_pytorch_unavailable_reason()
+                if isinstance(checkpoint, ClefCheckpoint)
+                else runtime_unavailable_reason()
+            )
+            if reason:
+                raise ValueError(reason)
     return values
 
 

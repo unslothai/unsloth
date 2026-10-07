@@ -28,7 +28,7 @@ def select_checkpoint(
     questions = None,
     preference = None,
 ):
-    from utils.systemone_settings import get_backend
+    from utils.systemone_settings import clef_pytorch_unavailable_reason, get_backend
     from .native_worker import native_availability
 
     preference = preference or get_backend()
@@ -50,6 +50,8 @@ def select_checkpoint(
         reason = native["reason"]
         if preference == "llama.cpp":
             raise Unavailable(503, "model_unavailable", reason)
+    if unavailable := clef_pytorch_unavailable_reason():
+        raise Unavailable(503, "model_unavailable", unavailable)
     return checkpoint, reason
 
 
@@ -67,11 +69,11 @@ def backend_info(checkpoint):
 
 
 def accepts_images(checkpoint):
-    from utils.systemone_settings import get_backend, runtime_unavailable_reason
+    from utils.systemone_settings import clef_pytorch_unavailable_reason, get_backend
     return (
         isinstance(checkpoint, catalog.ClefCheckpoint)
         and get_backend() != "llama.cpp"
-        and runtime_unavailable_reason() is None
+        and clef_pytorch_unavailable_reason() is None
     )
 
 
@@ -186,7 +188,7 @@ def shutdown() -> None:
 
 def download_plan(checkpoint: catalog.Checkpoint, *, preference = None) -> dict:
     if isinstance(checkpoint, catalog.ClefCheckpoint):
-        from utils.systemone_settings import get_backend, runtime_unavailable_reason
+        from utils.systemone_settings import clef_pytorch_unavailable_reason, get_backend
 
         preference = preference or get_backend()
         selected, _ = select_checkpoint(checkpoint, preference = preference)
@@ -195,7 +197,7 @@ def download_plan(checkpoint: catalog.Checkpoint, *, preference = None) -> dict:
             preference == "auto"
             and _clef().is_native(selected)
             and plan["cached"]
-            and runtime_unavailable_reason() is None
+            and clef_pytorch_unavailable_reason() is None
         ):
             fallback = _clef().download_plan(checkpoint)
             if not fallback["cached"]:

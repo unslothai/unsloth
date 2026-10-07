@@ -89,3 +89,37 @@ def test_auto_without_native_only_plans_pytorch(checkpoints, monkeypatch):
     )
     plan = resolve_systemone_download(model = torch.name, backend = "auto")
     assert plan.repo == torch.source and not plan.cached
+
+
+@pytest.mark.parametrize("version", ["5.4.0", None, "5.5.0"])
+def test_auto_fallback_requires_supported_transformers(checkpoints, monkeypatch, version):
+    from importlib.metadata import PackageNotFoundError
+
+    def installed(package):
+        assert package == "transformers"
+        if version is None:
+            raise PackageNotFoundError(package)
+        return version
+
+    monkeypatch.setattr("importlib.metadata.version", installed)
+    torch, native, cache = checkpoints
+    cache(native)
+    supported = version == "5.5.0"
+    assert runtime.accepts_images(torch) is supported
+    assert runtime.select_checkpoint(torch, preference = "auto")[0] == native
+    plan = resolve_systemone_download(model = torch.name, backend = "auto")
+    assert plan.repo == (torch.source if supported else native.source)
+    systemone_settings.validate(enabled = True, model = torch.name, backend = "auto")
+    for kwargs in (
+        {"images": True},
+        {"questions": {"q": {"instructions": ""}}},
+        {"questions": {"q": {"type": "score", "criteria": ["only"]}}},
+    ):
+        if supported:
+            assert runtime.select_checkpoint(torch, preference = "auto", **kwargs)[0] == torch
+        else:
+            with pytest.raises(runtime.Unavailable, match = "Transformers 5.5.0"):
+                runtime.select_checkpoint(torch, preference = "auto", **kwargs)
+    if not supported:
+        with pytest.raises(ValueError, match = "Transformers 5.5.0"):
+            systemone_settings.validate(enabled = True, model = torch.name, backend = "pytorch")
