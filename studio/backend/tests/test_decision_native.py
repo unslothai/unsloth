@@ -489,8 +489,10 @@ def test_freest_gpu_follows_the_visibility_order(stub, monkeypatch, mask, expect
     monkeypatch.setattr(
         LlamaCppBackend, "_enumerated_gpu_devices", staticmethod(lambda *_: ["ROCm0", "ROCm1"])
     )
-    hip = dict(os.environ, HIP_VISIBLE_DEVICES = mask)
+    hip = dict(os.environ, HIP_VISIBLE_DEVICES = mask, CUDA_VISIBLE_DEVICES = mask)
     hip.pop("ROCR_VISIBLE_DEVICES", None)
+    assert native_worker._pick_device("llama-server", hip) == expected.replace("CUDA", "ROCm")
+    hip.pop("HIP_VISIBLE_DEVICES")
     assert native_worker._pick_device("llama-server", hip) == expected.replace("CUDA", "ROCm")
 
 

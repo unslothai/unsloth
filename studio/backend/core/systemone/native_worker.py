@@ -267,7 +267,8 @@ def _pick_device(binary: str, env: dict[str, str]) -> str:
         if all(d.startswith("CUDA") for d in devices):
             mask = env.get("CUDA_VISIBLE_DEVICES")
         elif all(d.startswith("ROCm") for d in devices) and not env.get("ROCR_VISIBLE_DEVICES"):
-            mask = env.get("HIP_VISIBLE_DEVICES")
+            # HIP falls back to CUDA_VISIBLE_DEVICES when its own mask is unset.
+            mask = env.get("HIP_VISIBLE_DEVICES") or env.get("CUDA_VISIBLE_DEVICES")
         try:
             order = [int(x) for x in (mask or "").split(",") if x.strip()]
         except ValueError:
