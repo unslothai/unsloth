@@ -223,12 +223,16 @@ export async function generateStudioTtsAudio(
   text: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  const { ttsStudioVoiceId } = useVoiceSettingsStore.getState();
   const response = await authFetch("/api/inference/audio/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       messages: [{ role: "user", content: text }],
       stream: false,
+      // Read aloud is not a Speak run, so it stays out of Speak's history.
+      persist: false,
+      ...(ttsStudioVoiceId ? { voice_id: ttsStudioVoiceId } : {}),
     }),
     signal,
   });
@@ -239,7 +243,20 @@ export async function generateStudioTtsAudio(
     const detail = body?.detail ?? `HTTP ${response.status}`;
     if (/no model loaded|not an audio model/i.test(detail)) {
       throw new Error(
-        "No TTS model is loaded. Load an audio model (e.g. Orpheus TTS) from the model selector, then try again.",
+        "No speech model is loaded. Open Audio and load one in Speak, then try again.",
+      );
+    }
+    // Only this 404 is about the voice; another one (a model hidden from the account) must not
+    // drop the user's choice.
+    if (ttsStudioVoiceId && /saved voice no longer exists/i.test(detail)) {
+      useVoiceSettingsStore.getState().setTtsStudioVoiceId("");
+      throw new Error(
+        "The saved voice for read aloud no longer exists. Read aloud now uses the model's own voice.",
+      );
+    }
+    if (ttsStudioVoiceId && /can clone a voice/i.test(detail)) {
+      throw new Error(
+        "The loaded model can't use saved voices. Load a voice-cloning model in Audio, or choose Model's own voice in Settings → Voice.",
       );
     }
     throw new Error(detail);

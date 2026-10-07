@@ -649,3 +649,104 @@ def test_real_dacl_check_sees_a_granted_folder(tmp_path):
         ["icacls", str(folder), "/remove:g", "*S-1-15-2-1", "/Q"], check = True, capture_output = True
     )
     assert mxc_read_grants._package_aces(str(folder)) == (False, False)
+
+
+@pytest.mark.parametrize(
+    "aces, expected",
+    [
+        ([(0x1200A9, 0), (0xA0000000, 0x0B)], True),
+        ([(0x1200A9, 0x03)], True),
+        ([(0x10000000, 0x03)], True),
+        ([(0x1200A9, 0)], False),
+        ([(0xA0000000, 0x0B)], False),
+        ([(0x1200A9, 0), (0x80000000, 0x0B)], False),
+        ([(0x1200A9, 0), (0xA0000000, 0x09)], False),
+        ([(0x1200A9, 0), (0xA0000000, 0x0A)], False),
+        ([(0x1200A9, 0), (0xA0000000, 0x0F)], False),
+    ],
+)
+def test_split_inherited_package_read_access(aces, expected):
+    assert mxc_read_grants._read_execute_covered(aces) is expected
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "reads a real Windows DACL")
+def test_real_dacl_split_folder_and_child_grants(tmp_path):
+    import subprocess
+
+    folder = tmp_path / "split-runtime"
+    folder.mkdir()
+    subprocess.run(
+        [
+            "icacls",
+            str(folder),
+            "/grant",
+            "*S-1-15-2-1:(RX)",
+            "*S-1-15-2-1:(OI)(CI)(IO)(GR,GE)",
+            "/Q",
+        ],
+        check = True,
+        capture_output = True,
+    )
+    assert mxc_read_grants._package_aces(str(folder)) == (True, True)
+    child = folder / "child"
+    child.mkdir()
+    assert mxc_read_grants._package_aces(str(child)) == (True, False)
+
+
+def test_failed_grant_with_only_inherited_access_recovers_without_acl_edits(host):
+    root = _runtime(host)
+    key = os.path.normcase(root)
+    host.granted.add(key)
+    mxc_read_grants._save_record(
+        {
+            key: {
+                "state": "pending",
+                "identity": mxc_read_grants._identity(root),
+            }
+        }
+    )
+    assert mxc_read_grants.ensure([root]) == (root,)
+    assert _record() == {}
+    assert host.calls == []
+
+
+def test_opt_out_drops_proven_empty_pending_grant_without_revoking_windows_access(host):
+    root = _runtime(host)
+    key = os.path.normcase(root)
+    host.granted.add(key)
+    mxc_read_grants._save_record(
+        {
+            key: {
+                "state": "pending",
+                "identity": mxc_read_grants._identity(root),
+            }
+        }
+    )
+    mxc_read_grants.revoke_recorded()
+    assert _record() == {}
+    assert key in host.granted
+    assert host.calls == []
+
+
+@pytest.mark.parametrize("obstacle", ["explicit_child", "unreadable_child", "changed_identity"])
+def test_pending_recovery_retains_uncertain_or_partial_grants(host, monkeypatch, obstacle):
+    root = _runtime(host)
+    key = os.path.normcase(root)
+    host.granted.add(key)
+    identity = mxc_read_grants._identity(root)
+    mxc_read_grants._save_record({key: {"state": "pending", "identity": identity}})
+    child = os.path.normcase(str(Path(root) / "Lib"))
+    if obstacle == "explicit_child":
+        host.explicit.add(child)
+    elif obstacle == "unreadable_child":
+
+        def aces(path):
+            if os.path.normcase(path) == child:
+                raise OSError("cannot inspect child ACL")
+            return host.aces(path)
+
+        monkeypatch.setattr(mxc_read_grants, "_package_aces", aces)
+    else:
+        monkeypatch.setattr(mxc_read_grants, "_identity", lambda _path: {"fileId": -1})
+    assert not mxc_read_grants._pending_grant_has_no_explicit_aces(root, identity)
+    assert _states() == {key: "pending"}

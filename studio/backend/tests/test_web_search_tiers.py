@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Built-in text search runs an approved allowlist, tier by tier, and never reaches Yandex.
+"""uses the real DDGS selector so fan-out cannot hide tier-resolution errors."""
 
-Drives the real DDGS engine selector through ``execute_tool``; only each engine's own ``search`` is
-replaced, so the tier strings really are resolved by ddgs and a fan-out cannot hide.
-"""
-
-import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -62,9 +58,10 @@ class _Recorder:
 def engine_calls(monkeypatch):
     from ddgs.ddgs import DDGS
 
-    # 9.14.4 defines _get_network_client; a DHT cache hit would skip the engines entirely.
+    # disable the 9.14.4 DHT cache because a hit skips every engine.
     if callable(getattr(DDGS, "_get_network_client", None)):
         monkeypatch.setattr(DDGS, "_get_network_client", lambda self: None)
+    monkeypatch.setattr(tools, "_wikipedia_search", lambda *args: [])
     return _Recorder(monkeypatch)
 
 
@@ -73,8 +70,7 @@ def _names(recorder):
 
 
 def _require_two_tiers():
-    """Skip rather than go red if an upstream release ever leaves fewer than two resolvable tiers.
-    Both pins resolve two: 9.14.4 all three members, 9.8.0 yahoo alone."""
+    """skip if upstream resolves fewer than two tiers; 9.14.4 has every tier-two engine and 9.8.0 only Yahoo."""
     resolved = tools._resolve_engine_tiers(ENGINES["text"])
     if len(resolved) < 2:
         pytest.skip(f"installed ddgs resolves only {len(resolved)} tier(s): {resolved}")
@@ -172,7 +168,7 @@ def test_disabled_engines_are_dropped_from_a_tier(monkeypatch, engine_calls):
 
 
 def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_calls):
-    """Tier 2 inherits what is LEFT of the timeout: a fresh copy doubles what the caller asked for."""
+    """tier 2 must receive the remaining timeout because a fresh budget doubles the caller's limit."""
     from ddgs.ddgs import DDGS
 
     budgets = []
@@ -184,34 +180,29 @@ def test_the_caller_timeout_is_one_budget_for_both_tiers(monkeypatch, engine_cal
 
     monkeypatch.setattr(DDGS, "__init__", recording_init)
 
-    # Tier 1 burns most of the budget before coming back empty, so tier 2 runs with what is left.
-    def slow_tier_one(name):
-        if name in TIER1:
-            return "empty"
-        return "results"
+    engine_calls.install(lambda name: "empty" if name in TIER1 else "results")
+    clock = SimpleNamespace(now = 100.0)
+    monkeypatch.setattr(tools, "time", SimpleNamespace(monotonic = lambda: clock.now))
+    real_text = DDGS.text
+    searched_tiers = []
 
-    engine_calls.install(slow_tier_one)
-    for name in TIER1:
-        cls = ENGINES["text"].get(name)
-        if cls is not None:
-            inner = cls.search
-            monkeypatch.setattr(
-                cls, "search", lambda self, q, _i = inner, **k: (time.sleep(0.3), _i(self, q, **k))[1]
-            )
+    def timed_text(self, *args, **kwargs):
+        searched_tiers.append(kwargs["backend"])
+        try:
+            return real_text(self, *args, **kwargs)
+        finally:
+            # advance only Studio's clock so ddgs engine selection stays deterministic.
+            clock.now += 1
 
-    tools.execute_tool("web_search", {"query": "unsloth", "timeout": 3})
+    monkeypatch.setattr(DDGS, "text", timed_text)
+    # timeout belongs to the executor, not the model-provided tool arguments.
+    result = tools.execute_tool("web_search", {"query": "unsloth"}, timeout = 3)
 
-    tier_budgets = [b for b in budgets if isinstance(b, (int, float))]
-    assert len(tier_budgets) >= 3, f"expected a client per tier, saw {budgets}"
-    # Each value is the budget REMAINING when that tier starts, so the invariant is that it shrinks
-    # and never exceeds what the caller asked for. Summing them would be summing overlapping windows.
-    assert tier_budgets == sorted(
-        tier_budgets, reverse = True
-    ), f"budget did not shrink: {tier_budgets}"
-    assert (
-        tier_budgets[-1] < tier_budgets[0]
-    ), f"tier 2 was handed {tier_budgets[-1]}, not the remainder of {tier_budgets[0]}"
-    assert max(tier_budgets) <= tier_budgets[0], "a tier was handed more than the original budget"
+    assert "URL:" in result
+    assert searched_tiers == tools._resolve_engine_tiers(ENGINES["text"])
+    assert set(_names(engine_calls)) & set(TIER2), "the second tier must actually run"
+    # the initial client and first tier get three seconds; the second tier gets the two seconds left.
+    assert budgets == [3, 3, 2]
 
 
 def test_the_resolver_never_names_an_engine_outside_the_tiers():

@@ -3751,6 +3751,68 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
 
+_LAYA_MARKER = "rl_agent_config.json"
+# Cloudflare's Clef layout: a Qwen3.5 backbone plus the joint schema head.
+CLEF_MARKERS = ("config.json", "joint_head.safetensors", "joint_head_config.json")
+
+
+def _folder_decision_layout(folder: Path) -> Optional[str]:
+    if all((folder / name).is_file() for name in CLEF_MARKERS):
+        return "clef"
+    if all((folder / name).is_file() for name in (_LAYA_MARKER, "model.safetensors")) and all(
+        (folder / name).is_dir() for name in ("encoder", "tokenizer")
+    ):
+        return "laya"
+    return None
+
+
+def decision_layout(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    subfolder: Optional[str] = None,
+) -> Optional[str]:
+    """ "laya", "clef" or None for a model that is not a decision model."""
+    if is_local_path(model_name):
+        folder = Path(normalize_path(model_name))
+        # The subfolder first, as on the Hub; an escaping one is refused later by request validation.
+        nested = None
+        if subfolder and not Path(subfolder).is_absolute() and ".." not in Path(subfolder).parts:
+            nested = _folder_decision_layout(folder / subfolder)
+        return nested or _folder_decision_layout(folder)
+    from utils.utils import hf_cache_snapshot_dir, hf_env_offline
+
+    prefix = f"{subfolder}/" if subfolder else ""
+    if not (local_files_only or hf_env_offline()):
+        try:
+            info = _hub_model_info(model_name, hf_token)
+            files = {getattr(sibling, "rfilename", None) for sibling in info.siblings or ()}
+            if all(prefix + name in files for name in CLEF_MARKERS):
+                return "clef"
+            return "laya" if prefix + _LAYA_MARKER in files else None
+        except Exception as e:
+            logger.warning(f"Could not determine if {model_name} is a decision model: {e}")
+    if not cache_reads_authorized(hf_token, repo_id = model_name):
+        return None
+    snapshot = hf_cache_snapshot_dir(model_name)
+    if snapshot is None:
+        return None
+    if all((snapshot / prefix / name).is_file() for name in CLEF_MARKERS):
+        return "clef"
+    # The Decision API caches only the checkpoint subfolder it serves.
+    laya = (snapshot / _LAYA_MARKER, *snapshot.glob(f"*/{_LAYA_MARKER}"))
+    return "laya" if any(path.is_file() for path in laya) else None
+
+
+def is_decision_model(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    subfolder: Optional[str] = None,
+) -> bool:
+    return decision_layout(model_name, hf_token, local_files_only, subfolder) is not None
+
+
 def _has_model_weight_files(model_dir: Path) -> bool:
     """Return True when a directory contains loadable model weights."""
 
@@ -4051,6 +4113,51 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Error reading base model from LoRA config: {e}")
         return None
+
+
+def load_mlx_adapter_tokenizer(
+    tokenizer,
+    lora_path: str,
+    hf_token: HfTokenArg = None,
+):
+    # FastMLXModel hands back the base repo's tokenizer, not the one trained and saved with the adapter.
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer
+    adapter_dir = Path(lora_path)
+    if not adapter_dir.is_dir():
+        try:
+            from huggingface_hub import snapshot_download
+            adapter_dir = Path(
+                call_with_anonymous_retry(
+                    lambda token: snapshot_download(
+                        lora_path,
+                        allow_patterns = [
+                            "*.json",
+                            "*.jinja",
+                            "*.txt",
+                            "tokenizer.model",
+                            "*.tiktoken",
+                        ],
+                        token = token,
+                        cache_dir = active_hf_hub_cache(),
+                    ),
+                    hf_token,
+                )
+            )
+        except Exception as e:
+            logger.debug(f"Could not fetch the tokenizer saved with the adapter {lora_path}: {e}")
+            return tokenizer
+    if not (adapter_dir / "tokenizer_config.json").is_file():
+        return tokenizer
+    try:
+        from mlx_lm.utils import load_tokenizer
+        adapter_tokenizer = load_tokenizer(
+            adapter_dir, eos_token_ids = getattr(tokenizer, "eos_token_ids", None)
+        )
+    except Exception as e:
+        logger.warning(f"Could not load the tokenizer saved with the adapter at {lora_path}: {e}")
+        return tokenizer
+    return adapter_tokenizer if adapter_tokenizer.chat_template else tokenizer
 
 
 def get_base_model_from_lora_identifier(

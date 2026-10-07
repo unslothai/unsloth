@@ -12,12 +12,13 @@ import {
   AlertDialogMedia,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { audioCppSizeLabel } from "@/features/audio/audio-cpp-catalog";
 import { startSttDownload } from "@/features/chat";
-import { hfApiToken, useHfTokenStore } from "@/features/hub";
+import { hfApiToken, listGgufVariants, useHfTokenStore } from "@/features/hub";
 import { useT } from "@/i18n";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { trackSttDownload } from "../lib/stt-download-mirror";
 import {
   type SttDownloadRequest,
@@ -29,7 +30,7 @@ import {
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
-/** Emphasise the model name in translated copy; plain text if absent. */
+/** emphasise the model name in translated copy; use plain text if absent */
 function highlightModel(text: string, model: string): ReactNode {
   const at = model ? text.indexOf(model) : -1;
   if (at === -1) return text;
@@ -42,25 +43,58 @@ function highlightModel(text: string, model: string): ReactNode {
   );
 }
 
-/**
- * App-level confirmation for a dictation model download. Mounted once so the
- * mic can raise it before Voice settings is ever opened.
- */
+/** app-level confirmation mounted once so the mic can raise it before Voice settings opens */
 export function SttDownloadPrompt() {
   const t = useT();
   const pending = useSttDownloadPromptStore((s) => s.pending);
   const dismiss = useSttDownloadPromptStore((s) => s.dismiss);
   const hfToken = useHfTokenStore((state) => state.token);
+  const pendingModel = pending?.model ?? null;
+  const variant = pending?.ggufVariant ?? null;
+  // a package folder has no curated size, so read its quant's from the cached listing
+  const [listedSize, setListedSize] = useState<{
+    model: string;
+    variant: string | null;
+    size: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!pendingModel || sttModelSize(pendingModel)) return;
+    let cancelled = false;
+    listGgufVariants(pendingModel, hfApiToken(hfToken))
+      .then((listing) => {
+        const row = listing.variants.find(
+          (candidate) =>
+            candidate.quant === (variant ?? listing.default_variant),
+        );
+        if (cancelled || !row) return;
+        setListedSize({
+          model: pendingModel,
+          variant,
+          size: audioCppSizeLabel(row.download_size_bytes ?? row.size_bytes),
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingModel, variant, hfToken]);
 
   const confirm = async (request: SttDownloadRequest) => {
-    // Only on accept: a cancel must not leave the engine changed.
+    // change the engine only on accept because cancel must leave it unchanged
     if (request.selectLocalEngine) {
       useVoiceSettingsStore.getState().setDictationEngine("model");
     }
     try {
-      await startSttDownload(request.model, hfApiToken(hfToken));
-      // Progress goes to the shared download panel; the model loads itself when it lands.
-      trackSttDownload(request.model);
+      await startSttDownload(
+        request.model,
+        hfApiToken(hfToken),
+        undefined,
+        request.ggufVariant,
+      );
+      // progress uses the shared download panel; the model loads when the download finishes
+      trackSttDownload(request.model, {
+        ggufVariant: request.ggufVariant ?? null,
+      });
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
         description: error instanceof Error ? error.message : undefined,
@@ -68,8 +102,12 @@ export function SttDownloadPrompt() {
     }
   };
 
-  const pendingModel = pending?.model ?? null;
-  const size = pendingModel ? sttModelSize(pendingModel) : "";
+  const size = pendingModel
+    ? sttModelSize(pendingModel) ||
+      (listedSize?.model === pendingModel && listedSize.variant === variant
+        ? listedSize.size
+        : "")
+    : "";
   return (
     <AlertDialog
       open={pending !== null}
@@ -79,8 +117,7 @@ export function SttDownloadPrompt() {
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          {/* The glyph fills its viewBox, unlike the padded hugeicons the
-              default circle is sized for, so both come down together. */}
+          {/* the glyph fills its viewBox, unlike the padded hugeicons, so size both together */}
           <AlertDialogMedia className="size-12">
             <MicIcon className="text-muted-foreground size-5" />
           </AlertDialogMedia>

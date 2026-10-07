@@ -99,12 +99,16 @@ function CaptionGlyph({
   const corner = Math.min(2, 2.5 - inset);
   // round caps overshoot their endpoints, so the x ends pull in to keep its old size
   const tip = inset * 1.5;
+  // the x's tapered tips read 0.365 strokes narrower than the others' ends, so those shift right by that in whole device pixels
+  const nudge =
+    kind === "close" ? 0 : (Math.round(0.365 * strokePixels) * 10) / pixels;
   return (
     <svg
       aria-hidden="true"
       width={pixels / scale}
       height={pixels / scale}
       viewBox="0 0 10 10"
+      overflow="visible"
       fill="none"
       stroke="currentColor"
       strokeWidth={stroke}
@@ -112,36 +116,38 @@ function CaptionGlyph({
       strokeLinejoin="round"
       className="shrink-0"
     >
-      {kind === "minimize" && <path d={`M${inset} ${middle}H${edge}`} />}
-      {kind === "maximize" && (
-        <rect
-          x={inset}
-          y={inset}
-          width={10 - stroke}
-          height={10 - stroke}
-          rx="2"
-        />
-      )}
-      {/* Windows puts the front window bottom-left. */}
-      {kind === "restore" && (
-        <>
-          <path
-            d={`M2.5 2.5V${inset + corner}A${corner} ${corner} 0 0 1 ${2.5 + corner} ${inset}H${edge - corner}A${corner} ${corner} 0 0 1 ${edge} ${inset + corner}V${7.5 - corner}A${corner} ${corner} 0 0 1 ${edge - corner} 7.5H7.5`}
-          />
+      <g transform={`translate(${nudge} 0)`}>
+        {kind === "minimize" && <path d={`M${inset} ${middle}H${edge}`} />}
+        {kind === "maximize" && (
           <rect
             x={inset}
-            y="2.5"
-            width={7.5 - inset}
-            height={7.5 - inset}
+            y={inset}
+            width={10 - stroke}
+            height={10 - stroke}
             rx="2"
           />
-        </>
-      )}
-      {kind === "close" && (
-        <path
-          d={`M${tip} ${tip}L${10 - tip} ${10 - tip}M${10 - tip} ${tip}L${tip} ${10 - tip}`}
-        />
-      )}
+        )}
+        {/* Windows puts the front window bottom-left. */}
+        {kind === "restore" && (
+          <>
+            <path
+              d={`M2.5 2.5V${inset + corner}A${corner} ${corner} 0 0 1 ${2.5 + corner} ${inset}H${edge - corner}A${corner} ${corner} 0 0 1 ${edge} ${inset + corner}V${7.5 - corner}A${corner} ${corner} 0 0 1 ${edge - corner} 7.5H7.5`}
+            />
+            <rect
+              x={inset}
+              y="2.5"
+              width={7.5 - inset}
+              height={7.5 - inset}
+              rx="2"
+            />
+          </>
+        )}
+        {kind === "close" && (
+          <path
+            d={`M${tip} ${tip}L${10 - tip} ${10 - tip}M${10 - tip} ${tip}L${tip} ${10 - tip}`}
+          />
+        )}
+      </g>
     </svg>
   );
 }
