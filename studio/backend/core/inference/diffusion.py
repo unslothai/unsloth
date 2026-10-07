@@ -4859,6 +4859,9 @@ class DiffusionBackend:
                 entry["bytes"] += int(
                     sum(declared_sizes.get(n, 0) for n in newly_missing if n not in reusable)
                 )
+                entry["file_bytes"].update(
+                    {n: int(declared_sizes.get(n, 0)) for n in newly_missing if n not in reusable}
+                )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
                 return
@@ -4872,6 +4875,12 @@ class DiffusionBackend:
                     "bytes": int(
                         sum(declared_sizes.get(name, 0) for name in missing if name not in reusable)
                     ),
+                    # Per file, so the download panel can show what the bytes are for.
+                    "file_bytes": {
+                        name: int(declared_sizes.get(name, 0))
+                        for name in missing
+                        if name not in reusable
+                    },
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
                 }

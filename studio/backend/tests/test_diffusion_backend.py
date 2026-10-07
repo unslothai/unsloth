@@ -8616,6 +8616,21 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
     assert plan["checkpoint_bytes"] == 7 * GB
 
 
+def test_download_plan_sizes_each_file_it_counts(monkeypatch):
+    """The download panel colours the bar by what each file is, so the plan breaks ``bytes`` down."""
+    _fake_flux_hub(monkeypatch)
+    _no_cache(monkeypatch)
+
+    plan = _flux_download_plan()
+
+    for entry in plan["entries"]:
+        assert entry["file_bytes"], entry["repo_id"]
+        assert set(entry["file_bytes"]) <= set(entry["files"])
+        assert sum(entry["file_bytes"].values()) == entry["bytes"]
+    checkpoint = next(e for e in plan["entries"] if e["checkpoint"])
+    assert checkpoint["file_bytes"] == {"flux1-dev-Q4_K_M.gguf": 7 * GB}
+
+
 def test_download_plan_stages_but_does_not_count_a_file_an_older_snapshot_holds(monkeypatch):
     """README-only commit on a no-symlink cache: the GGUF is still staged but counts no bytes."""
     _fake_flux_hub(monkeypatch)
@@ -8634,6 +8649,7 @@ def test_download_plan_stages_but_does_not_count_a_file_an_older_snapshot_holds(
     assert checkpoint["repo_id"] == "unsloth/FLUX.1-dev-GGUF"
     assert checkpoint["files"] == ["flux1-dev-Q4_K_M.gguf"]
     assert checkpoint["bytes"] == 0
+    assert checkpoint["file_bytes"] == {}
     assert checkpoint["checkpoint"] is True
     assert base["bytes"] > 0
     assert plan["total_bytes"] == base["bytes"]

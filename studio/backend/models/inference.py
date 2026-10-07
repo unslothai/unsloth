@@ -5034,6 +5034,11 @@ class DiffusionDownloadPlanEntry(BaseModel):
     bytes: int = Field(
         0, description = "Declared size of the files still missing from cache, 0 when unknown"
     )
+    file_bytes: Dict[str, int] = Field(
+        default_factory = dict,
+        description = "Declared size of each file counted in ``bytes``. Empty from a planner that "
+        "does not break it down; the download panel then shows one bar.",
+    )
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"
     )

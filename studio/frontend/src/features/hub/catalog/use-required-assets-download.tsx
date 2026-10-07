@@ -16,6 +16,7 @@ import {
   selectDownloadEntries,
 } from "../download-manager/required-assets";
 import { RequiredAssetsDownloadDialog } from "../download-manager/required-assets-dialog";
+import { withCachedCheckpoint } from "../download-manager/download-breakdown";
 import { enqueueHubDownload } from "../download-manager/use-hub-download-queue";
 import type { StagedDownloadEntry } from "../download-manager/use-staged-download";
 export type AssetRuntime = "images" | "video" | "audio";
@@ -114,15 +115,19 @@ export function useRequiredAssetsDownload({
     try {
       const p = await resolvePlan();
       if (sequence.current !== id) return;
-      const entries = p.entries.map((e) => ({
-        repoId: e.repo_id,
-        files: e.files,
-        bytes: e.bytes,
-        ggufFilename: e.gguf_filename,
-        checkpoint:
-          e.checkpoint ??
-          (filename ? e.files.includes(filename) : e.repo_id === repoId),
-      }));
+      const entries = withCachedCheckpoint(
+        p.entries.map((e) => ({
+          repoId: e.repo_id,
+          files: e.files,
+          bytes: e.bytes,
+          fileBytes: e.file_bytes,
+          ggufFilename: e.gguf_filename,
+          checkpoint:
+            e.checkpoint ??
+            (filename ? e.files.includes(filename) : e.repo_id === repoId),
+        })),
+        p.checkpoint_bytes,
+      );
       if (additionalAssetDownloads(entries).length) setPending(entries);
       else if (entries.length)
         enqueueHubDownload(entries, { repoId, filename });

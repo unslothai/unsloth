@@ -31,6 +31,7 @@ import {
   hydrateDownloadManager,
   useDownloadManagerStore,
 } from "./download-manager-controller";
+import { downloadParts } from "./download-breakdown";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
 
@@ -194,6 +195,11 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           cancelling={job.state === "cancelling"}
           etaSeconds={job.etaSeconds}
           activity={job.activity}
+          parts={
+            job.presentation
+              ? null
+              : downloadParts(job.breakdown, job.downloadedBytes)
+          }
         />
       ) : null}
       {job.details?.length ? (
