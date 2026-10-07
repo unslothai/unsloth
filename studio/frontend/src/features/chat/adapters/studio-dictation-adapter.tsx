@@ -18,6 +18,7 @@ import {
   StudioModelDictationAdapter,
   fetchSttStatus,
   sttEngineStatusFor,
+  sttQuantDownloaded,
 } from "./studio-model-dictation-adapter";
 import {
   type StudioDictationSession,
@@ -164,6 +165,7 @@ export function notifyStudioDictationUnavailable(
 async function offerLocalDictation(): Promise<void> {
   const { sttModel, sttGgufVariant, setDictationEngine } =
     useVoiceSettingsStore.getState();
+  const ggufVariant = sttModelVariant(sttModel, sttGgufVariant);
   try {
     const status = await fetchSttStatus(undefined, sttModel);
     const engine = sttEngineStatusFor(status, sttModel);
@@ -176,7 +178,10 @@ async function offerLocalDictation(): Promise<void> {
       });
       return;
     }
-    if (engine?.downloaded_models.includes(sttModel)) {
+    if (
+      engine?.downloaded_models.includes(sttModel) &&
+      (await sttQuantDownloaded(sttModel, ggufVariant))
+    ) {
       setDictationEngine("model");
       toast.success("Switched to local transcription.", {
         description:
@@ -187,8 +192,5 @@ async function offerLocalDictation(): Promise<void> {
   } catch {
     // Status is unreachable; the download path reports its own failure.
   }
-  requestSttDownload(sttModel, {
-    selectLocalEngine: true,
-    ggufVariant: sttModelVariant(sttModel, sttGgufVariant),
-  });
+  requestSttDownload(sttModel, { selectLocalEngine: true, ggufVariant });
 }

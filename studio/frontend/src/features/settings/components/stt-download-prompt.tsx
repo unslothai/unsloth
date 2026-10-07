@@ -95,7 +95,9 @@ export function SttDownloadPrompt() {
         request.ggufVariant,
       );
       // Progress goes to the shared download panel; the model loads itself when it lands.
-      trackSttDownload(request.model);
+      trackSttDownload(request.model, {
+        ggufVariant: request.ggufVariant ?? null,
+      });
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
         description: error instanceof Error ? error.message : undefined,

@@ -895,7 +895,7 @@ export function VoiceTab() {
         undefined,
         sttVariant,
       );
-      trackSttDownload(sttModel);
+      trackSttDownload(sttModel, { ggufVariant: sttVariant });
       // The status effect only re-polls while it can see a download. Its last read was before this
       // one existed, and the on-demand branch schedules nothing, so without a nudge the tab shows
       // Download for the whole transfer.

@@ -593,7 +593,8 @@ test("every Settings dictation path carries the saved quant", () => {
   assert.match(prompt, /candidate\.quant === \(variant \?\? listing\.default_variant\)/);
   assert.match(adapter, /requestSttDownload\(sessionModel, \{ ggufVariant: sessionVariant \}\)/);
   const offer = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
-  assert.match(offer, /ggufVariant: sttModelVariant\(sttModel, sttGgufVariant\),/);
+  assert.match(offer, /const ggufVariant = sttModelVariant\(sttModel, sttGgufVariant\);/);
+  assert.match(offer, /requestSttDownload\(sttModel, \{ selectLocalEngine: true, ggufVariant \}\)/);
 
   const mirror = readSrc("features/settings/lib/stt-download-mirror.ts");
   // A stopped download of a second quant must not read as complete: the row is already listed.
@@ -601,6 +602,10 @@ test("every Settings dictation path carries the saved quant", () => {
   const erroredAt = mirror.indexOf("if (download?.error)");
   const downloadedAt = mirror.indexOf("if (engineStatus?.downloaded_models.includes(model))");
   assert.ok(cancelledAt > 0 && cancelledAt < erroredAt && erroredAt < downloadedAt);
+  // A quant picked while another one downloads is not warmed when the first lands.
+  assert.match(mirror, /sttModel === model &&\s*\(tracked === undefined \|\| tracked === variant\)/);
+  assert.match(voiceTab, /trackSttDownload\(sttModel, \{ ggufVariant: sttVariant \}\)/);
+  assert.match(prompt, /trackSttDownload\(request\.model, \{\s*ggufVariant: request\.ggufVariant \?\? null,\s*\}\)/);
   assert.match(mirror, /sttModelVariant\(model, sttGgufVariant\)/);
   assert.match(mirror, /outcome === "complete" && isAudioCppFolderId\(model\)[\s\S]*invalidateGgufVariantsCache\(model\)/);
 
@@ -610,11 +615,20 @@ test("every Settings dictation path carries the saved quant", () => {
   for (const holder of ["target", "source", "failed\\.snapshot"]) {
     assert.match(upload, new RegExp(`requestSttDownload\\([^)]*\\{\\s*ggufVariant: ${holder}\\.ggufVariant,`));
   }
-  // Upload readiness: a row with another quant cached is not ready for a pinned, missing one.
-  assert.match(upload, /listGgufVariants\(targetModel, hfApiToken\(getHfToken\(\)\), \{/);
+  // Status lists a row once any quant is cached; a pinned quant needs its own listing row.
+  assert.match(
+    adapter,
+    /listing\?\.variants\.find\(\(variant\) => variant\.quant === ggufVariant\)\s*\?\.downloaded !== false/,
+  );
+  // Upload readiness and the no-speech-service switch both require the pinned quant on disk.
+  assert.match(upload, /sttQuantDownloaded\(\s*targetModel,\s*target\.ggufVariant,\s*signal,\s*\)/);
   assert.match(
     upload,
-    /engineStatus\.downloaded_models\.includes\(targetModel\) &&\s*!quantMissing\s*\?\s*"ready"/,
+    /engineStatus\.downloaded_models\.includes\(targetModel\) &&\s*quantDownloaded\s*\?\s*"ready"/,
+  );
+  assert.match(
+    offer,
+    /engine\?\.downloaded_models\.includes\(sttModel\) &&\s*\(await sttQuantDownloaded\(sttModel, ggufVariant\)\)/,
   );
 
   const reference = readSrc("features/audio/hooks/use-reference-transcribe.ts");

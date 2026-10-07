@@ -40,6 +40,8 @@ const START_GRACE_MS = 8_000;
 
 const trackers = new SttDownloadTrackers();
 const warmSelectedVoiceModelOnComplete = new Map<string, boolean>();
+// The quant each tracked download fetches, when its starter knew it.
+const trackedVariants = new Map<string, string | null>();
 
 function trackerKey(model: SttModel, engine?: SttEngine): string {
   return engine && engine !== "transformers" ? `${engine}:${model}` : model;
@@ -86,18 +88,22 @@ function settle(
   const shouldWarmVoiceModel =
     warmSelectedVoiceModelOnComplete.get(key) ?? true;
   warmSelectedVoiceModelOnComplete.delete(key);
-  // Only warm what the user is still pointed at. Selecting another model, or
-  // leaving local dictation, during the download means this one is not wanted
-  // and loading it would undo the unload that switch performed.
+  const tracked = trackedVariants.get(key);
+  trackedVariants.delete(key);
+  // Only warm what the user is still pointed at. Selecting another model or
+  // quant, or leaving local dictation, during the download means this one is
+  // not wanted and loading it would undo the unload that switch performed.
   const { sttModel, sttGgufVariant, dictationEngine } =
     useVoiceSettingsStore.getState();
+  const variant = sttModelVariant(model, sttGgufVariant);
   if (
     shouldWarmVoiceModel &&
     outcome === "complete" &&
     dictationEngine === "model" &&
-    sttModel === model
+    sttModel === model &&
+    (tracked === undefined || tracked === variant)
   ) {
-    void loadAndAnnounce(model, engine, sttModelVariant(model, sttGgufVariant));
+    void loadAndAnnounce(model, engine, variant);
   }
 }
 
@@ -173,6 +179,8 @@ export function trackSttDownload(
     warmSelectedVoiceModelOnComplete?: boolean;
     engine?: SttEngine;
     repoId?: string;
+    /** The quant this download fetches, so a quant picked meanwhile is not warmed. */
+    ggufVariant?: string | null;
   } = {},
 ): void {
   const resolvedEngine = options.engine ?? sttEngineFor(model);
@@ -188,6 +196,9 @@ export function trackSttDownload(
     key,
     options.warmSelectedVoiceModelOnComplete ?? true,
   );
+  if (options.ggufVariant !== undefined) {
+    trackedVariants.set(key, options.ggufVariant);
+  }
   startExternalJob({
     key: jobKey(model, resolvedEngine),
     repoId: options.repoId ?? getSttModelRepo(model),

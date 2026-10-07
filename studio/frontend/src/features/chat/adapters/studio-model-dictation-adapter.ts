@@ -7,7 +7,9 @@ import {
   isAudioCppFolderId,
 } from "../../audio/audio-cpp-catalog";
 import { authFetch } from "@/features/auth";
+import { listGgufVariants } from "@/features/hub/inventory/api";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
@@ -341,6 +343,23 @@ export async function validateSttModel(
     } | null;
     throw new Error(body?.detail ?? `HTTP ${response.status}`);
   }
+}
+
+/** Whether a pinned quant's own files are on disk. Status lists rows, so a row counts as downloaded
+ *  once any quant is cached; an unreadable listing defers to that row status. */
+export async function sttQuantDownloaded(
+  model: string,
+  ggufVariant: string | null | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!ggufVariant) return true;
+  const listing = await listGgufVariants(model, hfApiToken(getHfToken()), {
+    signal,
+  }).catch(() => null);
+  return (
+    listing?.variants.find((variant) => variant.quant === ggufVariant)
+      ?.downloaded !== false
+  );
 }
 
 /** The quant an audiocpp pick names, as the request field; every other engine takes none. A saved

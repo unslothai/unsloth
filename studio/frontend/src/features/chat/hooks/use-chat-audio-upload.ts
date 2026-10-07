@@ -14,7 +14,6 @@ import {
   useSettingsDialogStore,
   useVoiceSettingsStore,
 } from "@/features/settings";
-import { getHfToken, hfApiToken, listGgufVariants } from "@/features/hub";
 import { useT } from "@/i18n";
 import { accountTransitionPending } from "@/lib/account-transition";
 import { toast } from "@/lib/toast";
@@ -32,6 +31,7 @@ import {
   fetchSttStatus,
   sttEngineFor,
   sttEngineStatusFor,
+  sttQuantDownloaded,
   transcribeAudioBlob,
 } from "../adapters/studio-model-dictation-adapter";
 import { resolveDictationChatId } from "../adapters/studio-web-speech-dictation-adapter";
@@ -205,11 +205,11 @@ export function useChatAudioUpload({
         try {
           const status = await fetchSttStatus(undefined, targetModel, signal);
           // Status knows rows; a pinned quant is ready only once its own files are.
-          const listing = target.ggufVariant
-            ? await listGgufVariants(targetModel, hfApiToken(getHfToken()), {
-                signal,
-              }).catch(() => null)
-            : null;
+          const quantDownloaded = await sttQuantDownloaded(
+            targetModel,
+            target.ggufVariant,
+            signal,
+          );
           if (
             !queue.isCurrent(attempt) ||
             ownerRef.current !== ownerAtStart ||
@@ -241,14 +241,10 @@ export function useChatAudioUpload({
             });
             return;
           }
-          const quantMissing =
-            listing?.variants.find(
-              (variant) => variant.quant === target.ggufVariant,
-            )?.downloaded === false;
           setReadiness({
             state:
               engineStatus.downloaded_models.includes(targetModel) &&
-              !quantMissing
+              quantDownloaded
                 ? "ready"
                 : "missing",
             model: targetModel,
