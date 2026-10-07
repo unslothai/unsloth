@@ -4152,7 +4152,7 @@ export const en = {
   },
   decisions: {
     title: "Try a decision",
-    description: "Ask Laya a question about any text.",
+    description: "Ask decision model a question about any text.",
     tryIt: "Try it",
     tryItOff: "Turn on Serve requests to try it.",
     typeNoul: "Yes / no",

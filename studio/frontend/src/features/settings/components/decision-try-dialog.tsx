@@ -36,9 +36,9 @@ import {
   BookOpen01Icon,
   Cancel01Icon,
   CodeIcon,
-  EyeIcon,
   PlayIcon,
   SlidersHorizontalIcon,
+  ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
@@ -1256,7 +1256,7 @@ export function DecisionTryDialog({
                   {
                     id: "preview",
                     label: t("decisions.preview"),
-                    icon: EyeIcon,
+                    icon: ViewIcon,
                   },
                   { id: "json", label: t("decisions.json"), icon: CodeIcon },
                 ]}
