@@ -35,15 +35,20 @@ export function imeKeydownBlocksComposerSubmit(
   );
 }
 
-export type InputImeState = { open: boolean; endedAt: number };
+export type InputImeState = {
+  open: boolean;
+  endedAt: number;
+  commitKeydownSeen: boolean;
+};
 
 export function newInputImeState(): InputImeState {
-  return { open: false, endedAt: -Infinity };
+  return { open: false, endedAt: -Infinity, commitKeydownSeen: false };
 }
 
 export function resetInputIme(ime: InputImeState) {
   ime.open = false;
   ime.endedAt = -Infinity;
+  ime.commitKeydownSeen = false;
 }
 
 export function inputImeHandlers(ime: InputImeState) {
@@ -54,10 +59,12 @@ export function inputImeHandlers(ime: InputImeState) {
     onBlur: reset,
     onCompositionStart: () => {
       ime.open = true;
+      ime.commitKeydownSeen = false;
     },
     onCompositionEnd: (event: { timeStamp: number }) => {
       ime.open = false;
-      ime.endedAt = event.timeStamp;
+      ime.endedAt = ime.commitKeydownSeen ? -Infinity : event.timeStamp;
+      ime.commitKeydownSeen = false;
     },
   };
 }
@@ -69,7 +76,11 @@ export function imeOwnsInputKeydown(
     nativeEvent: { isComposing?: boolean };
   },
   ime: InputImeState,
+  options?: { modifiedEnterSubmits?: boolean },
 ): boolean {
+  if (event.key === "Enter" && (event.nativeEvent.isComposing || ime.open)) {
+    ime.commitKeydownSeen = true;
+  }
   const msSinceCompositionEnd = event.timeStamp - ime.endedAt;
   ime.endedAt = -Infinity;
   if (event.nativeEvent.isComposing) return true;
@@ -79,7 +90,10 @@ export function imeOwnsInputKeydown(
     ime.open = false;
     return confirmsCandidate;
   }
-  return imeKeydownBlocksComposerSubmit(event, ime.open, msSinceCompositionEnd);
+  const candidate = options?.modifiedEnterSubmits
+    ? { ...event, metaKey: false, ctrlKey: false }
+    : event;
+  return imeKeydownBlocksComposerSubmit(candidate, ime.open, msSinceCompositionEnd);
 }
 
 export function composerKeyEventForImeSubmit(
