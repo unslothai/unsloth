@@ -149,18 +149,8 @@ def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Pa
 
 def host_ram_mib() -> tuple[Optional[int], Optional[int]]:
     """(total, available) host MiB, both capped by an enforcing cgroup."""
-    from .diffusion_memory import (
-        _available_system_memory_mib,
-        _cgroup_memory_limit_mib,
-        _system_memory_mib,
-    )
-
-    total, _ = _system_memory_mib()
-    available = _available_system_memory_mib()
-    limit = _cgroup_memory_limit_mib()
-    if total is not None and limit is not None:
-        total = min(int(total), int(limit))
-    return total, available
+    from .diffusion_memory import _available_system_memory_mib, _host_ram_capacity_mib
+    return _host_ram_capacity_mib(), _available_system_memory_mib()
 
 
 def host_reserve_mib(total_mib: Optional[int]) -> int:

@@ -42,6 +42,8 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     module = types.ModuleType("unsloth_zoo.mlx.inference")
     for name in FUSIONS:
         setattr(module, f"fused_{name}", _neutral_scope)
+    for name, helper in PLAIN_HELPERS.items():
+        setattr(module, name, helper)
     module.__getattr__ = _neutral_zoo_helper
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
@@ -59,6 +61,21 @@ def _neutral_scope(
     TypeError inside generation_mode on every macOS vision batch test.
     """
     return contextlib.nullcontext(model)
+
+
+def _fusion_modules(model, modules):
+    """zoo's own body (unsloth_zoo.mlx.inference): the modules a fusion scope walks."""
+    return (
+        modules
+        if modules is not None
+        else (model.named_modules() if hasattr(model, "named_modules") else ())
+    )
+
+
+# Helpers zoo imports from mlx.inference that are plain functions, not scopes, so the neutral
+# scope cannot stand in for them. unsloth_zoo #1565 made generate.py import _fusion_modules and
+# call tuple(_fusion_modules(model, None)); private names are otherwise refused below.
+PLAIN_HELPERS = {"_fusion_modules": _fusion_modules}
 
 
 def _neutral_zoo_helper(name):
@@ -436,8 +453,49 @@ def test_the_stub_accepts_every_call_zoo_makes_to_an_inference_helper(mlx_infere
     for filename, call in calls:
         args = [object() for _ in call.args]
         kwargs = {kw.arg: object() for kw in call.keywords if kw.arg}
-        with getattr(mlx_inference_patches, call.func.id)(*args, **kwargs):
+        helper = getattr(mlx_inference_patches, call.func.id)
+        if call.func.id in PLAIN_HELPERS:
+            # A plain function, not a scope: it only has to accept the call's shape.
+            helper(*args, **kwargs)
+            continue
+        with helper(*args, **kwargs):
             pass
+
+
+def _without_docstring(body):
+    """The body minus a leading docstring only: any other bare expression (a call, a log line) is
+    behaviour, and dropping it would let the copy miss it."""
+    first = body[0] if body else None
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return body[1:]
+    return body
+
+
+def test_each_plain_helper_stub_matches_zoos_body():
+    """A plain helper is not neutral, so the stub copies zoo's body; it must stay a copy."""
+    import importlib.util
+    import inspect
+    import textwrap
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    source = (Path(next(iter(spec.submodule_search_locations))) / "mlx" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    zoo = {n.name: n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)}
+    for name, helper in PLAIN_HELPERS.items():
+        if name not in zoo:
+            continue
+        ours = ast.parse(textwrap.dedent(inspect.getsource(helper))).body[0]
+        ours_body, zoo_body = (
+            [ast.dump(n) for n in _without_docstring(f.body)] for f in (ours, zoo[name])
+        )
+        assert ours_body == zoo_body, f"{name} no longer matches unsloth_zoo.mlx.inference"
 
 
 @pytest.mark.parametrize("feature", FUSIONS)

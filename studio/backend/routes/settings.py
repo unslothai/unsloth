@@ -37,7 +37,13 @@ from auth.authentication import (
 )
 from auth.storage import rotate_preview_link_secret
 from auth import policy
-from utils.account_context import OWNER, bind_account, current_account, reset_account
+from utils.account_context import (
+    OWNER,
+    bind_account,
+    current_account,
+    is_owner_context,
+    reset_account,
+)
 from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused, hf_token_arg
 
 from routes.provider_credentials import current_credential_write, require_ui_session
@@ -646,6 +652,10 @@ class SystemOneModelOption(BaseModel):
     name: str
     description: str
     download_bytes: int
+    kind: Literal["catalog", "fine_tune"] = "catalog"
+    label: Optional[str] = None
+    available: bool = True
+    unavailable_reason: Optional[str] = None
 
 
 class SystemOneConnectionOption(BaseModel):
@@ -1478,13 +1488,32 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
+    if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
+        return {}
+    return {"available": False, "unavailable_reason": reason}
+
+
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
+    from pathlib import Path
+
     from core.systemone import catalog, laya_runtime
     from routes.systemone import MCP_PATH
 
+    clef_reason = catalog.clef_unsupported_reason(wait = False)
     enabled = systemone_settings.get_enabled()
     runtime = laya_runtime.status()
-    model = catalog.default_checkpoint().name
+    configured = catalog.default_checkpoint()
+    model = configured.name
+    if is_owner_context():
+        fine_tunes = catalog.fine_tunes()
+    else:
+        # Other accounts see only the configured model, never the owner's other output folders.
+        fine_tunes = [configured] if catalog.is_fine_tune_name(configured.name) else []
+        if runtime["loaded_model"] != model:
+            runtime["loaded_model"] = runtime["device"] = None
+        if runtime["loading_model"] != model:
+            runtime["loading_model"] = None
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
         error = None
@@ -1499,9 +1528,23 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         gpu_available = systemone_settings.gpu_available(),
         models = [
             SystemOneModelOption(
-                name = c.name, description = c.description, download_bytes = c.download_bytes
+                name = c.name,
+                description = c.description,
+                download_bytes = c.download_bytes,
+                **_clef_availability(c, clef_reason),
             )
             for c in catalog.CHECKPOINTS.values()
+        ]
+        + [
+            SystemOneModelOption(
+                name = c.name,
+                description = c.description,
+                download_bytes = 0,
+                kind = "fine_tune",
+                label = Path(c.source).name,
+                **_clef_availability(c, clef_reason),
+            )
+            for c in fine_tunes
         ],
         loaded_model = runtime["loaded_model"],
         loaded_device = runtime["device"],
@@ -1543,7 +1586,8 @@ def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
         raise HTTPException(status_code = 409, detail = "Decision API settings changed. Try again.")
 
 
-@_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
+# Not the shared router, which reads as the owner for everyone: this answer depends on who asks.
+@_account_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
 def get_systemone_settings(
     request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
@@ -1971,6 +2015,8 @@ class DiffusionAcceleratorFallbackResponse(BaseModel):
 
 PINNED_MODELS_SETTING_KEY = "model_picker_pinned"
 PINNED_CONNECTED_MODELS_SETTING_KEY = "model_picker_pinned_connected"
+# Embedding models pinned to the RAG menu.
+PINNED_EMBEDDING_MODELS_SETTING_KEY = "rag_embedding_pinned"
 MAX_PINNED_MODELS = 512
 # Room for a "::quant" suffix or an "external::<connection>::" prefix on top of a model id.
 _MAX_PIN_KEY_LEN = MAX_MODEL_OVERRIDE_KEY_LEN + 512
@@ -1984,18 +2030,26 @@ class PinnedModelsPayload(BaseModel):
 
     pinned: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
     connected: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+    embedding: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
 
 
 class PinnedModelsResponse(BaseModel):
     # None = never stored, so the browser seeds it.
     pinned: Optional[list[str]] = None
     connected: Optional[list[str]] = None
+    embedding: Optional[list[str]] = None
 
 
 def _pinned_models_response() -> PinnedModelsResponse:
     from storage.studio_db import get_app_settings
 
-    stored = get_app_settings([PINNED_MODELS_SETTING_KEY, PINNED_CONNECTED_MODELS_SETTING_KEY])
+    stored = get_app_settings(
+        [
+            PINNED_MODELS_SETTING_KEY,
+            PINNED_CONNECTED_MODELS_SETTING_KEY,
+            PINNED_EMBEDDING_MODELS_SETTING_KEY,
+        ]
+    )
 
     def _ids(value: Any) -> Optional[list[str]]:
         return [v for v in value if isinstance(v, str)] if isinstance(value, list) else None
@@ -2003,6 +2057,7 @@ def _pinned_models_response() -> PinnedModelsResponse:
     return PinnedModelsResponse(
         pinned = _ids(stored.get(PINNED_MODELS_SETTING_KEY)),
         connected = _ids(stored.get(PINNED_CONNECTED_MODELS_SETTING_KEY)),
+        embedding = _ids(stored.get(PINNED_EMBEDDING_MODELS_SETTING_KEY)),
     )
 
 
@@ -2023,6 +2078,8 @@ def update_pinned_models(
         updates[PINNED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.pinned))
     if payload.connected is not None:
         updates[PINNED_CONNECTED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.connected))
+    if payload.embedding is not None:
+        updates[PINNED_EMBEDDING_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.embedding))
     if updates:
         upsert_app_settings(updates, read_back = False)
     return _pinned_models_response()
@@ -4831,7 +4888,7 @@ def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
 
 
 def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStatusResponse:
-    """Blocking. Only a direct local request may be offered the setup button."""
+    """Blocking. The setup button: a direct local request, or a Linux install that prompts nobody here."""
     from core.inference import sandbox_setup_plan
     from utils.client_ip import is_direct_local_request
 
@@ -4840,9 +4897,9 @@ def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStat
         return status
     local = bool(setup.action) and is_direct_local_request(request)
     update: dict = {"can_run": False}
-    if local and setup.action == sandbox_setup_plan.LINUX_INSTALL:
-        elevation, _path = sandbox_setup_plan.linux_elevation()
-        update = {"can_run": elevation is not None, "elevation": elevation}
+    if setup.action == sandbox_setup_plan.LINUX_INSTALL:
+        can_run, elevation = sandbox_setup_plan.linux_install_allowed(local = local)
+        update = {"can_run": can_run, "elevation": elevation}
     elif local:
         update = {"can_run": True}
     return status.model_copy(update = {"setup": setup.model_copy(update = update)})
@@ -5037,7 +5094,8 @@ async def start_sandbox_setup(
 ) -> SandboxSetupJob:
     """Install or prepare the OS sandbox here; the password or administrator prompt appears on this computer.
 
-    The Windows runtime-only install needs no prompt, so unlike the rest it also works from a remote browser.
+    Steps that need no prompt (the Windows runtime-only install, a Linux install as root or with
+    passwordless sudo) also work from a remote browser.
     """
     import sys
 
@@ -5046,9 +5104,9 @@ async def start_sandbox_setup(
     from utils.client_ip import is_direct_local_request
 
     # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
-    # The runtime-only install has no prompt (it is setup.ps1's unelevated step), so it works remotely.
-    if payload.operation != sandbox_setup_plan.WINDOWS_RUNTIME and not is_direct_local_request(
-        request
+    local = is_direct_local_request(request)
+    if not local and not await asyncio.to_thread(
+        sandbox_setup_plan.remote_start_allowed, payload.operation
     ):
         raise HTTPException(
             status_code = 403,
@@ -5083,7 +5141,7 @@ async def start_sandbox_setup(
         )
     sandbox_setup_job.add_finish_hook(_forget_sandbox_status)
     try:
-        job = await asyncio.to_thread(sandbox_setup_job.start, payload.operation)
+        job = await asyncio.to_thread(sandbox_setup_job.start, payload.operation, interactive = local)
     except sandbox_setup_job.SetupUnavailable as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     if consent:

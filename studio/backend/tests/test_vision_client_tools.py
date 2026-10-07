@@ -474,6 +474,95 @@ def test_the_named_template_list_form_survives_the_mirror():
     assert mlx_backend.models["m"]["chat_template_info"]["processor_template"] == listed
 
 
+_MARKS_EACH_IMAGE = (
+    "{% for m in messages %}<|im_start|>{{ m['role'] }}\n"
+    "{% if m['content'] is string %}{{ m['content'] }}{% else %}{% for c in m['content'] %}"
+    "{% if c['type'] == 'image' %}<|vision_start|><|image_pad|><|vision_end|>"
+    "{% elif c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %}{% endif %}"
+    "<|im_end|>\n{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
+)
+
+_MARKS_ONE_IMAGE = (
+    "{% for m in messages %}<|user|>\n"
+    "{% if m['content'] is string %}{{ m['content'] }}{% else %}"
+    "{% if m['content'] | selectattr('type', 'equalto', 'image') | list %}<image>\n{% endif %}"
+    "{% for c in m['content'] %}{% if c['type'] == 'text' %}{{ c['text'] }}{% endif %}{% endfor %}"
+    "{% endif %}<|end|>\n{% endfor %}{% if add_generation_prompt %}<|assistant|>\n{% endif %}"
+)
+
+
+class _TemplateProcessor:
+    image_processor = object()
+    all_special_tokens: list = []
+
+    def __init__(self, chat_template, image_token):
+        self.chat_template = chat_template
+        self.image_token = image_token
+
+    def apply_chat_template(
+        self,
+        messages,
+        add_generation_prompt = False,
+        **_kwargs,
+    ):
+        import jinja2
+        return (
+            jinja2.Environment()
+            .from_string(self.chat_template)
+            .render(messages = messages, add_generation_prompt = add_generation_prompt)
+        )
+
+
+@pytest.mark.parametrize(
+    "chat_template, image_token, model_type, served",
+    [
+        (_MARKS_EACH_IMAGE, "<|image_pad|>", "qwen2_5_vl", [2, 4]),
+        (_MARKS_ONE_IMAGE, "<image>", "llava", [4]),
+        (_MARKS_EACH_IMAGE, "<|image_pad|>", "mllama", [2, 4]),
+    ],
+    ids = ["marks each image", "marks one image", "mlx-vlm single-image model"],
+)
+def test_a_transformers_vision_model_is_served_every_image_its_template_can_mark(
+    chat_template, image_token, model_type, served
+):
+    import base64
+    import io
+    import types
+
+    from PIL import Image
+
+    from models.inference import ChatMessage
+
+    def picture(size):
+        buffer = io.BytesIO()
+        Image.new("RGB", (size, size), "white").save(buffer, format = "PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode()
+        return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}}
+
+    inf = _inference_module()
+    loader = inf.InferenceBackend.__new__(inf.InferenceBackend)
+    processor = _TemplateProcessor(chat_template, image_token)
+    model = types.SimpleNamespace(config = types.SimpleNamespace(model_type = model_type))
+    loader.models = {"vl": {"tokenizer": processor, "processor": processor, "model": model}}
+    loader._load_chat_template_info("vl")
+
+    _pytest = _shared_setup_1(__file__)
+    backend, passthrough = _shared_setup_3()
+    backend.models["sf-model"]["chat_template_info"] = loader.models["vl"]["chat_template_info"]
+    payload = passthrough._request(
+        messages = [
+            ChatMessage(role = "user", content = [picture(2), {"type": "text", "text": "first"}]),
+            ChatMessage(role = "assistant", content = "a white square"),
+            ChatMessage(role = "user", content = [picture(4), {"type": "text", "text": "brighter?"}]),
+        ],
+        stream = False,
+    )
+    _shared_setup_2(_pytest, backend, passthrough, payload)
+
+    call = backend.calls[0]
+    assert [image.width for image in call["images"] or [call["image"]]] == served
+
+
 def test_a_processor_body_that_cannot_advertise_empties_the_healing_catalog():
     """The route profiles the mirrored processor body for image turns, so a body with no
     tool handling at all must leave nothing authorized to heal."""

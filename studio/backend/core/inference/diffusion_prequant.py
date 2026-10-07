@@ -500,6 +500,78 @@ PREFER_SAFETENSORS_ENV = "UNSLOTH_PREQUANT_PREFER_SAFETENSORS"
 _PICKLE_SUFFIXES = (".pt", ".pth")
 _logged_twin_choices: set = set()
 
+# ``<stem>-ComfyUI.safetensors``: the twin of a hosted artifact both ComfyUI and Studio load; older builds never ask for it.
+COMFY_PREQUANT_TAG = "-ComfyUI"
+COMFY_PREQUANT_SUFFIX = COMFY_PREQUANT_TAG + ".safetensors"
+# 0 drops the ComfyUI-format names from the chain (back to Studio's own containers only).
+COMFY_PREQUANT_ENV = "UNSLOTH_DIFFUSION_PREQUANT_COMFY"
+_ARTIFACT_SUFFIXES = (".safetensors",) + _PICKLE_SUFFIXES
+
+
+def is_comfy_prequant_filename(name: Optional[str]) -> bool:
+    """Whether ``name`` is the ComfyUI-format spelling of a hosted artifact."""
+    return bool(name) and str(name).endswith(COMFY_PREQUANT_SUFFIX)
+
+
+def _artifact_stem(name: Optional[str]) -> Optional[str]:
+    """``<stem>`` of a hosted ``<stem>.safetensors`` / ``.pt`` / ``.pth`` / ``-ComfyUI.safetensors`` artifact;
+    None for the legacy ``transformer_<scheme>.pt`` names, which have no ComfyUI twin."""
+    if not name or "/" in str(name):
+        return None
+    name = str(name)
+    if name.startswith("transformer_"):
+        return None
+    if name.endswith(COMFY_PREQUANT_SUFFIX):
+        return name[: -len(COMFY_PREQUANT_SUFFIX)] or None
+    for suffix in _ARTIFACT_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)] or None
+    return None
+
+
+def comfy_prequant_filename(name: Optional[str]) -> Optional[str]:
+    """The ComfyUI-format twin of the hosted artifact ``name`` (``<stem>-ComfyUI.safetensors``), else None."""
+    stem = _artifact_stem(name)
+    if stem is None or is_comfy_prequant_filename(name):
+        return None
+    return stem + COMFY_PREQUANT_SUFFIX
+
+
+def comfy_prequant_enabled() -> bool:
+    import os
+    return (os.environ.get(COMFY_PREQUANT_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+# Twins that hold Studio's weights bit for bit (int8) lead the chain. ComfyUI fp8 has one scale per tensor, a coarser
+# second rounding of Studio's per-row fp8, so an fp8 twin trails Studio's own fp8 artifact.
+COMFY_TWIN_LEADS = frozenset({"int8"})
+
+
+def with_comfy_twins(names: Sequence[str], *, lead: bool = True) -> list:
+    """``names`` with each artifact's ComfyUI-format twin added. ``lead``: right ahead of the artifact's first name,
+    so the one file ComfyUI also loads is the default download and the containers older builds request stay behind
+    it as the fallback when the repo does not host the twin; otherwise right behind the artifact's last name.
+    Order-preserving, no duplicates."""
+    names = [n for n in names if n]
+    out: list = []
+    for index, name in enumerate(names):
+        twin = comfy_prequant_filename(name)
+        stem = _artifact_stem(name)
+        if twin and twin not in names and twin not in out:
+            if lead:
+                out.append(twin)
+            elif not any(_artifact_stem(n) == stem for n in names[index + 1 :]):
+                out.extend(n for n in (name, twin) if n not in out)
+                continue
+        if name not in out:
+            out.append(name)
+    return out
+
 
 def _hub_name_cached(
     repo_id: Optional[str], name: Optional[str], root: Optional[str]
@@ -603,8 +675,6 @@ def prefer_cached_pickle_twins(
     out = [n for n in names if n]
     if not repo_id or len(out) < 2:
         return out
-    if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in ("1", "true", "yes", "on"):
-        return out
     try:
         # only the roots the caller's download will reuse, else it re-fetches the pickle it was promised
         roots = tuple(roots) if roots is not None else _twin_cache_roots(cache_dir)
@@ -618,7 +688,49 @@ def prefer_cached_pickle_twins(
             except Exception:  # noqa: BLE001 - an unanswerable question is a no
                 return False
 
-        for st in [n for n in out if n.lower().endswith(".safetensors")]:
+        # A cached container of an artifact beats an uncached one of the SAME artifact: never download a second copy.
+        for comfy in [n for n in out if is_comfy_prequant_filename(n)]:
+            stem = _artifact_stem(comfy)
+            twins = [n for n in out if n != comfy and _artifact_stem(n) == stem]
+            if not twins:
+                continue
+            hit = next((t for t in twins if _ok(t) and _cached(t)), None)
+            if _cached(comfy):
+                if hit is None and _ok(comfy) and out.index(comfy) > out.index(twins[0]):
+                    out.remove(comfy)
+                    out.insert(out.index(twins[0]), comfy)
+                continue
+            if hit is None:
+                continue
+            out.remove(comfy)
+            out.insert(out.index(twins[-1]) + 1, comfy)
+            key = (repo_id, hit, comfy)
+            if log and key not in _logged_twin_choices:
+                _logged_twin_choices.add(key)
+                sink = logger
+                if sink is None:
+                    import logging
+                    sink = logging.getLogger(__name__)
+                sink.info(
+                    "diffusion.prequant_cached_twin: %s: using the cached %s; its ComfyUI-format twin %s is "
+                    "not downloaded",
+                    repo_id,
+                    hit,
+                    comfy,
+                )
+        if (os.environ.get(PREFER_SAFETENSORS_ENV) or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return out
+
+        for st in [
+            n
+            for n in out
+            if n.lower().endswith(".safetensors") and not is_comfy_prequant_filename(n)
+        ]:
             stem = st[: -len(".safetensors")]
             twin = next(
                 (
@@ -920,6 +1032,8 @@ def resolve_prequant_source(
         for name in declared + derived:
             if name and name not in names:
                 names.append(name)
+        if comfy_prequant_enabled() and _comfy_prequant_family(fam):
+            names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         return PrequantSource(
             kind = "repo",
             location = repo_id,
@@ -928,6 +1042,16 @@ def resolve_prequant_source(
             declared_filenames = declared,
         )
     return None
+
+
+def _comfy_prequant_family(fam: Any) -> bool:
+    """Whether ``fam``'s hosted artifacts may resolve to a ComfyUI-format twin: the image families, whose
+    denoiser loads through ``load_prequantized_transformer`` as one whole module."""
+    try:
+        from .diffusion_families import DiffusionFamily
+        return isinstance(fam, DiffusionFamily)
+    except Exception:  # noqa: BLE001 - no registry: keep the chain as it was
+        return False
 
 
 _LOCAL_PREQUANT_SCHEME: dict[tuple[str, int, int], Optional[str]] = {}
@@ -978,6 +1102,12 @@ def local_prequant_scheme(path: str) -> Optional[str]:
             scheme = str(recorded) if recorded else None
     except Exception:  # noqa: BLE001 -- a checkpoint we cannot parse is "unknown", never a match
         scheme = None
+    if scheme is None and is_safetensors_checkpoint(real):
+        try:
+            from .diffusion_comfy_quant import comfy_prequant_scheme, scan_comfy_quant
+            scheme = comfy_prequant_scheme(scan_comfy_quant(real))
+        except Exception:  # noqa: BLE001 -- unreadable is "unknown"
+            scheme = None
     _LOCAL_PREQUANT_SCHEME[key] = scheme
     return scheme
 
@@ -1396,6 +1526,16 @@ def usable_prequant_source(
             return None
         if local_prequant_scheme(src.location) != scheme:
             return None
+        if not _comfy_prequant_family(fam):
+            # only the image denoiser loader reads a ComfyUI-format file; anywhere else it would be refused at load
+            try:
+                from .diffusion_comfy_quant import scan_comfy_quant
+
+                from os.path import expanduser
+                if scan_comfy_quant(expanduser(src.location)) is not None:
+                    return None
+            except Exception:  # noqa: BLE001 -- unreadable: the scheme check above already decided
+                pass
     return src
 
 
@@ -1564,8 +1704,12 @@ def load_prequantized_transformer(
     local_files_only: bool = False,
     logger: Any = None,
     placement_device: Optional[str] = None,
+    family: Optional[str] = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
+
+    ``family`` (the Studio family name) is what a ComfyUI-format artifact needs to pick the layers Studio's
+    own ``scheme`` quantizes; Studio's own checkpoints record it themselves.
 
     ``placement_device`` (default ``device``) is where the module is materialised; ``device`` selects kernels.
 
@@ -1608,93 +1752,128 @@ def load_prequantized_transformer(
         if path is None:
             return None
 
-        # A safetensors artifact, or a torch.save pickle deserialized under the constructor ALLOWLIST above and never
-        # as a free-running one. First-party hosting is no reason to execute whatever bytes arrive: the artifact is
-        # mutable, fetched over the network, and reached by loads that never asked for one (auto resolves an unset
-        # precision to a hosted checkpoint), so a mutated file must fail to load rather than run. Both containers
-        # hand back the same dict, so every check below applies to them equally.
-        ckpt = _read_prequant_for(path, placement_device or device, logger)
-        if not _validate_checkpoint(
-            ckpt,
-            scheme,
-            base,
-            logger,
-            min_features = min_features,
-            fast_accum = fast_accum,
-            component = component,
-        ):
-            return None
-        state_dict = ckpt["state_dict"]
-        # The only check reading what the artifact HOLDS: corruption after build passes the rest.
-        if not _verify_packed_fingerprint(
-            state_dict, ckpt.get("metadata") or {}, logger = logger, path = path
-        ):
-            return None
-        _repair_legacy_checkpoint(ckpt, scheme, logger)
-        _pin_kernel_preference(state_dict, logger)
+        # A ComfyUI-format file rebuilds into the same torchao weights as Studio's own checkpoint of this scheme.
+        from .diffusion_comfy_quant import load_comfy_prequant, scan_comfy_quant
 
-        # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
-        # may be gone or read-only, and load_config's raise is swallowed below into a None return, silently dropping a
-        # prequant whose checkpoint is cached and already loaded.
-        config = _load_transformer_config(
-            transformer_cls,
-            base,
-            hf_token,
-            cache_dir,
-            path,
-            config_subfolder,
-            local_files_only = local_files_only,
-        )
-        from accelerate import init_empty_weights
+        comfy_scan = scan_comfy_quant(path)
+        comfy_rotated = False
+        if comfy_scan is not None:
+            if prepare_model is not None or (component and component != DEFAULT_PREQUANT_COMPONENT):
+                raise ValueError(
+                    "a ComfyUI-format checkpoint is only read as a whole denoiser, not as the "
+                    f"{component or 'reshaped'} component"
+                )
+            transformer = load_comfy_prequant(
+                transformer_cls,
+                path,
+                scheme = scheme,
+                base = base,
+                family = family,
+                dtype = dtype,
+                hf_token = hf_token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                fast_accum = fast_accum,
+                min_features = min_features,
+                config_subfolder = config_subfolder,
+                logger = logger,
+            )
+            from .diffusion_convrot import declares_rotation, is_rotated_linear, warm_rotation_cache
 
-        metadata = ckpt.get("metadata") or {}
-        with init_empty_weights():
-            transformer = transformer_cls.from_config(config)
-        if prepare_model is not None:
-            prepare_model(transformer, metadata)
-        transformer.load_state_dict(state_dict, strict = True, assign = True)
-        if _has_meta_tensors(transformer):
-            # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
-            # they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
-            transformer = transformer_cls.from_config(config)
-            # The retry REPLACES the module, so the hook has to run again: skipping it here would load the same state
-            # dict into a differently shaped model, and this branch is the one families with non-persistent buffers
-            # always take -- the mismatch would be the norm, not the corner case, and strict=True would surface it as
-            # a bare key error.
+            comfy_rotated = any(is_rotated_linear(m) for m in transformer.modules())
+            metadata = {
+                "family": family,
+                "torch_dtype": str(dtype).replace("torch.", ""),
+                "comfy_format": True,
+            }
+        else:
+            # A safetensors artifact, or a torch.save pickle deserialized under the constructor ALLOWLIST above and never
+            # as a free-running one. First-party hosting is no reason to execute whatever bytes arrive: the artifact is
+            # mutable, fetched over the network, and reached by loads that never asked for one (auto resolves an unset
+            # precision to a hosted checkpoint), so a mutated file must fail to load rather than run. Both containers
+            # hand back the same dict, so every check below applies to them equally.
+            ckpt = _read_prequant_for(path, placement_device or device, logger)
+            if not _validate_checkpoint(
+                ckpt,
+                scheme,
+                base,
+                logger,
+                min_features = min_features,
+                fast_accum = fast_accum,
+                component = component,
+            ):
+                return None
+            state_dict = ckpt["state_dict"]
+            # The only check reading what the artifact HOLDS: corruption after build passes the rest.
+            if not _verify_packed_fingerprint(
+                state_dict, ckpt.get("metadata") or {}, logger = logger, path = path
+            ):
+                return None
+            _repair_legacy_checkpoint(ckpt, scheme, logger)
+            _pin_kernel_preference(state_dict, logger)
+
+            # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
+            # may be gone or read-only, and load_config's raise is swallowed below into a None return, silently dropping a
+            # prequant whose checkpoint is cached and already loaded.
+            config = _load_transformer_config(
+                transformer_cls,
+                base,
+                hf_token,
+                cache_dir,
+                path,
+                config_subfolder,
+                local_files_only = local_files_only,
+            )
+            from accelerate import init_empty_weights
+
+            metadata = ckpt.get("metadata") or {}
+            with init_empty_weights():
+                transformer = transformer_cls.from_config(config)
             if prepare_model is not None:
                 prepare_model(transformer, metadata)
             transformer.load_state_dict(state_dict, strict = True, assign = True)
+            if _has_meta_tensors(transformer):
+                # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
+                # they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
+                transformer = transformer_cls.from_config(config)
+                # The retry REPLACES the module, so the hook has to run again: skipping it here would load the same state
+                # dict into a differently shaped model, and this branch is the one families with non-persistent buffers
+                # always take -- the mismatch would be the norm, not the corner case, and strict=True would surface it as
+                # a bare key error.
+                if prepare_model is not None:
+                    prepare_model(transformer, metadata)
+                transformer.load_state_dict(state_dict, strict = True, assign = True)
 
-        # The ONLINE half of an activation rotation, applied here rather than in a family's ``prepare_model`` hook so
-        # that no route can load a rotated checkpoint without it: the offline half is already baked into the weights
-        # that were just assigned, and a rotated weight met by an unrotated activation renders plausible garbage with
-        # nothing to catch. A no-op for every artifact that declares no rotation, and a RAISE (caught below into the
-        # dense fallback) for one this build cannot honour exactly. After load_state_dict because the meta retry above
-        # rebuilds the module; before apply_small_m_padding because padding reparents the Linears and the recorded
-        # fqns name the unwrapped tree.
-        from .diffusion_convrot import (
-            apply_activation_rotation,
-            declares_rotation,
-            warm_rotation_cache,
-        )
-
-        apply_activation_rotation(transformer, metadata, logger = logger)
-
-        if scheme == "nvfp4":
-            from .diffusion_nvfp4_linear import convert_nvfp4_backend
-            from .diffusion_nvfp4_ops import select_nvfp4_backend
-            convert_nvfp4_backend(
-                transformer, metadata, select_nvfp4_backend(device), logger = logger
+            # The ONLINE half of an activation rotation, applied here rather than in a family's ``prepare_model`` hook so
+            # that no route can load a rotated checkpoint without it: the offline half is already baked into the weights
+            # that were just assigned, and a rotated weight met by an unrotated activation renders plausible garbage with
+            # nothing to catch. A no-op for every artifact that declares no rotation, and a RAISE (caught below into the
+            # dense fallback) for one this build cannot honour exactly. After load_state_dict because the meta retry above
+            # rebuilds the module; before apply_small_m_padding because padding reparents the Linears and the recorded
+            # fqns name the unwrapped tree.
+            from .diffusion_convrot import (
+                apply_activation_rotation,
+                declares_rotation,
+                warm_rotation_cache,
             )
-        # assign=True shares the tensors: a live reference doubles the peak on unified memory.
-        del state_dict
-        del ckpt
+
+            apply_activation_rotation(transformer, metadata, logger = logger)
+
+            if scheme == "nvfp4":
+                from .diffusion_nvfp4_linear import convert_nvfp4_backend
+                from .diffusion_nvfp4_ops import select_nvfp4_backend
+                convert_nvfp4_backend(
+                    transformer, metadata, select_nvfp4_backend(device), logger = logger
+                )
+            # assign=True shares the tensors: a live reference doubles the peak on unified memory.
+            del state_dict
+            del ckpt
 
         from .diffusion_fast_load import fast_upload
 
         with fast_upload([transformer], placement_device or device, logger = logger):
             transformer = transformer.to(placement_device or device)
-        if declares_rotation(metadata):
+        if declares_rotation(metadata) or comfy_rotated:
             try:
                 import torch
 

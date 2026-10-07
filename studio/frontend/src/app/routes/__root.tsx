@@ -36,7 +36,7 @@ import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom"
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { SharedRunConfigLinkHandler } from "@/features/model-picker";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
-import { hydratePins } from "@/features/model-picker/components/model-selector/pins-mirror";
+import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {

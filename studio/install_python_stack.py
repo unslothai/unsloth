@@ -51,6 +51,7 @@ def _nvidia_library_inventory():
     return _nvidia_probe.probe() if _nvidia_probe is not None else None
 
 
+from backend.utils.kernel_install import install_prebuilt, uninstall_command
 from backend.utils.wheel_utils import (
     flash_attn_package_version,
     flash_attn_wheel_url,
@@ -5445,18 +5446,10 @@ def _warn_still_cpu(expected: str) -> bool:
 
 def _uninstall_distribution(name: str) -> bool:
     """Remove one distribution from the venv this script targets. True iff it is gone.
-
-    Same shape as the flash-attn removal below: --python sys.executable so a uv that
-    also needs --system cannot remove from the system Python instead, and a pip
-    fallback for the same interpreter. Output is swallowed; the caller reports.
-    """
-    if USE_UV and shutil.which("uv"):
-        cmd = ["uv", "pip", "uninstall"]
-        if UV_NEEDS_SYSTEM:
-            cmd.append("--system")
-        cmd.extend(["--python", sys.executable, name])
-    else:
-        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", name]
+    Output is swallowed; the caller reports."""
+    cmd = uninstall_command(
+        name, use_uv = USE_UV and bool(shutil.which("uv")), uv_needs_system = UV_NEEDS_SYSTEM
+    )
     _count_install_action()
     removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
     return removed.returncode == 0
@@ -8149,21 +8142,10 @@ def _flash_attn_importable() -> bool:
 def _remove_rejected_flash_attn() -> bool:
     """Uninstall a flash-attn that installed but will not import. True iff it is gone.
 
-    Targets the interpreter install_wheel installed into, always ``sys.executable``: its uv
-    command passes --python as well as --system, and its pip fallback runs that interpreter.
-    --system ALONE would remove from the system Python, leaving the rejected wheel in the
-    venv while setup reported it gone.
+    uv gets --python as well as --system: --system ALONE would remove from the system
+    Python, leaving the rejected wheel in the venv while setup reported it gone.
     """
-    if USE_UV and shutil.which("uv"):
-        cmd = ["uv", "pip", "uninstall"]
-        if UV_NEEDS_SYSTEM:
-            cmd.append("--system")
-        cmd.extend(["--python", sys.executable, "flash-attn"])
-    else:
-        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
-    _count_install_action()
-    removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
-    return removed.returncode == 0
+    return _uninstall_distribution("flash-attn")
 
 
 def _ensure_flash_attn() -> None:
@@ -8182,39 +8164,37 @@ def _ensure_flash_attn() -> None:
     if wheel_available:
         # Counted: it lands a distribution, so the caches keyed on the counter must be rebuilt.
         _count_install_action()
-        for installer, wheel_result in install_wheel(
+        outcome = install_prebuilt(
             wheel_url,
-            python_executable = sys.executable,
-            use_uv = USE_UV,
-            uv_needs_system = UV_NEEDS_SYSTEM,
-        ):
-            if wheel_result.returncode == 0:
-                # Verify rather than trust the exit code, so setup reports what happened.
-                if _flash_attn_importable():
-                    return
-                # Remove it before giving up. Left installed, unsloth/models/_utils.py finds
-                # it by metadata (_package_available) and then imports the native module
-                # in process, so a wheel that killed the probe would kill training too.
-                if _remove_rejected_flash_attn():
-                    _step(
-                        "warning",
-                        "flash-attn wheel installed but is not importable on this GPU; removed it",
-                        _cyan,
-                    )
-                else:
-                    # Say so plainly: it is still importable in process, so this is not the
-                    # same state as never having installed it.
-                    _step(
-                        "warning",
-                        "flash-attn wheel is not importable on this GPU and could not be "
-                        "removed; uninstall flash-attn manually before training",
-                        _cyan,
-                    )
-                break
-            _print_optional_install_failure(
+            install = install_wheel,
+            verify = _flash_attn_importable,
+            on_failed = lambda installer, wheel_result: _print_optional_install_failure(
                 f"Installing flash-attn prebuilt wheel with {installer}",
                 wheel_result,
-            )
+            ),
+            use_uv = USE_UV,
+            uv_needs_system = UV_NEEDS_SYSTEM,
+        )
+        if outcome == "installed":
+            return
+        if outcome == "rejected":
+            # Remove it before giving up. Left installed, unsloth/models/_utils.py finds
+            # it by metadata (_package_available) and then imports the native module
+            # in process, so a wheel that killed the probe would kill training too.
+            if _remove_rejected_flash_attn():
+                _step(
+                    "warning",
+                    "flash-attn wheel installed but is not importable on this GPU; removed it",
+                    _cyan,
+                )
+            else:
+                # Still importable in process, unlike never having installed it.
+                _step(
+                    "warning",
+                    "flash-attn wheel is not importable on this GPU and could not be "
+                    "removed; uninstall flash-attn manually before training",
+                    _cyan,
+                )
         _step("warning", "Continuing without flash-attn", _cyan)
         return
 
