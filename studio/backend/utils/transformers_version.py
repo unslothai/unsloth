@@ -3724,6 +3724,8 @@ def ensure_latest_transformers_venv(
     pin = _latest_pin_data()
     if (
         pin is not None
+        # A consented main install always rebuilds: main gains architectures without a .devN bump.
+        and _main_archive_commit is None
         and pin["version"] == version
         and tuple(pin["packages"]) == packages
         and _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages)

@@ -4293,3 +4293,18 @@ class TestTransformersMainSource:
             lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not reinstall main")),
         )
         assert tv._ensure_venv_t5_latest_exists() is False
+
+    def test_consented_main_install_rebuilds_a_healthy_sidecar(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        packages = tv._venv_t5_latest_packages("5.19.0.dev0")
+        monkeypatch.setattr(
+            tv, "_latest_pin_data", lambda: {"version": "5.19.0.dev0", "packages": list(packages)}
+        )
+        monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda d, p: True)
+        monkeypatch.setattr(tv, "_top_up_optional_packages", lambda d, p: "reused")
+        monkeypatch.setattr(tv, "_stage_and_swap_latest_venv", lambda *a, **k: "rebuilt")
+        assert tv.ensure_latest_transformers_venv("5.19.0.dev0") == "reused"
+        # Same .devN, newer main commit: the sidecar may lack the newly requested architecture.
+        with tv.transformers_main_at("d" * 40):
+            assert tv.ensure_latest_transformers_venv("5.19.0.dev0") == "rebuilt"
