@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 
 
 def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
-    """Lightweight format check without processing, for frontend validation: quickly determines whether the user must manually map columns before the full format_and_template_dataset(). Returns requires_manual_mapping, detected_format, columns (for the mapping UI), suggested_mapping, and detected_image_column / detected_text_column for VLM datasets."""
+    """check whether frontend column mapping is required without processing the dataset."""
     columns = (
         list(dataset.column_names)
         if hasattr(dataset, "column_names")
@@ -187,15 +187,13 @@ def _apply_user_mapping(
     mapping: dict,
     batch_size: int = 1000,
 ):
-    """Apply user-provided column mapping to convert dataset to conversations format. Accepts chatml (user/assistant/system), sharegpt (human/gpt/system) and alpaca (instruction/input/output) role names, all normalised to chatml. If the mapping has ``__``-prefixed metadata keys (from the conversion advisor), routes to template-based conversion instead of simple role mapping. Returns a dataset with a single 'conversations' column."""
+    """normalize chatml, ShareGPT, or Alpaca roles; ``__`` metadata selects template conversion."""
     meta = {k: v for k, v in mapping.items() if k.startswith("__")}
     column_roles = {k: v for k, v in mapping.items() if not k.startswith("__")}
 
     if meta:
         return _apply_template_mapping(dataset, column_roles, meta, batch_size)
 
-    # ── Simple mode (original logic) ──
-    # Pre-compute: group columns by canonical chatml role
     role_groups: dict[str, list[str]] = {r: [] for r in _CHATML_ROLE_ORDER}
     for col_name, role in column_roles.items():
         canonical = _TO_CHATML.get(role)
@@ -230,7 +228,6 @@ def _apply_user_mapping(
 
 
 def _extract_column_value(val, col: str, label_mapping: dict) -> str:
-    """Extract a string value from a column, handling complex types and label mapping."""
     if isinstance(val, dict):
         if "text" not in val:
             return json.dumps(val, ensure_ascii = False)

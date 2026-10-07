@@ -30,7 +30,7 @@ def cell_text(value):
     if value is None:
         return ""
     if isinstance(value, dict) and {"text", "answer_start"} <= value.keys():
-        # SQuAD-style `answers` span: train the first answer, as _extract_column_value does.
+        # match _extract_column_value by training the first SQuAD answer.
         answer = value["text"]
         if isinstance(answer, list):
             answer = answer[0] if answer else None
@@ -91,12 +91,12 @@ def _column_ids(dataset) -> dict:
 
 
 def typed_csv_columns(dataset) -> frozenset:
-    """CSV columns the csv loader would have typed: numbers, booleans or only missing cells."""
+    """CSV columns inferred as numbers, booleans, or all missing by the loader."""
     return frozenset(column for column, tag in _column_ids(dataset).items() if tag == _CSV_TYPED)
 
 
 def text_cell_check(dataset):
-    """`(column, cell) -> bool`: False for CSV cells the csv loader would not read as strings."""
+    """`(column, cell) -> bool`: `False` for CSV cells the loader would not parse as strings."""
     ids = _column_ids(dataset)
 
     def is_text(column, cell):

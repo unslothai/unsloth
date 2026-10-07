@@ -556,7 +556,6 @@ def detect_custom_format_heuristic(dataset):
 
 
 def detect_multimodal_dataset(dataset):
-    """Detect multimodal data (images and/or audio) in a dataset. Two passes per modality, a column-name keyword heuristic then value-type inspection, returning is_image/is_audio flags, detected columns, modality types and detected audio/text/speaker columns."""
     sample = next(iter(dataset))
     column_names = list(sample.keys())
 
