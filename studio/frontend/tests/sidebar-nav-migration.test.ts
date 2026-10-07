@@ -113,7 +113,7 @@ test("a customized version-5 sidebar keeps its order and only gains the rows add
   );
   assert.deepEqual(
     customization.sidebarNav.map((item) => item.id),
-    [...customizedV5.map((item) => item.id), "library", "audio"],
+    [...customizedV5.map((item) => item.id), "library", "audio", "convert"],
   );
   assert.equal(customization.sidebarNav.at(-1)?.pinned, false);
 });

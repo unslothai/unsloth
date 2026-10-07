@@ -167,7 +167,6 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "train", pinned: true },
     { id: "video", pinned: false },
     { id: "recipes", pinned: false },
-    { id: "convert", pinned: false },
     { id: "export", pinned: false },
   ],
   [
@@ -177,7 +176,6 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "video", pinned: true },
     { id: "train", pinned: true },
     { id: "recipes", pinned: false },
-    { id: "convert", pinned: false },
     { id: "export", pinned: false },
   ],
   [
@@ -187,7 +185,6 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "video", pinned: true },
     { id: "train", pinned: true },
     { id: "recipes", pinned: false },
-    { id: "convert", pinned: false },
     { id: "export", pinned: false },
   ],
   [
@@ -197,7 +194,6 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "video", pinned: false },
     { id: "train", pinned: true },
     { id: "recipes", pinned: false },
-    { id: "convert", pinned: false },
     { id: "export", pinned: false },
     { id: "api", pinned: false },
   ],
@@ -209,7 +205,6 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "audio", pinned: false },
     { id: "train", pinned: true },
     { id: "recipes", pinned: false },
-    { id: "convert", pinned: false },
     { id: "export", pinned: false },
     { id: "api", pinned: false },
   ],
