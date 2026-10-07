@@ -391,22 +391,1287 @@ if _IS_MLX:
                 "Unsloth: FastSentenceTransformer is not yet supported on MLX."
             )
 
+    # Decision models (Laya, Clef). The data, metrics and calibration code is a copy of unsloth/models/decision.py,
+    # which cannot be imported here: keep the two in step.
+    import copy, dataclasses, functools, json, math, random, tempfile, types, warnings
+    from collections import Counter
+    from pathlib import Path
+    from typing import Callable, Optional
+
+    TRAIN_MAX_LEN, TRAIN_HEAD_MAX_LEN = 1024, 256
+    HOLDOUT_MAX = 400
+    MIN_CALIBRATION_ITEMS = 10
+    QUESTION_TYPES = ("choice", "score", "noul")
+    _FILES = ("rl_agent_config.json", "model.safetensors")
+    _DIRS = ("encoder", "tokenizer")
+    _CLEF_HEAD_FILES = ("joint_head.safetensors", "joint_head_config.json")
+    _ADAPTER_CONFIG = "adapter_config.json"
+    CLEF_MAX_LEN = 4096
+    CLEF_SERVE_MAX_LEN = 16384
+    # laya 0.3.5 ships inside Unsloth for Studio's Decision API (studio/backend/vendor/README.md).
+    _VENDORED_LAYA = (
+        Path(__file__).resolve().parents[1]
+        / "studio"
+        / "backend"
+        / "vendor"
+        / "laya"
+        / "__init__.py"
+    ).resolve()
+
+    class DecisionDataError(ValueError):
+        pass
+
+    @functools.lru_cache(maxsize = None)
+    def _laya():
+        # By path, so a pip installed "laya" is never used or replaced; Studio registers this copy.
+        for name in ("laya", "unsloth._laya"):
+            module = sys.modules.get(name)
+            if (
+                getattr(module, "__file__", None)
+                and Path(module.__file__).resolve() == _VENDORED_LAYA
+            ):
+                return module
+        if not _VENDORED_LAYA.is_file():
+            raise ImportError(
+                f"Unsloth: decision models need laya, which ships with Unsloth at {_VENDORED_LAYA.parent}. "
+                "Please reinstall Unsloth."
+            )
+        spec = importlib.util.spec_from_file_location(
+            "unsloth._laya", _VENDORED_LAYA, submodule_search_locations = [str(_VENDORED_LAYA.parent)]
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        # laya's JSON reads and writes use a bare open(), which is the locale encoding on Windows.
+        module.agent.open = functools.partial(open, encoding = "utf-8")
+        return module
+
+    def is_decision_checkpoint(folder) -> bool:
+        folder = Path(folder)
+        return is_clef_checkpoint(folder) or (
+            all((folder / name).is_file() for name in _FILES)
+            and all((folder / name).is_dir() for name in _DIRS)
+        )
+
+    def is_clef_checkpoint(folder) -> bool:
+        # Cloudflare's Clef layout: a backbone (merged, or LoRA adapters over a base) plus a joint schema head.
+        folder = Path(folder)
+        return all((folder / name).is_file() for name in _CLEF_HEAD_FILES) and (
+            (folder / "config.json").is_file() or (folder / _ADAPTER_CONFIG).is_file()
+        )
+
+    def _is_clef_adapter(folder) -> bool:
+        folder = Path(folder)
+        return not (folder / "config.json").is_file() and (folder / _ADAPTER_CONFIG).is_file()
+
+    def _is_clef_repo(model_name, prefix, token, revision) -> Optional[bool]:
+        # Asked up front: Unsloth's download wrapper rejects a snapshot that lacks an exact file it was
+        # asked for, so a Laya pattern on a Clef repo (or the reverse) would fail as "incomplete".
+        from huggingface_hub import HfApi, constants
+
+        if constants.HF_HUB_OFFLINE:
+            return None
+        try:
+            files = HfApi(token = token).list_repo_files(model_name, revision = revision)
+        except Exception:
+            return None
+        return prefix + _CLEF_HEAD_FILES[1] in files
+
+    def _is_plain_lm(model_name, subfolder, token, revision, local_files_only) -> bool:
+        # Unknown (offline, no access) answers False, so the checkpoint loader names what is missing.
+        markers = {_FILES[0], _CLEF_HEAD_FILES[1]}
+        if subfolder:
+            return False
+        root = Path(str(model_name)).expanduser()
+        if root.is_dir():
+            has = lambda name: (root / name).is_file()
+            return (has("config.json") or has(_ADAPTER_CONFIG)) and not any(map(has, markers))
+        from huggingface_hub import constants
+
+        if not (local_files_only or constants.HF_HUB_OFFLINE):
+            try:
+                from huggingface_hub import HfApi
+                files = HfApi(token = token).list_repo_files(str(model_name), revision = revision)
+            except Exception:
+                files = None
+            if files is not None:
+                names = {name.rsplit("/", 1)[-1] for name in files}
+                return bool({"config.json", _ADAPTER_CONFIG} & set(files)) and not (names & markers)
+        from huggingface_hub import try_to_load_from_cache
+
+        def cached(name) -> bool:
+            try:
+                return isinstance(
+                    try_to_load_from_cache(str(model_name), name, revision = revision), str
+                )
+            except Exception:
+                return False
+
+        return (cached("config.json") or cached(_ADAPTER_CONFIG)) and not any(map(cached, markers))
+
+    def _checkpoint_folder(model_name, subfolder, token, revision, local_files_only) -> Path:
+        root = Path(model_name).expanduser()
+        if not root.is_dir():
+            from huggingface_hub import snapshot_download as cached_snapshot
+
+            try:
+                from unsloth_zoo.hf_xet_fallback import (
+                    snapshot_download_with_xet_fallback as snapshot_download,
+                )
+            except ImportError:
+                snapshot_download = cached_snapshot
+            prefix = f"{subfolder}/" if subfolder else ""
+            laya = [prefix + name for name in _FILES] + [f"{prefix}{name}/*" for name in _DIRS]
+            clef = None if local_files_only else _is_clef_repo(model_name, prefix, token, revision)
+            if clef is None:
+                # Offline: the cache already holds one layout or the other.
+                root = Path(
+                    cached_snapshot(
+                        model_name,
+                        token = token,
+                        revision = revision,
+                        local_files_only = True,
+                        allow_patterns = laya + [prefix + "*.json"],
+                    )
+                )
+                clef = (root / prefix / _CLEF_HEAD_FILES[1]).is_file()
+            # Laya repos hold several checkpoints in subfolders, so only the asked one is fetched.
+            root = Path(
+                snapshot_download(
+                    model_name,
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                    allow_patterns = [prefix + "*"] if clef else laya,
+                )
+            )
+        folder = root / subfolder if subfolder else root
+        if not is_decision_checkpoint(folder):
+            raise ValueError(
+                f"Unsloth: {folder} is not a decision model checkpoint "
+                "(rl_agent_config.json, model.safetensors, encoder/ and tokenizer/, "
+                "or a Clef backbone with joint_head.safetensors and joint_head_config.json). "
+                'To turn a plain language model into a decision model, pass decision_head = "clef".'
+            )
+        return folder
+
+    def _lm_subfolder(model_name, subfolder, token, revision, local_files_only) -> str:
+        if Path(model_name).expanduser().is_dir():
+            return str(Path(model_name).expanduser() / subfolder)
+        from huggingface_hub import snapshot_download
+
+        root = snapshot_download(
+            model_name,
+            allow_patterns = [f"{subfolder}/*"],
+            token = token,
+            revision = revision,
+            local_files_only = local_files_only,
+        )
+        return str(Path(root) / subfolder)
+
+    def _parsed(value):
+        if isinstance(value, str) and value.strip()[:1] in ("{", "["):
+            try:
+                return json.loads(value)
+            except ValueError:
+                return value
+        return value
+
+    def _internal(question) -> dict:
+        if not isinstance(question, dict) or question.get("type") not in QUESTION_TYPES:
+            raise DecisionDataError("is not a valid question")
+        kind, criteria = question["type"], question.get("criteria")
+        if kind == "choice" and not (
+            isinstance(criteria, (dict, list))
+            and criteria
+            and all(isinstance(option, str) for option in criteria)
+        ):
+            raise DecisionDataError("needs criteria naming its options")
+        if kind == "score" and not (isinstance(criteria, list) and criteria):
+            raise DecisionDataError("needs a list of criteria levels")
+        if kind == "noul" and criteria is not None and not isinstance(criteria, dict):
+            raise DecisionDataError('criteria may only have "true" and "false"')
+        laya_question = {"type": kind, "instructions": question.get("instructions") or ""}
+        if criteria is not None:
+            laya_question["criteria"] = criteria
+        return _laya().agent.Agent._to_internal(laya_question)
+
+    def _option_keys(internal: dict) -> list:
+        if internal["t"] == "choice":
+            return [str(key) for key in internal["crit"]]
+        if internal["t"] == "noul":
+            return ["false", "true"]
+        return [str(i) for i in range(len(internal["crit"]))]
+
+    def _label(kind: str, label):
+        if kind == "score" and isinstance(label, (int, float, str)) and not isinstance(label, bool):
+            try:
+                level = float(label)
+            except ValueError:
+                return None
+            return str(int(level)) if level.is_integer() else None
+        if label is None:
+            return None
+        return str(label).strip().lower() if kind == "noul" else str(label)
+
+    def _target(internal: dict, gold) -> tuple:
+        return _target_for(internal["t"], _option_keys(internal), gold)
+
+    def _target_for(kind: str, keys: list, gold) -> tuple:
+        if not isinstance(gold, dict):
+            gold = {"label": gold}
+        label = _label(kind, gold.get("label"))
+        probabilities = gold.get("probabilities")
+        if kind == "noul" and not isinstance(probabilities, dict):
+            noul = gold.get("noul")
+            probabilities = {"true": noul} if isinstance(noul, (int, float)) else None
+        if isinstance(probabilities, dict):
+            try:
+                values = {str(key): float(value) for key, value in probabilities.items()}
+            except (TypeError, ValueError):
+                values = {}
+            if not all(math.isfinite(value) for value in values.values()):
+                raise DecisionDataError("gold has probabilities that are not finite numbers")
+            if kind == "noul" and len(values.keys() & {"false", "true"}) == 1:
+                known = "true" if "true" in values else "false"
+                values[{"true": "false", "false": "true"}[known]] = 1.0 - values[known]
+            target = [max(0.0, values.get(key, 0.0)) for key in keys]
+            total = sum(target)
+            if 0 < total < math.inf:
+                target = [value / total for value in target]
+                return target, keys.index(label) if label in keys else target.index(max(target))
+        if label in keys:
+            return [1.0 if key == label else 0.0 for key in keys], keys.index(label)
+        raise DecisionDataError("gold has no usable label or probabilities")
+
+    def _clef_question(question) -> dict:
+        if not isinstance(question, dict) or question.get("type") not in QUESTION_TYPES:
+            raise DecisionDataError("is not a valid question")
+        kind, criteria = question["type"], question.get("criteria")
+        if kind == "choice":
+            if (
+                isinstance(criteria, list)
+                and criteria
+                and all(isinstance(c, str) for c in criteria)
+            ):
+                criteria = dict.fromkeys(criteria)
+            if not (isinstance(criteria, dict) and criteria):
+                raise DecisionDataError("needs criteria naming its options")
+            if len({str(key) for key in criteria}) != len(criteria):
+                raise DecisionDataError("has repeated options")
+        if kind == "score" and not (isinstance(criteria, list) and criteria):
+            raise DecisionDataError("needs a list of criteria levels")
+        if kind == "noul" and criteria is not None:
+            if not isinstance(criteria, dict) or set(criteria) - {"true", "false"}:
+                raise DecisionDataError('criteria may only have "true" and "false"')
+        clef_question = {"type": kind, "instructions": question.get("instructions")}
+        if criteria is not None:
+            clef_question["criteria"] = criteria
+        return clef_question
+
+    def _predicted(question: dict, answer: dict, probabilities: dict) -> dict:
+        # The Decision API answer plus "answer": the option (choice), True / False (noul) or level number (score).
+        kind = question["type"]
+        best = max(probabilities, key = probabilities.__getitem__)
+        return {
+            **answer,
+            "answer": int(best) if kind == "score" else best == "true" if kind == "noul" else best,
+            "probabilities": answer.get("probabilities")
+            or {key: round(float(value), 4) for key, value in probabilities.items()},
+        }
+
+    def _metrics(logits, items, temperatures) -> dict:
+        import numpy as np
+        import torch
+
+        conf, correct, loss, records = [], [], [], {}
+        for z, item, temperature in zip(logits, items, temperatures):
+            log_p = torch.log_softmax(z / temperature, -1)
+            conf.append(float(log_p.exp().max()))
+            correct.append(float(int(log_p.argmax()) == item["label"]))
+            loss.append(float(-(torch.tensor(item["target"]) * log_p).sum()))
+            row = item.get("row", ("item", len(correct)))
+            records[row] = records.get(row, True) and bool(correct[-1])
+        return {
+            "accuracy": float(np.mean(correct)),
+            "ece": _laya().common.ece_score(np.array(conf), np.array(correct)),
+            "loss": float(np.mean(loss)),
+            # Every question of a row right, the record-level precision Cloudflare rewards.
+            "record_accuracy": float(np.mean(list(records.values()))),
+        }
+
+    def _fit_temperature(
+        logits,
+        items,
+        line_search = None,
+    ) -> float:
+        import torch
+
+        options = max(len(z) for z in logits)
+        z = torch.full((len(logits), options), -1e4)
+        target = torch.zeros((len(logits), options))
+        for i, (row, item) in enumerate(zip(logits, items)):
+            z[i, : len(row)] = row
+            target[i, : len(row)] = torch.tensor(item["target"])
+        log_t = torch.zeros(1, requires_grad = True)
+        # Clef's hard-label fit passes "strong_wolfe": plain LBFGS can overshoot on peaked targets.
+        optimizer = torch.optim.LBFGS([log_t], lr = 0.1, max_iter = 100, line_search_fn = line_search)
+
+        def closure():
+            optimizer.zero_grad()
+            loss = -(target * torch.log_softmax(z / log_t.exp(), -1)).sum(-1).mean()
+            loss.backward()
+            return loss
+
+        optimizer.step(closure)
+        return float(log_t.exp().item())
+
+    def _fit_temperatures(logits, items, indices, fallback: list) -> tuple:
+        clamp = _laya().common.clamp_temperature
+        temperature, fitted = list(fallback), set()
+        for qtype in range(3):
+            chosen = [i for i in indices if items[i]["qtype"] == qtype]
+            if len(chosen) >= MIN_CALIBRATION_ITEMS:
+                temperature[qtype] = clamp(
+                    _fit_temperature([logits[i] for i in chosen], [items[i] for i in chosen])
+                )
+                fitted.add(qtype)
+        return temperature, fitted
+
+    def _served_temperatures(config: dict, logits, items) -> list:
+        common = _laya().common
+        per_type = [common.clamp_temperature(t) for t in config.get("temperature", [1.0] * 3)]
+        buckets = {
+            key: common.clamp_temperature(value)
+            for key, value in (config.get("temperature_by_options") or {}).items()
+        }
+        # A Clef temperature not yet folded into the head (_save_clef folds it on save).
+        head = config.get("head_temperature", 1.0)
+        return [
+            head * buckets.get(common.temp_bucket(item["qtype"], len(z)), per_type[item["qtype"]])
+            for z, item in zip(logits, items)
+        ]
+
+    HEAD_TEMPERATURE_RANGE = (0.05, 20.0)
+
+    def _calibrate_clef(config: dict, logits, items) -> dict:
+        # Calibrated against being right (the gold label), not the soft gold distribution: Clef's
+        # confidence is read as the chance the answer is correct, and soft gold targets left a tuned
+        # model underconfident (confidence 0.61 at accuracy 0.78 on typed-decisions).
+        common = _laya().common
+        hard = [
+            {**item, "target": [float(j == item["label"]) for j in range(len(z))]}
+            for z, item in zip(logits, items)
+        ]
+
+        def fit(indices) -> tuple:
+            chosen = list(indices)
+            head = _fit_temperature(
+                [logits[i] for i in chosen], [hard[i] for i in chosen], line_search = "strong_wolfe"
+            )
+            head = min(max(head, HEAD_TEMPERATURE_RANGE[0]), HEAD_TEMPERATURE_RANGE[1])
+            scaled = [z / head for z in logits]
+            relative, fitted = _fit_temperatures(scaled, hard, chosen, [1.0] * 3)
+            return head, relative, fitted
+
+        everything = range(len(items))
+        if len(items) < MIN_CALIBRATION_ITEMS:
+            return {
+                **_metrics(logits, items, _served_temperatures(config, logits, items)),
+                "fitted_types": [],
+            }
+        head, relative, fitted = fit(everything)
+        half = {row: i % 2 for i, row in enumerate(sorted({item["row"] for item in items}))}
+        per_item = [head * common.clamp_temperature(relative[item["qtype"]]) for item in items]
+        for side in (0, 1) if len(half) > 1 else ():
+            side_head, side_relative, _ = fit(
+                i for i in everything if half[items[i]["row"]] != side
+            )
+            for i in everything:
+                if half[items[i]["row"]] == side:
+                    per_item[i] = side_head * common.clamp_temperature(
+                        side_relative[items[i]["qtype"]]
+                    )
+        config["head_temperature"] = head
+        config["temperature"] = relative
+        config.pop("temperature_by_options", None)
+        return {**_metrics(logits, items, per_item), "fitted_types": sorted(fitted)}
+
+    def _served_lengths(
+        config: dict,
+        positions: int,
+        max_seq_length = None,
+    ) -> tuple:
+        """(max_len, head_max_len) a Laya checkpoint serves with once loaded."""
+        wanted = max_seq_length or max(int(config.get("max_len", 512)), TRAIN_MAX_LEN)
+        max_len = min(int(positions), int(wanted))
+        return max_len, min(
+            max_len // 2, max(int(config.get("head_max_len", 192)), TRAIN_HEAD_MAX_LEN)
+        )
+
+    def _decision_clef_items(
+        rows, options: Callable, encode: Callable, validate, report, skip
+    ) -> list:
+        # One item per row. `options(question)` names a question's options in the head's order and
+        # `encode(state, questions)` returns the backend's tokenized fields, raising when they do not fit.
+        items = []
+        for index, row in enumerate(rows):
+            row = row if isinstance(row, dict) else {}
+            state = _parsed(row.get("state"))
+            questions = _parsed(row.get("questions"))
+            gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
+            if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
+                report["total"] += 1
+                skip(index, "needs state, questions and gold")
+                continue
+            kept, targets, labels = {}, [], []
+            for name, question in questions.items():
+                report["total"] += 1
+                if name not in gold:
+                    skip(index, "has no gold", name)
+                    continue
+                try:
+                    if validate is not None:
+                        validate(name, question)
+                    clef_question = _clef_question(question)
+                    keys = options(clef_question)
+                    target, label = _target_for(clef_question["type"], keys, _parsed(gold[name]))
+                except (TypeError, ValueError, KeyError) as exc:
+                    skip(index, str(exc) or "is not a valid question", name)
+                    continue
+                kept[str(name)], targets, labels = (
+                    clef_question,
+                    targets + [target],
+                    labels + [label],
+                )
+            if not kept:
+                continue
+            try:
+                encoded = encode(state, kept)
+            except (TypeError, ValueError) as exc:
+                for name in kept:
+                    skip(index, f"does not fit: {exc}", name)
+                continue
+            items.append(
+                {
+                    **encoded,
+                    "targets": targets,
+                    "labels": labels,
+                    "row": index,
+                    "source": {"state": state, "questions": kept},
+                }
+            )
+        return items
+
+    def _decision_dataset(
+        rows,
+        tokenizer,
+        config: dict,
+        validate: Optional[Callable[[str, dict], None]] = None,
+        clef: Optional[Callable] = None,
+    ) -> tuple:
+        # `clef` builds a Clef model's items: the backend's (rows, tokenizer, max_len, validate, report, skip).
+        max_len = int(config.get("max_len", 512))
+        head_max_len = int(config.get("head_max_len", 192))
+        items, report, skips = [], {"total": 0, "skipped": 0, "reason": None, "truncated": 0}, {}
+
+        def skip(
+            index,
+            reason,
+            name = None,
+        ):
+            report["skipped"] += 1
+            where = f"row {index + 1}" if name is None else f'row {index + 1}: "{name}"'
+            skips.setdefault(reason, [0, f"{where} {reason}"])[0] += 1
+
+        if clef is not None:
+            items = clef(rows, tokenizer, max_len, validate, report, skip)
+            rows = ()
+        else:
+            common = _laya().common
+        for index, row in enumerate(rows):
+            row = row if isinstance(row, dict) else {}
+            state = _parsed(row.get("state"))
+            questions = _parsed(row.get("questions"))
+            gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
+            if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
+                report["total"] += 1
+                skip(index, "needs state, questions and gold")
+                continue
+            for name, question in questions.items():
+                report["total"] += 1
+                if name not in gold:
+                    skip(index, "has no gold", name)
+                    continue
+                try:
+                    if validate is not None:
+                        validate(name, question)
+                    internal = _internal(question)
+                    target, label = _target(internal, _parsed(gold[name]))
+                    ids, markers = common.build_sequence(
+                        tokenizer, state, internal, max_len, head_max_len
+                    )
+                except (TypeError, ValueError) as exc:
+                    skip(index, str(exc), name)
+                    continue
+                if len(markers) != len(target):
+                    skip(index, f"options exceed the {max_len}-token context", name)
+                    continue
+                items.append(
+                    {
+                        "input_ids": ids,
+                        "markers": markers,
+                        "qtype": common.QTYPES[internal["t"]],
+                        "target": target,
+                        "label": label,
+                        "row": index,
+                    }
+                )
+        if skips:
+            # The most common reason, shown with the first decision it applied to.
+            count, example = max(skips.values(), key = lambda skipped: skipped[0])
+            report["reason"] = (
+                example if count == 1 else f"{example} (and {count - 1:,} more like it)"
+            )
+        # Over max_seq_length the end of the state is cut, never questions or options.
+        report["truncated"] = sum(len(item["input_ids"]) >= max_len for item in items)
+        if report["truncated"]:
+            print(
+                f"Unsloth: {report['truncated']:,} of {len(items):,} training inputs are longer than "
+                f"max_seq_length = {max_len}, so the end of their state is cut. Raise "
+                "max_seq_length to train on all of it."
+            )
+        return items, report
+
+    def _decision_holdout(
+        items: list,
+        seed: int = 3407,
+        fraction: float = 0.1,
+        max_items: int = HOLDOUT_MAX,
+    ):
+        # Counted in decisions: a Clef item holds every question of its row.
+        sizes = Counter()
+        for item in items:
+            sizes[item["row"]] += len(item.get("labels", (None,)))
+        target = min(max_items, int(sum(sizes.values()) * fraction))
+        rows = sorted(sizes)
+        random.Random(seed).shuffle(rows)
+        held, count = set(), 0
+        # Whole rows that still fit under the target; the last row always stays in training.
+        for row in rows[:-1]:
+            if count + sizes[row] <= target:
+                held.add(row)
+                count += sizes[row]
+        return (
+            [item for item in items if item["row"] not in held],
+            [item for item in items if item["row"] in held],
+        )
+
+    def _decision_evaluation(config: dict, logits, items: list) -> dict:
+        return _metrics(logits, items, _served_temperatures(config, logits, items))
+
+    def _decision_calibration(
+        config: dict,
+        logits,
+        items: list,
+        clef: bool = False,
+    ) -> dict:
+        common = _laya().common
+        fallback = [common.clamp_temperature(t) for t in config.get("temperature", [1.0] * 3)]
+        if clef:
+            return _calibrate_clef(config, logits, items)
+        everything = range(len(items))
+        temperature, fitted = _fit_temperatures(logits, items, everything, fallback)
+        # Reported numbers score each half of the rows with temperatures fitted on the other half.
+        half = {row: i % 2 for i, row in enumerate(sorted({item["row"] for item in items}))}
+        per_item = [1.0] * len(items)
+        for side in (0, 1):
+            other = [i for i in everything if half[items[i]["row"]] != side]
+            side_temperature, _ = _fit_temperatures(logits, items, other, fallback)
+            for i in everything:
+                if half[items[i]["row"]] == side:
+                    per_item[i] = side_temperature[items[i]["qtype"]]
+        config["temperature"] = temperature
+        buckets = {
+            key: value
+            for key, value in (config.pop("temperature_by_options", None) or {}).items()
+            if common.QTYPES.get(key.split(":")[0]) not in fitted
+        }
+        if buckets:
+            config["temperature_by_options"] = buckets
+        return {**_metrics(logits, items, per_item), "fitted_types": sorted(fitted)}
+
+    # PEFT options the MLX adapters have no counterpart for, with the value that leaves each one off.
+    _DECISION_UNSUPPORTED_LORA = {
+        "bias": "none",
+        "layers_to_transform": None,
+        "layers_pattern": None,
+        "use_dora": False,
+        "modules_to_save": None,
+        "init_lora_weights": True,
+    }
+
+    # Training arguments that change what is trained and that the MLX trainer does not implement.
+    _DECISION_UNSUPPORTED_ARGUMENTS = (
+        "load_best_model_at_end",
+        "dataloader_drop_last",
+        "optim_args",
+        "eval_delay",
+        "auto_find_batch_size",
+    )
+
+    # The MLX trainer for language models takes these; this trainer has no counterpart for them.
+    _DECISION_UNUSED = {"neftune_noise_alpha", "push_to_hub"}
+
+    # Set by transformers itself or about where logs go.
+    _DECISION_QUIET_ARGUMENTS = ("do_eval", "do_train", "logging_dir", "run_name", "label_names")
+
+    # Trainer options of the torch DecisionTrainer that the MLX trainer does not implement.
+    _DECISION_UNSUPPORTED_OBJECTIVES = (
+        "brier_weight",
+        "ordinal_weight",
+        "kl_weight",
+        "permute_fields",
+    )
+
+    @functools.lru_cache(maxsize = None)
+    def _decision_zoo():
+        try:
+            from unsloth_zoo.mlx import decision
+            from unsloth_zoo.mlx.trainer import MLXDecisionTrainer
+            decision.load_language_model_as_clef
+        except (ImportError, AttributeError) as error:
+            raise ImportError(
+                "Unsloth: training decision models on MLX needs a newer unsloth-zoo. "
+                "Upgrade with `pip install -U unsloth-zoo`."
+            ) from error
+        return types.SimpleNamespace(MLXDecisionTrainer = MLXDecisionTrainer, **vars(decision))
+
+    def _is_clef(model) -> bool:
+        return getattr(model, "is_clef", False)
+
+    def _decision_annotate(model, **attributes):
+        # Plain attributes: an mlx module would otherwise hold them as part of its state.
+        for name, value in attributes.items():
+            object.__setattr__(model, name, value)
+        model.save_pretrained_merged = types.MethodType(_decision_save_merged, model)
+        model.push_to_hub_merged = types.MethodType(_decision_push_merged, model)
+        return model
+
+    def _decision_pad_token_id(tokenizer) -> int:
+        return getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
+
+    def _clef_items(pipeline, rows, tokenizer, max_len, validate, report, skip) -> list:
+        zoo = _decision_zoo()
+        return _decision_clef_items(
+            rows,
+            functools.partial(zoo.clef_option_keys, pipeline),
+            lambda state, questions: zoo.clef_training_item(pipeline, state, questions, max_len),
+            validate,
+            report,
+            skip,
+        )
+
+    def _decision_logits(model, tokenizer, items: list) -> tuple:
+        import torch
+
+        # Torch rows, so both backends score and calibrate with the same code.
+        if not _is_clef(model):
+            rows = _decision_zoo().decision_logits(model, items, _decision_pad_token_id(tokenizer))
+            return [torch.from_numpy(row) for row in rows], items
+        # One Laya-shaped item per question for the shared metrics.
+        logits, questions = [], []
+        for item, rows in zip(items, _decision_zoo().clef_logits(model, items)):
+            kinds = [question["type"] for question in item["source"]["questions"].values()]
+            for row, target, label, kind in zip(rows, item["targets"], item["labels"], kinds):
+                logits.append(torch.from_numpy(row))
+                questions.append(
+                    {
+                        "target": target,
+                        "label": label,
+                        "qtype": QUESTION_TYPES.index(kind),
+                        "row": item["row"],
+                    }
+                )
+        return logits, questions
+
+    def _decision_save_merged(
+        self,
+        save_directory,
+        tokenizer = None,
+        save_method = "merged_16bit",
+        **kwargs,
+    ) -> None:
+        if save_method != "merged_16bit":
+            raise NotImplementedError(
+                f"Unsloth: decision models are saved merged in 16-bit, not as {save_method!r}."
+            )
+        # The tokenizer is the checkpoint's own, which the savers copy from the source.
+        config = {**self.decision_config, "fine_tuned": True}
+        # The Clef saver writes the weights that train, so a frozen backbone is saved as trained before it was frozen.
+        frozen = getattr(self, "_unsloth_frozen_backbone", ())
+        FastDecisionModel.unfreeze_backbone(self)
+        try:
+            if _is_clef(self):
+                _decision_zoo().save_clef_model(
+                    self._unsloth_pipeline, save_directory, self._unsloth_source, config
+                )
+            else:
+                _decision_zoo().save_decision_model(
+                    self, save_directory, self._unsloth_source, config
+                )
+        finally:
+            if frozen:
+                FastDecisionModel.freeze_backbone(self)
+
+    def _decision_push_merged(
+        self,
+        repo_id,
+        tokenizer = None,
+        save_method = "merged_16bit",
+        token = None,
+        private = None,
+        **kwargs,
+    ) -> None:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token = token)
+        repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+        with tempfile.TemporaryDirectory() as folder:
+            self.save_pretrained_merged(folder, tokenizer, save_method)
+            api.upload_folder(folder_path = folder, repo_id = repo_id)
+        print(f"Unsloth: Saved the decision model to https://huggingface.co/{repo_id}")
+
+    _CLEF_ATTRIBUTES = (
+        "decision_config",
+        "is_clef",
+        "_unsloth_pipeline",
+        "_unsloth_source",
+        "_unsloth_full_finetuning",
+        "_saved_temp_tokenizer",
+    )
+
+    def _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpointing):
+        zoo = _decision_zoo()
+        if full_finetuning:
+            network = zoo.clef_training_network(
+                pipeline, full_finetuning = True, gradient_checkpointing = gradient_checkpointing
+            )
+        else:
+            # Until get_peft_model adds adapters, only the joint head trains.
+            pipeline.model.freeze()
+            pipeline.head.unfreeze()
+            network = zoo.ClefNetwork(pipeline, gradient_checkpointing)
+            network.train()
+        _decision_annotate(
+            network,
+            decision_config = config,
+            is_clef = True,
+            _unsloth_pipeline = pipeline,
+            _unsloth_source = folder,
+            _unsloth_full_finetuning = bool(full_finetuning),
+            _saved_temp_tokenizer = pipeline.tokenizer,
+        )
+        return network, pipeline.tokenizer
+
+    def _load_clef(
+        folder, max_seq_length, load_in_4bit, full_finetuning, token, gradient_checkpointing
+    ):
+        if _is_clef_adapter(folder):
+            raise NotImplementedError(
+                f"Unsloth: {folder} holds LoRA adapters over a base model, which MLX does not load. "
+                "Save it with save_pretrained_merged first."
+            )
+        # A 4-bit decoder trains through LoRA adapters only, which are saved merged into the checkpoint's own weights.
+        pipeline = _decision_zoo().load_decision_model(
+            folder, token = token, load_in_4bit = bool(load_in_4bit) and not full_finetuning
+        )
+        max_len = int(max_seq_length or CLEF_MAX_LEN)
+        config = {"layout": "clef", "max_len": max_len, "temperature": [1.0] * 3}
+        saved = folder / "unsloth_decision_config.json"
+        if saved.is_file():
+            config.update(json.loads(saved.read_text(encoding = "utf-8")), max_len = max_len)
+            # The parent run's training record does not describe the next fine-tune, as for Laya.
+            config.pop("training", None)
+        return _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpointing)
+
+    def _load_lm_as_clef(
+        model_name,
+        max_seq_length,
+        load_in_4bit,
+        full_finetuning,
+        token,
+        revision,
+        local_files_only,
+        gradient_checkpointing,
+        random_state,
+        decision_head = "clef",
+        head_width = None,
+        head_config = None,
+        **kwargs,
+    ):
+        # A plain language model plus a new joint schema head, as unsloth/models/decision_from_lm.py builds one.
+        if decision_head != "clef":
+            raise ValueError(
+                f"Unsloth: decision_head must be one of ('clef',), not {decision_head!r}."
+            )
+        if kwargs:
+            raise NotImplementedError(
+                f"Unsloth: decision models on MLX do not support {', '.join(sorted(kwargs))}."
+            )
+        folder = Path(str(model_name)).expanduser()
+        if not folder.is_dir():
+            from huggingface_hub import snapshot_download
+            folder = Path(
+                snapshot_download(
+                    str(model_name),
+                    token = token,
+                    revision = revision,
+                    local_files_only = local_files_only,
+                )
+            )
+        if not (folder / "config.json").is_file():
+            raise NotImplementedError(
+                f"Unsloth: {folder} holds LoRA adapters over a base model, which MLX does not load. "
+                "Merge them into the base model first."
+            )
+        load_in_4bit = bool(load_in_4bit) and not full_finetuning
+        pipeline = _decision_zoo().load_language_model_as_clef(
+            folder,
+            head_width = head_width,
+            head_config = head_config,
+            seed = random_state,
+            token = token,
+            load_in_4bit = load_in_4bit,
+        )
+        config = {
+            "layout": "clef",
+            "max_len": int(max_seq_length or CLEF_MAX_LEN),
+            "temperature": [1.0] * 3,
+            "base_model": str(model_name),
+            **({"base_revision": revision} if revision else {}),
+            "load_in_4bit": load_in_4bit,
+        }
+        return _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpointing)
+
     class FastDecisionModel:
         @staticmethod
-        def from_pretrained(*args, **kwargs):
-            raise NotImplementedError(
-                "Unsloth: FastDecisionModel training is not yet supported on MLX."
+        def from_pretrained(
+            model_name: str,
+            subfolder: Optional[str] = None,
+            max_seq_length: Optional[int] = None,
+            dtype = None,
+            load_in_4bit: bool = False,
+            load_in_8bit: bool = False,
+            full_finetuning: bool = False,
+            token: Optional[str] = None,
+            revision: Optional[str] = None,
+            local_files_only: bool = False,
+            use_gradient_checkpointing = "unsloth",
+            random_state: int = 3407,
+            **kwargs,
+        ):
+            if load_in_8bit:
+                raise NotImplementedError("Unsloth: decision models do not support load_in_8bit.")
+            checkpointing = bool(use_gradient_checkpointing)
+            if kwargs.get("decision_head") is None and _is_plain_lm(
+                model_name, subfolder, token, revision, local_files_only
+            ):
+                kwargs["decision_head"] = "clef"
+            lm = kwargs.get("decision_head") is not None
+            if not lm:
+                folder = _checkpoint_folder(
+                    model_name, subfolder, token, revision, local_files_only
+                )
+            if (lm or is_clef_checkpoint(folder)) and dtype is not None:
+                raise NotImplementedError(
+                    f"Unsloth: Clef on MLX trains at its checkpoint's precision, not {dtype}."
+                )
+            if lm:
+                if subfolder:
+                    model_name = _lm_subfolder(
+                        model_name, subfolder, token, revision, local_files_only
+                    )
+                return _load_lm_as_clef(
+                    model_name,
+                    max_seq_length,
+                    load_in_4bit,
+                    full_finetuning,
+                    token,
+                    revision,
+                    local_files_only,
+                    checkpointing,
+                    random_state,
+                    **kwargs,
+                )
+            if is_clef_checkpoint(folder):
+                return _load_clef(
+                    folder, max_seq_length, load_in_4bit, full_finetuning, token, checkpointing
+                )
+            if load_in_4bit:
+                raise NotImplementedError(
+                    "Unsloth: Laya decision models train in 16-bit, so load_in_4bit is not supported."
+                )
+            if not (full_finetuning or dtype is None or str(dtype).rsplit(".", 1)[-1] == "float16"):
+                raise NotImplementedError(
+                    f"Unsloth: decision models on MLX keep the frozen encoder in float16, not {dtype}."
+                )
+            from transformers import AutoTokenizer
+
+            config = json.loads((folder / "rl_agent_config.json").read_text(encoding = "utf-8"))
+            # The base model's training record does not describe the fine-tune.
+            config.pop("training", None)
+            encoder = json.loads((folder / "encoder" / "config.json").read_text(encoding = "utf-8"))
+            config["max_len"], config["head_max_len"] = _served_lengths(
+                config, int(encoder.get("max_position_embeddings", TRAIN_MAX_LEN)), max_seq_length
             )
+            tokenizer = AutoTokenizer.from_pretrained(str(folder / "tokenizer"))
+            model = _decision_zoo().load_trainable_decision_model(
+                folder, full_finetuning, gradient_checkpointing = checkpointing
+            )
+            _decision_annotate(
+                model,
+                decision_config = config,
+                _unsloth_source = folder,
+                _unsloth_full_finetuning = bool(full_finetuning),
+                _saved_temp_tokenizer = tokenizer,
+            )
+            return model, tokenizer
 
         @staticmethod
-        def get_peft_model(*args, **kwargs):
-            raise NotImplementedError(
-                "Unsloth: FastDecisionModel training is not yet supported on MLX."
+        def get_peft_model(
+            model,
+            r = 64,
+            target_modules = "all-linear",
+            lora_alpha = 64,
+            lora_dropout = 0.0,
+            bias = "none",
+            layers_to_transform = None,
+            layers_pattern = None,
+            use_gradient_checkpointing = "unsloth",
+            random_state = 3407,
+            max_seq_length = None,
+            use_rslora = False,
+            use_dora = False,
+            modules_to_save = None,
+            init_lora_weights = True,
+            loftq_config = {},
+            **kwargs,
+        ):
+            if getattr(model, "_unsloth_full_finetuning", False):
+                print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
+                return model
+            given = {**locals(), **kwargs}
+            unsupported = [
+                name for name, off in _DECISION_UNSUPPORTED_LORA.items() if given[name] != off
+            ]
+            unsupported += ["loftq_config"] if loftq_config else []
+            unsupported += sorted(kwargs)
+            if unsupported:
+                raise NotImplementedError(
+                    f"Unsloth: decision models on MLX do not support {', '.join(unsupported)}."
+                )
+            if _is_clef(model):
+                if getattr(model, "_unsloth_lora", False):
+                    raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
+                network = _decision_zoo().clef_training_network(
+                    model._unsloth_pipeline,
+                    r = r,
+                    lora_alpha = lora_alpha,
+                    lora_dropout = lora_dropout,
+                    use_rslora = use_rslora,
+                    target_modules = target_modules,
+                    random_state = random_state,
+                    gradient_checkpointing = bool(use_gradient_checkpointing),
+                )
+                attributes = {name: getattr(model, name) for name in _CLEF_ATTRIBUTES}
+                return _decision_annotate(network, **attributes, _unsloth_lora = True)
+            _decision_zoo().add_lora_adapters(
+                model,
+                r = r,
+                lora_alpha = lora_alpha,
+                lora_dropout = lora_dropout,
+                use_rslora = use_rslora,
+                target_modules = target_modules,
+                random_state = random_state,
             )
+            model.gradient_checkpointing = bool(use_gradient_checkpointing)
+            return model
+
+        @staticmethod
+        def freeze_backbone(model):
+            # Head-only warm-up for a fresh decision head; undo with unfreeze_backbone.
+            from mlx.utils import tree_flatten
+
+            frozen = [name for name, _ in tree_flatten(model.encoder.trainable_parameters())]
+            model.encoder.freeze()
+            object.__setattr__(model, "_unsloth_frozen_backbone", frozen)
+            return model
+
+        @staticmethod
+        def unfreeze_backbone(model):
+            names = set(getattr(model, "_unsloth_frozen_backbone", ()))
+            for path, module in model.encoder.named_modules():
+                keys = [key for key in module if f"{path}.{key}".lstrip(".") in names]
+                if keys:
+                    module.unfreeze(recurse = False, keys = keys)
+            object.__setattr__(model, "_unsloth_frozen_backbone", ())
+            return model
+
+        @staticmethod
+        def for_inference(model):
+            model.eval()
+            return model
+
+        @staticmethod
+        def for_training(model, use_gradient_checkpointing = True):
+            model.train()
+            if not _is_clef(model):
+                model.gradient_checkpointing = bool(use_gradient_checkpointing)
+            return model
+
+        @staticmethod
+        def build_dataset(
+            rows,
+            tokenizer,
+            model,
+            validate: Optional[Callable[[str, dict], None]] = None,
+        ) -> tuple:
+            clef = (
+                functools.partial(_clef_items, model._unsloth_pipeline) if _is_clef(model) else None
+            )
+            return _decision_dataset(rows, tokenizer, model.decision_config, validate, clef)
+
+        split_holdout = staticmethod(_decision_holdout)
+
+        @staticmethod
+        def predict(model, tokenizer, state, questions: dict) -> dict:
+            """Answers one Decision API request: {name: answer} at the calibrated temperatures.
+            Each answer is the Decision API's (choice / confidence, score / legend, or noul) plus
+            "answer" (the option, True / False for noul, the level number for score) and
+            "probabilities" over every option."""
+            import torch
+
+            from ._vendor.clef.joint_schema_model import systemone_answer
+
+            if not isinstance(questions, dict) or not questions:
+                raise DecisionDataError("questions must be a non-empty dict of name to question")
+            state, config, zoo = _parsed(state), model.decision_config, _decision_zoo()
+            if _is_clef(model):
+                pipeline = model._unsloth_pipeline
+                questions = {str(name): _clef_question(q) for name, q in questions.items()}
+                # Read up to CLEF_SERVE_MAX_LEN tokens, like serving, even past the training cut.
+                max_length = max(int(config.get("max_len", CLEF_MAX_LEN)), CLEF_SERVE_MAX_LEN)
+                item = zoo.clef_training_item(pipeline, state, questions, max_length)
+                logits = zoo.clef_logits(model, [item])[0]
+                keys = [zoo.clef_option_keys(pipeline, q) for q in questions.values()]
+                kinds = [QUESTION_TYPES.index(q["type"]) for q in questions.values()]
+            else:
+                common, max_len = _laya().common, int(config.get("max_len", 512))
+                tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+                items, keys = [], []
+                for name, question in questions.items():
+                    internal = _internal(question)
+                    ids, markers = common.build_sequence(
+                        tokenizer, state, internal, max_len, int(config.get("head_max_len", 192))
+                    )
+                    keys.append(_option_keys(internal))
+                    if len(markers) != len(keys[-1]):
+                        raise DecisionDataError(
+                            f'"{name}" has more options than fit in {max_len} tokens'
+                        )
+                    items.append(
+                        {
+                            "input_ids": ids,
+                            "markers": markers,
+                            "qtype": common.QTYPES[internal["t"]],
+                            "target": [0.0] * len(markers),
+                        }
+                    )
+                logits = zoo.decision_logits(model, items, tokenizer.pad_token_id)
+                kinds = [item["qtype"] for item in items]
+            logits = [torch.from_numpy(row) for row in logits]
+            scales = _served_temperatures(config, logits, [{"qtype": kind} for kind in kinds])
+            answers = {}
+            for (name, question), row, scale, options in zip(
+                questions.items(), logits, scales, keys
+            ):
+                probabilities = dict(zip(options, torch.softmax(row / scale, -1).tolist()))
+                answers[name] = _predicted(
+                    question, systemone_answer(question, probabilities), probabilities
+                )
+            return answers
+
+        # batch_size is the torch call shape; MLX scores Clef a record at a time and Laya in its own batches.
+        @staticmethod
+        def evaluate(
+            model,
+            tokenizer,
+            items: list,
+            batch_size = None,
+        ) -> dict:
+            logits, items = _decision_logits(model, tokenizer, items)
+            return _decision_evaluation(model.decision_config, logits, items)
+
+        @staticmethod
+        def calibrate(
+            model,
+            tokenizer,
+            items: list,
+            batch_size = None,
+        ) -> dict:
+            logits, items = _decision_logits(model, tokenizer, items)
+            return _decision_calibration(model.decision_config, logits, items, _is_clef(model))
+
+    def _decision_arguments(args):
+        from unsloth_zoo.mlx.trainer import MLXTrainingConfig
+
+        if args is None:
+            # The torch trainer's default: three epochs, no evaluation schedule.
+            from transformers import TrainingArguments
+            args = TrainingArguments(output_dir = "tmp_trainer")
+        given = args
+        strategy = getattr(args, "eval_strategy", None)
+        strategy = str(getattr(strategy, "value", strategy) or "").lower()
+        checkpointing = None
+        if isinstance(args, MLXTrainingConfig):
+            args = copy.copy(args)
+        else:
+            # transformers.TrainingArguments, as the torch DecisionTrainer takes.
+            checkpointing = bool(getattr(args, "gradient_checkpointing", False)) or None
+            fields = {field.name for field in dataclasses.fields(MLXTrainingConfig)}
+            values = _mlx_training_argument_values(args)
+            args = MLXTrainingConfig(**{k: v for k, v in values.items() if k in fields})
+            if dataclasses.is_dataclass(given):
+                # Whatever else differs from the defaults has no MLX counterpart.
+                default, quiet = (
+                    type(given)(output_dir = given.output_dir),
+                    {*fields, *_DECISION_QUIET_ARGUMENTS, *_DECISION_UNSUPPORTED_ARGUMENTS},
+                )
+                ignored = [
+                    field.name
+                    for field in dataclasses.fields(given)
+                    if field.name not in (quiet | _MLX_ALLOWED_EXTRA_ARGUMENTS) - _DECISION_UNUSED
+                    and getattr(given, field.name) != getattr(default, field.name)
+                ]
+                if ignored:
+                    warnings.warn(
+                        f"Unsloth: DecisionTrainer on MLX ignores {', '.join(sorted(ignored))}."
+                    )
+        if strategy == "epoch":
+            args.eval_steps = 0
+        # transformers callbacks read arguments the MLX config has no field for, such as eval_strategy.
+        for name, value in vars(given).items():
+            if not (name.startswith("_") or hasattr(args, name)):
+                setattr(args, name, value)
+        logging = getattr(given, "logging_strategy", None)
+        logging = str(getattr(logging, "value", logging) or "").lower()
+        if logging == "no":
+            args.logging_steps = 0
+        elif logging == "epoch":
+            warnings.warn(
+                "Unsloth: DecisionTrainer on MLX logs every logging_steps steps, not once per epoch."
+            )
+        unsupported = [
+            name for name in _DECISION_UNSUPPORTED_ARGUMENTS if getattr(given, name, None)
+        ]
+        if unsupported:
+            raise NotImplementedError(
+                f"Unsloth: DecisionTrainer on MLX does not support {', '.join(unsupported)}."
+            )
+        if getattr(args, "save_steps", 0):
+            # transformers saves every 500 steps by default, so this is a warning and not a refusal.
+            warnings.warn(
+                "Unsloth: DecisionTrainer on MLX saves no checkpoints during training; "
+                "call model.save_pretrained_merged when it finishes."
+            )
+            args.save_steps = 0
+        return args, strategy, checkpointing
+
+    def _decision_smoothed(items, smoothing):
+        # Toward uniform over each decision's own options, as the torch trainer smooths its targets.
+        def smooth(target):
+            return [(1.0 - smoothing) * value + smoothing / len(target) for value in target]
+
+        return [
+            {**item, "targets": [smooth(target) for target in item["targets"]]}
+            if "targets" in item
+            else {**item, "target": smooth(item["target"])}
+            for item in items
+        ]
 
     class DecisionTrainer:
-        def __init__(self, *args, **kwargs):
-            raise NotImplementedError("Unsloth: DecisionTrainer is not yet supported on MLX.")
+        def __init__(
+            self,
+            model = None,
+            args = None,
+            train_dataset = None,
+            eval_dataset = None,
+            *,
+            head_learning_rate: Optional[float] = None,
+            tokenizer = None,
+            callbacks = None,
+            processing_class = None,
+            **kwargs,
+        ):
+            label_smoothing = kwargs.pop("label_smoothing", None)
+            # The torch trainer's other objectives may be passed at the value that leaves them off.
+            kwargs = {
+                name: value
+                for name, value in kwargs.items()
+                if value or name not in _DECISION_UNSUPPORTED_OBJECTIVES
+            }
+            if kwargs:
+                raise NotImplementedError(
+                    f"Unsloth: DecisionTrainer on MLX does not support {', '.join(sorted(kwargs))}."
+                )
+            args, eval_strategy, gradient_checkpointing = _decision_arguments(args)
+            if label_smoothing is None:
+                label_smoothing = getattr(args, "label_smoothing_factor", 0.0)
+            # The torch trainer's loss smooths its targets when it evaluates too.
+            self._smoothing = float(label_smoothing or 0.0)
+            train_dataset, eval_dataset = map(self._smoothed, (train_dataset, eval_dataset))
+            if gradient_checkpointing and not _is_clef(model):
+                model.gradient_checkpointing = True
+            processing_class = tokenizer if processing_class is None else processing_class
+            if processing_class is None:
+                processing_class = model._saved_temp_tokenizer
+            self._eval_dataset = eval_dataset
+            self._trainer = _decision_zoo().MLXDecisionTrainer(
+                model,
+                args,
+                train_dataset,
+                # Kept for evaluate(); the zoo trainer evaluates on a schedule whenever it holds one.
+                None if eval_strategy == "no" else eval_dataset,
+                pad_token_id = _decision_pad_token_id(processing_class),
+                head_learning_rate = head_learning_rate,
+                callbacks = callbacks,
+                processing_class = processing_class,
+            )
+
+        def __getattr__(self, name):
+            if name in ("_trainer", "_eval_dataset", "_smoothing"):
+                raise AttributeError(name)
+            return getattr(self._trainer, name)
+
+        def train(self):
+            return self._trainer.train()
+
+        def _smoothed(self, items):
+            return (
+                _decision_smoothed(items, self._smoothing) if self._smoothing and items else items
+            )
+
+        def evaluate(self, eval_dataset = None):
+            trainer = self._trainer
+            eval_dataset = (
+                self._eval_dataset if eval_dataset is None else self._smoothed(eval_dataset)
+            )
+            scheduled, trainer.eval_dataset = trainer.eval_dataset, eval_dataset
+            try:
+                return trainer.evaluate()
+            finally:
+                trainer.eval_dataset = scheduled
 
     def is_bfloat16_supported():
         try:
