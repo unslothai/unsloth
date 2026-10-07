@@ -207,8 +207,13 @@ def _validate_images(images: list[str]) -> None:
             )
         if not _decodes(raw):
             raise _error(
-                422, "invalid_request_error", f"images[{index}] is not a readable PNG or JPEG image"
+                422,
+                "invalid_request_error",
+                f"images[{index}] is not a readable PNG or JPEG image of at most 4096 x 4096 pixels",
             )
+
+
+MAX_IMAGE_PIXELS = 4096 * 4096
 
 
 def _decodes(raw: bytes) -> bool:
@@ -220,6 +225,9 @@ def _decodes(raw: bytes) -> bool:
         with Image.open(BytesIO(raw)) as image:
             # By content, as stb_image reads it: a mislabelled JPEG still decodes.
             if image.format not in _IMAGE_TYPES.values():
+                return False
+            # A few MiB of PNG can decode to gigabytes; stb_image allocates it all.
+            if image.width * image.height > MAX_IMAGE_PIXELS:
                 return False
             image.verify()
     except Exception:

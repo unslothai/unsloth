@@ -100,7 +100,7 @@ def env(monkeypatch):
     lib = _Recorder()
     lib.eligibility = None
 
-    def gguf_eligibility(folder):
+    def gguf_eligibility(folder, *args, **kwargs):
         lib.calls.append(("eligibility", folder))
         if lib.eligibility is not None:
             return lib.eligibility
@@ -391,3 +391,17 @@ def test_orchestrator_keeps_the_decision_block_from_the_worker(monkeypatch, tmp_
     )
     assert backend.load_checkpoint(str(tmp_path), load_in_4bit = False) == (False, "no")
     assert backend.decision is None
+
+
+def test_a_decision_adapter_loads_only_the_authorized_base(env, tmp_path):
+    mod, lib = env
+    folder = _clef_adapter(tmp_path)
+    backend = mod.ExportBackend()
+    ok, message = backend.load_checkpoint(str(folder), base_model = "owner/private-model")
+    assert not ok and "authorized base model owner/private-model" in message
+    (folder / "unsloth_decision_config.json").write_text(
+        json.dumps({"base_model": "owner/private-model"}), encoding = "utf-8"
+    )
+    ok, message = backend.load_checkpoint(str(folder), base_model = "unsloth/Qwen3.5-0.8B")
+    assert not ok and "two different base models" in message
+    assert _exports(lib) == []

@@ -92,18 +92,30 @@ def _layout(folder: Path) -> Optional[str]:
     return "laya" if is_decision_checkpoint(folder) else None
 
 
-def _base_config(base: str) -> Optional[dict]:
+def _base_config(
+    base: str,
+    token = None,
+    local_files_only = False,
+) -> Optional[dict]:
     local = Path(base).expanduser()
     if (local / "config.json").is_file():
         return _read_json(local / "config.json")
     try:
         from huggingface_hub import hf_hub_download
-        return _read_json(Path(hf_hub_download(base, "config.json")))
+        return _read_json(
+            Path(
+                hf_hub_download(base, "config.json", token = token, local_files_only = local_files_only)
+            )
+        )
     except Exception:
         return None
 
 
-def _clef_backbone_config(folder: Path) -> Optional[dict]:
+def _clef_backbone_config(
+    folder: Path,
+    token = None,
+    local_files_only = False,
+) -> Optional[dict]:
     if (folder / "config.json").is_file():
         return _read_json(folder / "config.json")
     # Adapters only: the backbone is the base they were trained on.
@@ -112,7 +124,7 @@ def _clef_backbone_config(folder: Path) -> Optional[dict]:
         base = _read_json(folder / "unsloth_decision_config.json").get("base_model")
     if not base and (folder / "adapter_config.json").is_file():
         base = _read_json(folder / "adapter_config.json").get("base_model_name_or_path")
-    return _base_config(str(base)) if base else None
+    return _base_config(str(base), token, local_files_only) if base else None
 
 
 def _clef_reason(architectures) -> Optional[str]:
@@ -134,7 +146,11 @@ def _laya_reason(model_type) -> str:
     )
 
 
-def gguf_eligibility(source) -> dict:
+def gguf_eligibility(
+    source,
+    token = None,
+    local_files_only = False,
+) -> dict:
     """{"eligible", "layout", "reason"} for a decision model or an on-disk decision checkpoint."""
     if not isinstance(source, (str, os.PathLike)):
         if getattr(source, "is_clef", False):
@@ -156,7 +172,7 @@ def gguf_eligibility(source) -> dict:
         model_type = _read_json(encoder).get("model_type") if encoder.is_file() else None
         reason = None if model_type == "modernbert" else _laya_reason(model_type)
         return {"eligible": reason is None, "layout": "laya", "reason": reason}
-    config = _clef_backbone_config(folder)
+    config = _clef_backbone_config(folder, token, local_files_only)
     if config is None:
         return {
             "eligible": False,

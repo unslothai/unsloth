@@ -1262,3 +1262,18 @@ def test_the_download_plan_pins_the_revision_and_main_with_the_same_blob_counts(
     # The Clef companions resolve the same way.
     _cache_blob(home.cache, "clef-flash", "e" * 40)
     assert laya_runtime.is_cached(laya_runtime._native_target(catalog.CHECKPOINTS["clef-flash"]))
+
+
+def test_an_image_that_decodes_to_too_many_pixels_is_refused(home, client, stub):
+    import io
+
+    from PIL import Image
+
+    _cache_gguf(home.cache)
+    _put(client, enabled = True, model = "clef-flash")
+    big = io.BytesIO()
+    Image.new("1", (8192, 8192)).save(big, "PNG")
+    assert len(big.getvalue()) < 4 * 1024 * 1024
+    refused = _post(client, images = [_image_url("png", big.getvalue())])
+    assert refused.status_code == 422 and "4096 x 4096" in refused.text
+    assert stub.records("start") == []

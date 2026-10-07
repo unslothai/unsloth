@@ -181,11 +181,41 @@ def normalize_decision_quants(quantization_method) -> list:
     return chosen or [DECISION_GGUF_QUANTIZATIONS[0]]
 
 
-def check_decision_eligibility(checkpoint_path) -> dict:
+def adapter_base(checkpoint_path) -> str:
+    """The base an adapter-only decision folder loads; both configs must name the same one."""
+    folder = Path(str(checkpoint_path)).expanduser()
+    names = []
+    for name, key in (
+        ("unsloth_decision_config.json", "base_model"),
+        ("adapter_config.json", "base_model_name_or_path"),
+    ):
+        try:
+            value = json.loads((folder / name).read_text(encoding = "utf-8")).get(key)
+        except (OSError, ValueError, AttributeError):
+            value = None
+        if value:
+            names.append(str(value))
+    if not names:
+        raise DecisionExportError(f"{folder} has adapters but does not name their base model.")
+    if len(set(names)) > 1:
+        raise DecisionExportError(
+            f"{folder} names two different base models ({names[0]} and {names[1]}); "
+            "re-save it with FastDecisionModel.save_pretrained."
+        )
+    return names[0]
+
+
+def check_decision_eligibility(
+    checkpoint_path,
+    token = None,
+    local_files_only = False,
+) -> dict:
     """gguf_eligibility from the library; raises DecisionExportError with its reason when ineligible."""
     from unsloth.models.decision_gguf import gguf_eligibility
 
-    eligibility = gguf_eligibility(str(Path(str(checkpoint_path)).expanduser()))
+    eligibility = gguf_eligibility(
+        str(Path(str(checkpoint_path)).expanduser()), token, local_files_only
+    )
     if not eligibility.get("eligible"):
         raise DecisionExportError(
             eligibility.get("reason") or "This decision model cannot be exported to GGUF."
@@ -207,7 +237,7 @@ def run_decision_gguf_export(
     kind = decision_kind(folder)
     if kind is None:
         raise DecisionExportError(f"{folder} is not a decision model checkpoint.")
-    check_decision_eligibility(folder)
+    check_decision_eligibility(folder, token, local_files_only)
     _, adapter_only = kind
     if adapter_only:
         # Adapters only: FastDecisionModel keeps the head and calibration, save_pretrained_gguf merges.

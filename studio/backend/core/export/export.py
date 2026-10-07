@@ -777,7 +777,10 @@ class ExportBackend:
             decision = decision_kind(checkpoint_path)
             if decision is not None:
                 return self._load_decision_checkpoint(
-                    str(Path(checkpoint_path).expanduser()), *decision, token = token
+                    str(Path(checkpoint_path).expanduser()),
+                    *decision,
+                    token = token,
+                    base_model = base_model,
                 )
 
             checkpoint_path_obj = Path(checkpoint_path)
@@ -997,14 +1000,29 @@ class ExportBackend:
         layout: str,
         adapter_only: bool,
         token: HfTokenArg = None,
+        base_model: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Records a decision checkpoint; its weights load (adapters) or convert (merged) at export."""
-        from core.export.decision import DecisionExportError, check_decision_eligibility
+        from core.export.decision import (
+            DecisionExportError,
+            adapter_base,
+            check_decision_eligibility,
+        )
 
         if not _export_runtime_available():
             return False, _export_runtime_message()
+        if adapter_only:
+            # The base FastDecisionModel will load must be the one the route authorized and scanned.
+            try:
+                resolved = adapter_base(checkpoint_path)
+            except DecisionExportError as exc:
+                return False, str(exc)
+            if base_model and resolved != base_model:
+                return False, (
+                    f"This adapter loads {resolved}, not the authorized base model {base_model}."
+                )
         try:
-            check_decision_eligibility(checkpoint_path)
+            check_decision_eligibility(checkpoint_path, token)
         except DecisionExportError as exc:
             return False, str(exc)
         self.decision = {"layout": layout, "adapter_only": adapter_only}

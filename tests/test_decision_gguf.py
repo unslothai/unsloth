@@ -703,3 +703,30 @@ def test_sigterm_cleans_up_and_a_killed_export_is_swept_later(
         for prefix in decision_gguf._TEMP_PREFIXES
         for name in (f"{os.getppid()}-alive", "legacy")
     )
+
+
+def test_eligibility_reads_a_hub_base_with_the_callers_token(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    seen = []
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"architectures": ["Qwen3_5ForConditionalGeneration"]}))
+
+    def download(
+        repo,
+        filename,
+        token = None,
+        local_files_only = False,
+        **kwargs,
+    ):
+        seen.append((repo, token, local_files_only))
+        return str(config)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
+    adapters = _clef_folder(tmp_path / "adapters", config = {"base_model": "org/private"})
+    (adapters / "config.json").unlink()
+    (adapters / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "org/private"})
+    )
+    assert gguf_eligibility(adapters, token = "hf_x", local_files_only = True)["eligible"]
+    assert seen == [("org/private", "hf_x", True)]
