@@ -693,7 +693,7 @@ function convertLatexDelimiters(content: string): {
 }
 
 /** converts bracketed LaTeX and protects currency or shell variables from single-dollar math. */
-export function preprocessLaTeX(content: string): string {
+export function preprocessLaTeX(content: string, isStreaming = false): string {
   const { text, mathRegions } = convertLatexDelimiters(content);
 
   if (!text.includes("$")) return text;
@@ -756,7 +756,10 @@ export function preprocessLaTeX(content: string): string {
       !currency &&
       next !== -1 &&
       startsLikeVariable(text, offset + 1) &&
-      (next + 1 === text.length || NEW_TOKEN_RE.test(text[next + 1])) &&
+      // a closer at the end of a streaming reply may still be followed by a name.
+      (next + 1 === text.length
+        ? isStreaming
+        : NEW_TOKEN_RE.test(text[next + 1])) &&
       VARIABLE_PROSE_RE.test(text.slice(offset + 1, next)) &&
       !inRawText(offset)
     ) {

@@ -31,7 +31,7 @@ function render(source: string, isStreaming = false): string {
         plugins: { math },
       },
       stabilizeStreamingMarkdown(
-        preprocessLaTeX(normalizeEscapedInlineMath(source)),
+        preprocessLaTeX(normalizeEscapedInlineMath(source), isStreaming),
         isStreaming,
       ),
     ),
@@ -142,6 +142,8 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["\u4e09\u89d2\u5f62$ABC$\u4e2d\uff0c$AB$\u8fb9", ["ABC", "AB"]],
   ["Die Gr\u00f6\u00dfe $AB$ und $CD$", ["AB", "CD"]],
   ["Write $a * b$ and $AB * CD$.", ["a * b", "AB * CD"]],
+  ["The result is $sin theta.$", ["sin theta."]],
+  ["So $ab = c.$", ["ab = c."]],
 ];
 
 test("real maths still renders", () => {
