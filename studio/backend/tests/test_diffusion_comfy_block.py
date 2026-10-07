@@ -602,7 +602,8 @@ def test_a_failed_mxfp8_probe_is_not_cached(monkeypatch):
     def boom(*_a, **_k):
         raise torch.OutOfMemoryError("CUDA out of memory")
 
-    monkeypatch.setattr(cb, "mx_quantize_activation", boom)
+    # the probe's first allocation fails, as it would on a full GPU (and before CPU-only torch can object)
+    monkeypatch.setattr(torch, "randn", boom)
     assert "OutOfMemoryError" in cb.mxfp8_runtime_reason(_target("cuda:0"))
     assert cb._MX_PROBE == {}
 
