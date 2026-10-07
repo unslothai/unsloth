@@ -11,6 +11,7 @@ The CLI is wheel-only (never a source build) and uses --no-deps so torch is neve
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import os
 import platform
 import shutil
@@ -217,10 +218,35 @@ def resolve_wheel_url(name: str, env: dict[str, str] | None) -> str | None:
     return _PINNED[name].wheel_url(env)
 
 
-# FlashAttention 2 needs sm80, and unsloth_zoo turns mamba_ssm's fast path off below sm80
-# (patch_mamba_ssm_pre_ampere_fallback), so either wheel would go unused there.
+# FlashAttention 2 needs sm80. mamba_ssm's Triton kernels also run on sm75 with Triton 3.4+
+# (torch 2.8+), the same rule unsloth_zoo's patch_mamba_ssm_pre_ampere_fallback applies, which
+# turns the fast path off anywhere else, so the wheel would go unused there.
 _NEEDS_SM80 = ("flash_attn", "mamba_ssm")
+_MAMBA_SM75_MIN_TRITON = (3, 4)
 _CAPABILITY: dict = {}
+
+
+def _triton_version() -> tuple[int, int] | None:
+    try:
+        return tuple(int(part) for part in importlib.metadata.version("triton").split(".")[:2])
+    except Exception:
+        return None
+
+
+def _pre_ampere_skip_reason(name: str, capability: tuple[int, int]) -> str | None:
+    """Why a kernel stays off a pre-sm80 GPU, or None when unsloth_zoo uses it there."""
+    if name != "mamba_ssm":
+        return "needs sm80 or newer"
+    forced = os.environ.get("UNSLOTH_MAMBA_PRE_AMPERE_FAST", "").strip()
+    if forced in ("0", "1"):
+        return None if forced == "1" else "UNSLOTH_MAMBA_PRE_AMPERE_FAST=0 is set"
+    if capability < (7, 5):
+        return "needs sm80, or sm75 with Triton 3.4+"
+    triton = _triton_version()
+    if triton is not None and triton >= _MAMBA_SM75_MIN_TRITON:
+        return None
+    found = "missing" if triton is None else "%d.%d" % triton
+    return f"needs sm80, or sm75 with Triton 3.4+ (torch 2.8+), and Triton is {found}"
 
 
 def _gpu_capability(run: Callable[..., subprocess.CompletedProcess]) -> tuple[int, int] | None:
@@ -287,14 +313,17 @@ def install_kernel(
     url = resolve_wheel_url(name, env)
     if name in _NEEDS_SM80 and url is not None:
         capability = _gpu_capability(run)
-        if capability is None or capability < (8, 0):
-            gpu = (
-                "no CUDA GPU is visible"
-                if capability is None
-                else "the best GPU is sm%d%d" % capability
-            )
-            print(f"Unsloth: skipping {name}, which needs sm80 or newer ({gpu}).")
+        if capability is None:
+            print(f"Unsloth: skipping {name}, which needs sm80 or newer (no CUDA GPU is visible).")
             return 0
+        if capability < (8, 0):
+            reason = _pre_ampere_skip_reason(name, capability)
+            if reason is not None:
+                print(
+                    f"Unsloth: skipping {name}, which {reason} "
+                    f"(the best GPU is sm{capability[0]}{capability[1]})."
+                )
+                return 0
     torch_desc = f"torch {env.get('torch_version')}" if env else "this environment"
     # Only a 404 proves nothing is published; an unreachable check falls through to the install.
     if url is None or exists(url) is False:
