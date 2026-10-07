@@ -6963,10 +6963,12 @@ def _moe_spill_batch_ubatch(
 # of the experts statically resident. Emitted as one run so a retry can take it out.
 _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
 # Pass-through placement that owns what the cache would be sized against: the user's
-# own cache, layer count, tensor overrides, expert counts and device split. llama.cpp's
-# fitter aborts on most of them, and the cache refuses more than one device.
+# own cache, layer count, tensor overrides (the CPU-FFN count is one), expert counts,
+# device split and RPC servers. llama.cpp's fitter aborts on most of them, and the
+# cache refuses more than one device, which a remote one makes.
 _MOE_CACHE_USER_OWNED_FLAGS = (
-    frozenset({"--moe-cache-mib", "-ot", "--override-tensor"})
+    frozenset({"--moe-cache-mib", "-ot", "--override-tensor", "--rpc"})
+    | _CPU_FFN_COUNT_FLAGS
     | _DEVICE_FLAGS
     | _GPU_LAYER_FLAGS
     | _MOE_OFFLOAD_FLAGS
@@ -6978,10 +6980,12 @@ _MOE_CACHE_USER_OWNED_ENV = (
     "LLAMA_ARG_OVERRIDE_TENSOR",
     "LLAMA_ARG_CPU_MOE",
     "LLAMA_ARG_N_CPU_MOE",
+    "LLAMA_ARG_N_CPU_FFN",
     "LLAMA_ARG_DEVICE",
     "LLAMA_ARG_MAIN_GPU",
     "LLAMA_ARG_SPLIT_MODE",
     "LLAMA_ARG_TENSOR_SPLIT",
+    "LLAMA_ARG_RPC",
 )
 # The fork's MoE cache startup errors (llama-context.cpp / llama-moe-cache.cpp
 # runtime_error texts, and the per-layer GGML_ABORT). Matched exactly: the same
@@ -10490,22 +10494,61 @@ class LlamaCppBackend:
         caps: Optional[Mapping[str, object]],
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
+        auto_resolves_off: bool = False,
     ) -> int:
         """Bytes of the model llama.cpp leaves mmap'd from disk under every load mode
         (see ``_LAZY_READ_TENSORS``). Zero on a build without lazy reads, under
-        ``--lazy-mode off``, and when the header cannot be read."""
+        ``--lazy-mode off``, and when the header cannot be read.
+
+        ``auto_resolves_off`` is ``_lazy_auto_resolves_off`` for the child's devices:
+        there llama.cpp turns ``auto`` into ``off``, and only an explicit ``on`` reads
+        the table lazily."""
         if not model_path or not (caps or {}).get("supports_lazy_mode"):
             return 0
         mode = _effective_lazy_mode(
             extra_args, env, flag = str((caps or {}).get("lazy_mode_flag") or "--lazy-mode")
         )
-        if mode == "off":
+        if mode == "off" or (mode == "auto" and auto_resolves_off):
             return 0
         scan = self._gguf_tensor_scan(model_path)
         if scan is None:
             return 0
         architecture, named, _experts = scan
         return _lazy_read_bytes(architecture, named, mode)
+
+    def _lazy_auto_resolves_off(
+        self,
+        *,
+        gpu_indices: Optional[Iterable[int]],
+        detected_gpus: Optional[Iterable[tuple]],
+        shared_gpu_ids: Optional[Iterable[int]],
+        is_vulkan_backend: bool,
+        probe_integrated_cuda: bool = True,
+    ) -> bool:
+        """Whether llama.cpp resolves ``--lazy-mode auto`` to ``off`` for this child.
+
+        It does when a model device lacks mmap support (llama-model.cpp load_tensors,
+        ggml-org/llama.cpp#28160): an integrated CUDA / HIP device or a Vulkan iGPU.
+        Its default device list holds iGPUs only when the child sees no discrete GPU,
+        so it takes EVERY selected device being integrated, the same rule as
+        ``_offload_target_shares_system_memory`` plus the integrated CUDA SoC.
+        ``probe_integrated_cuda`` False reads that SoC answer only when it is already
+        cached, for a caller past the VRAM snapshot that must not open a context."""
+        rows = [(row[0], row[1]) for row in (detected_gpus or ())]
+        if self._offload_target_shares_system_memory(
+            is_vulkan_backend = is_vulkan_backend,
+            shared_gpu_ids = shared_gpu_ids,
+            detected_gpus = rows,
+            gpu_indices = gpu_indices,
+        ):
+            return True
+        if is_vulkan_backend:
+            return False
+        if not probe_integrated_cuda and not self._integrated_cuda_probe_is_free():
+            return False
+        return self._integrated_cuda_selection_is_all_shared(
+            list(gpu_indices) if gpu_indices else None
+        )
 
     @staticmethod
     def _installed_ggml_backends(binary: Optional[str] = None) -> frozenset[str]:
@@ -14960,6 +15003,28 @@ class LlamaCppBackend:
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
         shared = set(shared_gpu_ids or ())
+        # The lazily read table the fit already left out, or this undoes its pinned
+        # verdict: the pageable rewrite reads a shortfall the load does not have.
+        try:
+            model_bytes = max(
+                1,
+                model_bytes
+                - self._lazy_read_host_bytes(
+                    model_path,
+                    caps = self.probe_server_capabilities(argv[0]),
+                    extra_args = argv,
+                    env = _env,
+                    auto_resolves_off = self._lazy_auto_resolves_off(
+                        gpu_indices = [row[0] for row in gpus] if gpus else None,
+                        detected_gpus = gpus,
+                        shared_gpu_ids = shared,
+                        is_vulkan_backend = bool(shared) or self._is_vulkan_backend(argv[0]),
+                        probe_integrated_cuda = False,
+                    ),
+                ),
+            )
+        except Exception as e:  # noqa: BLE001 -- unverified discount: price the whole file
+            logger.debug("Lazy-read discount skipped in the host preflight: %s", e)
         free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         heap_free_mib, heap_bytes = self._shared_heap_budget(gpus, shared, model_bytes, argv, _env)
         offload_bytes = model_bytes - free_vram_mib * 1024 * 1024
@@ -27816,12 +27881,18 @@ class LlamaCppBackend:
                     )
                     # A lazily read table (Qwen3.8-Flash-Next's n-gram embedding) stays
                     # mmap'd from disk under every load mode, so it is not RAM a pinned
-                    # load has to find.
+                    # load has to find. Not on an iGPU-only child, which reads it in.
                     _fit_lazy_bytes = self._lazy_read_host_bytes(
                         model_path,
                         caps = server_caps,
                         extra_args = _fit_extras,
                         env = _fit_env,
+                        auto_resolves_off = self._lazy_auto_resolves_off(
+                            gpu_indices = gpu_indices,
+                            detected_gpus = _detected_gpus,
+                            shared_gpu_ids = _shared_gpu_ids,
+                            is_vulkan_backend = is_vulkan_backend,
+                        ),
                     )
                     _fit_load_mode_kwargs = dict(
                         model_size = _fit_model_size,
@@ -28031,6 +28102,10 @@ class LlamaCppBackend:
                 # abstains, while the RAM this launch actually loads into cannot hold
                 # them. "none" and "mlock" do not mmap, so that is an OOM kill.
                 _apu_ram_oversized = False
+                # The weights the APU guards charge to system RAM: model_size less a
+                # lazily read table, which stays mmap'd from disk. Kept for the
+                # text-only reprice, which has to charge the same bytes.
+                _apu_resident_model_size = model_size
                 # The two shortfall notices this load recorded, kept verbatim (and
                 # un-amended) so the text-only fallback further down can re-price them
                 # once it drops the CPU-pinned projector whose bytes they charged. Both
@@ -28074,11 +28149,28 @@ class LlamaCppBackend:
                     _apu_ram_part = (
                         "APU" if self._amd_apu_wants_unified_memory(gpu_indices) else "SoC"
                     )
+                    _apu_resident_model_size = max(
+                        1,
+                        model_size
+                        - self._lazy_read_host_bytes(
+                            model_path,
+                            caps = server_caps,
+                            extra_args = extra_args,
+                            env = os.environ,
+                            auto_resolves_off = self._lazy_auto_resolves_off(
+                                gpu_indices = gpu_indices,
+                                detected_gpus = _detected_gpus,
+                                shared_gpu_ids = _shared_gpu_ids,
+                                is_vulkan_backend = False,
+                                probe_integrated_cuda = False,
+                            ),
+                        ),
+                    )
                     _ram_msg = self._apu_ram_shortfall_message(
                         # A pinned projector left model_size but not system RAM, and
                         # this guard exists to stop an oversize load being OOM-killed
                         # mid-read, so it has to weigh the projector either way.
-                        model_size + _mmproj_pinned_bytes,
+                        _apu_resident_model_size + _mmproj_pinned_bytes,
                         _apu_avail_mib,
                         part = _apu_ram_part,
                     )
@@ -31441,8 +31533,26 @@ class LlamaCppBackend:
                         _retry_apu_msg = None
                         if model_size is not None and _retry_wants_unified:
                             _apu_avail_mib = self._available_system_memory_mib()
+                            # Re-read for the respawn's own argv and devices.
+                            _apu_resident_model_size = max(
+                                1,
+                                model_size
+                                - self._lazy_read_host_bytes(
+                                    model_path,
+                                    caps = server_caps,
+                                    extra_args = cmd,
+                                    env = env,
+                                    auto_resolves_off = self._lazy_auto_resolves_off(
+                                        gpu_indices = _remaining,
+                                        detected_gpus = _detected_gpus,
+                                        shared_gpu_ids = _shared_gpu_ids,
+                                        is_vulkan_backend = is_vulkan_backend,
+                                        probe_integrated_cuda = False,
+                                    ),
+                                ),
+                            )
                             _retry_apu_msg = self._apu_ram_shortfall_message(
-                                model_size + _mmproj_pinned_bytes,
+                                _apu_resident_model_size + _mmproj_pinned_bytes,
                                 _apu_avail_mib,
                             )
                             # Same contract as the preflight above: the opt-out takes
@@ -32247,7 +32357,7 @@ class LlamaCppBackend:
                                 self._reprice_after_dropping_pinned_projector(
                                     apu_msg = _apu_ram_msg,
                                     host_msg = _host_ram_msg,
-                                    model_size = model_size,
+                                    model_size = _apu_resident_model_size,
                                     pinned_bytes = _mmproj_pinned_bytes,
                                     avail_mib = _apu_avail_mib,
                                     part = _apu_ram_part,

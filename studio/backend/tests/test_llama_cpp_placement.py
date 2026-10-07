@@ -4303,6 +4303,8 @@ def _moe_cache_host(monkeypatch, _discrete_linux_host):
         "LLAMA_ARG_NO_MMAP",
         "LLAMA_ARG_LAZY_MODE",
         "LLAMA_ARG_CACHE_RAM",
+        "LLAMA_ARG_N_CPU_FFN",
+        "LLAMA_ARG_RPC",
     ):
         monkeypatch.delenv(name, raising = False)
 
@@ -4320,10 +4322,12 @@ def _cache_launch(
     arch = "qwen3moe",
     size_gib = None,
     memory = None,
+    host_guard = False,
     **load_kwargs,
 ):
     """One launch of an MoE (or dense) model, priced so the fit can answer
-    "none". 20 GiB on an 8 GiB card spills; 1 GiB on a 40 GiB card does not."""
+    "none". 20 GiB on an 8 GiB card spills; 1 GiB on a 40 GiB card does not.
+    ``host_guard`` puts the real host-RAM preflight back."""
     if memory is None:
         memory = (
             [(i, 8_000, 16_000) for i in range(gpus)]
@@ -4344,6 +4348,8 @@ def _cache_launch(
     full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
     full_caps.update(_CACHE_CAPS_ON if caps is None else caps)
     backend.probe_server_capabilities = lambda _binary = None: full_caps
+    if host_guard:
+        _restore_host_guard(backend)
     cmd = _launch(backend, gguf, **load_kwargs)["cmd"]
     return backend, cmd
 
@@ -4414,6 +4420,9 @@ def test_the_moe_cache_stays_off(tmp_path, _moe_cache_host, cell, kwargs):
         ["--fit", "off"],
         ["--device", "CUDA0"],
         ["--tensor-split", "1,0"],
+        ["-ncffn", "1"],
+        ["--n-cpu-ffn=1"],
+        ["--rpc", "127.0.0.1:50052"],
     ],
     ids = [
         "ot",
@@ -4427,6 +4436,9 @@ def test_the_moe_cache_stays_off(tmp_path, _moe_cache_host, cell, kwargs):
         "fit_off",
         "device",
         "tensor_split",
+        "ncffn",
+        "n_cpu_ffn_equals",
+        "rpc",
     ],
 )
 def test_a_user_placement_flag_keeps_the_moe_cache_off(tmp_path, _moe_cache_host, extra_args):
@@ -4445,6 +4457,8 @@ def test_a_user_placement_flag_keeps_the_moe_cache_off(tmp_path, _moe_cache_host
         ("LLAMA_ARG_N_GPU_LAYERS", "20"),
         ("LLAMA_ARG_OVERRIDE_TENSOR", "exps=CPU"),
         ("LLAMA_ARG_FIT", "off"),
+        ("LLAMA_ARG_N_CPU_FFN", "1"),
+        ("LLAMA_ARG_RPC", "127.0.0.1:50052"),
     ],
 )
 def test_an_inherited_placement_keeps_the_moe_cache_off(
@@ -4790,6 +4804,143 @@ def test_the_cache_admission_counts_the_experts_once(tmp_path, _moe_cache_host, 
     assert _load_mode(cmd) == "none", cmd
     assert _has_moe_cache(cmd) is cached, cmd
     assert backend._moe_cache_flags == (_MOE_CACHE if cached else [])
+
+
+@pytest.mark.parametrize("ram_gib, cached", [(45, False), (60, True)])
+def test_qwen38_on_a_16gib_card_launches_pinned_past_the_host_guard(
+    tmp_path, _moe_cache_host, ram_gib, cached
+):
+    """Qwen3.8-Flash-Next IQ1_S on one 16 GiB card, end to end with the real host-RAM
+    preflight. The fit leaves the 26.82 GiB lazy table out and picks "none"; the
+    preflight charged the whole 67.55 GiB file, read a shortfall, and the pageable
+    rewrite took the pinned mode (and with it the cache) back out."""
+    backend, cmd = _cache_launch(
+        tmp_path,
+        size_gib = _QWEN38_TOTAL / _GIB,
+        memory = [(0, 15_500, 16_384)],
+        ram_gib = ram_gib,
+        expert_gib = _QWEN38_EXPERTS / _GIB,
+        lazy = {"per_layer_token_embd.weight": _QWEN38_PLE},
+        arch = "qwen4exp",
+        host_guard = True,
+    )
+
+    assert _load_mode(cmd) == "none", cmd
+    assert _has_moe_cache(cmd) is cached, cmd
+    assert backend.last_load_warning is None, backend.last_load_warning
+
+
+def test_the_host_guard_still_charges_a_table_read_in_full(tmp_path, _moe_cache_host):
+    """Under "-lzm off" the table is an ordinary tensor: the same host is short."""
+    _backend, cmd = _cache_launch(
+        tmp_path,
+        size_gib = _QWEN38_TOTAL / _GIB,
+        memory = [(0, 15_500, 16_384)],
+        ram_gib = 45,
+        expert_gib = _QWEN38_EXPERTS / _GIB,
+        lazy = {"per_layer_token_embd.weight": _QWEN38_PLE},
+        arch = "qwen4exp",
+        host_guard = True,
+        extra_args = ["-lzm", "off"],
+    )
+
+    assert _load_mode(cmd) is None and not _has_moe_cache(cmd), cmd
+
+
+def test_an_igpu_only_child_gets_no_auto_lazy_discount(tmp_path, _moe_cache_host, monkeypatch):
+    """llama.cpp turns lazy auto off on a device without mmap support, so the fit that
+    pins the lazy table's model on a discrete card leaves it mapped here."""
+    monkeypatch.setattr(LlamaCppBackend, "_lazy_auto_resolves_off", lambda self, **_kw: True)
+    lazy = {"per_layer_token_embd.weight": 12 * _GIB}
+    no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
+
+    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto)
+    assert _load_mode(cmd) is None, cmd
+    # An explicit "on" is read lazily on any device.
+    _b, cmd = _cache_launch(
+        tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, extra_args = ["-lzm", "on"]
+    )
+    assert _load_mode(cmd) == "none", cmd
+
+
+@pytest.mark.parametrize(
+    "vulkan, gpu_indices, shared, rocm_unified, cuda_integrated, expected",
+    [
+        (False, [0], set(), set(), set(), False),
+        (True, [0], {0}, set(), set(), True),
+        # llama.cpp drops an iGPU from its default list once a discrete GPU is seen.
+        (True, None, {1}, set(), set(), False),
+        (False, [0], set(), {0}, set(), True),
+        (False, [0, 1], set(), {0}, set(), False),
+        (False, [0], set(), set(), {0}, True),
+        (False, None, set(), set(), {0, 1}, True),
+    ],
+    ids = [
+        "discrete",
+        "vulkan_igpu",
+        "vulkan_mixed",
+        "rocm_apu",
+        "rocm_mixed",
+        "cuda_soc",
+        "cuda_soc_unpinned",
+    ],
+)
+def test_lazy_auto_resolves_off_only_where_llama_cpp_does(
+    monkeypatch, vulkan, gpu_indices, shared, rocm_unified, cuda_integrated, expected
+):
+    monkeypatch.setattr(
+        LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: set(rocm_unified))
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: set(cuda_integrated))
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_resolve_visible_physical_ids", staticmethod(lambda: [0, 1])
+    )
+    got = LlamaCppBackend()._lazy_auto_resolves_off(
+        gpu_indices = gpu_indices,
+        detected_gpus = [(0, 8_000), (1, 8_000)],
+        shared_gpu_ids = shared,
+        is_vulkan_backend = vulkan,
+    )
+    assert got is expected
+
+    backend = LlamaCppBackend()
+    backend._gguf_tensor_scan = lambda _path: (
+        "qwen4exp",
+        {"per_layer_token_embd.weight": _QWEN38_PLE},
+        0,
+    )
+    caps = {"supports_lazy_mode": True}
+    auto = backend._lazy_read_host_bytes("/m.gguf", caps = caps, env = {}, auto_resolves_off = got)
+    on = backend._lazy_read_host_bytes(
+        "/m.gguf", caps = caps, extra_args = ["-lzm", "on"], env = {}, auto_resolves_off = got
+    )
+    assert (auto, on) == ((0 if expected else _QWEN38_PLE), _QWEN38_PLE)
+
+
+@pytest.mark.parametrize("lazy_args, warned", [(["-lzm", "on"], False), ([], True)])
+def test_the_apu_guard_prices_only_resident_weights(tmp_path, monkeypatch, lazy_args, warned):
+    """A 64.6 GiB model with a 26.82 GiB table on an APU with 46 GiB of RAM. "-lzm on"
+    leaves the table on disk, so the unmapped load fits; auto is off on an APU, so the
+    whole file loads and the guard still warns and remaps."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = 64.6, avail_mib = 46 * 1024, monkeypatch = monkeypatch
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_rocm_unified_memory_gpu_ids", staticmethod(lambda: {0}))
+    backend._gguf_tensor_scan = lambda _path: (
+        "qwen4exp",
+        {"per_layer_token_embd.weight": _QWEN38_PLE},
+        0,
+    )
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(_CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: caps
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none", *lazy_args])["cmd"]
+
+    assert ("unified-memory APU" in (backend.last_load_warning or "")) is warned
+    assert bool(_unmapped_tokens(cmd)) is not warned, cmd
 
 
 @pytest.mark.parametrize(
