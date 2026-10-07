@@ -151,9 +151,14 @@ def decide(
 
 def status() -> dict:
     native = _clef().status()
-    if native["loaded_model"] or native["loading_model"] or native["error"]:
+    legacy = laya_runtime.status()
+    if (
+        native["loaded_model"]
+        or native["loading_model"]
+        or (native["error"] and not (legacy["loaded_model"] or legacy["loading_model"]))
+    ):
         return {**native, "fallback_reason": _fallback_reason}
-    return laya_runtime.status()
+    return legacy
 
 
 def ensure_can_unload() -> None:

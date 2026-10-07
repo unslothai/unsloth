@@ -123,3 +123,21 @@ def test_auto_fallback_requires_supported_transformers(checkpoints, monkeypatch,
     if not supported:
         with pytest.raises(ValueError, match = "Transformers 5.5.0"):
             systemone_settings.validate(enabled = True, model = torch.name, backend = "pytorch")
+
+
+@pytest.mark.parametrize("phase", [None, "loaded_model", "loading_model"])
+def test_live_laya_status_keeps_cache_protected(monkeypatch, phase):
+    from core.systemone import laya_runtime
+    from hub.services.models.deletion import _decisions_blocks_delete
+
+    failed = {"loaded_model": None, "loading_model": None, "error": "Clef load failed"}
+    live = {"loaded_model": None, "loading_model": None, "error": None}
+    name = "laya-multilingual"
+    if phase:
+        live[phase] = name
+    monkeypatch.setattr(owned_runtime, "status", lambda: failed)
+    monkeypatch.setattr(laya_runtime, "status", lambda: live)
+    expected = live if phase else {**failed, "fallback_reason": runtime._fallback_reason}
+    assert runtime.status() == expected
+    if phase == "loaded_model":
+        assert _decisions_blocks_delete(catalog.CHECKPOINTS[name].source) is not None
