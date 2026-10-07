@@ -152,24 +152,26 @@ const mergeTokensIntoBlocks = (tokens: Token[]): string[] => {
   return mergedBlocks;
 };
 
-// Prose that can still hold a link reference: code and Marked's own definitions removed.
-const collectReferenceProse = (tokens: Token[], out: string[]): string[] => {
+// Prose that can still hold a link reference (code and definitions removed), and Marked's
+// own definitions.
+const collectReferenceProse = (
+  tokens: Token[],
+  out: { referenceProse: string[]; definitions: string[] },
+): { referenceProse: string[]; definitions: string[] } => {
   for (const token of tokens) {
-    if (
-      token.type === "code" ||
-      token.type === "space" ||
-      token.type === "def"
-    ) {
+    if (token.type === "code" || token.type === "space") {
       continue;
     }
-    if (token.type === "blockquote") {
+    if (token.type === "def") {
+      out.definitions.push(token.raw);
+    } else if (token.type === "blockquote") {
       collectReferenceProse(token.tokens ?? [], out);
     } else if (token.type === "list") {
       for (const item of token.items) {
         collectReferenceProse(item.tokens, out);
       }
     } else {
-      out.push(token.raw);
+      out.referenceProse.push(token.raw);
     }
   }
   return out;
@@ -179,12 +181,13 @@ const collectReferenceProse = (tokens: Token[], out: string[]): string[] => {
 export function parseMarkdownBlockDetails(markdown: string): {
   blocks: string[];
   referenceProse: string[];
+  definitions: string[];
 } {
   if (
     footnoteReferencePattern.test(markdown) ||
     footnoteDefinitionPattern.test(markdown)
   ) {
-    return { blocks: [markdown], referenceProse: [markdown] };
+    return { blocks: [markdown], referenceProse: [markdown], definitions: [] };
   }
   const input = markdown.includes("\r")
     ? markdown.replace(lineEndingPattern, "\n")
@@ -192,7 +195,7 @@ export function parseMarkdownBlockDetails(markdown: string): {
   const tokens = lexBlocks(input);
   return {
     blocks: mergeTokensIntoBlocks(tokens),
-    referenceProse: collectReferenceProse(tokens, []),
+    ...collectReferenceProse(tokens, { referenceProse: [], definitions: [] }),
   };
 }
 

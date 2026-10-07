@@ -229,9 +229,17 @@ function normalizeLabel(label: string): string {
     .toUpperCase();
 }
 
-function hasShortcutReference(prose: string, references: string): boolean {
+function hasShortcutReference(
+  prose: string,
+  references: string,
+  definitions: readonly string[],
+): boolean {
   const labels = new Set<string>();
-  for (const definition of prose.match(LINK_DEFINITION_KEY_RE) ?? []) {
+  // Marked's tokens as well: an unmatched `[` line before a definition widens the regex's label.
+  for (const definition of [
+    ...definitions,
+    ...(prose.match(LINK_DEFINITION_KEY_RE) ?? []),
+  ]) {
     const label = DEFINITION_LABEL_RE.exec(definition)?.[1];
     if (label !== undefined && label[0] !== "^") {
       labels.add(normalizeLabel(label));
@@ -264,6 +272,7 @@ const HTML_TAG_START_RE = /[a-zA-Z/]/;
 let splitMarkdown: string | null = null;
 let splitBlocks: readonly string[] = [];
 let splitReferenceProse = "";
+let splitDefinitions: readonly string[] = [];
 
 function blocksOf(markdown: string): readonly string[] {
   if (splitMarkdown !== markdown) {
@@ -271,6 +280,7 @@ function blocksOf(markdown: string): readonly string[] {
     const details = parseMarkdownBlockDetails(markdown);
     splitBlocks = details.blocks;
     splitReferenceProse = details.referenceProse.join("\n\n");
+    splitDefinitions = details.definitions;
   }
   return splitBlocks;
 }
@@ -278,6 +288,11 @@ function blocksOf(markdown: string): readonly string[] {
 function referenceProseOf(markdown: string): string {
   blocksOf(markdown);
   return splitReferenceProse;
+}
+
+function definitionsOf(markdown: string): readonly string[] {
+  blocksOf(markdown);
+  return splitDefinitions;
 }
 
 // Which replies have to be lexed in one piece.
@@ -314,7 +329,11 @@ function documentProse(markdown: string): string | null {
   );
   return LINK_DEFINITION_LINE_RE.test(prose) &&
     (hasLinkReference(prose) ||
-      hasShortcutReference(prose, referenceProseOf(markdown)))
+      hasShortcutReference(
+        prose,
+        referenceProseOf(markdown),
+        definitionsOf(markdown),
+      ))
     ? prose
     : null;
 }

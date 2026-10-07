@@ -346,6 +346,8 @@ test("a shortcut reference matches its definition the way CommonMark matches lab
       `Read [1](${"(".repeat(33)}x${")".repeat(33)}) first.`,
       "[1]: https://x.test/one",
     ],
+    ["See [1].\n\n[broken", "[1]: /one"],
+    ["See [1].\n\n> [broken", "- [1]: /one"],
     ["Read [SS] first.", "[\u1E9E]: https://x.test/ss"],
     ["Read [Stra\u00DFe] first.", "[STRASSE]: https://x.test/strasse"],
   ]) {
