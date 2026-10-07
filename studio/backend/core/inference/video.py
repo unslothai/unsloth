@@ -5742,6 +5742,8 @@ class VideoBackend:
                         repo_id, gguf_filename, hf_token, local_files_only = local_files_only
                     )
                 )
+                if not _is_trusted_video_repo(repo_id):
+                    assert_safetensors_file(comfy_checkpoint)
             return self._load_h3_modular_pipeline(
                 diffusers = diffusers,
                 torch = torch,

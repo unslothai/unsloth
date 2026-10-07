@@ -12914,3 +12914,33 @@ def test_previewer_is_finished_when_the_render_fails_before_its_loop(fake_runtim
     with pytest.raises(RuntimeError, match = "protect refused"):
         backend.generate(prompt = "a fox", steps = 3, num_frames = 9, fps = 24)
     assert all(p.finished for p in started)
+
+
+def test_h3_modular_single_file_from_an_untrusted_repo_checks_the_header_first(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # The modular H3 branch returns before the generic single-file check, so it validates the header itself.
+    import pickle
+
+    bogus = tmp_path / "minimax_h3_fp8.safetensors"
+    bogus.write_bytes(pickle.dumps({"weights": 1}))
+    reached = []
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "ModularPipeline", _FakeModularPipeline, raising = False)
+    monkeypatch.setattr(diffusers, "ComponentsManager", _FakeComponentsManager, raising = False)
+    monkeypatch.setattr(diffusers, "MiniMaxH3Transformer3DModel", _FakeTransformer, raising = False)
+    monkeypatch.setattr(
+        VideoBackend, "_resolve_checkpoint_path", lambda self, *args, **kwargs: bogus
+    )
+    monkeypatch.setattr(
+        VideoBackend,
+        "_load_h3_modular_pipeline",
+        lambda self, **kwargs: reached.append(kwargs["comfy_checkpoint"]),
+    )
+    with pytest.raises(ValueError, match = "not a valid safetensors checkpoint"):
+        VideoBackend().load_pipeline(
+            "someone/minimax-h3-repack",
+            gguf_filename = bogus.name,
+            family_override = "minimax-h3",
+        )
+    assert reached == []
