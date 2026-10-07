@@ -161,6 +161,14 @@ def _contained_local_path(
         raise ValueError(
             "S3 key is an absolute path and cannot be downloaded into the dataset directory."
         )
+    # Win32 trims trailing dots and spaces, so ".. " can act as "..".
+    if any(
+        seg.rstrip(" .") == ""
+        for part in parts
+        for seg in part.replace("\\", "/").split("/")
+        if seg
+    ):
+        raise ValueError("S3 key has a dot-only path segment and cannot be downloaded.")
     root = pathmod.normcase(pathmod.normpath(pathmod.abspath(target_dir)))
     resolved = pathmod.normcase(pathmod.normpath(pathmod.join(root, *parts)))
     if resolved == root or not resolved.startswith(pathmod.join(root, "")):

@@ -247,6 +247,9 @@ def test_a_key_with_dotdot_segments_cannot_escape_the_download_dir(monkeypatch, 
         ["\\\\server\\share\\evil.wav"],
         ["audio", "..\\..\\evil.wav"],
         ["\\evil.wav"],
+        ["datasets", ".. ", "evil.wav"],
+        ["datasets", ". .", "evil.wav"],
+        ["datasets\\.. \\evil.wav"],
     ],
 )
 def test_windows_shaped_keys_cannot_escape_the_download_dir(parts):
