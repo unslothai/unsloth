@@ -157,6 +157,9 @@ def _stub_probabilities(question):
 
 @pytest.fixture
 def stub(tmp_path, monkeypatch):
+    if os.name == "nt":
+        # The stub server is a shebang script; CreateProcess cannot run it (WinError 193).
+        pytest.skip("stub llama-server needs a POSIX shebang")
     record = tmp_path / "stub_record.jsonl"
     script = tmp_path / "stub_server.py"
     script.write_text(STUB, encoding = "utf-8")
