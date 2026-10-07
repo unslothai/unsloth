@@ -1014,6 +1014,10 @@ async def lifespan(app: FastAPI):
 
     await _close_llama_http()
 
+    from core.systemone.laya_runtime import shutdown as shutdown_decisions
+
+    await asyncio.to_thread(shutdown_decisions)
+
     await run_lifespan_shutdown(
         terminate_hub_downloads,
         lambda: clear_compiled_cache_unless_shared(app),

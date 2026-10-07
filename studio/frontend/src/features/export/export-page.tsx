@@ -50,6 +50,7 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import type { LocalModelInfo } from "@/features/training";
 import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
+import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   AlertCircleIcon,
@@ -63,7 +64,11 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useSearch } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { ModelCheckpoints } from "./api/export-api";
+import {
+  type DecisionExportInfo,
+  type ModelCheckpoints,
+  fetchDecisionExportInfo,
+} from "./api/export-api";
 import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
@@ -168,6 +173,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 }
 
 export function ExportPage() {
+  const t = useT();
   const signalReady = useAppShellReadySignal();
   const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
@@ -493,6 +499,79 @@ export function ExportPage() {
     return map;
   }, [exportableLocalModels]);
 
+  // Decision models (Clef / Laya) are local run folders; the backend says which and what they allow.
+  const decisionProbePath = useMemo(() => {
+    if (sourceMode === "checkpoint") {
+      return (
+        checkpointsForModel.find((c) => c.display_name === checkpoint)?.path ??
+        null
+      );
+    }
+    if (modelSource !== "local" || !selectedSourceModel) {
+      return null;
+    }
+    return localMetaById.get(selectedSourceModel)?.path ?? selectedSourceModel;
+  }, [
+    sourceMode,
+    checkpointsForModel,
+    checkpoint,
+    modelSource,
+    selectedSourceModel,
+    localMetaById,
+  ]);
+  const [decisionState, setDecisionState] = useState<{
+    path: string;
+    info: DecisionExportInfo | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!decisionProbePath) {
+      return;
+    }
+    const controller = new AbortController();
+    fetchDecisionExportInfo(decisionProbePath, controller.signal)
+      .then((info) => {
+        setDecisionState({ path: decisionProbePath, info });
+        if (!info) {
+          return;
+        }
+        // A decision model exports to GGUF only, saved locally in its run folder.
+        const allowed = new Set(info.quantizations);
+        setExportMethod("gguf");
+        setGgufTarget("model");
+        setDestination("local");
+        setQuantLevels((prev) => {
+          const kept = prev.filter((q) => allowed.has(q));
+          if (kept.length === prev.length && kept.length > 0) {
+            return prev;
+          }
+          return kept.length > 0 ? kept : [info.default_quantization];
+        });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setDecisionState({ path: decisionProbePath, info: null });
+        }
+      });
+    return () => controller.abort();
+  }, [decisionProbePath]);
+  const decisionInfo =
+    decisionProbePath && decisionState?.path === decisionProbePath
+      ? decisionState.info
+      : null;
+  const isDecision = decisionInfo != null;
+  const decisionIneligible = decisionInfo?.eligible === false;
+  const decisionQuantOptions = useMemo(
+    () =>
+      (decisionInfo?.quantizations ?? []).map((q) => ({
+        value: q,
+        label: q.toUpperCase(),
+        recommended: q === decisionInfo?.default_quantization,
+      })),
+    [decisionInfo],
+  );
+  const decisionExistingQuants =
+    decisionInfo?.existing_export?.quantizations ?? [];
+
   const localResultIds = useMemo(() => {
     const ids = exportableLocalModels.map((model) => model.id);
     const manual = localModelInput.trim();
@@ -678,7 +757,8 @@ export function ExportPage() {
     !exportUnsupported &&
     !hubMultiFormat &&
     (exportMethod !== "gguf" || ggufAsLora || quantLevels.length > 0) &&
-    (exportMethod !== "merged" || selectedFormats.length > 0)
+    (exportMethod !== "merged" || selectedFormats.length > 0) &&
+    (!isDecision || (exportMethod === "gguf" && !decisionIneligible))
   );
 
   const applyHfSourceModel = useCallback((value: string) => {
@@ -758,6 +838,9 @@ export function ExportPage() {
     if (exportMethod === "merged" && selectedFormats.length === 0) return;
     // A Hub merged push writes each format to the repo root; several would collide (mirrors canExport).
     if (hubMultiFormat) return;
+    if (isDecision && (exportMethod !== "gguf" || decisionIneligible)) {
+      return;
+    }
 
     const selectedCp =
       sourceMode === "checkpoint"
@@ -781,10 +864,12 @@ export function ExportPage() {
     // The GGUF method with the LoRA target reuses the LoRA-adapter export path.
     const effectiveMethod: ExportMethod = ggufAsLora ? "lora" : exportMethod;
     const emitLoraGguf = ggufAsLora || (effectiveMethod === "lora" && loraAsGguf);
-    const methodLabel = ggufAsLora
-      ? "GGUF LoRA adapter"
-      : (EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ??
-        exportMethod);
+    const methodLabel = isDecision
+      ? t("exportDecision.methodLabel")
+      : ggufAsLora
+        ? "GGUF LoRA adapter"
+        : (EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ??
+          exportMethod);
     const adapterExport = sourceMode === "checkpoint" && isAdapter;
 
     // Consent gate for an HF source's custom (auto_map) code, before handing off to runExport.
@@ -826,9 +911,15 @@ export function ExportPage() {
       exportMethod: effectiveMethod,
       isAdapter: adapterExport,
       quantLevels,
-      useImatrix: effectiveImatrix,
-      imatrixPath,
-      npuQ4nx: effectiveNpuQ4nx,
+      useImatrix: isDecision ? false : effectiveImatrix,
+      imatrixPath: isDecision ? "" : imatrixPath,
+      npuQ4nx: isDecision ? false : effectiveNpuQ4nx,
+      decisionOutputLabel: isDecision
+        ? (quantizations: string[]) =>
+            t("exportDecision.outputLabel", {
+              quantizations: quantizations.join(", "),
+            })
+        : undefined,
       mergedSelections: selectedFormats.map((v) => ({
         ...mergedFormatPayload(v),
         label: MERGED_FORMATS.find((f) => f.value === v)?.label ?? v,
@@ -883,6 +974,9 @@ export function ExportPage() {
     privateRepo,
     modelSource,
     runExport,
+    isDecision,
+    decisionIneligible,
+    t,
   ]);
 
   // Open the inline panel into a fresh config state, clearing any previous terminal run.
@@ -1436,20 +1530,24 @@ export function ExportPage() {
                 disabledMethods={
                   exportUnsupported
                     ? ["merged", "lora", "gguf"]
-                    : !effectiveIsAdapter && effectiveIsQuantized
-                      ? ["merged", "lora", "gguf"]
-                      : effectiveIsAdapter
-                        ? []
-                        : ["lora"]
+                    : isDecision
+                      ? ["merged", "lora"]
+                      : !effectiveIsAdapter && effectiveIsQuantized
+                        ? ["merged", "lora", "gguf"]
+                        : effectiveIsAdapter
+                          ? []
+                          : ["lora"]
                 }
                 disabledReason={
                   exportUnsupported
                     ? exportUnsupportedMessage
-                    : !effectiveIsAdapter && effectiveIsQuantized
-                      ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
-                      : effectiveIsAdapter
-                        ? undefined
-                        : "LoRA-only export needs a LoRA adapter checkpoint"
+                    : isDecision
+                      ? t("exportDecision.ggufOnly")
+                      : !effectiveIsAdapter && effectiveIsQuantized
+                        ? "Pre-quantized (BNB 4-bit) models cannot be exported without LoRA adapters"
+                        : effectiveIsAdapter
+                          ? undefined
+                          : "LoRA-only export needs a LoRA adapter checkpoint"
                 }
               />
 
@@ -1690,7 +1788,49 @@ export function ExportPage() {
                   </div>
                 )}
 
-              {exportMethod === "gguf" && !exportUnsupported && (
+              {exportMethod === "gguf" && !exportUnsupported && decisionInfo && (
+                <div className="space-y-3">
+                  {decisionIneligible ? (
+                    <Alert variant="destructive">
+                      <HugeiconsIcon icon={AlertCircleIcon} className="size-4" />
+                      <AlertTitle>{t("exportDecision.notEligibleTitle")}</AlertTitle>
+                      <AlertDescription>{decisionInfo.reason}</AlertDescription>
+                    </Alert>
+                  ) : (
+                    <>
+                      <div className="space-y-1">
+                        <div className="text-sm font-medium">
+                          {t("exportDecision.title")}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {t("exportDecision.description", {
+                            layout: decisionInfo.layout === "clef" ? "Clef" : "Laya",
+                          })}
+                        </div>
+                        {decisionInfo.adapter_only && (
+                          <div className="text-xs text-muted-foreground">
+                            {t("exportDecision.adapterNote")}
+                          </div>
+                        )}
+                      </div>
+                      <QuantPicker
+                        value={quantLevels}
+                        onChange={setQuantLevels}
+                        options={decisionQuantOptions}
+                      />
+                      {decisionExistingQuants.length > 0 && (
+                        <div className="text-xs text-muted-foreground">
+                          {t("exportDecision.existing", {
+                            quantizations: decisionExistingQuants.join(", "),
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
+              {exportMethod === "gguf" && !exportUnsupported && !decisionInfo && (
                 <div className="space-y-3">
                   {effectiveIsAdapter && !isMacHost && (
                     <div className="space-y-2">
@@ -1862,6 +2002,13 @@ export function ExportPage() {
                   onPrivateRepoChange={setPrivateRepo}
                   onStart={handleStart}
                   onClose={handleClosePanel}
+                  decisionNote={
+                    decisionInfo
+                      ? t("exportDecision.outputNote", {
+                          path: decisionInfo.output_dir,
+                        })
+                      : undefined
+                  }
                 />
               )}
               {showPanel && (

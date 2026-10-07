@@ -1127,6 +1127,7 @@ def _save_clef(
     self,
     save_directory,
     tokenizer,
+    token = None,
     exact = False,
 ) -> None:
     import shutil
@@ -1138,7 +1139,12 @@ def _save_clef(
         encoder = self.encoder
         if hasattr(encoder, "save_pretrained_merged"):
             # Unsloth's merge dequantizes a 4-bit base and writes the processor files too.
-            encoder.save_pretrained_merged(str(staging), tokenizer, save_method = "merged_16bit")
+            encoder.save_pretrained_merged(
+                str(staging),
+                tokenizer,
+                save_method = "merged_16bit",
+                **({} if token is None else {"token": token}),
+            )
             # A merge with local_dir = the save folder leaves huggingface_hub's .cache behind.
             shutil.rmtree(staging / ".cache", ignore_errors = True)
         else:
@@ -1266,6 +1272,13 @@ def _attach_clef_saving(model) -> None:
     model.save_pretrained_merged = types.MethodType(save_pretrained_merged, model)
     model.push_to_hub = types.MethodType(push_to_hub_clef, model)
     model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
+    _attach_gguf_saving(model)
+
+
+def _attach_gguf_saving(model) -> None:
+    from .decision_gguf import push_to_hub_gguf, save_pretrained_gguf
+    model.save_pretrained_gguf = types.MethodType(save_pretrained_gguf, model)
+    model.push_to_hub_gguf = types.MethodType(push_to_hub_gguf, model)
 
 
 def _clef_mixed_precision(model, args) -> None:
@@ -1689,6 +1702,17 @@ def _calibrate_clef(config: dict, logits, items) -> dict:
     return {**_metrics(logits, items, per_item), "fitted_types": sorted(fitted)}
 
 
+def _served_lengths(
+    config: dict,
+    positions: int,
+    max_seq_length = None,
+) -> tuple:
+    """(max_len, head_max_len) a Laya checkpoint serves with once loaded."""
+    wanted = max_seq_length or max(int(config.get("max_len", 512)), TRAIN_MAX_LEN)
+    max_len = min(int(positions), int(wanted))
+    return max_len, min(max_len // 2, max(int(config.get("head_max_len", 192)), TRAIN_HEAD_MAX_LEN))
+
+
 def save_pretrained_merged(
     self,
     save_directory,
@@ -1704,7 +1728,7 @@ def save_pretrained_merged(
         )
     tokenizer = self._saved_temp_tokenizer if tokenizer is None else tokenizer
     if getattr(self, "is_clef", False):
-        return _save_clef(self, save_directory, tokenizer)
+        return _save_clef(self, save_directory, tokenizer, kwargs.get("token"))
     encoder = self.encoder
     if hasattr(encoder, "merge_and_unload"):
         # Merged on a CPU copy: the model keeps its adapters and the GPU never holds a second encoder.
@@ -1854,10 +1878,8 @@ class FastDecisionModel:
         model.encoder.config.reference_compile = False
 
         positions = int(getattr(model.encoder.config, "max_position_embeddings", TRAIN_MAX_LEN))
-        wanted = max_seq_length or max(int(config.get("max_len", 512)), TRAIN_MAX_LEN)
-        config["max_len"] = min(positions, int(wanted))
-        config["head_max_len"] = min(
-            config["max_len"] // 2, max(int(config.get("head_max_len", 192)), TRAIN_HEAD_MAX_LEN)
+        config["max_len"], config["head_max_len"] = _served_lengths(
+            config, positions, max_seq_length
         )
         model.decision_config = config
 
@@ -1879,6 +1901,7 @@ class FastDecisionModel:
         )
         model.save_pretrained_merged = types.MethodType(save_pretrained_merged, model)
         model.push_to_hub_merged = types.MethodType(push_to_hub_merged, model)
+        _attach_gguf_saving(model)
         return model, tokenizer
 
     @staticmethod

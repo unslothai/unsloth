@@ -5785,7 +5785,7 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir)
+        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
 
         models = [
             ModelCheckpoints(
