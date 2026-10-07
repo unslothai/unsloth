@@ -52,7 +52,8 @@ export type LinkedChatPick = {
 
 type Section = "recommended" | "downloaded";
 
-const MEDIA_CATALOGS = [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG];
+// A function: the catalogs come through the chat barrel and are unset while the import cycle loads.
+const mediaCatalogs = () => [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG];
 
 const GB = 1024 ** 3;
 const isGgufRepo = (id: string) => /gguf/i.test(id);
@@ -275,7 +276,7 @@ export function LinkedModelsPanel({
   // Chat's On Device skips media models; the remote's cache reports no task for most GGUFs.
   const isImageRepo = (repo: CachedGgufRepo | CachedModelRepo) =>
     imageRepo(repo.repo_id) ||
-    MEDIA_CATALOGS.some((c) => artifactForRepoId(repo.repo_id, c) !== null) ||
+    mediaCatalogs().some((c) => artifactForRepoId(repo.repo_id, c) !== null) ||
     ((caps) => caps.imageGen || caps.videoGen)(
       detectCapabilities({
         id: repo.repo_id,

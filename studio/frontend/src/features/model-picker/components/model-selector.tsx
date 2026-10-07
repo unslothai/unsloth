@@ -905,7 +905,7 @@ export function ModelSelector({
     return all;
   }, [externalModels, loraModels, models]);
 
-  const selectedModel = useMemo(() => {
+  const currentModel = useMemo(() => {
     if (!selected) return undefined;
     // A cached vendor copy loads for its unsloth mirror; name it by the mirror's option.
     const mirrorId =
@@ -967,22 +967,22 @@ export function ModelSelector({
     t,
   ]);
 
-  const currentModel = useMemo(() => {
-    if (!selectedModel || !linkedMachine) return selectedModel;
+  const triggerModel = useMemo(() => {
+    if (!currentModel || !linkedMachine) return currentModel;
     // One description, since a suffix span beside it loses the space before its dash.
     const suffix =
-      "descriptionSuffix" in selectedModel
-        ? selectedModel.descriptionSuffix
+      "descriptionSuffix" in currentModel
+        ? currentModel.descriptionSuffix
         : undefined;
     return {
-      ...selectedModel,
+      ...currentModel,
       description: suffix
         ? `@${linkedMachine} · ${suffix}`
         : `@${linkedMachine}`,
       descriptionSuffix: undefined,
       icon: <HugeiconsIcon icon={CloudServerIcon} className="size-4" />,
     };
-  }, [selectedModel, linkedMachine]);
+  }, [currentModel, linkedMachine]);
 
   function handleSelect(id: string, meta: ModelSelectorChangeMeta) {
     if (onValueChange) {
@@ -1021,7 +1021,7 @@ export function ModelSelector({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
-        currentModel={currentModel}
+        currentModel={triggerModel}
         isLoaded={isLoaded}
         showCloudIndicator={showCloudIndicator}
         variant={variant}
