@@ -279,3 +279,21 @@ test("a switch that lands after the list unmounted does not change the menu view
   assert.match(MENU_PICKER, /if \(mountedRef\.current\) onBack\(\);/);
   assert.match(MENU_PICKER, /return \(\) => \{\s*mountedRef\.current = false;\s*\};/);
 });
+
+test("only the model rows scroll; the header and Eject stay put", () => {
+  assert.match(MENU_PICKER, /<div className="flex shrink-0 items-start[\s\S]*?ref=\{listRef\}\s*className="min-h-0 flex-1 overflow-y-auto/);
+  assert.match(MENU_PICKER, /<\/div>\s*\{settings\.backendLoaded \? \(\s*<div className="shrink-0">/);
+});
+
+test("the list header is a page header: its own back button, then a titled page", () => {
+  // Back is a separate round button labelled with where it goes, not an arrow on the title.
+  // Wash on hover or focus only, no resting circle.
+  assert.match(MENU_PICKER, /aria-label=\{t\("settings\.general\.rag\.back"\)\}[\s\S]*?rounded-full text-muted-foreground[^"]*hover:bg-\[/);
+  // Title matches the More models link size.
+  assert.match(MENU_PICKER, /truncate text-ui-12 font-medium leading-tight text-foreground/);
+  assert.match(
+    MENU_PICKER,
+    /t\("settings\.general\.rag\.embeddingModel"\)[\s\S]*?t\("settings\.general\.rag\.menuSubtitle"\)/,
+  );
+  assert.doesNotMatch(MENU_PICKER, /menuTitle|DropdownMenuLabel/);
+});

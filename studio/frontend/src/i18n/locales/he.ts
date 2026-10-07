@@ -1782,7 +1782,6 @@ export const he = {
         pin: "הצמדה לתפריט RAG",
         unpin: "ביטול הצמדה מתפריט RAG",
         menuChip: "מודל",
-        menuTitle: "בחירת מודל",
         moreModels: "מודלים נוספים",
         defaultTag: "ברירת מחדל",
         localModel: "מודל מקומי",
@@ -1792,7 +1791,8 @@ export const he = {
         switchedUncheckedDescription: "לא ניתן לבדוק אם הוא הורד. בדוק בהגדרות לפני אינדוקס קבצים חדשים.",
         openSettings: "פתיחת ההגדרות",
         switchFailed: "לא ניתן להחליף את מודל ההטמעה",
-        back: "חזרה",
+        back: "חזרה למקורות",
+        menuSubtitle: "מפעיל את חיפוש הקבצים",
         pinHint: "הצמידו מודלים נוספים בהגדרות > מסמכים ו-RAG כדי לעבור ביניהם כאן.",
       },
       storage: {

@@ -1849,7 +1849,6 @@ export const sv = {
         pin: "Fäst i RAG-menyn",
         unpin: "Lossa från RAG-menyn",
         menuChip: "Modell",
-        menuTitle: "Välj modell",
         moreModels: "Fler modeller",
         defaultTag: "Standard",
         localModel: "Lokal modell",
@@ -1859,7 +1858,8 @@ export const sv = {
         switchedUncheckedDescription: "Kunde inte kontrollera om den är nedladdad. Kontrollera i inställningarna innan du indexerar nya filer.",
         openSettings: "Öppna inställningar",
         switchFailed: "Kunde inte byta inbäddningsmodell",
-        back: "Tillbaka",
+        back: "Tillbaka till källor",
+        menuSubtitle: "Används för filsökning",
         pinHint: "Fäst fler modeller i Inställningar > Dokument och RAG för att byta här.",
       },
       storage: {

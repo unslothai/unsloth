@@ -1691,7 +1691,6 @@ export const ptBR = {
         pin: "Fixar no menu RAG",
         unpin: "Desafixar do menu RAG",
         menuChip: "Modelo",
-        menuTitle: "Selecionar modelo",
         moreModels: "Mais modelos",
         defaultTag: "Padrão",
         localModel: "Modelo local",
@@ -1701,7 +1700,8 @@ export const ptBR = {
         switchedUncheckedDescription: "Não foi possível verificar se está baixado. Confira nas configurações antes de indexar novos arquivos.",
         openSettings: "Abrir configurações",
         switchFailed: "Não foi possível trocar o modelo de embedding",
-        back: "Voltar",
+        back: "Voltar às fontes",
+        menuSubtitle: "Para busca em arquivos",
         pinHint: "Fixe mais modelos em Configurações > Documentos e RAG para trocar aqui.",
       },
       storage: {

@@ -1702,7 +1702,6 @@ export const fr = {
         pin: "Épingler au menu RAG",
         unpin: "Désépingler du menu RAG",
         menuChip: "Modèle",
-        menuTitle: "Choisir un modèle",
         moreModels: "Plus de modèles",
         defaultTag: "Par défaut",
         localModel: "Modèle local",
@@ -1712,7 +1711,8 @@ export const fr = {
         switchedUncheckedDescription: "Impossible de vérifier s'il est téléchargé. Vérifiez dans les paramètres avant d'indexer de nouveaux fichiers.",
         openSettings: "Ouvrir les paramètres",
         switchFailed: "Impossible de changer le modèle d'embedding",
-        back: "Retour",
+        back: "Retour aux sources",
+        menuSubtitle: "Pour la recherche de fichiers",
         pinHint: "Épinglez d'autres modèles dans Paramètres > Documents et RAG pour changer ici.",
       },
       storage: {

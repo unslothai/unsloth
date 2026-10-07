@@ -8,7 +8,6 @@ import { useEffect, useRef, useState } from "react";
 
 import {
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
@@ -23,6 +22,7 @@ import {
   useEmbeddingPinsStore,
   useSettingsDialogStore,
 } from "@/features/settings";
+import { useWheelScrollRef } from "@/hooks";
 import { useT } from "@/i18n";
 import { ChevronLeftStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { MenuTickIcon } from "@/lib/tick-icon";
@@ -104,6 +104,7 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
       mountedRef.current = false;
     };
   }, []);
+  const listRef = useWheelScrollRef<HTMLDivElement>();
 
   // Fresh residency, so Eject reflects a model indexing just loaded.
   useEffect(() => {
@@ -174,25 +175,41 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <>
-      <DropdownMenuLabel className="flex items-center justify-between gap-3">
+    // Capped to the menu's room, so the rows scroll inside it instead of the whole menu.
+    <div className="flex max-h-[calc(var(--radix-dropdown-menu-content-available-height)-1rem*var(--ui-space-scale,1))] flex-col">
+      {/* Header and Eject stay put; only the model rows scroll. */}
+      {/* A page header, not a label: the back button returns to the source list, and the title
+          names this page, so the arrow never reads as "go back to <title>". */}
+      <div className="flex shrink-0 items-start gap-2 px-2 pt-2 pb-2">
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <DropdownMenuPrimitive.Item
+              aria-label={t("settings.general.rag.back")}
+              onSelect={(event) => {
+                event.preventDefault();
+                onBack();
+              }}
+              className="-ml-1 flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground outline-hidden transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground data-[highlighted]:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] data-[highlighted]:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))] dark:data-[highlighted]:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))]"
+            >
+              <HugeiconsIcon
+                icon={ChevronLeftStandardIcon}
+                strokeWidth={2}
+                className="size-[calc(14px*var(--ui-space-scale,1))]"
+              />
+            </DropdownMenuPrimitive.Item>
+          </TooltipTrigger>
+          <TooltipContent side="top">{t("settings.general.rag.back")}</TooltipContent>
+        </Tooltip>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-ui-12 font-medium leading-tight text-foreground">
+            {t("settings.general.rag.embeddingModel")}
+          </span>
+          <span className="truncate text-xs leading-snug text-muted-foreground">
+            {t("settings.general.rag.menuSubtitle")}
+          </span>
+        </div>
         <DropdownMenuPrimitive.Item
-          aria-label={t("settings.general.rag.back")}
-          onSelect={(event) => {
-            event.preventDefault();
-            onBack();
-          }}
-          className="-my-1 -ml-1.5 flex min-w-0 cursor-pointer items-center gap-1 rounded-full py-1 pr-2 pl-1 outline-hidden transition-colors hover:text-foreground data-[highlighted]:text-foreground"
-        >
-          <HugeiconsIcon
-            icon={ChevronLeftStandardIcon}
-            strokeWidth={1.75}
-            className="size-[calc(13px*var(--ui-space-scale,1))] shrink-0"
-          />
-          <span className="truncate">{t("settings.general.rag.menuTitle")}</span>
-        </DropdownMenuPrimitive.Item>
-        <DropdownMenuPrimitive.Item
-          className={HEADING_LINK_CLASS}
+          className={cn(HEADING_LINK_CLASS, "mt-px text-ui-12")}
           // Deferred past the menu's focus restore.
           onSelect={() =>
             setTimeout(() => openSettings("general", { scrollTarget: "general-rag-embedding" }), 0)
@@ -200,93 +217,98 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
         >
           {t("settings.general.rag.moreModels")}
         </DropdownMenuPrimitive.Item>
-      </DropdownMenuLabel>
-      {models.map((model) => {
-        const isPinned = pinned.includes(model);
-        const owner = embeddingModelOwner(model);
-        const details = [
-          owner || t("settings.general.rag.localModel"),
-          ...(model === settings.defaultEmbeddingModel ? [t("settings.general.rag.defaultTag")] : []),
-          ...(model === current
-            ? [t(settings.loaded ? "settings.general.rag.loaded" : "settings.general.rag.notLoaded")]
-            : []),
-        ].join(" · ");
-        const pinLabel = t(isPinned ? "settings.general.rag.unpin" : "settings.general.rag.pin");
-        return (
-          // The pin is its own menu item, so arrow keys reach it; it is laid over the row's spacer.
-          <div key={model} className="menu-row-with-action group/row relative">
-            <DropdownMenuItem
-              disabled={switching !== null && switching !== model}
-              onSelect={(event) => {
-                // Stay open while it switches; the list goes back once it lands.
-                event.preventDefault();
-                void pick(model);
-              }}
-              className={cn("items-start gap-2 py-2", model === current && "font-medium")}
-            >
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="truncate text-ui-13 leading-tight">{embeddingModelName(model)}</span>
-                <span className="truncate text-xs font-normal leading-snug text-muted-foreground">
-                  {details}
+      </div>
+      <div
+        ref={listRef}
+        className="min-h-0 flex-1 overflow-y-auto max-h-[calc(236px*var(--ui-space-scale,1))]"
+      >
+        {models.map((model) => {
+          const isPinned = pinned.includes(model);
+          const owner = embeddingModelOwner(model);
+          const details = [
+            owner || t("settings.general.rag.localModel"),
+            ...(model === settings.defaultEmbeddingModel ? [t("settings.general.rag.defaultTag")] : []),
+            ...(model === current
+              ? [t(settings.loaded ? "settings.general.rag.loaded" : "settings.general.rag.notLoaded")]
+              : []),
+          ].join(" · ");
+          const pinLabel = t(isPinned ? "settings.general.rag.unpin" : "settings.general.rag.pin");
+          return (
+            // The pin is its own menu item, so arrow keys reach it; it is laid over the row's spacer.
+            <div key={model} className="menu-row-with-action group/row relative">
+              <DropdownMenuItem
+                disabled={switching !== null && switching !== model}
+                onSelect={(event) => {
+                  // Stay open while it switches; the list goes back once it lands.
+                  event.preventDefault();
+                  void pick(model);
+                }}
+                className={cn("items-start gap-2 py-2", model === current && "font-medium")}
+              >
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="truncate text-ui-13 leading-tight">{embeddingModelName(model)}</span>
+                  <span className="truncate text-xs font-normal leading-snug text-muted-foreground">
+                    {details}
+                  </span>
                 </span>
-              </span>
-              <span className="flex shrink-0 items-center gap-2 self-center">
-                <span className="size-6" />
-                <span className={TRAILING_SLOT_CLASS}>
-                  {switching === model ? (
-                    <Spinner className="size-4" />
-                  ) : model === current ? (
-                    <HugeiconsIcon
-                      icon={MenuTickIcon}
-                      strokeWidth={2}
-                      className="permission-mode-tick"
-                    />
-                  ) : null}
+                <span className="flex shrink-0 items-center gap-2 self-center">
+                  <span className="size-6" />
+                  <span className={TRAILING_SLOT_CLASS}>
+                    {switching === model ? (
+                      <Spinner className="size-4" />
+                    ) : model === current ? (
+                      <HugeiconsIcon
+                        icon={MenuTickIcon}
+                        strokeWidth={2}
+                        className="permission-mode-tick"
+                      />
+                    ) : null}
+                  </span>
                 </span>
+              </DropdownMenuItem>
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center gap-2">
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <DropdownMenuPrimitive.CheckboxItem
+                      checked={isPinned}
+                      aria-label={pinLabel}
+                      data-row-action={true}
+                      onSelect={(event) => {
+                        event.preventDefault();
+                        // Unpinning an extra row removes the focused item; hand focus to a neighbour.
+                        const leaving =
+                          isPinned && model !== current && model !== settings.defaultEmbeddingModel;
+                        const neighbour = leaving
+                          ? neighbourRowItem(event.currentTarget as HTMLElement)
+                          : null;
+                        togglePin(model);
+                        if (neighbour) requestAnimationFrame(() => neighbour.focus());
+                      }}
+                      // As on Recents: grey, unpin glyph once pinned. Shown on row hover or focus, always on touch.
+                      className="pointer-events-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 outline-hidden transition-colors group-hover/row:opacity-100 group-has-[[data-highlighted]]/row:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] data-[highlighted]:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[highlighted]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                    >
+                      <HugeiconsIcon
+                        icon={isPinned ? PinOffIcon : PinIcon}
+                        strokeWidth={1.75}
+                        className="size-3.5!"
+                      />
+                    </DropdownMenuPrimitive.CheckboxItem>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">{pinLabel}</TooltipContent>
+                </Tooltip>
+                <span className={TRAILING_SLOT_CLASS} />
               </span>
-            </DropdownMenuItem>
-            <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center gap-2">
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <DropdownMenuPrimitive.CheckboxItem
-                    checked={isPinned}
-                    aria-label={pinLabel}
-                    data-row-action={true}
-                    onSelect={(event) => {
-                      event.preventDefault();
-                      // Unpinning an extra row removes the focused item; hand focus to a neighbour.
-                      const leaving =
-                        isPinned && model !== current && model !== settings.defaultEmbeddingModel;
-                      const neighbour = leaving
-                        ? neighbourRowItem(event.currentTarget as HTMLElement)
-                        : null;
-                      togglePin(model);
-                      if (neighbour) requestAnimationFrame(() => neighbour.focus());
-                    }}
-                    // As on Recents: grey, unpin glyph once pinned. Shown on row hover or focus, always on touch.
-                    className="pointer-events-auto flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 outline-hidden transition-colors group-hover/row:opacity-100 group-has-[[data-highlighted]]/row:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] data-[highlighted]:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:data-[highlighted]:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
-                  >
-                    <HugeiconsIcon
-                      icon={isPinned ? PinOffIcon : PinIcon}
-                      strokeWidth={1.75}
-                      className="size-3.5!"
-                    />
-                  </DropdownMenuPrimitive.CheckboxItem>
-                </TooltipTrigger>
-                <TooltipContent side="top">{pinLabel}</TooltipContent>
-              </Tooltip>
-              <span className={TRAILING_SLOT_CLASS} />
-            </span>
-          </div>
-        );
-      })}
-      {pinned.length === 0 ? (
-        <p className="px-3 pt-1 pb-2 text-xs text-muted-foreground">
-          {t("settings.general.rag.pinHint")}
-        </p>
-      ) : null}
+            </div>
+          );
+        })}
+        {pinned.length === 0 ? (
+          <p className="px-3 pt-1 pb-2 text-xs text-muted-foreground">
+            {t("settings.general.rag.pinHint")}
+          </p>
+        ) : null}
+      </div>
       {settings.backendLoaded ? (
-        <>
+        <div className="shrink-0">
           <DropdownMenuSeparator />
           <DropdownMenuItem
             disabled={switching !== null}
@@ -303,8 +325,8 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
             )}
             {t("settings.general.rag.ejectModel")}
           </DropdownMenuItem>
-        </>
+        </div>
       ) : null}
-    </>
+    </div>
   );
 }

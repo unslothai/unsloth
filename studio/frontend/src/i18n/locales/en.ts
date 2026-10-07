@@ -1738,7 +1738,6 @@ export const en = {
         pin: "Pin to the RAG menu",
         unpin: "Unpin from the RAG menu",
         menuChip: "Model",
-        menuTitle: "Select model",
         moreModels: "More models",
         defaultTag: "Default",
         localModel: "Local model",
@@ -1748,7 +1747,8 @@ export const en = {
         switchedUncheckedDescription: "Couldn't check whether it's downloaded. Check in Settings before indexing new files.",
         openSettings: "Open settings",
         switchFailed: "Couldn't switch the embedding model",
-        back: "Back",
+        back: "Back to sources",
+        menuSubtitle: "Powers file search",
         pinHint: "Pin more models in Settings > Documents & RAG to switch here.",
       },
       storage: {

@@ -1704,7 +1704,6 @@ export const de = {
         pin: "An das RAG-Menü anheften",
         unpin: "Vom RAG-Menü lösen",
         menuChip: "Modell",
-        menuTitle: "Modell auswählen",
         moreModels: "Weitere Modelle",
         defaultTag: "Standard",
         localModel: "Lokales Modell",
@@ -1714,7 +1713,8 @@ export const de = {
         switchedUncheckedDescription: "Konnte nicht prüfen, ob es heruntergeladen ist. Prüfe es in den Einstellungen, bevor du neue Dateien indexierst.",
         openSettings: "Einstellungen öffnen",
         switchFailed: "Embedding-Modell konnte nicht gewechselt werden",
-        back: "Zurück",
+        back: "Zurück zu den Quellen",
+        menuSubtitle: "Für die Dateisuche",
         pinHint: "Hefte weitere Modelle unter Einstellungen > Dokumente & RAG an, um hier zu wechseln.",
       },
       storage: {

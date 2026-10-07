@@ -1675,7 +1675,6 @@ export const ko = {
         pin: "RAG 메뉴에 고정",
         unpin: "RAG 메뉴에서 고정 해제",
         menuChip: "모델",
-        menuTitle: "모델 선택",
         moreModels: "더 많은 모델",
         defaultTag: "기본값",
         localModel: "로컬 모델",
@@ -1685,7 +1684,8 @@ export const ko = {
         switchedUncheckedDescription: "다운로드 여부를 확인하지 못했습니다. 새 파일을 인덱싱하기 전에 설정에서 확인하세요.",
         openSettings: "설정 열기",
         switchFailed: "임베딩 모델을 전환하지 못했습니다",
-        back: "뒤로",
+        back: "소스로 돌아가기",
+        menuSubtitle: "파일 검색에 사용",
         pinHint: "설정 > 문서 및 RAG에서 모델을 더 고정하면 여기서 전환할 수 있습니다.",
       },
       storage: {

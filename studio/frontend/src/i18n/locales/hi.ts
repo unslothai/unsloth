@@ -1682,7 +1682,6 @@ export const hi = {
         pin: "RAG मेन्यू में पिन करें",
         unpin: "RAG मेन्यू से अनपिन करें",
         menuChip: "मॉडल",
-        menuTitle: "मॉडल चुनें",
         moreModels: "और मॉडल",
         defaultTag: "डिफ़ॉल्ट",
         localModel: "लोकल मॉडल",
@@ -1692,7 +1691,8 @@ export const hi = {
         switchedUncheckedDescription: "यह जाँच नहीं हो सकी कि यह डाउनलोड है या नहीं। नई फ़ाइलें इंडेक्स करने से पहले सेटिंग्स में देखें।",
         openSettings: "सेटिंग्स खोलें",
         switchFailed: "एम्बेडिंग मॉडल नहीं बदला जा सका",
-        back: "वापस",
+        back: "स्रोतों पर वापस जाएँ",
+        menuSubtitle: "फ़ाइल खोज के लिए",
         pinHint: "यहाँ बदलने के लिए सेटिंग्स > दस्तावेज़ और RAG में और मॉडल पिन करें।",
       },
       storage: {

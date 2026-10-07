@@ -1664,7 +1664,6 @@ export const ja = {
         pin: "RAG メニューにピン留め",
         unpin: "RAG メニューからピン留めを外す",
         menuChip: "モデル",
-        menuTitle: "モデルを選択",
         moreModels: "その他のモデル",
         defaultTag: "デフォルト",
         localModel: "ローカルモデル",
@@ -1674,7 +1673,8 @@ export const ja = {
         switchedUncheckedDescription: "ダウンロード済みか確認できませんでした。新しいファイルをインデックスする前に設定で確認してください。",
         openSettings: "設定を開く",
         switchFailed: "埋め込みモデルを切り替えられませんでした",
-        back: "戻る",
+        back: "ソースに戻る",
+        menuSubtitle: "ファイル検索に使用",
         pinHint: "設定 > ドキュメントと RAG でモデルをピン留めすると、ここで切り替えられます。",
       },
       storage: {

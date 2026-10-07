@@ -1699,7 +1699,6 @@ export const es = {
         pin: "Fijar en el menú RAG",
         unpin: "Quitar del menú RAG",
         menuChip: "Modelo",
-        menuTitle: "Seleccionar modelo",
         moreModels: "Más modelos",
         defaultTag: "Predeterminado",
         localModel: "Modelo local",
@@ -1709,7 +1708,8 @@ export const es = {
         switchedUncheckedDescription: "No se pudo comprobar si está descargado. Revísalo en Ajustes antes de indexar archivos nuevos.",
         openSettings: "Abrir ajustes",
         switchFailed: "No se pudo cambiar el modelo de embedding",
-        back: "Atrás",
+        back: "Volver a las fuentes",
+        menuSubtitle: "Para buscar en archivos",
         pinHint: "Fija más modelos en Ajustes > Documentos y RAG para cambiar aquí.",
       },
       storage: {

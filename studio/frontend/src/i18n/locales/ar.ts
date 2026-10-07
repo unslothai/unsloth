@@ -1679,7 +1679,6 @@ export const ar = {
         pin: "تثبيت في قائمة RAG",
         unpin: "إلغاء التثبيت من قائمة RAG",
         menuChip: "النموذج",
-        menuTitle: "اختر النموذج",
         moreModels: "المزيد من النماذج",
         defaultTag: "افتراضي",
         localModel: "نموذج محلي",
@@ -1689,7 +1688,8 @@ export const ar = {
         switchedUncheckedDescription: "تعذّر التحقق مما إذا كان قد نُزّل. تحقّق في الإعدادات قبل فهرسة ملفات جديدة.",
         openSettings: "فتح الإعدادات",
         switchFailed: "تعذّر تبديل نموذج التضمين",
-        back: "رجوع",
+        back: "العودة إلى المصادر",
+        menuSubtitle: "يشغّل البحث في الملفات",
         pinHint: "ثبّت المزيد من النماذج من الإعدادات > المستندات و RAG للتبديل بينها هنا.",
       },
       storage: {

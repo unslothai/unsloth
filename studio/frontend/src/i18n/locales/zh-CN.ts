@@ -1657,7 +1657,6 @@ export const zhCN = {
         pin: "固定到 RAG 菜单",
         unpin: "从 RAG 菜单取消固定",
         menuChip: "模型",
-        menuTitle: "选择模型",
         moreModels: "更多模型",
         defaultTag: "默认",
         localModel: "本地模型",
@@ -1667,7 +1666,8 @@ export const zhCN = {
         switchedUncheckedDescription: "无法确认是否已下载。索引新文件前请在设置中查看。",
         openSettings: "打开设置",
         switchFailed: "无法切换嵌入模型",
-        back: "返回",
+        back: "返回来源",
+        menuSubtitle: "用于文件搜索",
         pinHint: "在 设置 > 文档与 RAG 中固定更多模型，即可在此切换。",
       },
       storage: {
