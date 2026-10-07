@@ -181,6 +181,34 @@ export function withSttVariant(model: SttModel, variant: string): string {
   return quant ? `${model}:${quant}` : model;
 }
 
+/** The quant a dictation pick runs, as the listing names it: the pinned one, else the resident one
+ *  (a cache-only load can report the loose key, "Q8_0" for "small/Q8_0"), else what a bare load
+ *  picks offline, the first cached quant in listing order, else the default. */
+export function sttShownVariant(
+  pinned: string | null,
+  loaded: string | null,
+  listing: {
+    default_variant: string | null;
+    variants: readonly { quant: string; downloaded?: boolean }[];
+  } | null,
+): string | null {
+  if (pinned) return pinned;
+  if (!listing) return loaded;
+  if (loaded) {
+    if (listing.variants.some((variant) => variant.quant === loaded)) {
+      return loaded;
+    }
+    const scoped = listing.variants.filter(
+      (variant) => variant.downloaded && variant.quant.endsWith(`/${loaded}`),
+    );
+    if (scoped.length === 1) return scoped[0].quant;
+  }
+  return (
+    listing.variants.find((variant) => variant.downloaded)?.quant ??
+    listing.default_variant
+  );
+}
+
 export function sttModelSize(model: SttModel): string {
   return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
 }

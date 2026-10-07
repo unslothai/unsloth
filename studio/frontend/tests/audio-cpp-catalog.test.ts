@@ -74,6 +74,7 @@ import {
   sttModelName,
   sttModelSize,
   sttModelVariant,
+  sttShownVariant,
   withSttVariant,
 } from "../src/features/settings/stores/stt-model-catalog.ts";
 
@@ -573,17 +574,37 @@ test("every Settings dictation path carries the saved quant", () => {
   assert.match(voiceTab, /\(variant\) => variant\.quant === sttVariant,/);
   assert.match(voiceTab, /pinnedSttVariant\?\.downloaded === false\s*\?\s*"missing"/);
 
+  // The prompt fetches the quant its requester pinned, not whatever Voice settings say now.
   const prompt = readSrc("features/settings/components/stt-download-prompt.tsx");
-  assert.match(prompt, /hfApiToken\(hfToken\),\s*undefined,\s*ggufVariant,/);
+  assert.match(prompt, /hfApiToken\(hfToken\),\s*undefined,\s*request\.ggufVariant,/);
+  assert.match(prompt, /const variant = pending\?\.ggufVariant \?\? null;/);
+  assert.doesNotMatch(prompt, /sttGgufVariant/);
   assert.match(prompt, /candidate\.quant === \(variant \?\? listing\.default_variant\)/);
+  assert.match(adapter, /requestSttDownload\(sessionModel, \{ ggufVariant: sessionVariant \}\)/);
+  const offer = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
+  assert.match(offer, /ggufVariant: sttModelVariant\(sttModel, sttGgufVariant\),/);
 
   const mirror = readSrc("features/settings/lib/stt-download-mirror.ts");
+  // A stopped download of a second quant must not read as complete: the row is already listed.
+  const cancelledAt = mirror.indexOf("download?.cancelled && (download.cancelled_model ?? model) === model");
+  const erroredAt = mirror.indexOf("if (download?.error)");
+  const downloadedAt = mirror.indexOf("if (engineStatus?.downloaded_models.includes(model))");
+  assert.ok(cancelledAt > 0 && cancelledAt < erroredAt && erroredAt < downloadedAt);
   assert.match(mirror, /sttModelVariant\(model, sttGgufVariant\)/);
   assert.match(mirror, /outcome === "complete" && isAudioCppFolderId\(model\)[\s\S]*invalidateGgufVariantsCache\(model\)/);
 
   const upload = readSrc("features/chat/hooks/use-chat-audio-upload.ts");
   assert.match(upload, /ggufVariant: sttModelVariant\(model\.trim\(\), ggufVariant\),/);
   assert.match(upload, /ggufVariant: source\.ggufVariant,/);
+  for (const holder of ["target", "source", "failed\\.snapshot"]) {
+    assert.match(upload, new RegExp(`requestSttDownload\\([^)]*\\{\\s*ggufVariant: ${holder}\\.ggufVariant,`));
+  }
+  // Upload readiness: a row with another quant cached is not ready for a pinned, missing one.
+  assert.match(upload, /listGgufVariants\(targetModel, hfApiToken\(getHfToken\(\)\), \{/);
+  assert.match(
+    upload,
+    /engineStatus\.downloaded_models\.includes\(targetModel\) &&\s*!quantMissing\s*\?\s*"ready"/,
+  );
 
   const reference = readSrc("features/audio/hooks/use-reference-transcribe.ts");
   assert.match(reference, /withSttVariant\(model, voice\.sttGgufVariant\)/);
@@ -813,4 +834,37 @@ test("the picked STT quant is remembered with the repo across a restart", () => 
   assert.match(page, /usePersistedChoice\("unsloth:audio:last-stt-variant", ""\)/);
   assert.match(page, /lastSttRepo && lastSttVariant \? \[\[lastSttRepo\.toLowerCase\(\), lastSttVariant\]\]/);
   assert.match(page, /setLastSttVariant\(sttGgufVariants\.current\.get\(repo\.toLowerCase\(\)\) \?\? ""\)/);
+});
+
+test("the quant Select shows the quant a dictation would actually run", () => {
+  const listing = {
+    default_variant: "multilingual-ctc/F16",
+    variants: [
+      { quant: "multilingual-ctc/F16", downloaded: false },
+      { quant: "v3-ctc/F16", downloaded: true },
+      { quant: "v3-rnnt/F16", downloaded: true },
+    ],
+  };
+  // A pin always wins.
+  assert.equal(sttShownVariant("v3-rnnt/F16", "v3-ctc/F16", listing), "v3-rnnt/F16");
+  // Unpinned, the resident quant runs.
+  assert.equal(sttShownVariant(null, "v3-rnnt/F16", listing), "v3-rnnt/F16");
+  // Nothing resident: a bare load picks the first cached quant offline, not the default.
+  assert.equal(sttShownVariant(null, null, listing), "v3-ctc/F16");
+  // Nothing cached: the default.
+  const cold = { ...listing, variants: listing.variants.map((v) => ({ ...v, downloaded: false })) };
+  assert.equal(sttShownVariant(null, null, cold), "multilingual-ctc/F16");
+  // A cache-only load reports the loose key; map it to the one cached quant it can be.
+  const moonshine = {
+    default_variant: "tiny/Q8_0",
+    variants: [
+      { quant: "tiny/Q8_0", downloaded: false },
+      { quant: "small/Q8_0", downloaded: true },
+    ],
+  };
+  assert.equal(sttShownVariant(null, "Q8_0", moonshine), "small/Q8_0");
+  // No listing yet: whatever is resident.
+  assert.equal(sttShownVariant(null, "Q8_0", null), "Q8_0");
+  const voiceTab = readSrc("features/settings/tabs/voice-tab.tsx");
+  assert.match(voiceTab, /const shownSttVariant = sttShownVariant\(\s*sttVariant,\s*sttLoadedVariant,/);
 });

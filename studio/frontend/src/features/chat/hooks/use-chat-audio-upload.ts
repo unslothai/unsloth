@@ -14,6 +14,7 @@ import {
   useSettingsDialogStore,
   useVoiceSettingsStore,
 } from "@/features/settings";
+import { getHfToken, hfApiToken, listGgufVariants } from "@/features/hub";
 import { useT } from "@/i18n";
 import { accountTransitionPending } from "@/lib/account-transition";
 import { toast } from "@/lib/toast";
@@ -203,6 +204,12 @@ export function useChatAudioUpload({
         }
         try {
           const status = await fetchSttStatus(undefined, targetModel, signal);
+          // Status knows rows; a pinned quant is ready only once its own files are.
+          const listing = target.ggufVariant
+            ? await listGgufVariants(targetModel, hfApiToken(getHfToken()), {
+                signal,
+              }).catch(() => null)
+            : null;
           if (
             !queue.isCurrent(attempt) ||
             ownerRef.current !== ownerAtStart ||
@@ -234,10 +241,16 @@ export function useChatAudioUpload({
             });
             return;
           }
+          const quantMissing =
+            listing?.variants.find(
+              (variant) => variant.quant === target.ggufVariant,
+            )?.downloaded === false;
           setReadiness({
-            state: engineStatus.downloaded_models.includes(targetModel)
-              ? "ready"
-              : "missing",
+            state:
+              engineStatus.downloaded_models.includes(targetModel) &&
+              !quantMissing
+                ? "ready"
+                : "missing",
             model: targetModel,
           });
         } catch {
@@ -291,7 +304,9 @@ export function useChatAudioUpload({
     }
     if (readiness.model !== target.model || readiness.state !== "ready") {
       if (readiness.model === target.model && readiness.state === "missing") {
-        requestSttDownload(target.model);
+        requestSttDownload(target.model, {
+          ggufVariant: target.ggufVariant,
+        });
       } else if (readiness.state === "error") {
         void refreshReadiness();
       }
@@ -379,7 +394,9 @@ export function useChatAudioUpload({
         if (controller.signal.aborted) return;
         if (error instanceof SttModelNotDownloadedError) {
           setReadiness({ state: "missing", model: source.model });
-          requestSttDownload(source.model);
+          requestSttDownload(source.model, {
+            ggufVariant: source.ggufVariant,
+          });
         }
         failure =
           error instanceof Error && error.message
@@ -458,7 +475,9 @@ export function useChatAudioUpload({
         readiness.model === failed.snapshot.model &&
         readiness.state === "missing"
       ) {
-        requestSttDownload(failed.snapshot.model);
+        requestSttDownload(failed.snapshot.model, {
+          ggufVariant: failed.snapshot.ggufVariant,
+        });
       } else {
         void refreshReadiness();
       }

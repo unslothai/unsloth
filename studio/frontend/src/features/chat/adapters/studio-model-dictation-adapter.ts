@@ -577,7 +577,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         !usesExternalEndpoint &&
         error instanceof SttModelNotDownloadedError
       ) {
-        requestSttDownload(sessionModel);
+        requestSttDownload(sessionModel, { ggufVariant: sessionVariant });
         finishSession("cancelled");
         return;
       }

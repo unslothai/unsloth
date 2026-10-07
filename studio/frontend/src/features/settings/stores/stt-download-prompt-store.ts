@@ -6,6 +6,8 @@ import type { SttModel } from "./voice-settings-store";
 
 export interface SttDownloadRequest {
   model: SttModel;
+  /** Quant of a package folder model, as the requester pinned it. */
+  ggufVariant?: string | null;
   /** Also switch dictation to local on confirm, for a browser whose speech
    * service cannot work at all. Left alone if the user cancels. */
   selectLocalEngine?: boolean;

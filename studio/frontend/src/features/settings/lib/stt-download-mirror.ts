@@ -130,16 +130,18 @@ async function poll(
     return;
   }
 
-  if (engineStatus?.downloaded_models.includes(model)) {
-    settle(model, "complete", undefined, engine);
-    return;
-  }
-  if (download?.cancelled) {
+  // Before the downloaded check: a row lists as downloaded once any quant of it is cached, so a
+  // stopped download of another quant would read as complete. start() clears both flags.
+  if (download?.cancelled && (download.cancelled_model ?? model) === model) {
     settle(model, "cancelled", undefined, engine);
     return;
   }
   if (download?.error) {
     settle(model, "error", download.error, engine);
+    return;
+  }
+  if (engineStatus?.downloaded_models.includes(model)) {
+    settle(model, "complete", undefined, engine);
     return;
   }
   if (Date.now() - startedAt > START_GRACE_MS) {

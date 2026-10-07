@@ -91,6 +91,7 @@ import {
   sttModelName,
   sttModelSize,
   sttModelVariant,
+  sttShownVariant,
   type TtsEngine,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
@@ -681,12 +682,11 @@ export function VoiceTab() {
     sttVariantListing?.model === sttModel
       ? sttVariantListing.listing.variants
       : [];
-  const shownSttVariant =
-    sttVariant ??
-    sttLoadedVariant ??
-    (sttVariantListing?.model === sttModel
-      ? sttVariantListing.listing.default_variant
-      : null);
+  const shownSttVariant = sttShownVariant(
+    sttVariant,
+    sttLoadedVariant,
+    sttVariantListing?.model === sttModel ? sttVariantListing.listing : null,
+  );
   const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
   const [sttDownloadAvailability, setSttDownloadAvailability] = useState<{
     repoId: string;

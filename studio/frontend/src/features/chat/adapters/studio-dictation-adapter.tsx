@@ -4,6 +4,7 @@
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
   type DictationEngine,
+  sttModelVariant,
   useVoiceSettingsStore,
 } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
@@ -161,7 +162,8 @@ export function notifyStudioDictationUnavailable(
  *  switch; otherwise the same confirmation the mic raises, which flips the engine only if
  *  accepted. */
 async function offerLocalDictation(): Promise<void> {
-  const { sttModel, setDictationEngine } = useVoiceSettingsStore.getState();
+  const { sttModel, sttGgufVariant, setDictationEngine } =
+    useVoiceSettingsStore.getState();
   try {
     const status = await fetchSttStatus(undefined, sttModel);
     const engine = sttEngineStatusFor(status, sttModel);
@@ -185,5 +187,8 @@ async function offerLocalDictation(): Promise<void> {
   } catch {
     // Status is unreachable; the download path reports its own failure.
   }
-  requestSttDownload(sttModel, { selectLocalEngine: true });
+  requestSttDownload(sttModel, {
+    selectLocalEngine: true,
+    ggufVariant: sttModelVariant(sttModel, sttGgufVariant),
+  });
 }

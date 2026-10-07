@@ -27,7 +27,6 @@ import {
 import {
   sttModelName,
   sttModelSize,
-  sttModelVariant,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
@@ -53,14 +52,8 @@ export function SttDownloadPrompt() {
   const pending = useSttDownloadPromptStore((s) => s.pending);
   const dismiss = useSttDownloadPromptStore((s) => s.dismiss);
   const hfToken = useHfTokenStore((state) => state.token);
-  // Every caller asks about the dictation model, so its saved quant is the one to fetch.
-  const sttModel = useVoiceSettingsStore((s) => s.sttModel);
-  const sttGgufVariant = useVoiceSettingsStore((s) => s.sttGgufVariant);
   const pendingModel = pending?.model ?? null;
-  const variant =
-    pendingModel === sttModel
-      ? sttModelVariant(pendingModel, sttGgufVariant)
-      : null;
+  const variant = pending?.ggufVariant ?? null;
   // A package folder has no curated size: read its quant's from the cached listing.
   const [listedSize, setListedSize] = useState<{
     model: string;
@@ -89,10 +82,7 @@ export function SttDownloadPrompt() {
     };
   }, [pendingModel, variant, hfToken]);
 
-  const confirm = async (
-    request: SttDownloadRequest,
-    ggufVariant: string | null,
-  ) => {
+  const confirm = async (request: SttDownloadRequest) => {
     // Only on accept: a cancel must not leave the engine changed.
     if (request.selectLocalEngine) {
       useVoiceSettingsStore.getState().setDictationEngine("model");
@@ -102,7 +92,7 @@ export function SttDownloadPrompt() {
         request.model,
         hfApiToken(hfToken),
         undefined,
-        ggufVariant,
+        request.ggufVariant,
       );
       // Progress goes to the shared download panel; the model loads itself when it lands.
       trackSttDownload(request.model);
@@ -159,7 +149,7 @@ export function SttDownloadPrompt() {
               event.preventDefault();
               const request = pending;
               dismiss();
-              if (request) void confirm(request, variant);
+              if (request) void confirm(request);
             }}
           >
             {t("settings.voice.dictation.sttDownload")}
