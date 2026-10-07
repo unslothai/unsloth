@@ -193,6 +193,49 @@ def test_windows_status_carries_the_opt_in_block(host, windows):
     assert body["windows"]["prepare_repeats_after_restart"] is True
 
 
+@pytest.mark.parametrize(
+    "dacl, capability, expected",
+    [
+        # With the fallback off wxc-exec runs only in BaseContainer, so a working MXC is that tier.
+        (False, _cap(backend = "mxc-processcontainer"), True),
+        (
+            False,
+            os_sandbox.SandboxCapability(
+                backend = "mxc-processcontainer",
+                available = False,
+                reason = mxc_probe.NO_BUILTIN_CONTAINER_REASON,
+            ),
+            False,
+        ),
+        # Any other failure says nothing about the tier.
+        (False, _cap(available = False, backend = "mxc-processcontainer"), None),
+        # With the fallback on, wxc-exec may have used either tier.
+        (True, _cap(backend = "mxc-processcontainer"), None),
+    ],
+)
+def test_windows_status_names_the_builtin_container(
+    host, windows, monkeypatch, dacl, capability, expected
+):
+    _calls, saved = host
+    saved["dacl"] = dacl
+    monkeypatch.setattr(os_sandbox, "capability_snapshot", lambda **_kw: capability)
+    with _client(OWNER) as client:
+        body = client.get("/sandbox").json()
+    assert body["windows"]["builtin_container"] is expected
+
+
+def test_without_the_runtime_the_builtin_container_is_unknown(host, windows, monkeypatch):
+    block = _windows_block({"dacl": False, "grants": True}).model_copy(
+        update = {"runtime_installed": False}
+    )
+    monkeypatch.setattr(settings, "_sandbox_windows_status", lambda: block)
+    monkeypatch.setattr(
+        os_sandbox, "capability_snapshot", lambda **_kw: _cap(backend = "mxc-processcontainer")
+    )
+    with _client(OWNER) as client:
+        assert client.get("/sandbox").json()["windows"]["builtin_container"] is None
+
+
 def test_managed_account_is_refused(host, windows):
     with _client(ALICE) as client:
         assert client.get("/sandbox").status_code == 403

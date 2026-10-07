@@ -55,6 +55,8 @@ export type WindowsView = {
   unsupported: RuntimeUnsupported | null;
   runtimeMissing: boolean;
   showInstallRuntime: boolean;
+  // Python and Terminal already run in Windows' built-in container, so the fallback is not needed.
+  builtinInUse: boolean;
   optInChecked: boolean;
   optInDisabled: boolean;
   optInLocked: boolean;
@@ -92,6 +94,9 @@ export function windowsView(
     unsupported,
     runtimeMissing,
     showInstallRuntime: runtimeMissing && unsupported === null,
+    builtinInUse:
+      windows.builtinContainer === true &&
+      !(runtimeMissing || windows.allowDaclFallback),
     optInChecked: windows.allowDaclFallback,
     optInDisabled:
       runtimeMissing || windows.daclLockedByEnvironment || saving || running,

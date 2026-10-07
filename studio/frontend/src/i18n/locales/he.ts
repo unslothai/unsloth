@@ -1236,12 +1236,17 @@ export const he = {
         "שרת Unsloth זה עדיין אינו מדווח על מצב ארגז החול. עדכן את Unsloth כדי לנהל אותו כאן.",
       windowsSection: "ארגז החול של Windows (תצוגה מקדימה)",
       windowsDescription:
-        "ארגז החול MXC של Microsoft, לגרסאות Windows ללא ארגז חול מובנה.",
-      optInLabel: "הפעל את ארגז החול של Windows",
+        "ארגז החול MXC של Microsoft. הוא משתמש בקונטיינר המובנה ב-Windows, ובגרסאות Windows בלעדיו, בארגז חול חלופי.",
+      builtinLabel: "קונטיינר מובנה",
+      builtinDescription:
+        "Python ו-Terminal רצים בקונטיינר המובנה של Windows, ללא שלב של מנהל מערכת.",
+      builtinInUse: "בשימוש",
+      optInLabel: "השתמש בארגז החול החלופי",
       optInDescription:
-        "Python ו-Terminal יוכלו אז לשנות קבצים רק בתיקיית הצ'אט.",
+        "לגרסאות Windows ללא הקונטיינר המובנה. Python ו-Terminal יוכלו אז לשנות קבצים רק בתיקיית הצ'אט.",
+      optInNotNeeded: "לא נדרש במחשב זה, כי הקונטיינר המובנה עובד.",
       disclosure:
-        "נדרש שלב חד-פעמי של מנהל מערכת, 'הכן מחשב זה', שיש לחזור עליו אחרי כל הפעלה מחדש. בזמן שכלי רץ, Unsloth מעניק לו גישה זמנית לתיקיות שהוא צריך. MXC עדיין בתצוגה מקדימה, ואינו גבול אבטחה.",
+        "ארגז החול החלופי דורש שלב חד-פעמי של מנהל מערכת, 'הכן מחשב זה', שיש לחזור עליו אחרי כל הפעלה מחדש. בזמן שכלי רץ, Unsloth מעניק לו גישה זמנית לתיקיות שהוא צריך. MXC עדיין בתצוגה מקדימה, ואינו גבול אבטחה.",
       lockedDacl: "הוגדר על ידי UNSLOTH_MXC_ALLOW_DACL_FALLBACK",
       grantsLabel: "הפעלה מהירה יותר של כלים",
       grantsDescription:
