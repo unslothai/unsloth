@@ -12,8 +12,14 @@ from typing import Any
 ENABLED_KEY = "systemone_enabled"
 MODEL_KEY = "systemone_model"
 DEVICE_KEY = "systemone_device"
+BACKEND_KEY = "systemone_backend"
+NATIVE_CTX_KEY = "systemone_native_ctx"
 DEFAULT_MODEL = "laya-multilingual"
 DEVICES = ("cpu", "gpu")
+BACKENDS = ("auto", "llama.cpp", "pytorch")
+DEFAULT_NATIVE_CTX = 16384
+# -c / -b / -ub of the llama.cpp decision server; compute memory grows with it (~0.24 MiB GPU per token).
+NATIVE_CTX_RANGE = (512, 65536)
 
 ENV_DISABLE = "UNSLOTH_SYSTEMONE_DISABLE"
 ENV_MODEL = "UNSLOTH_SYSTEMONE_MODEL"
@@ -89,11 +95,35 @@ def get_device() -> str:
     return stored if stored in DEVICES else "cpu"
 
 
+def clef_device() -> str:
+    """Where a llama.cpp Clef runs: the chosen device, else the GPU when there is one (CPU needs ~22 GB RAM)."""
+    if device_locked() or _owner_setting(DEVICE_KEY) in DEVICES:
+        return get_device()
+    return "gpu" if gpu_available() else "cpu"
+
+
+def get_backend() -> str:
+    stored = _owner_setting(BACKEND_KEY)
+    return stored if stored in BACKENDS else "auto"
+
+
+def _valid_ctx(value: Any) -> bool:
+    low, high = NATIVE_CTX_RANGE
+    return isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+
+
+def get_native_ctx() -> int:
+    stored = _owner_setting(NATIVE_CTX_KEY)
+    return stored if _valid_ctx(stored) else DEFAULT_NATIVE_CTX
+
+
 def validate(
     *,
     enabled: bool | None = None,
     model: str | None = None,
     device: str | None = None,
+    backend: str | None = None,
+    native_ctx: int | None = None,
 ) -> dict[str, Any]:
     from core.systemone.catalog import (
         CHECKPOINTS,
@@ -134,6 +164,15 @@ def validate(
         if device not in DEVICES:
             raise ValueError("Device must be cpu or gpu.")
         values[DEVICE_KEY] = device
+    if backend is not None:
+        if backend not in BACKENDS:
+            raise ValueError("Runtime must be auto, llama.cpp or pytorch.")
+        values[BACKEND_KEY] = backend
+    if native_ctx is not None:
+        if not _valid_ctx(native_ctx):
+            low, high = NATIVE_CTX_RANGE
+            raise ValueError(f"The llama.cpp context must be {low} to {high} tokens.")
+        values[NATIVE_CTX_KEY] = native_ctx
     serving = enabled if enabled is not None else model is not None and get_enabled()
     local = parse_connection(get_model() if model is None else model) is None
     if serving and local and (reason := runtime_unavailable_reason()):

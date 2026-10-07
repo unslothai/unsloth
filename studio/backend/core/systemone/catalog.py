@@ -23,6 +23,8 @@ class Checkpoint:
     download_bytes: int = 0
     # "laya" (rl_agent_config.json + encoder) or "clef" (Qwen3.5 backbone + joint schema head).
     layout: str = "laya"
+    # "pytorch", or "llama.cpp" for the GGUF a Clef entry is served from (see laya_runtime._native_target).
+    backend: str = "pytorch"
 
     @property
     def is_local(self) -> bool:
@@ -70,6 +72,34 @@ CHECKPOINTS = {
             "clef",
         ),
     )
+}
+
+
+@dataclass(frozen = True)
+class GgufCompanion:
+    repo: str
+    revision: str
+    model: str
+    mmproj: str | None
+    download_bytes: int
+
+
+# ggml-org's conversions of the stock Clef models, served by llama.cpp's /v1/systemone (b11443 and newer).
+GGUF_COMPANIONS = {
+    "clef-flash": GgufCompanion(
+        "ggml-org/Clef-Flash-GGUF",
+        "4a192915ef971886004b5b13294f2b4c7a7fc39d",
+        "Clef-Flash-Q8_0.gguf",
+        "mmproj-Clef-Flash-Q8_0.gguf",
+        9_657_260_192 + 624_229_728,
+    ),
+    "clef": GgufCompanion(
+        "ggml-org/Clef-GGUF",
+        "63840a1a68cb7084c88610cffc328509356b04cb",
+        "Clef-Q8_0.gguf",
+        "mmproj-Clef-Q8_0.gguf",
+        28_732_215_360 + 629_247_424,
+    ),
 }
 
 # Names TypeSafe's and OpenJev's SDKs send by default, so an unmodified client reaches the configured model.
