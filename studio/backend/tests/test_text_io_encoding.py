@@ -878,14 +878,15 @@ def test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale(tmp_path):
 def test_clef_config_read_uses_utf8_under_a_non_utf8_locale(tmp_path):
     config = tmp_path / "joint_head_config.json"
     config.write_text('{"label": "ä 世"}', encoding = "utf-8")
-    source = BACKEND_ROOT / "vendor/clef/joint_schema_model.py"
+    source = BACKEND_ROOT.parents[1] / "unsloth/_vendor/clef/joint_schema_model.py"
     code = """
 import ast, json, sys
 from pathlib import Path
+from core.systemone.clef_worker import _reference_module
 source = ast.parse(Path(sys.argv[2]).read_text(encoding="utf-8"))
 reads = [n for n in ast.walk(source) if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "read_text"]
 assert len(reads) == 1
-path = Path(sys.argv[1]).parent
+path = _reference_module().Path(sys.argv[1]).parent
 value = eval(compile(ast.Expression(reads[0]), "<clef-config-read>", "eval"))
 assert json.loads(value)["label"] == "\\u00e4 \\u4e16"
 """

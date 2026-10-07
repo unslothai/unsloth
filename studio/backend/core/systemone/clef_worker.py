@@ -41,6 +41,16 @@ def _cancelled(cancel_event) -> None:
         raise ClefWorkerCancelled("Clef model operation was cancelled.")
 
 
+class _UTF8Path(type(Path())):
+    def read_text(
+        self,
+        encoding = None,
+        errors = None,
+        **kwargs,
+    ):
+        return super().read_text(encoding = encoding or "utf-8", errors = errors, **kwargs)
+
+
 def _reference_module():
     """Load the audited, byte-pinned Apache source without trust_remote_code."""
     source = _VENDORED_CLEF / "joint_schema_model.py"
@@ -68,9 +78,7 @@ def _reference_module():
     except BaseException:
         sys.modules.pop(name, None)
         raise
-    from .laya_runtime import _utf8_open
-
-    module.open = _utf8_open
+    module.Path = _UTF8Path
     return module
 
 
