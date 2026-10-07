@@ -23,7 +23,7 @@ def _draw_sticker(draw, outline, fill):
 
 
 def _write_sticker(path, mode):
-    # Exporters commonly store fully transparent pixels as (0, 0, 0, 0).
+    # exporters commonly store fully transparent pixels as (0, 0, 0, 0).
     if mode == "P":
         img = Image.new("P", (SIZE, SIZE), 0)
         img.putpalette([0, 0, 0, *YELLOW, 0, 0, 0])

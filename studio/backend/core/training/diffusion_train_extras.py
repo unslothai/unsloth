@@ -202,13 +202,12 @@ def save_ema_adapter(ema: "LoRAEMA", transformer: Any, spec_save: Any, out_dir: 
 
 
 _CACHE_VERSION = "1"
-# v2: transparent images are composited onto white before encoding.
+# v2 composites transparent images onto white before encoding.
 _LATENT_CACHE_VERSION = "2"
 
 
 def _file_content_hash(path: str) -> str:
-    """sha256 of the file bytes (truncated hex): renames/moves keep their cache
-    entries, edits invalidate them."""
+    """return a truncated sha256; renames preserve cache entries while edits invalidate them."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -353,8 +352,7 @@ class PersistentConditioningCache:
         return self.path_for(key).is_file()
 
     def put(self, key: str, tensors: Iterable[Any]) -> None:
-        """Store an ordered tuple of tensors (None entries allowed: their slot
-        indices are recorded in the metadata so ``get`` restores them)."""
+        """store an ordered tensor tuple with None slots recorded for exact reconstruction."""
         from safetensors.torch import save_file
 
         named: dict[str, Any] = {}
