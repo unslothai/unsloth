@@ -1992,6 +1992,8 @@ class DiffusionAcceleratorFallbackResponse(BaseModel):
 
 PINNED_MODELS_SETTING_KEY = "model_picker_pinned"
 PINNED_CONNECTED_MODELS_SETTING_KEY = "model_picker_pinned_connected"
+# Embedding models pinned to the RAG menu.
+PINNED_EMBEDDING_MODELS_SETTING_KEY = "rag_embedding_pinned"
 MAX_PINNED_MODELS = 512
 # Room for a "::quant" suffix or an "external::<connection>::" prefix on top of a model id.
 _MAX_PIN_KEY_LEN = MAX_MODEL_OVERRIDE_KEY_LEN + 512
@@ -2005,18 +2007,26 @@ class PinnedModelsPayload(BaseModel):
 
     pinned: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
     connected: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+    embedding: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
 
 
 class PinnedModelsResponse(BaseModel):
     # None = never stored, so the browser seeds it.
     pinned: Optional[list[str]] = None
     connected: Optional[list[str]] = None
+    embedding: Optional[list[str]] = None
 
 
 def _pinned_models_response() -> PinnedModelsResponse:
     from storage.studio_db import get_app_settings
 
-    stored = get_app_settings([PINNED_MODELS_SETTING_KEY, PINNED_CONNECTED_MODELS_SETTING_KEY])
+    stored = get_app_settings(
+        [
+            PINNED_MODELS_SETTING_KEY,
+            PINNED_CONNECTED_MODELS_SETTING_KEY,
+            PINNED_EMBEDDING_MODELS_SETTING_KEY,
+        ]
+    )
 
     def _ids(value: Any) -> Optional[list[str]]:
         return [v for v in value if isinstance(v, str)] if isinstance(value, list) else None
@@ -2024,6 +2034,7 @@ def _pinned_models_response() -> PinnedModelsResponse:
     return PinnedModelsResponse(
         pinned = _ids(stored.get(PINNED_MODELS_SETTING_KEY)),
         connected = _ids(stored.get(PINNED_CONNECTED_MODELS_SETTING_KEY)),
+        embedding = _ids(stored.get(PINNED_EMBEDDING_MODELS_SETTING_KEY)),
     )
 
 
@@ -2044,6 +2055,8 @@ def update_pinned_models(
         updates[PINNED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.pinned))
     if payload.connected is not None:
         updates[PINNED_CONNECTED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.connected))
+    if payload.embedding is not None:
+        updates[PINNED_EMBEDDING_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.embedding))
     if updates:
         upsert_app_settings(updates, read_back = False)
     return _pinned_models_response()
@@ -4649,6 +4662,8 @@ class SandboxWindowsStatus(BaseModel):
     # None: MXC could not tell; [] prepared; otherwise the wxc-host-prep verbs still missing.
     host_prep_missing: Optional[list[str]] = None
     prepare_repeats_after_restart: bool = True
+    # True: MXC runs in Windows' built-in container (BaseContainer); False: this Windows has none; None: unknown.
+    builtin_container: Optional[bool] = None
 
 
 class SandboxSetupStatus(BaseModel):
@@ -4782,6 +4797,21 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     )
 
 
+def _sandbox_windows_block(python, dacl_at_probe: bool) -> SandboxWindowsStatus:
+    """wxc-exec does not name its tier, but with the fallback off it runs only in BaseContainer."""
+    from core.inference import mxc_probe
+
+    windows = _sandbox_windows_status()
+    builtin = None
+    # A save between the probe and this read would pair one setting's verdict with the other.
+    if windows.runtime_installed and not (windows.allow_dacl_fallback or dacl_at_probe):
+        if python.available and python.backend == "mxc-processcontainer":
+            builtin = True
+        elif python.reason == mxc_probe.NO_BUILTIN_CONTAINER_REASON:
+            builtin = False
+    return windows.model_copy(update = {"builtin_container": builtin})
+
+
 def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
     """Blocking (live probes); run off the event loop. Never elevates: probes only."""
     import sys
@@ -4798,6 +4828,10 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
         tools.reset_terminal_profile_cache()
     # After the resets above: they raise the floor an earlier generation is dropped under.
     generation = os_sandbox.tool_isolation_generation()
+    dacl_at_probe = False
+    if sys.platform == "win32":
+        from core.inference import mxc_policy
+        dacl_at_probe = mxc_policy.dacl_fallback_enabled()
     python = os_sandbox.capability_snapshot(
         force = force, execution_kind = "python", selected_executable = sys.executable
     )
@@ -4821,7 +4855,7 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
         python = _sandbox_tool_status(python),
         terminal = _sandbox_tool_status(terminal),
         terminal_shell = shell,
-        windows = _sandbox_windows_status() if sys.platform == "win32" else None,
+        windows = _sandbox_windows_block(python, dacl_at_probe) if sys.platform == "win32" else None,
         setup = _sandbox_setup_status(python.available and terminal.available),
         checked_at = time.time(),
     )

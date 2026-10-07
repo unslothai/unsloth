@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { readFastApiError } from "@/lib/format-fastapi-error";
+import {
+  formatFastApiDetail,
+  readFastApiError,
+} from "@/lib/format-fastapi-error";
+import type { DecisionResponse } from "../lib/decision-request";
 
 export type SystemOneDevice = "cpu" | "gpu";
 
@@ -257,4 +261,72 @@ export async function resolveSystemOneDownload(
     cached: plan.cached,
     error: plan.error,
   };
+}
+
+const LOAD_WAIT_MS = 10 * 60 * 1000;
+
+export class DecisionError extends Error {
+  readonly status: number | null;
+
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+export async function runDecision(
+  body: unknown,
+  signal: AbortSignal,
+  onWaiting: (message: string) => void,
+): Promise<{ response: DecisionResponse; latencyMs: number }> {
+  const deadline = Date.now() + LOAD_WAIT_MS;
+  for (;;) {
+    const started = performance.now();
+    const res = await authFetch("/v1/systemone", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (res.ok) {
+      const response = (await res.json()) as DecisionResponse;
+      return { response, latencyMs: Math.round(performance.now() - started) };
+    }
+    const data = (await res.json().catch(() => null)) as {
+      detail?: unknown;
+    } | null;
+    const detail = data?.detail;
+    const fields =
+      detail && typeof detail === "object"
+        ? (detail as Record<string, unknown>)
+        : {};
+    const message =
+      (typeof fields.message === "string" ? fields.message : null) ??
+      formatFastApiDetail(detail) ??
+      res.statusText;
+    const loading = res.status === 503 && fields.error_type === "model_loading";
+    if (!loading || Date.now() > deadline || signal.aborted) {
+      throw new DecisionError(message, res.status);
+    }
+    onWaiting(message);
+    const retryAfter = Number(res.headers.get("Retry-After")) || 5;
+    await wait(Math.min(retryAfter * 1000, deadline - Date.now()), signal);
+    if (signal.aborted || Date.now() >= deadline) {
+      throw new DecisionError(message, res.status);
+    }
+  }
 }

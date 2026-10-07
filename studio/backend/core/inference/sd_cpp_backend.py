@@ -3542,6 +3542,7 @@ class SdCppDiffusionBackend:
                         cancel_event = cancel,
                         reuse_other_cache_root = True,
                         local_files_only = local_files_only,
+                        gguf_header_delta = True,
                     )
                 except _local_entry_not_found_error() as exc:
                     # Raised by huggingface_hub for exactly "not cached and outgoing traffic is disabled", so it can

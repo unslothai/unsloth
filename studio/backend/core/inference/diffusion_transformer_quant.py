@@ -250,7 +250,7 @@ _INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
 }
 
 # Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``).
-_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"z-image"})
+_INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"qwen-image-2.1", "z-image"})
 
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"
 
