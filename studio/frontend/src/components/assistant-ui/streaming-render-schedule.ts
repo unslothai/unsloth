@@ -207,6 +207,16 @@ function isAsciiControl(char: string): boolean {
   return code <= 0x1f || code === 0x7f;
 }
 
+function isAsciiPunctuation(char: string): boolean {
+  const code = char.charCodeAt(0);
+  return (
+    (code >= 0x21 && code <= 0x2f) ||
+    (code >= 0x3a && code <= 0x40) ||
+    (code >= 0x5b && code <= 0x60) ||
+    (code >= 0x7b && code <= 0x7e)
+  );
+}
+
 function skipInlineWhitespace(text: string, from: number): number {
   let at = from;
   while (text[at] === " " || text[at] === "\t") {
@@ -227,10 +237,11 @@ function angleDestinationEnd(text: string, from: number): number {
     if (text[at] === "\n" || text[at] === "<") {
       return -1;
     }
-    if (text[at] === "\\") {
-      if (text[at + 1] === "\n" || text[at + 1] === undefined) {
-        return -1;
-      }
+    if (
+      text[at] === "\\" &&
+      text[at + 1] !== undefined &&
+      isAsciiPunctuation(text[at + 1])
+    ) {
       at += 1;
     } else if (text[at] === ">") {
       return at + 1;
@@ -246,11 +257,11 @@ function bareDestinationEnd(
   let depth = 0;
   for (let at = from; at < text.length; at += 1) {
     const char = text[at];
-    if (char === "\\") {
-      const next = text[at + 1];
-      if (next === undefined || next === " " || isAsciiControl(next)) {
-        return [-1, -1];
-      }
+    if (
+      char === "\\" &&
+      text[at + 1] !== undefined &&
+      isAsciiPunctuation(text[at + 1])
+    ) {
       at += 1;
     } else if (char === "(") {
       depth += 1;
