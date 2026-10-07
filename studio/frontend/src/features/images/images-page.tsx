@@ -2357,8 +2357,7 @@ export function ImagesPage({
 
   const restoreSettings = useCallback((image: GalleryImage) => {
     // Negative prompt only applies when guidance>0; do not restore a hidden value.
-    const restoredNegative =
-      negativeCapable && image.guidance > 0 ? (image.negative_prompt ?? "") : "";
+    const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
     setNegativePrompt(restoredNegative);
     if (restoredNegative) setNegativeOpen(true);
     setSteps(image.steps);
@@ -2427,7 +2426,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [negativeCapable, setPromptFor, setWorkflow, sizeLimits]);
+  }, [setPromptFor, setWorkflow, sizeLimits]);
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
