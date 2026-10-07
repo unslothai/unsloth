@@ -335,7 +335,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ),
         # BOTH experts: the plan subtracts one denoiser term and this family builds two.
         prequant_resident_gb_by_scheme = (("nvfp4", 16.2),),
-        aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
+        # "wan2.2_t2v": ComfyUI's expert files (wan2.2_t2v_high_noise_14B_*.safetensors), paired at load.
+        aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan2.2_t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
         # is_moe drives the dual-DiT optimisation layers; cfg2_kwarg names the pipeline kwarg for transformer_2's
         # guidance.
@@ -357,7 +358,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         vae_force_fp32 = True,
         # same VAE as TI2V-5B
         cudnn_benchmark = False,
-        # no gguf_repo: community GGUFs split the experts, and a single-file load covers only one
+        # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
+        # (video_moe_pair)
     ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG
     # on the ``guider``), no callback_on_step_end (generate() wraps scheduler.step), and no upstream model_index.json,

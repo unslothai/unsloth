@@ -612,9 +612,115 @@ def _load_extras_file(
     return load_file(path)
 
 
+# sha256[:16] of ``proj_out.bias`` as bf16 bits: headers match across 2.3 variants, but this bias is retrained per
+# release and never quantized, so fp8 / int8 / GGUF repacks carry the release's values.
+LTX23_PROJ_OUT_BIAS_SHA = {
+    "b6a06f88015c612b": "distilled",  # ltx-2.3-22b-distilled (and -distilled-fp8)
+    "140a7d077a306ea9": "distilled",  # ltx-2.3-22b-distilled-1.1
+    "3d334d94df5daf30": "dev",  # ltx-2.3-22b-dev (and -dev-fp8)
+}
+_PROJ_OUT_BIAS_NAMES = (
+    "proj_out.bias",
+    "model.diffusion_model.proj_out.bias",
+    "diffusion_model.proj_out.bias",
+)
+_CONTENT_VARIANT_CACHE: dict[tuple[str, int, int], Optional[str]] = {}
+
+
+def _safetensors_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional[bytes]:
+    """One small tensor's values as bfloat16 bits, read through the header offsets (no other weight byte)."""
+    import json
+    import struct
+
+    import torch
+
+    with open(path, "rb") as fh:
+        (size,) = struct.unpack("<Q", fh.read(8))
+        if size <= 0 or size > 256 * 1024 * 1024:
+            return None
+        header = json.loads(fh.read(size))
+        entry = next((header[n] for n in names if isinstance(header.get(n), dict)), None)
+        if entry is None:
+            return None
+        dtype = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16}.get(
+            entry.get("dtype")
+        )
+        start, end = entry["data_offsets"]
+        if dtype is None or not 0 < end - start <= 1 << 20:
+            return None
+        fh.seek(8 + size + start)
+        raw = bytearray(fh.read(end - start))
+    values = torch.frombuffer(raw, dtype = dtype)
+    return values.to(torch.bfloat16).view(torch.int16).numpy().tobytes()
+
+
+def _gguf_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional[bytes]:
+    import numpy as np
+    import torch
+    from gguf import GGMLQuantizationType, GGUFReader
+
+    for tensor in GGUFReader(path).tensors:
+        if str(tensor.name) not in names:
+            continue
+        data = np.asarray(tensor.data)
+        if tensor.tensor_type == GGMLQuantizationType.F32:
+            values = torch.from_numpy(data.astype(np.float32).reshape(-1).copy())
+        elif tensor.tensor_type == GGMLQuantizationType.F16:
+            values = torch.from_numpy(data.astype(np.float16).reshape(-1).copy())
+        elif tensor.tensor_type == GGMLQuantizationType.BF16:
+            values = torch.from_numpy(data.reshape(-1).view(np.int16).copy()).view(torch.bfloat16)
+        else:
+            return None
+        return values.to(torch.bfloat16).view(torch.int16).numpy().tobytes()
+    return None
+
+
+def ltx23_checkpoint_variant(checkpoint_path: Path | str | None) -> Optional[str]:
+    """``"distilled"`` / ``"dev"`` from the checkpoint's CONTENT (a 128-value bias fingerprint), or None when the file
+    is not on disk, unreadable, or not a known LTX-2.3 release (a finetune): callers then fall back to the name. Reads
+    the header plus 256 bytes; cached on (path, size, mtime)."""
+    if not checkpoint_path:
+        return None
+    path = str(checkpoint_path)
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    key = (path, stat.st_size, stat.st_mtime_ns)
+    if key in _CONTENT_VARIANT_CACHE:
+        return _CONTENT_VARIANT_CACHE[key]
+    variant: Optional[str] = None
+    try:
+        import hashlib
+
+        reader = (
+            _gguf_tensor_bf16_bits
+            if path.lower().endswith(".gguf")
+            else _safetensors_tensor_bf16_bits
+        )
+        bits = reader(path, _PROJ_OUT_BIAS_NAMES)
+        if bits is not None:
+            variant = LTX23_PROJ_OUT_BIAS_SHA.get(hashlib.sha256(bits).hexdigest()[:16])
+    except Exception as exc:  # noqa: BLE001 -- the name decides instead
+        logger.debug("video.ltx23_variant_probe_failed: %s", exc)
+    _CONTENT_VARIANT_CACHE[key] = variant
+    return variant
+
+
+def ltx23_variant_identifier(checkpoint_path: Path | str | None) -> Optional[str]:
+    """An identifier naming the content-detected variant, to put FIRST in the id lists the generation defaults and the
+    distilled recipe read (``default_video_generation_params`` / ``ltx2_distilled_ids``), so the file's weights outrank
+    its name. None when the content is inconclusive, leaving the name to decide as before."""
+    variant = ltx23_checkpoint_variant(checkpoint_path)
+    return f"ltx-2.3-22b-{variant}" if variant else None
+
+
 def checkpoint_variant(checkpoint_path: Path | str) -> str:
-    """Which companion-weight set a checkpoint pairs with ("dev"/"distilled"). The distilled-1.1
-    refresh only retrained the DiT, so it shares the distilled companions."""
+    """Which companion-weight set a checkpoint pairs with ("dev"/"distilled"): the file's content when it is a known
+    release, else its name. The distilled-1.1 refresh only retrained the DiT, so it shares the distilled companions."""
+    by_content = ltx23_checkpoint_variant(checkpoint_path)
+    if by_content is not None:
+        return by_content
     return "dev" if "dev" in Path(checkpoint_path).name.lower() else "distilled"
 
 
