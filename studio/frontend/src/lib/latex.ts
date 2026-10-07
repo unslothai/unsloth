@@ -33,11 +33,14 @@ const DOLLAR_REGEX = /(?<![\\$])\$(?!\$)/g;
  */
 const CURRENCY_REGEX = /\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d])/y;
 
-const BLANK_LINE_RE = /\n[ \t\r]*\n/;
+const HEADING_LINE_RE = / {0,3}#/y;
+const TABLE_ROW_RE = /[ \t]*\|/y;
+const BLOCK_BREAK_RE = /\n[ \t\r]*(?:\n|[#>|]|[-*+][ \t]|\d+[.)][ \t]|```|~~~)/;
 
 /** A `$NAME ... $` span that reads as prose: no math symbols, and the closer starts a word. */
 const VARIABLE_PROSE_RE =
-  /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`-]*[\s"'(/`]$/;
+  /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`-]*(?:[\s/:,.;-]|[\s(]["'(`])$/;
+const NEW_TOKEN_RE = /[\w{\\]/;
 
 /**
  * Union of two span lists, each ascending by start (overlap within a list is
@@ -525,18 +528,25 @@ function hasInlineMathCloser(
   return false;
 }
 
-// Like remark-math, the closer may sit inside a later code span but not past a blank line.
-function findInlineMathCloser(content: string, offset: number): number {
-  let i = offset;
-  while ((i = content.indexOf("$", i + 1)) !== -1) {
-    if (content[i - 1] === "\\") continue;
-    if (content[i + 1] === "$") {
-      while (content[i + 1] === "$") i++;
-      continue;
-    }
-    if (!/\d/.test(content[i + 1] ?? "")) break;
+// Inside an open span remark-math closes on the next single `$`, escaped or not, within the block.
+function findInlineMathCloser(
+  content: string,
+  offset: number,
+  lineStart: number,
+): number {
+  let i = content.indexOf("$", offset + 1);
+  while (i !== -1 && content[i + 1] === "$") {
+    while (content[i + 1] === "$") i++;
+    i = content.indexOf("$", i + 1);
   }
-  return i === -1 || BLANK_LINE_RE.test(content.slice(offset + 1, i)) ? -1 : i;
+  if (i === -1) return -1;
+  const body = content.slice(offset + 1, i);
+  if (BLOCK_BREAK_RE.test(body)) return -1;
+  HEADING_LINE_RE.lastIndex = lineStart;
+  if (HEADING_LINE_RE.test(content) && body.includes("\n")) return -1;
+  TABLE_ROW_RE.lastIndex = lineStart;
+  if (TABLE_ROW_RE.test(content) && /\n|(?<!\\)\|/.test(body)) return -1;
+  return i;
 }
 
 /**
@@ -667,9 +677,11 @@ export function preprocessLaTeX(content: string): string {
 
   const codeRegions = findCodeBlockRegions(text);
   let closer = -1;
+  let lineStart = 0;
+  let nextNewline = text.indexOf("\n");
 
   return text.replace(DOLLAR_REGEX, (match, offset) => {
-    if (offset === closer || isInRegion(offset, codeRegions)) {
+    if (isInRegion(offset, codeRegions)) {
       return match;
     }
     // Skip the spans we just created from `\(...\)` so a numeric body like
@@ -682,10 +694,18 @@ export function preprocessLaTeX(content: string): string {
     if (currency && !hasInlineMathCloser(text, offset, mathRegions)) {
       return "\\" + match;
     }
-    const next = findInlineMathCloser(text, offset);
+    if (offset === closer) {
+      return match;
+    }
+    while (nextNewline !== -1 && nextNewline < offset) {
+      lineStart = nextNewline + 1;
+      nextNewline = text.indexOf("\n", lineStart);
+    }
+    const next = findInlineMathCloser(text, offset, lineStart);
     if (
       !currency &&
       next !== -1 &&
+      (next + 1 === text.length || NEW_TOKEN_RE.test(text[next + 1])) &&
       VARIABLE_PROSE_RE.test(text.slice(offset + 1, next))
     ) {
       return "\\" + match;

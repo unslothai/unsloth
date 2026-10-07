@@ -59,6 +59,7 @@ const SHELL_VARIABLE_REPLIES: Array<[string, string[]]> = [
   ['Quote them: "$HOME" and "$PATH".', ["$HOME", "$PATH"]],
   ["Files live under $HOME/$USER/data.", ["$HOME/$USER/data"]],
   ["Use ${HOME} and ${PATH} in scripts.", ["${HOME} and ${PATH}"]],
+  ["Set it to $PATH:$HOME/bin now.", ["$PATH:$HOME/bin"]],
   ["PHP reads $_GET and $_POST.", ["$_GET and $"]],
   [
     "Add it to $PATH, then run `echo $HOME`.",
@@ -108,6 +109,19 @@ const MATH_REPLIES: Array<[string, string[]]> = [
   ["Let $x \\in A$ and $AB $ hold.", ["x \\in A", "AB "]],
   ["The value \\(\\beta\\) and $\\gamma$.", ["\\beta", "\\gamma"]],
   ["Sum $a +\nb$ over lines.", ["a +\nb"]],
+  ["Segment $AB'$ and the derivative $uv'$.", ["AB'", "uv'"]],
+  [
+    "About $\\sim$2x faster: the $k$th token and the $n$th layer.",
+    ["\\sim", "k", "n"],
+  ],
+  [
+    "| Item | Price ($) |\n|---|---|\n| the $n$th row and the $m$th column | 5 |",
+    ["n", "m"],
+  ],
+  ["# Cost in $\nThe $n$th row and the $m$th column.", ["n", "m"]],
+  ["- Ends with $\n- The $n$th row and the $m$th column", ["n", "m"]],
+  ["We have $sin theta $ and $AB / CD $ here.", ["sin theta ", "AB / CD "]],
+  ["Use $HOME/$USER and $\\alpha$ here.", ["\\alpha"]],
 ];
 
 test("real maths still renders", () => {
