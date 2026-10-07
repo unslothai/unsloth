@@ -3,6 +3,7 @@
 
 import ast
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -216,6 +217,9 @@ def clef_checkpoint(tmp_path, monkeypatch):
 
     text = {"model_type": "qwen3_5_text", "hidden_size": 64, "intermediate_size": 128}
     text.update(num_hidden_layers = 4, num_attention_heads = 2, num_key_value_heads = 1)
+    # The default recurrent state is the full model's, megabytes per token whatever the hidden size.
+    text.update(linear_num_value_heads = 4, linear_num_key_heads = 2)
+    text.update(linear_key_head_dim = 32, linear_value_head_dim = 16)
     args = qwen3_5.ModelArgs(model_type = "qwen3_5", text_config = {**text, "vocab_size": 512})
     kernel = lambda value: value.swapaxes(1, 2) if value.ndim == 3 else value
     # The checkpoint names the decoder's tensors differently from the loaded model.
@@ -270,7 +274,9 @@ def clef_checkpoint(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("full, four_bit", [(False, False), (False, True), (True, True)])
-def test_clef_trains_calibrates_saves_and_reloads(clef_checkpoint, tmp_path, full, four_bit):
+def test_clef_trains_calibrates_saves_and_reloads(
+    clef_checkpoint, tmp_path, monkeypatch, full, four_bit
+):
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(clef_checkpoint), full_finetuning = full, max_seq_length = 2048, load_in_4bit = four_bit
     )
@@ -324,6 +330,51 @@ def test_clef_trains_calibrates_saves_and_reloads(clef_checkpoint, tmp_path, ful
     held = FastDecisionModel.build_dataset([rows[item["row"]] for item in held], tokenizer, served)
     loss = FastDecisionModel.evaluate(served, tokenizer, held[0])["loss"]
     assert loss == pytest.approx(calibrated["loss"], abs = 3e-2)
+    # save_pretrained keeps LoRA adapters as adapters over their base; a full fine-tune has none and saves merged.
+    model.save_pretrained(tmp_path / "lora")
+    assert (tmp_path / "lora" / "adapter_model.safetensors").exists() != full
+    assert (tmp_path / "lora" / "model.safetensors").exists() == full
+    again, tokenizer = FastDecisionModel.from_pretrained(
+        str(tmp_path / "lora"), load_in_4bit = four_bit
+    )
+    base = tmp_path / "lora" if full else clef_checkpoint
+    reloaded = FastDecisionModel.evaluate(again, tokenizer, held[0])["loss"]
+    assert again.decision_config["base_model"] == str(base) and reloaded == pytest.approx(
+        loss, abs = 3e-2
+    )
+    if not full:
+        # Loaded adapters are the ones that go on training, and they save as adapters again.
+        with pytest.raises(RuntimeError, match = "already added"):
+            FastDecisionModel.get_peft_model(again, r = 64)
+        tuned = dict(tree_flatten(again.trainable_parameters()))
+        assert sorted(tuned) == sorted(trained)
+        assert {v.shape[1] for k, v in tuned.items() if k.endswith("lora_a")} == {8}
+        again.save_pretrained(tmp_path / "again")
+        # Without a decision config, the adapters still name their base.
+        (tmp_path / "again" / "unsloth_decision_config.json").unlink()
+        bare = FastDecisionModel.from_pretrained(str(tmp_path / "again"))[0]
+        assert bare.decision_config["base_model"] == str(clef_checkpoint)
+        # Merged, they go into the base's weights, which the adapter folder does not hold.
+        again.save_pretrained_merged(tmp_path / "whole")
+        whole, tokenizer = FastDecisionModel.from_pretrained(str(tmp_path / "whole"))
+        merged = FastDecisionModel.evaluate(whole, tokenizer, held[0])["loss"]
+        assert merged == pytest.approx(loss, abs = 3e-2)
+    # The GGUF export converts a merged save, whatever the model trained through.
+    seen, gguf = [], unsloth._decision_gguf()
+    monkeypatch.setattr(gguf, "_converter_dir", lambda *args: None)
+    export = lambda folder, method, **kwargs: seen.append(
+        (sorted(os.listdir(folder)), method, kwargs["output_dir"], Path(folder).name)
+    )
+    monkeypatch.setattr(gguf, "export_decision_gguf", export)
+    # A merge an ended process left behind is swept, and this one is named for its own process.
+    monkeypatch.setattr(gguf, "_pid_alive", lambda pid: False)
+    (tmp_path / "gguf" / ".unsloth-merged-1-left").mkdir(parents = True)
+    model.save_pretrained_gguf(tmp_path / "gguf", tokenizer)
+    assert seen[0][3].startswith(f".unsloth-merged-{os.getpid()}-")
+    assert "model.safetensors" in seen[0][0] and "adapter_config.json" not in seen[0][0]
+    assert (
+        seen[0][1:3] == ("q8_0", tmp_path / "gguf" / "gguf") and os.listdir(tmp_path / "gguf") == []
+    )
 
 
 def _predicted_shapes(answers):
@@ -357,13 +408,8 @@ def test_predict_answers_at_the_calibrated_temperatures(checkpoint, monkeypatch)
 
 @pytest.mark.parametrize("four_bit", [False, True])
 def test_a_plain_language_model_trains_as_a_clef(clef_checkpoint, tmp_path, four_bit):
-    adapters = tmp_path / "adapters"
-    adapters.mkdir()
     for name in ("joint_head.safetensors", "joint_head_config.json"):
-        (clef_checkpoint / name).rename(adapters / name)
-    (adapters / "adapter_config.json").write_text("{}")
-    with pytest.raises(NotImplementedError, match = "LoRA adapters"):
-        FastDecisionModel.from_pretrained(str(adapters))
+        (clef_checkpoint / name).unlink()
     with pytest.raises(NotImplementedError, match = "head_init"):
         FastDecisionModel.from_pretrained(str(clef_checkpoint), head_init = "org/clef")
     # Without head files the folder is a plain language model, which gets a new joint head.
@@ -387,4 +433,4 @@ def test_a_plain_language_model_trains_as_a_clef(clef_checkpoint, tmp_path, four
     served, tokenizer = FastDecisionModel.from_pretrained(str(tmp_path / "out"))
     answers = FastDecisionModel.predict(served, tokenizer, "s", QUESTIONS)
     assert _predicted_shapes(answers) == pytest.approx(confidence, abs = 3e-2)
-    assert served.decision_config["base_model"] == str(clef_checkpoint)
+    assert served.decision_config["base_model"] == str(tmp_path / "out")

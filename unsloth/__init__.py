@@ -1056,7 +1056,88 @@ if _IS_MLX:
             object.__setattr__(model, name, value)
         model.save_pretrained_merged = types.MethodType(_decision_save_merged, model)
         model.push_to_hub_merged = types.MethodType(_decision_push_merged, model)
+        if _is_clef(model):
+            model.save_pretrained = types.MethodType(_clef_save, model)
+            model.push_to_hub = types.MethodType(_clef_push, model)
+        model.save_pretrained_gguf = types.MethodType(_decision_save_gguf, model)
+        model.push_to_hub_gguf = types.MethodType(_decision_gguf().push_to_hub_gguf, model)
         return model
+
+    def _clef_save(
+        self,
+        save_directory,
+        tokenizer = None,
+        **kwargs,
+    ) -> None:
+        # Adapters plus the head, as Unsloth's other models; a full finetune has none, so it saves merged.
+        if not getattr(self, "_unsloth_lora", False):
+            return self.save_pretrained_merged(save_directory, tokenizer)
+        config = {**self.decision_config, "fine_tuned": True}
+        _decision_zoo().save_clef_adapter(
+            self._unsloth_pipeline,
+            save_directory,
+            self._unsloth_source,
+            config["base_model"],
+            config.get("base_revision"),
+            config,
+        )
+
+    def _clef_push(
+        self,
+        repo_id,
+        tokenizer = None,
+        token = None,
+        private = None,
+        **kwargs,
+    ) -> None:
+        from huggingface_hub import HfApi
+
+        api = HfApi(token = token)
+        repo_id = api.create_repo(repo_id, private = private, exist_ok = True).repo_id
+        with tempfile.TemporaryDirectory() as folder:
+            self.save_pretrained(folder, tokenizer)
+            api.upload_folder(folder_path = folder, repo_id = repo_id)
+        print(f"Unsloth: Saved the decision model to https://huggingface.co/{repo_id}")
+
+    @functools.lru_cache(maxsize = None)
+    def _decision_gguf():
+        # By path: the exporter runs llama.cpp's converter in a subprocess, and unsloth.models needs torch.
+        spec = importlib.util.spec_from_file_location(
+            "unsloth._decision_gguf", Path(__file__).parent / "models" / "decision_gguf.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def _decision_save_gguf(
+        self,
+        save_directory,
+        tokenizer = None,
+        quantization_method = "q8_0",
+        source_folder = None,
+        print_output = False,
+        **kwargs,
+    ) -> dict:
+        """GGUF for llama.cpp's decision server in <save_directory>/gguf, from a temporary merged save."""
+        gguf = _decision_gguf()
+        # Fail before the merge when llama.cpp cannot convert.
+        gguf._converter_dir(print_output)
+        output = Path(save_directory)
+        output.mkdir(parents = True, exist_ok = True)
+        gguf._remove_abandoned_temp(output)
+        prefix = gguf._temp_prefix(".unsloth-merged-")
+        with (
+            gguf._exit_on_sigterm(),
+            tempfile.TemporaryDirectory(prefix = prefix, dir = output) as merged,
+        ):
+            self.save_pretrained_merged(merged, tokenizer)
+            return gguf.export_decision_gguf(
+                merged,
+                quantization_method,
+                output_dir = output / gguf._contract().EXPORT_DIR,
+                source_folder = source_folder,
+                print_output = print_output,
+            )
 
     def _decision_pad_token_id(tokenizer) -> int:
         return getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
@@ -1153,9 +1234,13 @@ if _IS_MLX:
 
     def _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpointing):
         zoo = _decision_zoo()
-        if full_finetuning:
+        # A checkpoint saved as adapters comes with them, and they go on training.
+        adapters = hasattr(pipeline, "base_folder")
+        if full_finetuning or adapters:
             network = zoo.clef_training_network(
-                pipeline, full_finetuning = True, gradient_checkpointing = gradient_checkpointing
+                pipeline,
+                full_finetuning = bool(full_finetuning),
+                gradient_checkpointing = gradient_checkpointing,
             )
         else:
             # Until get_peft_model adds adapters, only the joint head trains.
@@ -1168,21 +1253,17 @@ if _IS_MLX:
             decision_config = config,
             is_clef = True,
             _unsloth_pipeline = pipeline,
-            _unsloth_source = folder,
+            _unsloth_source = getattr(pipeline, "base_folder", folder),
             _unsloth_full_finetuning = bool(full_finetuning),
             _saved_temp_tokenizer = pipeline.tokenizer,
+            _unsloth_lora = adapters,
         )
         return network, pipeline.tokenizer
 
     def _load_clef(
-        folder, max_seq_length, load_in_4bit, full_finetuning, token, gradient_checkpointing
+        folder, max_seq_length, load_in_4bit, full_finetuning, token, gradient_checkpointing, name
     ):
-        if _is_clef_adapter(folder):
-            raise NotImplementedError(
-                f"Unsloth: {folder} holds LoRA adapters over a base model, which MLX does not load. "
-                "Save it with save_pretrained_merged first."
-            )
-        # A 4-bit decoder trains through LoRA adapters only, which are saved merged into the checkpoint's own weights.
+        # A 4-bit decoder trains through LoRA adapters only.
         pipeline = _decision_zoo().load_decision_model(
             folder, token = token, load_in_4bit = bool(load_in_4bit) and not full_finetuning
         )
@@ -1193,6 +1274,16 @@ if _IS_MLX:
             config.update(json.loads(saved.read_text(encoding = "utf-8")), max_len = max_len)
             # The parent run's training record does not describe the next fine-tune, as for Laya.
             config.pop("training", None)
+        if hasattr(pipeline, "base_folder"):
+            # Adapters stay over the base they were trained on.
+            adapter = json.loads((folder / _ADAPTER_CONFIG).read_text(encoding = "utf-8"))
+            config.setdefault("base_model", adapter["base_model_name_or_path"])
+            if adapter.get("revision"):
+                config.setdefault("base_revision", adapter["revision"])
+        else:
+            # A merged checkpoint is its own base, whatever model it once started from.
+            config.pop("base_revision", None)
+            config.update(name)
         return _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpointing)
 
     def _load_lm_as_clef(
@@ -1305,8 +1396,18 @@ if _IS_MLX:
                     **kwargs,
                 )
             if is_clef_checkpoint(folder):
+                name = {
+                    "base_model": str(model_name),
+                    **({"base_revision": revision} if revision else {}),
+                }
                 return _load_clef(
-                    folder, max_seq_length, load_in_4bit, full_finetuning, token, checkpointing
+                    folder,
+                    max_seq_length,
+                    load_in_4bit,
+                    full_finetuning,
+                    token,
+                    checkpointing,
+                    name,
                 )
             if load_in_4bit:
                 raise NotImplementedError(
