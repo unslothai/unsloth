@@ -1792,6 +1792,10 @@ for _prefix, _upstream, _pages in (
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
 app.include_router(_browser_routes.router, prefix = "/api/browser", tags = ["browser"])
 
+from routes.convert import router as convert_router
+
+app.include_router(convert_router)
+
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)
 

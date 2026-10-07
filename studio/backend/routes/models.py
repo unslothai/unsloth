@@ -388,6 +388,7 @@ def _is_model_directory(d: Path) -> bool:
                 or name.startswith("model")
                 or name.startswith("adapter_model")
                 or name.startswith("consolidated")
+                or name.startswith(("openvino_model", "openvino_language_model"))
             )
         return False
 
@@ -402,7 +403,14 @@ def _is_model_directory(d: Path) -> bool:
 
 # Weight ``.bin`` files the local scanners accept, as opposed to companions like ``tokenizer.bin``.
 # Mirrors ``_is_weight_file`` so every weight check agrees.
-_WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
+_WEIGHT_BIN_PREFIXES = (
+    "pytorch_model",
+    "model",
+    "adapter_model",
+    "consolidated",
+    "openvino_model",
+    "openvino_language_model",
+)
 
 
 def _is_weight_bin(name: str) -> bool:

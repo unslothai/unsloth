@@ -3875,6 +3875,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/llama_cpp.py",
         "core/inference/managed_engine.py",
         "core/inference/npu_backend.py",
+        "core/inference/openvino_backend.py",
         "core/inference/orchestrator.py",
         "core/inference/sd_cpp_engine.py",
         "core/inference/sd_cpp_server.py",
@@ -3883,6 +3884,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/inference/stt_transformers_worker.py",
         "core/rag/embed_llama_server.py",
         "core/training/training.py",
+        "routes/convert.py",
     }
     # Adopters this change deliberately leaves ungated, listed so the completeness check
     # below cannot pass by omission. They are a documented residual, not an oversight:

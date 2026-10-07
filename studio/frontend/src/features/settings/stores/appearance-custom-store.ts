@@ -101,6 +101,7 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "audio",
   "train",
   "recipes",
+  "convert",
   "export",
   "api",
 ] as const;
@@ -149,6 +150,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   audio: false,
   train: true,
   recipes: false,
+  convert: false,
   export: false,
   api: false,
 };

@@ -4165,6 +4165,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "audio": False,
     "train": True,
     "recipes": False,
+    "convert": False,
     "export": False,
     "api": False,
 }
@@ -4207,6 +4208,7 @@ SidebarNavItemId = Literal[
     "audio",
     "train",
     "recipes",
+    "convert",
     "export",
     "api",
 ]
