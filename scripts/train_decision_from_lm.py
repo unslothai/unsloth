@@ -93,9 +93,8 @@ def main():
         evals[name] = [
             dd.canonical_row(r) for r in dd.load_source(name, "test", limit = args.eval_rows, seed = 0)
         ]
-    eval_texts = [
-        json.dumps(r["state"], ensure_ascii = False) for rows in evals.values() for r in rows
-    ]
+    # Raw states: the decontaminator serializes both sides with sorted keys.
+    eval_texts = [r["state"] for rows in evals.values() for r in rows]
 
     pools = {}
     sources = [] if args.sources == "none" else args.sources.split(",")
@@ -106,8 +105,9 @@ def main():
         except Exception as exc:  # gated or unavailable sources are reported and skipped
             print(f"skipping {name}: {type(exc).__name__}: {str(exc)[:160]}")
     per_source = max(1, -(-args.rows // max(1, len(pools))))
+    # 2x headroom so decontamination and converter drops do not force resampling.
     pools = {
-        name: dd.load_source(name, "train", limit = per_source, seed = args.seed) for name in pools
+        name: dd.load_source(name, "train", limit = 2 * per_source, seed = args.seed) for name in pools
     }
     rows = (
         dd.build_decision_mixture(
@@ -182,7 +182,7 @@ def main():
     out = t.train()
     steps = t.state.global_step
     losses = [h["loss"] for h in t.state.log_history if "loss" in h]
-    calibration = FastDecisionModel.calibrate(model, processor, holdout)
+    calibration = FastDecisionModel.calibrate(model, processor, holdout) if holdout else {}
     tuned = {name: _record_metrics(model, processor, its) for name, its in eval_items.items()}
     result = {
         "model": args.model,

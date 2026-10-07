@@ -1286,7 +1286,9 @@ def _clef_mixed_precision(model, args) -> None:
     # float16 NaNs the gated delta net; bfloat16 weights pair with bf16 only; an fp16 load (T4) keeps fp16.
     if _clef_forced_float32(model):
         if args.fp16 or args.bf16:
-            print("Unsloth: Clef trains in float32 here, since Qwen3.5 cannot train in float16.")
+            print(
+                "Unsloth: Qwen3.5 overflows under float16 autocast, so Clef keeps float16 weights with float32 activations instead."
+            )
         args.fp16 = args.bf16 = False
     elif args.fp16 and getattr(model._backbone(), "dtype", None) == torch.bfloat16:
         print("Unsloth: Clef is in bfloat16, so fp16 = True is switched to bf16 = True.")

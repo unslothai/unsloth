@@ -61,7 +61,12 @@ def _source_folder(model_name, token, revision, local_files_only) -> Optional[Pa
         return None
 
 
-def _head_from(head_init, hidden_size, token, revision):
+def _head_from(
+    head_init,
+    hidden_size,
+    token,
+    local_files_only = False,
+):
     from safetensors.torch import load_file
 
     from .clef import HEAD_FILES, JointSchemaHead
@@ -70,7 +75,12 @@ def _head_from(head_init, hidden_size, token, revision):
     if not folder.is_dir():
         from huggingface_hub import snapshot_download
         folder = Path(
-            snapshot_download(str(head_init), token = token, allow_patterns = list(HEAD_FILES))
+            snapshot_download(
+                str(head_init),
+                token = token,
+                local_files_only = local_files_only,
+                allow_patterns = list(HEAD_FILES),
+            )
         )
     config = json.loads((folder / HEAD_FILES[1]).read_text(encoding = "utf-8"))
     if int(config["hidden_size"]) != int(hidden_size):
@@ -187,7 +197,7 @@ def load_lm_as_decision_model(
         )
     hidden_size = int(_text_config(backbone.config).hidden_size)
     if head_init is not None:
-        head = _head_from(head_init, hidden_size, token, revision)
+        head = _head_from(head_init, hidden_size, token, local_files_only)
     else:
         config = head_config or default_head_config(hidden_size, head_width)
         if int(config["hidden_size"]) != hidden_size:

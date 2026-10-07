@@ -69,6 +69,12 @@ def runtime_unavailable_reason() -> str | None:
     return None
 
 
+def llama_cpp_only(name: Any) -> bool:
+    """A GGUF-only catalog entry: llama.cpp serves it without PyTorch."""
+    from core.systemone.catalog import CHECKPOINTS
+    return getattr(CHECKPOINTS.get(name), "layout", None) == "gguf"
+
+
 def get_enabled() -> bool:
     if enabled_locked():
         return False
@@ -174,7 +180,8 @@ def validate(
             raise ValueError(f"The llama.cpp context must be {low} to {high} tokens.")
         values[NATIVE_CTX_KEY] = native_ctx
     serving = enabled if enabled is not None else model is not None and get_enabled()
-    local = parse_connection(get_model() if model is None else model) is None
+    name = get_model() if model is None else model
+    local = parse_connection(name) is None and not llama_cpp_only(name)
     if serving and local and (reason := runtime_unavailable_reason()):
         raise ValueError(reason)
     return values

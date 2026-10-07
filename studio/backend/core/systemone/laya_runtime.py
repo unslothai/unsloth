@@ -1735,8 +1735,7 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
     from .native_worker import NativeContextOverflow
 
     target, reason = select(checkpoint, images, questions)
-    if checkpoint.layout != "laya":
-        _fallback_reason = reason
+    _fallback_reason = reason if checkpoint.layout != "laya" else None
     try:
         return _decide(target, state, questions, images)
     except NativeContextOverflow as exc:

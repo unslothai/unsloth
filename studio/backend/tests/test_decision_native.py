@@ -475,6 +475,13 @@ def test_gpu_flags_offload_to_the_freest_device(home, stub, tmp_path):
     assert second._key != api_key
 
 
+@pytest.mark.parametrize("mask, expected", [("1,0", "CUDA0"), ("0,1", "CUDA1"), ("5", "CUDA1")])
+def test_freest_gpu_follows_the_visibility_order(stub, mask, expected):
+    # Physical GPU 1 is the freest; llama.cpp numbers devices in CUDA_VISIBLE_DEVICES order.
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES = mask)
+    assert native_worker._pick_device("llama-server", env) == expected
+
+
 @pytest.mark.parametrize("mode", ["nodecisions", "wrongalias"])
 def test_a_server_without_a_decisions_output_is_not_capable(home, stub, tmp_path, mode):
     model = tmp_path / "m.gguf"
