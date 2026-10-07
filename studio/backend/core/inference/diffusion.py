@@ -278,6 +278,7 @@ from .diffusion_denoiser_prequant import (
 from .diffusion_comfy_block import (
     comfy_block_backend,
     comfy_block_backends,
+    comfy_block_runtime_layers,
     comfy_nvfp4_runtime_possible,
 )
 from .diffusion_comfy_quant import (
@@ -6780,7 +6781,12 @@ class DiffusionBackend:
                                         offload = _comfy_offload,
                                     ),
                                     **comfy_block_backends(
-                                        comfy_scan, target, fam.name, dtype = dtype, logger = logger
+                                        comfy_scan,
+                                        target,
+                                        fam.name,
+                                        dtype = dtype,
+                                        logger = logger,
+                                        lora = _has_active_lora(loras),
                                     ),
                                     family = fam.name,
                                     target = target,
@@ -7815,6 +7821,9 @@ class DiffusionBackend:
             else:
                 from huggingface_hub import try_to_load_from_cache
                 path = try_to_load_from_cache(repo_id, filename, cache_dir = hub_cache_dir())
+                if not isinstance(path, str):
+                    # the resolver falls back to Hugging Face's default cache too
+                    path = try_to_load_from_cache(repo_id, filename, cache_dir = None)
             if not isinstance(path, str):
                 return False
             from .diffusion_comfy_quant import scan_comfy_quant
@@ -9330,6 +9339,12 @@ class DiffusionBackend:
                 "stored the transformer as int8 weights (small-host route), which cannot carry adapters. Load the "
                 "model with the LoRA selected (Studio then keeps the dense transformer), or use a host with more RAM."
             )
+        if comfy_block_runtime_layers(getattr(pipe, "transformer", None)):
+            raise ValueError(
+                "LoRA is not available on this load: the ComfyUI file's nvfp4 / mxfp8 layers run on their own "
+                "quantized Linears, which cannot carry adapters. Load the file with the LoRA selected (Studio then "
+                "dequantizes those layers), or set UNSLOTH_DIFFUSION_COMFY_NVFP4=0 / UNSLOTH_DIFFUSION_COMFY_MXFP8=0."
+            )
         if not diffusion_lora.supports_lora(
             engine = "diffusers",
             family = getattr(state.family, "name", None),
@@ -10840,7 +10855,8 @@ class DiffusionBackend:
                 transformer_quant = state.transformer_quant,
                 compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()),
             )
-            and not _small_host_int8(state.pipe),
+            and not _small_host_int8(state.pipe)
+            and not comfy_block_runtime_layers(getattr(state.pipe, "transformer", None)),
             "small_host": small_host_engaged_on(state.pipe),
             "supports_controlnet": diffusion_controlnet.supports_controlnet(
                 engine = "diffusers",

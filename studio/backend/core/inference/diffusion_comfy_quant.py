@@ -329,6 +329,8 @@ def comfy_resident_mib(
             (layer.format == FP8_E4M3 and keep_fp8 and _fits(shape, fp8_divisible))
             or (
                 {NVFP4: keep_nvfp4, MXFP8: keep_mxfp8}.get(layer.format, False)
+                # input smoothing has no runtime Linear: the loader dequantizes such a layer
+                and name + ".pre_quant_scale" not in header
                 and _fits(
                     _logical(layer.format, shape), (block_divisible or {}).get(layer.format, 0)
                 )

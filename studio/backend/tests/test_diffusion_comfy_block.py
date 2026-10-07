@@ -265,6 +265,56 @@ def test_resident_size_prices_kept_and_dequantized_nvfp4(tmp_path):
     kw = dict(keep_int8 = False, keep_fp8 = False, keep_nvfp4 = True, block_divisible = {"nvfp4": 16})
     assert cq.comfy_resident_mib(path, min_features = 2048, **kw) == 3
     assert cq.comfy_resident_mib(path, min_features = 2049, **kw) == dense
+    # input smoothing has no runtime Linear, so a smoothed layer is priced dequantized too
+    smoothed = _layer_file(
+        tmp_path,
+        "nvfp4",
+        rows = 2048,
+        cols = 2048,
+        name = "s",
+        extra = {"a.pre_quant_scale": torch.ones(2048)},
+    )
+    assert cq.comfy_resident_mib(smoothed, **kw) > kept
+
+
+def test_lora_and_block_runtime_layers(monkeypatch, tmp_path):
+    scan = cq.scan_comfy_quant(_layer_file(tmp_path, "mxfp8"))
+    monkeypatch.setattr(cb, "mxfp8_runtime_reason", lambda target: None)
+    assert (
+        cb.comfy_block_backends(scan, _target("cuda:0"), "krea-2")["mxfp8_backend"] == "scaled_mm"
+    )
+    # adapters need dense Linears: a LoRA selected at load dequantizes the block layers
+    assert (
+        cb.comfy_block_backends(scan, _target("cuda:0"), "krea-2", lora = True)["mxfp8_backend"]
+        is None
+    )
+    model = types.SimpleNamespace(_unsloth_comfy_quant = {"mxfp8": 3, "nvfp4": 0})
+    assert cb.comfy_block_runtime_layers(model) == 3
+    assert (
+        cb.comfy_block_runtime_layers(types.SimpleNamespace(_unsloth_comfy_quant = {"mxfp8": 0})) == 0
+    )
+    assert cb.comfy_block_runtime_layers(None) == 0
+
+
+def test_install_hint_reads_the_default_hub_cache_too(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from core.inference.diffusion import DiffusionBackend
+
+    path = str(_layer_file(tmp_path, "nvfp4"))
+    seen = []
+
+    def fake(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
+        seen.append(cache_dir)
+        return path if cache_dir is None else None
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", fake)
+    assert DiffusionBackend._comfy_single_file_holds_nvfp4("Comfy-Org/x", "m.safetensors")
+    assert seen[-1] is None and len(seen) == 2
 
 
 class _Block(nn.Module):

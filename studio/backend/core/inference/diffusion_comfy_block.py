@@ -322,6 +322,15 @@ def _env_off(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in _OFF
 
 
+def comfy_block_runtime_layers(model: Any) -> int:
+    """How many nvfp4 / mxfp8 layers of a ComfyUI load kept their codes (they cannot carry LoRA adapters)."""
+    info = getattr(model, "_unsloth_comfy_quant", None) or {}
+    try:
+        return int(info.get(NVFP4) or 0) + int(info.get(MXFP8) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def comfy_nvfp4_runtime_possible(family: Optional[str]) -> bool:
     """Whether the switch and the family let a ComfyUI nvfp4 file keep its codes (the device is the load's call)."""
     try:
@@ -445,6 +454,7 @@ def comfy_block_backends(
     *,
     dtype: Any = None,
     logger: Any = None,
+    lora: bool = False,
 ) -> dict:
     """``load_comfy_quant_transformer`` backend kwargs, logging per format which runtime keeps it or why not."""
     out = {"nvfp4_backend": None, "mxfp8_backend": None}
@@ -453,6 +463,8 @@ def comfy_block_backends(
         if not counts.get(fmt):
             continue
         backend, reason = comfy_block_backend(fmt, target, family, dtype = dtype)
+        if lora and backend:
+            backend, reason = None, "a LoRA is selected: adapters need dense Linears"
         out[f"{fmt}_backend"] = backend
         if logger is not None:
             if backend:
