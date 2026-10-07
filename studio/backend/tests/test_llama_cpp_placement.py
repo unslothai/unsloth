@@ -4193,3 +4193,550 @@ def test_the_spill_raise_helper_only_raises():
         assert _moe_spill_batch_ubatch(None, None, **{**on, off: False}) == (None, None)
     assert _moe_spill_batch_ubatch(None, None, **{**on, "user_named_batch": True}) == (None, None)
     assert _moe_spill_batch_ubatch(None, None, **{**on, "n_moe_layers": 0}) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# MoE experts in host RAM: --moe-cache-mib auto, and lazily read tables.
+
+_MOE_CACHE = ["--moe-cache-mib", "auto"]
+
+
+def _has_moe_cache(cmd):
+    return any(cmd[i : i + 2] == _MOE_CACHE for i in range(len(cmd) - 1))
+
+
+def _write_help_binary(tmp_path, name, help_text):
+    script = tmp_path / name
+    script.write_text("#!/bin/sh\ncat <<'HELP'\n" + help_text + "\nHELP\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+_HELP_BASE = (
+    "-m,   --model FNAME                    model path\n"
+    "--load-mode MODE                       how to load the model\n"
+)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "shell script stands in for llama-server")
+@pytest.mark.parametrize(
+    "extra_help, cache, auto, lazy",
+    [
+        ("", False, False, False),
+        (
+            "--moe-cache-mib N                      GPU cache size in MiB for the MoE experts "
+            "kept in the CPU (default: 0, disabled)\n",
+            True,
+            False,
+            False,
+        ),
+        (
+            "--moe-cache-mib N|auto                 GPU cache size in MiB for the MoE experts "
+            "kept in the CPU, or auto to size it from free VRAM (default: 0, disabled)\n"
+            "-lzm, --lazy-mode MODE                 on-demand reading of certain tensors\n",
+            True,
+            True,
+            True,
+        ),
+        ("--tensor-read-lazy MODE                on-demand reading\n", False, False, True),
+    ],
+    ids = ["old_build", "upstream_cache", "fork_auto", "pre_rename_lazy"],
+)
+def test_the_probe_reads_the_moe_cache_and_lazy_mode_flags(
+    tmp_path, monkeypatch, extra_help, cache, auto, lazy
+):
+    monkeypatch.setattr(LlamaCppBackend, "_capability_cache", {})
+    binary = _write_help_binary(
+        tmp_path, f"llama-server-{cache}{auto}{lazy}", _HELP_BASE + extra_help
+    )
+    caps = LlamaCppBackend.probe_server_capabilities(binary)
+
+    assert caps["help_probe_ok"] is True
+    assert (
+        caps["supports_moe_cache"],
+        caps["supports_moe_cache_auto"],
+        caps["supports_lazy_mode"],
+    ) == (
+        cache,
+        auto,
+        lazy,
+    )
+
+
+def test_a_failed_probe_advertises_no_moe_cache():
+    caps = LlamaCppBackend.probe_server_capabilities("/nonexistent/llama-server")
+    assert not caps["supports_moe_cache_auto"] and not caps["supports_lazy_mode"]
+
+
+_CACHE_CAPS_ON = dict(
+    supports_load_mode = True,
+    supports_moe_cache = True,
+    supports_moe_cache_auto = True,
+    supports_lazy_mode = True,
+)
+
+
+@pytest.fixture
+def _moe_cache_host(monkeypatch, _discrete_linux_host):
+    import utils.model_memory_settings as mm
+
+    monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, False))
+    monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+    monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+    monkeypatch.setattr(mm, "should_mlock", lambda: False)
+    for name in (
+        "LLAMA_ARG_MOE_CACHE_MIB",
+        "LLAMA_ARG_OVERRIDE_TENSOR",
+        "LLAMA_ARG_N_GPU_LAYERS",
+        "LLAMA_ARG_DEVICE",
+        "LLAMA_ARG_FIT",
+        "LLAMA_ARG_LOAD_MODE",
+        "LLAMA_ARG_MMAP",
+        "LLAMA_ARG_NO_MMAP",
+        "LLAMA_ARG_LAZY_MODE",
+        "LLAMA_ARG_CACHE_RAM",
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+
+def _cache_launch(
+    tmp_path,
+    *,
+    caps = None,
+    moe = True,
+    spilled = True,
+    gpus = 1,
+    ram_gib = 256,
+    expert_gib = 15,
+    lazy = None,
+    arch = "qwen3moe",
+    **load_kwargs,
+):
+    """One launch of an MoE (or dense) model, priced so the fit can answer
+    "none". 20 GiB on an 8 GiB card spills; 1 GiB on a 40 GiB card does not."""
+    memory = (
+        [(i, 8_000, 16_000) for i in range(gpus)]
+        if spilled
+        else [(i, 40_000, 48_000) for i in range(gpus)]
+    )
+    backend, gguf = _moe_backend(tmp_path, size_gib = 20 if spilled else 1, memory = memory, moe = moe)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB // 4
+    backend._available_system_memory_mib = lambda: int(ram_gib * 1024)
+    backend._gguf_tensor_scan = lambda _path: (
+        arch,
+        dict(lazy or {}),
+        int(expert_gib * _GIB) if moe else 0,
+    )
+    full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    full_caps.update(_CACHE_CAPS_ON if caps is None else caps)
+    backend.probe_server_capabilities = lambda _binary = None: full_caps
+    cmd = _launch(backend, gguf, **load_kwargs)["cmd"]
+    return backend, cmd
+
+
+def _load_mode(cmd):
+    values = [cmd[i + 1] for i, tok in enumerate(cmd) if tok == "--load-mode"]
+    return values[-1] if values else None
+
+
+def test_a_spilled_moe_on_one_gpu_loading_pinned_gets_the_cache(tmp_path, _moe_cache_host):
+    backend, cmd = _cache_launch(tmp_path)
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _load_mode(cmd) == "none", cmd
+    assert _has_moe_cache(cmd), cmd
+    assert cmd.count("--moe-cache-mib") == 1
+    # Next to the expert-spill micro-batch, which it never replaces.
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    assert backend._moe_cache_flags == _MOE_CACHE
+
+
+@pytest.mark.parametrize(
+    "cell, kwargs",
+    [
+        ("dense", dict(moe = False)),
+        ("no_spill", dict(spilled = False)),
+        ("two_gpus", dict(gpus = 2)),
+        # 15 GiB of experts plus the 8 GiB prompt cache cannot be pinned in 16 GiB
+        # of RAM, but the whole 20 GiB load still fits it with the card's 8 GiB.
+        ("ram_cannot_pin_experts", dict(ram_gib = 24)),
+        ("ram_cannot_pin_anything", dict(ram_gib = 8)),
+        (
+            "old_build",
+            dict(
+                caps = dict(_CACHE_CAPS_ON, supports_moe_cache = False, supports_moe_cache_auto = False)
+            ),
+        ),
+        ("upstream_build_no_auto", dict(caps = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False))),
+        ("user_mmap", dict(load_mode = "mmap")),
+        ("user_mmap_extra", dict(extra_args = ["--load-mode", "mmap"])),
+        ("manual_layers", dict(gpu_memory_mode = "manual", gpu_layers = 40)),
+    ],
+    ids = lambda v: v if isinstance(v, str) else "",
+)
+def test_the_moe_cache_stays_off(tmp_path, _moe_cache_host, cell, kwargs):
+    backend, cmd = _cache_launch(tmp_path, **kwargs)
+
+    assert not _has_moe_cache(cmd) and "--moe-cache-mib" not in cmd, (cell, cmd)
+    assert backend._moe_cache_flags == []
+    if cell == "ram_cannot_pin_experts":
+        # Pinned without the cache: the cache never demotes a pinned load.
+        assert _load_mode(cmd) == "none", cmd
+    if cell == "ram_cannot_pin_anything":
+        assert _load_mode(cmd) is None, cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["-ot", r"blk\.\d+\.ffn_.*_exps\.=CPU"],
+        ["--override-tensor", "exps=CUDA0"],
+        ["-ngl", "30"],
+        ["--n-gpu-layers", "99"],
+        ["-cmoe"],
+        ["--cpu-moe"],
+        ["--n-cpu-moe", "10"],
+        ["--moe-cache-mib", "4096"],
+        ["--fit", "off"],
+        ["--device", "CUDA0"],
+        ["--tensor-split", "1,0"],
+    ],
+    ids = [
+        "ot",
+        "override_tensor",
+        "ngl",
+        "n_gpu_layers",
+        "cmoe",
+        "cpu_moe",
+        "n_cpu_moe",
+        "user_cache",
+        "fit_off",
+        "device",
+        "tensor_split",
+    ],
+)
+def test_a_user_placement_flag_keeps_the_moe_cache_off(tmp_path, _moe_cache_host, extra_args):
+    _backend, cmd = _cache_launch(tmp_path, extra_args = extra_args)
+
+    assert not _has_moe_cache(cmd), cmd
+    # The user's own cache size reaches the child untouched.
+    if "--moe-cache-mib" in extra_args:
+        assert cmd.count("--moe-cache-mib") == 1 and cmd[cmd.index("--moe-cache-mib") + 1] == "4096"
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("LLAMA_ARG_MOE_CACHE_MIB", "2048"),
+        ("LLAMA_ARG_N_GPU_LAYERS", "20"),
+        ("LLAMA_ARG_OVERRIDE_TENSOR", "exps=CPU"),
+        ("LLAMA_ARG_FIT", "off"),
+    ],
+)
+def test_an_inherited_placement_keeps_the_moe_cache_off(
+    tmp_path, _moe_cache_host, monkeypatch, name, value
+):
+    monkeypatch.setenv(name, value)
+    _backend, cmd = _cache_launch(tmp_path)
+
+    assert not _has_moe_cache(cmd), cmd
+
+
+def test_the_moe_cache_eligibility_gates(tmp_path, _moe_cache_host):
+    backend, _gguf = _moe_backend(tmp_path, **_SPILLED)
+    on = dict(
+        caps = _CACHE_CAPS_ON,
+        gpu_memory_mode = "auto",
+        use_fit = True,
+        experts_on_host = True,
+        discrete_gpu = True,
+        gpu_indices = [0],
+        detected_gpus = [(0, 8_000), (1, 8_000)],
+        is_vulkan_backend = False,
+        tensor_parallel = False,
+        extra_args = [],
+        env = {},
+    )
+    assert backend._moe_cache_auto_eligible(**on) is True
+    for off in (
+        dict(use_fit = False),
+        dict(experts_on_host = False),
+        dict(discrete_gpu = False),
+        dict(is_vulkan_backend = True),
+        dict(tensor_parallel = True),
+        dict(gpu_memory_mode = "manual"),
+        dict(gpu_indices = [0, 1]),
+        # Unpinned: every detected card is the child's.
+        dict(gpu_indices = None),
+        dict(caps = {}),
+        dict(extra_args = ["--fit", "off"]),
+        dict(env = {"LLAMA_ARG_FIT": "off"}),
+    ):
+        assert backend._moe_cache_auto_eligible(**{**on, **off}) is False, off
+    assert backend._moe_cache_auto_eligible(
+        **{**on, "gpu_indices": None, "detected_gpus": [(0, 8_000)]}
+    )
+    backend._n_experts = None
+    assert backend._moe_cache_auto_eligible(**on) is False
+
+
+def test_every_retry_drops_the_moe_cache_first():
+    backend = LlamaCppBackend()
+    argv = ["llama-server", "-m", "x.gguf", "--fit", "on", "--load-mode", "none", *_MOE_CACHE]
+    # Not this launch's: a user's identical flag is theirs.
+    assert backend._drop_moe_cache(argv, "test") == argv
+
+    backend._moe_cache_flags = list(_MOE_CACHE)
+    assert backend._drop_moe_cache(argv, "test") == argv[:-2]
+    # The CPU replay hands back the uncached argv as well.
+    assert backend._drop_moe_cache(argv[:-2], "test") == argv[:-2]
+
+
+@pytest.mark.parametrize(
+    "crash_line, retried",
+    [
+        (
+            "llama_init_from_model: failed to initialize the context: MoE cache is too small to hold the experts of one token",
+            True,
+        ),
+        (
+            "ggml_backend_cuda_buffer_type_alloc_buffer: allocating 4096.00 MiB on device 0: cudaMalloc failed: out of memory",
+            True,
+        ),
+        ("error: unknown model architecture: 'foo'", False),
+    ],
+    ids = ["cache_error", "cuda_oom", "unrelated"],
+)
+def test_a_cache_crash_retries_once_without_the_cache(
+    tmp_path, _moe_cache_host, crash_line, retried
+):
+    spawned = []
+
+    def fake_popen(cmd, **kwargs):
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _REAL_POPEN(cmd, **kwargs)
+        spawned.append(list(cmd))
+        crashed = len(spawned) == 1
+        return type(
+            "Process",
+            (),
+            {
+                "pid": 100 + len(spawned),
+                "stdout": iter([crash_line + "\n"]) if crashed else iter(()),
+                "returncode": 1 if crashed else None,
+                "poll": lambda self: 1 if crashed else None,
+                "terminate": lambda self: None,
+                "wait": lambda self, timeout = None: 1 if crashed else 0,
+                "kill": lambda self: None,
+            },
+        )()
+
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    backend._can_estimate_kv = lambda: True
+    backend._estimate_kv_cache_bytes = lambda *a, **k: _GIB // 4
+    backend._available_system_memory_mib = lambda: 256 * 1024
+    backend._gguf_tensor_scan = lambda _path: ("qwen3moe", {}, 15 * _GIB)
+    full_caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    full_caps.update(_CACHE_CAPS_ON)
+    backend.probe_server_capabilities = lambda _binary = None: full_caps
+
+    def health(timeout, **_kw):
+        if len(spawned) == 1:
+            backend._stdout_lines = [crash_line]
+            return False
+        return True
+
+    backend._wait_for_health = health
+    with patch.object(subprocess, "Popen", side_effect = fake_popen):
+        try:
+            backend.load_model(GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test"))
+        except Exception:
+            pass
+
+    assert _has_moe_cache(spawned[0]), spawned[0]
+    if retried:
+        assert len(spawned) >= 2 and not _has_moe_cache(spawned[1]), spawned
+        assert _without_cache(spawned[0]) == spawned[1]
+    else:
+        assert len(spawned) < 2 or spawned[1] != _without_cache(spawned[0])
+
+
+def _without_cache(cmd):
+    for i in range(len(cmd) - 1):
+        if cmd[i : i + 2] == _MOE_CACHE:
+            return cmd[:i] + cmd[i + 2 :]
+    return list(cmd)
+
+
+# Qwen3.8-Flash-Next IQ1_S (arch qwen4exp), sizes from its GGUF header.
+_QWEN38_TOTAL = int(67.55 * _GIB)
+_QWEN38_PLE = int(26.82 * _GIB)  # per_layer_token_embd.weight, TENSOR_READ_LAZY
+_QWEN38_EXPERTS = int(37.11 * _GIB)
+
+
+class _RamStub:
+    """Only what the load-mode predicate touches."""
+
+    def __init__(self, avail_mib):
+        self._avail_mib = avail_mib
+
+    def _available_system_memory_mib(self):
+        return self._avail_mib
+
+    def _amd_apu_wants_unified_memory(self, gpu_indices = None):
+        return False
+
+    _fits_without_paging = LlamaCppBackend._fits_without_paging
+    _FIT_LOAD_MODE = LlamaCppBackend._FIT_LOAD_MODE
+
+
+def _qwen38_mode(
+    lazy_bytes,
+    host_only_bytes = 0,
+    monkeypatch = None,
+):
+    # A 16 GiB card with 15.5 GiB free under the 1 GiB fit margin, and a 32 GiB host
+    # showing 30 GiB available. 0.5 GiB KV and 0.5 GiB compute buffer.
+    return LlamaCppBackend._fit_derived_load_mode(
+        _RamStub(30 * 1024),
+        model_size = _QWEN38_TOTAL,
+        kv_cache_bytes = _GIB // 2,
+        compute_buffer_flat = _GIB // 2,
+        host_only_bytes = host_only_bytes,
+        gpus = [(0, int(15.5 * 1024))],
+        gpu_indices = [0],
+        fit_margin_mib = 1024,
+        lazy_read_bytes = lazy_bytes,
+        extra_args = [],
+        env = {},
+    )
+
+
+def test_a_lazily_read_table_is_not_pinned_ram(monkeypatch):
+    import utils.hardware as hardware
+
+    monkeypatch.setattr(hardware, "is_apple_silicon", lambda: False)
+    # 67.55 + 1 GiB against 14.5 GiB of VRAM leaves 54 GiB for 28 GiB of RAM: mmap.
+    assert _qwen38_mode(0) is None
+    # Without the 26.82 GiB table it is 41.7 GiB: 27.2 GiB of host RAM, which fits
+    # under the 2 GiB headroom the table's working set pages through.
+    assert _qwen38_mode(_QWEN38_PLE) == LlamaCppBackend._FIT_LOAD_MODE
+    # The expert cache would need all 37.11 GiB of experts pinned: not on this host,
+    # so it launches pinned without the cache.
+    assert _qwen38_mode(_QWEN38_PLE, host_only_bytes = _QWEN38_EXPERTS) is None
+
+
+@pytest.mark.parametrize(
+    "arch, size, extra_args, env, expected",
+    [
+        ("qwen4exp", _QWEN38_PLE, [], {}, _QWEN38_PLE),
+        ("gemma4", _QWEN38_PLE, [], {}, _QWEN38_PLE),
+        # Another architecture's table of the same name is read like any tensor.
+        ("qwen3moe", _QWEN38_PLE, [], {}, 0),
+        # At or under 4 GiB, auto loads it normally; "on" reads it lazily anyway.
+        ("qwen4exp", 4 * _GIB, [], {}, 0),
+        ("qwen4exp", 4 * _GIB, ["-lzm", "on"], {}, 4 * _GIB),
+        ("qwen4exp", _QWEN38_PLE, ["-lzm", "off"], {}, 0),
+        ("qwen4exp", _QWEN38_PLE, ["--lazy-mode=off"], {}, 0),
+        ("qwen4exp", _QWEN38_PLE, [], {"LLAMA_ARG_LAZY_MODE": "off"}, 0),
+        # Last wins over the env twin.
+        (
+            "qwen4exp",
+            _QWEN38_PLE,
+            ["--lazy-mode", "auto"],
+            {"LLAMA_ARG_LAZY_MODE": "off"},
+            _QWEN38_PLE,
+        ),
+    ],
+    ids = [
+        "qwen4exp",
+        "gemma4",
+        "other_arch",
+        "under_4gib",
+        "on",
+        "lzm_off",
+        "inline_off",
+        "env_off",
+        "argv_beats_env",
+    ],
+)
+def test_lazy_table_bytes(arch, size, extra_args, env, expected):
+    backend = LlamaCppBackend()
+    backend._gguf_tensor_scan = lambda _path: (arch, {"per_layer_token_embd.weight": size}, 0)
+    caps = {"supports_lazy_mode": True}
+    got = backend._lazy_read_host_bytes("/m.gguf", caps = caps, extra_args = extra_args, env = env)
+    assert got == expected
+    # A build without lazy reads loads every tensor.
+    assert backend._lazy_read_host_bytes("/m.gguf", caps = {}, extra_args = extra_args, env = env) == 0
+
+
+def _write_tensor_gguf(path, architecture, tensors):
+    """A GGUF with real tensor infos: (name, dims, ggml_type) each, F32 data laid out
+    back to back."""
+
+    def string(value):
+        data = value.encode()
+        return struct.pack("<Q", len(data)) + data
+
+    header = struct.pack("<IIQQ", 0x46554747, 3, len(tensors), 1)
+    header += string("general.architecture") + struct.pack("<I", 8) + string(architecture)
+    offset = 0
+    for name, dims, ggml_type in tensors:
+        header += string(name) + struct.pack("<I", len(dims)) + struct.pack(f"<{len(dims)}Q", *dims)
+        header += struct.pack("<I", ggml_type) + struct.pack("<Q", offset)
+        n = 1
+        for d in dims:
+            n *= d
+        offset += -(-n * 4 // 32) * 32
+    header += b"\0" * (-len(header) % 32)
+    path.write_bytes(header + b"\0" * offset)
+    return path
+
+
+def test_the_header_scan_sums_shards(tmp_path):
+    f32 = 0
+    _write_tensor_gguf(
+        tmp_path / "m-00001-of-00002.gguf",
+        "qwen4exp",
+        [
+            ("per_layer_token_embd.weight", (8, 4), f32),
+            ("blk.0.ffn_up_exps.weight", (4, 4, 2), f32),
+        ],
+    )
+    _write_tensor_gguf(
+        tmp_path / "m-00002-of-00002.gguf",
+        "",
+        [("blk.1.ffn_down_exps.weight", (4, 4, 2), f32), ("blk.1.attn_q.weight", (4, 4), f32)],
+    )
+    backend = LlamaCppBackend()
+    arch, named, experts = backend._gguf_tensor_scan(str(tmp_path / "m-00001-of-00002.gguf"))
+
+    assert arch == "qwen4exp"
+    assert named == {"per_layer_token_embd.weight": 8 * 4 * 4}
+    assert experts == 2 * 4 * 4 * 2 * 4
+    # A missing shard reads as unknown, which discounts nothing.
+    (tmp_path / "m-00002-of-00002.gguf").unlink()
+    assert LlamaCppBackend()._gguf_tensor_scan(str(tmp_path / "m-00001-of-00002.gguf")) is None
+
+
+def test_the_launch_discounts_the_lazy_table(tmp_path, _moe_cache_host):
+    """The same predicate through the launch: a 20 GiB MoE whose 12 GiB n-gram table
+    is lazy fits 8 GiB of VRAM plus 12 GiB of RAM only without the table."""
+    plain = _cache_launch(
+        tmp_path, ram_gib = 12, caps = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
+    )[1]
+    assert _load_mode(plain) is None, plain
+
+    lazy = {"per_layer_token_embd.weight": 12 * _GIB}
+    no_auto = dict(_CACHE_CAPS_ON, supports_moe_cache_auto = False)
+    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, caps = no_auto)
+    assert _load_mode(cmd) is None, "qwen3moe does not mark the table lazy"
+
+    _b, cmd = _cache_launch(tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto)
+    assert _load_mode(cmd) == "none", cmd
+    # And "-lzm off" makes it an ordinary tensor again.
+    _b, cmd = _cache_launch(
+        tmp_path, ram_gib = 12, lazy = lazy, arch = "qwen4exp", caps = no_auto, extra_args = ["-lzm", "off"]
+    )
+    assert _load_mode(cmd) is None, cmd

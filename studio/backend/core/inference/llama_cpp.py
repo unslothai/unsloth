@@ -99,6 +99,7 @@ from core.inference.llama_server_args import (
     _TENSOR_SPLIT_FLAGS,
     _effective_tensor_parallel,
     _flag_name,
+    _last_flag_value,
     _tensor_parallel_matches_loaded,
     LLAMA_CTX_CHECKPOINTS_DEFAULT,
     apply_load_mode_policy,
@@ -6956,6 +6957,122 @@ def _moe_spill_batch_ubatch(
     return n_batch, _MOE_SPILL_N_UBATCH
 
 
+# The GPU replica of the routed experts a spilled MoE keeps in host RAM
+# (ggml-org/llama.cpp#29887). "auto" has llama.cpp's fitter size it from what the
+# card has left once everything but the routed experts is placed, and keep a share
+# of the experts statically resident. Emitted as one run so a retry can take it out.
+_MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
+# Pass-through placement that owns what the cache would be sized against: the user's
+# own cache, layer count, tensor overrides, expert counts and device split. llama.cpp's
+# fitter aborts on most of them, and the cache refuses more than one device.
+_MOE_CACHE_USER_OWNED_FLAGS = (
+    frozenset({"--moe-cache-mib", "-ot", "--override-tensor"})
+    | _DEVICE_FLAGS
+    | _GPU_LAYER_FLAGS
+    | _MOE_OFFLOAD_FLAGS
+    | _SPLIT_MODE_FLAGS
+    | _TENSOR_SPLIT_FLAGS
+)
+_MOE_CACHE_USER_OWNED_ENV = (
+    "LLAMA_ARG_MOE_CACHE_MIB",
+    "LLAMA_ARG_OVERRIDE_TENSOR",
+    "LLAMA_ARG_CPU_MOE",
+    "LLAMA_ARG_N_CPU_MOE",
+    "LLAMA_ARG_DEVICE",
+    "LLAMA_ARG_SPLIT_MODE",
+    "LLAMA_ARG_TENSOR_SPLIT",
+)
+
+# Tensors llama.cpp creates with TENSOR_READ_LAZY, per GGUF architecture
+# (src/models/gemma4.cpp, src/models/qwen4exp.cpp). Under --lazy-mode auto, the
+# default, one larger than 4 GiB stays mmap'd from disk whatever the load mode
+# (llama-model-loader.cpp, lazy_read::add), its rows faulted in on demand, so it
+# needs neither a pinned host copy nor VRAM. "on" drops the size floor, "off"
+# loads it like any other tensor.
+_LAZY_READ_TENSORS: dict[str, tuple[str, ...]] = {
+    "gemma4": ("per_layer_token_embd.weight",),
+    "qwen4exp": ("per_layer_token_embd.weight",),
+}
+_LAZY_READ_AUTO_MIN_BYTES = 4 * 1024**3
+# --tensor-read-lazy is the spelling before ggml-org/llama.cpp#27969.
+_LAZY_MODE_FLAGS = frozenset({"-lzm", "--lazy-mode", "--tensor-read-lazy"})
+_LAZY_MODE_ENV_VARS = ("LLAMA_ARG_TENSOR_READ_LAZY", "LLAMA_ARG_LAZY_MODE")
+
+
+# llama-server's --cache-ram default (MiB): the host-RAM prompt cache it grows into.
+_LLAMA_CACHE_RAM_DEFAULT_MIB = 8192
+
+
+def _prompt_cache_host_bytes(
+    cache_ram: Optional[int],
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    supports_cache_ram: bool,
+) -> Optional[int]:
+    """The host RAM llama-server's prompt cache may grow into, or None when it is
+    unbounded (``-1``) or unreadable. Env first, then the launch's own value, then a
+    last-wins pass-through flag; zero on a build without the cache."""
+    if not supports_cache_ram:
+        return 0
+    source_env = os.environ if env is None else env
+    value: object = _LLAMA_CACHE_RAM_DEFAULT_MIB
+    if str(source_env.get("LLAMA_ARG_CACHE_RAM") or "").strip():
+        value = source_env.get("LLAMA_ARG_CACHE_RAM")
+    if cache_ram is not None:
+        value = cache_ram
+    try:
+        override = _last_flag_value(extra_args, _CACHE_RAM_FLAGS)
+        if override is not None:
+            value = override
+        mib = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return None if mib < 0 else mib * 1024 * 1024
+
+
+def _argv_loads_pinned(argv: Iterable[str], env: Optional[Mapping[str, str]] = None) -> bool:
+    """Whether ``argv`` (with the env twins) loads the weights into a pinned host
+    copy, i.e. ``--load-mode none``: no mmap, no page-lock, no DirectIO."""
+    mlock, reserves_ram, direct_io = resolve_effective_load_state(list(argv), env)
+    return bool(reserves_ram and not mlock and not direct_io)
+
+
+def _effective_lazy_mode(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> str:
+    """llama.cpp's --lazy-mode for this launch: env first, then last-wins argv.
+
+    A value llama-server would refuse reads as "off", which discounts nothing."""
+    source_env = os.environ if env is None else env
+    mode = "auto"
+    for name in _LAZY_MODE_ENV_VARS:
+        value = str(source_env.get(name) or "").strip().lower()
+        if value:
+            mode = value
+    try:
+        value = _last_flag_value(extra_args, _LAZY_MODE_FLAGS)
+    except ValueError:
+        return "off"
+    if value:
+        mode = value.strip().lower()
+    return mode if mode in ("auto", "on") else "off"
+
+
+def _lazy_read_bytes(
+    architecture: Optional[str], tensor_bytes: Mapping[str, int], mode: str
+) -> int:
+    """Bytes of ``tensor_bytes`` llama.cpp reads lazily under ``mode``."""
+    if mode not in ("auto", "on"):
+        return 0
+    names = _LAZY_READ_TENSORS.get(architecture or "", ())
+    return sum(
+        int(size)
+        for name, size in tensor_bytes.items()
+        if name in names and (mode == "on" or int(size) > _LAZY_READ_AUTO_MIN_BYTES)
+    )
+
+
 def _build_ngram_mod_flags(
     caps: Optional[dict],
     n_match: int = 24,
@@ -7793,6 +7910,8 @@ class LlamaCppBackend:
         # The expert-spill micro-batch raise: the pair before it, and the argv tokens.
         self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
         self._moe_spill_batch_tokens: Optional[tuple[list[str], list[str]]] = None
+        # The --moe-cache-mib auto run the last launch added; empty when it added none.
+        self._moe_cache_flags: List[str] = []
         # The tuning group the last load asked for; none = defaults, or left to
         # extras / env. What was REQUESTED, not what ran: Model Memory can replace
         # the load mode, and Windows full-offload tuning owns the two cache knobs.
@@ -9627,6 +9746,9 @@ class LlamaCppBackend:
                 "supports_trace_verbosity": False,
                 "supports_video_fps": False,
                 "supports_load_mode": False,
+                "supports_moe_cache": False,
+                "supports_moe_cache_auto": False,
+                "supports_lazy_mode": False,
                 "spec_draft_ngl_flag": None,
                 "spec_draft_cache_k_flag": None,
                 "spec_draft_cache_v_flag": None,
@@ -9680,6 +9802,9 @@ class LlamaCppBackend:
         supports_no_mmproj_offload = False
         supports_video_fps = False
         supports_load_mode = False
+        supports_moe_cache = False
+        supports_moe_cache_auto = False
+        supports_lazy_mode = False
         spec_draft_ngl_flag = None
         spec_draft_cache_k_flag = None
         spec_draft_cache_v_flag = None
@@ -9924,6 +10049,22 @@ class LlamaCppBackend:
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
+            # The MoE expert cache, and whether this build sizes it itself: "auto" is
+            # a fork addition the upstream flag lacks, and a build that does not list
+            # it exits on the value. Both fail closed, like --reasoning.
+            supports_moe_cache = bool(probe_ok and _is_real("--moe-cache-mib"))
+            supports_moe_cache_auto = bool(
+                supports_moe_cache
+                and re.search(
+                    r"(?<![a-z0-9_-])auto(?![a-z0-9_-])",
+                    (blocks.get("--moe-cache-mib") or "").lower(),
+                )
+            )
+            # Lazily read tensors (TENSOR_READ_LAZY) arrived with this flag. Fails
+            # closed: an older build loads them like any other weight.
+            supports_lazy_mode = bool(
+                probe_ok and (_is_real("--lazy-mode") or _is_real("--tensor-read-lazy"))
+            )
             # Record WHICH alias this build has: --spec-draft-ngl only landed in
             # b8955, and a build exposing only --gpu-layers-draft would refuse to
             # start on the newer name. Long forms only, since the block parser above
@@ -10021,6 +10162,9 @@ class LlamaCppBackend:
             "supports_trace_verbosity": supports_trace_verbosity,
             "supports_video_fps": supports_video_fps,
             "supports_load_mode": supports_load_mode,
+            "supports_moe_cache": supports_moe_cache,
+            "supports_moe_cache_auto": supports_moe_cache_auto,
+            "supports_lazy_mode": supports_lazy_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
             "spec_draft_cache_k_flag": spec_draft_cache_k_flag,
             "spec_draft_cache_v_flag": spec_draft_cache_v_flag,
@@ -10202,6 +10346,136 @@ class LlamaCppBackend:
                     total += sibling.stat().st_size
 
         return total
+
+    @staticmethod
+    def _gguf_scan_tensor_bytes(path: str) -> "tuple[Optional[str], dict[str, int], int]":
+        """(architecture, lazy-read candidate bytes by name, routed expert bytes) from
+        one GGUF header.
+
+        Streamed rather than through ``gguf.GGUFReader``, whose ``__init__``
+        materialises the tokenizer vocabulary and runs under the load lock. A quant
+        type the installed gguf package predates is sized from the next tensor's
+        offset, or from the end of the file for the last one.
+        """
+        from gguf.constants import GGML_QUANT_SIZES
+        from core.inference.offload_layout import _BLOCK_RE, _MOE_EXPERT_RE
+
+        wanted = {name.encode() for names in _LAZY_READ_TENSORS.values() for name in names}
+        architecture: Optional[str] = None
+        alignment = 32  # GGUF's default when general.alignment is absent
+        named: dict[str, int] = {}
+        experts = 0
+        # Every tensor's data offset, and the wanted ones that could not be sized.
+        offsets: list[int] = []
+        unsized: list[tuple[str, int]] = []
+        with open(path, "rb") as f:
+            if struct.unpack("<I", f.read(4))[0] != 0x46554747:  # b"GGUF"
+                return None, {}, 0
+            f.seek(4, 1)  # version
+            n_tensors, n_kv = struct.unpack("<QQ", f.read(16))
+            for _ in range(n_kv):
+                key = f.read(struct.unpack("<Q", f.read(8))[0])
+                value_type = struct.unpack("<I", f.read(4))[0]
+                if key == b"general.architecture" and value_type == 8:
+                    raw = f.read(struct.unpack("<Q", f.read(8))[0])
+                    architecture = raw.decode("utf-8", "replace")
+                    continue
+                if key == b"general.alignment" and value_type == 4:
+                    alignment = max(1, struct.unpack("<I", f.read(4))[0])
+                    continue
+                LlamaCppBackend._gguf_skip_value(f, value_type)
+            for _ in range(n_tensors):
+                raw_name = f.read(struct.unpack("<Q", f.read(8))[0])
+                n_dims = struct.unpack("<I", f.read(4))[0]
+                dims = struct.unpack(f"<{n_dims}Q", f.read(8 * n_dims))
+                ggml_type = struct.unpack("<I", f.read(4))[0]
+                offset = struct.unpack("<Q", f.read(8))[0]
+                offsets.append(offset)
+                block_match = _BLOCK_RE.match(raw_name.decode("utf-8", "replace"))
+                is_expert = bool(block_match and _MOE_EXPERT_RE.match(block_match.group(2)))
+                if not is_expert and raw_name not in wanted:
+                    continue
+                name = raw_name.decode("utf-8", "replace")
+                block = GGML_QUANT_SIZES.get(ggml_type)
+                if block is None:
+                    unsized.append((name, offset))
+                    continue
+                size = math.prod(dims) // block[0] * block[1]
+                if is_expert:
+                    experts += size
+                else:
+                    named[name] = size
+            if unsized:
+                data_start = -(-f.tell() // alignment) * alignment
+                data_end = max(0, os.path.getsize(path) - data_start)
+                ordered = sorted(offsets)
+                for name, offset in unsized:
+                    later = ordered[bisect.bisect_right(ordered, offset) :]
+                    size = max(0, (later[0] if later else data_end) - offset)
+                    block_match = _BLOCK_RE.match(name)
+                    if block_match and _MOE_EXPERT_RE.match(block_match.group(2)):
+                        experts += size
+                    else:
+                        named[name] = size
+        return architecture, named, experts
+
+    def _gguf_tensor_scan(
+        self, model_path: Optional[str]
+    ) -> "Optional[tuple[Optional[str], dict[str, int], int]]":
+        """``_gguf_scan_tensor_bytes`` summed over every shard, cached per file
+        identity. None when a shard is missing or unreadable, so callers discount
+        nothing."""
+        from core.inference.offload_layout import split_shard_paths
+
+        if not model_path:
+            return None
+        paths = split_shard_paths(model_path) or [model_path]
+        try:
+            key = tuple((p, st.st_size, st.st_mtime_ns) for p in paths for st in (os.stat(p),))
+        except OSError:
+            return None
+        cached = getattr(self, "_gguf_tensor_scan_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        try:
+            architecture: Optional[str] = None
+            named: dict[str, int] = {}
+            experts = 0
+            for p in paths:
+                arch, part, part_experts = self._gguf_scan_tensor_bytes(p)
+                # Shard 1 carries the metadata.
+                architecture = architecture or arch
+                for name, size in part.items():
+                    named[name] = named.get(name, 0) + size
+                experts += part_experts
+            result = (architecture, named, experts)
+        except Exception as e:  # unreadable or truncated: discount nothing
+            logger.debug("GGUF tensor scan failed for %s (%s)", model_path, e)
+            result = None
+        self._gguf_tensor_scan_cache = (key, result)
+        return result
+
+    def _lazy_read_host_bytes(
+        self,
+        model_path: Optional[str],
+        *,
+        caps: Optional[Mapping[str, object]],
+        extra_args: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> int:
+        """Bytes of the model llama.cpp leaves mmap'd from disk under every load mode
+        (see ``_LAZY_READ_TENSORS``). Zero on a build without lazy reads, under
+        ``--lazy-mode off``, and when the header cannot be read."""
+        if not model_path or not (caps or {}).get("supports_lazy_mode"):
+            return 0
+        mode = _effective_lazy_mode(extra_args, env)
+        if mode == "off":
+            return 0
+        scan = self._gguf_tensor_scan(model_path)
+        if scan is None:
+            return 0
+        architecture, named, _experts = scan
+        return _lazy_read_bytes(architecture, named, mode)
 
     @staticmethod
     def _installed_ggml_backends(binary: Optional[str] = None) -> frozenset[str]:
@@ -15399,6 +15673,8 @@ class LlamaCppBackend:
         avail_mib: Optional[int] = None,
         extra_args: Optional[Iterable[str]] = None,
         env: Optional[Mapping[str, str]] = None,
+        lazy_read_bytes: int = 0,
+        announce: bool = True,
     ) -> Optional[str]:
         """``"none"`` when the fit proves the load needs no demand paging, else None.
 
@@ -15466,6 +15742,13 @@ class LlamaCppBackend:
         enabled fitter is free to lower it (common/fit.cpp aborts only on a count the
         user really set), and a pass-through ``--fit-target`` raises the margin above
         anything ``_ctx_integrity_flags`` emitted.
+
+        ``lazy_read_bytes`` is the part of ``model_size`` llama.cpp leaves mmap'd from
+        disk under every load mode (``_lazy_read_host_bytes``): neither a pinned host
+        copy nor VRAM, so it leaves the footprint. Its working set is page cache, and
+        pages through the ``_HOST_RAM_HEADROOM_MIB`` ``_fits_without_paging`` keeps
+        free. ``announce`` off keeps a what-if call (the MoE cache admission) out of
+        the log.
         """
         from utils.hardware import is_apple_silicon
 
@@ -15546,6 +15829,9 @@ class LlamaCppBackend:
             + max(0, pipeline_overhead_bytes)
             + max(0, soft_overhead)
         )
+        _lazy_discount = max(0, int(lazy_read_bytes or 0))
+        if _lazy_discount:
+            footprint = max(1, footprint - _lazy_discount)
         # Unified memory is ONE pool: an APU's free VRAM IS the host RAM the spill
         # comes out of, so adding both fits a model twice into memory that holds it
         # once. shared_gpu_ids already names Vulkan iGPUs; the ROCm APUs it cannot see
@@ -15579,11 +15865,19 @@ class LlamaCppBackend:
             vram_margin_mib = fit_margin_mib,
             avail_mib = avail_mib,
         ):
-            logger.info(
-                "Load mode: the whole load (%.1f GB) fits without paging, using --load-mode %s.",
-                footprint / (1024**3),
-                self._FIT_LOAD_MODE,
-            )
+            if announce:
+                logger.info(
+                    "Load mode: the whole load (%.1f GB) fits without paging, using "
+                    "--load-mode %s%s.",
+                    footprint / (1024**3),
+                    self._FIT_LOAD_MODE,
+                    (
+                        f" ({_lazy_discount / (1024**3):.1f} GB of lazily read tables stay "
+                        "on disk)"
+                        if _lazy_discount
+                        else ""
+                    ),
+                )
             return self._FIT_LOAD_MODE
         return None
 
@@ -23118,6 +23412,70 @@ class LlamaCppBackend:
                 return [*argv[:i], *before, *argv[i + len(raised) :]]
         return argv
 
+    def _drop_moe_cache(
+        self,
+        argv: "list[str]",
+        why: str = "",
+    ) -> "list[str]":
+        """``argv`` without the ``--moe-cache-mib auto`` this launch added.
+
+        Only Unsloth's own run is taken out, so a user's flag (which also keeps
+        Unsloth from adding one) is never touched. Unchanged when absent."""
+        tokens = list(getattr(self, "_moe_cache_flags", None) or ())
+        stripped = _without_subsequence(list(argv), tokens)
+        if tokens and stripped != list(argv) and why:
+            logger.info("MoE cache: dropping --moe-cache-mib auto for the %s.", why)
+        return stripped
+
+    def _moe_cache_auto_eligible(
+        self,
+        *,
+        caps: Optional[Mapping[str, object]],
+        gpu_memory_mode: str,
+        use_fit: bool,
+        experts_on_host: bool,
+        discrete_gpu: bool,
+        gpu_indices: Optional[Iterable[int]],
+        detected_gpus: Optional[Iterable[tuple[int, int]]],
+        is_vulkan_backend: bool,
+        tensor_parallel: bool,
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        """Whether this launch may hand llama.cpp ``--moe-cache-mib auto``, before the
+        RAM admission and the final load mode, which the caller checks.
+
+        Auto placement that llama.cpp's fitter runs (``--fit on``), an MoE whose
+        experts may spill (the same verdict as the expert-spill micro-batch), one
+        discrete CUDA / ROCm GPU (the cache is single-device and measured only there;
+        unified memory has nothing to stream over PCIe), a build that advertises ``auto``,
+        and no pass-through placement of the user's: their own cache, layer count,
+        tensor overrides, CPU-MoE count, device list or split, or ``--fit off``."""
+        if not (caps or {}).get("supports_moe_cache_auto"):
+            return False
+        if gpu_memory_mode == "manual" or not use_fit or not experts_on_host:
+            return False
+        if not discrete_gpu or is_vulkan_backend or tensor_parallel or self.n_moe_layers <= 0:
+            return False
+        devices = (
+            {int(i) for i in gpu_indices}
+            if gpu_indices is not None
+            else {int(idx) for idx, _free in (detected_gpus or ())}
+        )
+        if len(devices) != 1:
+            return False
+        source_env = os.environ if env is None else env
+        if _extra_args_set_any_flag(extra_args, _MOE_CACHE_USER_OWNED_FLAGS):
+            return False
+        if any(str(source_env.get(name) or "").strip() for name in _MOE_CACHE_USER_OWNED_ENV):
+            return False
+        if _env_fixes_gpu_layers(source_env):
+            return False
+        try:
+            return fit_is_effectively_on(list(extra_args or ()), source_env)
+        except ValueError:  # a valueless --fit: llama-server refuses the launch anyway
+            return False
+
     def _discrete_gpu_for_expert_spill(
         self,
         gpu_indices: Optional[Iterable[int]],
@@ -23188,8 +23546,10 @@ class LlamaCppBackend:
         replay = self._drop_managed_dio(
             replay, "the CPU fallback runs entirely from host RAM", clear_record = False
         )
-        # The MoE expert-spill micro-batch only pays off streaming experts to a GPU.
+        # The MoE expert-spill micro-batch only pays off streaming experts to a GPU,
+        # and the expert cache needs one.
         replay = self._undo_moe_spill_batch(replay)
+        replay = self._drop_moe_cache(replay, "CPU fallback")
         # A user's own "--load-mode none" / "--no-mmap" survives that strip, by design,
         # and on this rung it is no longer the mode they were priced for: the replay
         # appends "--gpu-layers 0 --fit off --device none", so nothing credits VRAM and
@@ -24773,6 +25133,11 @@ class LlamaCppBackend:
                 self._pending_plan_mib = {}
                 # Set by the MoE expert-spill micro-batch raise after the fit.
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
+                # Whether the launch may carry --moe-cache-mib auto, and whether host RAM
+                # holds the experts pinned with it. Both set inside the fit; False on
+                # every path that never prices it.
+                _moe_cache_candidate = False
+                _moe_cache_ram_ok = False
                 _shared_gpus = frozenset()
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
@@ -27059,17 +27424,18 @@ class LlamaCppBackend:
                             or _env_places_tensors_on_cpu(os.environ)
                         )
                     )
+                    _moe_spill_discrete_gpu = bool(
+                        _moe_experts_on_host
+                        and self._discrete_gpu_for_expert_spill(
+                            gpu_indices, _detected_gpus, _shared_gpu_ids
+                        )
+                    )
                     _spill_n_batch, _spill_n_ubatch = _moe_spill_batch_ubatch(
                         n_batch,
                         n_ubatch,
                         n_moe_layers = self.n_moe_layers,
                         experts_on_host = _moe_experts_on_host,
-                        discrete_gpu = (
-                            _moe_experts_on_host
-                            and self._discrete_gpu_for_expert_spill(
-                                gpu_indices, _detected_gpus, _shared_gpu_ids
-                            )
-                        ),
+                        discrete_gpu = _moe_spill_discrete_gpu,
                         user_named_batch = _user_named_batch,
                     )
                     if _spill_n_ubatch != n_ubatch:
@@ -27093,6 +27459,23 @@ class LlamaCppBackend:
                             n_parallel = n_parallel,
                             per_device_tensor = True,
                         ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
+                    # The same spill, cached: a GPU replica of the experts left in host
+                    # RAM, sized by llama.cpp's fitter (--moe-cache-mib auto). Host RAM
+                    # admission is priced with the load mode below, and the flag is only
+                    # emitted once the launch is known to load pinned.
+                    _moe_cache_candidate = self._moe_cache_auto_eligible(
+                        caps = server_caps,
+                        gpu_memory_mode = gpu_memory_mode,
+                        use_fit = use_fit,
+                        experts_on_host = _moe_experts_on_host,
+                        discrete_gpu = _moe_spill_discrete_gpu,
+                        gpu_indices = gpu_indices,
+                        detected_gpus = _detected_gpus,
+                        is_vulkan_backend = is_vulkan_backend,
+                        tensor_parallel = tensor_parallel,
+                        extra_args = extra_args,
+                        env = os.environ,
+                    )
 
                     # Pass the final slot and micro-batch values instead of the defaults
                     # captured before slot reduction.
@@ -27398,7 +27781,16 @@ class LlamaCppBackend:
                         _kv_bytes(effective_ctx, _effective_ctx_checkpoints)
                         - _kv_bytes(effective_ctx, 0),
                     )
-                    _fit_load_mode = self._fit_derived_load_mode(
+                    # A lazily read table (Qwen3.8-Flash-Next's n-gram embedding) stays
+                    # mmap'd from disk under every load mode, so it is not RAM a pinned
+                    # load has to find.
+                    _fit_lazy_bytes = self._lazy_read_host_bytes(
+                        model_path,
+                        caps = server_caps,
+                        extra_args = _fit_extras,
+                        env = _fit_env,
+                    )
+                    _fit_load_mode_kwargs = dict(
                         model_size = _fit_model_size,
                         mmproj_pinned_bytes = _mmproj_pinned_bytes
                         + (_fit_env_mmproj_bytes if _fit_env_mmproj_on_host else 0),
@@ -27447,7 +27839,43 @@ class LlamaCppBackend:
                         # launch's own -ngl.
                         extra_args = _fit_extras,
                         env = _fit_env,
+                        lazy_read_bytes = _fit_lazy_bytes,
                     )
+                    _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
+                    if _moe_cache_candidate:
+                        # The cache is a GPU replica, so it frees no host RAM, and the
+                        # VRAM it takes is VRAM the experts can no longer use: at worst
+                        # every routed expert is host-resident. Pinned with the cache
+                        # needs them all in RAM; otherwise the launch goes without it.
+                        # The prompt cache grows into the same RAM, so its bound is
+                        # charged too; an unbounded one admits nothing.
+                        _moe_expert_bytes = (self._gguf_tensor_scan(model_path) or (None, {}, 0))[2]
+                        _moe_prompt_cache_bytes = _prompt_cache_host_bytes(
+                            cache_ram,
+                            _fit_extras,
+                            _fit_env,
+                            supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
+                        )
+                        _moe_cache_ram_ok = bool(
+                            _moe_expert_bytes > 0
+                            and _moe_prompt_cache_bytes is not None
+                            and self._fit_derived_load_mode(
+                                **{
+                                    **_fit_load_mode_kwargs,
+                                    "host_only_bytes": _fit_load_mode_kwargs["host_only_bytes"]
+                                    + _moe_expert_bytes
+                                    + _moe_prompt_cache_bytes,
+                                    "announce": False,
+                                }
+                            )
+                            == self._FIT_LOAD_MODE
+                        )
+                        if not _moe_cache_ram_ok:
+                            logger.info(
+                                "MoE cache: system RAM cannot hold the %.1f GB of routed "
+                                "experts pinned; launching without --moe-cache-mib.",
+                                _moe_expert_bytes / (1024**3),
+                            )
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
@@ -27457,6 +27885,8 @@ class LlamaCppBackend:
                     _placement_verdict_partial = False
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
+                    # And no expert cache, which is only ever emitted on a priced load.
+                    _moe_cache_candidate = _moe_cache_ram_ok = False
                     # And a half-built snapshot is not a price either: the throw can
                     # land after the dict exists but before the later terms are added
                     # to it, which would plan against a footprint missing them.
@@ -27878,6 +28308,9 @@ class LlamaCppBackend:
                 # Set when a positional --tensor-split is emitted, so the env block
                 # can pin CUDA to PCI order even without a GPU subset (see below).
                 manual_tensor_split_emitted = False
+                # Placement handed to llama.cpp's fitter, the only one the MoE cache's
+                # "auto" sizing runs under.
+                _placed_by_fitter = False
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     # Pin the user's layer count and disable auto-fit. --fit off
                     # also means _ctx_integrity_flags must not add --fit-ctx.
@@ -27969,6 +28402,7 @@ class LlamaCppBackend:
                         )
                     else:
                         cmd.extend(["--fit", "on"])
+                        _placed_by_fitter = True
                 elif gpu_indices is not None:
                     # Fits on selected GPU(s) -- force all layers on GPU. --fit off is
                     # required: without it llama.cpp's default --fit on second-guesses
@@ -29135,6 +29569,22 @@ class LlamaCppBackend:
                     cmd.extend(_pv_split_mode_pin)
                 if _pv_device_pin:
                     cmd.extend(_pv_device_pin)
+                # The MoE expert cache, decided on the finished argv: only a pinned
+                # load (--load-mode none) gets it. Under mmap the experts it copies
+                # from are page cache, measured slower than no cache at all.
+                self._moe_cache_flags = []
+                if (
+                    _moe_cache_candidate
+                    and _moe_cache_ram_ok
+                    and _placed_by_fitter
+                    and _argv_loads_pinned(cmd, _fit_load_mode_env_view)
+                ):
+                    self._moe_cache_flags = list(_MOE_CACHE_AUTO_TOKENS)
+                    cmd.extend(self._moe_cache_flags)
+                    logger.info(
+                        "MoE experts spill to pinned system RAM on one GPU; adding "
+                        "--moe-cache-mib auto so llama.cpp caches hot experts in VRAM."
+                    )
 
                 # A build with no --flash-attn cannot run a quantized V cache
                 # either: llama.cpp aborts init with "V cache quantization
@@ -30116,10 +30566,10 @@ class LlamaCppBackend:
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
-                    Up to three launches: the first, one ROCm env correction,
-                    and one --fit recovery. Separate flags, so a library mix
-                    does not spend the fit slot and a VRAM crash after the
-                    correction can still fit-retry.
+                    Up to four launches: the first, one ROCm env correction, one
+                    retry without the MoE expert cache, and one --fit recovery.
+                    Separate flags, so a library mix does not spend the fit slot
+                    and a VRAM crash after the correction can still fit-retry.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
@@ -30133,9 +30583,17 @@ class LlamaCppBackend:
                     # and projector placement, and each retry changes one of them.
                     if label:
                         run_cmd = self._drop_tensor_spill(run_cmd, label.lstrip("-") or "retry")
+                    # The expert cache goes first on every retry, whatever it changes:
+                    # each re-places the model, and the cache only ever rode the first
+                    # launch's pinned fit. Also when a rung left the load unpinned.
+                    if label or not _argv_loads_pinned(run_cmd, env):
+                        run_cmd = self._drop_moe_cache(
+                            run_cmd, f"{label.lstrip('-') or 'unpinned'} launch"
+                        )
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     _did_fit_retry = False
-                    for _spawn_attempt in (0, 1, 2):
+                    _did_moe_cache_retry = False
+                    for _spawn_attempt in (0, 1, 2, 3):
                         # Defensive kill: drop an orphan Popen a concurrent load may
                         # have stored before we overwrite the reference (#5161).
                         # Also reaps the crashed first attempt on the retry pass.
@@ -30300,6 +30758,32 @@ class LlamaCppBackend:
                                 )
                                 env["LD_LIBRARY_PATH"] = _retry_ld
                                 _did_rocm_retry = True
+                                continue
+                        if (
+                            not _did_moe_cache_retry
+                            and _startup_crashed
+                            and not _capability_crash
+                            and not _hip_rocr_mismatch
+                        ):
+                            # The expert cache first: it is the newest and largest VRAM
+                            # claim on the launch, and llama.cpp names it when it is the
+                            # one that does not fit. Out of memory with it on, or a cache
+                            # error, respawns the same placement without it.
+                            _uncached = self._drop_moe_cache(run_cmd)
+                            _crash_text = "\n".join(self._stdout_lines[-200:])
+                            if _uncached != run_cmd and (
+                                "moe cache" in _crash_text.lower()
+                                or self._is_gpu_memory_start_failure(_crash_text)
+                            ):
+                                logger.warning(
+                                    "llama-server crashed during startup (exit code %s) "
+                                    "with --moe-cache-mib auto; retrying once without "
+                                    "the MoE expert cache. Crash log: %s",
+                                    _crashed_proc.returncode,
+                                    self._llama_log_path,
+                                )
+                                run_cmd = _uncached
+                                _did_moe_cache_retry = True
                                 continue
                         if (
                             not _did_fit_retry
