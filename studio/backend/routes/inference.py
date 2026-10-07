@@ -1474,6 +1474,7 @@ def _openai_stream_usage_chunk(
             completion_tokens = _completion_tokens,
             total_tokens = _total_tokens,
             prompt_tokens_details = _prompt_tokens_details(_usage.get("prompt_tokens_details")),
+            context_tokens = _usage.get("context_tokens"),
         ),
         timings = stream_timings,
     )
@@ -11546,6 +11547,7 @@ async def _maybe_auto_switch_model(
                             # Stale pin (GPU removed, another host, or a backend change
                             # renumbering these ids): drop it rather than 400 the load.
                             load_kwargs.pop("gpu_ids", None)
+                            load_kwargs.pop("tensor_split", None)
                             logger.warning(
                                 "Dropping saved gpu_ids %s for %s: not available here.",
                                 saved_gpu_ids,
@@ -11606,6 +11608,7 @@ async def _maybe_auto_switch_model(
                                     exc.detail,
                                 )
                                 load_kwargs.pop("gpu_ids", None)
+                                load_kwargs.pop("tensor_split", None)
                                 load_request = LoadRequest(**load_kwargs)
                                 load_request._gguf_companion_roots = gguf_companion_roots
                                 load_request._gguf_companion_roots_set = True
@@ -19319,11 +19322,18 @@ async def _load_model_impl(
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
-        from core.inference.gpu_arbiter import GpuOwnerBusyError
+        from core.inference.gpu_arbiter import DECISIONS, GpuOwnerBusyError
         from utils.transformers_version import SidecarSwapInProgress
 
         if isinstance(e, account_access.GpuBusyForAnotherAccountError):
             raise account_access.gpu_busy_error() from e
+        if isinstance(e, GpuOwnerBusyError) and e.owner == DECISIONS:
+            # A llama.cpp decision server loading or deciding refuses eviction until it is idle.
+            raise HTTPException(
+                status_code = 409,
+                detail = "The Decision API is using the GPU; retry shortly.",
+                headers = {"Retry-After": "5"},
+            ) from e
         if isinstance(e, GpuOwnerBusyError):
             raise
         if isinstance(e, SidecarSwapInProgress):
@@ -19821,8 +19831,7 @@ async def validate_model(
             from utils.transformers_version import latest_tier_active_for
             _install_only_upgrade = (
                 transformers_upgrade is not None
-                and transformers_upgrade.supported_in_pypi
-                and transformers_upgrade.pypi_version
+                and transformers_upgrade.installable
                 and not requires_trust_remote_code
             )
             if _install_only_upgrade or await asyncio.to_thread(
@@ -20231,15 +20240,14 @@ async def check_transformers_upgrade_route(
 
     # An offered install lands the model on the latest sidecar, which forces 16-bit (bnb
     # 4-bit feeds quantized experts into unvalidated paths for brand-new architectures).
-    # A dev-only upgrade is never installed, so it changes nothing. Same rule /validate
+    # An upgrade with nothing to install changes nothing. Same rule /validate
     # applies: a model with a custom-code fallback still loads 4-bit on the current
     # transformers and the dialog offers that way out, so a merely offered upgrade
     # cannot be claimed as 16-bit. Only an install-only upgrade, or a sidecar already
     # routing the model, forces it.
     install_only_upgrade = bool(
         transformers_upgrade is not None
-        and transformers_upgrade.supported_in_pypi
-        and transformers_upgrade.pypi_version
+        and transformers_upgrade.installable
         and not requires_trust_remote_code
     )
     # Already on the sidecar: the install is not what would strand the checkpoint, and
@@ -20279,7 +20287,8 @@ async def install_latest_transformers_route(
 
     Called after the user confirms the transformers-upgrade dialog raised by /validate
     (requires_transformers_upgrade). The requested version must match the current latest
-    PyPI release (re-verified server-side); the sidecar then participates in routing on
+    PyPI release, or transformers main when only main ships the architecture (both
+    re-verified server-side); the sidecar then participates in routing on
     this and every future start. A pip install runs off-loop, so this can take a minute.
     """
     from utils.transformers_latest import install_latest_transformers
@@ -20479,7 +20488,7 @@ async def install_latest_transformers_route(
         if owns_reservation:
             end_sidecar_swap()
     if not result["success"]:
-        if result.get("latest_version"):
+        if result.get("latest_version") or result.get("latest_main_version"):
             # Structured failure so the dialog can update to the newer release
             # and offer a retry that can actually succeed.
             return InstallLatestTransformersResponse(**result, model_unloaded = unloaded_chat["v"])
@@ -24465,6 +24474,7 @@ def _stt_lifecycle() -> tuple:
 
 
 _stt_download_accounts: dict[str, str] = {}
+_stt_download_id_accounts: dict[str, dict[str, str]] = {}
 _stt_download_lock = threading.Lock()
 _stt_grant_pending: dict[str, threading.Event] = {}
 
@@ -24498,9 +24508,14 @@ def _start_account_stt_download(
             )
         repo = _stt_repo_reference(model, engine)
         account_access.authorize_download(repo, "model", hf_token)
-        module.start_model_download(*args)
+        download_id = module.start_model_download(*args)
         _stt_download_accounts[engine] = current_account_id()
         account = current_account_id()
+        if download_id is not None:
+            attempts = _stt_download_id_accounts.setdefault(engine, {})
+            attempts[str(download_id)] = account
+            while len(attempts) > 64:
+                attempts.pop(next(iter(attempts)))
         settled = _stt_grant_pending[engine] = threading.Event()
 
         def watch():
@@ -24528,6 +24543,7 @@ def _start_account_stt_download(
                 settled.set()
 
         account_thread(target = watch, name = f"stt-grant-{engine}", daemon = True).start()
+        return download_id
 
 
 def retire_stt_downloads() -> None:
@@ -24562,14 +24578,24 @@ def retire_stt_downloads() -> None:
         )
 
 
-def _cancel_account_stt_download(module, engine):
+def _cancel_account_stt_download(
+    module,
+    engine,
+    model = None,
+    download_id = None,
+):
     with _stt_download_lock:
         if (
             account_access.account_scope() is not None
             and _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id()
         ):
             return {"downloading": False, "cancelled": False}
-        cancelled = module.cancel_model_download()
+        if download_id is not None:
+            cancelled = module.cancel_model_download(model, download_id)
+        elif model is not None:
+            cancelled = module.cancel_model_download(model)
+        else:
+            cancelled = module.cancel_model_download()
         return {**module.download_status(), "cancelled": cancelled}
 
 
@@ -24620,8 +24646,22 @@ def _account_stt_status(status):
             for model in section.get("downloaded_models", [])
             if account_access.model_visible(_stt_repo_reference(model, engine))
         ]
+        download = section.get("download", {})
+        attempt_accounts = _stt_download_id_accounts.get(engine, {})
+        completed_download_ids = [
+            download_id
+            for download_id in download.get("completed_download_ids", [])
+            if attempt_accounts.get(download_id) == current_account_id()
+        ]
         if _stt_download_accounts.get(engine, OWNER_ACCOUNT_ID) != current_account_id():
-            section["download"] = {"downloading": False}
+            # Opaque ids tell stale trackers the engine moved on; no other account's model leaks.
+            section["download"] = {
+                "downloading": False,
+                "download_id": download.get("download_id"),
+                "completed_download_ids": completed_download_ids,
+            }
+        else:
+            download["completed_download_ids"] = completed_download_ids
     return status
 
 
@@ -24633,15 +24673,6 @@ _AUDIO_CPP_RUNTIME_MISSING = {
     "expected_tag": None,
     "outdated": False,
 }
-
-
-def _audio_cpp_release_ladder() -> list:
-    studio_dir = str(Path(__file__).resolve().parents[2])
-    if studio_dir not in sys.path:
-        sys.path.insert(0, studio_dir)
-    import install_audio_cpp_prebuilt
-
-    return install_audio_cpp_prebuilt._release_ladder()
 
 
 def _audio_cpp_runtime_status() -> dict:
@@ -24665,26 +24696,11 @@ def _audio_cpp_runtime_status() -> dict:
     except Exception as exc:  # noqa: BLE001 - a status poll must not fail on a probe
         logger.debug("audio.cpp runtime probe failed: %s", exc)
         return dict(_AUDIO_CPP_RUNTIME_MISSING)
-    # only the managed tree is updatable; setup skips it under any of these, whatever the path.
-    setup_skips = (
-        os.environ.get("AUDIOCPP_SERVER_PATH")
-        or os.environ.get("UNSLOTH_AUDIO_CPP_PATH")
-        or os.environ.get("UNSLOTH_SKIP_AUDIO_CPP_INSTALL") == "1"
-    )
     try:
-        managed_dir = audio_cpp_server.managed_audio_cpp_dir().resolve()
-        managed = not setup_skips and (
-            Path(binary).resolve().is_relative_to(managed_dir)
-            and (managed_dir / ".unsloth-studio-owned").is_file()
-        )
-        ladder = _audio_cpp_release_ladder() if managed else []
+        from utils import audio_cpp_update
+        status.update(audio_cpp_update.release_status(binary, record))
     except Exception as exc:  # noqa: BLE001 - cannot tell is not outdated
         logger.debug("audio.cpp release lookup failed: %s", exc)
-        ladder = []
-    # a None tag tracks the latest release, so an installed release cannot be compared.
-    if status["release_tag"] and ladder and all(tag for _, tag in ladder):
-        status["expected_tag"] = ladder[0][1]
-        status["outdated"] = (record.get("published_repo"), release_tag) not in ladder
     return status
 
 
@@ -24843,7 +24859,7 @@ async def stt_download(
             validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
             # Pin the download to the commit that was just validated so the
             # repo cannot be swapped between validation and snapshot_download.
-            await asyncio.to_thread(
+            download_id = await asyncio.to_thread(
                 _start_account_stt_download,
                 module,
                 engine,
@@ -24852,14 +24868,14 @@ async def stt_download(
                 validated.get("revision"),
             )
         else:
-            await asyncio.to_thread(
+            download_id = await asyncio.to_thread(
                 _start_account_stt_download, module, engine, payload.model, hf_token
             )
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
-    return JSONResponse(content = module.download_status())
+    return JSONResponse(content = {**module.download_status(), "download_id": download_id})
 
 
 @studio_router.post("/audio/stt/download/cancel")
@@ -24875,7 +24891,13 @@ async def stt_download_cancel(
 
     engine = _resolve_serving_stt_engine(payload.engine if payload else None)
     module = _stt_download_module(engine)
-    status = await asyncio.to_thread(_cancel_account_stt_download, module, engine)
+    status = await asyncio.to_thread(
+        _cancel_account_stt_download,
+        module,
+        engine,
+        payload.model if payload else None,
+        payload.download_id if payload else None,
+    )
     return JSONResponse(content = status)
 
 
@@ -27716,6 +27738,12 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
     leaves a cancelled generation holding the model through a swap's teardown.
     """
 
+    def _retrieve_exception(task: asyncio.Task) -> None:
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
+
     async def _cancelled() -> None:
         while not cancel_event.is_set():
             await asyncio.sleep(0.1)
@@ -27734,11 +27762,13 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
                 return
             yield line
     finally:
-        for task in (step, waiter):
-            if task is not None and not task.done():
-                # cancelling the pending read closes the upstream response inside ``agen``.
-                task.cancel()
-                await asyncio.gather(task, return_exceptions = True)
+        pending = [task for task in (step, waiter) if task is not None and not task.done()]
+        for task in pending:
+            task.add_done_callback(_retrieve_exception)
+            task.cancel()
+        if pending:
+            # asyncio.wait leaves cancellation cleanup running when the relay is cancelled.
+            await asyncio.wait(pending)
         try:
             await agen.aclose()
         except RuntimeError:
@@ -45672,6 +45702,28 @@ async def _refuse_disabled_nvfp4_checkpoint(request: Any) -> None:
         raise HTTPException(status_code = 400, detail = str(exc))
 
 
+def _component_file_kwargs(request: DiffusionLoadRequest) -> dict:
+    """Empty when none, so the native engine and older callers see the same keywords as before."""
+    files = getattr(request, "text_encoder_file", None)
+    files = [files] if isinstance(files, str) else list(files or ())
+    out: dict = {}
+    if files:
+        out["text_encoder_files"] = files
+    vae_file = getattr(request, "vae_file", None)
+    if vae_file:
+        out["vae_file"] = vae_file
+    return out
+
+
+def _refuse_native_component_files(request: DiffusionLoadRequest) -> None:
+    if _component_file_kwargs(request):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Separate text-encoder / VAE files load on the diffusers engine (a CUDA / ROCm GPU); "
+            "this host routes the pick to the native engine. Omit text_encoder_file / vae_file.",
+        )
+
+
 @studio_router.post("/images/download-plan", response_model = DiffusionDownloadPlanResponse)
 async def diffusion_download_plan(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
@@ -45697,6 +45749,7 @@ async def diffusion_download_plan(
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
+        split_local_checkpoint_path,
         resolve_model_kind,
     )
     from core.inference.diffusion_engine_router import predict_engine
@@ -45708,7 +45761,15 @@ async def diffusion_download_plan(
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # Same bare-single-file-directory reinterpretation as the load route, so the plan describes the load that will actually run.
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_model_kind(split[1])
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
@@ -45719,6 +45780,7 @@ async def diffusion_download_plan(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            **_component_file_kwargs(request),
         )
         planner = backend
         # BEFORE the plan is handed back and staged. The load route refuses a precision this
@@ -45747,6 +45809,7 @@ async def diffusion_download_plan(
             fam is not None
             and predict_engine(fam, model_kind = kind, gpu_ordinal = gpu_ordinal) == ENGINE_SD_CPP
         ):
+            _refuse_native_component_files(request)
             from core.inference.sd_cpp_backend import get_sd_cpp_backend
             planner = get_sd_cpp_backend()
         if fam is not None and not training:
@@ -45795,6 +45858,7 @@ async def diffusion_download_plan(
             # this the plan stages a file the load refuses and replaces with dense shards.
             transformer_quant_fast_accum = request.transformer_quant_fast_accum,
             loras = request.loras,
+            **_component_file_kwargs(request),
             # Only the verdict, not the probe: the panel stages exactly what this reports.
             # Clearing the probe drops the hosted DiT prequant, so a GGUF pick naming an explicit
             # transformer_quant reports ~21 GB short, stages that, says done, and the load pulls
@@ -45910,12 +45974,22 @@ async def load_diffusion_model_gated(
     # deferred to the launch below, since the validation in between 400s without moving a byte.
     _media_repos_to_record = [
         ref
-        for ref in (request.model_path, request.base_repo)
+        for ref in (
+            request.model_path,
+            request.base_repo,
+            # Hub-hosted text-encoder / VAE files are fetched with this request's token too.
+            *(
+                r
+                for r in account_access.media_component_file_references(request)
+                if r and not Path(r).is_absolute()
+            ),
+        )
         if ref and _repo_is_in_the_hub_cache(ref) is not True
     ]
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
+        split_local_checkpoint_path,
         resolve_model_kind,
     )
     from core.inference.diffusion_device import (
@@ -45948,7 +46022,15 @@ async def load_diffusion_model_gated(
         kind = resolve_model_kind(request.gguf_filename, request.model_kind)
         # A local On-Device pick can be a bare single-file .safetensors directory; if it holds exactly one checkpoint, reinterpret it as a single_file load so all three paths agree.
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_model_kind(split[1])
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_model_kind(sole)
@@ -45960,6 +46042,7 @@ async def load_diffusion_model_gated(
             family_override = request.family_override,
             model_kind = kind,
             base_repo = request.base_repo,
+            **_component_file_kwargs(request),
         )
         # Off-torch native shares no VRAM with training or chat; re-settled after selection (diffusers lands on torch's card).
         off_torch = await asyncio.to_thread(off_torch_sd_cpp_device)
@@ -46026,6 +46109,7 @@ async def load_diffusion_model_gated(
                 base_repo = request.base_repo,
             )
         elif fam is not None and pending_name == ENGINE_SD_CPP:
+            _refuse_native_component_files(request)
             # The native engine accepts both knobs for interface parity and ignores them. It was
             # excluded from the gate above so as not to refuse loads that work today, but the
             # loads it "works" for are precisely the silent mismatch this whole change exists to
@@ -46088,6 +46172,7 @@ async def load_diffusion_model_gated(
         activated = active_engine_name()
         if fam is not None and activated != pending_name:
             if activated == ENGINE_SD_CPP:
+                _refuse_native_component_files(request)
                 _assert_native_precision_unset(
                     transformer_quant = request.transformer_quant,
                     text_encoder_quant = request.text_encoder_quant,
@@ -46145,6 +46230,7 @@ async def load_diffusion_model_gated(
                 # The winner this route already ranked and preflighted, so the load cannot pick a
                 # different card from free VRAM that has moved since.
                 gpu_ordinal = gpu_ordinal,
+                **_component_file_kwargs(request),
             )
 
         def _begin_load():
@@ -46181,6 +46267,7 @@ async def load_diffusion_model_gated(
             request.model_path,
             request.base_repo,
             *account_access.media_adapter_references(request),
+            *(r for r in account_access.media_component_file_references(request) if r),
         )
         reset_media_load_progress("image")
         return DiffusionStatusResponse(**(await asyncio.to_thread(annotate_status, status_dict)))
@@ -46386,7 +46473,7 @@ async def generate_diffusion_image(
                             if request.prompts and index < len(request.prompts)
                             else request.prompt
                         ),
-                        "negative_prompt": request.negative_prompt,
+                        "negative_prompt": result.get("negative_prompt"),
                         # Persist the ACTUAL output size, not the request sliders: the conditioned workflows derive it from the upload.
                         "width": getattr(image, "width", None) or request.width,
                         "height": getattr(image, "height", None) or request.height,
@@ -47493,8 +47580,17 @@ async def _generate_openai_images(
                 ),
             )
 
-        # Fall back to the resolved base repo so a local-path load still gets the right per-model steps/guidance.
-        steps, guidance = default_generation_params(status.get("repo_id"), status.get("base_repo"))
+        # Same order as the load (FLUX.1's base is schnell).
+        from core.inference.diffusion_content import content_variant_hint
+
+        steps, guidance = default_generation_params(
+            status.get("gguf_filename"),
+            await asyncio.to_thread(
+                content_variant_hint, status.get("repo_id"), status.get("gguf_filename")
+            ),
+            status.get("repo_id"),
+            status.get("base_repo"),
+        )
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):

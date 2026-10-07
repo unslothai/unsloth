@@ -20336,9 +20336,9 @@ class LlamaCppBackend:
         Same fixed order ``_arch_to_task`` asks in: the ARCHITECTURE first, since some map
         straight to a family (``detect_video_family("", override = "ltxv")`` resolves LTX-2
         with no name to go on), then the repo id, then the filename. Whatever resolves must
-        not be an MoE (the GGUF loader cannot assemble those) and must be buildable by the
-        video engine -- bare "wan" resolves nothing and QuantStack/Wan2.2-T2V-A14B-GGUF
-        resolves an MoE, so neither is promised the page."""
+        be an MoE only when the file names one expert of a high/low noise pair (the loader
+        assembles the pair) and must be buildable by the video engine -- bare "wan" resolves
+        nothing, and an unpaired QuantStack/Wan2.2-T2V-A14B-GGUF file is not promised the page."""
         try:
             from core.inference.video_families import detect_video_family
 
@@ -20354,7 +20354,10 @@ class LlamaCppBackend:
                         break
             if fam is None:
                 return False
-            return not getattr(fam, "is_moe", False) and _video_family_buildable(fam)
+            from core.inference.video_moe_pair import moe_pick_pairs
+
+            # An MoE expert is offered when its name pairs the partner the loader assembles it with.
+            return moe_pick_pairs(fam, gguf_path) and _video_family_buildable(fam)
         except Exception as e:  # noqa: BLE001 -- never lose the page over a probe failure
             logger.debug("Family probe failed for video arch: %s", e)
             return True
@@ -36421,6 +36424,9 @@ class LlamaCppBackend:
                 "completion_tokens": _tc,
                 "total_tokens": _fp + _tc,
             }
+            # Earlier passes' completions are already inside _fp, so the context is _fp + this pass only.
+            if _accumulated_completion_tokens:
+                _usage["context_tokens"] = _fp + int(_fu.get("completion_tokens") or 0)
             # Preserve KV-cache hit details (cached_tokens) so the tool path
             # reports them like the standard non-tool path does, not always 0.
             if _fu.get("prompt_tokens_details"):

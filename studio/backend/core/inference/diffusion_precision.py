@@ -263,6 +263,15 @@ def quantize_text_encoders(
     leaves the encoder dense."""
     mode = normalize_te_quant(mode)
     if mode is None:
+        present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]
+        stored_int8 = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == TE_QUANT_INT8]
+        if stored_int8:
+            return TEQuantOutcome(
+                TE_QUANT_INT8,
+                "int8 ConvRot weight-only text encoder, as stored in the supplied file"
+                + ("" if len(stored_int8) == len(present) else f" ({', '.join(stored_int8)} only)"),
+                RESOLVED_APPLIED,
+            )
         return TEQuantOutcome(None)
     # A hosted int8 ConvRot encoder is already quantized (plain tensors, offload-safe): report it, never re-cast it.
     present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]

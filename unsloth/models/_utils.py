@@ -75,6 +75,12 @@ __all__ = [
     "set_task_config_attr",
     "patch_fast_lora",
     "validate_loftq_config",
+    "validate_init_lora_weights",
+    "validate_init_target_parameters",
+    "RESIDUAL_INIT_LORA_WEIGHTS",
+    "snapshot_residual_lora_init",
+    "lora_relative_to_original_base",
+    "freeze_peft_variant_weights",
     "RaiseUninitialized",
     "fast_inference_setup",
     "patch_peft_fast_inference",
@@ -2675,6 +2681,7 @@ _ROOT_AUX_PREFETCH_PATTERNS = (
 _ADAPTER_PREFETCH_PATTERNS = (
     "adapter_config.json",
     "adapter_model*",
+    "unsloth_lora_init.json",  # lora_init.SIDECAR: which PiSSA algorithm rebuilds the residual base
 )
 
 
@@ -5650,6 +5657,29 @@ def patch_fast_lora():
     peft.tuners.lora.bnb.Linear4bit.forward = fast_lora_forward
 
 
+# Model types whose norms the compiler's check upcast to float32. The check runs only on a modeling file's first compile, so a later load of the same family replays it from here.
+_HIGH_PRECISION_LAYERNORM_MODEL_TYPES = set()
+
+
+def _start_layernorm_check():
+    # The compiler ORs its check into the inherited value, so clear it to see this type's own answer.
+    prior = os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM")
+    os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "0"
+    return prior
+
+
+def _finish_layernorm_check(model_type, prior):
+    detected = os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1"
+    if detected:
+        _HIGH_PRECISION_LAYERNORM_MODEL_TYPES.add(model_type)
+    if detected or prior == "1" or model_type in _HIGH_PRECISION_LAYERNORM_MODEL_TYPES:
+        os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = "1"
+    elif prior is None:
+        os.environ.pop("UNSLOTH_HIGH_PRECISION_LAYERNORM", None)
+    else:
+        os.environ["UNSLOTH_HIGH_PRECISION_LAYERNORM"] = prior
+
+
 def unsloth_compile_transformers(
     dtype,
     model_name,
@@ -5712,6 +5742,7 @@ def unsloth_compile_transformers(
     _run_temporary_patches("pre_compile")
 
     for model_type in model_types:
+        prior_high_precision = _start_layernorm_check()
         _unsloth_compile_transformers(
             model_type,
             sdpa_dynamic_mask = sdpa_dynamic_mask,
@@ -5740,6 +5771,7 @@ def unsloth_compile_transformers(
             return_logits = return_logits,
             supports_sdpa = supports_sdpa,
         )
+        _finish_layernorm_check(model_type, prior_high_precision)
     _run_temporary_patches("post_compile")
     return model_types, supports_sdpa[0]
 
@@ -5811,7 +5843,237 @@ for function in ("__reduce__", "__reduce_ex__", "__getstate__", "__setstate__"):
         pass
 
 
-def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
+_INIT_LORA_WEIGHTS = (
+    "gaussian",
+    "eva",
+    "olora",
+    "pissa",
+    "corda",
+    "loftq",
+    "orthogonal",
+    "lora_ga",
+    "mica",
+)
+# Inits that rewrite the base weight to W - scaling * B @ A (save_pretrained_merged must not use the original W).
+RESIDUAL_INIT_LORA_WEIGHTS = ("pissa", "olora", "corda", "loftq", "lora_ga")
+
+
+def _has_quantized_linears(
+    model,
+    routed_ok,
+    bnb_ok = False,
+):
+    for module in model.modules():
+        routed = type(module).__name__ == "_UnslothNVFP4Linear" or getattr(
+            module, "_unsloth_compressed_tensors_fp8", False
+        )
+        if routed:
+            if not routed_ok:
+                return True
+            continue
+        # No dense .weight: GPTQ / AWQ (qweight), HQQ (W_q), packed MXFP4 / INT4 (weight_packed).
+        if any(hasattr(module, name) for name in ("qweight", "qzeros", "W_q", "weight_packed")):
+            return True
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        weight = getattr(module, "weight", None)
+        # FSDP-QLoRA packs Params4bit into a float quant_storage, so the dtype alone looks dense.
+        if type(weight).__name__ in ("Params4bit", "Int8Params") or hasattr(weight, "quant_state"):
+            if bnb_ok:
+                continue
+            return True
+        if isinstance(weight, torch.Tensor) and weight.dtype not in (
+            torch.float32,
+            torch.float16,
+            torch.bfloat16,
+        ):
+            return True
+    return False
+
+
+def validate_init_target_parameters(init_lora_weights, target_parameters):
+    # PEFT's ParamWrapper reads a .weight fused experts lack and refuses MiCA, failing mid get_peft_model.
+    if not target_parameters or not isinstance(init_lora_weights, str):
+        return
+    if init_lora_weights.split("_niter_")[0] in (
+        "pissa",
+        "olora",
+        "orthogonal",
+        "corda",
+        "loftq",
+        "lora_ga",
+        "mica",
+    ):
+        raise ValueError(
+            f"Unsloth: `init_lora_weights = {init_lora_weights!r}` cannot initialize fused MoE expert "
+            f"parameters ({target_parameters}).\n"
+            "Pass `target_parameters = []` to apply it to the other layers only, or use another init."
+        )
+
+
+def validate_init_lora_weights(
+    init_lora_weights,
+    model,
+    r = None,
+):
+    if type(init_lora_weights) is bool:
+        return
+    name = init_lora_weights if isinstance(init_lora_weights, str) else None
+    if name is not None and name.startswith("pissa_niter_"):
+        if not name[len("pissa_niter_") :].isdigit():
+            raise ValueError(
+                f"Unsloth: `init_lora_weights = {name!r}` must be `pissa_niter_<non-negative int>`."
+            )
+        name = "pissa"
+    if name not in _INIT_LORA_WEIGHTS:
+        raise ValueError(
+            "Unsloth: `init_lora_weights` must be True, False, `pissa_niter_<int>` or one of "
+            f"{list(_INIT_LORA_WEIGHTS)}, got {init_lora_weights!r}."
+        )
+    import peft
+    from peft.tuners.lora import LoraLayer
+
+    def _require(supported, version):
+        if not supported:
+            raise RuntimeError(
+                f"Unsloth: Your PEFT version of {peft.__version__} does not support "
+                f"`init_lora_weights = {init_lora_weights!r}`.\n"
+                f"Please install PEFT {version} or higher: `pip install --upgrade peft`"
+            )
+
+    if name == "mica":
+        try:
+            from peft.tuners.lora.variants import MiCALinearVariant
+        except ImportError:
+            _require(False, "0.20.0")
+    elif name == "lora_ga":
+        _require(hasattr(LoraLayer, "lora_ga_init"), "0.19.0")
+
+    # PEFT's olora handles bitsandbytes only; loader_utils densifies routed NVFP4 / FP8 for all but MiCA.
+    base = name.split("_niter_")[0] if name is not None else None
+    if base in (
+        "pissa",
+        "olora",
+        "corda",
+        "loftq",
+        "lora_ga",
+        "mica",
+        "orthogonal",
+    ) and _has_quantized_linears(model, routed_ok = base != "mica", bnb_ok = base == "olora"):
+        raise ValueError(
+            f"Unsloth: `init_lora_weights = {init_lora_weights!r}` needs float32/float16/bfloat16 base weights, "
+            "yet your model is quantized.\n"
+            "Reload your model with `load_in_4bit = False` and `load_in_8bit = False`."
+        )
+    if name == "orthogonal" and r is not None and r % 2 != 0:
+        raise ValueError(
+            f"Unsloth: `init_lora_weights = 'orthogonal'` needs an even rank, got r = {r}."
+        )
+    if name in ("corda", "lora_ga"):
+        attr = "eigens" if name == "corda" else "_peft_loraga_grad"
+        if not any(hasattr(module, attr) for module in model.modules()):
+            preprocess = (
+                "peft.tuners.lora.corda.preprocess_corda"
+                if name == "corda"
+                else "peft.preprocess_loraga"
+            )
+            # lora_ga silently falls back to the default init without it.
+            raise ValueError(
+                f"Unsloth: `init_lora_weights = {name!r}` needs `{preprocess}(model, lora_config, ...)` "
+                "to be run on the model before `get_peft_model`."
+            )
+    if name == "eva":
+        logger.warning_once(
+            "Unsloth: `init_lora_weights = 'eva'` only zeroes lora_B. Call "
+            "`peft.initialize_lora_eva_weights(model, dataloader)` after `get_peft_model` to run EVA."
+        )
+
+
+def _lora_factors(module):
+    """(adapter, A holder, A attr, B holder, B attr): Linear / Conv keep factors as `.weight` of lora_A / lora_B
+    modules, Embedding as entries of the lora_embedding_A / lora_embedding_B ParameterDicts."""
+    lora_A = getattr(module, "lora_A", None)
+    if isinstance(lora_A, torch.nn.ModuleDict):
+        for k in lora_A:
+            yield k, lora_A[k], "weight", module.lora_B[k], "weight"
+    lora_embedding_A = getattr(module, "lora_embedding_A", None)
+    if isinstance(lora_embedding_A, torch.nn.ParameterDict):
+        for k in lora_embedding_A:
+            yield k, lora_embedding_A, k, module.lora_embedding_B, k
+
+
+def snapshot_residual_lora_init(model, init_lora_weights):
+    if not isinstance(init_lora_weights, str):
+        return
+    if init_lora_weights.split("_niter_")[0] not in RESIDUAL_INIT_LORA_WEIGHTS:
+        return
+    # The scale the base rewrite used: LoftQ fits B0 @ A0 to W - Q unscaled, the others subtract s * B0 @ A0.
+    unscaled = init_lora_weights == "loftq"
+    for module in model.modules():
+        initial = {
+            k: (
+                getattr(a, a_name).detach().clone(),
+                getattr(b, b_name).detach().clone(),
+                1.0 if unscaled else module.scaling[k],
+            )
+            for k, a, a_name, b, b_name in _lora_factors(module)
+        }
+        if initial:
+            module._unsloth_initial_lora = initial
+
+
+@contextlib.contextmanager
+def lora_relative_to_original_base(model):
+    # Merge reads the original W: s0 * [B * s / s0, -B0] @ [A; A0] (PEFT's path_initial_model_for_weight_conversion).
+    swapped = []
+    try:
+        for module in model.modules():
+            initial = getattr(module, "_unsloth_initial_lora", None)
+            if not initial:
+                continue
+            for k, a, a_name, b, b_name in list(_lora_factors(module)):
+                if k not in initial:
+                    continue
+                A0, B0, scaling0 = initial[k]
+                if not scaling0:
+                    continue  # lora_alpha = 0: the base rewrite was a no-op
+                A, B = getattr(a, a_name), getattr(b, b_name)
+                swapped.append((module, k, module.scaling[k], a, a_name, A, b, b_name, B))
+                B_new = B.detach() * (module.scaling[k] / scaling0)
+                module.scaling[k] = scaling0
+                setattr(
+                    a,
+                    a_name,
+                    torch.nn.Parameter(torch.cat([A.detach(), A0.to(A)], 0), requires_grad = False),
+                )
+                setattr(
+                    b,
+                    b_name,
+                    torch.nn.Parameter(torch.cat([B_new, -B0.to(B_new)], 1), requires_grad = False),
+                )
+        yield
+    finally:
+        for module, k, scaling, a, a_name, A, b, b_name, B in swapped:
+            module.scaling[k] = scaling
+            setattr(a, a_name, A)
+            setattr(b, b_name, B)
+
+
+def freeze_peft_variant_weights(model):
+    # prepare_model_for_training re-enables every lora_A/lora_B; PEFT variants such as MiCA freeze lora_B.
+    for module in model.modules():
+        if getattr(module, "frozen_peft_weight_names", None):
+            module._freeze_non_trainable_peft_weights()
+
+
+def validate_loftq_config(
+    loftq_config,
+    lora_dropout,
+    bias,
+    init_lora_weights,
+    model,
+    r = None,
+):
     from peft import LoraConfig
 
     if loftq_config is None:
@@ -5832,15 +6094,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
             f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
         )
 
-    if not (
-        type(init_lora_weights) is bool
-        or init_lora_weights == "gaussian"
-        or init_lora_weights == "loftq"
-        or init_lora_weights == "corda"
-    ):
-        raise ValueError(
-            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq", "corda"].'
-        )
+    validate_init_lora_weights(init_lora_weights, model, r)
 
     if init_lora_weights == "loftq":
         if not SUPPORTS_LOFTQ:
@@ -5858,12 +6112,6 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
                 "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
             )
             loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
-
-        if hasattr(model.config, "quantization_config"):
-            raise ValueError(
-                "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"
-                "Reload your model without any quantization by setting `load_in_4bit = False`."
-            )
 
     return loftq_config
 

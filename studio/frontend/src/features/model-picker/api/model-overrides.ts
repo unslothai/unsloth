@@ -5,6 +5,7 @@
 // localStorage, so an API auto-switch load came up with none of the user's settings.
 // routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
+import { normalizeTensorSplit, reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { authFetch } from "@/features/auth";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -75,6 +76,8 @@ export interface ApiModelOverride {
   gpu_layers?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   n_cpu_moe?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  tensor_split?: number[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_ids?: number[];
   // Which index space gpu_ids is in. Absent means "physical", all an older row could mean.
@@ -310,6 +313,14 @@ export function fromApiOverride(
     : local.llamaExtraArgs;
   // A row without ids says nothing about placement, so the local pin keeps its namespace.
   const serverGpuIds = override.gpu_ids?.length ? override.gpu_ids : null;
+  const tensorSplit = "tensor_split" in override
+    ? normalizeTensorSplit(override.tensor_split, serverGpuIds)
+    : serverGpuIds
+      ? (override.gpu_index_kind ?? "physical") === (local.selectedGpuIndexKind ?? "physical")
+        ? reconcileTensorSplit(local.tensorSplit, local.selectedGpuIds, serverGpuIds)
+        : null
+      : local.tensorSplit;
+
   // The pin is ONE setting in one of two fields, and an edit clears the other
   // (contextPinPatch). Filling them from different sources mints a record that loads at
   // two lengths, since the picker reads customContextLength first and the API's
@@ -358,6 +369,7 @@ export function fromApiOverride(
     gpuLayers: override.gpu_layers ?? local.gpuLayers,
     nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
     selectedGpuIds: serverGpuIds ?? local.selectedGpuIds ?? null,
+    tensorSplit,
     // reconcileGpuSelection drops the pin if this host numbers its devices the other way.
     selectedGpuIndexKind: serverGpuIds
       ? (override.gpu_index_kind ?? "physical")
@@ -470,6 +482,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
   if (config.selectedGpuIds && config.selectedGpuIds.length > 0) {
     payload.gpu_ids = config.selectedGpuIds;
+    const tensorSplit = normalizeTensorSplit(config.tensorSplit, config.selectedGpuIds);
+    // Explicit null clears a saved split; an older client omitting it keeps its value.
+    payload.tensor_split = tensorSplit;
     // Sent only when it is not the legacy default, so a physical pin's payload is
     // unchanged from before this field.
     if (gpuIndexKind !== "physical") {

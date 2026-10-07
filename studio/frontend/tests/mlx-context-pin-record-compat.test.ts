@@ -208,8 +208,8 @@ const ROWS: Row[] = [
       "and reads normally.",
   },
   {
-    name: "version 10 (genuinely future)",
-    raw: { version: 10, customContextLength: 32768 },
+    name: "version 11 (genuinely future)",
+    raw: { version: 11, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -330,7 +330,7 @@ test("a patched pin round-trips through storage on both backends", () => {
 test("both pin shapes are stamped version 1, so neither is distinguishable by version", () => {
   assert.equal(stampedVersion({ customContextLength: 32768 }), 1);
   assert.equal(stampedVersion({ maxSeqLength: 32768 }), 1);
-  // The current client's forwards guard is `version > 9`, and v1 invites any client
+  // The current client's forwards guard is `version > 10`, and v1 invites any client
   // back to v1 to rewrite the record.
   assert.equal(
     stage({ version: 1, customContextLength: 32768 }).remembered,
@@ -354,6 +354,10 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
   );
   assert.equal(
     stage({ version: 10, customContextLength: 32768 }).remembered,
+    true,
+  );
+  assert.equal(
+    stage({ version: 11, customContextLength: 32768 }).remembered,
     false,
   );
 });

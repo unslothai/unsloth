@@ -1214,6 +1214,7 @@ function MarkdownTextRenderer({
               searchImages,
             ),
           ),
+          isStreaming,
         ),
         isStreaming,
       ),

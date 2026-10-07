@@ -90,12 +90,17 @@ export function normalizeLanAccessStatus(
     blockReason: status.block_reason ?? null,
     bindHost: status.bind_host ?? null,
     wildcardBind: status.wildcard_bind === true,
-    // absent on a backend that predates the field, where the web UI is served
+    // older backends omit this field but still serve the web UI
     servesWebUi: status.serves_web_ui !== false,
     keylessLanEligible: status.keyless_lan_eligible === true,
     keylessScope,
     keylessTools: keylessScope !== "off" && status.keyless_tools === true,
   };
+}
+
+// launch binds (-H 0.0.0.0, Docker) often use forwarded localhost ports
+export function lanApiUrls(status: LanAccessStatus): string[] {
+  return status.managedBy === "settings" ? status.urls : [];
 }
 
 export function keylessLanAccessDescription(

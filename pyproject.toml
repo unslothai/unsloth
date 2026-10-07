@@ -284,7 +284,7 @@ huggingfacenotorch = [
     # fix alone. The compiled-path probes in tests/test_empty_logits_compiled_path_probes.py
     # gate on the INSTALLED zoo rather than on this pin, so they start running by themselves
     # wherever 2026.9.5 or newer is the zoo actually present.
-    "unsloth_zoo>=2026.10.1",
+    "unsloth_zoo>=2026.10.2",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -872,7 +872,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.10.1",
+    "unsloth_zoo>=2026.10.2",
     "packaging",
     "tyro",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",

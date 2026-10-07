@@ -27,6 +27,7 @@ This file therefore runs on Linux, macOS and Windows with no accelerator and no 
 from __future__ import annotations
 
 import ast
+import contextlib
 import sys
 import types
 from pathlib import Path
@@ -56,7 +57,12 @@ def _load(*names, **env):
     """Exec the named top-level functions against `env` and return the namespace."""
     # save.py imports this from models.mistral_format (#12144) and calls it on every merge and
     # GGUF path; none of these fixtures is a Mistral-format view, so it never refuses here.
-    namespace = {"raise_if_merging_mistral_format_view": lambda model, save_method: None, **env}
+    namespace = {
+        "raise_if_merging_mistral_format_view": lambda model, save_method: None,
+        "lora_relative_to_original_base": lambda model: contextlib.nullcontext(),
+        "nullcontext": contextlib.nullcontext,
+        **env,
+    }
     for name in names:
         exec(compile(_function_source(name), str(_SAVE_PY), "exec"), namespace)
     return namespace
@@ -239,7 +245,7 @@ def _not_reached(*args, **kwargs):
 
 
 def _routing_environment(monkeypatch, model):
-    calls = {"merge": [], "adapter": [], "prewarm": []}
+    calls = {"merge": [], "adapter": [], "prewarm": [], "convert": []}
 
     zoo = types.ModuleType("unsloth_zoo.saving_utils")
     zoo.merge_and_overwrite_lora = lambda *args, **kwargs: calls["merge"].append(kwargs)
@@ -260,6 +266,9 @@ def _routing_environment(monkeypatch, model):
         _qwen3_5_vlm_state_dict_for_save = _not_reached,
         _determine_username = lambda repo, old, token: (repo, "owner"),
         unsloth_save_model = lambda *args, **kwargs: calls["adapter"].append(kwargs),
+        lora_relative_to_original_base = lambda model: (
+            calls["convert"].append(model) or contextlib.nullcontext()
+        ),
         logger = types.SimpleNamespace(warning_once = lambda *a, **k: None),
         gc = types.SimpleNamespace(collect = lambda: None),
         torch = types.SimpleNamespace(
@@ -348,6 +357,7 @@ def test_every_other_method_still_merges(monkeypatch, tmp_path, save_method):
     assert calls["adapter"] == []
     assert len(calls["merge"]) == 1
     assert len(calls["prewarm"]) == 1
+    assert len(calls["convert"]) == (save_method != "merged_4bit_forced")
 
 
 def test_a_model_with_no_adapter_is_unchanged(monkeypatch, tmp_path):
