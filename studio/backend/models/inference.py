@@ -3438,11 +3438,7 @@ class CompletionUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
-    # Studio addition for tool-loop turns: the context the turn leaves behind
-    # (final pass's prompt + its completion). total_tokens there instead sums
-    # every pass's completion for the turn's throughput, so a usage bar pricing
-    # it reads past the window the compaction just enforced. Null elsewhere,
-    # where total_tokens already is the context.
+    # Studio tool loops: final pass's prompt + completion (total_tokens sums every pass's completion).
     context_tokens: Optional[int] = None
     prompt_tokens_details: Optional[dict] = Field(
         default_factory = lambda: {"cached_tokens": 0, "audio_tokens": 0}

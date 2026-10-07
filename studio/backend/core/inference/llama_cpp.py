@@ -36420,12 +36420,7 @@ class LlamaCppBackend:
                 "prompt_tokens": _fp,
                 "completion_tokens": _tc,
                 "total_tokens": _fp + _tc,
-                # What a context meter should price. _tc bills every pass's
-                # completion, but each earlier pass's output already sits in
-                # _fp (every iteration re-renders the whole conversation), so
-                # pricing _fp + _tc on a tool-heavy turn reads as context past
-                # the window the fit just enforced. Only this pass's
-                # completion is ahead of the next request.
+                # Earlier passes' completions are already inside _fp, so the context is _fp + this pass only.
                 "context_tokens": _fp + int(_fu.get("completion_tokens") or 0),
             }
             # Preserve KV-cache hit details (cached_tokens) so the tool path
