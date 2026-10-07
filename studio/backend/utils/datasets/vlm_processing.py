@@ -49,12 +49,10 @@ def generate_smart_vlm_instruction(
         "input",
         "inputs",
     ]
-    columns_by_name = {
-        col.lower(): col for col in column_names if col not in (text_column, image_column)
-    }
+    columns = [col for col in sample if col not in (text_column, image_column)]
 
     for name in question_columns:
-        col = columns_by_name.get(name)
+        col = name if name in columns else next((c for c in columns if c.lower() == name), None)
         if col is not None:
             # Use it only if it has non-empty content
             sample_content = sample[col]

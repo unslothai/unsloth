@@ -66,3 +66,13 @@ def test_answer_column_is_not_reused_as_the_question():
     out = _format({"prompt": prompts}, {"image": "image", "prompt": "text"})
 
     assert [_turns(sample) for sample in out] == [(HELPER_SENTENCE, p) for p in prompts]
+
+
+def test_exact_question_column_wins_over_a_case_variant():
+    questions = ["Find x in the triangle.", "How many red cubes are left?"]
+    answers = ["x = 42", "3"]
+    out = _format(
+        {"Question": ["upper one", "upper two"], "question": questions, "answer": answers}
+    )
+
+    assert [_turns(sample) for sample in out] == list(zip(questions, answers))
