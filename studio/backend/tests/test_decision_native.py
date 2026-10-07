@@ -915,9 +915,9 @@ def test_an_idle_server_unloads_and_a_stale_timer_does_nothing(home, client, stu
     assert _post(client).status_code == 200
     agent = laya_runtime._agent
     generation = laya_runtime._generation
-    # Generous: a loaded host can take seconds to reap the stub server; the loop exits early.
+    # Unload clears _agent, then closes the server outside the lock: wait for both.
     deadline = time.monotonic() + 30
-    while laya_runtime._agent is not None and time.monotonic() < deadline:
+    while (laya_runtime._agent is not None or agent.is_alive()) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert laya_runtime._agent is None and not agent.is_alive()
     # A timer from that generation never touches the server loaded after it.
@@ -1329,15 +1329,24 @@ def test_a_uuid_mask_keeps_its_order_when_choosing_the_gpu(stub, monkeypatch):
     assert native_worker._pick_device("llama-server", env) == "CUDA0"
 
 
-def test_a_no_torch_install_finds_the_gpu_through_llama_cpp(monkeypatch):
+@pytest.mark.parametrize("devices, expected", [(["CUDA0"], True), ([], False)])
+def test_a_no_torch_install_asks_llama_cpp_for_gpus(monkeypatch, devices, expected):
     from utils import systemone_settings
     from utils.hardware import hardware
 
+    calls = []
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CPU)
+    monkeypatch.setattr(native_worker, "resolve_binary", lambda: "llama-server")
+    monkeypatch.setattr(LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(lambda _: {}))
     monkeypatch.setattr(
-        LlamaCppBackend, "_get_gpu_free_memory", staticmethod(lambda *_, **__: [(0, 9000)])
+        LlamaCppBackend,
+        "_enumerated_gpu_devices",
+        staticmethod(lambda *_: calls.append(1) or devices),
     )
+    monkeypatch.setattr(systemone_settings, "_LLAMA_GPU_CACHE", [])
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
-    assert not systemone_settings.gpu_available()
+    assert not systemone_settings.gpu_available() and not calls
+    # Without torch: the binary's own devices decide (a CPU-only build has none), probed once.
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: "no torch")
-    assert systemone_settings.gpu_available()
+    assert systemone_settings.gpu_available() is expected
+    assert systemone_settings.gpu_available() is expected and len(calls) == 1
