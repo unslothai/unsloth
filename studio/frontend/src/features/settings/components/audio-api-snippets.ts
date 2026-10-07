@@ -116,7 +116,7 @@ export function audioApiModelFits(
   return !!listed && canRun(listed, example);
 }
 
-// /v1/models gives a task, not workflows: the audio.cpp catalog decides, family hints for unknown repos.
+// The row's advertised workflows decide; else the audio.cpp catalog, then family hints for unknown repos.
 function canRun(model: AudioApiModel, example: AudioApiExample): boolean {
   if (model.workflows?.length) return model.workflows.includes(example);
   if (example === "transcribe") {

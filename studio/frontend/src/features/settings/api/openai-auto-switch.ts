@@ -92,7 +92,6 @@ const settingsListeners = new Set<
   (settings: OpenAIAutoSwitchSettings) => void
 >();
 
-/** Called with each settings answer this tab reads or writes from now on. */
 export function subscribeOpenAIAutoSwitchSettings(
   listener: (settings: OpenAIAutoSwitchSettings) => void,
 ): () => void {

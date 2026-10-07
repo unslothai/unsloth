@@ -31,7 +31,6 @@ export type AudioApiModel = {
   loaded: boolean;
   // text-to-speech also covers music models, which /v1/audio/speech serves too.
   task: AudioApiTask;
-  // The Audio page workflows the server says this row runs, when it says.
   workflows?: string[];
 };
 
