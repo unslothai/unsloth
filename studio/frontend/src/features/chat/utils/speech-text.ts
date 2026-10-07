@@ -17,6 +17,12 @@ const SCHEMA_TAGS = new Set(
   (defaultRehypePlugins.sanitize as [unknown, { tagNames?: string[] }])[1]
     .tagNames,
 );
+// Elements that start a new line on the page; other schema tags join their text (`H<sub>2</sub>O`).
+const LINE_TAGS = new Set(
+  "br p div li ul ol dl dt dd tr table thead tbody tfoot blockquote pre hr section details summary h1 h2 h3 h4 h5 h6".split(
+    " ",
+  ),
+);
 
 /** The words a markdown reply shows, for read-aloud: voices speak raw markup ("asterisk asterisk", #12547). */
 export function markdownToSpeechText(markdown: string): string {
@@ -67,7 +73,13 @@ function collectBlocks(
       return;
     // The sanitizer unwraps raw HTML, so its text shows on the page.
     case "html":
-      out.push(htmlText(node.value));
+      out.push(
+        htmlText(node.value)
+          .split("\n")
+          .map((line) => line.replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .join("\n"),
+      );
       return;
     case "thematicBreak":
     case "definition":
@@ -110,18 +122,19 @@ function htmlText(html: string): string {
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(
       /<\/?([a-z][^\s/<>]*)(?:[^<>"']|"[^"]*"|'[^']*')*>/gi,
-      (tag, name: string) => (SCHEMA_TAGS.has(name.toLowerCase()) ? " " : tag),
+      (tag, name: string) => {
+        const lower = name.toLowerCase();
+        if (!SCHEMA_TAGS.has(lower)) return tag;
+        if (lower === "td" || lower === "th") return " ";
+        return LINE_TAGS.has(lower) ? "\n" : "";
+      },
     )
     .replace(/&(#x[\da-f]+|#\d+|[a-z][a-z\d]*);/gi, (ref, body: string) => {
       if (body[0] !== "#") return decodeNamedCharacterReference(body) || ref;
       const hex = body[1] === "x" || body[1] === "X";
       const code = Number.parseInt(body.slice(hex ? 2 : 1), hex ? 16 : 10);
       return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ref;
-    })
-    .split("\n")
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .filter(Boolean)
-    .join("\n");
+    });
 }
 
 function sentence(text: string): string {

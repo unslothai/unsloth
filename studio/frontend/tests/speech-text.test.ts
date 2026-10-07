@@ -105,3 +105,12 @@ test("raw HTML reads as the chat shows it: quoted attributes, literal tags, name
     "café © …",
   );
 });
+
+test("HTML tags keep the word boundaries the page shows", () => {
+  assert.equal(markdownToSpeechText("hello<br>world"), "hello\nworld");
+  assert.equal(
+    markdownToSpeechText("| a<br>b | c |\n|---|---|\n| 1 | 2 |"),
+    "a\nb, c.\n1, 2.",
+  );
+  assert.equal(markdownToSpeechText("<div>H<sub>2</sub>O</div>"), "H2O");
+});
