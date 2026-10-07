@@ -64,6 +64,7 @@ _TAG = float(1 << 24)
 # Tag width of the fast pass: enough columns to see a splice (first / middle / last differ), none of the real width.
 _NARROW_TAG_COLUMNS = 4
 _MAX_HEADER_BYTES = 256 * 1024 * 1024
+_MAX_COMFY_QUANT_BYTES = 1024 * 1024
 
 
 @dataclass(frozen = True)
@@ -104,10 +105,13 @@ def _read_header(path: str) -> tuple[dict, int]:
 
 
 def _read_json_tensor(path: str, entry: dict, base: int) -> Any:
-    start, end = entry["data_offsets"]
+    start, end = (int(v) for v in entry["data_offsets"])
+    # A declaration is a few hundred bytes of JSON; refuse offsets that would buffer a whole file.
+    if not 0 <= start <= end or end - start > _MAX_COMFY_QUANT_BYTES:
+        raise ValueError("implausible comfy_quant entry")
     with open(path, "rb") as handle:
-        handle.seek(base + int(start))
-        return json.loads(handle.read(int(end) - int(start)).decode("utf-8"))
+        handle.seek(base + start)
+        return json.loads(handle.read(end - start).decode("utf-8"))
 
 
 def _layer_conf(raw: Any) -> tuple[Optional[str], bool, int]:

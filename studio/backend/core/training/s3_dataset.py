@@ -151,13 +151,33 @@ def _validate_single_extension_family(keys: list[str]) -> None:
     )
 
 
+def _contained_local_path(
+    target_dir: str,
+    parts: list[str],
+    pathmod = os.path,
+) -> str:
+    """Join S3 key ``parts`` under ``target_dir``, refusing a key that lands outside it.
+
+    On Windows a key segment can carry a drive (``C:evil``), a root or backslash
+    ``..`` components that ``os.path.join`` honours, so check the joined result too."""
+    if any(pathmod.isabs(part) or pathmod.splitdrive(part)[0] for part in parts):
+        raise ValueError(
+            "S3 key is an absolute path and cannot be downloaded into the dataset directory."
+        )
+    root = pathmod.normcase(pathmod.normpath(pathmod.abspath(target_dir)))
+    resolved = pathmod.normcase(pathmod.normpath(pathmod.join(root, *parts)))
+    if resolved == root or not resolved.startswith(pathmod.join(root, "")):
+        raise ValueError("S3 key resolves outside the dataset directory and cannot be downloaded.")
+    return pathmod.join(target_dir, *parts)
+
+
 def _unique_local_path(target_dir: str, filename: str, used_paths: set[str]) -> str:
     """Return an unused flattened path for an S3 object basename."""
     stem, ext = os.path.splitext(filename)
-    candidate = os.path.join(target_dir, filename)
+    candidate = _contained_local_path(target_dir, [filename])
     suffix = 1
     while candidate in used_paths or os.path.exists(candidate):
-        candidate = os.path.join(target_dir, f"{stem}_{suffix}{ext}")
+        candidate = _contained_local_path(target_dir, [f"{stem}_{suffix}{ext}"])
         suffix += 1
     used_paths.add(candidate)
     return candidate
@@ -197,7 +217,7 @@ def _download_structured(
                 f"S3 key {key!r} contains '..' or empty path segments and cannot "
                 "be downloaded into the dataset directory."
             )
-        local_path = os.path.join(target_dir, *parts)
+        local_path = _contained_local_path(target_dir, parts)
         os.makedirs(os.path.dirname(local_path) or target_dir, exist_ok = True)
         _download_one(client, bucket, key, local_path, cancel_callback)
         local_by_key[key] = local_path

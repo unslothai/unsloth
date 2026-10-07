@@ -1380,6 +1380,8 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/export",
     "/api/library",
     "/api/browser",
+    # Unauthenticated (login, refresh): every route takes a few hundred bytes of JSON.
+    "/api/auth",
     "/mcp",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
