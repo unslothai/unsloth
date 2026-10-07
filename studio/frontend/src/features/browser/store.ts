@@ -67,6 +67,8 @@ export type BrowserTab = {
   zoom: number;
   nativeHistory: { back: boolean; forward: boolean } | null;
   nativeError: string | null;
+  /** The proxied page failed to load, so an error shows instead of its frame. */
+  pageError?: boolean;
   /** The name the reader gave the tab; kept as it navigates. */
   customTitle: string | null;
   muted: boolean;
@@ -297,7 +299,7 @@ type BrowserState = {
     patch: Partial<
       Pick<
         BrowserTab,
-        "title" | "favicon" | "documentType" | "displayUrl" | "loading" | "nativeHistory" | "nativeError"
+        "title" | "favicon" | "documentType" | "displayUrl" | "loading" | "nativeHistory" | "nativeError" | "pageError"
       >
     >,
   ) => void;
@@ -348,6 +350,7 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     loading: entry.kind === "web",
     openKey: null,
     nativeError: null,
+    pageError: false,
     zoom,
   };
 }
@@ -365,6 +368,7 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
     loading: entry.kind === "web",
     openKey: entry.kind === "file" ? (entry.openKey ?? null) : null,
     nativeError: null,
+    pageError: false,
   };
 }
 

@@ -133,8 +133,8 @@ test("the action slot offers Download or Unload, not Reset to default", () => {
     !SECTION.includes("resetEmbeddingModelSettings"),
     "reset is reachable by picking the default in the list",
   );
-  assert.match(SECTION, /settings\.general\.rag\.unload/);
-  assert.match(SECTION, /embeddingModel\?\.backendLoaded \? \(/);
+  assert.match(SECTION, /settings\.general\.rag\.unloadFailed/);
+  assert.match(SECTION, /onEject=\{embeddingModel\?\.backendLoaded \? \(\) => void unload\(\) : undefined\}/);
   assert.ok(
     !SECTION.includes("): embeddingModel?.loaded ? ("),
     "Unload is not an alternative to Download",
@@ -298,7 +298,7 @@ test("the configured default stays reachable when the listing drops it", () => {
   // The empty query is scoped to `unsloth`, so a private, other-owner or local default has no row.
   assert.match(PICKER, /rows\.push\(\{ id: fallback, sizeBytes: null \}\)/);
   assert.match(PICKER, /const fallback = defaultModel\?\.trim\(\)/);
-  assert.match(PICKER, /\}, \[results, value, defaultModel\]\)/);
+  assert.match(PICKER, /\}, \[results, value, defaultModel, pinnedModels\]\)/);
   assert.match(SECTION, /defaultModel=\{embeddingModel\?\.defaultEmbeddingModel\}/);
 });
 

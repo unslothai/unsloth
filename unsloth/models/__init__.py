@@ -27,3 +27,7 @@ except:
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__
 from .rl import PatchFastRL, vLLMSamplingParams
+from .lora_init import patch_peft_calibration_eager as _patch_peft_calibration_eager
+
+_patch_peft_calibration_eager()
+del _patch_peft_calibration_eager
