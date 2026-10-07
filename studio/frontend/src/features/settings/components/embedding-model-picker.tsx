@@ -174,8 +174,8 @@ export function EmbeddingModelPicker({
           className={`group/trigger border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border pr-3.5 font-mono text-ui-11 outline-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${onEject ? "pl-2.5" : "pl-3.5"} ${className ?? ""}`}
         >
           {onEject ? (
-            // As on the chat model picker: tick at rest, eject on hover. Keyboard users eject
-            // from the RAG menu; a nested button is not valid inside the trigger.
+            // As on the chat model picker: tick at rest, eject on hover. Keyboard and screen reader
+            // users get the Eject button at the foot of the list; a button can't nest in the trigger.
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <span
@@ -334,6 +334,21 @@ export function EmbeddingModelPicker({
             })
           )}
         </div>
+        {onEject ? (
+          <div className="border-t border-border/60 p-1">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onEject();
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-full px-2.5 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:bg-muted focus-visible:text-foreground focus-visible:outline-none"
+            >
+              <HugeiconsIcon icon={RemoveCircleIcon} strokeWidth={1.75} className="size-3.5" />
+              {t("settings.general.rag.ejectModel")}
+            </button>
+          </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   );

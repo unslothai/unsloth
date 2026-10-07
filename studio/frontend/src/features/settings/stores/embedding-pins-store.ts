@@ -4,6 +4,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+export const EMBEDDING_PINS_STORAGE_KEY = "unsloth_embedding_pins";
+
 /** Embedding models pinned to the RAG menu for quick switching. Per browser. */
 interface EmbeddingPinsState {
   pinned: string[];
@@ -25,6 +27,6 @@ export const useEmbeddingPinsStore = create<EmbeddingPinsState>()(
           };
         }),
     }),
-    { name: "unsloth_embedding_pins" },
+    { name: EMBEDDING_PINS_STORAGE_KEY },
   ),
 );

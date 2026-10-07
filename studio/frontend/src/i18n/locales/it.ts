@@ -1688,6 +1688,7 @@ export const it = {
         switched: "Modello di embedding impostato su {model}",
         switchedNeedsDownload: "{model} non è ancora scaricato",
         switchedNeedsDownloadDescription: "Scaricalo nelle Impostazioni prima di indicizzare nuovi file.",
+        switchedUncheckedDescription: "Impossibile verificare se è scaricato. Controlla nelle impostazioni prima di indicizzare nuovi file.",
         openSettings: "Apri impostazioni",
         switchFailed: "Impossibile cambiare il modello di embedding",
         back: "Indietro",

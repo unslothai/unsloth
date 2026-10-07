@@ -1682,6 +1682,7 @@ export const ko = {
         switched: "임베딩 모델을 {model}(으)로 설정했습니다",
         switchedNeedsDownload: "{model}이(가) 아직 다운로드되지 않았습니다",
         switchedNeedsDownloadDescription: "새 파일을 인덱싱하기 전에 설정에서 다운로드하세요.",
+        switchedUncheckedDescription: "다운로드 여부를 확인하지 못했습니다. 새 파일을 인덱싱하기 전에 설정에서 확인하세요.",
         openSettings: "설정 열기",
         switchFailed: "임베딩 모델을 전환하지 못했습니다",
         back: "뒤로",

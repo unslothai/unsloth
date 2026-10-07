@@ -1686,6 +1686,7 @@ export const ar = {
         switched: "تم تعيين نموذج التضمين إلى {model}",
         switchedNeedsDownload: "لم يتم تنزيل {model} بعد",
         switchedNeedsDownloadDescription: "نزّله من الإعدادات قبل فهرسة ملفات جديدة.",
+        switchedUncheckedDescription: "تعذّر التحقق مما إذا كان قد نُزّل. تحقّق في الإعدادات قبل فهرسة ملفات جديدة.",
         openSettings: "فتح الإعدادات",
         switchFailed: "تعذّر تبديل نموذج التضمين",
         back: "رجوع",

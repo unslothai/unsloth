@@ -1856,6 +1856,7 @@ export const sv = {
         switched: "Inbäddningsmodellen är nu {model}",
         switchedNeedsDownload: "{model} är inte nedladdad än",
         switchedNeedsDownloadDescription: "Ladda ned den i Inställningar innan nya filer indexeras.",
+        switchedUncheckedDescription: "Kunde inte kontrollera om den är nedladdad. Kontrollera i inställningarna innan du indexerar nya filer.",
         openSettings: "Öppna inställningar",
         switchFailed: "Kunde inte byta inbäddningsmodell",
         back: "Tillbaka",

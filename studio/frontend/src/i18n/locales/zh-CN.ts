@@ -1664,6 +1664,7 @@ export const zhCN = {
         switched: "嵌入模型已设为 {model}",
         switchedNeedsDownload: "{model} 尚未下载",
         switchedNeedsDownloadDescription: "请先在设置中下载，再为新文件建立索引。",
+        switchedUncheckedDescription: "无法确认是否已下载。索引新文件前请在设置中查看。",
         openSettings: "打开设置",
         switchFailed: "无法切换嵌入模型",
         back: "返回",

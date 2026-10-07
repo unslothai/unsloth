@@ -1691,6 +1691,7 @@ export const ru = {
         switched: "Модель эмбеддингов: {model}",
         switchedNeedsDownload: "{model} ещё не загружена",
         switchedNeedsDownloadDescription: "Загрузите её в настройках, прежде чем индексировать новые файлы.",
+        switchedUncheckedDescription: "Не удалось проверить, скачана ли модель. Проверьте в настройках перед индексацией новых файлов.",
         openSettings: "Открыть настройки",
         switchFailed: "Не удалось сменить модель эмбеддингов",
         back: "Назад",

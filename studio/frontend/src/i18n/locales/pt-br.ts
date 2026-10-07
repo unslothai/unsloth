@@ -1698,6 +1698,7 @@ export const ptBR = {
         switched: "Modelo de embedding definido como {model}",
         switchedNeedsDownload: "{model} ainda não foi baixado",
         switchedNeedsDownloadDescription: "Baixe-o nas Configurações antes de indexar novos arquivos.",
+        switchedUncheckedDescription: "Não foi possível verificar se está baixado. Confira nas configurações antes de indexar novos arquivos.",
         openSettings: "Abrir configurações",
         switchFailed: "Não foi possível trocar o modelo de embedding",
         back: "Voltar",

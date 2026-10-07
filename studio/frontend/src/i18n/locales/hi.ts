@@ -1689,6 +1689,7 @@ export const hi = {
         switched: "एम्बेडिंग मॉडल {model} पर सेट किया गया",
         switchedNeedsDownload: "{model} अभी डाउनलोड नहीं हुआ है",
         switchedNeedsDownloadDescription: "नई फ़ाइलें इंडेक्स करने से पहले इसे सेटिंग्स में डाउनलोड करें।",
+        switchedUncheckedDescription: "यह जाँच नहीं हो सकी कि यह डाउनलोड है या नहीं। नई फ़ाइलें इंडेक्स करने से पहले सेटिंग्स में देखें।",
         openSettings: "सेटिंग्स खोलें",
         switchFailed: "एम्बेडिंग मॉडल नहीं बदला जा सका",
         back: "वापस",

@@ -1745,6 +1745,7 @@ export const en = {
         switched: "Embedding model set to {model}",
         switchedNeedsDownload: "{model} is not downloaded yet",
         switchedNeedsDownloadDescription: "Download it in Settings before indexing new files.",
+        switchedUncheckedDescription: "Couldn't check whether it's downloaded. Check in Settings before indexing new files.",
         openSettings: "Open settings",
         switchFailed: "Couldn't switch the embedding model",
         back: "Back",

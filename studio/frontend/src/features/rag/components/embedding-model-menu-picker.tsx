@@ -114,6 +114,15 @@ export function EmbeddingModelMenuList({ onBack }: { onBack: () => void }) {
             onClick: () => openSettings("general", { scrollTarget: "general-rag-embedding" }),
           },
         });
+      } else if (result.status === "saved" && result.needsDownload === null) {
+        // Saved, but the resolve failed, so whether the files are on disk is unknown.
+        toast.info(t("settings.general.rag.switched", { model: name }), {
+          description: t("settings.general.rag.switchedUncheckedDescription"),
+          action: {
+            label: t("settings.general.rag.openSettings"),
+            onClick: () => openSettings("general", { scrollTarget: "general-rag-embedding" }),
+          },
+        });
       } else if (result.status === "saved") {
         toast.success(t("settings.general.rag.switched", { model: name }), {
           description: t("settings.general.rag.reindexWarning"),

@@ -1789,6 +1789,7 @@ export const he = {
         switched: "מודל ההטמעה הוגדר ל-{model}",
         switchedNeedsDownload: "{model} עדיין לא הורד",
         switchedNeedsDownloadDescription: "הורידו אותו בהגדרות לפני אינדוקס קבצים חדשים.",
+        switchedUncheckedDescription: "לא ניתן לבדוק אם הוא הורד. בדוק בהגדרות לפני אינדוקס קבצים חדשים.",
         openSettings: "פתיחת ההגדרות",
         switchFailed: "לא ניתן להחליף את מודל ההטמעה",
         back: "חזרה",

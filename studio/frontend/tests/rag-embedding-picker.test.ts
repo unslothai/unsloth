@@ -106,9 +106,10 @@ test("a newer pick from another surface wins", async () => {
 
 test("a failed resolve still saves, and a failed save is reported", async () => {
   const resolveDown = switcher({ plan: new Error("offline") });
+  // Unknown, not ready: the menu points to Settings instead of claiming success.
   assert.deepEqual(await resolveDown.switchEmbeddingModel("acme/embed"), {
     status: "saved",
-    needsDownload: false,
+    needsDownload: null,
   });
   assert.deepEqual(resolveDown.saves, [{ model: "acme/embed", ggufRepo: null, backend: null }]);
   const saveDown = switcher({ plan: PLAN, saveError: new Error("Could not verify") });
@@ -144,11 +145,11 @@ test("the chip shows for the owner only and swaps the menu to the model list", (
   assert.doesNotMatch(MENU_PICKER, /DropdownMenuPrimitive\.Sub\b|SubContent/);
 });
 
-test("Change model and the needs-download toast open the embedding row in Settings", () => {
+test("More models and the download toasts open the embedding row in Settings", () => {
   const opens = MENU_PICKER.match(
     /openSettings\("general", \{ scrollTarget: "general-rag-embedding" \}\)/g,
   );
-  assert.equal(opens?.length, 2);
+  assert.equal(opens?.length, 3);
   assert.match(SECTION, /if \(scrollTarget !== "general-rag-embedding"\) return;/);
   assert.match(SECTION, /<SettingsSection ref=\{sectionRef\}/);
 });
@@ -214,4 +215,25 @@ test("ejecting frees the model through the shared residency path", async () => {
   );
   await mod.ejectEmbeddingModel();
   assert.deepEqual(calls, [unload]);
+});
+
+test("an unchecked switch points to Settings rather than reading as ready", () => {
+  assert.match(
+    MENU_PICKER,
+    /result\.needsDownload === null\)[\s\S]*?switchedUncheckedDescription[\s\S]*?scrollTarget: "general-rag-embedding"/,
+  );
+});
+
+test("Settings keeps a focusable Eject in the picker list", () => {
+  assert.match(PICKER, /\{onEject \? \(\s*<div className="border-t[\s\S]*?<button\s+type="button"[\s\S]*?onEject\(\);[\s\S]*?settings\.general\.rag\.ejectModel/);
+});
+
+test("Reset all preferences clears embedding pins", () => {
+  const general = read("../src/features/settings/tabs/general-tab.tsx");
+  const keys = general.slice(general.indexOf("const PREFS_KEYS"), general.indexOf("];", general.indexOf("const PREFS_KEYS")));
+  assert.match(keys, /EMBEDDING_PINS_STORAGE_KEY,/);
+  assert.match(
+    read("../src/features/settings/stores/embedding-pins-store.ts"),
+    /\{ name: EMBEDDING_PINS_STORAGE_KEY \}/,
+  );
 });

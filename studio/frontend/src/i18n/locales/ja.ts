@@ -1671,6 +1671,7 @@ export const ja = {
         switched: "埋め込みモデルを {model} に設定しました",
         switchedNeedsDownload: "{model} はまだダウンロードされていません",
         switchedNeedsDownloadDescription: "新しいファイルをインデックスする前に、設定でダウンロードしてください。",
+        switchedUncheckedDescription: "ダウンロード済みか確認できませんでした。新しいファイルをインデックスする前に設定で確認してください。",
         openSettings: "設定を開く",
         switchFailed: "埋め込みモデルを切り替えられませんでした",
         back: "戻る",

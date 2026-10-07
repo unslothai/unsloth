@@ -1711,6 +1711,7 @@ export const de = {
         switched: "Embedding-Modell auf {model} gesetzt",
         switchedNeedsDownload: "{model} ist noch nicht heruntergeladen",
         switchedNeedsDownloadDescription: "Lade es in den Einstellungen herunter, bevor neue Dateien indexiert werden.",
+        switchedUncheckedDescription: "Konnte nicht prüfen, ob es heruntergeladen ist. Prüfe es in den Einstellungen, bevor du neue Dateien indexierst.",
         openSettings: "Einstellungen öffnen",
         switchFailed: "Embedding-Modell konnte nicht gewechselt werden",
         back: "Zurück",

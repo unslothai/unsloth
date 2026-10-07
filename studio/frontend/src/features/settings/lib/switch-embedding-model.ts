@@ -10,8 +10,9 @@ import {
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
 
 export type EmbeddingSwitchResult =
-  /** `needsDownload`: saved, but indexing needs the files on disk first. */
-  | { status: "saved"; needsDownload: boolean }
+  /** `needsDownload`: saved, but indexing needs the files on disk first. Null when the resolve
+   *  failed, so nobody knows. */
+  | { status: "saved"; needsDownload: boolean | null }
   /** A newer pick from another surface won; say nothing. */
   | { status: "superseded" }
   | { status: "failed"; message: string };
@@ -45,7 +46,7 @@ export async function switchEmbeddingModel(
     if (!stood) return { status: "superseded" };
     return {
       status: "saved",
-      needsDownload: Boolean(plan && !plan.cached && plan.downloadRepo),
+      needsDownload: plan ? Boolean(!plan.cached && plan.downloadRepo) : null,
     };
   } catch (error) {
     return { status: "failed", message: error instanceof Error ? error.message : "" };

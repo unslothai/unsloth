@@ -1709,6 +1709,7 @@ export const fr = {
         switched: "Modèle d'embedding défini sur {model}",
         switchedNeedsDownload: "{model} n'est pas encore téléchargé",
         switchedNeedsDownloadDescription: "Téléchargez-le dans les Paramètres avant d'indexer de nouveaux fichiers.",
+        switchedUncheckedDescription: "Impossible de vérifier s'il est téléchargé. Vérifiez dans les paramètres avant d'indexer de nouveaux fichiers.",
         openSettings: "Ouvrir les paramètres",
         switchFailed: "Impossible de changer le modèle d'embedding",
         back: "Retour",
