@@ -5527,6 +5527,9 @@ def install_from_archives(
         raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
+    source_fit_params = build_bin / "llama-fit-params"
+    if source_fit_params.is_file():
+        os.chmod(source_fit_params, 0o755)
 
     root_server = install_dir / "llama-server"
     root_quantize = install_dir / "llama-quantize"
