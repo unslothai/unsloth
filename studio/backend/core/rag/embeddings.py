@@ -25,7 +25,7 @@ import re
 import threading
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Callable
+from typing import Any, Callable
 
 from utils.hardware.hardware import DeviceType, get_device
 from utils.transformers_dtype import dtype_kwargs
@@ -171,6 +171,38 @@ def _ambient_hf_token() -> str | None:
         return None
 
 
+def _repo_json(name: str, filename: str, token: str | None) -> Any:
+    """``filename`` parsed from the local folder or Hub repo ``name``, None when the file is absent.
+    Raises whatever reading or parsing raises."""
+    import json
+
+    from utils.paths import is_local_path
+
+    if is_local_path(name):
+        from pathlib import Path
+        from utils.paths import normalize_path
+
+        path = Path(normalize_path(name)).expanduser() / filename
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding = "utf-8-sig"))
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import EntryNotFoundError
+    from utils.hf_cache_settings import active_hf_hub_cache
+
+    try:
+        local = hf_hub_download(
+            name,
+            filename,
+            token = account_hf_token(token or None),
+            cache_dir = active_hf_hub_cache(),
+        )
+    except EntryNotFoundError:
+        return None
+    with open(local, encoding = "utf-8-sig") as f:
+        return json.load(f)
+
+
 def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
     """The module directories a SentenceTransformer load reads weights from, taken from
     the repo's ``modules.json`` (each module's non-empty ``path``, e.g. ``0_Transformer``).
@@ -179,33 +211,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
     failure (no modules.json, offline, malformed) so the guard never bricks the embedder.
     """
     try:
-        import json
-
-        from utils.paths import is_local_path
-
-        if is_local_path(name):
-            from pathlib import Path
-            from utils.paths import normalize_path
-
-            path = Path(normalize_path(name)).expanduser() / "modules.json"
-            if not path.is_file():
-                return ()
-            data = json.loads(path.read_text(encoding = "utf-8-sig"))
-        else:
-            from huggingface_hub import hf_hub_download
-            from huggingface_hub.utils import EntryNotFoundError
-            from utils.hf_cache_settings import active_hf_hub_cache
-
-            try:
-                local = hf_hub_download(
-                    name,
-                    "modules.json",
-                    token = account_hf_token(token or None),
-                    cache_dir = active_hf_hub_cache(),
-                )
-            except EntryNotFoundError:
-                return ()
-            data = json.loads(open(local, encoding = "utf-8-sig").read())
+        data = _repo_json(name, "modules.json", token)
         subdirs = []
         for module in data or ():
             sub = str((module or {}).get("path", "")).strip().strip("/")
@@ -908,15 +914,67 @@ def _llama_server_runtime_available() -> bool:
         return False
 
 
+_ST_LOAD_PREFLIGHT_TIMEOUT_S = 5.0
+
+
+def _st_can_load(model_name: str) -> bool:
+    """False when the installed sentence-transformers or transformers provably cannot open ``model_name``.
+
+    Two ways to know before downloading the weights: ``modules.json`` names a Sentence Transformers class
+    this version does not have (embeddinggemma-2 was saved by 6.x and names ``sentence_transformers.base``
+    modules, which 5.x lacks), or ``config.json`` names a ``model_type`` this transformers does not know.
+    True when either file cannot be read, so an unreachable repo keeps the plan it had.
+    """
+    try:
+        from sentence_transformers.util import import_from_string
+        from utils.utils import call_with_deadline
+
+        # Bounded: Settings resolves a plan inside a 20 s budget, and a blackholed Hub must not spend it here.
+        modules, model_config = call_with_deadline(
+            lambda: (
+                _repo_json(model_name, "modules.json", None),
+                _repo_json(model_name, "config.json", None),
+            ),
+            _ST_LOAD_PREFLIGHT_TIMEOUT_S,
+            name = "embed-st-load-preflight",
+        )
+        for module in modules or ():
+            ref = str((module or {}).get("type", ""))
+            # Other classes are third-party code, which _gate_st_custom_modules refuses on its own.
+            if not ref.startswith(_ST_PACKAGE_PREFIX):
+                continue
+            try:
+                # How ST's own loader resolves sentence_transformers.* refs.
+                import_from_string(ref)
+            except ImportError:
+                return False
+        model_type = (model_config or {}).get("model_type")
+        if isinstance(model_type, str):
+            # CONFIG_MAPPING, not CONFIG_MAPPING_NAMES, so types registered at runtime count. An auto_map does not
+            # help an unknown type: the loader never passes trust_remote_code.
+            from transformers import CONFIG_MAPPING
+            if model_type not in CONFIG_MAPPING:
+                return False
+    except Exception as exc:  # noqa: BLE001 - offline, gated, missing or malformed: no proof either way
+        logger.debug("sentence-transformers load preflight for %s failed: %s", model_name, exc)
+    return True
+
+
 def resolved_backend_for_model(model_name: str) -> str:
     """Backend a fresh operation for ``model_name`` would actually select."""
     raw = _raw_backend()
     forced = _forced_backends.get(model_name)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
-    if key in _ST_ALIASES and not sentence_transformers_runtime_available():
-        # Without a real llama binary ST is the only possible plan, and its eventual error is more useful
-        # than a fabricated GGUF destination.
-        if _llama_server_runtime_available():
+    # Without a real llama binary ST is the only possible plan, and its eventual error is more useful than a
+    # fabricated GGUF destination. The binary check is a stat, so it runs before the Hub preflight.
+    if key in _ST_ALIASES and _llama_server_runtime_available():
+        st_unusable = not sentence_transformers_runtime_available() or (
+            # An ST plan for a model ST cannot open downloads weights that never load, and the pending marker it
+            # sets keeps the llama fallback from fetching a GGUF. Under auto only: an explicit ST policy makes the
+            # runtime ignore the backend this plan stores.
+            raw in _AUTO_ALIASES and not _st_can_load(model_name)
+        )
+        if st_unusable:
             key = "llama-server"
     if key in _LLAMA_ALIASES:
         return "llama-server"

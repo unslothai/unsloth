@@ -114,7 +114,14 @@ def test_resolution_selects_the_backend_for_the_new_model_not_the_old_one(client
     assert body["backend"] == "sentence-transformers"
 
 
-def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(client, monkeypatch):
+@pytest.mark.parametrize(
+    "runtime_available, can_load",
+    # ST cannot run at all, or it runs but cannot open this model (a repo saved by a newer major).
+    [(False, True), (True, False)],
+)
+def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(
+    client, monkeypatch, runtime_available, can_load
+):
     from core.rag import embeddings
 
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
@@ -124,7 +131,10 @@ def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(client, monkey
         "_resolve_auto_for_model",
         lambda model = None: "sentence-transformers",
     )
-    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: False)
+    monkeypatch.setattr(
+        embeddings, "sentence_transformers_runtime_available", lambda: runtime_available
+    )
+    monkeypatch.setattr(embeddings, "_st_can_load", lambda model: can_load)
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
     monkeypatch.setattr(
         settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
