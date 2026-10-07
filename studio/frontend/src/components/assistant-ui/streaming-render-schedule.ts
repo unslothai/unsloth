@@ -148,8 +148,48 @@ const LINK_DEFINITION_LABEL_RE = new RegExp(
   LINK_DEFINITION_LINE_RE.source,
   `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
-const CODE_SPAN_RE =
-  /(?<=(?:^|[^\\])(?:\\\\)*)(?<!`)(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\1(?!`)/g;
+const BACKTICK_RUN_RE = /`+/g;
+const BLANK_LINE_RE = /\n[ \t]*\n/g;
+
+// One pass: each run's closer is the next run of the same width in its paragraph, found from
+// the right, so an opener with no closer costs nothing instead of a rescan of the paragraph.
+function stripCodeSpans(text: string): string {
+  const breaks = Array.from(text.matchAll(BLANK_LINE_RE), (match) => match.index);
+  const runs: { start: number; end: number; paragraph: number }[] = [];
+  let paragraph = 0;
+  for (const match of text.matchAll(BACKTICK_RUN_RE)) {
+    while (paragraph < breaks.length && breaks[paragraph] < match.index) {
+      paragraph += 1;
+    }
+    runs.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      paragraph,
+    });
+  }
+  const closers = new Array<number>(runs.length).fill(-1);
+  const nearest = new Map<number, number>();
+  for (let i = runs.length - 1; i >= 0; i -= 1) {
+    if (i + 1 < runs.length && runs[i + 1].paragraph !== runs[i].paragraph) {
+      nearest.clear();
+    }
+    const width = runs[i].end - runs[i].start;
+    closers[i] = nearest.get(width) ?? -1;
+    nearest.set(width, i);
+  }
+  let stripped = "";
+  let from = 0;
+  for (let i = 0; i < runs.length; i += 1) {
+    const closer = closers[i];
+    if (closer < 0 || isEscaped(text, runs[i].start)) {
+      continue;
+    }
+    stripped += text.slice(from, runs[i].start);
+    from = runs[closer].end;
+    i = closer;
+  }
+  return stripped + text.slice(from);
+}
 
 const LINK_LABEL_USE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
 
@@ -317,7 +357,7 @@ function documentProse(markdown: string): string | null {
   );
   return LINK_DEFINITION_LINE_RE.test(prose) &&
     (hasLinkReference(prose) ||
-      hasShortcutReference(prose, prose.replace(CODE_SPAN_RE, "")))
+      hasShortcutReference(prose, stripCodeSpans(prose)))
     ? prose
     : null;
 }

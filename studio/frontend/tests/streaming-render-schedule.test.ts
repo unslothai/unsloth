@@ -980,6 +980,25 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
     `500k of \`[]:\` cost ${invalidMedian.toFixed(1)}ms; invalid candidates are being rescanned`);
 });
 
+test("unclosed backtick runs of many widths do not rescan the paragraph", () => {
+  // Runs of width 1..800 with no closer each: a lazy regex rescans the rest of the paragraph from
+  // every opener, ~900ms at this size. Absolute and loose as above.
+  let runs = "";
+  for (let width = 1; width <= 800; width += 1) {
+    runs += `${"`".repeat(width)}a`;
+  }
+  const reply = `See [1]. ${runs}\n\n[1]: https://x.test\n`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(reply + " ");
+  const samples: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    assert.equal(markdownRenderScope(reply + " ".repeat(i)), "document");
+    samples.push(performance.now() - t0);
+  }
+  const median = samples.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 100, `321k of backtick runs cost ${median.toFixed(1)}ms`);
+});
+
 test("a reference label past the old cap still resolves against its definition", () => {
   // A label resolves only when BOTH probes admit it, and the definition one moved to 999 while
   // this one stayed at 200, so 201..999 stayed on the blocks path (unslothai/unsloth#9540).
