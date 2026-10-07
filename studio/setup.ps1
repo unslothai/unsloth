@@ -2756,7 +2756,8 @@ function Test-LlamaBuildToolsMissing {
 }
 
 # A failed prebuilt download is not consent to a machine-wide, multi-GB toolchain. Explicit
-# source-build requests (FORCE_COMPILE, a PR, a custom source) never reach this.
+# source-build requests (FORCE_COMPILE, a PR, a custom source) never reach this. Headless
+# runs outside Unsloth Desktop (CI, a piped log) keep installing: no one is there to ask.
 function Test-LlamaBuildToolsInstallAllowed {
     $opt = "$env:UNSLOTH_INSTALL_BUILD_TOOLS".Trim().ToLowerInvariant()
     if ($opt -in @("1", "true", "yes")) { return $true }
@@ -2765,13 +2766,13 @@ function Test-LlamaBuildToolsInstallAllowed {
     if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
     # The CLI adds -NonInteractive whenever stdout is not a tty (a piped log, CI), and Read-Host
     # throws there even with a console on stdin.
-    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return $false }
+    if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return $true }
     Write-StudioLine ""
     Write-StudioLine "The prebuilt llama.cpp could not be installed. Building it from source needs Git," -ForegroundColor Yellow
     Write-StudioLine "CMake and Visual Studio Build Tools (plus the CUDA Toolkit on NVIDIA): several GB," -ForegroundColor Yellow
     Write-StudioLine "installed machine-wide via winget. Without them Unsloth Studio still runs, but GGUF" -ForegroundColor Yellow
     Write-StudioLine "chat and export are disabled." -ForegroundColor Yellow
-    try { $reply = Read-Host "  Install the build tools now? [y/N]" } catch { return $false }
+    try { $reply = Read-Host "  Install the build tools now? [y/N]" } catch { return $true }
     return ($reply -match '^\s*y(es)?\s*$')
 }
 
@@ -11027,6 +11028,9 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
         [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
         [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
         [Console]::Out.Flush()
+    } elseif ($script:LlamaBuildToolsDeclined) {
+        # The user said no to the toolchain; failing the install would punish the answer.
+        step "llama.cpp" "unavailable; GGUF inference is disabled until the build tools are installed" "Yellow"
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
     }

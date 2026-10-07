@@ -43,6 +43,16 @@ Describe 'Test-LlamaBuildToolsInstallAllowed' {
         Should -Invoke Read-Host -Times 0 -Exactly
     }
 
+    It 'headless runs outside Unsloth Desktop keep installing, without a prompt' {
+        if (-not ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected)) {
+            Set-ItResult -Skipped -Because 'needs a redirected console, as under CI'
+            return
+        }
+        Mock Read-Host { throw 'prompted' }
+        Test-LlamaBuildToolsInstallAllowed | Should -BeTrue
+        Should -Invoke Read-Host -Times 0 -Exactly
+    }
+
     It 'the opt-in still wins inside Unsloth Desktop' {
         $env:UNSLOTH_TAURI_MODE = '1'
         $env:UNSLOTH_INSTALL_BUILD_TOOLS = '1'
@@ -72,6 +82,13 @@ Describe 'only the automatic fallback is gated' {
         $next = $script:SetupText.IndexOf('$script:LlamaSourceBuildIsFallback = $true')
         $next | Should -BeGreaterThan $at
         $script:SetupText.Substring($at, $next - $at).Split("`n").Count | Should -BeLessOrEqual 3
+    }
+
+    It 'a declined toolchain finishes the install instead of failing it' {
+        $declined = $script:SetupText.IndexOf('} elseif ($script:LlamaBuildToolsDeclined) {', $script:SetupText.IndexOf('[TAURI:DIAG] llama_cpp=unavailable'))
+        $fatal = $script:SetupText.IndexOf('Exit-SetupFailure "llama.cpp setup did not produce a usable server"')
+        $declined | Should -BeGreaterThan 0
+        $declined | Should -BeLessThan $fatal
     }
 
     It 'the gate checks the fallback flag before asking' {
