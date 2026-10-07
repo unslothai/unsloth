@@ -2052,12 +2052,7 @@ _PACKED_SEQUENCE_PATCH_FLAG = "_unsloth_patched_is_packed_sequence"
 
 
 def _mrope_position_ids_read_as_packed(is_packed_sequence):
-    """Does this `_is_packed_sequence` call one unpadded mRoPE row packed?
-
-    Shape `(3, 1, L)` is what transformers 5.3's Qwen3.5 hands every full
-    attention layer (huggingface/transformers#44910): `shape[1]` is then the
-    batch, so the check compares positions against `arange(1)` and says True.
-    """
+    """Does `_is_packed_sequence` call Qwen3.5's `(3, 1, L)` mRoPE ids packed (transformers#44910)?"""
     try:
         import torch
         positions = torch.arange(4, device = "cpu").view(1, 1, 4).expand(3, 1, 4)
@@ -2069,13 +2064,8 @@ def _mrope_position_ids_read_as_packed(is_packed_sequence):
 def fix_transformers_flash_attention_mrope_packed_sequence():
     """Stop flash attention reading one unpadded Qwen3.5 row as three packed ones.
 
-    For a batch of one with no padding, transformers 5.3 passes `(3, 1, L)`
-    mRoPE position ids into `_flash_attention_forward`, `_is_packed_sequence`
-    answers True, and `_prepare_from_posids` flattens all three rows into
-    `cu_seqlens = [0, L, 2L, 3L]` over a q/k/v of L tokens. flash-attn then reads
-    and writes 2L tokens past its buffers: compute-sanitizer reports 8319
-    invalid reads for that call, and the stray writes corrupt neighbouring
-    tensors (NaN logits in Clef calibration, an illegal memory access on A100).
+    transformers 5.3 turns `(3, 1, L)` mRoPE ids into `cu_seqlens = [0, L, 2L, 3L]`
+    over L tokens, so flash-attn reads and writes 2L tokens out of bounds.
     Packed sequences are flattened 2D `(1, total)` ids, so more dims never are.
     """
     try:

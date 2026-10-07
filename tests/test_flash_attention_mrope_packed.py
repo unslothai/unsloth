@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""One unpadded Qwen3.5 row must not reach flash attention as three packed rows.
-
-transformers 5.3 hands `_flash_attention_forward` the `(3, 1, L)` mRoPE ids, and
-`_is_packed_sequence` reads `shape[1]` (the batch) as the length, so flash-attn
-ran varlen with `cu_seqlens = [0, L, 2L, 3L]` over L tokens (transformers#44910).
-"""
+"""One unpadded Qwen3.5 row must not reach flash attention as three packed rows (transformers#44910)."""
 
 import pytest
 
@@ -48,7 +43,6 @@ def test_two_dim_packing_is_unchanged(patched):
 
 
 def test_probe_reads_the_original(patched):
-    # The probe must see the upstream function, so a reload or second import re-detects the bug.
     original = getattr(patched, "__wrapped__", patched)
     assert _mrope_position_ids_read_as_packed(original) == bool(original(_mrope(4), batch_size = 1))
     assert not _mrope_position_ids_read_as_packed(patched)
