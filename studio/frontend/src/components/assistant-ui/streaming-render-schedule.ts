@@ -67,7 +67,11 @@ function hasLinkDefinition(text: string): boolean {
   let nextBracket = bracket < 0 ? -1 : text.indexOf("[", bracket + 1);
   let close = -1;
   let nextClose = text.indexOf("]");
-  for (let end = text.indexOf("]:"); end >= 0; end = text.indexOf("]:", end + 1)) {
+  for (
+    let end = text.indexOf("]:");
+    end >= 0;
+    end = text.indexOf("]:", end + 1)
+  ) {
     while (nextBracket >= 0 && nextBracket <= end) {
       bracket = nextBracket;
       nextBracket = text.indexOf("[", bracket + 1);
@@ -93,7 +97,8 @@ function hasLinkDefinition(text: string): boolean {
 }
 // A label may sit behind any mix of container markers. A list marker needs
 // whitespace after it or no list opens: `-[label]:` is prose, not a bullet.
-const CONTAINER_PREFIX = "[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*";
+const CONTAINER_PREFIX =
+  "[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\\d{1,9}[.)])[ \t]+))*";
 const LINK_DEFINITION_LINE_RE = new RegExp(
   `^${CONTAINER_PREFIX}${LINK_DEFINITION_RE.source}`,
   `m${LINK_DEFINITION_RE.flags}`,
@@ -116,7 +121,8 @@ const LINK_DEFINITION_KEY_RE = new RegExp(
   `g${LINK_DEFINITION_LINE_RE.flags}`,
 );
 // code blocks start with a fence or indentation to column four, including tabs.
-const CODE_BLOCK_RE = /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
+const CODE_BLOCK_RE =
+  /^(?: {0,3}(?:`{3,}|~{3,})|(?: {4,}| {0,3}\t)[ \t]*[^ \t\r\n])/;
 // backtick fence info cannot contain backticks, while tilde fence info can.
 const BACKTICK_OPENER_RE = /^ {0,3}`{3,}([^\n]*)/;
 
@@ -139,7 +145,10 @@ function codeSpanRegions(
   text: string,
   inlineLinks: readonly [number, number][] = [],
 ): [number, number][] {
-  const breaks = Array.from(text.matchAll(BLANK_LINE_RE), (match) => match.index);
+  const breaks = Array.from(
+    text.matchAll(BLANK_LINE_RE),
+    (match) => match.index,
+  );
   const runs: { start: number; end: number; paragraph: number }[] = [];
   let paragraph = 0;
   for (const match of text.matchAll(BACKTICK_RUN_RE)) {
@@ -216,43 +225,96 @@ function isAsciiPunctuation(char: string): boolean {
   );
 }
 
-function skipInlineWhitespace(text: string, from: number): number {
+type InlineLinkScan = {
+  readonly blankLines: number[];
+  readonly angleOpeners: number[];
+  readonly angleClosers: number[];
+  readonly doubleQuoteClosers: number[];
+  readonly singleQuoteClosers: number[];
+  readonly parenthesisClosers: number[];
+  readonly lineEndings: number[];
+  readonly whitespaceEnds: Map<number, number>;
+};
+
+function inlineLinkScan(text: string): InlineLinkScan {
+  const scan: InlineLinkScan = {
+    blankLines: Array.from(
+      text.matchAll(BLANK_LINE_RE),
+      (match) => match.index,
+    ),
+    angleOpeners: [],
+    angleClosers: [],
+    doubleQuoteClosers: [],
+    singleQuoteClosers: [],
+    parenthesisClosers: [],
+    lineEndings: [],
+    whitespaceEnds: new Map(),
+  };
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at];
+    if (char === "\n") {
+      scan.lineEndings.push(at);
+    }
+    if (
+      char === "\\" &&
+      text[at + 1] !== undefined &&
+      isAsciiPunctuation(text[at + 1])
+    ) {
+      at += 1;
+      continue;
+    }
+    if (char === "<") scan.angleOpeners.push(at);
+    else if (char === ">") scan.angleClosers.push(at);
+    else if (char === '"') scan.doubleQuoteClosers.push(at);
+    else if (char === "'") scan.singleQuoteClosers.push(at);
+    else if (char === ")") scan.parenthesisClosers.push(at);
+  }
+  return scan;
+}
+
+function nextOffset(offsets: readonly number[], from: number): number {
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (offsets[middle] < from) low = middle + 1;
+    else high = middle;
+  }
+  return offsets[low] ?? Number.POSITIVE_INFINITY;
+}
+
+function skipInlineWhitespace(
+  text: string,
+  from: number,
+  scan: InlineLinkScan,
+): number {
+  const cached = scan.whitespaceEnds.get(from);
+  if (cached !== undefined) return cached;
   let at = from;
   while (text[at] === " " || text[at] === "\t") {
     at += 1;
   }
   if (text[at] !== "\n") {
+    scan.whitespaceEnds.set(from, at);
     return at;
   }
   at += 1;
   while (text[at] === " " || text[at] === "\t") {
     at += 1;
   }
-  return text[at] === "\n" ? -1 : at;
+  const end = text[at] === "\n" ? -1 : at;
+  scan.whitespaceEnds.set(from, end);
+  return end;
 }
 
-function angleDestinationEnd(text: string, from: number): number {
-  for (let at = from + 1; at < text.length; at += 1) {
-    if (text[at] === "\n" || text[at] === "<") {
-      return -1;
-    }
-    if (
-      text[at] === "\\" &&
-      text[at + 1] !== undefined &&
-      isAsciiPunctuation(text[at + 1])
-    ) {
-      at += 1;
-    } else if (text[at] === ">") {
-      return at + 1;
-    }
-  }
-  return -1;
+function angleDestinationEnd(from: number, scan: InlineLinkScan): number {
+  const opener = nextOffset(scan.angleOpeners, from + 1);
+  const closer = nextOffset(scan.angleClosers, from + 1);
+  const lineEnding = nextOffset(scan.lineEndings, from + 1);
+  return closer < opener && closer < lineEnding ? closer + 1 : -1;
 }
 
-function bareDestinationEnd(
-  text: string,
-  from: number,
-): [number, number] {
+function bareDestinationEnd(text: string, from: number): [number, number] {
   let depth = 0;
   for (let at = from; at < text.length; at += 1) {
     const char = text[at];
@@ -281,49 +343,45 @@ function bareDestinationEnd(
   return depth === 0 ? [text.length, -1] : [-1, -1];
 }
 
-function inlineTitleEnd(text: string, from: number): number {
-  let at = from;
-  const opener = text[at];
+function inlineTitleEnd(
+  text: string,
+  from: number,
+  scan: InlineLinkScan,
+): number {
+  const opener = text[from];
   const closer = opener === "(" ? ")" : opener;
   if (opener !== '"' && opener !== "'" && opener !== "(") {
     return -1;
   }
-  at += 1;
-  for (; at < text.length; at += 1) {
-    if (
-      text[at] === "\\" &&
-      text[at + 1] !== undefined &&
-      isAsciiPunctuation(text[at + 1])
-    ) {
-      at += 1;
-    } else if (text[at] === closer) {
-      at = skipInlineWhitespace(text, at + 1);
-      return at >= 0 && text[at] === ")" ? at + 1 : -1;
-    } else if (text[at] === "\n") {
-      let next = at + 1;
-      while (text[next] === " " || text[next] === "\t") {
-        next += 1;
-      }
-      if (text[next] === "\n") {
-        return -1;
-      }
-    }
-  }
-  return -1;
+  const offsets =
+    closer === '"'
+      ? scan.doubleQuoteClosers
+      : closer === "'"
+        ? scan.singleQuoteClosers
+        : scan.parenthesisClosers;
+  const close = nextOffset(offsets, from + 1);
+  if (!Number.isFinite(close)) return -1;
+  if (nextOffset(scan.blankLines, from) < close) return -1;
+  const end = skipInlineWhitespace(text, close + 1, scan);
+  return end >= 0 && text[end] === ")" ? end + 1 : -1;
 }
 
-function inlineLinkEnd(text: string, from: number): number {
+function inlineLinkEnd(
+  text: string,
+  from: number,
+  scan: InlineLinkScan,
+): number {
   if (text[from] !== "(") {
     return -1;
   }
-  let at = skipInlineWhitespace(text, from + 1);
+  let at = skipInlineWhitespace(text, from + 1, scan);
   if (at < 0) {
     return -1;
   }
 
   let linkEnd = -1;
   if (text[at] === "<") {
-    at = angleDestinationEnd(text, at);
+    at = angleDestinationEnd(at, scan);
   } else {
     [at, linkEnd] = bareDestinationEnd(text, at);
   }
@@ -332,30 +390,42 @@ function inlineLinkEnd(text: string, from: number): number {
   }
 
   const destinationEnd = at;
-  at = skipInlineWhitespace(text, at);
+  at = skipInlineWhitespace(text, at, scan);
   if (at < 0) {
     return -1;
   }
   if (text[at] === ")") {
     return at + 1;
   }
-  return at > destinationEnd ? inlineTitleEnd(text, at) : -1;
+  return at > destinationEnd ? inlineTitleEnd(text, at, scan) : -1;
 }
 
-function inlineLinkRegions(text: string): [number, number][] {
+function inlineLinkRegions(
+  text: string,
+  scan: InlineLinkScan,
+): [number, number][] {
   const regions: [number, number][] = [];
-  for (let at = text.indexOf("]("); at >= 0; at = text.indexOf("](", at + 1)) {
-    if (isEscaped(text, at)) continue;
-    const blankLine = text.lastIndexOf("\n\n", at);
-    const paragraphStart = blankLine < 0 ? 0 : blankLine + 2;
-    let opener = text.lastIndexOf("[", at - 1);
-    while (opener >= paragraphStart && isEscaped(text, opener)) {
-      opener = text.lastIndexOf("[", opener - 1);
+  let opener = -1;
+  let blankLine = 0;
+  for (let at = 0; at + 1 < text.length; at += 1) {
+    while (
+      blankLine < scan.blankLines.length &&
+      scan.blankLines[blankLine] < at
+    ) {
+      opener = -1;
+      blankLine += 1;
     }
-    if (opener < paragraphStart) continue;
-    const end = inlineLinkEnd(text, at + 1);
-    if (end < 0) continue;
-    regions.push([at, end]);
+    if (text[at] === "[" && !isEscaped(text, at)) {
+      opener = at;
+    } else if (
+      opener >= 0 &&
+      text[at] === "]" &&
+      text[at + 1] === "(" &&
+      !isEscaped(text, at)
+    ) {
+      const end = inlineLinkEnd(text, at + 1, scan);
+      if (end >= 0) regions.push([at, end]);
+    }
   }
   return regions;
 }
@@ -467,7 +537,7 @@ function inlineHtmlEnd(text: string, from: number): number {
     while (
       text[at] !== undefined &&
       !isHtmlWhitespace(text[at]) &&
-      !'"\'=<>`'.includes(text[at])
+      !"\"'=<>`".includes(text[at])
     ) {
       at += 1;
     }
@@ -491,7 +561,10 @@ function inlineHtmlRegions(text: string): [number, number][] {
 const DOLLAR_RUN_RE = /\$+/g;
 
 function inlineMathRegions(text: string): [number, number][] {
-  const breaks = Array.from(text.matchAll(BLANK_LINE_RE), (match) => match.index);
+  const breaks = Array.from(
+    text.matchAll(BLANK_LINE_RE),
+    (match) => match.index,
+  );
   let paragraph = 0;
   const runs = Array.from(text.matchAll(DOLLAR_RUN_RE), (match) => {
     while (paragraph < breaks.length && breaks[paragraph] < match.index) {
@@ -526,10 +599,13 @@ function inlineMathRegions(text: string): [number, number][] {
   return regions;
 }
 
-function opaqueInlineRegions(text: string): [number, number][] {
+function opaqueInlineRegions(
+  text: string,
+  scan: InlineLinkScan,
+): [number, number][] {
   if (!text.includes("`")) return [];
   const candidates = [
-    ...inlineLinkRegions(text),
+    ...inlineLinkRegions(text, scan),
     ...autolinkRegions(text),
     ...inlineHtmlRegions(text),
     ...inlineMathRegions(text),
@@ -562,8 +638,9 @@ function hasShortcutReference(
     return false;
   }
   const uses = references;
+  const linkScan = exact ? inlineLinkScan(uses) : null;
   const code = exact
-    ? codeSpanRegions(uses, opaqueInlineRegions(uses))
+    ? codeSpanRegions(uses, opaqueInlineRegions(uses, linkScan!))
     : [];
   let codeIndex = 0;
   let inlineEnd = -1;
@@ -583,7 +660,7 @@ function hasShortcutReference(
       labels.has(normalizeLabel(match[1]))
     ) {
       if (!exact) return true;
-      inlineEnd = inlineLinkEnd(uses, match.index + match[0].length);
+      inlineEnd = inlineLinkEnd(uses, match.index + match[0].length, linkScan!);
       if (inlineEnd >= 0) continue;
       return true;
     }
@@ -614,7 +691,11 @@ function hasLinkReference(text: string): boolean {
   let close = -1;
   let nextClose = text.indexOf("]");
   let after = -1;
-  for (let mid = text.indexOf("]["); mid >= 0; mid = text.indexOf("][", mid + 1)) {
+  for (
+    let mid = text.indexOf("][");
+    mid >= 0;
+    mid = text.indexOf("][", mid + 1)
+  ) {
     // No empty label, so the opener is at `mid - 2` or earlier. Forward: `lastIndexOf` is not.
     while (nextBracket >= 0 && nextBracket <= mid - 2) {
       bracket = nextBracket;
@@ -716,13 +797,9 @@ function documentProse(markdown: string): string | null {
   ) {
     return null;
   }
-  const prose = normalizeLineEndings(
-    proseBlocksOf(markdown)
-      .join("\n\n"),
-  );
+  const prose = normalizeLineEndings(proseBlocksOf(markdown).join("\n\n"));
   const referenceProse = normalizeLineEndings(
-    referenceProseBlocksOf(markdown)
-      .join("\n\n"),
+    referenceProseBlocksOf(markdown).join("\n\n"),
   );
   return LINK_DEFINITION_LINE_RE.test(prose) &&
     (hasLinkReference(prose) || hasShortcutReference(prose, referenceProse))
