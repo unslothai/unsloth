@@ -129,6 +129,24 @@ def test_a_url_download_takes_the_owner_of_the_directory_it_lands_in(runner, mon
     assert owners == [(st.st_uid, st.st_gid)]
 
 
+def test_unsloth_run_drops_to_the_requested_host_user(runner, monkeypatch):
+    calls = []
+    monkeypatch.setenv("UNSLOTH_RUN_UID", "1234")
+    monkeypatch.setenv("UNSLOTH_RUN_GID", "5678")
+    monkeypatch.setattr(runner.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(runner.os, "getegid", lambda: 0)
+    monkeypatch.setattr(runner.os, "getgroups", lambda: [0, 44])
+    monkeypatch.setattr(runner.os, "setgroups", lambda groups: calls.append(("groups", groups)))
+    monkeypatch.setattr(runner.os, "setgid", lambda gid: calls.append(("gid", gid)))
+    monkeypatch.setattr(runner.os, "setuid", lambda uid: calls.append(("uid", uid)))
+
+    runner._drop_run_privileges()
+
+    assert calls == [("groups", [44]), ("gid", 5678), ("uid", 1234)]
+    assert "UNSLOTH_RUN_UID" not in os.environ
+    assert "UNSLOTH_RUN_GID" not in os.environ
+
+
 def _run_sh_argv(tmp_path, *command):
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -165,7 +183,10 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
     )
     image = argv.index("unsloth/unsloth:latest")
     assert ["-w", "/workspace/host"] in [argv[i : i + 2] for i in range(image)]
-    assert ["--user", f"{os.getuid()}:{os.getgid()}"] in [argv[i : i + 2] for i in range(image)]
+    pairs = [argv[i : i + 2] for i in range(image)]
+    assert ["-e", f"UNSLOTH_RUN_UID={os.getuid()}"] in pairs
+    assert ["-e", f"UNSLOTH_RUN_GID={os.getgid()}"] in pairs
+    assert "--user" not in argv[:image]
     assert f"{tmp_path}:/workspace/host" in argv[:image]
 
 
@@ -180,7 +201,8 @@ def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path, command):
     argv = _run_sh_argv(tmp_path, *command)
     flags = argv[: argv.index("unsloth/unsloth:latest")]
     assert "-w" not in flags
-    assert "--user" not in flags
+    assert not any(flag.startswith("UNSLOTH_RUN_UID=") for flag in flags)
+    assert not any(flag.startswith("UNSLOTH_RUN_GID=") for flag in flags)
 
 
 if __name__ == "__main__":

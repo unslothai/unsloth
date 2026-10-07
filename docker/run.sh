@@ -400,13 +400,13 @@ fi
 
 # URL runs use mounted $PWD so unsloth-run saves survive --rm; local paths still use /workspace
 WORKDIR_FLAG=()
-USER_FLAG=()
+RUN_USER_ENV=()
 if [[ $# -gt 0 && "$1" == "unsloth-run" ]]; then
     for _arg in "${@:2}"; do
         case "$_arg" in
             http://* | https://*)
                 WORKDIR_FLAG=(-w /workspace/host)
-                USER_FLAG=(--user "$(id -u):$(id -g)")
+                RUN_USER_ENV=(-e "UNSLOTH_RUN_UID=$(id -u)" -e "UNSLOTH_RUN_GID=$(id -g)")
                 break
                 ;;
         esac
@@ -424,7 +424,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
     ${WORKDIR_FLAG[@]+"${WORKDIR_FLAG[@]}"} \
-    ${USER_FLAG[@]+"${USER_FLAG[@]}"} \
+    ${RUN_USER_ENV[@]+"${RUN_USER_ENV[@]}"} \
     ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
     ${MODEL_MOUNTS[@]+"${MODEL_MOUNTS[@]}"} \
     "${ENV_FORWARD[@]}" \

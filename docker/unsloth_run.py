@@ -150,6 +150,23 @@ def _open_url_download(url):
         return path, fd
 
 
+def _drop_run_privileges():
+    uid = os.environ.pop("UNSLOTH_RUN_UID", None)
+    gid = os.environ.pop("UNSLOTH_RUN_GID", None)
+    if uid is None and gid is None:
+        return
+    if uid is None or gid is None or not uid.isdigit() or not gid.isdigit():
+        raise SystemExit("UNSLOTH_RUN_UID and UNSLOTH_RUN_GID must be non-negative integers")
+    uid, gid = int(uid), int(gid)
+    if os.geteuid() == uid and os.getegid() == gid:
+        return
+    if os.geteuid() != 0:
+        raise SystemExit("unsloth-run cannot switch to the requested host UID/GID")
+    os.setgroups([group for group in os.getgroups() if group != 0])
+    os.setgid(gid)
+    os.setuid(uid)
+
+
 def main():
     ap = argparse.ArgumentParser(prog = "unsloth-run")
     ap.add_argument("notebook")
@@ -169,6 +186,7 @@ def main():
     pin, model = _scan(nb)
     want = args.tf or pin or (compat.tier_for_model(model) if compat else None)
     sidecar = compat.sidecar_for(want) if (compat and want) else None
+    _drop_run_privileges()
 
     tmp_files = []
     publish_from = None
