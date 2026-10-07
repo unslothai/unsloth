@@ -143,7 +143,6 @@ class _JinjaTokenizer:
 
     def apply_chat_template(self, messages, **kwargs):
         from transformers.utils.chat_template_utils import _compile_jinja_template
-
         return _compile_jinja_template(self.chat_template).render(messages = messages)
 
 
