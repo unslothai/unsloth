@@ -5101,7 +5101,13 @@ class DiffusionStatusResponse(BaseModel):
         "picker's enabled state). Diffusers only, for families with a ControlNet pipeline; False "
         "for the native engine, GGUF-via-diffusers, and torchao fp8/int8 dense.",
     )
-    # Additive per-control provenance {control: {value, source, reason}}; null when nothing is loaded. Declared explicitly so pydantic extra='ignore' keeps it.
+    supports_negative_prompt: bool = Field(
+        True,
+        description = "Whether the loaded model applies a negative prompt on this engine "
+        "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
+        "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
@@ -5110,11 +5116,7 @@ class DiffusionStatusResponse(BaseModel):
 
 
 class DiffusionInferenceInfo(BaseModel):
-    """One family's bf16 component sizes + estimated resident footprint per quant scheme.
-
-    Mirrors the dicts ``family_inference_infos()`` returns: the bf16-resident transformer /
-    text-encoder / VAE sizes, and the estimated resident GB under bf16 and each dense
-    transformer-quant scheme (transformer * factor + companions), rounded to 1 decimal."""
+    """bf16 component sizes and 0.1 GB resident estimates by transformer quantization scheme."""
 
     family: str = Field(..., description = "Diffusion family name (auto-policy table key).")
     transformer_bf16_gb: float = Field(..., description = "bf16-resident transformer size in GB.")

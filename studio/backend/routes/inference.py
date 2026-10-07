@@ -46394,7 +46394,7 @@ async def generate_diffusion_image(
                             if request.prompts and index < len(request.prompts)
                             else request.prompt
                         ),
-                        "negative_prompt": request.negative_prompt,
+                        "negative_prompt": result.get("negative_prompt"),
                         # Persist the ACTUAL output size, not the request sliders: the conditioned workflows derive it from the upload.
                         "width": getattr(image, "width", None) or request.width,
                         "height": getattr(image, "height", None) or request.height,

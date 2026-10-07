@@ -2276,12 +2276,15 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+_EMBEDDED_GUIDANCE_FAMILIES = ("flux.1", "flux.1-kontext", "flux.2-dev")
+
+
 def _map_guidance(
     fam: DiffusionFamily, guidance: Optional[float]
 ) -> tuple[Optional[float], Optional[float]]:
     """(cfg_scale, guidance) for sd-cli. Guidance-distilled FLUX runs cfg 1.0 plus the embedded guidance; the rest
     (FLUX.2-klein included: no guidance embedder) use real CFG, 1.0 when <= 1. Always explicit: sd.cpp defaults to 7.0."""
-    if fam.name in ("flux.1", "flux.1-kontext", "flux.2-dev"):
+    if fam.name in _EMBEDDED_GUIDANCE_FAMILIES:
         return 1.0, (float(guidance) if guidance is not None else None)
     if fam.name == "z-image":
         # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
@@ -3825,6 +3828,8 @@ class SdCppDiffusionBackend:
                 else:
                     seed = int(seed)
                 cfg_scale, flux_guidance = _map_guidance(state.family, guidance)
+                if cfg_scale <= 1.0:
+                    negative_prompt = None
                 # Resolve selected LoRAs up front (a bad id gives a clear 400). Drop weight-0 rows BEFORE the support
                 # gate so an only-disabled request stays a no-op.
                 lora_resolved: list = []
@@ -3910,6 +3915,7 @@ class SdCppDiffusionBackend:
                     "images": images,
                     "seed": int(seed),
                     "seeds": seeds,
+                    "negative_prompt": negative_prompt or None,
                     "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD, for the recipe: the repo id alone does not say WHICH GGUF quant ran, and two quants
                     # make different pixels.
@@ -4479,6 +4485,7 @@ class SdCppDiffusionBackend:
                 transformer_quant = None,
             ),
             "supports_controlnet": False,
+            "supports_negative_prompt": state.family.name not in _EMBEDDED_GUIDANCE_FAMILIES,
             # "server" = resident sd-server (load once); "oneshot" = legacy per-image sd-cli.
             "native_mode": state.mode,
             # txt2img always; reference and edit only where this build and its loaded assets run them.
