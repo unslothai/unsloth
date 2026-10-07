@@ -31,7 +31,7 @@ export interface SegmentRecorder {
   ): void;
 }
 
-// A container the engine only advertises if it has an audio encoder for it.
+// A container the engine can only advertise if it has a working audio encoder.
 const OPUS_MIME_TYPES = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus"];
 // Apple's WebKit builds also advertise audio/mp4 alone, and there MediaRecorder does encode,
 // so the platform is what separates them from WebKitGTK.
@@ -250,9 +250,8 @@ type RecorderListener = ((event: RecordedDataEvent) => void) &
 
 let mediaRecorderRefusedStart = false;
 
-/** A MediaRecorder that becomes a PcmRecorder if `start()` is refused. WebKitGTK advertises Opus
- *  from its encoders alone, then throws NotSupportedError when GStreamer's `uritranscodebin`
- *  (gst-plugins-bad) is not installed (#11939). */
+/** A MediaRecorder that becomes a PcmRecorder if `start()` is refused: WebKitGTK advertises Opus,
+ *  then throws NotSupportedError without gst-plugins-bad's `uritranscodebin` (#11939). */
 class StartFallbackRecorder implements SegmentRecorder {
   private recorder: SegmentRecorder;
   private readonly stream: MediaStream;
@@ -312,9 +311,8 @@ class StartFallbackRecorder implements SegmentRecorder {
   }
 }
 
-/** A recorder for `stream`: MediaRecorder where it encodes, PCM where it does not or refuses to
- *  start. `mimeType` is the MediaRecorder preference and is unused on the PCM path, which always
- *  makes WAV. */
+/** A recorder for `stream`: MediaRecorder where it encodes, PCM where it does not. `mimeType`
+ *  is the MediaRecorder preference and is unused on the PCM path, which always makes WAV. */
 export function createAudioRecorder(
   stream: MediaStream,
   mimeType?: string,
