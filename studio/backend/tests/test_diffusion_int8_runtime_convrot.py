@@ -525,7 +525,6 @@ def test_zimage_rotated_artifact_is_only_named_in_its_own_repo(monkeypatch):
 
 
 def test_qwen_image_21_convrot_is_default_on_and_the_env_is_its_kill_switch(monkeypatch):
-    # ComfyUI's Qwen-Image-2.1 template ships qwen_image_2.1_int8_convrot; the plain INT8 build drifts further from bf16
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     assert tq.int8_convrot_enabled("qwen-image-2.1") and tq.int8_convrot_enabled(" Qwen-Image-2.1 ")
     for off in ("0", "off", "false", "no"):
@@ -553,12 +552,11 @@ def test_qwen_image_21_int8_resolves_the_rotated_artifact_first_unless_killed(
         fam = detect_family(repo)
         assert fam is not None and fam.name == "qwen-image-2.1"
         src = resolve_prequant_source(fam, "int8")
-        # ComfyUI-format twins ride ahead of each int8 artifact (same codes); the order is about Studio's own names
+        # -ComfyUI twins ride ahead of each artifact; compare Studio's own names
         everything = candidate_filenames_of(src)
         names = tuple(n for n in everything if not is_comfy_prequant_filename(n))
         assert everything[0] == comfy_prequant_filename(names[0])
         assert src.location == "unsloth/Qwen-Image-2.1-FP8"
-        # the plain build stays in the chain behind it, so older builds and an offline cache keep loading it
         assert "Qwen-Image-2.1-INT8.safetensors" in names
         assert (names[0] == "Qwen-Image-2.1-INT8-ConvRot.safetensors") is rotated_first
         assert ("Qwen-Image-2.1-INT8-ConvRot.safetensors" in names) is rotated_first
@@ -568,7 +566,6 @@ def test_qwen_image_21_int8_resolves_the_rotated_artifact_first_unless_killed(
 
 
 def test_qwen_image_21_runtime_int8_rotates_by_default(monkeypatch):
-    # no hosted artifact (dense quant fallback): the runtime int8 path rotates the same Linears the artifact does
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     seen = []
     _stub_torchao(monkeypatch, seen)
@@ -583,7 +580,6 @@ def test_qwen_image_21_runtime_int8_rotates_by_default(monkeypatch):
 
 
 def test_qwen_image_21_offline_default_still_loads_the_cached_plain_artifact(monkeypatch, tmp_path):
-    # an existing user with only the plain INT8 cached and no Hub keeps loading it under the new default
     from huggingface_hub.errors import LocalEntryNotFoundError
 
     from core.inference import diffusion_prequant as pq
@@ -614,13 +610,11 @@ def test_qwen_image_21_offline_default_still_loads_the_cached_plain_artifact(mon
     monkeypatch.setattr("huggingface_hub.hf_hub_download", _dl)
     source = pq.resolve_prequant_source(detect_family("Qwen/Qwen-Image-2.1"), "int8")
     assert pq._resolve_checkpoint_path(source, None, None) == str(plain)
-    # one Hub probe (the head of the chain, the rotated build's ComfyUI twin), then the offline cache walk
     assert asked == ["Qwen-Image-2.1-INT8-ConvRot-ComfyUI.safetensors"]
 
 
 def test_qwen_image_21_rotated_set_is_exactly_the_int8_quantized_set(monkeypatch):
-    # The real Qwen-Image-2.1 skeleton on the meta device: now that ConvRot is the default, every Linear the int8
-    # filter quantizes must be rotated (an unrotated one is a silent accuracy hole) and nothing else.
+    # an int8-quantized but unrotated Linear would be a silent accuracy hole
     monkeypatch.delenv(tq.INT8_CONVROT_ENV)
     diffusers = pytest.importorskip("diffusers")
     cls = getattr(diffusers, "QwenImage21Transformer2DModel", None)

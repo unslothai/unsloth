@@ -1224,7 +1224,7 @@ def _is_zimage_ff(module: Any) -> bool:
 def _swiglu_layout_allowed(module: Any) -> bool:
     if _SWIGLU_ALL_LAYOUTS or _is_zimage_ff(module):
         return True
-    # Qwen-Image-2.1 ConvRot: rotated down projection, so the SwiGLU kernel never runs (diffusion_qwenimage21_fused)
+    # rotated down projection: the SwiGLU kernel never runs
     from .diffusion_qwenimage21_fused import rotated_ff
     return rotated_ff(module)
 
@@ -1272,8 +1272,8 @@ def int8_linear(module: Any, x: Any) -> Any:
 
 
 def int8_linear_core(module: Any, x: Any) -> Any:
-    """``int8_linear`` past its wrapper checks, for a forward installed on ``module`` itself: anything the fast path
-    does not cover runs the class forward (never ``module(x)``, which would re-enter that forward)."""
+    """``int8_linear`` minus its wrapper checks, for a forward installed on ``module``: fallbacks run the class
+    forward, never ``module(x)`` (would recurse)."""
     import torch
 
     from .diffusion_convrot import is_rotated_linear

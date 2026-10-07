@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for ``diffusion_qwenimage21_fused.py``: Qwen-Image-2.1 ConvRot int8 shares one rotation + act quant per input.
-The exactness tests need CUDA on an arch where ``diffusion_int8_gemm`` leaves rotated Linears stock (sm90 / sm100)."""
+"""``diffusion_qwenimage21_fused``; exactness tests need CUDA sm90 / sm100."""
 
 from __future__ import annotations
 
@@ -81,13 +80,13 @@ def _block(rotate: bool = True):
 def _x(seq = 96, scale = 1.0):
     g = torch.Generator(device = "cpu").manual_seed(1)
     x = torch.randn(1, seq, DIM, generator = g) * scale
-    x[..., :3] *= 40  # outlier channels: the reason ConvRot exists
+    x[..., :3] *= 40
     return x.cuda().to(torch.bfloat16)
 
 
 def _engage(blk):
     with torch.inference_mode(False), torch.no_grad():
-        assert i8f.install(blk) == 1  # the rotated SwiGLU
+        assert i8f.install(blk) == 1
     res = qf.install_modules(blk)
     assert res == {"fused_qkv": 1, "out": 1}
     return res
@@ -113,7 +112,6 @@ def test_shared_projections_equal_the_separate_rotated_ones():
     assert torch.equal(q, ref_q) and torch.equal(k, ref_k) and torch.equal(v, ref_v)
     assert torch.equal(out, ref_out)
     assert torch.equal(y_ff, ref_ff)
-    # the fused rows ARE the parts' rows (views), so a later weight read sees one copy
     assert attn.to_q.weight.qdata.data_ptr() == fused.weight.qdata.data_ptr()
 
 
@@ -130,8 +128,7 @@ def _rope(seq):
 
 @needs_cuda
 def test_compiled_block_stays_within_the_compile_floor(monkeypatch):
-    # Not bit-identical to the stock compile (the shared act quant is the eager-exact kernel, Inductor's own quant is
-    # not): bar = the stock compile's own distance from eager.
+    # Inductor's own act quant is not eager-exact: bar = the stock compile's distance from eager
     traced = []
     real_linear = i8f.int8_linear
 

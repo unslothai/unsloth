@@ -1,23 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image-2.1 ConvRot int8: one rotation + one activation quant per shared input, inside the regional compile.
+"""Qwen-Image-2.1 ConvRot int8: one rotation + one act quant per shared input (QKV, SwiGLU gate/value) in the compile.
 
-Stock, every rotated Linear rotates and quantizes its own input: ``to_q``, ``to_k`` and ``to_v`` three times over the
-same tensor, ``gate_layer`` and ``proj`` twice. The rotation is a bf16 GEMM Inductor cannot fuse, so each copy also
-runs its own act quant pass, and the plain int8 file (whose quant Inductor fuses into the producer and shares) is
-~20% faster per step on B200. The rotation acts on the shared input axis, so the rotated weights of a group
-concatenate along the output axis exactly like plain ones (``diffusion_zimage_fused._fuse_linears``):
-
-- attention: ``to_q/to_k/to_v`` -> one fused ConvRotLinear, one rotation + one quant + one ``_int_mm``; ``to_out``
-  runs the same rotation and the probed act quant kernel (``diffusion_int8_fused.int8_linear``).
-- MLP: ``gate_layer`` + ``proj`` -> ``diffusion_int8_fused``'s split SwiGLU forward (rotated down projection branch:
-  bf16 SiLU product, no SwiGLU kernel), enabled here for the rotated layout only.
-
-Per-row int8 scales make the fused GEMM's rows the separate GEMMs' rows; the act quant is the probed kernel that
-matches torchao bit for bit, so every projection output equals the unfused eager ConvRot one (tests pin it).
-Only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (no fused-dequant GEMM, no ``rotq_i8``:
-sm90, sm100); the plain int8 file and every other arch are untouched. Resident denoisers only (offload keeps stock).
+Rotation is on the shared input axis and int8 scales are per row, so fused outputs equal the separate rotated ones bit
+for bit. Only where ``diffusion_int8_gemm`` leaves rotated Linears on the stock path (sm90, sm100), resident only.
 Kill switch: ``UNSLOTH_DIFFUSION_Q21_CONVROT_FUSED=0``.
 """
 
@@ -50,8 +37,7 @@ def q21_convrot_fused_disabled() -> bool:
 
 
 def arch_ok(device: Any = None) -> bool:
-    """True where ``diffusion_int8_gemm`` keeps rotated Linears on ConvRotLinear's own forward (neither its fused GEMM
-    nor the fused rotation + quant kernel is on for this arch), i.e. where this sharing is the only fast path."""
+    """True where ``diffusion_int8_gemm`` has neither its fused GEMM nor ``rotq_i8`` for this arch."""
     try:
         import torch
 
@@ -73,7 +59,7 @@ def arch_ok(device: Any = None) -> bool:
 
 
 def _rotated_group(linears: list) -> int:
-    """The shared ConvRot group of ``linears`` (> 0), else 0: plain or mixed parts are not this module's business."""
+    """The shared ConvRot group of ``linears``, else 0 (plain or mixed)."""
     from .diffusion_zimage_fused import _rotation_group
 
     group = _rotation_group(linears)
@@ -87,8 +73,7 @@ def _plain(lin: Any) -> bool:
 
 
 def rotated_ff(module: Any) -> bool:
-    """A Qwen-Image-2.1 SwiGLU whose gate, value and down projections all rotate at one group (the split SwiGLU's
-    rotated-down branch reproduces them), on an arch this sharing covers."""
+    """A Qwen-Image-2.1 SwiGLU with rotated gate/value and down projections, on a covered arch."""
     if type(module).__name__ != "QwenImage21SwiGLUFeedForward" or q21_convrot_fused_disabled():
         return False
     try:
@@ -123,7 +108,7 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
             return stock(
                 attn, hidden_states, rotary_emb, layer_cache, kv_cache_mode, cache_write_slice
             )
-        # The stock body below the three projections, op for op (fingerprinted at install).
+        # stock body below the projections, op for op (fingerprinted at install)
         query, key, value = int8_linear(fused, hidden_states).chunk(3, dim = -1)
 
         query = query.unflatten(-1, (attn.heads, -1))
@@ -134,7 +119,7 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
         key = attn.norm_k(key).to(value.dtype)
 
         if rotary_emb is not None:
-            # module global, read per call: diffusion_qwenimage21_rope's real-arithmetic RoPE stays in charge
+            # read per call: diffusion_qwenimage21_rope may have replaced it
             query = mod.apply_rotary_emb_qwen(query, rotary_emb, use_real = False)
             key = mod.apply_rotary_emb_qwen(key, rotary_emb, use_real = False)
 
@@ -160,7 +145,7 @@ def _make_prepare(stock: Any, mod: Any) -> Any:
 
 
 def _out_forward(self: Any, x: Any) -> Any:
-    """``to_out[0]``: the module's own rotation, then the probed act quant + ``_int_mm`` + torchao's epilogue."""
+    """``to_out[0]`` under compile: own rotation + the probed act quant kernel."""
     import torch
 
     if not torch.compiler.is_compiling():
@@ -261,7 +246,7 @@ def install_modules(root: Any, logger: Any = None) -> dict:
 
 
 def uninstall(transformer: Any = None) -> None:
-    """Restore the stock QKV helper; drop the fused Linears (the per-row views stay valid) and the to_out forwards."""
+    """Restore the stock QKV helper; drop the fused Linears and to_out forwards."""
     if transformer is not None:
         from .diffusion_int8_fused import cancel_first_call
         cancel_first_call(transformer, "q21_convrot_fused")

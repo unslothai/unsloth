@@ -249,8 +249,7 @@ _INT8_FAMILY_CONVROT_REPO: dict[str, str] = {
     "z-image": "unsloth/Z-Image-Turbo-FP8",
 }
 
-# Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``). Qwen-Image-2.1 matches
-# ComfyUI's template (qwen_image_2.1_int8_convrot) and renders closer to bf16 than the plain INT8 build.
+# Families whose int8 runs ConvRot unless the env turns it off; the rest stay opt-in (``=1``).
 _INT8_FAMILY_CONVROT_DEFAULT_ON: frozenset[str] = frozenset({"qwen-image-2.1", "z-image"})
 
 INT8_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_CONVROT"

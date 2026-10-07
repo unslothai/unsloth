@@ -1153,7 +1153,7 @@ def _compile_repeated_blocks(
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "z-image fused attention", exc)
         if type(transformer).__name__ == "QwenImage21Transformer2DModel":
-            # After the int8 GEMM swap: it reads which rotated Linears that one left on the stock path.
+            # after the int8 GEMM swap, whose leftovers it reads
             try:
                 from .diffusion_qwenimage21_fused import install as install_q21_fused
                 install_q21_fused(
