@@ -43,12 +43,10 @@ def cell_text(value):
 
 
 def cell_turns(value, role):
-    if (
-        isinstance(value, list)
-        and value
-        and all(isinstance(turn, dict) and {"role", "content"} <= turn.keys() for turn in value)
+    if isinstance(value, list) and all(
+        isinstance(turn, dict) and {"role", "content"} <= turn.keys() for turn in value
     ):
-        return [{"role": turn["role"], "content": cell_text(turn["content"])} for turn in value]
+        return [{**turn, "content": cell_text(turn["content"])} for turn in value]
     return [{"role": role, "content": cell_text(value)}]
 
 

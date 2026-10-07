@@ -524,7 +524,7 @@ def format_dataset(
                                         convo.extend(
                                             turn
                                             for turn in cell_turns(examples[col_name][i], role)
-                                            if turn["content"].strip()
+                                            if turn["content"].strip() or turn.get("tool_calls")
                                         )
                             conversations.append(convo)
 

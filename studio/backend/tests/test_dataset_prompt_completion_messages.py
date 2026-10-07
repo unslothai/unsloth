@@ -89,3 +89,36 @@ def test_prompt_completion_pair_wins_over_another_chat_column(prompt):
     assert check_dataset_format(dataset)["suggested_mapping"] == _MAPPING
     result = format_dataset(dataset)
     assert result["dataset"][0]["conversations"] == [_user("Sky?"), _assistant("Blue")]
+
+
+_CALL = {"id": "c1", "type": "function", "function": {"name": "weather", "arguments": "{}"}}
+
+
+@pytest.mark.parametrize("mapping", [None, _MAPPING], ids = ["auto_mapping", "user_mapping"])
+def test_tool_calls_and_empty_message_lists(mapping):
+    rows = [
+        {
+            "prompt": [_user("Weather?")],
+            "completion": [
+                {"role": "assistant", "content": None, "tool_calls": [_CALL]},
+                {"role": "tool", "content": "Sunny", "tool_call_id": "c1"},
+                _assistant("Sunny"),
+            ],
+        },
+        {"prompt": [_user("Sky?")], "completion": []},
+    ]
+    result = format_dataset(Dataset.from_list(rows), custom_format_mapping = mapping)
+
+    conversations = [
+        [{key: value for key, value in turn.items() if value is not None} for turn in row]
+        for row in result["dataset"]["conversations"]
+    ]
+    assert conversations == [
+        [
+            _user("Weather?"),
+            {"role": "assistant", "content": "", "tool_calls": [_CALL]},
+            {"role": "tool", "content": "Sunny", "tool_call_id": "c1"},
+            _assistant("Sunny"),
+        ],
+        [_user("Sky?")],
+    ]
