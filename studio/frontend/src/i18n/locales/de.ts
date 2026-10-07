@@ -1631,6 +1631,9 @@ export const de = {
         showWhisperUpdates: "whisper.cpp-Update-Benachrichtigungen",
         showWhisperUpdatesDescription:
           "Benachrichtigt, wenn ein neuerer whisper.cpp-Build für Speech-to-Text-Modelle verfügbar ist. Deaktivieren Sie dies, wenn Sie nie Audio transkribieren.",
+        showAudioCppUpdates: "audio.cpp-Update-Benachrichtigungen",
+        showAudioCppUpdatesDescription:
+          "Benachrichtigt, wenn die audio.cpp-Laufzeit ein Update für die Audio-Seiten braucht. Deaktivieren Sie dies, wenn Sie Audio nie verwenden.",
       },
       startup: {
         sectionTitle: "Autostart",

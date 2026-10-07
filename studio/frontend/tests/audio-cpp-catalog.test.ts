@@ -867,10 +867,12 @@ test("an outdated managed runtime names both releases; anything else shows no no
   assert.match(route, /"expected_tag": None,\s*"outdated": False,/);
   const page = readAudioWorkspaceSource();
   assert.match(page, /const nextUpdate = audioCppRuntimeUpdate\(audioCppRuntime\.current\);/);
-  assert.match(page, /\{runtimeUpdate \? \(/);
+  assert.match(page, /\{runtimeUpdate \? \(\s*<AudioRuntimeUpdateNotice\s+update=\{runtimeUpdate\}/);
+  // The CLI route stays for whoever the in-app update is not offered to.
+  const notice = readText("../src/features/audio/components/audio-runtime-update-notice.tsx");
   assert.match(
-    page,
-    /Stop Studio,\{" "\}\s*run\{" "\}\s*<code className="font-mono">unsloth studio update<\/code>,\s*then start Studio again\./,
+    notice,
+    /Stop Unsloth, run\{" "\}\s*<code className="font-mono">unsloth studio update<\/code>, then\s*start it again\./,
   );
 });
 

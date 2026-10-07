@@ -1590,6 +1590,9 @@ export const zhCN = {
         showWhisperUpdates: "whisper.cpp 更新通知",
         showWhisperUpdatesDescription:
           "当有可用于语音识别模型的新版 whisper.cpp 构建时通知你。如果不需要转写音频，可以关闭此项。",
+        showAudioCppUpdates: "audio.cpp 更新通知",
+        showAudioCppUpdatesDescription:
+          "当音频页面所需的 audio.cpp 运行时需要更新时通知你。如果从不使用音频功能，可以关闭此项。",
       },
       startup: {
         sectionTitle: "启动",
