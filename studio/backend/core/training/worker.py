@@ -2631,10 +2631,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
-    if config.get("is_decision"):
-        message = "Decision model training is not supported for MLX training yet."
-        _send("error", error = message)
-        raise NotImplementedError(message)
     if config.get("training_type") == "Continued Pretraining":
         message = "Continued Pretraining is not supported for MLX training yet."
         _send("error", error = message)
@@ -3431,7 +3427,13 @@ def run_mlx_training_process(
 
     try:
         try:
-            _run_mlx_training(event_queue, stop_queue, config)
+            if config.get("is_decision"):
+                # Its own pipeline, as on the torch path; unsloth picks the MLX backend.
+                _download_decision_checkpoint(event_queue, config)
+                from core.training.decision_trainer import run_decision_training
+                run_decision_training(event_queue, stop_queue, config)
+            else:
+                _run_mlx_training(event_queue, stop_queue, config)
         finally:
             try:
                 stop_queue.put({"type": _MLX_WORKER_COMPLETE})

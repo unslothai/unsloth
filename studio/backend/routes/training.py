@@ -1202,11 +1202,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
         )
-    if request.is_decision:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Decision model training is not supported for MLX training yet.",
-        )
     if request.is_dataset_audio:
         raise HTTPException(
             status_code = 400,
