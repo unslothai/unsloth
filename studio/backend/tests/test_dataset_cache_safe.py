@@ -32,6 +32,38 @@ def _install_fake_datasets(monkeypatch, load_dataset):
     monkeypatch.setattr("loggers.config.quiet_third_party_progress_bars", lambda: None)
 
 
+@pytest.fixture(autouse = True)
+def _restore_process_symlink_policy(monkeypatch):
+    """_disable_hf_symlinks_for_process writes process-wide state on purpose.
+
+    Record all three pieces it touches first on this test's monkeypatch, so they are
+    undone last and a later test in the same worker still sees symlinks enabled.
+    A bare delenv/delattr on something absent records nothing, so absent values are
+    set first and then removed, which makes the undo remove them again.
+    """
+    name = "HF_HUB_DISABLE_SYMLINKS"
+    if name in os.environ:
+        monkeypatch.setenv(name, os.environ[name])
+    else:
+        monkeypatch.setenv(name, "0")
+        monkeypatch.delenv(name)
+    try:
+        from huggingface_hub import constants, file_download
+    except ImportError:
+        return
+    if name in vars(constants):
+        monkeypatch.setattr(constants, name, vars(constants)[name])
+    else:
+        monkeypatch.setattr(constants, name, False, raising = False)
+        monkeypatch.delattr(constants, name)
+    if hasattr(file_download, "_are_symlinks_supported_in_dir"):
+        monkeypatch.setattr(
+            file_download,
+            "_are_symlinks_supported_in_dir",
+            file_download._are_symlinks_supported_in_dir,
+        )
+
+
 def _isolate_hub_symlink_state(monkeypatch):
     """Keep _disable_hf_symlinks_for_process from leaking into other tests."""
     from huggingface_hub import constants, file_download

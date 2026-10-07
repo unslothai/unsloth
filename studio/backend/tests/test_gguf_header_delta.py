@@ -82,6 +82,17 @@ class Fetcher:
         return self.data[start : end + 1]
 
 
+@pytest.fixture(autouse = True)
+def _hub_symlinks_enabled(monkeypatch):
+    # Placement goes through huggingface_hub's _create_symlink, which reads process-wide
+    # state: a worker that disabled symlinks earlier would turn every pointer into a copy.
+    from huggingface_hub import constants, file_download
+
+    monkeypatch.delenv("HF_HUB_DISABLE_SYMLINKS", raising = False)
+    monkeypatch.setattr(constants, "HF_HUB_DISABLE_SYMLINKS", False, raising = False)
+    monkeypatch.setattr(file_download, "_are_symlinks_supported_in_dir", {})
+
+
 def cache_with_old(
     tmp_path: Path,
     *,
