@@ -22,7 +22,6 @@ COMPONENT_VAE = "vae"
 TEXT_ENCODER_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
 MAX_TEXT_ENCODER_FILES = len(TEXT_ENCODER_COMPONENTS)
 COMPONENT_FILE_SUFFIX = ".safetensors"
-# Header metadata keys / blobs ComfyUI files carry beside the weights (tokenizer models, the legacy fp8 marker).
 _NON_WEIGHT_KEYS = frozenset({"scaled_fp8", "tekken_model", "spiece_model"})
 _QUANT_COMPANION_SUFFIXES = (
     ".comfy_quant",
@@ -296,7 +295,6 @@ def _rule_identity(key: str) -> str:
 
 
 def _rule_strip_model(key: str) -> Optional[str]:
-    # ``Qwen3Model`` / ``LlamaModel`` / ``Gemma2Model`` are the decoder without the causal-LM wrapper.
     if key.startswith("model."):
         return key[len("model.") :]
     if key.startswith("lm_head."):
@@ -334,7 +332,6 @@ KEY_RULES: tuple[tuple[str, Callable[[str], Optional[str]]], ...] = (
     ("identity", _rule_identity),
     ("strip_model_prefix", _rule_strip_model),
     ("nest_language_model", _rule_nest_language_model),
-    # The headless VL classes (``Qwen3VLModel``): nested, then without the ``model.`` wrapper.
     ("nest_language_model_headless", lambda k: _rule_strip_model(_rule_nest_language_model(k))),
 )
 
