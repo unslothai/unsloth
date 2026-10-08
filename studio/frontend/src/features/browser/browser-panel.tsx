@@ -1678,7 +1678,7 @@ function BrowserFileToolbar({
               <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
               {t("browser.file.openIn")}
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="min-w-52 rounded-[20px] p-1.5">
+            <DropdownMenuSubContent className="browser-menu min-w-52 rounded-[20px] p-1.5">
               <DropdownMenuItem onSelect={openInNewChat}>
                 <HugeiconsIcon icon={BubbleChatAddIcon} strokeWidth={1.75} className="size-4.5" />
                 {t("browser.file.newChat")}
