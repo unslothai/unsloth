@@ -2170,7 +2170,7 @@ def test_truncated_header_and_blockquote_keep_source_order():
     assert out.index("Title") < out.index("Quote")
 
 
-# Headers interact with every buffer, so enumerate the grid: that is where the one-off bugs live.
+# headers interact with every buffer, where one-off bugs occur
 _GRID_HEADINGS = {
     "h1": "<h1>Page Title</h1>",
     "aria": "<div role='heading'>Page Title</div>",
