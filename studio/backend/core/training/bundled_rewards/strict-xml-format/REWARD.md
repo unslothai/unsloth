@@ -5,5 +5,5 @@ description: The whole reply is <reasoning>...</reasoning> followed by <answer>.
 ---
 type: regex
 mode: fullmatch
-pattern: '<reasoning>\s*.*?\s*</reasoning>\s*<answer>\s*.*?\s*</answer>'
+pattern: '<reasoning>.*?</reasoning>\s*<answer>.*?</answer>'
 score: {match: 0.5, miss: 0.0}

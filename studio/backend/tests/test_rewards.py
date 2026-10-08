@@ -107,6 +107,19 @@ def test_rule_types(body, text, reference, expected):
         (_md("t", "import os\nimport sys", kind = "python"), "Python rewards are not supported"),
         (_md("Bad Name", "type: regex\npattern: x"), "lowercase"),
         (_md("t", "type: numeric\nbands: []"), "bands"),
+        (_md("t", "type: numeric\nbands: [1, 2]"), "band"),
+        (
+            _md("t", "type: json_schema\nextract: {regex: '(.*)'}\nschema: {type: [object]}"),
+            "schema.type",
+        ),
+        (
+            _md("t", "type: json_schema\nextract: {regex: '(.*)'}\nschema: {type: integer}"),
+            "schema.type",
+        ),
+        (
+            _md("t", "type: json_schema\nextract: {regex: '(.*)'}\nschema: {required: [[a, b]]}"),
+            "schema.required",
+        ),
     ],
 )
 def test_invalid_rewards_are_refused(raw, message):
@@ -177,3 +190,35 @@ def test_preview_scores_and_weights(client):
 def test_bundled_root_is_packaged():
     pyproject = Path(rewards.__file__).parents[4] / "pyproject.toml"
     assert "backend/core/training/bundled_rewards/**/*.md" in pyproject.read_text("utf-8")
+
+
+def test_bundled_strict_format_scores_whitespace_runs_quickly(user_root):
+    import time
+
+    specs = {r["name"]: r for r in rewards.list_rewards()}
+    ws = "\n" * 150
+    text = (
+        f"<reasoning>\nSo 16 - 3 - 4 = 9.\n{ws}</reasoning>\n<answer>\n{ws}9{ws}</answer>\nThanks"
+    )
+    start = time.perf_counter()
+    assert rewards.score_rule(specs["strict-xml-format"]["rule"], text) == 0.0
+    assert time.perf_counter() - start < 0.5
+    assert (
+        rewards.score_rule(
+            specs["strict-xml-format"]["rule"], "<reasoning>a</reasoning>\n<answer>9</answer>"
+        )
+        == 0.5
+    )
+
+
+def test_catastrophic_user_regex_times_out_as_a_miss(monkeypatch):
+    import time
+
+    pytest.importorskip("regex")
+    monkeypatch.setattr(rewards, "MATCH_TIMEOUT_S", 0.2)
+    rule = rewards.parse_reward_markdown(_md("t", "type: regex\npattern: '(a+)+$'\nmode: search"))[
+        "rule"
+    ]
+    start = time.perf_counter()
+    assert rewards.score_rule(rule, "a" * 40 + "!") == rule["score"]["miss"]
+    assert time.perf_counter() - start < 5

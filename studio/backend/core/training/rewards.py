@@ -21,6 +21,11 @@ from typing import Any, Callable, Iterable, Optional
 
 import yaml
 
+try:  # regex takes a per-call timeout; a user pattern must not stall a GRPO step or the server
+    import regex as _rx
+except ImportError:  # pragma: no cover
+    _rx = None
+
 MAX_REWARD_MD_BYTES = 64 * 1024
 MAX_REWARDS_PER_ROOT = 500
 MAX_PATTERN_CHARS = 2_000
@@ -107,6 +112,27 @@ def _validate_extract(extract: Any) -> Optional[dict]:
     raise RewardError("extract needs 'between' or 'regex'.")
 
 
+# Seconds one user-pattern match may take before it scores as a miss (needs the regex module).
+MATCH_TIMEOUT_S = 1.0
+
+
+def _match(
+    pattern: str,
+    text: str,
+    fullmatch: bool = False,
+):
+    if _rx is None:
+        compiled = re.compile(pattern, re.DOTALL | re.MULTILINE)
+        return compiled.fullmatch(text) if fullmatch else compiled.search(text)
+    compiled = _rx.compile(pattern, _rx.DOTALL | _rx.MULTILINE)
+    try:
+        if fullmatch:
+            return compiled.fullmatch(text, timeout = MATCH_TIMEOUT_S)
+        return compiled.search(text, timeout = MATCH_TIMEOUT_S)
+    except TimeoutError:
+        return None
+
+
 def _compile(pattern: Any) -> re.Pattern:
     if not isinstance(pattern, str) or not pattern or len(pattern) > MAX_PATTERN_CHARS:
         raise RewardError(f"pattern must be a non-empty string under {MAX_PATTERN_CHARS} chars.")
@@ -155,6 +181,8 @@ def validate_rule(rule: dict) -> dict:
             bands = rule.get("bands")
             if not isinstance(bands, list) or not bands:
                 raise RewardError("numeric needs a non-empty bands list.")
+            if not all(isinstance(b, dict) for b in bands):
+                raise RewardError("Each numeric band needs 'within' and 'score'.")
             out["bands"] = sorted(
                 (
                     {
@@ -162,7 +190,6 @@ def validate_rule(rule: dict) -> dict:
                         "score": _number(b.get("score"), "bands.score"),
                     }
                     for b in bands
-                    if isinstance(b, dict)
                 ),
                 key = lambda b: b["within"],
             )
@@ -172,10 +199,18 @@ def validate_rule(rule: dict) -> dict:
         schema = rule.get("schema", {})
         if not isinstance(schema, dict):
             raise RewardError("schema must be a mapping.")
-        out["schema"] = {
-            "type": schema.get("type", "object"),
-            "required": [str(k) for k in schema.get("required", []) or []],
-        }
+        schema_type = schema.get("type", "object")
+        if not isinstance(schema_type, str) or schema_type not in _JSON_TYPES:
+            raise RewardError(f"schema.type must be one of {', '.join(_JSON_TYPES)}.")
+        # Strings only: str() of a nested YAML alias expands it exponentially.
+        required = schema.get("required", []) or []
+        if (
+            not isinstance(required, list)
+            or len(required) > 64
+            or not all(isinstance(k, str) and len(k) <= 256 for k in required)
+        ):
+            raise RewardError("schema.required takes up to 64 key names.")
+        out["schema"] = {"type": schema_type, "required": list(required)}
         out["score"] = _validate_score(rule.get("score", {}), ("match", "miss"))
     elif kind == "length":
         out["max_chars"] = int(_number(rule.get("max_chars"), "max_chars"))
@@ -322,7 +357,7 @@ def _extract(text: str, extract: Optional[dict]) -> Optional[str]:
             return None
         j = text.find(end, i + len(start))
         return text[i + len(start) : j] if j >= 0 else None
-    match = re.search(extract["regex"], text, re.DOTALL | re.MULTILINE)
+    match = _match(extract["regex"], text)
     if not match:
         return None
     return match.group(1) if match.groups() else match.group(0)
@@ -349,16 +384,17 @@ def _to_float(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+_JSON_TYPES = {"object": dict, "array": list, "string": str, "number": (int, float)}
+
+
 def _json_matches(text: str, schema: dict) -> bool:
     fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
     try:
         value = json.loads(fenced.group(1) if fenced else text)
     except (ValueError, TypeError):
         return False
-    expected = {"object": dict, "array": list, "string": str, "number": (int, float)}.get(
-        schema["type"]
-    )
-    if expected is not None and not isinstance(value, expected):
+    expected = _JSON_TYPES[schema["type"]]
+    if not isinstance(value, expected) or (schema["type"] == "number" and isinstance(value, bool)):
         return False
     return (
         all(key in value for key in schema["required"])
@@ -374,10 +410,10 @@ def score_rule(
 ) -> float:
     kind = rule["type"]
     if kind == "regex":
-        pattern = re.compile(rule["pattern"], re.DOTALL | re.MULTILINE)
-        hit = (
-            pattern.fullmatch(text.strip()) if rule["mode"] == "fullmatch" else pattern.search(text)
-        )
+        if rule["mode"] == "fullmatch":
+            hit = _match(rule["pattern"], text.strip(), fullmatch = True)
+        else:
+            hit = _match(rule["pattern"], text)
         return rule["score"]["match" if hit else "miss"]
     if kind == "length":
         return rule["score"]["over" if len(text) > rule["max_chars"] else "under"]
