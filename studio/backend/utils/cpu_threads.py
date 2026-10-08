@@ -115,7 +115,16 @@ class _TorchLoader(importlib.abc.Loader):
         return None if create is None else create(spec)
 
     def exec_module(self, module):
-        self._loader.exec_module(module)
+        try:
+            self._loader.exec_module(module)
+        finally:
+            # Hand torch its own loader back: pkg_resources and others dispatch on its type, and a reload
+            # would otherwise wrap this wrapper again.
+            spec = getattr(module, "__spec__", None)
+            if spec is not None and spec.loader is self:
+                spec.loader = self._loader
+            if getattr(module, "__loader__", None) is self:
+                module.__loader__ = self._loader
         apply_openblas_runtime_cap()
 
     def __getattr__(self, attribute):
@@ -145,9 +154,8 @@ class _TorchImportFinder(importlib.abc.MetaPathFinder):
             return None
         self._finding.active = True
         try:
+            # Not caught: a finder further down that raises must fail the import exactly as without this one.
             spec = importlib.util.find_spec(fullname)
-        except Exception:  # noqa: BLE001
-            return None
         finally:
             self._finding.active = False
         if spec is None or spec.loader is None or not hasattr(spec.loader, "exec_module"):

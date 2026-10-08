@@ -145,6 +145,28 @@ def test_cap_waits_for_torch_and_fires_after_its_module_body(
     assert fake_windows == [1]
 
 
+def test_torch_keeps_its_own_loader_and_reload_does_not_stack(
+    fake_windows, clean_thread_env, monkeypatch, tmp_path
+):
+    import importlib
+
+    package = tmp_path / "torch"
+    package.mkdir()
+    (package / "__init__.py").write_text("LOADED = True\n", encoding = "utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "torch", raising = False)
+
+    configure_cpu_threads()
+    import torch
+
+    # pkg_resources picks its provider by type(module.__loader__), so the wrapper must not stay visible.
+    assert type(torch.__loader__) is importlib.machinery.SourceFileLoader
+    assert torch.__spec__.loader is torch.__loader__
+    importlib.reload(torch)
+    assert type(torch.__loader__) is importlib.machinery.SourceFileLoader
+    assert fake_windows == [1, 1]
+
+
 def test_install_is_idempotent(fake_windows, monkeypatch):
     monkeypatch.delitem(sys.modules, "torch", raising = False)
     before = len(sys.meta_path)
