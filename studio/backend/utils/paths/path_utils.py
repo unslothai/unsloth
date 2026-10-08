@@ -413,6 +413,175 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
         subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
 
 
+# What "Open in default app" may hand to the OS: documents and media, which open in a viewer. A
+# script, app bundle or installer would run instead, and these files are model-written.
+DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
+    {
+        ".pdf",
+        ".txt",
+        ".md",
+        ".markdown",
+        ".csv",
+        ".tsv",
+        ".json",
+        ".jsonl",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".log",
+        ".rtf",
+        ".docx",
+        ".xlsx",
+        ".pptx",
+        ".odt",
+        ".ods",
+        ".odp",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".avif",
+        ".tif",
+        ".tiff",
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".ogg",
+        ".m4a",
+        ".mp4",
+        ".mov",
+        ".webm",
+        ".mkv",
+        ".parquet",
+        ".ipynb",
+    }
+)
+
+
+_OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
+
+
+def _prune_open_staging(root: Path) -> None:
+    import shutil
+    import time
+
+    cutoff = time.time() - _OPEN_STAGING_MAX_AGE_S
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.lstat().st_mtime < cutoff:
+                shutil.rmtree(entry, ignore_errors = True)
+        except OSError:
+            continue
+
+
+def _opened_path(handle: int) -> Optional[str]:
+    """Where an open file really is, or None where the OS can't say."""
+    if sys.platform == "darwin":
+        import fcntl
+        return os.fsdecode(fcntl.fcntl(handle, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\0"))
+    proc = f"/proc/self/fd/{handle}"
+    return os.readlink(proc) if os.path.islink(proc) else None
+
+
+def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
+    """A name for *path*'s current file in a private directory, for the OS opener.
+
+    Tool code runs in the sandbox and can swap *path* for a symlink (to an app or a script outside
+    it) between any check and the opener resolving the name. So the file is opened once without
+    following links, and the inode that open returned is hard-linked (or, across filesystems,
+    copied) into a fresh directory only Studio writes to. That name is what the OS opens.
+    O_NOFOLLOW only covers the last component, so a swapped parent is caught by checking where the
+    opened file really is against *root*.
+    """
+    import shutil
+    import stat as stat_module
+    import tempfile
+
+    from utils.paths.storage_roots import cache_root
+
+    try:
+        handle = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        )
+    except OSError as exc:
+        raise FileNotFoundError(str(path)) from exc
+    try:
+        info = os.fstat(handle)
+        if not stat_module.S_ISREG(info.st_mode):
+            raise FileNotFoundError(str(path))
+        if root is not None:
+            real = _opened_path(handle)
+            if real is None:
+                # By name, so it must still be the file that was opened (Windows junctions).
+                real = os.path.realpath(path)
+                same = os.stat(real)
+                if (same.st_dev, same.st_ino) != (info.st_dev, info.st_ino):
+                    raise FileNotFoundError(str(path))
+            if not Path(real).is_relative_to(os.path.realpath(root)):
+                raise FileNotFoundError(str(path))
+        staging = cache_root() / "open-staging"
+        staging.mkdir(parents = True, exist_ok = True)
+        _prune_open_staging(staging)
+        target = Path(tempfile.mkdtemp(dir = staging)) / path.name
+        try:
+            os.link(path, target, follow_symlinks = False)
+            linked = os.lstat(target)
+            # Swapped since the open: copy what was opened.
+            if (linked.st_dev, linked.st_ino) != (info.st_dev, info.st_ino):
+                target.unlink()
+                raise OSError("file changed")
+        except (OSError, NotImplementedError):
+            with os.fdopen(os.dup(handle), "rb") as source, open(target, "xb") as copy:
+                shutil.copyfileobj(source, copy)
+        return target
+    finally:
+        os.close(handle)
+
+
+def open_in_default_app(path: Path, root: Optional[Path] = None) -> None:
+    """Open the regular file *path* (inside *root*, if given) with the OS default app.
+
+    Refuses (``PermissionError``) anything outside ``DEFAULT_APP_OPEN_EXTENSIONS`` and raises
+    ``FileNotFoundError`` when *path* is not a regular file; a symlink is refused like a missing file.
+    The opener gets a private name for the file (see ``_stage_for_open``), never *path* itself.
+    """
+    import stat as stat_module
+    import subprocess
+
+    if path.suffix.lower() not in DEFAULT_APP_OPEN_EXTENSIONS:
+        raise PermissionError(str(path))
+    try:
+        entry = os.lstat(path)
+    except OSError as exc:
+        raise FileNotFoundError(str(path)) from exc
+    if not stat_module.S_ISREG(entry.st_mode):
+        raise FileNotFoundError(str(path))
+    target = str(_stage_for_open(path, root))
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", target])
+    elif os.name == "nt":
+        os.startfile(target)  # noqa: S606 - local user's own default app
+    elif _IS_WSL:
+        windows_path = subprocess.run(
+            ["wslpath", "-w", target],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            check = True,
+            timeout = 10,
+        ).stdout.strip()
+        subprocess.Popen(["explorer.exe", windows_path])
+    else:
+        subprocess.Popen(["xdg-open", target])
+
+
 # pathconf's _PC_CASE_SENSITIVE on macOS, which Python has no name for.
 _PC_CASE_SENSITIVE = 11
 

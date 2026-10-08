@@ -864,16 +864,16 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
 
 /// Open the Unsloth logs directory in the system file manager.
 #[tauri::command]
-pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
-    crate::native_intents::ensure_main_window(&window)?;
+pub fn open_logs_dir(webview: tauri::Webview) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
     open_existing_dir(&diagnostics::logs_dir())
 }
 
 /// Open a models directory (resolved by the backend, e.g. the HF cache) in the
 /// system file manager.
 #[tauri::command]
-pub fn open_models_dir(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
-    crate::native_intents::ensure_main_window(&window)?;
+pub fn open_models_dir(webview: tauri::Webview, path: String) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
     open_existing_dir(std::path::Path::new(&path))
 }
 
@@ -952,6 +952,22 @@ pub fn install_system_packages(
     _diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
     Err("Elevated package install is only supported on Linux".to_string())
+}
+
+fn backend_update_confirmed(training_active: bool, confirm: impl FnOnce() -> bool) -> bool {
+    !training_active || confirm()
+}
+
+#[tauri::command]
+pub async fn confirm_backend_update(app: AppHandle) -> bool {
+    // blocking_show parks its thread until the user answers: keep it off the async workers.
+    tauri::async_runtime::spawn_blocking(move || {
+        backend_update_confirmed(crate::training_is_active(&app), || {
+            crate::confirm_update_during_training(&app)
+        })
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Run backend update: stop server, run `unsloth studio update`, emit progress.
@@ -1183,6 +1199,7 @@ pub async fn start_managed_repair(
             install_state,
             install_diagnostics,
             install_repair_group_id,
+            force_installer,
         )
     })
     .await
@@ -1335,6 +1352,26 @@ mod tests {
         assert!(super::should_emit_repair_failed(
             "Installer exited with code 1"
         ));
+    }
+
+    #[test]
+    fn keeping_training_at_the_update_prompt_declines_the_update() {
+        assert!(!super::backend_update_confirmed(true, || false));
+    }
+
+    #[test]
+    fn updating_anyway_during_training_confirms_the_update() {
+        assert!(super::backend_update_confirmed(true, || true));
+    }
+
+    #[test]
+    fn updating_without_training_does_not_ask() {
+        let mut asked = false;
+        assert!(super::backend_update_confirmed(false, || {
+            asked = true;
+            false
+        }));
+        assert!(!asked);
     }
 
     #[tokio::test]

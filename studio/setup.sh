@@ -5,6 +5,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The deps pass can replace this file while bash reads the old one (_setup_rerun_if_replaced).
+_SETUP_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+_SETUP_SELF_SUM=$(cksum < "$_SETUP_SELF" 2>/dev/null || true)
+_SETUP_ARGV=("$@")
+_SETUP_START_PWD=$PWD
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RULE=$(printf '\342\224\200%.0s' {1..52})
 
@@ -94,6 +99,21 @@ _can_read_tty() {
 
 _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
+}
+
+_filter_download_output() {
+    if _is_verbose; then
+        cat
+        return
+    fi
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "Downloading "*": "*"% ("*") at "*"/s"|"Downloading "*": "*" downloaded at "*"/s")
+                printf '%s\n' "$line"
+                ;;
+        esac
+    done
 }
 
 verbose_substep() {
@@ -553,9 +573,28 @@ _CAPTURE_LOG=""
 
 _npm_mirror_retry() {
     [ "$(_mirror_failed_host "${_CAPTURE_LOG:-}" npm)" = npm ] && _mirror_take npm || return 1
-    run_quiet_no_exit "$1" npm install --no-fund --no-audit --loglevel=error --registry "${_MT_PAIRS#*=}" || return
+    run_quiet_no_exit "$1" npm "${_NPM_INSTALL:-install}" --no-fund --no-audit --loglevel=error --registry "${_MT_PAIRS#*=}" || return
     export "$_MT_PAIRS"
     _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
+}
+
+# Local errno is matched on npm's code line only (cleanup warnings carry EPERM after
+# network failures too) and before the network check, since FetchError names
+# registry.npmjs.org even on a local error (#8725). Keep in sync with setup.ps1.
+_NPM_LOCAL_FAILURE_RE='npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|ENFILE|EMFILE)|operation was rejected by your operating system'
+
+# $1 = "socket": FetchError with no "npm error path" line, i.e. the OS refused node's
+# socket (per-program firewall / antivirus rule). A cache write failure has a path.
+_suggest_npm_local_failure() {
+    printf '\n' >&2
+    if [ "${1:-}" = socket ]; then
+        step "frontend" "the OS refused node's connection to the npm registry" "$C_WARN" >&2
+        substep "Allow $(command -v node 2>/dev/null || echo node) in your firewall/antivirus, or use another Node install." >&2
+        return 0
+    fi
+    step "frontend" "npm hit a local file error (permission, lock or disk full)" "$C_WARN" >&2
+    substep "Try: npm cache clean --force, or check the npm cache is writable." >&2
+    return 0
 }
 
 # Print actionable guidance when a frontend/OXC npm/bun install fails and the registry
@@ -563,8 +602,20 @@ _npm_mirror_retry() {
 # via UNSLOTH_NPM_REGISTRY. This only guides; the mirror fallback does any switching.
 # $1 = path to a captured install log (may be empty/missing).
 _suggest_npm_registry() {
-    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
     local _log="${1:-}"
+    # Before the UNSLOTH_NPM_REGISTRY opt-out: a mirror does not unlock a cache.
+    local _plain=""
+    # Strip ANSI colour (npm color=always) so the code-line match still sees "npm error code".
+    if [ -n "$_log" ] && [ -s "$_log" ]; then _plain="$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$_log")"; fi
+    if [ -n "$_plain" ] && grep -Eq "$_NPM_LOCAL_FAILURE_RE" <<<"$_plain"; then
+        if grep -q 'FetchError' <<<"$_plain" && ! grep -Eq 'npm (error|ERR!) path ' <<<"$_plain"; then
+            _suggest_npm_local_failure socket
+        else
+            _suggest_npm_local_failure
+        fi
+        return 0
+    fi
+    [ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && return 0
     # If we captured output and it does NOT look like a registry/network problem, stay
     # quiet -- the raw error already shown is more useful than a misleading hint.
     if [ -n "$_log" ] && [ -s "$_log" ] \
@@ -728,6 +779,15 @@ _resolve_cuda_archs() {
 # above that: it must also cover MSVC and hipcc, older and far heavier CUDA
 # toolkits (ggml-org/llama.cpp#17844 climbs past 16 GiB), and the link step.
 # Erring high costs build time; erring low costs the machine.
+# The build dir is renamed into place, so CMake's build-tree RUNPATH dies at the mv (#12392):
+# $ORIGIN finds the sibling libllama*.so; USE_LINK_PATH keeps toolchain dirs (ROCm, CUDA, Nix).
+_llama_relocatable_rpath_args() {
+    case "$(uname -s 2>/dev/null)" in
+        Linux) printf '%s' '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=$ORIGIN -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON' ;;
+        *) printf '' ;;
+    esac
+}
+
 _LLAMA_BUILD_RESERVE_MB=2048
 _LLAMA_BUILD_MB_PER_JOB=2048
 
@@ -2216,8 +2276,8 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     _NODE_LOG="$(mktemp)"
     set +e
     for _node_try in default mirror; do
-        if _is_verbose; then
-            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee -a "$_NODE_LOG"
+        if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee -a "$_NODE_LOG" | _filter_download_output
             _NODE_STATUS=${PIPESTATUS[0]}
         else
             "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >>"$_NODE_LOG" 2>&1
@@ -2238,6 +2298,12 @@ elif [ "$NODE_SOURCE" = bundled ]; then
         sed 's/^/   | /' "$_NODE_LOG" >&2; rm -f "$_NODE_LOG"
         substep "install Node >= 20.19 (with npm >= 11) yourself and re-run, or check your network"
         setup_fail 1 "Could not install an isolated Node runtime"
+    elif grep -Fq "keeping existing isolated Node" "$_NODE_LOG"; then
+        # Exit 0 also covers a failed update that kept a working Node; relay any repair lines.
+        if grep -Fq 'takeown /F' "$_NODE_LOG"; then
+            sed 's/^/   | /' "$_NODE_LOG" >&2
+        fi
+        step "node" "update not applied, existing isolated Node kept" "$C_WARN"
     fi
     grep -Fq "already matches" "$_NODE_LOG" && verbose_substep "isolated Node already up to date"
     rm -f "$_NODE_LOG"
@@ -2273,6 +2339,8 @@ else
 # isolated prefix); on a system Node we install nothing global. Build falls back to npm.
 if command -v bun &>/dev/null; then
     substep "bun already installed ($(bun --version))"
+elif [ -f "$SCRIPT_DIR/frontend/package-lock.json" ]; then
+    verbose_substep "skipping global bun install (package-lock.json installs with npm ci)"
 elif [ "$NODE_SOURCE" = bundled ]; then
     substep "installing bun..."
     # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
@@ -2306,7 +2374,7 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# Use bun for install if available (faster), fall back to npm.
+# package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
 # Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
 # NOTE: We intentionally avoid run_quiet for the bun install attempt because
 # run_quiet calls exit on failure, which would kill the script before the npm
@@ -2320,7 +2388,7 @@ trap _restore_gitignores EXIT
 _try_bun_install() {
     local _log _exit_code=0
     _log=$(mktemp)
-    bun install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" >"$_log" 2>&1 || _exit_code=$?
+    bun install --frozen-lockfile "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" >"$_log" 2>&1 || _exit_code=$?
 
     # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
     if [ "$_exit_code" -eq 0 ] \
@@ -2347,7 +2415,9 @@ _try_bun_install() {
 _FRONTEND_INSTALL_LOG=$(mktemp)
 _CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
 _bun_install_ok=false
-if command -v bun &>/dev/null; then
+_NPM_INSTALL=install
+[ -f package-lock.json ] && _NPM_INSTALL=ci
+if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then
     substep "using bun for package install (faster)"
     if _try_bun_install; then
         _bun_install_ok=true
@@ -2366,8 +2436,8 @@ if [ "$_bun_install_ok" = false ]; then
     # returns non-zero on failure) so the hint branch is reachable; it also captures
     # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
     _npm_install_rc=0
-    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
-    if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm install"; then
+    run_quiet_no_exit "npm $_NPM_INSTALL" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
+    if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL"; then
         _npm_install_rc=0
     fi
     if [ "$_npm_install_rc" -ne 0 ]; then
@@ -2408,8 +2478,10 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
     # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
     # below is reachable; it also captures the exact exit code.
     _oxc_install_rc=0
-    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
-    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm install (oxc validator runtime)"; then
+    _NPM_INSTALL=install
+    [ -f package-lock.json ] && _NPM_INSTALL=ci
+    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
         _oxc_install_rc=0
     fi
     _CAPTURE_LOG=""
@@ -2480,6 +2552,31 @@ fi
 install_python_stack() {
     [ "${STUDIO_LOCAL_INSTALL:-0}" = 1 ] && [ -x "$VENV_DIR/bin/python" ] || _mirror_fallback
     python "$SCRIPT_DIR/install_python_stack.py"
+}
+
+# Phases a release adds below would be skipped by the update installing it; exec keeps the CLI's PID.
+_setup_rerun_if_replaced() {
+    if [ "${UNSLOTH_SETUP_RERUN:-}" = 1 ] || [ -z "$_SETUP_SELF_SUM" ]; then
+        return 0
+    fi
+    local _now
+    _now=$(cksum < "$_SETUP_SELF" 2>/dev/null) || return 0
+    if [ -z "$_now" ] || [ "$_now" = "$_SETUP_SELF_SUM" ]; then
+        return 0
+    fi
+    step "setup" "the update replaced this setup script; finishing with the new version"
+    export UNSLOTH_SETUP_RERUN=1
+    unset UNSLOTH_STUDIO_FULL_DEPS
+    cd "$_SETUP_START_PWD" 2>/dev/null || :
+    # execfail alone is not enough: under set -e a failed exec still ends the shell.
+    shopt -s execfail
+    set +e
+    exec "${BASH:-bash}" "$_SETUP_SELF" ${_SETUP_ARGV[@]+"${_SETUP_ARGV[@]}"}
+    set -e
+    shopt -u execfail
+    unset UNSLOTH_SETUP_RERUN
+    cd "$SCRIPT_DIR"
+    substep "could not start the updated setup script; continuing with this one" "$C_WARN"
 }
 
 # ── HTTP GET to stdout (supports curl and wget) ──
@@ -3070,9 +3167,9 @@ elif {
     if _setup_install_uv_pinned || { [ "$_SIUP_UNFETCHED" = true ] && _mirror_switch uvbin && _setup_install_uv_pinned; }; then
         _SETUP_UV_PINNED_OK=true
     elif _is_verbose; then
-        _setup_http_get https://astral.sh/uv/install.sh | sh
+        _setup_http_get "https://astral.sh/uv/$_SETUP_UV_PINNED_VERSION/install.sh" | sh
     else
-        _setup_http_get https://astral.sh/uv/install.sh | sh > /dev/null 2>&1
+        _setup_http_get "https://astral.sh/uv/$_SETUP_UV_PINNED_VERSION/install.sh" | sh > /dev/null 2>&1
     fi
 }; then
     # Only for astral's installer, which writes to ~/.local/bin. The pinned path already put its
@@ -3480,6 +3577,7 @@ fi
 
 if [ "$_SKIP_PYTHON_DEPS" = false ]; then
     install_python_stack
+    _setup_rerun_if_replaced
 else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
@@ -4826,8 +4924,8 @@ else
     esac
     _PREBUILT_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG" | _filter_download_output
         _PREBUILT_STATUS=${PIPESTATUS[0]}
     else
         "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
@@ -5128,7 +5226,7 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             # Set Release explicitly (llama.cpp only defaults to it on non-MSVC/Xcode).
-            CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON"
+            CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON $(_llama_relocatable_rpath_args)"
             _TRY_METAL_CPU_FALLBACK=false
             _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
             _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
@@ -5611,8 +5709,8 @@ else
     fi
     _WHISPER_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG"
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG" | _filter_download_output
         _WHISPER_STATUS=${PIPESTATUS[0]}
     else
         "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1
@@ -5682,6 +5780,54 @@ PY
         fi
         rm -f "$_WHISPER_LOG"
     fi
+fi
+
+# ── audio.cpp (speech, music and dictation engine) ──
+# audio.cpp vendors its own patched ggml, so its bundles are self-contained and do not pair with
+# the llama install. Fail-open like whisper.cpp: every other audio engine keeps working.
+AUDIO_CPP_DIR="$UNSLOTH_HOME/audio.cpp"
+if [ -n "${AUDIOCPP_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_AUDIO_CPP_PATH:-}" ]; then
+    verbose_substep "audio.cpp: using a user-configured binary/dir; skipping managed install"
+elif [ "${UNSLOTH_SKIP_AUDIO_CPP_INSTALL:-0}" = "1" ]; then
+    verbose_substep "audio.cpp: install skipped (UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1)"
+elif [ -f "$SCRIPT_DIR/install_audio_cpp_prebuilt.py" ]; then
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$AUDIO_CPP_DIR" "audio.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
+    fi
+    _AUDIO_CPP_CMD=(python "$SCRIPT_DIR/install_audio_cpp_prebuilt.py" --install-dir "$AUDIO_CPP_DIR")
+    # A host whose GPU is invisible at install time (a Docker image build) names its bundle here.
+    if [ -n "${UNSLOTH_AUDIO_CPP_ACCELERATOR:-}" ]; then
+        _AUDIO_CPP_CMD+=(--accelerator "$UNSLOTH_AUDIO_CPP_ACCELERATOR")
+    fi
+    _AUDIO_CPP_LOG="$(mktemp)"
+    set +e
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_AUDIO_CPP_CMD[@]}" 2>&1 | tee "$_AUDIO_CPP_LOG" | _filter_download_output
+        _AUDIO_CPP_STATUS=${PIPESTATUS[0]}
+    else
+        "${_AUDIO_CPP_CMD[@]}" >"$_AUDIO_CPP_LOG" 2>&1
+        _AUDIO_CPP_STATUS=$?
+    fi
+    set -e
+    if [ "$_AUDIO_CPP_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_AUDIO_CPP_LOG"; then
+            step "audio.cpp" "prebuilt up to date"
+        elif grep -Fq "keeping the existing complete install" "$_AUDIO_CPP_LOG"; then
+            # The release lookup could not answer and the install on disk is complete; "prebuilt
+            # installed" would name a release nothing fetched. whisper.cpp's wording.
+            step "audio.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
+        else
+            step "audio.cpp" "prebuilt installed"
+        fi
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$AUDIO_CPP_DIR" ]; then
+            : > "$AUDIO_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+        fi
+    elif [ "$_AUDIO_CPP_STATUS" -eq 3 ]; then
+        step "audio.cpp" "install busy; keeping existing runtime" "$C_WARN"
+    else
+        step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "$C_WARN"
+    fi
+    rm -f "$_AUDIO_CPP_LOG"
 fi
 
 # Named in the footer: every path to a lost GPU exits 0, and a mid-log line is what #9255's reporters scrolled past.

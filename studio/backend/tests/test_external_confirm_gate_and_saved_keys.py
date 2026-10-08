@@ -212,6 +212,49 @@ def test_a_plain_streaming_ask_request_still_reaches_the_loop(monkeypatch):
     assert entered["policy"].confirm_calls is True
 
 
+_PNG = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4"
+    "z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+)
+
+
+def test_an_mcp_image_is_refused_when_the_tool_loop_will_not_run(monkeypatch):
+    """The direct proxy forwards no MCP image, so accepting one would drop it silently."""
+    inf = _install(monkeypatch, "openai")
+    # A provider/model that runs no local tools proxies straight through.
+    monkeypatch.setattr(inf, "provider_model_runs_local_tools", lambda *a: False)
+    payload = _payload(enable_tools = True, mcp_enabled = True, mcp_image = _PNG)
+    with pytest.raises(HTTPException) as excinfo:
+        _run(inf, payload)
+    assert excinfo.value.status_code == 400 and "MCP" in excinfo.value.detail
+
+
+def test_an_mcp_image_is_refused_when_the_catalog_has_no_mapped_tool(monkeypatch):
+    from core.inference import tools as tools_mod
+
+    inf = _install(monkeypatch, "openai")
+    entered = _capture_loop(monkeypatch, inf)
+    monkeypatch.setattr(tools_mod, "mcp_catalog_takes_image", lambda names: False)
+    payload = _payload(enable_tools = True, permission_mode = "ask", mcp_enabled = True, mcp_image = _PNG)
+    with pytest.raises(HTTPException) as excinfo:
+        _run(inf, payload)
+    assert excinfo.value.status_code == 400 and not entered
+
+
+def test_an_mcp_image_reaches_the_tool_loop(monkeypatch):
+    from core.inference import tools as tools_mod
+
+    inf = _install(monkeypatch, "openai")
+    # Stands in for an enabled server whose tool has a mapped image field.
+    monkeypatch.setattr(tools_mod, "mcp_catalog_takes_image", lambda names: True)
+    entered = _capture_loop(monkeypatch, inf)
+    _run(
+        inf,
+        _payload(enable_tools = True, permission_mode = "ask", mcp_enabled = True, mcp_image = _PNG),
+    )
+    assert entered["mcp_image"].mime == "image/png"
+
+
 def test_a_non_streaming_request_without_any_confirm_intent_still_proxies(monkeypatch):
     """off/full never prompt, so they keep the legacy non-streaming passthrough."""
     inf = _install(monkeypatch, "openai")

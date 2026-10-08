@@ -44,7 +44,12 @@ def is_local_filesystem_root(path: str, *, _pathmod = os.path) -> bool:
     return drive[:2] not in ("\\\\", "//")
 
 
-def _is_linux_media_mount_path(path: str, media_root: Path | str) -> bool:
+def _is_linux_media_mount_path(
+    path: str,
+    media_root: Path | str,
+    *,
+    min_parts: int = 2,
+) -> bool:
     normalized = os.path.normpath(os.path.realpath(os.path.expanduser(path)))
     root = os.path.normpath(os.path.realpath(os.path.expanduser(str(media_root))))
     try:
@@ -54,7 +59,7 @@ def _is_linux_media_mount_path(path: str, media_root: Path | str) -> bool:
     if rel == "." or rel == ".." or rel.startswith(f"..{os.sep}"):
         return False
     parts = [part for part in rel.split(os.sep) if part]
-    return len(parts) >= 2 and all(part not in (".", "..") for part in parts[:2])
+    return len(parts) >= min_parts and all(part not in (".", "..") for part in parts[:min_parts])
 
 
 def is_linux_run_media_path(path: str) -> bool:
@@ -78,6 +83,36 @@ def _contains_sensitive_media_component(path: Path, media_root: Path) -> bool:
     except ValueError:
         rel = path
     return contains_sensitive_path_component(str(rel))
+
+
+def _accept_linux_volume(
+    volume_dir: Path,
+    scanned_base: Path,
+    *,
+    min_parts: int,
+    seen: set[str],
+    alias_root: Path | str | None = None,
+) -> Path | None:
+    """*volume_dir*'s real path when it is a readable, non-sensitive mount root under *scanned_base* (or *alias_root*)."""
+    if is_sensitive_path_component(volume_dir.name):
+        return None
+    try:
+        resolved = volume_dir.resolve()
+        if not (resolved.is_dir() and os.access(resolved, os.R_OK | os.X_OK)):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not _is_linux_media_mount_path(str(resolved), scanned_base, min_parts = min_parts) and not (
+        alias_root is not None and _is_linux_media_mount_path(str(resolved), alias_root)
+    ):
+        return None
+    if _contains_sensitive_media_component(resolved, scanned_base):
+        return None
+    key = os.path.normcase(os.path.realpath(str(resolved)))
+    if key in seen:
+        return None
+    seen.add(key)
+    return resolved
 
 
 def linux_run_media_mount_roots(
@@ -105,26 +140,88 @@ def linux_run_media_mount_roots(
     except (OSError, RuntimeError, ValueError):
         return []
     for volume_dir in volume_dirs:
-        if is_sensitive_path_component(volume_dir.name):
+        accepted = _accept_linux_volume(volume_dir, resolved_base, min_parts = 2, seen = seen)
+        if accepted is not None:
+            roots.append(accepted)
+    return roots
+
+
+def linux_media_mount_roots(
+    base: Path | str = "/media",
+    *,
+    user: str | None = None,
+    run_media: Path | str = "/run/media",
+) -> list[Path]:
+    """Readable ``/media/<user>/<volume>`` and legacy ``/media/<volume>`` roots; entries may symlink into *run_media*."""
+    if platform.system() != "Linux":
+        return []
+    user = user or _current_username()
+    base_path = Path(base)
+    try:
+        resolved_base = base_path.resolve()
+        children = list(base_path.iterdir())
+    except (OSError, RuntimeError, ValueError):
+        return []
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for child in children:
+        if is_sensitive_path_component(child.name):
             continue
         try:
-            resolved = volume_dir.resolve()
+            if not child.is_dir():
+                continue
+            # The current user's folder is the parent of their mounts, not a volume.
+            volume_dirs = list(child.iterdir()) if user and child.name == user else [child]
         except (OSError, RuntimeError, ValueError):
             continue
-        if not _is_linux_media_mount_path(str(resolved), resolved_base):
+        for volume_dir in volume_dirs:
+            accepted = _accept_linux_volume(
+                volume_dir, resolved_base, min_parts = 1, seen = seen, alias_root = run_media
+            )
+            if accepted is not None:
+                roots.append(accepted)
+    return roots
+
+
+def linux_mnt_mount_roots(base: Path | str = "/mnt") -> list[Path]:
+    """Readable ``/mnt/<name>`` roots; probed with a timeout so a stale network mount cannot stall the browser."""
+    if platform.system() != "Linux":
+        return []
+    base_path = Path(base)
+    try:
+        resolved_base = base_path.resolve()
+        children = list(base_path.iterdir())
+    except (OSError, RuntimeError, ValueError):
+        return []
+    readable = _readable_dirs_within(
+        [str(c) for c in children if not is_sensitive_path_component(c.name)],
+        _DRIVE_PROBE_TIMEOUT_S,
+    )
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for child in children:
+        if str(child) not in readable:
             continue
-        if _contains_sensitive_media_component(resolved, resolved_base):
-            continue
-        key = os.path.normcase(os.path.realpath(str(resolved)))
-        if key in seen:
-            continue
-        try:
-            is_dir = resolved.is_dir()
-        except OSError:
-            continue
-        if is_dir and os.access(resolved, os.R_OK | os.X_OK):
+        accepted = _accept_linux_volume(child, resolved_base, min_parts = 1, seen = seen)
+        if accepted is not None:
+            roots.append(accepted)
+    return roots
+
+
+def linux_external_mount_roots() -> list[Path]:
+    """``/run/media``, ``/media`` and ``/mnt`` roots, deduped by real path."""
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for root in (
+        *linux_run_media_mount_roots(),
+        *linux_media_mount_roots(),
+        *linux_mnt_mount_roots(),
+    ):
+        key = os.path.normcase(os.path.realpath(str(root)))
+        if key not in seen:
             seen.add(key)
-            roots.append(resolved)
+            roots.append(root)
     return roots
 
 
@@ -162,6 +259,8 @@ def _active_windows_drive_bitmask() -> int:
 
 # A disconnected mapped drive stays set in the GetLogicalDrives bitmask, so ``os.path.isdir`` on it can block for tens of seconds. Bound each drive probe so one stale mapping cannot stall a whole folder-browser request.
 _DRIVE_PROBE_TIMEOUT_S = 2.0
+_probes_lock = threading.Lock()
+_probes_started: dict[str, float] = {}
 
 
 def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
@@ -174,9 +273,19 @@ def _readable_dirs_within(paths: Iterable[str], timeout: float) -> set[str]:
             results[path] = os.path.isdir(path) and os.access(path, os.R_OK)
         except OSError:
             results[path] = False
+        finally:
+            with _probes_lock:
+                _probes_started.pop(path, None)
 
     threads: list[threading.Thread] = []
+    now = time.monotonic()
     for path in paths:
+        # Probe stuck past the timeout (hard NFS mount): unreadable, never restarted.
+        with _probes_lock:
+            started = _probes_started.get(path)
+            if started is not None and now - started >= timeout:
+                continue
+            _probes_started.setdefault(path, now)
         thread = threading.Thread(target = _probe, args = (path,), daemon = True)
         thread.start()
         threads.append(thread)

@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
+import fnmatch
+import glob
 import os
+import re
 import shutil
 import stat
 import site
@@ -118,7 +121,10 @@ def bwrap_identity() -> str:
     """Stable identity included in capability-cache keys."""
     path = _trusted_bwrap_path()
     info = os.stat(path, follow_symlinks = False)
-    return repr((path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode))
+    layout = "emptyproc" if empty_proc_layout(path) else "proc"
+    return repr(
+        (path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode, layout)
+    )
 
 
 # /etc is fresh in the jail; without these nothing dynamically linked starts.
@@ -130,6 +136,12 @@ _ETC_FILES = (
     "/etc/localtime",
     "/etc/nsswitch.conf",
 )
+# Distro JDKs link their configuration into /etc/java*.
+_ETC_JAVA_GLOB = "/etc/java*"
+# conf/security holds java.security; Fedora's separate lib/security holds default.policy.
+_ETC_JAVA_SECURITY_MARKERS = ("java.security", "default.policy")
+# Files beside security/; exclude management/ and its JMX credentials.
+_ETC_JAVA_FILES = ("*.properties", "*.cfg")
 # Bound only when it passes _trusted_system_file.
 _ETC_FILES_IF_TRUSTED = ("/etc/gitconfig",)
 # PUBLIC halves one by one, never /etc/ssl or /etc/pki whole: both hold private keys.
@@ -147,6 +159,7 @@ _NETWORK_FILES = (
     "/etc/pki/tls/cert.pem",
     "/etc/pki/tls/openssl.cnf",
     "/etc/pki/ca-trust",
+    "/etc/pki/java/cacerts",
     "/etc/ca-certificates",
     "/etc/ca-certificates.conf",
     "/etc/crypto-policies",
@@ -169,6 +182,36 @@ def _trusted_system_file(path: str) -> bool:
     if not stat.S_ISREG(info.st_mode):
         return False
     return info.st_uid == 0 and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
+def _etc_java_binds() -> tuple[str, ...]:
+    """Select JDK security directories and adjacent configuration files."""
+    binds: list[str] = []
+    for top in sorted(glob.glob(_ETC_JAVA_GLOB)):
+        if os.path.islink(top):
+            continue  # os.walk follows top-level symlinks even with followlinks=False.
+        for root, dirs, files in os.walk(top):
+            dirs.sort()
+            security = os.path.join(root, "security")
+            # The glob also matches non-JDK trees.
+            markers = (os.path.join(security, name) for name in _ETC_JAVA_SECURITY_MARKERS)
+            if (
+                "security" in dirs
+                and not os.path.islink(security)
+                and any(os.path.isfile(m) and not os.path.islink(m) for m in markers)
+            ):
+                dirs.remove("security")
+                binds.append(security)
+                binds.extend(
+                    os.path.join(root, name)
+                    for name in sorted(files)
+                    if any(fnmatch.fnmatch(name, pattern) for pattern in _ETC_JAVA_FILES)
+                    and stat.S_ISREG(os.lstat(os.path.join(root, name)).st_mode)
+                )
+            # Fedora's conf/ is three levels down.
+            if os.path.relpath(root, top).count(os.sep) >= 3:
+                dirs[:] = []
+    return tuple(binds)
 
 
 def _within(path: str, root: str) -> bool:
@@ -293,13 +336,126 @@ def _bwrap_long_options(identity: tuple[str, int, int]) -> frozenset[str]:
     )
 
 
-def _bwrap_supports(bwrap: str, option: str) -> bool:
+def _bwrap_file_identity(bwrap: str) -> tuple[str, int, int]:
     try:
         info = os.stat(bwrap)
-        identity = (bwrap, info.st_ino, info.st_mtime_ns)
+        return (bwrap, info.st_ino, info.st_mtime_ns)
     except OSError:
-        identity = (bwrap, 0, 0)
-    return option in _bwrap_long_options(identity)
+        return (bwrap, 0, 0)
+
+
+def _bwrap_supports(bwrap: str, option: str) -> bool:
+    return option in _bwrap_long_options(_bwrap_file_identity(bwrap))
+
+
+# A container masking parts of its own /proc (Docker, Colab) refuses a fresh one in a child namespace.
+# bwrap <= 0.11 says "on /newroot/proc", 0.12 says "on /proc" (openai/codex#44329).
+_PROC_MOUNT_REFUSED = re.compile(
+    r"Can't mount proc on (?:/newroot)?/proc: "
+    r"(?:Permission denied|Operation not permitted|Invalid argument)"
+)
+
+
+def proc_mount_refused(stderr: str) -> bool:
+    return bool(_PROC_MOUNT_REFUSED.search(stderr or ""))
+
+
+def _preflight(bwrap: str, proc: tuple[str, ...]) -> "subprocess.CompletedProcess | None":
+    """The launch's namespaces, /proc and system binds in its order, running only `true`."""
+    # NixOS has no FHS `true`: run the store file itself, with the store bound as launches bind it.
+    found = next(
+        (
+            p
+            for p in ("/usr/bin/true", "/bin/true", "/run/current-system/sw/bin/true")
+            if os.path.isfile(p)
+        ),
+        None,
+    )
+    if found is None:
+        return None
+    true = os.path.realpath(found)
+    argv = [bwrap, "--unshare-user", "--unshare-pid", *proc, "--dev", "/dev"]
+    roots = _SYSTEM_ROOTS + ((_NIX_STORE,) if _within(true, _NIX_STORE) else ())
+    for root in roots:
+        if os.path.isdir(root):
+            argv += ["--ro-bind-try", root, root]
+    try:
+        return subprocess.run(
+            [*argv, "--", true],
+            stdin = subprocess.DEVNULL,
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.PIPE,
+            # The detector matches English strerror text.
+            env = {**os.environ, "LC_ALL": "C", "LANG": "C", "LANGUAGE": ""},
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 10,
+            close_fds = True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+class _PreflightInconclusive(Exception):
+    """The preflight could not run or failed before /proc: not cached, retried after a back-off."""
+
+
+# A wedged bwrap times out at 10 s a run: retry it this often, not on every identity read.
+_INCONCLUSIVE_RETRY_SECONDS = 300.0
+_inconclusive_until: "dict[tuple[str, int, int], float]" = {}
+
+
+@lru_cache(maxsize = 8)
+def _fresh_proc_answer(identity: tuple[str, int, int]) -> bool:
+    fresh = _preflight(identity[0], ("--proc", "/proc"))
+    if fresh is None:
+        raise _PreflightInconclusive
+    if fresh.returncode == 0:
+        return False
+    if not proc_mount_refused(fresh.stderr):
+        # bwrap failed before /proc (e.g. a uid map AppArmor still denies): the layout is unknown until that is fixed.
+        raise _PreflightInconclusive
+    without = _preflight(identity[0], ())
+    if without is None:
+        raise _PreflightInconclusive
+    return without.returncode == 0
+
+
+def _fresh_proc_refused(identity: tuple[str, int, int]) -> bool:
+    """Only the /proc mount fails while the rest of bwrap works; any other failure is the probe's to report."""
+    if time.monotonic() < _inconclusive_until.get(identity, 0.0):
+        return False
+    try:
+        return _fresh_proc_answer(identity)
+    except _PreflightInconclusive:
+        _inconclusive_until[identity] = time.monotonic() + _INCONCLUSIVE_RETRY_SECONDS
+        return False
+
+
+def empty_proc_layout(bwrap: str | None = None) -> bool:
+    """Whether launches mount an empty private /proc instead of a fresh procfs. Never the host's: it lists every cmdline."""
+    try:
+        path = bwrap or _trusted_bwrap_path()
+    except SandboxUnavailableError:
+        return False
+    return _fresh_proc_refused(_bwrap_file_identity(path))
+
+
+def forget_proc_layout() -> None:
+    _fresh_proc_answer.cache_clear()
+    _inconclusive_until.clear()
+
+
+def profile_id() -> str:
+    return f"{PROFILE_ID}-emptyproc" if empty_proc_layout() else PROFILE_ID
+
+
+def limitations() -> tuple[str, ...]:
+    # /dev/fd and /dev/std{in,out,err} link into /proc/self/fd, so they dangle too (no `<(...)`).
+    if empty_proc_layout():
+        return (*LIMITATIONS, "no_process_filesystem", "no_dev_fd_links")
+    return LIMITATIONS
 
 
 def _host_mount_points() -> tuple[str, ...]:
@@ -423,14 +579,20 @@ def _runtime_read_paths(
     return tuple(selected)
 
 
-def _identity_files() -> tuple[str, str, str]:
+def _identity_files(home: str) -> tuple[str, str, str]:
     """Synthesise one-entry passwd and group so getpwuid() works without the host database."""
     directory = tempfile.mkdtemp(prefix = "unsloth-sandbox-identity-")
     uid, gid = os.getuid(), os.getgid()
+    # Reject passwd field and record separators.
+    if ":" in home or "\n" in home:
+        home = "/nonexistent"
     passwd, group = os.path.join(directory, "passwd"), os.path.join(directory, "group")
     try:
-        with open(passwd, "w", encoding = "utf-8") as stream:
-            stream.write(f"studio:x:{uid}:{gid}:Studio sandbox:/nonexistent:/bin/sh\n")
+        # Bytes: the workdir may hold non-UTF-8 filename bytes.
+        with open(passwd, "wb") as stream:
+            stream.write(
+                b"studio:x:%d:%d:Studio sandbox:%b:/bin/sh\n" % (uid, gid, os.fsencode(home))
+            )
         with open(group, "w", encoding = "utf-8") as stream:
             stream.write(f"studio:x:{gid}:\n")
         os.chmod(passwd, 0o600)
@@ -479,8 +641,13 @@ def _inspect_cache_component(
     return cache_share_hazard(path, witness)
 
 
+CACHE_MISSING = "does not exist"
+CACHE_STILL_CHECKING = "is still being checked; it will be shared once the check finishes"
+
 # Retain timed-out workers until they finish, preventing a thread leak on a wedged path.
-_cache_scan_pending: "dict[str, threading.Thread]" = {}
+# path -> (worker, its answer list, give-up time): a later launch joins the same check instead of giving up,
+# but only until the give-up time, so a wedged mount costs two waits in total, not one per launch.
+_cache_scan_pending: "dict[str, tuple[threading.Thread, list, float]]" = {}
 # Request threads must reserve and remove workers atomically.
 _cache_scan_lock = threading.Lock()
 
@@ -516,25 +683,34 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
 
     with _cache_scan_lock:
         pending = _cache_scan_pending.get(path)
-        if pending is not None:
-            if pending.is_alive():
-                return "was still being inspected when a previous launch gave up (a wedged mount?)"
+        if pending is not None and not pending[0].is_alive():
             del _cache_scan_pending[path]
-        worker = threading.Thread(target = check, name = f"unsloth-cache-scan-{name}", daemon = True)
-        # Start under the lock, or another caller can replace the not-yet-alive worker.
-        _cache_scan_pending[path] = worker
-        worker.start()
-    worker.join(_CACHE_INSPECT_SECONDS)
+            pending = None
+        if pending is None:
+            worker = threading.Thread(target = check, name = f"unsloth-cache-scan-{name}", daemon = True)
+            # Start under the lock, or another caller can replace the not-yet-alive worker.
+            give_up = time.monotonic() + 2 * _CACHE_INSPECT_SECONDS
+            pending = _cache_scan_pending[path] = (worker, answer, give_up)
+            worker.start()
+    worker, answer, give_up = pending
+    worker.join(max(0.0, min(_CACHE_INSPECT_SECONDS, give_up - time.monotonic())))
     if not answer:
-        return f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)"
+        return CACHE_STILL_CHECKING
     with _cache_scan_lock:
         # By identity: another caller may already have replaced it.
-        if _cache_scan_pending.get(path) is worker:
+        if _cache_scan_pending.get(path) is pending:
             del _cache_scan_pending[path]
     return answer[0]
 
 
 def _cache_hazard_memoized(name: str, path: str) -> "str | None":
+    if not os.path.lexists(path):
+        # A fresh HF home has no datasets/ or assets/ yet; create it so the sandbox shares it too.
+        try:
+            os.makedirs(path, exist_ok = True)
+        except OSError as exc:
+            logger.debug("could not create the %s cache at %s: %s", name, path, exc)
+            return CACHE_MISSING
     signature = _cache_component_signature(path)
     now = time.monotonic()
     with _cache_scan_lock:
@@ -554,6 +730,20 @@ def _cache_hazard_memoized(name: str, path: str) -> "str | None":
         with _cache_scan_lock:
             _cache_verdicts[path] = (now + _CACHE_VERDICT_TTL_SECONDS, signature, witness, verdict)
     return verdict
+
+
+_CACHE_WARNING_SECONDS = 60.0
+_cache_warned: "dict[tuple[str, str], float]" = {}
+
+
+def _warn_not_shared(name: str, hazard: str) -> None:
+    now = time.monotonic()
+    with _cache_scan_lock:
+        last = _cache_warned.get((name, hazard))
+        if last is not None and now - last < _CACHE_WARNING_SECONDS:
+            return
+        _cache_warned[(name, hazard)] = now
+    logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)
 
 
 def _model_cache_binds(workdir: str) -> dict[str, str]:
@@ -595,8 +785,10 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
             continue
         # Writable caches need the workdir's host-channel checks, including nested bind mounts.
         hazard = _cache_hazard_within_deadline(name, path)
+        if hazard == CACHE_MISSING:
+            continue
         if hazard is not None:
-            logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)
+            _warn_not_shared(name, hazard)
             continue
         binds[name] = path
     return binds
@@ -658,13 +850,17 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     tmp_runtime_paths = tuple(path for path in runtime_paths if _within(path, "/tmp"))
     workdir_runtime_paths = _runtime_paths_under(workdir)
 
-    disable_userns = _bwrap_supports(bwrap, "--disable-userns")
+    # --disable-userns writes /proc/sys/user/max_user_namespaces inside, which an empty /proc lacks:
+    # there the seccomp filter refuses nested user namespaces instead, as on bwrap 0.6.1.
+    # One read per launch: a reset between two reads could mix --disable-userns with an empty /proc.
+    empty_proc = empty_proc_layout(bwrap)
+    disable_userns = not empty_proc and _bwrap_supports(bwrap, "--disable-userns")
     try:
         seccomp = sandbox_seccomp.filter_file(block_userns = not disable_userns)
     except RuntimeError as exc:
         raise SandboxUnavailableError(str(exc)) from exc
     try:
-        identity_dir, passwd, group = _identity_files()
+        identity_dir, passwd, group = _identity_files(inner)
     except Exception:
         seccomp.close()
         raise
@@ -685,8 +881,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             "ALL",
             "--seccomp",
             str(seccomp.fileno()),
-            "--proc",
-            "/proc",
+            *(("--tmpfs", "/proc") if empty_proc else ("--proc", "/proc")),
             "--dev",
             "/dev",
             "--dir",
@@ -702,7 +897,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for root in silent_roots:
             argv += ["--ro-bind-try", root, root]
         trusted = tuple(p for p in _ETC_FILES_IF_TRUSTED if _trusted_system_file(p))
-        for path in (*_ETC_FILES, *trusted, *_NETWORK_FILES):
+        for path in (*_ETC_FILES, *_etc_java_binds(), *trusted, *_NETWORK_FILES):
             argv += ["--ro-bind-try", path, path]
         argv += ["--ro-bind", passwd, "/etc/passwd", "--ro-bind", group, "/etc/group"]
         for path in runtime_paths:

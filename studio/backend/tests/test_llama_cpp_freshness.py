@@ -763,3 +763,68 @@ def test_release_fetch_cannot_outlive_its_deadline(monkeypatch, fetch):
     assert getattr(fr, fetch)("unslothai/llama.cpp", timeout = 0.25) is None
     # Pins the implemented timeout + 1, not merely "faster than the 30s stall".
     assert time.monotonic() - started < 2.0
+
+
+def _refusal(
+    code: int,
+    headers: dict | None = None,
+    body: bytes = b"",
+):
+    import email.message
+    import io
+    import urllib.error
+
+    message = email.message.Message()
+    for name, value in (headers or {}).items():
+        message[name] = value
+    return urllib.error.HTTPError(
+        "https://api.github.com/repos/x/y/releases", code, "refused", message, io.BytesIO(body)
+    )
+
+
+@pytest.mark.parametrize(
+    ("code", "headers", "body", "low", "high"),
+    [
+        (
+            403,
+            {"X-RateLimit-Remaining": "4998"},
+            b'{"message": "Resource not accessible"}',
+            None,
+            None,
+        ),
+        (404, {"X-RateLimit-Remaining": "0"}, b"", None, None),
+        (403, {"Retry-After": "60"}, b"", 60, 60),
+        (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "+42"}, b"", 35, 42),
+        (403, {}, b'{"message": "You have exceeded a secondary rate limit"}', 900, 900),
+        (429, {"X-RateLimit-Remaining": "4998"}, b"", 900, 900),
+        (403, {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "+21600"}, b"", 3600, 3600),
+    ],
+)
+def test_rate_limit_wait(code, headers, body, low, high):
+    headers = {
+        k: str(int(time.time()) + int(v[1:])) if v.startswith("+") else v
+        for k, v in headers.items()
+    }
+    wait = fr._flow.rate_limit_wait(_refusal(code, headers, body))
+    assert wait is None if low is None else low <= wait <= high
+
+
+def test_a_rate_limit_parks_every_github_fetch_until_it_resets(monkeypatch):
+    mono = [1000.0]
+    monkeypatch.setattr(fr._flow.time, "monotonic", lambda: mono[0])
+    calls = []
+
+    def refuse(req, timeout = 5.0):
+        calls.append(req.full_url)
+        raise _refusal(403, {"Retry-After": "1800"})
+
+    monkeypatch.setattr(fr._flow, "auth_safe_open", refuse)
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+    assert fr._fetch_latest_release_assets("unslothai/llama.cpp") is None
+    assert len(calls) == 1
+    fr._flow.hold_github_api(60)
+    assert fr._flow.github_rate_limit_remaining() == 1800
+    mono[0] += 1801
+    assert fr._fetch_latest_release_tag("unslothai/llama.cpp") is None
+    assert len(calls) == 2

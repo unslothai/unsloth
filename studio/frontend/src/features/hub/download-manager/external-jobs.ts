@@ -115,3 +115,12 @@ export function finishExternalJob(
   });
   scheduleRemoval(key, TERMINAL_LINGER_MS);
 }
+
+/** Update an external operation whose package manager does not report byte totals. */
+export function updateExternalActivity(
+  key: string,
+  activity: string,
+  details: string[],
+): void {
+  if (externalJobs.has(key)) patchJob(key, { activity, details });
+}

@@ -55,6 +55,24 @@ def _drop_seed_token(builder_config: dict) -> None:
     seed_config.get("source", {}).pop("token", None)
 
 
+def _ensure_hub_repo_private(hf_api, repo_id: str) -> None:
+    # create_repo ignores `private` when the repo already exists.
+    try:
+        hf_api.update_repo_settings(repo_id = repo_id, private = True, repo_type = "dataset")
+        return
+    except Exception as exc:
+        try:
+            info = hf_api.repo_info(repo_id = repo_id, repo_type = "dataset")
+            if bool(getattr(info, "private", False)):
+                return
+        except Exception:
+            pass
+        raise RecipeDatasetPublishError(
+            f"Could not make {repo_id} private, so nothing was uploaded. The token likely "
+            "lacks permission to change this repo's settings."
+        ) from exc
+
+
 def publish_recipe_dataset(
     *,
     artifact_path: str,
@@ -91,6 +109,8 @@ def publish_recipe_dataset(
         client._validate_repo_id(repo_id = repo_id)
         client._validate_dataset_path(base_dataset_path = dataset_path)
         client._create_or_get_repo(repo_id = repo_id, private = private)
+        if private:
+            _ensure_hub_repo_private(client._api, repo_id)
 
         metadata_path = dataset_path / METADATA_FILENAME
         builder_config_path = dataset_path / SDG_CONFIG_FILENAME

@@ -76,24 +76,30 @@ export function ManagedProviderUrlsSection() {
         description={t(
           "settings.general.managedProviderUrls.enableDescription",
         )}
+        below={
+          settings?.lockedByEnvironment || error ? (
+            <div className="flex flex-col items-end gap-1">
+              {settings?.lockedByEnvironment ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
+                  {t(
+                    "settings.general.managedProviderUrls.lockedByEnvironment",
+                  )}
+                </span>
+              ) : null}
+              {error ? (
+                <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+                  {error}
+                </span>
+              ) : null}
+            </div>
+          ) : null
+        }
       >
-        <div className="flex flex-col items-end gap-1">
-          <Switch
-            checked={settings?.allowed ?? false}
-            disabled={!settings || saving || settings.lockedByEnvironment}
-            onCheckedChange={(allowed) => void save(allowed)}
-          />
-          {settings?.lockedByEnvironment ? (
-            <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
-              {t("settings.general.managedProviderUrls.lockedByEnvironment")}
-            </span>
-          ) : null}
-          {error ? (
-            <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-              {error}
-            </span>
-          ) : null}
-        </div>
+        <Switch
+          checked={settings?.allowed ?? false}
+          disabled={!settings || saving || settings.lockedByEnvironment}
+          onCheckedChange={(allowed) => void save(allowed)}
+        />
       </SettingsRow>
     </SettingsSection>
   );

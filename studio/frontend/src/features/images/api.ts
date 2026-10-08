@@ -23,18 +23,25 @@ export interface DiffusionResolvedControl {
   reason: string;
   // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
   artifact?: string | null;
+  // "gguf:<file>" the `artifact` replaced.
+  replaced?: string | null;
 }
 
 export interface DiffusionStatus {
   loaded: boolean;
   repo_id: string | null;
+  /** Logical Hub identity when repo_id is an exact local snapshot. */
+  display_repo_id?: string | null;
   family: string | null;
+  supported_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
   gguf_filename?: string | null;
+  // Supplied text-encoder / VAE files: pipeline component -> basename.
+  component_files?: Record<string, string> | null;
   // Selected GGUF quant. Newer backends report this separately from the compute dtype.
   gguf_variant?: string | null;
   cpu_offload: boolean;
@@ -66,6 +73,7 @@ export interface DiffusionStatus {
   supports_lora?: boolean;
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
+  supports_negative_prompt?: boolean;
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
@@ -93,8 +101,11 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  // Absent (sd.cpp engine) means "denoise".
-  phase?: "denoise" | "decode" | null;
+  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts.
+  phase?: "encode" | "denoise" | "decode" | null;
+  // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
+  preview?: string | null;
+  preview_seq?: number;
 }
 
 export interface DiffusionLoadProgress {
@@ -107,14 +118,20 @@ export interface DiffusionLoadProgress {
 
 export interface DiffusionLoadRequest {
   model_path: string;
+  /** Logical Hub identity to publish while model_path remains the physical load target. */
+  display_repo_id?: string;
   // Optional now: required for the gguf / single_file kinds, omitted for a full pipeline loaded via from_pretrained.
   gguf_filename?: string;
-  // How to load the model (omit to auto-detect from gguf_filename). Non-GGUF kinds are restricted to unsloth/* repos.
+  // How to load the model (omit to auto-detect from gguf_filename). A single_file .safetensors loads from any repo;
+  // pipeline loads are restricted to unsloth/* repos, the official bases, or a local path.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
   hf_token?: string;
   cpu_offload?: boolean;
+  // Separate .safetensors files (e.g. ComfyUI models/text_encoders, models/vae); gguf / single_file only.
+  text_encoder_file?: string | string[];
+  vae_file?: string;
   // Advanced (load-time) tuning. All optional; omit for the backend's auto defaults.
   speed_mode?: "off" | "eager" | "default" | "max";
   transformer_quant?: "auto" | "none" | "off" | "int8" | "fp8" | "nvfp4" | "mxfp8";
@@ -154,6 +171,8 @@ export interface DiffusionLoadRequest {
 
 export interface DiffusionGenerateRequest {
   prompt: string;
+  // Stream a live preview on generate-progress; omitted = the server default (on).
+  live_preview?: boolean;
   negative_prompt?: string;
   width?: number;
   height?: number;
@@ -171,7 +190,7 @@ export interface DiffusionGenerateRequest {
   allow_oversized?: boolean;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
-  workflow?: "edit" | "reference";
+  workflow?: "edit" | "reference" | "outpaint";
   reference_resolution?: number;
   // Unified edit only: annotate/paint composite onto the source, mask is sent as Image 2.
   localized_edit?: { mode: LocalizedEditMode; image: string };
@@ -246,6 +265,11 @@ export interface GalleryImage {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  speed_mode?: string | null;
+  attention_backend?: string | null;
+  transformer_cache?: string | null;
+  cpu_offload?: boolean | null;
+  schema_version?: number | null;
   baked_loras?: string[];
   loras?: string[];
   controlnet?: string | null;
@@ -812,6 +836,10 @@ export interface DiffusionTrainingInfo {
   datasets_root: string;
   outputs_root: string;
   datasets: DiffusionDatasetSummary[];
+  // includes occupied folders without trainable media, which `datasets` omits.
+  dataset_names?: string[];
+  // occupied captions-only folders that the diffusion uploader may safely continue.
+  continuation_dataset_names?: string[];
   // Added by the multi-family trainer backend; tolerate its absence.
   families?: DiffusionTrainableFamily[];
 }
@@ -829,9 +857,11 @@ export interface DiffusionDatasetUploadResult extends DiffusionDatasetSummary {
 export async function uploadDiffusionDataset(
   name: string,
   files: File[],
+  createOnly = false,
 ): Promise<DiffusionDatasetUploadResult> {
   const form = new FormData();
   form.append("name", name);
+  form.append("create_only", createOnly ? "true" : "false");
   for (const f of files) form.append("files", f);
   return parseJson(
     await authFetch("/api/train/diffusion/dataset", { method: "POST", body: form }),

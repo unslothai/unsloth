@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { skillLoadCardEvent } from "./skill-load-event";
 import { authFetch, getAuthSessionEpoch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
@@ -52,7 +53,11 @@ import {
   runBoundedVariantsRequest,
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
-import { maxTokensIsTheLimit } from "./generation-length.ts";
+import {
+  type LengthStopCause,
+  lengthStopCause,
+  windowEvidenceCount,
+} from "./generation-length.ts";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches they built
@@ -108,24 +113,35 @@ export class StreamInterruptedError extends Error {
   }
 }
 
+const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
+  max_tokens:
+    "The model reached the Max Tokens limit before producing a final answer. " +
+    "Increase Max Tokens or disable thinking, then retry.",
+  // The context window can bind even when Max Tokens is finite.
+  context_length:
+    "The model ran out of room to answer: thinking used what the context window " +
+    "had left after the prompt, before any answer was written. Raising Max " +
+    "Tokens cannot create room the window does not have -- increase the " +
+    "Context Length in Model settings, or disable thinking, then retry.",
+  // No Studio setting controls a connected model's window.
+  context_window:
+    "The conversation filled the model's context window before an answer was " +
+    "written. Start a new chat, or shorten this one, then retry.",
+  // Unknown cause: offer both remedies.
+  unknown:
+    "The model hit Max Tokens or its context window before answering. Increase " +
+    "Max Tokens, disable thinking, or start a new chat.",
+};
+
 /** Thrown when a reasoning model consumes its output budget before emitting any standard content,
  *  so the chat UI can explain a completed stream holding only a thinking panel. */
 export class GenerationLengthError extends Error {
-  /** @param maxTokensWasSet whether the user actually configured a Max Tokens value. With Max Tokens on "Max"
-     *  the backend already requests the whole context length, so generation stops at the context wall and
-     *  "Increase Max Tokens" cannot be followed. The false branch also covers a finite cap the prompt left no room
-     *  for, hence the wording about raising the cap. */
-  constructor(maxTokensWasSet = true) {
-    super(
-      maxTokensWasSet
-        ? "The model reached the Max Tokens limit before producing a final answer. " +
-            "Increase Max Tokens or disable thinking, then retry."
-        : "The model ran out of room to answer: thinking used what the context window " +
-            "had left after the prompt, before any answer was written. Raising Max " +
-            "Tokens cannot create room the window does not have -- increase the " +
-            "Context Length in Model settings, or disable thinking, then retry.",
-    );
+  readonly stopCause: LengthStopCause;
+
+  constructor(stopCause: LengthStopCause) {
+    super(LENGTH_STOP_ADVICE[stopCause]);
     this.name = "GenerationLengthError";
+    this.stopCause = stopCause;
   }
 }
 
@@ -148,7 +164,7 @@ export function notifyChatHistoryUpdated(
   }
 }
 
-function notifyChatProjectsUpdated(): void {
+export function notifyChatProjectsUpdated(): void {
   notifyChatHistoryUpdated();
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CHAT_PROJECTS_UPDATED_EVENT));
@@ -218,8 +234,10 @@ export async function listLoras(
 
 export async function getInferenceStatus(
   signal?: AbortSignal,
+  model?: string,
 ): Promise<InferenceStatusResponse> {
-  const response = await authFetch("/api/inference/status", { signal });
+  const query = model ? `?${new URLSearchParams({ model }).toString()}` : "";
+  const response = await authFetch(`/api/inference/status${query}`, { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
@@ -258,8 +276,11 @@ export interface ActiveGenerationsResponse {
 
 /** Chats generating on the backend right now. Authoritative where `runningByThreadId` is not: that
  *  map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these. */
-export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
-  const response = await authFetch("/api/inference/active-generations");
+export async function getActiveGenerations(
+  model?: string,
+): Promise<ActiveGenerationsResponse> {
+  const query = model ? `?model=${encodeURIComponent(model)}` : "";
+  const response = await authFetch(`/api/inference/active-generations${query}`);
   return parseJsonOrThrow<ActiveGenerationsResponse>(response);
 }
 
@@ -355,20 +376,26 @@ export async function countChatInputTokens(payload: {
 
 export async function validateModel(
   payload: LoadModelRequest,
+  options?: { signal?: AbortSignal },
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
   if (!preparedToken.proceed)
     throw Object.assign(new Error("Model load cancelled."), {
       unslothUserCancelled: true,
     });
+  options?.signal?.throwIfAborted();
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: options?.signal,
     body: JSON.stringify({
       model_path: payload.model_path,
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: preparedToken.token,
       gguf_variant: payload.gguf_variant ?? null,
+      engine: payload.engine ?? "auto",
+      engine_precision: payload.engine_precision ?? "auto",
+      engine_parallelism: payload.engine_parallelism ?? "tensor",
       // Intended load settings so validate's preflight matches the follow-up /load.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
@@ -523,6 +550,7 @@ export interface CachedGgufRepo {
    *  Images picker can show only diffusion GGUFs. */
   task?: string | null;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   /** True when some quant has a download manifest or cancel marker. Optional for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
@@ -603,7 +631,7 @@ export type ModelLoadPhase = "mmap" | "ready" | null;
 export interface LoadProgressResponse {
   /** Load phase: "mmap" while llama-server pages weight shards into RAM, "ready" once healthy, or
    *  null when no load is in flight. */
-  phase: ModelLoadPhase;
+  phase: ModelLoadPhase | "starting" | "loading_weights" | "warming_up";
   bytes_loaded: number;
   bytes_total: number;
   fraction: number;
@@ -620,10 +648,11 @@ export interface LocalModelInfo {
   id: string;
   display_name: string;
   path: string;
-  source: "models_dir" | "hf_cache" | "lmstudio" | "ollama" | "hermes" | "custom";
+  source: "models_dir" | "hf_cache" | "lmstudio" | "omlx" | "ollama" | "hermes" | "custom";
   model_id?: string | null;
   // Backend-detected weights format ("gguf" when known), for folders whose name lacks -GGUF.
   model_format?: string | null;
+  opaque?: boolean;
   // Set when a cached snapshot holds an incomplete download, so consumers skip unloadable weights.
   partial?: boolean;
   updated_at?: number | null;
@@ -631,6 +660,7 @@ export interface LocalModelInfo {
   task?: string | null;
   /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
 }
 
 interface LocalModelListResponse {
@@ -661,6 +691,7 @@ export interface CachedModelRepo {
   size_bytes: number;
   /** Weights format; "adapter" is a LoRA with no base weights of its own. Optional for older-backend compatibility. */
   model_format?: string | null;
+  opaque?: boolean;
   /** epoch seconds of the newest downloaded weight; optional for older backends. */
   last_modified?: number;
   /** HF pipeline task: "text-to-image" for a cached diffusers pipeline repo, so the chat picker can
@@ -668,6 +699,7 @@ export interface CachedModelRepo {
   task?: string | null;
   /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   /** True when the snapshot is incomplete: such a repo must not count as downloaded, or a click
    *  re-downloads the full weights. */
   partial?: boolean;
@@ -766,6 +798,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Sub-folders are scanned too. Absent on older backends. */
+  recursive?: boolean;
   /** Result of the last scan. Absent on older backends, which means "ok". */
   status?: "ok" | "permission_denied" | "missing" | "unreadable" | "partial";
 }
@@ -776,11 +810,14 @@ export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   return data.folders;
 }
 
-export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
+export async function addScanFolder(
+  path: string,
+  recursive?: boolean,
+): Promise<ScanFolderInfo> {
   const response = await authFetch("/api/models/scan-folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, recursive }),
   });
   return parseJsonOrThrow<ScanFolderInfo>(response);
 }
@@ -1632,8 +1669,7 @@ function classifyStructuredDeltaContent(content: unknown): {
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
-  /** The window this request is served by, when the caller knows it. Used only to tell a user-chosen
-   *  Max Tokens apart from the backend's stand-in for "Max", which is the whole context length. */
+  /** Served context window for length-stop attribution; null or omitted when unknown. */
   loadedContextLength?: number | null,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
@@ -1669,6 +1705,9 @@ export async function* streamChatCompletions(
   // Reported by the server on the final chunk. Needed to tell the two walls apart: a finite Max
   // Tokens below the context length does not mean Max Tokens stopped the generation.
   let promptTokens: number | null = null;
+  let windowCount: number | null = null;
+  // Anthropic's explicit model_context_window_exceeded signal.
+  let providerReportedWindow = false;
 
   const throwIfReasoningOnlyLength = () => {
     if (
@@ -1679,11 +1718,14 @@ export async function* streamChatCompletions(
       // The backend substitutes the full context length when the user left Max Tokens on "Max", so a payload value
       // equal to it is indistinguishable from unset, and both mean the setting is not the lever.
       throw new GenerationLengthError(
-        maxTokensIsTheLimit({
-          cap: payload.max_tokens ?? null,
-          contextLength: loadedContextLength ?? null,
-          promptTokens,
-        }),
+        providerReportedWindow
+          ? "context_window"
+          : lengthStopCause({
+              cap: payload.max_tokens ?? null,
+              contextLength: loadedContextLength ?? null,
+              promptTokens,
+              completionTokens: windowCount,
+            }),
       );
     }
   };
@@ -1727,6 +1769,11 @@ export async function* streamChatCompletions(
           | { type?: string; content?: string; error?: { message?: string } };
         if ("error" in parsed && parsed.error) {
           throw new Error(parsed.error.message || "Stream error");
+        }
+        if ("type" in parsed && parsed.type === "skill_load") {
+          yield { _toolEvent: skillLoadCardEvent(parsed) } as unknown as OpenAIChatChunk;
+          separatorIndex = buffer.search(/\r?\n\r?\n/);
+          continue;
         }
         // Tool status events are custom SSE payloads, not OpenAI chunks
         if ("type" in parsed && parsed.type === "tool_status") {
@@ -1772,9 +1819,21 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        const parsedUsage = (parsed as { usage?: { prompt_tokens?: number } }).usage;
+        const {
+          usage: parsedUsage,
+          timings: parsedTimings,
+          _toolEvent: parsedToolEvent,
+        } = parsed as {
+          usage?: { prompt_tokens?: number };
+          timings?: { predicted_n?: number };
+          _toolEvent?: { type?: string };
+        };
         if (typeof parsedUsage?.prompt_tokens === "number") {
           promptTokens = parsedUsage.prompt_tokens;
+        }
+        windowCount = windowEvidenceCount(parsedTimings) ?? windowCount;
+        if (parsedToolEvent?.type === "context_window_exceeded") {
+          providerReportedWindow = true;
         }
         // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
         const parsedChoices = (

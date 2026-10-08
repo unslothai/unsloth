@@ -585,6 +585,17 @@ class TrainingStartRequest(BaseModel):
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
+    is_decision: bool = Field(
+        False,
+        description = "Train a decision model: a Laya or Clef checkpoint, or an LLM with a new Clef head",
+    )
+    model_subfolder: Optional[str] = Field(
+        None, description = "Checkpoint subfolder of a decision model repo"
+    )
+    decision_layout: Optional[Literal["laya", "clef", "llm"]] = Field(
+        None,
+        description = "Set by the server from the checkpoint files; a caller's value is replaced",
+    )
 
     enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")
     wandb_token: Optional[str] = Field(None, description = "W&B token")
@@ -605,8 +616,8 @@ class TrainingStartRequest(BaseModel):
             "Physical GPU indices to use, for example [0, 1]. Omit or pass "
             "[] to use automatic selection. Explicit gpu_ids are unsupported "
             "when the parent visibility mask uses non-numeric or subdevice "
-            "entries -- this includes CUDA_VISIBLE_DEVICES with UUID/MIG "
-            "entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
+            "entries -- this includes CUDA_VISIBLE_DEVICES with MIG or "
+            "unresolvable UUID entries on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens "
             "(e.g. '0.0,0.1') or FLAT-hierarchy (default) tile handles on "
             "Intel XPU."
         ),
@@ -1174,25 +1185,27 @@ class DiffusionTrainableFamily(BaseModel):
     # When set, a LoRA trained on this family previews on this repo instead of the training base (Krea
     # trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None
-    # Variant-specific training-base to inference-base pairs, including public mirror ids.
+    # maps each training base, including public mirrors, to its inference base.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
-    # Per-checkpoint facts that overlay the family-level params/VRAM guidance.
+    # overlays checkpoint-specific parameter and VRAM guidance on family defaults.
     base_specs: Dict[str, dict] = Field(default_factory = dict)
 
 
 class DiffusionTrainingInfoResponse(BaseModel):
-    """Where diffusion training reads/writes on this Unsloth, plus usable datasets and the
-    trainable model families (so the UI can offer a base picker with realistic guidance)."""
+    """lists paths, usable datasets, and UI-facing trainable families for this Unsloth instance."""
 
     datasets_root: str
     outputs_root: str
     datasets: List[DiffusionDatasetSummary]
+    # includes every occupied folder name, even captions-only folders.
+    dataset_names: List[str] = Field(default_factory = list)
+    # occupied, unlisted folders that this upload form may safely continue.
+    continuation_dataset_names: List[str] = Field(default_factory = list)
     families: List[DiffusionTrainableFamily] = Field(default_factory = list)
 
 
 class DiffusionDatasetUploadResponse(BaseModel):
-    """Result of uploading images/clips/captions into a named dataset folder. Counts are
-    for the whole folder after the upload, so repeat uploads show the running total."""
+    """counts cover the whole folder after the upload, including earlier uploads."""
 
     name: str
     path: str

@@ -12,7 +12,7 @@
 from .loader_utils import DEFAULT_DEVICE_MAP
 from .llama import *
 import os
-from ._utils import __version__
+from ._utils import __version__, config_return_dict
 from unsloth_zoo.utils import _get_dtype
 from unsloth_zoo.hf_utils import dtype_from_config
 from ..utils.packing import (
@@ -36,6 +36,8 @@ from .llama import (
     apply_logit_transforms,
     resolve_logit_scaling,
     resolve_logit_transforms,
+    _cache_as_legacy_tuple,
+    _cached_prefill_defaults,
 )
 from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
@@ -53,7 +55,7 @@ try:
 except:
     MistralSdpaAttention = MistralAttention
     MistralFlashAttention2 = MistralAttention
-from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.utils import Version
 
 
 def MistralAttention_fast_forward(
@@ -179,6 +181,9 @@ def MistralForCausalLM_fast_forward(
     *args,
     **kwargs,
 ) -> Union[Tuple, CausalLMOutputWithPast]:
+    past_key_values = _cache_as_legacy_tuple(past_key_values)
+    if past_key_values is not None and len(past_key_values) == 0:
+        past_key_values = None
     # PrefixGrouper brings its own mask: a synthesized causal attention_mask would trip
     # resolve_prefix_seg_info on the no-xFormers path and force a fallback.
     # Not using xformers - need to create attention masks
@@ -257,11 +262,16 @@ def MistralForCausalLM_fast_forward(
         if output_hidden_states is not None
         else self.config.output_hidden_states
     )
-    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    return_dict = return_dict if return_dict is not None else config_return_dict(self.config)
 
     self.model._has_no_labels = labels is None
 
-    if past_key_values is not None:
+    if past_key_values is not None and not (input_ids is not None and input_ids.shape[1] == 1):
+        position_ids, attention_mask = _cached_prefill_defaults(
+            past_key_values, input_ids, inputs_embeds, position_ids, attention_mask
+        )
+
+    if past_key_values is not None and input_ids is not None and input_ids.shape[1] == 1:
         outputs = LlamaModel_fast_forward_inference(
             self,
             input_ids,

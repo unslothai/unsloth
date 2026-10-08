@@ -20,6 +20,15 @@ from utils.models import checkpoints as checkpoints_module
 from utils.training_runs import build_default_output_dir_name
 
 
+# No markers and no weight probe in a bulk listing: full_state stays unverified.
+_PLAIN_FEATURES = {
+    "dora": False,
+    "full_state": None,
+    "moe_target_parameters": False,
+    "non_uniform": False,
+}
+
+
 def _make_history_connection(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -282,7 +291,12 @@ def test_scan_checkpoints_lists_run_with_only_intermediate_checkpoints(tmp_path,
                 ("checkpoint-100", str(run_dir / "checkpoint-100"), 0.5),
                 ("checkpoint-50", str(run_dir / "checkpoint-50"), 0.75),
             ],
-            {"base_model": "unsloth/X", "peft_type": "LORA", "lora_rank": 16},
+            {
+                "base_model": "unsloth/X",
+                "peft_type": "LORA",
+                "lora_rank": 16,
+                "adapter_features": _PLAIN_FEATURES,
+            },
         )
     ]
 
@@ -346,6 +360,11 @@ def test_scan_checkpoints_keeps_root_adapter_first(tmp_path, monkeypatch):
                 ("checkpoint-100", str(run_dir / "checkpoint-100"), 0.125),
                 ("checkpoint-50", str(run_dir / "checkpoint-50"), 0.25),
             ],
-            {"base_model": "unsloth/X", "peft_type": "LORA", "lora_rank": 16},
+            {
+                "base_model": "unsloth/X",
+                "peft_type": "LORA",
+                "lora_rank": 16,
+                "adapter_features": _PLAIN_FEATURES,
+            },
         )
     ]

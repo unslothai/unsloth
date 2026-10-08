@@ -47,8 +47,9 @@ a repo can host both and each build reads the one it understands.
 from __future__ import annotations
 
 import json
+import os
 import re
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 SAFETENSORS_SUFFIX = ".safetensors"
 
@@ -61,6 +62,14 @@ UNSLOTH_METADATA_KEY = "unsloth_metadata"
 # never sees a key it would try to rsplit on ".".
 UNSLOTH_ROOT_PREFIX = "unsloth_root::"
 UNSLOTH_ROOT_KEYS_KEY = "unsloth_root_tensors"
+# Our own header entries: never torchao tensor entries, so never pruned (layout + source: prequant_native).
+_UNSLOTH_HEADER_KEYS = (
+    UNSLOTH_FORMAT_KEY,
+    UNSLOTH_METADATA_KEY,
+    UNSLOTH_ROOT_KEYS_KEY,
+    "unsloth_quant_layout",
+    "unsloth_source",
+)
 
 # The torchao release that first shipped the flatten/unflatten pair under this import path. Below it
 # the helpers are absent and a safetensors artifact simply cannot be read, so the loader says so and
@@ -133,6 +142,62 @@ def safetensors_prequant_supported() -> bool:
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+def plain_safetensors_supported() -> bool:
+    """The layerwise-cast encoder format stores plain tensors, without torchao subclasses."""
+    try:
+        from safetensors import safe_open  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def load_plain_prequant_safetensors(
+    path: str,
+    *,
+    device: str = "cpu",
+    skip_names: Iterable[str] = (),
+) -> dict:
+    """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors.
+
+    ``skip_names`` are validated but never read."""
+    from safetensors import safe_open
+
+    with safe_open(path, framework = "pt", device = device) as handle:
+        raw = handle.metadata() or {}
+        fmt = raw.get(UNSLOTH_FORMAT_KEY)
+        if not fmt:
+            raise ValueError(f"{path} is not an Unsloth pre-quant checkpoint")
+        metadata = json.loads(raw.get(UNSLOTH_METADATA_KEY) or "{}")
+        names = json.loads(raw.get("tensor_names") or "null")
+        if not isinstance(metadata, dict):
+            raise ValueError(f"{path} has invalid pre-quant metadata")
+        if (
+            not isinstance(names, list)
+            or not all(isinstance(name, str) and name for name in names)
+            or len(names) != len(set(names))
+        ):
+            raise ValueError(f"{path} has invalid tensor_names")
+        keys = set(handle.keys())
+        roots = {key for key in keys if key.startswith(UNSLOTH_ROOT_PREFIX)}
+        root_names = {key[len(UNSLOTH_ROOT_PREFIX) :] for key in roots}
+        if (
+            any(not name or "." in name for name in root_names)
+            or root_names.intersection(names)
+            or set(names).intersection(roots)
+            or set(names) != keys - roots
+        ):
+            raise ValueError(f"{path} has tensors its header does not account for")
+        for name in names:
+            if json.loads(raw.get(name) or "null") != {"_type": "Tensor"}:
+                raise ValueError(f"{path} requires a tensor-subclass reader for {name!r}")
+        skip = frozenset(skip_names)
+        state_dict = {name: handle.get_tensor(name) for name in names if name not in skip}
+        state_dict.update(
+            (key[len(UNSLOTH_ROOT_PREFIX) :], handle.get_tensor(key)) for key in roots
+        )
+    return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
 
 
 def _first(value: Any) -> Any:
@@ -305,7 +370,7 @@ def _header_without_inert_tensor_field(
     pruned = dict(header)
     victims = []
     for key, value in header.items():
-        if key in (UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY, UNSLOTH_ROOT_KEYS_KEY):
+        if key in _UNSLOTH_HEADER_KEYS:
             continue
         try:
             parsed = json.loads(value)
@@ -377,7 +442,7 @@ def _header_without_unconstructible_fields(
             removed: list = []
             pruned = {}
             for key, value in header.items():
-                if key in (UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY, UNSLOTH_ROOT_KEYS_KEY):
+                if key in _UNSLOTH_HEADER_KEYS:
                     pruned[key] = value
                     continue
                 try:
@@ -414,7 +479,106 @@ def _header_without_unconstructible_fields(
     return header
 
 
-def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
+_ST_DTYPES = {
+    "BF16": "bfloat16",
+    "F16": "float16",
+    "F32": "float32",
+    "F64": "float64",
+    "C64": "complex64",
+    "F8_E4M3": "float8_e4m3fn",
+    "F8_E5M2": "float8_e5m2",
+    "F8_E8M0": "float8_e8m0fnu",
+    "I8": "int8",
+    "U8": "uint8",
+    "I16": "int16",
+    "U16": "uint16",
+    "I32": "int32",
+    "U32": "uint32",
+    "I64": "int64",
+    "U64": "uint64",
+    "BOOL": "bool",
+}
+
+# safetensors refuses headers past 100 MB; a pre-quant header is a few MB at most.
+_MAX_HEADER_BYTES = 100_000_000  # the safetensors parser's own limit
+
+
+def _mapped_tensors(path: str) -> tuple:
+    """``(header metadata, {name: tensor})`` with every tensor a view of a private mapping of ``path``.
+
+    ``safe_open(...).get_tensor`` copies each tensor into anonymous memory, so a 34 GB checkpoint costs
+    34 GB of host RAM before the first byte reaches the GPU; the pickle path maps the file instead
+    (``prequant_mmap_enabled``). This maps it with the same primitive ``torch.load(mmap = True)`` uses
+    (``UntypedStorage.from_file``, private), so the two containers cost the same on every OS: pages are
+    read when ``.to(device)`` touches them, and a write never reaches the file. The header is checked
+    the way safetensors checks it (known dtypes, non-negative integer shapes, byte ranges that tile the
+    data section exactly, a bounded header); anything else raises and the caller re-reads unmapped.
+    """
+    import struct
+
+    import torch
+
+    size = os.path.getsize(path)
+    with open(path, "rb") as fh:
+        head = fh.read(8)
+        if len(head) != 8:
+            raise ValueError(f"{path} is not a safetensors file")
+        (length,) = struct.unpack("<Q", head)
+        if length <= 0 or length > _MAX_HEADER_BYTES or 8 + length > size:
+            raise ValueError(f"{path} has a corrupt safetensors header")
+        header = json.loads(fh.read(length))
+    if not isinstance(header, dict):
+        raise ValueError(f"{path} has a corrupt safetensors header")
+    metadata = header.pop("__metadata__", None) or {}
+    base = 8 + length
+    entries = []
+    for name, info in header.items():
+        try:
+            dtype = getattr(torch, _ST_DTYPES[info["dtype"]])
+            start, end = (int(v) for v in info["data_offsets"])
+            shape = list(info["shape"])
+        except Exception:  # noqa: BLE001 - unknown dtype (on this torch) or a malformed entry
+            raise ValueError(f"{path}: unreadable tensor entry {name!r}") from None
+        if not all(isinstance(d, int) and not isinstance(d, bool) and d >= 0 for d in shape):
+            raise ValueError(f"{path}: tensor {name!r} has an invalid shape")
+        count = 1
+        for d in shape:
+            count *= d
+        itemsize = torch.empty((), dtype = dtype).element_size()
+        if count * itemsize != end - start:
+            raise ValueError(f"{path}: tensor {name!r} size does not match its shape")
+        entries.append((start, end, name, dtype, shape, itemsize))
+    entries.sort(key = lambda e: (e[0], e[1]))
+    cursor = 0
+    for start, end, name, *_ in entries:
+        if start != cursor:
+            raise ValueError(f"{path}: tensor {name!r} overlaps another or leaves a gap")
+        cursor = end
+    if cursor != size - base:
+        raise ValueError(f"{path}: the data section does not match its header")
+    storage = (
+        torch.UntypedStorage.from_file(path, shared = False, nbytes = size) if size > base else None
+    )
+    tensors = {}
+    for start, end, name, dtype, shape, itemsize in entries:
+        offset = base + start
+        if start == end or storage is None:
+            tensors[name] = torch.empty(shape, dtype = dtype)
+        elif offset % itemsize == 0:
+            tensors[name] = torch.empty(0, dtype = dtype).set_(storage, offset // itemsize, shape)
+        else:
+            # safetensors packs tensors back to back, so one can start off its dtype's alignment: copy that one.
+            raw = torch.empty(0, dtype = torch.uint8).set_(storage, offset, (end - start,))
+            tensors[name] = raw.clone().view(dtype).reshape(shape)
+    return dict(metadata), tensors
+
+
+def load_prequant_safetensors(
+    path: str,
+    *,
+    device: str = "cpu",
+    mmap: bool = False,
+) -> dict:
     """Read ``path`` into the SAME dict shape the pickle path returns.
 
     Returning ``{"format", "state_dict", "metadata"}`` rather than a new type is deliberate: every
@@ -422,6 +586,9 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
     activation-floor probe that reads the reconstructed tensors, the rotation biconditional, the
     kernel-preference pin) then runs unchanged on both containers, so the two formats cannot drift
     into having different acceptance rules.
+
+    ``mmap`` maps the file instead of copying it (CPU tensors only), as the pickle path does for an
+    accelerator destination.
     """
     helpers = _torchao_helpers()
     if helpers is None:
@@ -430,12 +597,14 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
             f"{'.'.join(str(p) for p in MIN_TORCHAO_VERSION)} is required for "
             "torchao.prototype.safetensors.safetensors_support"
         )
-    from safetensors import safe_open
-
     _, unflatten = helpers
-    with safe_open(path, framework = "pt", device = device) as handle:
-        raw = dict(handle.metadata() or {})
-        tensors = {key: handle.get_tensor(key) for key in handle.keys()}
+    if mmap and str(device) == "cpu":
+        raw, tensors = _mapped_tensors(path)
+    else:
+        from safetensors import safe_open
+        with safe_open(path, framework = "pt", device = device) as handle:
+            raw = dict(handle.metadata() or {})
+            tensors = {key: handle.get_tensor(key) for key in handle.keys()}
 
     fmt = raw.get(UNSLOTH_FORMAT_KEY)
     if not fmt:
@@ -453,27 +622,31 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
         for key in [k for k in tensors if k.startswith(UNSLOTH_ROOT_PREFIX)]
     }
 
-    # A newer torchao can record a field an older one's constructor does not take, which is how a
-    # published int8 checkpoint stopped loading. Dropped here when it is inert; see the helper.
-    raw = _header_without_unconstructible_fields(unflatten, tensors, raw, path = path)
+    # Unsloth's own int8 / fp8 rebuild, independent of torchao's deserializer accepting another release's kwargs;
+    # None (nvfp4, mxfp8, ...) falls through to torchao below.
+    from .prequant_native import native_rebuild_enabled, native_unflatten
 
-    # torchao reads its OWN keys out of the same header; ours are namespaced and simply ignored. The second element
-    # is what it could NOT account for: a subclass missing one of its parts (a truncated or hand-edited file) is
-    # skipped there rather than raised, which would reach load_state_dict as a bare missing-key error saying nothing
-    # about the artifact. Name it here instead.
-    rebuilt = unflatten(tensors, raw)
-    state_dict = _first(rebuilt)
-    leftover = rebuilt[1] if isinstance(rebuilt, tuple) and len(rebuilt) > 1 else None
-    if leftover:
-        raise ValueError(
-            f"{path} has {len(leftover)} tensor(s) its header does not account for "
-            f"(e.g. {sorted(leftover)[0]!r}); the checkpoint is incomplete or was edited"
-        )
+    state_dict = native_unflatten(tensors, raw, path = path) if native_rebuild_enabled() else None
+    reader = "native" if state_dict is not None else "torchao"
+    if state_dict is None:
+        # A newer torchao's field an older constructor lacks (how a published int8 file broke): dropped if inert.
+        raw = _header_without_unconstructible_fields(unflatten, tensors, raw, path = path)
+
+        # The second element is what torchao could not account for (truncated / hand-edited file): named here, not left
+        # to surface as a bare missing-key error in load_state_dict.
+        rebuilt = unflatten(tensors, raw)
+        state_dict = _first(rebuilt)
+        leftover = rebuilt[1] if isinstance(rebuilt, tuple) and len(rebuilt) > 1 else None
+        if leftover:
+            raise ValueError(
+                f"{path} has {len(leftover)} tensor(s) its header does not account for "
+                f"(e.g. {sorted(leftover)[0]!r}); the checkpoint is incomplete or was edited"
+            )
     if roots:
         # Back under their bare names, so the caller's load_state_dict sees the shape the model
         # declares. A dotted key can never collide with one of these.
         state_dict.update(roots)
-    return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
+    return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata, "reader": reader}
 
 
 def scheme_is_flattenable(quant_config: Any, *, features: int = 512) -> Optional[bool]:

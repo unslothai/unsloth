@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat";
 // From the keys module, not the barrel or the store: both are in an import cycle with this file,
 // so the key was still in its temporal dead zone when the module-scope list below read it, killing
 // the module graph. The keys module imports nothing, so it is always evaluated first.
@@ -29,8 +29,10 @@ import {
   TRAINING_UI_PREFERENCE_KEYS,
 } from "@/features/training";
 import {
+  setShowAudioCppUpdateBanner,
   setShowLlamaUpdateBanner,
   setShowWhisperUpdateBanner,
+  useShowAudioCppUpdateBanner,
   useShowLlamaUpdateBanner,
   useShowWhisperUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
@@ -118,6 +120,7 @@ const PREFS_KEYS: string[] = [
   CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
+  "unsloth_chat_sandbox_level",
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
@@ -162,6 +165,8 @@ const PREFS_KEYS: string[] = [
   // Update notifications
   "unsloth_show_llama_update_banner",
   "unsloth_show_whisper_update_banner",
+  "unsloth_show_audio_cpp_update_banner",
+  "unsloth_llama_update_offer_suppression",
   "unsloth_monitor_overlay",
   LOADED_MODELS_PREFERENCE_KEYS.show,
   LOADED_MODELS_PREFERENCE_KEYS.collapsed,
@@ -198,8 +203,10 @@ export function GeneralTab() {
   const hfTokenPersistenceError = useHfTokenStore(
     (s) => s.persistenceError,
   );
+  const hfTokenIsPersisting = useHfTokenStore((s) => s.isPersisting);
   const showLlamaUpdates = useShowLlamaUpdateBanner();
   const showWhisperUpdates = useShowWhisperUpdateBanner();
+  const showAudioCppUpdates = useShowAudioCppUpdateBanner();
   const showLoadedModels = useShowLoadedModels();
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -243,6 +250,9 @@ export function GeneralTab() {
   });
 
   const draftRef = useRef(draftToken);
+  const tokenEditedRef = useRef(false);
+  const tokenEditRevisionRef = useRef(0);
+  const submittedTokenRevisionRef = useRef<number | null>(null);
   useEffect(() => {
     draftRef.current = draftToken;
   }, [draftToken]);
@@ -250,7 +260,16 @@ export function GeneralTab() {
   // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
   useEffect(() => {
     return () => {
-      if (resetInProgress) return;
+      if (resetInProgress || !tokenEditedRef.current) return;
+      const credential = useHfTokenStore.getState();
+      if (
+        submittedTokenRevisionRef.current !== null &&
+        submittedTokenRevisionRef.current === tokenEditRevisionRef.current &&
+        !credential.isPersisting &&
+        !credential.persistenceError
+      ) {
+        return;
+      }
       const trimmed = draftRef.current.trim();
       const current = useChatRuntimeStore.getState().hfToken;
       if (trimmed !== current) {
@@ -259,13 +278,46 @@ export function GeneralTab() {
     };
   }, []);
 
+  useEffect(() => {
+    const current = hfToken ?? "";
+    if (tokenEditedRef.current) {
+      if (hfTokenIsPersisting) return;
+      if (hfTokenPersistenceError) {
+        submittedTokenRevisionRef.current = null;
+        return;
+      }
+      if (
+        submittedTokenRevisionRef.current !== tokenEditRevisionRef.current &&
+        draftRef.current.trim() !== current
+      ) {
+        return;
+      }
+      tokenEditedRef.current = false;
+      submittedTokenRevisionRef.current = null;
+    }
+    draftRef.current = current;
+    setDraftToken(current);
+  }, [hfToken, hfTokenIsPersisting, hfTokenPersistenceError]);
+
   const commitToken = () => {
-    const trimmed = draftToken.trim();
+    if (!tokenEditedRef.current) return;
+    const trimmed = draftRef.current.trim();
+    draftRef.current = trimmed;
     if (trimmed !== draftToken) setDraftToken(trimmed);
-    if (trimmed !== hfToken) setHfToken(trimmed);
+    const current = useChatRuntimeStore.getState().hfToken;
+    if (trimmed === current) {
+      tokenEditedRef.current = false;
+      submittedTokenRevisionRef.current = null;
+      return;
+    }
+    submittedTokenRevisionRef.current = tokenEditRevisionRef.current;
+    setHfToken(trimmed);
   };
 
   const clearHfToken = () => {
+    tokenEditRevisionRef.current += 1;
+    tokenEditedRef.current = true;
+    submittedTokenRevisionRef.current = tokenEditRevisionRef.current;
     draftRef.current = "";
     setDraftToken("");
     setHfToken("");
@@ -451,64 +503,8 @@ export function GeneralTab() {
         <SettingsRow
           label={t("settings.general.huggingFaceToken")}
           description={t("settings.general.huggingFaceTokenDescription")}
-        >
-          <div className="flex min-w-0 flex-col items-end gap-1.5">
-            <div className="flex max-w-full items-center gap-2">
-              <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">
-                <Input
-                  type={showToken ? "text" : "password"}
-                  name="hf-token"
-                  autoComplete="new-password"
-                  spellCheck={false}
-                  placeholder="hf_…"
-                  value={draftToken}
-                  onChange={(e) => setDraftToken(e.target.value)}
-                  onBlur={commitToken}
-                  className={cn(
-                    "h-8 w-full font-mono text-xs",
-                    tokenValidated ? "pr-14" : "pr-8",
-                  )}
-                />
-                {tokenValidated ? (
-                  // Decorative: pointer-events-none lets clicks reach the input underneath.
-                  <span
-                    className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
-                    role="img"
-                    aria-label={t("settings.general.tokenValidated")}
-                  >
-                    <Check className="size-4" strokeWidth={2.5} />
-                  </span>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => setShowToken((s) => !s)}
-                  className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
-                  aria-label={
-                    showToken
-                      ? t("settings.general.hideToken")
-                      : t("settings.general.showToken")
-                  }
-                  tabIndex={-1}
-                >
-                  {showToken ? (
-                    <EyeOff className="size-3.5" />
-                  ) : (
-                    <Eye className="size-3.5" />
-                  )}
-                </button>
-              </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8"
-                disabled={!draftToken && !hfToken}
-                onClick={clearHfToken}
-              >
-                {t("settings.general.clearToken")}
-              </Button>
-            </div>
-            {hfTokenPersistenceError ? (
+          below={
+            hfTokenPersistenceError ? (
               <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {hfTokenPersistenceError}
               </p>
@@ -520,7 +516,70 @@ export function GeneralTab() {
               <p className="max-w-[calc(330px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {tokenValidation.error}
               </p>
-            ) : null}
+            ) : null
+          }
+        >
+          <div className="flex max-w-full items-center gap-2">
+            <div className="relative w-[calc(260px*var(--ui-space-scale,1))] min-w-0">
+              <Input
+                type={showToken ? "text" : "password"}
+                name="hf-token"
+                autoComplete="new-password"
+                spellCheck={false}
+                placeholder="hf_…"
+                value={draftToken}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  tokenEditRevisionRef.current += 1;
+                  tokenEditedRef.current = value.trim() !== (hfToken ?? "");
+                  submittedTokenRevisionRef.current = null;
+                  draftRef.current = value;
+                  setDraftToken(value);
+                }}
+                onBlur={commitToken}
+                className={cn(
+                  "h-8 w-full font-mono text-xs",
+                  tokenValidated ? "pr-14" : "pr-8",
+                )}
+              />
+              {tokenValidated ? (
+                // Decorative: pointer-events-none lets clicks reach the input underneath.
+                <span
+                  className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
+                  role="img"
+                  aria-label={t("settings.general.tokenValidated")}
+                >
+                  <Check className="size-4" strokeWidth={2.5} />
+                </span>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => setShowToken((s) => !s)}
+                className="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
+                aria-label={
+                  showToken
+                    ? t("settings.general.hideToken")
+                    : t("settings.general.showToken")
+                }
+                tabIndex={-1}
+              >
+                {showToken ? (
+                  <EyeOff className="size-3.5" />
+                ) : (
+                  <Eye className="size-3.5" />
+                )}
+              </button>
+            </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8"
+              disabled={!draftToken && !hfToken}
+              onClick={clearHfToken}
+            >
+              {t("settings.general.clearToken")}
+            </Button>
           </div>
         </SettingsRow>
         {/* The desktop owner authenticates via desktop auto-auth with a generated
@@ -545,56 +604,47 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title={t("settings.general.permissions.sectionTitle")}>
-        <SettingsRow
-          label={t("settings.general.permissions.bypassLabel")}
-          description={t("settings.general.permissions.bypassDescription")}
-        >
-          <PermissionModeDropdown />
-        </SettingsRow>
-      </SettingsSection>
-
       {isTauri ? (
         <SettingsSection title={t("settings.general.startup.sectionTitle")}>
           <SettingsRow
             label={t("settings.general.startup.launchAtLogin")}
             description={t("settings.general.startup.launchAtLoginDescription")}
-          >
-            <div className="flex flex-col items-end gap-1">
-              <Switch
-                checked={launchAtLoginSetting.value ?? false}
-                disabled={
-                  launchAtLoginSetting.value === null || launchAtLoginSetting.saving
-                }
-                onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
-              />
-              {launchAtLoginSetting.error ? (
+            below={
+              launchAtLoginSetting.error ? (
                 <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                   {launchAtLoginSetting.error}
                 </span>
-              ) : null}
-            </div>
+              ) : null
+            }
+          >
+            <Switch
+              checked={launchAtLoginSetting.value ?? false}
+              disabled={
+                launchAtLoginSetting.value === null || launchAtLoginSetting.saving
+              }
+              onCheckedChange={(enabled) => void launchAtLoginSetting.update(enabled)}
+            />
           </SettingsRow>
 
           {closeToTraySetting.supported ? (
             <SettingsRow
               label={t("settings.general.startup.closeToTray")}
               description={t("settings.general.startup.closeToTrayDescription")}
-            >
-              <div className="flex flex-col items-end gap-1">
-                <Switch
-                  checked={closeToTraySetting.value ?? false}
-                  disabled={
-                    closeToTraySetting.value === null || closeToTraySetting.saving
-                  }
-                  onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
-                />
-                {closeToTraySetting.error ? (
+              below={
+                closeToTraySetting.error ? (
                   <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                     {closeToTraySetting.error}
                   </span>
-                ) : null}
-              </div>
+                ) : null
+              }
+            >
+              <Switch
+                checked={closeToTraySetting.value ?? false}
+                disabled={
+                  closeToTraySetting.value === null || closeToTraySetting.saving
+                }
+                onCheckedChange={(enabled) => void closeToTraySetting.update(enabled)}
+              />
             </SettingsRow>
           ) : null}
         </SettingsSection>
@@ -634,6 +684,17 @@ export function GeneralTab() {
             onCheckedChange={setShowWhisperUpdateBanner}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.notifications.showAudioCppUpdates")}
+          description={t(
+            "settings.general.notifications.showAudioCppUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showAudioCppUpdates}
+            onCheckedChange={setShowAudioCppUpdateBanner}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       {/* Installation-wide settings: owner-only routes, so a managed account gets no dead controls. */}
@@ -645,19 +706,19 @@ export function GeneralTab() {
         <SettingsRow
           label={t("settings.general.previewSharing.enableLabel")}
           description={t("settings.general.previewSharing.enableDescription")}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              checked={previewSharing?.enabled ?? false}
-              disabled={!previewSharing || isSavingPreviewSharing}
-              onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
-            />
-            {previewSharingError ? (
+          below={
+            previewSharingError ? (
               <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {previewSharingError}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
+          <Switch
+            checked={previewSharing?.enabled ?? false}
+            disabled={!previewSharing || isSavingPreviewSharing}
+            onCheckedChange={(enabled) => void savePreviewSharing(enabled)}
+          />
         </SettingsRow>
         <SettingsRow
           destructive={true}
@@ -691,38 +752,38 @@ export function GeneralTab() {
               uploadLimit?.defaultUploadSizeMb ?? DEFAULT_UPLOAD_LIMIT_MB,
             ),
           })}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5">
-                <Input
-                  type="number"
-                  min={uploadLimit?.minUploadSizeMb ?? 1}
-                  max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
-                  step={1}
-                  value={draftUploadLimit}
-                  aria-label={t("settings.general.uploads.maxUploadSize")}
-                  onChange={(event) => setDraftUploadLimit(event.target.value)}
-                  className="h-8 w-24"
-                />
-                <span className="text-xs font-medium text-muted-foreground">
-                  MB
-                </span>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={isSavingUploadLimit}
-                onClick={() => void saveUploadLimit()}
-              >
-                {isSavingUploadLimit ? t("common.saving") : t("common.save")}
-              </Button>
-            </div>
-            {uploadLimitError ? (
+          below={
+            uploadLimitError ? (
               <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {uploadLimitError}
               </span>
-            ) : null}
+            ) : null
+          }
+        >
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
+              <Input
+                type="number"
+                min={uploadLimit?.minUploadSizeMb ?? 1}
+                max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
+                step={1}
+                value={draftUploadLimit}
+                aria-label={t("settings.general.uploads.maxUploadSize")}
+                onChange={(event) => setDraftUploadLimit(event.target.value)}
+                className="h-8 w-24"
+              />
+              <span className="text-xs font-medium text-muted-foreground">
+                MB
+              </span>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isSavingUploadLimit}
+              onClick={() => void saveUploadLimit()}
+            >
+              {isSavingUploadLimit ? t("common.saving") : t("common.save")}
+            </Button>
           </div>
         </SettingsRow>
       </SettingsSection>
@@ -734,18 +795,8 @@ export function GeneralTab() {
           description={t(
             "settings.general.helperLlm.preloadOnStartupDescription",
           )}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              checked={helperPrecache?.enabled ?? false}
-              disabled={
-                !helperPrecache ||
-                isSavingHelperPrecache ||
-                helperPrecache.disabledByEnv
-              }
-              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
-            />
-            {helperPrecache?.disabledByEnv ? (
+          below={
+            helperPrecache?.disabledByEnv ? (
               <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
                 {t("settings.general.helperLlm.disabledByEnv")}
               </span>
@@ -753,8 +804,18 @@ export function GeneralTab() {
               <span className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
                 {helperPrecacheError}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
+          <Switch
+            checked={helperPrecache?.enabled ?? false}
+            disabled={
+              !helperPrecache ||
+              isSavingHelperPrecache ||
+              helperPrecache.disabledByEnv
+            }
+            onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+          />
         </SettingsRow>
       </SettingsSection>
         </>

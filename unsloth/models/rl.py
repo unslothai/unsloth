@@ -383,6 +383,10 @@ try:
     from unsloth.models._utils import _unsloth_reset_stray_compile_cache
 except Exception:
     def _unsloth_reset_stray_compile_cache(self): pass
+try:
+    from unsloth.models._utils import _unsloth_dataset_column_names
+except Exception:
+    def _unsloth_dataset_column_names(dataset): return dataset.column_names
 # Drops/renames config arguments the installed TRL no longer accepts, so a
 # script pinned to an older TRL keeps working after an upgrade. Falls back to
 # the historical raw passthrough so this can never break trainer construction.
@@ -2359,10 +2363,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += check_ga
 
+        # GRPO evaluates whole groups, so never shrink the eval batch below what num_generations divides.
         eval_changes = (
             "if getattr(args, 'eval_strategy', 'no') != 'no':\n"
             "    eval_bsz = getattr(args, 'per_device_eval_batch_size', 8)\n"
-            "    if eval_bsz == 8 and args.per_device_train_batch_size < eval_bsz: args.per_device_eval_batch_size = args.per_device_train_batch_size\n"
+            "    eval_generations = getattr(args, 'num_generations_eval', None) or getattr(args, 'num_generations', None) or 1\n"
+            "    if eval_bsz == 8 and args.per_device_train_batch_size < eval_bsz and (args.per_device_train_batch_size * args.world_size) % eval_generations == 0: args.per_device_eval_batch_size = args.per_device_train_batch_size\n"
             "    if getattr(args, 'eval_accumulation_steps', None) is None and ga_steps is not None: args.eval_accumulation_steps = ga_steps\n"
             "fp16_full_eval = getattr(args, 'fp16_full_eval', False)\n"
             "if type(fp16_full_eval) is not bool: fp16_full_eval = False\n"
@@ -2784,14 +2790,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"
             "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
-            "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"
+            "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in _unsloth_dataset_column_names(train_dataset):\n"
             "        data_collator = TransformersDataCollatorForLanguageModeling(\n"
             "            __tokenizer,\n"
             "            mlm = False,\n"
             "            mlm_probability = 0.0,\n"
             "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
             "        )\n"
-            "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"
+            "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in _unsloth_dataset_column_names(train_dataset):\n"
             "        data_collator = DataCollatorForSeq2Seq(\n"
             "            __tokenizer,\n"
             "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
@@ -3161,6 +3167,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "\n"
         )
         extra_args += check_num_generations
+
+    if "eval_steps" in call_args and "eval_strategy" in call_args:
+        check_eval_steps = (
+            "if eval_steps is not None and eval_strategy != 'steps':\n"
+            '    print(f\'Unsloth: `eval_steps = {eval_steps}` is ignored because `eval_strategy` is {getattr(eval_strategy, "value", eval_strategy)!r}. Set `eval_strategy = "steps"` to evaluate every `eval_steps` steps.\')\n'
+            "\n"
+        )
+        extra_args += check_eval_steps
 
     if "temperature" in call_args:
         check_temperature = (
@@ -3578,6 +3592,27 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
 
 
+# TRL 1.10+ rejects the list train_dataset the vision notebooks pass; Dataset.from_list is no fix (re-encodes images).
+# Only list / tuple: a torch IterableDataset would skip TRL's streaming handling (dispatch_batches, RepeatSampler).
+_LIST_TRAIN_DATASET_TRAINERS = frozenset(("sft_trainer", "grpo_trainer", "rloo_trainer"))
+_TRL_TRAIN_DATASET_TYPE_CHECK = re.compile(
+    r"(elif\s+not\s+isinstance\(\s*train_dataset\s*,\s*)\(?\s*(Dataset(?:\s*,\s*IterableDataset)?)\s*\)?(\s*\)\s*:)"
+)
+
+
+def _allow_list_train_dataset(function, source, trainer_file):
+    if trainer_file not in _LIST_TRAIN_DATASET_TRAINERS:
+        return source
+    if function == "__init__":
+        return _TRL_TRAIN_DATASET_TYPE_CHECK.sub(r"\1(\2, list, tuple)\3", source)
+    if function == "_reject_skip_prepare_without_labels":
+        return source.replace(
+            "cols = get_dataset_column_names(dataset)",
+            "cols = _unsloth_dataset_column_names(dataset)",
+        )
+    return source
+
+
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
@@ -3779,6 +3814,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         for edit_function in edit_functions:
             source = edit_function(function, source)
+        source = _allow_list_train_dataset(function, source, trainer_file)
 
         """
         import torch

@@ -5,6 +5,7 @@
 // localStorage, so an API auto-switch load came up with none of the user's settings.
 // routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
+import { normalizeTensorSplit, reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { authFetch } from "@/features/auth";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -25,6 +26,9 @@ const OVERRIDES_URL = "/api/settings/openai-auto-switch/overrides";
 
 /** One model's stored launch config, as the backend persists it. */
 export interface ApiModelOverride {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -36,6 +40,8 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_kv_quant?: string;
   mlx_kv_bits?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_int8_prefill?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -70,6 +76,8 @@ export interface ApiModelOverride {
   gpu_layers?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   n_cpu_moe?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  tensor_split?: number[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_ids?: number[];
   // Which index space gpu_ids is in. Absent means "physical", all an older row could mean.
@@ -305,6 +313,14 @@ export function fromApiOverride(
     : local.llamaExtraArgs;
   // A row without ids says nothing about placement, so the local pin keeps its namespace.
   const serverGpuIds = override.gpu_ids?.length ? override.gpu_ids : null;
+  const tensorSplit = "tensor_split" in override
+    ? normalizeTensorSplit(override.tensor_split, serverGpuIds)
+    : serverGpuIds
+      ? (override.gpu_index_kind ?? "physical") === (local.selectedGpuIndexKind ?? "physical")
+        ? reconcileTensorSplit(local.tensorSplit, local.selectedGpuIds, serverGpuIds)
+        : null
+      : local.tensorSplit;
+
   // The pin is ONE setting in one of two fields, and an edit clears the other
   // (contextPinPatch). Filling them from different sources mints a record that loads at
   // two lengths, since the picker reads customContextLength first and the API's
@@ -315,6 +331,10 @@ export function fromApiOverride(
     "mlx_kv_quant" in override || "mlx_kv_bits" in override;
   const normalized = normalizePerModelConfig({
     ...DEFAULT_PER_MODEL_CONFIG,
+    engine: override.engine ?? "auto",
+    engineParallelism: override.engine_parallelism ?? local.engineParallelism ?? "tensor",
+    enginePrecision:
+      override.engine_precision ?? local.enginePrecision ?? "auto",
     customContextLength: serverStatesPin
       ? (override.custom_context_length ?? null)
       : local.customContextLength,
@@ -341,6 +361,7 @@ export function fromApiOverride(
     // Both are stored only when true, so an absent one is a gap like any other.
     tensorParallel: override.tensor_parallel ?? local.tensorParallel,
     disableVision: override.disable_vision ?? local.disableVision,
+    mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
     chatTemplateOverride:
       override.chat_template_override ?? local.chatTemplateOverride,
     llamaExtraArgs: extraArgs,
@@ -348,6 +369,7 @@ export function fromApiOverride(
     gpuLayers: override.gpu_layers ?? local.gpuLayers,
     nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
     selectedGpuIds: serverGpuIds ?? local.selectedGpuIds ?? null,
+    tensorSplit,
     // reconcileGpuSelection drops the pin if this host numbers its devices the other way.
     selectedGpuIndexKind: serverGpuIds
       ? (override.gpu_index_kind ?? "physical")
@@ -368,7 +390,14 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (!config) {
     return {};
   }
-  const payload: ApiModelOverride = {};
+  // Engine fields are always sent, defaults included: the server keeps a stored engine choice
+  // when the field is absent, so omitting "auto" could never clear an earlier "vllm". It stores
+  // only non-default values, so an all-default save still leaves no row.
+  const payload: ApiModelOverride = {
+    engine: config.engine ?? "auto",
+    engine_precision: config.enginePrecision ?? "auto",
+    engine_parallelism: config.engineParallelism ?? "tensor",
+  };
   if (config.maxSeqLength && config.maxSeqLength > 0) {
     payload.max_seq_length = config.maxSeqLength;
   }
@@ -425,6 +454,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.disableVision) {
     payload.disable_vision = true;
   }
+  if (config.mlxInt8Prefill) {
+    payload.mlx_int8_prefill = true;
+  }
   if (config.chatTemplateOverride?.trim()) {
     payload.chat_template_override = config.chatTemplateOverride;
   }
@@ -450,6 +482,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
   if (config.selectedGpuIds && config.selectedGpuIds.length > 0) {
     payload.gpu_ids = config.selectedGpuIds;
+    const tensorSplit = normalizeTensorSplit(config.tensorSplit, config.selectedGpuIds);
+    // Explicit null clears a saved split; an older client omitting it keeps its value.
+    payload.tensor_split = tensorSplit;
     // Sent only when it is not the legacy default, so a physical pin's payload is
     // unchanged from before this field.
     if (gpuIndexKind !== "physical") {

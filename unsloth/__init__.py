@@ -228,6 +228,18 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same reason: MLX loads hub configs and saves tokenizers through transformers too.
+        from .import_fixes import (
+            fix_transformers_untrusted_config_fields as _fix_untrusted_config,
+            fix_transformers_chat_template_path_traversal as _fix_template_names,
+        )
+
+        _fix_untrusted_config()
+        _fix_template_names()
+        del _fix_untrusted_config, _fix_template_names
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(
@@ -378,6 +390,23 @@ if _IS_MLX:
             raise NotImplementedError(
                 "Unsloth: FastSentenceTransformer is not yet supported on MLX."
             )
+
+    class FastDecisionModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            raise NotImplementedError(
+                "Unsloth: FastDecisionModel training is not yet supported on MLX."
+            )
+
+        @staticmethod
+        def get_peft_model(*args, **kwargs):
+            raise NotImplementedError(
+                "Unsloth: FastDecisionModel training is not yet supported on MLX."
+            )
+
+    class DecisionTrainer:
+        def __init__(self, *args, **kwargs):
+            raise NotImplementedError("Unsloth: DecisionTrainer is not yet supported on MLX.")
 
     def is_bfloat16_supported():
         try:
@@ -656,9 +685,9 @@ if _IS_MLX:
         strategy = strategy.rsplit(".", 1)[-1]
         return strategy in ("no", "none", "false")
 
+    # Mirrors zoo's _normalize_mlx_optimizer_name; adamw_8bit is a real MLX optimizer, never collapse it.
     _MLX_ADAMW_OPTIMIZER_ALIASES = frozenset(
         (
-            "adamw_8bit",
             "paged_adamw_8bit",
             "adamw_bnb_8bit",
             "paged_adamw_32bit",
@@ -690,8 +719,7 @@ if _IS_MLX:
         try:
             return _normalize_mlx_optimizer_name(value)
         except ValueError:
-            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names and keep
-            # notebook defaults (optim="adamw_8bit") working.
+            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names.
             opt = str(getattr(value, "value", value) or "adamw").strip().lower()
             opt = opt.rsplit(".", 1)[-1].replace("-", "_")
             if opt in _MLX_ADAMW_OPTIMIZER_ALIASES:

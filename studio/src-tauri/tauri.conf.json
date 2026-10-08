@@ -59,8 +59,10 @@
     "license": "AGPL-3.0-only",
     "targets": ["app", "appimage", "deb", "dmg", "nsis"],
     "icon": [
+      "icons/icon.png",
       "icons/32x32.png",
       "icons/128x128.png",
+      "icons/128x128@2x.png",
       "icons/icon.ico",
       "icons/icon.icns"
     ],
@@ -88,6 +90,7 @@
         }
       },
       "deb": {
+        "recommends": ["gstreamer1.0-plugins-bad"],
         "desktopTemplate": "./linux/unsloth.desktop",
         "files": {
           "/usr/share/polkit-1/actions/ai.unsloth.studio.update.policy": "./linux/ai.unsloth.studio.update.policy"

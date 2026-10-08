@@ -7,7 +7,7 @@ from typing import Optional
 
 import typer
 
-from unsloth_cli._inference import ensure_studio_backend_path
+from unsloth_cli._inference import ensure_studio_backend_path, mlx_distributed_info
 from unsloth_cli._studio_deps import studio_backend_imports
 from unsloth_cli.config import Config, ConfigError, load_config
 from unsloth_cli.options import add_options_from_config
@@ -23,10 +23,18 @@ def _should_use_mlx_backend_for_cli() -> bool:
 def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None:
     # Activate before any transformers import: adapter model-type detection imports utils.models.
     ensure_studio_backend_path()
+    from filelock import FileLock
+    from utils.paths.storage_roots import studio_root
     from utils.transformers_version import activate_transformers_for_subprocess
+
     try:
-        activate_transformers_for_subprocess(model_name, hf_token)
+        root = studio_root()
+        root.mkdir(parents = True, exist_ok = True)
+        with FileLock(str(root / ".transformers-sidecar.lock")):
+            activate_transformers_for_subprocess(model_name, hf_token)
     except Exception as exc:
+        if mlx_distributed_info()[0]:
+            raise
         typer.echo(f"Warning: failed to activate Transformers sidecar: {exc}", err = True)
 
 
@@ -94,14 +102,13 @@ def train(
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
+    config_overrides = config_overrides or {}
     try:
         cfg = load_config(config)
+        cfg.apply_overrides(**config_overrides)
     except (FileNotFoundError, ConfigError) as e:
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
-
-    config_overrides = config_overrides or {}
-    cfg.apply_overrides(**config_overrides)
 
     # CLI/env tokens take precedence; guard against unresolved typer.Option.
     from typer.models import OptionInfo

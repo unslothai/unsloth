@@ -456,8 +456,10 @@ _ONLINE_DPO_MODEL_CALL = re.compile(
     r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*$",
     flags = re.MULTILINE,
 )
+# TRL 0.18-0.19 slice from `prompt_ids.size(1) - 1`, TRL 0.20+ name it start_idx.
 _ONLINE_DPO_LOGITS_SLICE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, start_idx:(?:end_idx|-1)\])[ \t]*$",
+    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, "
+    r"(?P<start>start_idx|prompt_ids\.size\(1\) - 1) ?: ?(?:end_idx|-1)\])[ \t]*$",
     flags = re.MULTILINE,
 )
 
@@ -494,7 +496,7 @@ def online_dpo_trainer__forward(function_name, function):
     j = logits_slice.group("indent")
     gather = (
         f"{j}if _unsloth_left_pad is not None:\n"
-        f"{j}    _unsloth_index = (start_idx - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
+        f"{j}    _unsloth_index = ({logits_slice.group('start')} - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
         f"{j}        completion_ids.size(1), device = completion_ids.device\n"
         f"{j}    ).unsqueeze(0)\n"
         f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"
@@ -1413,18 +1415,22 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     replacement_lines_head = """
         max_left_pad = None
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
+        # Which name carries "this batch has images" moved twice, and at the bottom of the
+        # declared window neither name exists: 0.20.0 through 0.23.1 bind has_images, 0.24.0
+        # and up bind images, and 0.18.2 / 0.19.1 have no vision path at all, so every batch
+        # there is text only. Probing has_images and falling back to images without a third
+        # branch made the floor raise NameError out of the except handler and killed training.
         try:
-            # TRL 0.23.1 and below path
-            if not has_images:
-                # Left pad prompt before calculation old and ref hidden states
-                left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
-                max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
-        except:
-            # TRL 0.24.0 and below path
-            if images is None:
-                # Left pad prompt before calculation old and ref hidden states
-                left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
-                max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
+            _unsloth_text_only = not has_images
+        except NameError:
+            try:
+                _unsloth_text_only = images is None
+            except NameError:
+                _unsloth_text_only = True
+        if _unsloth_text_only:
+            # Left pad prompt before calculation old and ref hidden states
+            left_pad_tokens_per_prompt = calculate_pad_tokens_in_prompt(prompt_completion_ids, logits_to_keep, self.processing_class.pad_token_id)
+            max_left_pad = torch.max(left_pad_tokens_per_prompt).item()
         _use_gc = self.model._unsloth_gradient_checkpointing if hasattr(self.model, '_unsloth_gradient_checkpointing') else getattr(self.args, 'gradient_checkpointing', True)
         self.model.for_training(use_gradient_checkpointing=_use_gc)"""
 
@@ -3067,6 +3073,12 @@ def grpo_trainer_compute_loss(function_name, function):
             logit_scale_multiply, logit_scale_divide = _unsloth_resolve_logit_scales(model_config)
 
         max_left_pad = inputs.get("max_left_pad", 0)
+        # importance_sampling_level is absent before TRL 0.20.0 (token level).
+        importance_sampling_level = getattr(
+            self,
+            "importance_sampling_level",
+            getattr(self.args, "importance_sampling_level", "token"),
+        )
         if per_token_logps is not None:
             loss_mask = completion_mask
             if tool_mask is not None:
@@ -3098,7 +3110,7 @@ def grpo_trainer_compute_loss(function_name, function):
                 pixel_values = pixel_values,
                 image_grid_thw = image_grid_thw,
                 loss_type = self.args.loss_type,
-                importance_sampling_level = self.importance_sampling_level,
+                importance_sampling_level = importance_sampling_level,
                 epsilon_low = self.epsilon_low,
                 epsilon_high = self.epsilon_high,
                 max_completion_length = self.args.max_completion_length,
@@ -3218,7 +3230,7 @@ def grpo_trainer_compute_loss(function_name, function):
                     ref_logps = ref_logps,
                     n_chunks = self.args.unsloth_num_chunks,
                     loss_type = self.args.loss_type,
-                    importance_sampling_level = self.importance_sampling_level,
+                    importance_sampling_level = importance_sampling_level,
                     epsilon_low = self.epsilon_low,
                     epsilon_high = self.epsilon_high,
                     max_completion_length = self.args.max_completion_length,

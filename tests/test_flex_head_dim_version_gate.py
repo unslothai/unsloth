@@ -101,13 +101,41 @@ def test_gate_is_off_below_blackwell(monkeypatch):
     assert u._sdpa_reaches_cudnn_at_head_dim_256() is False
 
 
-def test_gate_is_on_for_blackwell_on_torch_2_14(monkeypatch):
+def _plain_sdpa(monkeypatch):
+    # The SM100 cuDNN head_dim 256 detour wraps SDPA at import on a B200; these gate tests are about plain SDPA.
+    sdpa = u.torch.nn.functional.scaled_dot_product_attention
+    monkeypatch.setattr(
+        u.torch.nn.functional, "scaled_dot_product_attention", getattr(sdpa, "__wrapped__", sdpa)
+    )
+
+
+def _blackwell_torch_2_14(monkeypatch):
     monkeypatch.setattr(u.torch, "__version__", "2.14.0+cu130")
     monkeypatch.setattr(u.torch.version, "hip", None, raising = False)
     monkeypatch.setattr(u.torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(u.torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(u.torch.cuda, "get_device_capability", lambda index: (10, 0))
+
+
+def test_gate_is_on_for_blackwell_on_torch_2_14(monkeypatch):
+    _plain_sdpa(monkeypatch)
+    _blackwell_torch_2_14(monkeypatch)
     assert u._sdpa_reaches_cudnn_at_head_dim_256() is True
+
+
+def test_gate_is_off_while_the_cudnn_d256_detour_is_installed(monkeypatch):
+    # Masked head_dim 256 training then runs the efficient kernel, not cuDNN: flex is faster, as on torch <= 2.13.
+    _blackwell_torch_2_14(monkeypatch)
+    sdpa = u.torch.nn.functional.scaled_dot_product_attention
+    original = getattr(sdpa, "__wrapped__", sdpa)
+
+    def detour(*args, **kwargs):
+        return original(*args, **kwargs)
+
+    detour._unsloth_avoids_cudnn_d256_masked_backward = True
+    monkeypatch.setattr(u.torch.nn.functional, "scaled_dot_product_attention", detour)
+    assert u._sdpa_reaches_cudnn_at_head_dim_256() is False
+    assert u._prefers_flex_for_head_dim(_cfg(256)) is True
 
 
 def test_a_mixed_box_falls_back_to_the_weakest_card(monkeypatch):

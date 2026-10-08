@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { TrashIcon, RefreshCwIcon, PlusIcon } from "lucide-react";
+import { TrashIcon, PlusIcon } from "lucide-react";
 import {
   createOpenAIContainer,
   deleteOpenAIContainer,
@@ -40,6 +40,7 @@ import {
   listStoredChatThreads,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 
 const DEFAULT_TTL_MINUTES = 20;
 const TTL_MIN = 1;
@@ -440,7 +441,7 @@ export function OpenAICodeExecSection({
             disabled={isLoading || !hasCredential}
             aria-label="Refresh container list"
           >
-            <RefreshCwIcon
+            <RefreshGlyph
               className={`size-3.5 ${isLoading ? "animate-spin" : ""}`}
             />
           </Button>

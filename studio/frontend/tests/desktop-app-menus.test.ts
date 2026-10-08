@@ -316,6 +316,8 @@ test("menu items for web shortcuts follow a mounted handler, and honour claims",
   // Availability asks claims(), and the root has it re-ask when a modal opens or closes.
   assert.match(hook, /\(triggers\.get\(id\) \?\? \[\]\)\.some\(\(t\) => t\.claims\(\)\)/);
   assert.match(hook, /attributeFilter: \["aria-hidden", "inert"\]/);
+  // Backdrops portal to body, and Radix skips aria-hidden on anything holding aria-live.
+  assert.match(hook, /modalObserver\.observe\(document\.body, \{ childList: true \}\)/);
   for (const id of ["toggleSidebar", "findInPage", "previousChat", "nextChat"]) {
     assert.ok(ROOT.includes(`useShortcutAvailable("${id}", isTauri)`), `${id} enables its item`);
   }
@@ -324,9 +326,9 @@ test("menu items for web shortcuts follow a mounted handler, and honour claims",
 test("Back and Forward follow page history, and zoom steps the interface scale", () => {
   assert.match(ROOT, /"back": routeShortcutEnabled \? \(\) => window\.history\.back\(\) : null/);
   assert.match(ROOT, /"forward": routeShortcutEnabled \? \(\) => window\.history\.forward\(\) : null/);
-  assert.match(ROOT, /"zoom-in": zoomBy\(1\)/);
-  assert.match(ROOT, /"zoom-out": zoomBy\(-1\)/);
-  assert.match(ROOT, /"actual-size": \(\) => useInterfaceScaleStore\.getState\(\)\.reset\(\)/);
+  assert.match(ROOT, /"zoom-in": \(\) => zoomInterfaceFromMenu\(1\)/);
+  assert.match(ROOT, /"zoom-out": \(\) => zoomInterfaceFromMenu\(-1\)/);
+  assert.match(ROOT, /"actual-size": \(\) => zoomInterfaceFromMenu\(0\)/);
 });
 
 test("Help items reuse the icon of the Settings tab they open", () => {

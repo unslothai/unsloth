@@ -43,6 +43,7 @@ activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
 activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
 replace_with_busy_retry = INSTALL_LLAMA_PREBUILT.replace_with_busy_retry
+blocked_replace_hint = INSTALL_LLAMA_PREBUILT.blocked_replace_hint
 remove_tree_logged = INSTALL_LLAMA_PREBUILT.remove_tree_logged
 prune_stale_install_side_paths = INSTALL_LLAMA_PREBUILT.prune_stale_install_side_paths
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
@@ -1116,6 +1117,150 @@ def test_replace_with_busy_retry_waits_out_a_transient_windows_lock(
 
     assert attempts["count"] == 3
     assert (destination / "payload.txt").read_text() == "payload\n"
+
+
+def test_blocked_replace_hint_names_the_cause_per_winerror():
+    assert "scanner" in blocked_replace_hint(32)
+    denied = blocked_replace_hint(5)
+    assert "access is denied" in denied and "ACL" in denied
+    not_empty = blocked_replace_hint(145)
+    assert "not empty" in not_empty and "scanner" not in not_empty
+
+
+def _run_denied_replace(tmp_path, monkeypatch, failures):
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "payload.txt").write_text("payload\n")
+    destination = tmp_path / "dst"
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+    attempts = {"count": 0}
+
+    def access_denied(src, dst):
+        attempts["count"] += 1
+        if attempts["count"] <= failures:
+            exc = OSError(errno.EACCES, "Access is denied")
+            exc.winerror = 5
+            raise exc
+        return original_replace(src, dst)
+
+    logged: list[str] = []
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", access_denied)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
+    return source, destination, logged
+
+
+def test_replace_with_busy_retry_prints_acl_repair_once_when_denial_persists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 3)
+    retry_lines = [line for line in logged if "blocked (5)" in line]
+    assert len(retry_lines) == 2 and "scanner" not in retry_lines[0].split("--")[0]
+    assert all("takeown" not in line for line in retry_lines)
+    # One command per line so each can be pasted; src is the tree, dst does not exist yet.
+    assert logged.count(f'takeown /F "{source}" /R /D Y') == 1
+    assert logged.count(f'icacls "{source}" /reset /T') == 1
+    assert not any(str(destination) in line for line in logged if "takeown" in line)
+    assert any("Controlled folder access" in line for line in logged)
+
+
+def test_replace_with_busy_retry_offers_no_recursive_repair_for_a_linked_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    target = tmp_path / "external"
+    target.mkdir()
+    link = tmp_path / "linked"
+    try:
+        link.symlink_to(target, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    _source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    # os.name is spoofed to "nt", so the real probe would look for Windows reparse attributes.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_is_link_or_junction", lambda p: p == link)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(link, destination, attempts = 2)
+    assert not any("takeown" in line or "icacls" in line for line in logged)
+    assert any("contains a link" in line for line in logged)
+
+
+def test_replace_with_busy_retry_offers_no_recursive_repair_over_a_nested_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    try:
+        (source / "link-out").symlink_to(outside, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_is_link_or_junction", lambda p: p.is_symlink())
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2)
+    assert not any("takeown" in line or "icacls" in line for line in logged)
+
+
+def test_replace_with_busy_retry_offers_only_a_root_repair_for_an_unlistable_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+
+    def denied_walk(
+        top,
+        onerror = None,
+        **_kwargs,
+    ):
+        onerror(PermissionError(errno.EACCES, "Access is denied", str(top)))
+        return iter(())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_is_link_or_junction", lambda p: False)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "walk", denied_walk)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2)
+    assert f'takeown /F "{source}"' in logged
+    assert f'icacls "{source}" /reset /L' in logged
+    assert not any(
+        "/R" in line or "/T" in line for line in logged if "takeown" in line or "icacls" in line
+    )
+
+
+def test_replace_with_busy_retry_offers_a_root_repair_when_the_root_cannot_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    real_lstat = type(source).lstat
+
+    def denied_lstat(self):
+        if self == source:
+            raise PermissionError(errno.EACCES, "Access is denied")
+        return real_lstat(self)
+
+    monkeypatch.setattr(type(source), "lstat", denied_lstat)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2)
+    assert f'takeown /F "{source}"' in logged
+    assert not any("contains a link" in line for line in logged)
+
+
+def test_replace_with_busy_retry_can_withhold_the_acl_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 99)
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 2, acl_repair = False)
+    assert not any("takeown" in line or "icacls" in line for line in logged)
+
+
+def test_replace_with_busy_retry_skips_acl_repair_when_denial_clears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, destination, logged = _run_denied_replace(tmp_path, monkeypatch, failures = 1)
+    replace_with_busy_retry(source, destination)
+    assert (destination / "payload.txt").read_text() == "payload\n"
+    assert any("blocked (5)" in line for line in logged)
+    assert not any("takeown" in line for line in logged)
 
 
 def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
@@ -3944,6 +4089,112 @@ def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) 
     assert not (runtime_dir / "llama-cli").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+@pytest.mark.parametrize("bundles_fit_params", [True, False])
+def test_macos_install_makes_llama_fit_params_executable(
+    tmp_path: Path, bundles_fit_params: bool
+) -> None:
+    """#12901: the guarded extractor drops archive modes, so the optional Metal
+    probe must be chmod'ed like llama-server, and bundles without it still install."""
+    install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
+
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    archives = tmp_path / "archives"
+    work.mkdir()
+    install.mkdir()
+    archives.mkdir()
+
+    names = ["llama-server", "llama-quantize", "libllama.dylib", "libggml.dylib"]
+    if bundles_fit_params:
+        names.append("llama-fit-params")
+    bundle = archives / "llama-b9001-bin-macos-arm64.tar.gz"
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in names:
+            add_bytes_to_tar(archive, name, f"{name}\n".encode(), mode = 0o755)
+
+    import hashlib
+
+    choice = asset_choice(
+        name = bundle.name,
+        source_label = "published",
+        install_kind = "macos-arm64",
+        expected_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    )
+
+    orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
+
+    def fake_download(url, target_path, **kw):
+        shutil.copy2(bundle, target_path)
+
+    INSTALL_LLAMA_PREBUILT.download_file_verified = fake_download
+    try:
+        install_from_archives(choice, macos_host(), install, work)
+    finally:
+        INSTALL_LLAMA_PREBUILT.download_file_verified = orig_download
+
+    fit_params = install / "build" / "bin" / "llama-fit-params"
+    if bundles_fit_params:
+        assert stat.S_IMODE(fit_params.stat().st_mode) == 0o755
+    else:
+        assert not fit_params.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+@pytest.mark.parametrize("skip_path", ["no_network_check", "plan_match"])
+def test_a_reused_install_repairs_a_non_executable_llama_fit_params(
+    tmp_path: Path, monkeypatch, skip_path: str
+) -> None:
+    """#12901: installs made before the fix keep a 0644 probe, and an update on the same
+    release returns before any extraction, so the skip paths must restore the bit."""
+    M = INSTALL_LLAMA_PREBUILT
+    install_dir = tmp_path / "llama.cpp"
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    helper.parent.mkdir(parents = True)
+    helper.write_bytes(b"probe\n")
+    helper.chmod(0o644)
+
+    host = macos_host()
+    choice = asset_choice(name = "llama-b9001-bin-macos-arm64.tar.gz", install_kind = "macos-arm64")
+    release_plan = M.InstallReleasePlan(
+        requested_tag = "latest",
+        llama_tag = "b9001",
+        release_tag = "release-1",
+        attempts = [choice],
+        approved_checksums = release_checksums((choice.name, choice.expected_sha256, UPSTREAM)),
+    )
+    route = types.SimpleNamespace(
+        host = host, backend = "auto", published_repo = "unslothai/llama.cpp", published_release_tag = ""
+    )
+    monkeypatch.setattr(M, "route_backend_request", lambda **_k: route)
+    monkeypatch.setattr(
+        M,
+        "existing_install_current_without_plan",
+        lambda *_a, **_k: skip_path == "no_network_check",
+    )
+    monkeypatch.setattr(
+        M,
+        "select_backend_install",
+        lambda **_k: M.BackendSelection(
+            backend = "auto",
+            host = host,
+            published_repo = "unslothai/llama.cpp",
+            published_release_tag = "",
+            requested_tag = "latest",
+            release_plans = [release_plan],
+            persist_llama_backend = None,
+            persist_rocm_gfx = None,
+        ),
+    )
+    monkeypatch.setattr(M, "existing_install_matches_plan", lambda *_a, **_k: True)
+    monkeypatch.setattr(M, "diffusion_visual_server_backfill_needed", lambda *_a, **_k: False)
+    monkeypatch.setattr(M, "sync_marker_selection", lambda *_a, **_k: None)
+
+    M.install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert stat.S_IMODE(helper.stat().st_mode) == 0o755
+
+
 def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: Path) -> None:
     """Installer DLL discovery must scan the same path set as the backend (cu12/cu13/conda layouts + torch/lib)."""
     import site as _site
@@ -4340,7 +4591,7 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",
-        lambda repo, tag: {asset_name: asset_url},
+        lambda repo, tag: (_ for _ in ()).throw(AssertionError("listed the release over the API")),
     )
 
     def fake_download_file(url, destination):
@@ -4375,15 +4626,16 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     assert target.stat().st_mode & 0o777 == 0o755
 
 
-def test_diffusion_visual_server_refuses_unapproved_release_asset(monkeypatch, tmp_path: Path):
-    asset_name = "llama-diffusion-gemma-visual-server-attacker-linux"
+def test_diffusion_visual_server_skips_when_the_manifest_names_no_visual_server(
+    monkeypatch, tmp_path: Path
+):
     verified_calls: list[str] = []
     raw_calls: list[str] = []
 
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",
-        lambda repo, tag: {asset_name: "https://example.test/" + asset_name},
+        lambda repo, tag: (_ for _ in ()).throw(AssertionError("listed the release over the API")),
     )
 
     def fake_download_file(url, destination):
@@ -4973,6 +5225,26 @@ def test_release_listing_failure_keeps_a_complete_existing_install(tmp_path, mon
     install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
 
     assert (install_dir / "llama-server").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+def test_an_offline_keep_repairs_a_non_executable_llama_fit_params(tmp_path, monkeypatch):
+    """#12901: an update that cannot reach the release keeps the tree, so it must repair the probe too."""
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+
+    install_dir = _complete_existing_llama_install(tmp_path)
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    helper.write_bytes(b"probe\n")
+    helper.chmod(0o644)
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert stat.S_IMODE(helper.stat().st_mode) == 0o755
 
 
 def test_release_listing_failure_does_not_keep_a_non_executable_install(tmp_path, monkeypatch):

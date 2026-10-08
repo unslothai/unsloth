@@ -151,24 +151,22 @@ test("the sidebar and the customizer resolve the row the same way", async () => 
   const customizer = await readSrcAsync(
     "features/settings/components/sidebar-nav-customizer.tsx",
   );
-  // Both split their rows with the shared resolver rather than reading `pinned` directly.
   assert.match(
     sidebar,
     /sidebarNavRowPinned\(item, sidebarNavAuto, \{ projectsSectionShowing \}\)/,
   );
-  assert.match(sidebar, /\.filter\(\(item\) => !navRowPinned\(item\)\)/);
-  assert.match(sidebar, /\.filter\(\(item\) => navRowPinned\(item\)\)/);
+  assert.match(
+    sidebar,
+    /placeNavRows\(\s*sidebarNav\.map\(\(item\) => \(\{ id: item\.id, pinned: navRowPinned\(item\) \}\)\),/,
+  );
   assert.match(customizer, /checked=\{pinned\}/);
-  // And the switch records the decision alongside the new placement.
   assert.match(
     customizer,
     /sidebarNavAuto: sidebarNavAutoAfterChoice\(sidebarNavAuto, item\.id\)/,
   );
 });
 
-// Train and Recipes list their runs where the folders go. The row read that as the section being
-// gone and pinned itself back to the top, so walking to Train turned a row the user had put away
-// back on, and walking back turned it off again.
+// Train and Recipes reuse the folder section, so route rendering must not repin a hidden Projects row.
 test("a route that borrows the section does not bring the row back", async () => {
   const sidebar = await readSrcAsync("components/app-sidebar.tsx");
   assert.match(

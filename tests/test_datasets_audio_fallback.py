@@ -223,6 +223,36 @@ def test_a_wheel_that_raises_anything_at_import_is_disabled(
     assert said and "soundfile and PyAV" in said[0] and "reinstall torchcodec" in said[0]
 
 
+@pytest.mark.parametrize("hint_from", ["version", "provenance"])
+def test_a_broken_codec_with_a_remedy_is_reported_once(
+    broken_torchcodec, monkeypatch, tmp_path, hint_from
+):
+    # A torchcodec built for another torch: one warning carrying the remedy, not two.
+    import sys
+    import warnings
+
+    pkg = tmp_path / "torchcodec"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding = "utf-8")
+    (pkg / "decoders.py").write_text("raise RuntimeError('libtorchcodec')\n", encoding = "utf-8")
+    for name in [n for n in sys.modules if n == "torchcodec" or n.startswith("torchcodec.")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    hint = "torchcodec 0.5 is incompatible with torch 2.11.0+cu128; install a matching build."
+    monkeypatch.setattr(
+        import_fixes,
+        "_torchcodec_version_mismatch_hint",
+        lambda: hint if hint_from == "version" else None,
+    )
+    monkeypatch.setattr(import_fixes, "_torchcodec_provenance_hint", lambda: hint)
+    with warnings.catch_warnings(record = True) as caught:
+        warnings.simplefilter("always")
+        import_fixes.disable_torchcodec_if_broken()
+    said = [str(w.message) for w in caught if "torchcodec" in str(w.message)]
+    assert len(said) == 1, said
+    assert "torchcodec is installed but" in said[0] and hint in said[0]
+
+
 def test_the_audio_extras_carry_the_fallback_decoders():
     # `unsloth[audio-torch2xx]` must install what decodes when torchcodec cannot load, or the
     # fallback re-raises libsndfile's error on exactly the containers it exists for.
@@ -337,13 +367,17 @@ def _normalized(path: Path, name: str, rename: dict) -> str:
 
 @pytest.mark.parametrize(
     ("library", "studio"),
-    [("_audio_decode_with_av", "_decode_with_av"), ("_audio_read_mono", "_read_mono")],
+    [
+        ("_audio_decode_with_av", "_decode_with_av"),
+        ("_audio_read_mono", "_read_mono"),
+        ("_audio_av_open", "_av_open"),
+    ],
 )
 def test_the_library_and_studio_decoders_do_not_drift(library, studio):
     # Studio's API process never imports unsloth, so it carries its own copy of the decoder.
     if not _STUDIO_SHIM.exists():
         pytest.skip("no studio checkout")
-    rename = {"_audio_decode_with_av": "_decode_with_av"}
+    rename = {"_audio_decode_with_av": "_decode_with_av", "_audio_av_open": "_av_open"}
     assert _normalized(_REPO / "unsloth" / "import_fixes.py", library, rename) == _normalized(
         _STUDIO_SHIM, studio, {}
     )

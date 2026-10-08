@@ -1140,6 +1140,8 @@ class DownloadMetadata:
     xet_cache: Optional[str] = None
     # Scoped jobs only: the exact files to fetch, kept so the XET -> HTTP retry respawns the same scoped download.
     scoped_files: tuple[str, ...] = ()
+    owner: Optional[str] = None
+    load_attached: bool = False
 
 
 @dataclass(frozen = True)
@@ -1328,6 +1330,34 @@ class DownloadRegistry:
                 return
             self._metadata[key] = replace(metadata, transport = transport)
 
+    def release_owned(self, key: str, owner: str) -> bool:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.owner != owner:
+                return False
+            if self._jobs.get(key, DownloadState("idle")).state not in _ACTIVE_STATES:
+                return False
+            self._jobs[key] = DownloadState("idle")
+            self._discard_active_locked(key)
+            return True
+
+    def _discard_active_locked(self, key: str) -> None:
+        repo = _repo_of_key(key)
+        active = self._repo_active.get(repo)
+        if active is not None:
+            active.discard(key)
+            if not active:
+                self._repo_active.pop(repo, None)
+
+    def mark_load_attached(self, key: str, attached: bool) -> None:
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is None or metadata.load_attached == attached:
+                return
+            self._metadata[key] = replace(metadata, load_attached = attached)
+
     def release_active_slot(self, key: str) -> None:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1469,6 +1499,7 @@ class DownloadRegistry:
         hub_cache: Optional[str] = None,
         xet_cache: Optional[str] = None,
         scoped_files: Optional[Sequence[str]] = None,
+        owner: Optional[str] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1533,6 +1564,7 @@ class DownloadRegistry:
             else:
                 self._generations[key] = generation
                 self._attempts[key] = self._attempts.get(key, 1) + 1
+            previous = self._metadata.get(key) if current in _ACTIVE_STATES else None
             self._jobs[key] = DownloadState("running")
             self._repo_active.setdefault(repo, active).add(key)
             if repo_type and repo_id:
@@ -1551,6 +1583,8 @@ class DownloadRegistry:
                     hub_cache = hub_cache,
                     xet_cache = xet_cache,
                     scoped_files = tuple(scoped_files or ()),
+                    owner = owner,
+                    load_attached = previous.load_attached if previous is not None else False,
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport
@@ -1590,6 +1624,9 @@ class DownloadRegistry:
         """True when *key* itself has a live job a client can attach to. Lets a rejected claim distinguish a collision with this key's own in-flight job (pollable) from one blocked by a different repo job or an in-progress delete, where no job exists for this key."""
         key = normalize_job_key(key)
         with self._lock:
+            metadata = self._metadata.get(key)
+            if metadata is not None and metadata.owner is not None:
+                return False
             return self._jobs.get(key, DownloadState("idle")).state in _ACTIVE_STATES
 
     def _active_job_variant_locked(self, key: str) -> Optional[str]:
@@ -1810,6 +1847,11 @@ class DownloadRegistry:
             # Settle active jobs without a live worker: a retry parked in the reclaim wait has dropped its worker, and a registered worker that errored before its watcher ran would stay running and spawn an HTTP retry. Skip one that exited cleanly, which would strand a stale marker.
             for key, job in list(self._jobs.items()):
                 if job.state not in _ACTIVE_STATES or key in live_keys:
+                    continue
+                placeholder = self._metadata.get(key)
+                if placeholder is not None and placeholder.owner is not None:
+                    self._jobs[key] = DownloadState("idle")
+                    self._discard_active_locked(key)
                     continue
                 proc = self._processes.get(key)
                 if proc is not None:

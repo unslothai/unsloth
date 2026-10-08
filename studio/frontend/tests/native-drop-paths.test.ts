@@ -53,6 +53,7 @@ import {
 } from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
+import { MAX_AUDIO_FILES } from "../src/lib/audio-utils.ts";
 import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
 import {
   VIDEO_ACCEPT,
@@ -109,7 +110,7 @@ const OPEN_DOCUMENT_EXTENSION_RE = /\.ods/;
 const RTF_ADAPTER_RE =
   /class RtfAttachmentAdapter[^{]*\{\s*accept = RTF_ATTACHMENT_ACCEPT;[\s\S]*?readRtfAttachmentContent\(file, file\.name\)[\s\S]*?new CompositeAttachmentAdapter\(\[[\s\S]*?new RtfAttachmentAdapter\(\),/;
 const TOOL_ONLY_ADAPTER_RE =
-  /function pythonToolRunsInStudio\(\)[\s\S]*?const codeToolsEnabled = codeToolsOn\(state\);[\s\S]*?if \(!external\) return state\.supportsTools && codeToolsEnabled;[\s\S]*?\}\)\.local\.includes\("python"\);[\s\S]*?class ToolOnlyAttachmentAdapter[^{]*\{\s*accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;[\s\S]*?!pythonToolRunsInStudio\(\)[\s\S]*?\?\?\s*\(await this\.upload\(attachment\.file\)\);[\s\S]*?return original \? \(\{ \.\.\.complete, original \}[\s\S]*?new RtfAttachmentAdapter\(\),\s*new ToolOnlyAttachmentAdapter\(\),\s*\]\)/;
+  /function pythonToolRunsInStudio\([\s\S]*?\): boolean \{[\s\S]*?const codeToolsEnabled = codeToolsOn\(state\);[\s\S]*?if \(!external\) return state\.supportsTools && codeToolsEnabled;[\s\S]*?\}\)\.local\.includes\("python"\);[\s\S]*?class ToolOnlyAttachmentAdapter[^{]*\{\s*accept = TOOL_ONLY_ATTACHMENT_EXTENSIONS;[\s\S]*?!pythonToolRunsInStudio\(\)[\s\S]*?\?\?\s*\(await this\.upload\(attachment\.file\)\);[\s\S]*?return original \? \(\{ \.\.\.complete, original \}[\s\S]*?new RtfAttachmentAdapter\(\),\s*new ToolOnlyAttachmentAdapter\(\),\s*\]\)/;
 const OPEN_DOCUMENT_ADAPTER_ACCEPT_RE =
   /class OpenDocumentAttachmentAdapter[^{]*\{[\s\S]*?accept = OPEN_DOCUMENT_ATTACHMENT_ACCEPT;/;
 const OPEN_DOCUMENT_DROP_TO_COMPOSER_RE =
@@ -535,22 +536,39 @@ test("a single audio file routes to chat audio attachments", () => {
   ]);
 });
 
-// One clip per message, so a larger batch is turned away before it is read.
-test("multi-audio drops are rejected before they are routed", () => {
+// Models like Gemma 4 take several clips in one message, so a batch routes whole.
+test("multi-audio drops route to chat audio attachments", () => {
   const dropped = classifyDropPaths([
     "/clips/take.WAV",
     "/clips/note.mp3",
     "/clips/voice.flac",
   ]);
-  assert.equal(dropped.kind, "unsupported");
+  assert.equal(dropped.kind, "audio");
+  assert.deepEqual(dropped.kind === "audio" ? dropped.paths : [], [
+    "/clips/take.WAV",
+    "/clips/note.mp3",
+    "/clips/voice.flac",
+  ]);
 });
 
-test("a second clip alongside other attachments is rejected too", () => {
+test("several clips alongside other attachments route together", () => {
   const dropped = classifyDropPaths([
     "/docs/a.pdf",
     "/clips/note.mp3",
     "/clips/voice.flac",
   ]);
+  assert.equal(dropped.kind, "attach");
+  assert.deepEqual(dropped.kind === "attach" ? dropped.audio : [], [
+    "/clips/note.mp3",
+    "/clips/voice.flac",
+  ]);
+});
+
+// Past the per-message cap a batch would attach only partly, so it is turned away before it is read.
+test("an audio batch over the per-message cap is rejected", () => {
+  const dropped = classifyDropPaths(
+    Array.from({ length: MAX_AUDIO_FILES + 1 }, (_, i) => `/clips/${i}.wav`),
+  );
   assert.equal(dropped.kind, "unsupported");
 });
 
