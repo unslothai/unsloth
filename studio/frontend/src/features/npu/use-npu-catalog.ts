@@ -54,8 +54,7 @@ export function useNpuCatalog(
 
   useEffect(() => {
     if (!ready) return;
-    // The first listing after a Studio update can upgrade the runtime; if that fails,
-    // re-read the status so the setup notice offers Try again.
+    // This listing can run a pending upgrade; on failure re-read status to offer Try again.
     void refreshNpuModels().then((listed) => {
       if (listed) return;
       getNpuStatus().then(
