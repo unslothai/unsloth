@@ -200,7 +200,21 @@ function boxOf(ranges: Range[], origin: DOMRect): Box | null {
   };
 }
 
-/** Effective CSS zoom at the content; 1 where the browser can't report it. */
+/** Effective CSS zoom of an element. */
+function cssZoomOf(element: Element | null): number {
+  if (!element) return 1;
+  // Typed as always present, but older engines lack it.
+  const reported: unknown = element.currentCSSZoom;
+  if (typeof reported === "number") return reported;
+  // Older engines: multiply each ancestor's own zoom.
+  let zoom = 1;
+  for (let el: Element | null = element; el; el = el.parentElement) {
+    zoom *= Number.parseFloat(getComputedStyle(el).zoom) || 1;
+  }
+  return zoom;
+}
+
+/** Effective CSS zoom at the content. */
 function zoomAt(ranges: Range[]): number {
   const range = ranges[0];
   if (!range) return 1;
@@ -213,7 +227,7 @@ function zoomAt(ranges: Range[]): number {
       : node instanceof Element
         ? node
         : node.parentElement;
-  return element?.currentCSSZoom ?? 1;
+  return cssZoomOf(element);
 }
 
 /** A drag's box if any, else the box around the content. */
