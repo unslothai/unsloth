@@ -26,7 +26,7 @@ def test_repo_id_resolves_to_local_scan_folder_copy(monkeypatch):
         return (_SNAPSHOT, "Q4_K_XL", "unsloth/Muse-Glimmer-30B-GGUF")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fake_resolve)
-    rewritten = inf._as_local_scan_folder_request(_request())
+    rewritten = inf._as_local_scan_folder_request(_request(), True)
     assert seen == ["unsloth/Muse-Glimmer-30B-GGUF"]
     assert rewritten.model_path == _SNAPSHOT
     assert rewritten.gguf_variant == "Q4_K_XL"
@@ -40,7 +40,7 @@ def test_pinned_variant_resolves_by_repo_and_quant(monkeypatch):
         return (_SNAPSHOT, "Q8_0", "loader")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fake_resolve)
-    rewritten = inf._as_local_scan_folder_request(_request(gguf_variant = "Q8_0"))
+    rewritten = inf._as_local_scan_folder_request(_request(gguf_variant = "Q8_0"), True)
     assert seen == ["unsloth/Muse-Glimmer-30B-GGUF:Q8_0"]
     assert rewritten.model_path == _SNAPSHOT
     assert rewritten.gguf_variant == "Q8_0"
@@ -49,16 +49,16 @@ def test_pinned_variant_resolves_by_repo_and_quant(monkeypatch):
 def test_local_miss_keeps_the_request_untouched(monkeypatch):
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda wanted, **kwargs: None)
     original = _request()
-    assert inf._as_local_scan_folder_request(original) is original
+    assert inf._as_local_scan_folder_request(original, True) is original
 
 
 def test_bare_name_stays_remote_for_the_hub(monkeypatch):
     def fail(wanted, **kwargs):
-        raise AssertionError("resolver consulted for a bare name")
+        pytest.fail("resolver consulted for a bare name")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fail)
     request = _request(model_path = "Muse-Glimmer-30B-GGUF")
-    assert inf._as_local_scan_folder_request(request) is request
+    assert inf._as_local_scan_folder_request(request, True) is request
 
 
 def test_resolved_variant_replaces_the_requested_one(monkeypatch):
@@ -69,14 +69,14 @@ def test_resolved_variant_replaces_the_requested_one(monkeypatch):
         return (_SNAPSHOT, "Q4_K_XL", "loader")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fake_resolve)
-    rewritten = inf._as_local_scan_folder_request(_request(gguf_variant = "BF16"))
+    rewritten = inf._as_local_scan_folder_request(_request(gguf_variant = "BF16"), True)
     assert seen == ["unsloth/Muse-Glimmer-30B-GGUF:BF16"]
     assert rewritten.gguf_variant == "Q4_K_XL"
 
 
 def test_paths_and_manifest_refs_never_consult_the_resolver(monkeypatch):
     def fail(wanted, **kwargs):
-        raise AssertionError("resolver consulted for a non-repo-id path")
+        pytest.fail("resolver consulted for a non-repo-id path")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fail)
     for path in (
@@ -85,7 +85,7 @@ def test_paths_and_manifest_refs_never_consult_the_resolver(monkeypatch):
         "ollama-manifest:sha256:deadbeef",
     ):
         request = _request(model_path = path)
-        assert inf._as_local_scan_folder_request(request) is request
+        assert inf._as_local_scan_folder_request(request, True) is request
 
 
 def test_resolver_failure_or_ollama_target_keeps_the_request(monkeypatch):
@@ -94,7 +94,7 @@ def test_resolver_failure_or_ollama_target_keeps_the_request(monkeypatch):
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", boom)
     original = _request()
-    assert inf._as_local_scan_folder_request(original) is original
+    assert inf._as_local_scan_folder_request(original, True) is original
 
     monkeypatch.setattr(
         resolver,
@@ -102,26 +102,26 @@ def test_resolver_failure_or_ollama_target_keeps_the_request(monkeypatch):
         lambda wanted, **kwargs: ("ollama-manifest:sha256:deadbeef", None, "loader"),
     )
     tagged = _request()
-    assert inf._as_local_scan_folder_request(tagged) is tagged
+    assert inf._as_local_scan_folder_request(tagged, True) is tagged
 
 
-def test_managed_account_keeps_the_requested_id(monkeypatch):
-    def fail(wanted, **kwargs):
-        raise AssertionError("resolver consulted for a managed account")
-
-    monkeypatch.setattr(resolver, "resolve_local_gguf", fail)
-    monkeypatch.setattr(inf.account_access, "managed_account", lambda: True)
+def test_a_caller_other_than_the_owner_session_keeps_the_requested_id(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        resolver, "resolve_local_gguf", lambda wanted, **kwargs: seen.append(wanted)
+    )
     original = _request()
-    assert inf._as_local_scan_folder_request(original) is original
+    assert inf._as_local_scan_folder_request(original, False) is original
+    assert seen == []
 
 
 def test_native_path_lease_keeps_the_requested_id(monkeypatch):
     def fail(wanted, **kwargs):
-        raise AssertionError("resolver consulted under a native lease")
+        pytest.fail("resolver consulted under a native lease")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fail)
     original = _request(native_path_lease = "lease-token")
-    assert inf._as_local_scan_folder_request(original) is original
+    assert inf._as_local_scan_folder_request(original, True) is original
 
 
 # Real resolver index below (no mock).
@@ -173,14 +173,16 @@ def roots(monkeypatch, tmp_path):
 def test_scan_folder_only_copy_loads_from_disk(roots):
     _active, scan = roots
     snapshot = _cache_repo(scan, ["Tiny-Probe-UD-Q5_K_XL.gguf"])
-    rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO))
+    rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO), True)
     assert (rewritten.model_path, rewritten.gguf_variant) == (str(snapshot), "UD-Q5_K_XL")
     pinned = inf._as_local_scan_folder_request(
-        _request(model_path = _REPO, gguf_variant = "UD-Q5_K_XL")
+        _request(model_path = _REPO, gguf_variant = "UD-Q5_K_XL"), True
     )
     assert pinned.model_path == str(snapshot)
     # A quant the copy does not hold stays remote rather than serving other weights.
-    missing = inf._as_local_scan_folder_request(_request(model_path = _REPO, gguf_variant = "Q8_0"))
+    missing = inf._as_local_scan_folder_request(
+        _request(model_path = _REPO, gguf_variant = "Q8_0"), True
+    )
     assert (missing.model_path, missing.gguf_variant) == (_REPO, "Q8_0")
 
 
@@ -192,14 +194,14 @@ def test_active_hub_cache_copy_keeps_the_repo_id(roots, in_scan_folder):
         _cache_repo(scan, ["Tiny-Probe-Q4_K_M.gguf"])
     for variant in (None, "Q8_0"):
         request = _request(model_path = _REPO, gguf_variant = variant)
-        assert inf._as_local_scan_folder_request(request) is request
+        assert inf._as_local_scan_folder_request(request, True) is request
 
 
 def test_weightless_hub_skeleton_does_not_hide_the_scan_folder_copy(roots):
     active, scan = roots
     _cache_repo(active, [])
     snapshot = _cache_repo(scan, ["Tiny-Probe-Q4_K_M.gguf"])
-    rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO))
+    rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO), True)
     assert rewritten.model_path == str(snapshot)
 
 
@@ -211,8 +213,13 @@ def test_validate_reads_the_scan_folder_copy_offline(roots, monkeypatch):
     _active, scan = roots
     _cache_repo(scan, ["Tiny-Probe-Q4_K_M.gguf"])
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(inf, "_owner_session", lambda fastapi_request: True)
     result = asyncio.run(inf.validate_model(ValidateModelRequest(model_path = _REPO), None, "owner"))
     assert result.valid and result.is_gguf
+    # An API key caller may not read the owner's copy, so it keeps the remote refusal.
+    monkeypatch.setattr(inf, "_owner_session", lambda fastapi_request: False)
+    with pytest.raises(inf.HTTPException):
+        asyncio.run(inf.validate_model(ValidateModelRequest(model_path = _REPO), None, "owner"))
 
 
 @pytest.mark.parametrize(
@@ -227,7 +234,7 @@ def test_validate_reads_the_scan_folder_copy_offline(roots, monkeypatch):
 def test_only_a_gguf_snapshot_of_the_requested_repo_is_taken(monkeypatch, hit):
     monkeypatch.setattr(resolver, "resolve_local_gguf", lambda wanted, **kwargs: hit)
     request = _request()
-    assert inf._as_local_scan_folder_request(request) is request
+    assert inf._as_local_scan_folder_request(request, True) is request
 
 
 def test_scan_folder_nested_inside_the_hub_cache_still_loads_from_disk(roots, monkeypatch):
@@ -245,5 +252,5 @@ def test_scan_folder_nested_inside_the_hub_cache_still_loads_from_disk(roots, mo
     connection.close()
     resolver.invalidate_index()
     snapshot = _cache_repo(nested, ["Tiny-Probe-Q4_K_M.gguf"])
-    rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO))
+    rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO), True)
     assert rewritten.model_path == str(snapshot)
