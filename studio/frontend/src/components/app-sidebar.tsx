@@ -939,7 +939,21 @@ function MoreMenuItem({
   );
 }
 
-function AudioMoreSubmenu({
+type MediaMoreSubmenuProps<Id extends string> = {
+  icon: typeof ZapIcon;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  tooltip?: string;
+  badge?: string;
+  spinner?: boolean;
+  onIntent?: () => void;
+  onOpen: () => void;
+  onPick: (id: Id) => void;
+  contentProps: ComponentProps<typeof DropdownMenuSubContent>;
+};
+
+function MediaMoreSubmenu<Id extends string>({
   icon,
   label,
   active,
@@ -951,22 +965,14 @@ function AudioMoreSubmenu({
   onOpen,
   onPick,
   contentProps,
-}: {
-  icon: typeof ZapIcon;
-  label: string;
-  active: boolean;
-  disabled?: boolean;
-  tooltip?: string;
-  badge?: string;
-  spinner?: boolean;
-  onIntent?: () => void;
-  onOpen: () => void;
-  onPick: (id: AudioWorkflowId) => void;
-  contentProps: ComponentProps<typeof DropdownMenuSubContent>;
+  tabs,
+  current,
+  enabled,
+}: MediaMoreSubmenuProps<Id> & {
+  tabs: ReadonlyArray<{ id: Id; icon: IconSvgElement; label: string }>;
+  current: Id | null;
+  enabled: (id: Id) => boolean;
 }) {
-  const workflow = useAudioWorkspaceStore((s) => s.workflow);
-  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
-  const current = active ? (requested ?? workflow) : null;
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger
@@ -974,7 +980,7 @@ function AudioMoreSubmenu({
         title={tooltip}
         onPointerEnter={disabled ? undefined : onIntent}
         onFocus={disabled ? undefined : onIntent}
-        // click opens Audio; hover and keyboard still open the workflows.
+        // click opens the page; hover and keyboard still open the workflows.
         onClick={(event) => {
           if (disabled) return;
           event.preventDefault();
@@ -990,9 +996,11 @@ function AudioMoreSubmenu({
         )}
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent {...contentProps} className="sidebar-more-menu w-44 p-1">
-        {AUDIO_WORKFLOWS.map((tab) => (
+        {tabs.map((tab) => (
           <DropdownMenuItem
             key={tab.id}
+            disabled={!enabled(tab.id)}
+            title={enabled(tab.id) ? undefined : WORKFLOW_UNAVAILABLE}
             onSelect={() => onPick(tab.id)}
             className={cn(current === tab.id && "bg-accent/60")}
           >
@@ -1002,6 +1010,35 @@ function AudioMoreSubmenu({
         ))}
       </DropdownMenuSubContent>
     </DropdownMenuSub>
+  );
+}
+
+function ImagesMoreSubmenu(props: MediaMoreSubmenuProps<WorkflowId>) {
+  const workflow = useImageWorkflowStore((s) => s.workflow);
+  const supported = useImageWorkflowStore((s) => s.supported);
+  const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  const current = props.active && pageMode === "create" ? workflow : null;
+  return (
+    <MediaMoreSubmenu
+      {...props}
+      tabs={WORKFLOW_TABS}
+      current={current}
+      enabled={(id) => isWorkflowEnabled(id, supported)}
+    />
+  );
+}
+
+function AudioMoreSubmenu(props: MediaMoreSubmenuProps<AudioWorkflowId>) {
+  const workflow = useAudioWorkspaceStore((s) => s.workflow);
+  const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
+  const current = props.active ? (requested ?? workflow) : null;
+  return (
+    <MediaMoreSubmenu
+      {...props}
+      tabs={AUDIO_WORKFLOWS}
+      current={current}
+      enabled={audioWorkflowAlwaysEnabled}
+    />
   );
 }
 
@@ -2896,10 +2933,10 @@ export function AppSidebar() {
   // The Projects row repeats the section, so it only earns its place while the section is absent.
   const navRowPinned = (item: SidebarNavItemPref) =>
     sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing });
-  // Audio steps out of More while its page is open: a pin for the visit, never saved.
+  // Audio and Images step out of More while their page is open: a pin for the visit, never saved.
   const { inline: inlineNavIds, overflow: overflowNavIds } = placeNavRows(
     sidebarNav.map((item) => ({ id: item.id, pinned: navRowPinned(item) })),
-    navRows.audio.active ? "audio" : null,
+    navRows.audio.active ? "audio" : navRows.images.active ? "images" : null,
   );
   // The mobile sheet shows labels regardless of the desktop pin state.
   const sidebarRowsLabelled = isMobile || sidebarState !== "collapsed";
@@ -2908,6 +2945,11 @@ export function AppSidebar() {
     sidebarRowsLabelled &&
     !(navRows.images.active && imagesPageMode === "train");
   const audioWorkflowsListed = sidebarRowsLabelled;
+  const pickImagesWorkflow = (workflowId: WorkflowId) => {
+    useImageWorkflowStore.getState().setWorkflow(workflowId);
+    navigate({ to: "/images" });
+    closeMobileIfOpen();
+  };
   // Sidebar and More-flyout picks only ask; the Audio page switches once it is free to.
   const pickAudioWorkflow = (workflowId: AudioWorkflowId) => {
     useAudioWorkspaceStore.getState().requestWorkflow(workflowId);
@@ -5560,13 +5602,7 @@ export function AppSidebar() {
                       <ImagesWorkflowList
                         active={row.active}
                         collapsed={!sidebarRowsLabelled}
-                        onPick={(workflowId) => {
-                          useImageWorkflowStore
-                            .getState()
-                            .setWorkflow(workflowId);
-                          navigate({ to: "/images" });
-                          closeMobileIfOpen();
-                        }}
+                        onPick={pickImagesWorkflow}
                       />
                     ) : id === "audio" ? (
                       <AudioWorkflowList
@@ -5664,28 +5700,37 @@ export function AppSidebar() {
                         const row = navRows[id];
                         // Same pending handling as the inline rows above.
                         const rowState = resolveNavRowState(row);
-                        if (id === "audio") {
-                          return (
+                        if (id === "images" || id === "audio") {
+                          const submenu = {
+                            icon: row.icon,
+                            label: row.label,
+                            badge: row.badge,
+                            active: row.active,
+                            disabled: rowState.disabled,
+                            tooltip: rowState.tooltip,
+                            spinner: rowState.spinner,
+                            onIntent: row.onIntent,
+                            onOpen: () => {
+                              setMoreOpen(false);
+                              row.onClick();
+                            },
+                            contentProps: {
+                              ...sidebarSubmenuOffsets,
+                              // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
+                              ...moreHover.content,
+                            },
+                          };
+                          return id === "images" ? (
+                            <ImagesMoreSubmenu
+                              key={id}
+                              {...submenu}
+                              onPick={pickImagesWorkflow}
+                            />
+                          ) : (
                             <AudioMoreSubmenu
                               key={id}
-                              icon={row.icon}
-                              label={row.label}
-                              badge={row.badge}
-                              active={row.active}
-                              disabled={rowState.disabled}
-                              tooltip={rowState.tooltip}
-                              spinner={rowState.spinner}
-                              onIntent={row.onIntent}
-                              onOpen={() => {
-                                setMoreOpen(false);
-                                row.onClick();
-                              }}
+                              {...submenu}
                               onPick={pickAudioWorkflow}
-                              contentProps={{
-                                ...sidebarSubmenuOffsets,
-                                // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
-                                ...moreHover.content,
-                              }}
                             />
                           );
                         }
