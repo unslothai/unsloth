@@ -26,6 +26,7 @@ function fakeClient() {
   let thread: State = { isRunning: false, messages, composer };
   let threads: State = { mainThreadId: "t1", threadItems: {}, main: thread };
   let tools: State = { tools: {} };
+  let repository: unknown[] = [];
   const listeners = new Set<() => void>();
   let parentSubscriptions = 0;
   const client = {
@@ -41,7 +42,12 @@ function fakeClient() {
       return () => {};
     },
     threads: () => ({ getState: () => threads }),
-    thread: () => ({ getState: () => thread }),
+    thread: () => ({
+      getState: () => thread,
+      __internal_getRuntime: () => ({
+        getState: () => ({ messages: repository }),
+      }),
+    }),
     composer: () => ({ getState: () => composer }),
     tools: () => ({ getState: () => tools }),
   };
@@ -49,7 +55,9 @@ function fakeClient() {
     composer?: State;
     thread?: State;
     tools?: State;
+    repositoryWrite?: boolean;
   }) => {
+    if (next.repositoryWrite) repository = [...repository];
     if (next.composer) composer = next.composer;
     thread = { ...thread, ...(next.thread ?? {}), composer };
     threads = { ...threads, main: thread };
@@ -143,14 +151,36 @@ test("a streamed token reaches the last two rows only", () => {
   rows.release();
 });
 
-test("a rebuilt messages array holding the same messages reaches no row", () => {
+test("a rebuilt messages array holding the same messages reaches every row only after a repository write", () => {
   const fake = fakeClient();
   const rows = subscribeRows(fake, 4);
+  const rebuilt = () => [...(fake.thread().messages as unknown[])];
+  fake.publish({ thread: { messages: rebuilt() } });
+  assert.deepEqual(rows.heard, [0, 0, 0, 0], "a store-only rebuild");
+  // A write on a hidden branch rebuilds the array without touching a visible message.
+  fake.publish({ thread: { messages: rebuilt() }, repositoryWrite: true });
+  assert.deepEqual(rows.heard, [1, 1, 1, 1]);
+  rows.release();
+});
+
+test("a rebuilt messages array reaches every row when the repository cannot be read", () => {
+  const fake = fakeClient();
+  const client = {
+    ...(fake.client as unknown as Record<string, unknown>),
+    thread: () => ({ getState: () => fake.thread() }),
+  } as unknown as AssistantClient;
+  const gate = createRowNotificationGate(client);
+  const heard = [0, 0];
+  const release = heard.map((_, index) =>
+    gate.row(index).subscribe(() => {
+      heard[index] += 1;
+    }),
+  );
   fake.publish({
     thread: { messages: [...(fake.thread().messages as unknown[])] },
   });
-  assert.deepEqual(rows.heard, [0, 0, 0, 0]);
-  rows.release();
+  assert.deepEqual(heard, [1, 1]);
+  for (const r of release) r();
 });
 
 test("a non-empty queue change reaches every row", () => {

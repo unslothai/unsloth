@@ -4,7 +4,8 @@
 // Every assistant-ui store write re-runs every row's selectors (#12552), so each row subscribes
 // through a client that drops what cannot change it: a thread-composer keystroke reaches no row; a
 // same-length `thread.messages` change reaches rows from one before the first changed message (row
-// selectors read their own, earlier, or the next message, never two ahead); anything else reaches all.
+// selectors read their own, earlier, or the next message, never two ahead); the same messages in a
+// new array reach all unless the runtime's repository is unchanged; anything else reaches all.
 // Assumes scope methods change only with `thread.messages` (assistant-ui 0.12): recheck on upgrade.
 
 import type { AssistantClient } from "@assistant-ui/react";
@@ -14,11 +15,13 @@ type Listener = () => void;
 export interface RowFingerprint {
   rest: unknown[];
   messages: readonly unknown[] | null;
+  repository: unknown;
 }
 
 const TYPED_COMPOSER_FIELDS = new Set(["text", "isEmpty"]);
 const EMPTY: readonly unknown[] = [];
 const ROW_MESSAGES = Symbol("row messages");
+const UNKNOWN_REPOSITORY = Symbol("unknown repository");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -92,12 +95,33 @@ function scopeState(client: AssistantClient, key: string): unknown {
   return getState.call(methods);
 }
 
+// The runtime's message array: rebuilt on every repository write, hidden branches included, but not
+// when only the store rebuilds `thread.messages` (the first keystroke after a run does).
+function repositoryRevision(client: AssistantClient): unknown {
+  const thread = (client as unknown as Record<string, unknown>).thread;
+  if (typeof thread !== "function") return UNKNOWN_REPOSITORY;
+  const methods = (thread as () => unknown)();
+  const getRuntime = isRecord(methods)
+    ? methods.__internal_getRuntime
+    : undefined;
+  if (typeof getRuntime !== "function") return UNKNOWN_REPOSITORY;
+  const runtime = getRuntime.call(methods);
+  const getState = isRecord(runtime) ? runtime.getState : undefined;
+  if (typeof getState !== "function") return UNKNOWN_REPOSITORY;
+  const state = getState.call(runtime);
+  return isRecord(state) && Array.isArray(state.messages)
+    ? state.messages
+    : UNKNOWN_REPOSITORY;
+}
+
 export function rowFingerprint(client: AssistantClient): RowFingerprint {
   let messages: readonly unknown[] | null = null;
+  let repository: unknown = UNKNOWN_REPOSITORY;
   try {
     const thread = scopeState(client, "thread");
     if (isRecord(thread) && Array.isArray(thread.messages))
       messages = thread.messages;
+    repository = repositoryRevision(client);
   } catch {
     // No thread scope: every change lands in `rest` and reaches every row.
   }
@@ -114,7 +138,7 @@ export function rowFingerprint(client: AssistantClient): RowFingerprint {
     rest.push(key);
     pushState(rest, state, messages);
   }
-  return { rest, messages };
+  return { rest, messages, repository };
 }
 
 function sameValues(a: readonly unknown[], b: readonly unknown[]): boolean {
@@ -145,7 +169,12 @@ export function rowsToNotify(
       return Math.max(0, index - 1);
     }
   }
-  return "none";
+  // Same messages in a new array after a repository write: a hidden branch changed, which selectors
+  // keyed on the array (research reply owners) must still hear.
+  return last.repository !== UNKNOWN_REPOSITORY &&
+    last.repository === next.repository
+    ? "none"
+    : "all";
 }
 
 export interface RowNotificationGate {
