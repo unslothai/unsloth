@@ -2154,12 +2154,18 @@ def test_table_spans_do_not_multiply_the_page_size():
 
 
 def test_generated_table_spans_do_not_make_a_main_content_candidate():
-    decoy = (
-        "<article><table><tr><td rowspan='51'>x</td></tr>" + "<tr></tr>" * 50 + "</table></article>"
-    )
     body = "<main><p>" + "Real page body. " * 20 + "</p></main>"
-    out = html_to_markdown(f"<body>{decoy}{body}</body>", main_content = True)
-    assert "Real page body." in out
+    decoys = (
+        "<article><table><tr><td rowspan='51'>x</td></tr>"
+        + "<tr></tr>" * 50
+        + "</table></article>",
+        "<article><blockquote><table><tr><td rowspan='101'>x</td></tr>"
+        + "<tr></tr>" * 100
+        + "</table></blockquote></article>",
+    )
+    for decoy in decoys:
+        out = html_to_markdown(f"<body>{decoy}{body}</body>", main_content = True)
+        assert "Real page body." in out
 
 
 def test_table_spans_stop_at_row_groups_tables_and_long_cells():

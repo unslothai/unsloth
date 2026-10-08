@@ -238,7 +238,6 @@ class _HeaderFrame:
         "outer_in_code",
         "outer_bq_depth",
         "outer_table_depth",
-        "generated_span_chars",
     )
 
     def __init__(
@@ -269,7 +268,6 @@ class _HeaderFrame:
         self.outer_in_code = in_code
         self.outer_bq_depth = bq_depth
         self.outer_table_depth = table_depth
-        self.generated_span_chars: int = 0
         # both exclude heading text: it is kept anyway, so it must not vote on dropping the rest
         self.text_chars: int = 0
         self.link_chars: int = 0
@@ -369,9 +367,6 @@ class _MarkdownRenderer(HTMLParser):
         # cannot keep them out of the gate.
         self._seg_heading_texts: list[str] = []
         self.scope_heading_prose: list[int] = []
-        self.scope_generated_span_chars: list[int] = []
-        self._generated_span_chars: int = 0
-        self._seg_generated_span_start: int = 0
         # Open-tag indices of headings, unwound with _hidden_marks.
         self._heading_marks: list[int] = []
 
@@ -520,11 +515,6 @@ class _MarkdownRenderer(HTMLParser):
         return "\n".join(prefixed)
 
     # Table helpers: flush open cells/rows so omitted </td>/</tr> don't lose data.
-    def _count_generated_span_chars(self, count: int) -> None:
-        self._generated_span_chars += count
-        if self._header_stack:
-            self._header_stack[-1].generated_span_chars += count
-
     def _table_depth(self) -> int:
         return len(self._table_stack) + int(self._in_table)
 
@@ -588,7 +578,6 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row.extend([""] * extra_cols)
         generated = extra_col_cost * extra_cols
         self._span_chars += generated
-        self._count_generated_span_chars(generated)
         if self._cell_rowspan > 1:
             repeated = cell_text if len(cell_text) <= _MAX_REPEATED_CELL_CHARS else ""
             for i in range(extra_cols + 1):
@@ -606,7 +595,6 @@ class _MarkdownRenderer(HTMLParser):
                 break
             self._current_row.append(text)
             self._span_chars += cost
-            self._count_generated_span_chars(cost)
 
     def _finish_row(self) -> None:
         in_row, self._in_row = self._in_row, False
@@ -712,9 +700,6 @@ class _MarkdownRenderer(HTMLParser):
             out = frame.render(closed_by_own_tag)
             if frame.stripped:
                 self._dropped_chars += max(0, frame.rendered_chars - frame.heading_chars)
-                self._generated_span_chars -= frame.generated_span_chars
-            elif self._header_stack:
-                self._header_stack[-1].generated_span_chars += frame.generated_span_chars
             self._emit(out)
             closed_by_own_tag = False
 
@@ -806,7 +791,6 @@ class _MarkdownRenderer(HTMLParser):
             if self._scope_depth == 0:
                 self._scope_seg_start = len(self._out)
                 self._seg_dropped_start = self._dropped_chars
-                self._seg_generated_span_start = self._generated_span_chars
                 self._seg_heading_texts = []
             self._scope_depth += 1
         if self._hidden_marks:
@@ -844,9 +828,6 @@ class _MarkdownRenderer(HTMLParser):
                 self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
                 self.scope_dropped.append(self._dropped_chars - self._seg_dropped_start)
                 self.scope_heading_prose.append(self._seg_heading_prose())
-                self.scope_generated_span_chars.append(
-                    self._generated_span_chars - self._seg_generated_span_start
-                )
                 self._scope_seg_start = None
         return not suppressed
 
@@ -1110,9 +1091,6 @@ class _MarkdownRenderer(HTMLParser):
             self.scope_segments.append("".join(self._out[self._scope_seg_start :]))
             self.scope_dropped.append(self._dropped_chars - self._seg_dropped_start)
             self.scope_heading_prose.append(self._seg_heading_prose())
-            self.scope_generated_span_chars.append(
-                self._generated_span_chars - self._seg_generated_span_start
-            )
             self._scope_seg_start = None
             self._scope_depth = 0
 
@@ -1226,13 +1204,16 @@ def _strip_boilerplate_lines(text: str) -> str:
 
 
 def _new_renderer(
-    source_html: str, scope_tags: frozenset[str] | None, strip_header: bool
+    source_html: str,
+    scope_tags: frozenset[str] | None,
+    strip_header: bool,
+    span_char_limit: int | None = None,
 ) -> _MarkdownRenderer:
     # generated span cells stay proportional to their source and cannot consume the fetch cap alone
     renderer = _MarkdownRenderer(
         scope_tags = scope_tags,
         strip_header = strip_header,
-        span_char_limit = 2 * len(source_html),
+        span_char_limit = 2 * len(source_html) if span_char_limit is None else span_char_limit,
     )
     renderer.feed(source_html)
     renderer.close()
@@ -1263,18 +1244,22 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     furniture can never be the majority of a score. Uncapped, a teaser with a
     1000 link header outranked a sibling holding five times its real text."""
     renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
-    dropped = renderer.scope_dropped
-    heading_prose = renderer.scope_heading_prose
-    generated_spans = renderer.scope_generated_span_chars
+    # Generated span cells belong in the returned Markdown but must not help a tiny scope clear the content gate or
+    # outrank source-backed prose. Only span-bearing pages pay for this second, unexpanded scoring pass.
+    scoring = (
+        _new_renderer(source_html, frozenset({tag}), strip_header = True, span_char_limit = 0)
+        if renderer._span_chars
+        else renderer
+    )
     best_len = 0
     best_render = ""
     for i, seg in enumerate(renderer.scope_segments):
         rendered = _strip_boilerplate_lines(_cleanup(seg))
-        source_backed_chars = max(0, len(rendered) - generated_spans[i])
-        prose = max(0, _visible_chars(rendered) - heading_prose[i] - generated_spans[i])
+        scored = _strip_boilerplate_lines(_cleanup(scoring.scope_segments[i]))
+        prose = _visible_chars(scored) - scoring.scope_heading_prose[i]
         if prose < _MIN_MAIN_CONTENT_CHARS:
             continue
-        size = source_backed_chars + min(dropped[i], source_backed_chars)
+        size = len(scored) + min(scoring.scope_dropped[i], len(scored))
         if size > best_len:
             best_len = size
             best_render = rendered
