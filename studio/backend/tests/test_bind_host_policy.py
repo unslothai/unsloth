@@ -9,10 +9,10 @@ import pytest
 
 from utils import host_policy
 from utils.host_policy import (
+    dial_host,
     is_wildcard_host,
     normalize_wildcard_bind_host,
     resolved_bind_address_count,
-    dial_host,
     published_url_host,
     wildcard_ip_versions,
     wildcard_loopback_host,
@@ -250,6 +250,7 @@ def test_run_server_rejects_an_ephemeral_multi_address_bind(monkeypatch):
         ("fe80::1234%eth0", "[fe80::1234%25eth0]"),
         ("fe80::1234%12", "[fe80::1234%2512]"),
         ("[::1]", "[::1]"),
+        ("[fe80::1234%eth0]", "[fe80::1234%25eth0]"),
     ],
 )
 def test_published_url_host_builds_a_url_authority(host, expected):
@@ -258,9 +259,15 @@ def test_published_url_host_builds_a_url_authority(host, expected):
 
 @pytest.mark.parametrize(
     "host, expected",
-    [("[::1]", "[::1]"), ("::1", "[::1]"), ("127.0.0.1", "127.0.0.1")],
+    [
+        ("127.0.0.1", "127.0.0.1"),
+        ("::1", "[::1]"),
+        ("[::1]", "[::1]"),
+        ("fe80::1%en0", "[fe80::1%en0]"),
+        ("[fe80::1%en0]", "[fe80::1%en0]"),
+    ],
 )
-def test_dial_host_is_idempotent_for_bracketed_ipv6(host, expected):
+def test_dial_host_builds_a_dialable_url_authority(host, expected):
     assert dial_host(host) == expected
 
 

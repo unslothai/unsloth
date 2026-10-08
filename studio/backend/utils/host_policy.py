@@ -164,19 +164,20 @@ def wildcard_loopback_host(host: str) -> "str | None":
     return "::1" if 6 in versions else None
 
 
+def _bracket_ipv6(host: str) -> str:
+    if ":" not in host or (host.startswith("[") and host.endswith("]")):
+        return host
+    return f"[{host}]"
+
+
 def published_url_host(host: str) -> str:
     """Authority host for a URL Studio hands out - a banner line, `server_url`, a tunnel origin."""
-    escaped = host.replace("%", "%25")
-    if ":" not in escaped or (escaped.startswith("[") and escaped.endswith("]")):
-        return escaped
-    return f"[{escaped}]"
+    return _bracket_ipv6(host.replace("%", "%25"))
 
 
 def dial_host(host: str) -> str:
     """Authority host for a URL this process dials itself. The IPv6 zone id stays literal: httpx hands the RFC 6874 escaping `published_url_host` applies to the resolver unchanged."""
-    if ":" not in host or (host.startswith("[") and host.endswith("]")):
-        return host
-    return f"[{host}]"
+    return _bracket_ipv6(host)
 
 
 # Self-call address resolution. A `--host` other than a wildcard binds one interface only, so loopback is not served and a hardcoded `127.0.0.1` self-call cannot connect.
