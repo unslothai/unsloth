@@ -233,6 +233,13 @@ export function existingDatasetName(name: string, datasets: { name: string }[]):
   return datasets.find((d) => d.name.toLowerCase() === folded)?.name ?? null;
 }
 
+export function datasetNamesForCreation(info: {
+  datasets: { name: string }[];
+  dataset_names?: string[];
+} | null): { name: string }[] {
+  return info?.dataset_names?.map((name) => ({ name })) ?? info?.datasets ?? [];
+}
+
 export function freeDatasetName(datasets: { name: string }[]): string {
   let name = "my-images";
   for (let i = 2; existingDatasetName(name, datasets); i += 1) {

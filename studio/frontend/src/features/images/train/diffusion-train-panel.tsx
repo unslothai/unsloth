@@ -84,6 +84,7 @@ import {
   DATASET_FILE_ACCEPT,
   DATASET_IMAGE_EXTS,
   chunkDatasetUpload,
+  datasetNamesForCreation,
   existingDatasetName,
   existingStemClash,
   filesFromDataTransfer,
@@ -462,6 +463,7 @@ export function DiffusionTrainPanel({
   // one folder picker serves both targets, so the destination is captured when it opens.
   const folderInputRef = useRef<HTMLInputElement | null>(null);
   const folderTarget = useRef("");
+  const folderCreatesDataset = useRef(false);
   const [dropActive, setDropActive] = useState(false);
   // the authoritative in-flight guard: `uploading` is render state and reads stale in a closure.
   const uploadInFlight = useRef(false);
@@ -764,7 +766,8 @@ export function DiffusionTrainPanel({
   // A deleted dataset leaves a name that no longer resolves; fall back to the upload form.
   const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
   const namesLoading = uploadMode && info === null;
-  const takenName = uploadMode ? existingDatasetName(uploadName, info?.datasets ?? []) : null;
+  const occupiedDatasets = datasetNamesForCreation(info);
+  const takenName = uploadMode ? existingDatasetName(uploadName, occupiedDatasets) : null;
   const takenNameMessage = `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;
   // Trainable items in the picked dataset, images and clips alike. caption_count is the folder
   // total over both kinds, so every ratio must be against this and not image_count.
@@ -838,7 +841,7 @@ export function DiffusionTrainPanel({
   // Uploads accumulate, so the same call both creates a folder and adds to an existing one.
   // `picked` can come from a file pick, a folder pick or a drop, so it is filtered here.
   const uploadTo = useCallback(
-    async (name: string, picked: File[]) => {
+    async (name: string, picked: File[], createOnly = false) => {
       if (picked.length === 0) return;  // the picker was cancelled
       if (!name) {
         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
@@ -944,7 +947,7 @@ export function DiffusionTrainPanel({
             }
           }
         }
-        let res = await uploadDiffusionDataset(name, chunks[0]);
+        let res = await uploadDiffusionDataset(name, chunks[0], createOnly);
         let sent = res.uploaded;
         let stopped: string | null = null;
         for (const chunk of chunks.slice(1)) {
@@ -1000,8 +1003,9 @@ export function DiffusionTrainPanel({
     [info, refreshInfo],
   );
 
-  const pickFolder = useCallback((name: string) => {
+  const pickFolder = useCallback((name: string, createOnly = false) => {
     folderTarget.current = name;
+    folderCreatesDataset.current = createOnly;
     folderInputRef.current?.click();
   }, []);
 
@@ -1047,9 +1051,9 @@ export function DiffusionTrainPanel({
         toast.error("That drop had no files in it.");
         return;
       }
-      await uploadTo(dropTarget, dropped);
+      await uploadTo(dropTarget, dropped, uploadMode);
     },
-    [dropTarget, uploadTo, namesLoading, takenName, takenNameMessage],
+    [dropTarget, uploadTo, uploadMode, namesLoading, takenName, takenNameMessage],
   );
 
   const onStart = useCallback(async () => {
@@ -1652,8 +1656,8 @@ export function DiffusionTrainPanel({
                     if (ex) void importExample(ex);
                     return;  // the controlled value stays put while the import runs
                   }
-                  if (v === UPLOAD_DATASET && existingDatasetName(uploadName, info?.datasets ?? [])) {
-                    setUploadName(freeDatasetName(info?.datasets ?? []));
+                  if (v === UPLOAD_DATASET && existingDatasetName(uploadName, occupiedDatasets)) {
+                    setUploadName(freeDatasetName(occupiedDatasets));
                   }
                   setDataset(v);
                   setGridOpen(false);
@@ -1725,7 +1729,7 @@ export function DiffusionTrainPanel({
               onChange={(e) => {
                 const files = Array.from(e.target.files ?? []);
                 e.target.value = "";
-                void uploadTo(folderTarget.current, files);
+                void uploadTo(folderTarget.current, files, folderCreatesDataset.current);
               }}
             />
             {importingId && (
@@ -1760,7 +1764,7 @@ export function DiffusionTrainPanel({
                     onChange={(e) => {
                       const files = Array.from(e.target.files ?? []);
                       e.target.value = "";
-                      void uploadTo(uploadName.trim(), files);
+                      void uploadTo(uploadName.trim(), files, true);
                     }}
                   />
                   {/* The pick is the confirmation, so it uploads without a second click. */}
@@ -1788,7 +1792,7 @@ export function DiffusionTrainPanel({
                         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
                         return;
                       }
-                      pickFolder(uploadName.trim());
+                      pickFolder(uploadName.trim(), true);
                     }}
                   />
                 </div>

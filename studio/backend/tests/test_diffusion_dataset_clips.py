@@ -225,6 +225,7 @@ def test_info_still_skips_a_folder_holding_neither(client, ds_root):
     r = client.get("/api/train/diffusion/info")
     assert r.status_code == 200, r.text
     assert [d["name"] for d in r.json()["datasets"]] == []
+    assert r.json()["dataset_names"] == ["captions-only"]
 
 
 def test_list_images_marks_clips_and_leaves_images_unchanged(client, ds_root):

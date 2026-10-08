@@ -674,6 +674,31 @@ def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root)
     assert (folder / "sample.txt").read_text(encoding = "utf-8") == "a caption"
 
 
+def test_create_only_upload_refuses_every_occupied_spelling(client, ds_root):
+    folder = ds_root / "StyleSet"
+    folder.mkdir()
+    original = _png_bytes((10, 20, 30))
+    (folder / "sample.png").write_bytes(original)
+
+    for name in ("StyleSet", "styleset"):
+        r = client.post(
+            "/api/train/diffusion/dataset",
+            data = {"name": name, "create_only": "true"},
+            files = [("files", ("sample.png", _png_bytes((90, 90, 90)), "image/png"))],
+        )
+        assert r.status_code == 409, r.text
+        assert "already exists" in r.json()["detail"]
+
+    assert (folder / "sample.png").read_bytes() == original
+    created = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "fresh", "create_only": "true"},
+        files = [("files", ("new.png", _png_bytes(), "image/png"))],
+    )
+    assert created.status_code == 200, created.text
+    assert (ds_root / "fresh" / "new.png").is_file()
+
+
 # ── import: promotion is all-or-nothing ──────────────────────────────────────
 def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypatch):
     # The staging dir is promoted in one atomic rename. If it fails, the folder must be left with NO images rather than a

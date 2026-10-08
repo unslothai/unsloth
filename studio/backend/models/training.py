@@ -1198,6 +1198,8 @@ class DiffusionTrainingInfoResponse(BaseModel):
     datasets_root: str
     outputs_root: str
     datasets: List[DiffusionDatasetSummary]
+    # Every occupied folder name, including captions-only folders that are not trainable yet.
+    dataset_names: List[str] = Field(default_factory = list)
     families: List[DiffusionTrainableFamily] = Field(default_factory = list)
 
 

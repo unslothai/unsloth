@@ -3670,10 +3670,9 @@ _DATASET_IMPORT_LOCKS_GUARD = threading.Lock()
 
 def _dataset_import_lock(folder: Path) -> "threading.Lock":
     """One lock per dataset folder, so two imports cannot fill the same empty name at once. Keyed by
-    the resolved path (one folder can be reached by different names) and kept for the process
-    lifetime: there are a handful of folders and a Lock is tiny, while dropping one while another
-    thread holds it would defeat the point."""
-    key = str(folder.resolve(strict = False))
+    the case-folded resolved path so portable name variants serialize too, and kept for the process
+    lifetime so a lock cannot disappear while another thread holds it."""
+    key = str(folder.resolve(strict = False)).casefold()
     with _DATASET_IMPORT_LOCKS_GUARD:
         lock = _DATASET_IMPORT_LOCKS.get(key)
         if lock is None:
@@ -3864,6 +3863,7 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
             datasets_root = str(root),
             outputs_root = str(outputs_root()),
             datasets = found,
+            dataset_names = [p.name for p in children],
             families = families,
         )
 
@@ -3947,6 +3947,7 @@ def _clean_diffusion_dataset_name(name: str) -> str:
 async def upload_diffusion_dataset(
     name: str = Form(...),
     files: list[UploadFile] = File(...),
+    create_only: bool = Form(False),
     current_subject: str = Depends(get_current_subject),
     _interlock: None = Depends(diffusion_dataset_interlock),
 ):
@@ -3964,7 +3965,6 @@ async def upload_diffusion_dataset(
     # Run the same symlink + root-containment check as the read/caption/delete endpoints before any write, so a
     # symlinked name cannot make the upload write outside root.
     folder = _resolve_dataset_folder(name, must_exist = False)
-    folder.mkdir(parents = True, exist_ok = True)
     # Serialize against a concurrent import into the SAME folder: the training interlock counts
     # mutations rather than excluding them. The duplicate-stem check below is inside the lock.
     _lock = _dataset_import_lock(folder)
@@ -3977,6 +3977,39 @@ async def upload_diffusion_dataset(
             ),
         )
     try:
+        if create_only:
+            occupied = (
+                next(
+                    (
+                        p
+                        for p in folder.parent.iterdir()
+                        if p.is_dir()
+                        and not p.is_symlink()
+                        and p.name.casefold() == cleaned.casefold()
+                    ),
+                    None,
+                )
+                if folder.parent.is_dir()
+                else None
+            )
+            if occupied is not None:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Dataset '{occupied.name}' already exists. Pick it in the dataset list "
+                        "to add files, or choose another name."
+                    ),
+                )
+        try:
+            folder.mkdir(parents = True, exist_ok = not create_only)
+        except FileExistsError:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"Dataset '{cleaned}' already exists. Pick it in the dataset list to add "
+                    "files, or choose another name."
+                ),
+            )
         limit_bytes = get_upload_limit_bytes()
         total_bytes = 0
         uploaded = 0

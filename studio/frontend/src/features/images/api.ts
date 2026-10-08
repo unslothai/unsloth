@@ -836,6 +836,8 @@ export interface DiffusionTrainingInfo {
   datasets_root: string;
   outputs_root: string;
   datasets: DiffusionDatasetSummary[];
+  // Includes occupied folders with no trainable media, which stay out of datasets.
+  dataset_names?: string[];
   // Added by the multi-family trainer backend; tolerate its absence.
   families?: DiffusionTrainableFamily[];
 }
@@ -853,9 +855,11 @@ export interface DiffusionDatasetUploadResult extends DiffusionDatasetSummary {
 export async function uploadDiffusionDataset(
   name: string,
   files: File[],
+  createOnly = false,
 ): Promise<DiffusionDatasetUploadResult> {
   const form = new FormData();
   form.append("name", name);
+  form.append("create_only", createOnly ? "true" : "false");
   for (const f of files) form.append("files", f);
   return parseJson(
     await authFetch("/api/train/diffusion/dataset", { method: "POST", body: form }),
