@@ -91,10 +91,8 @@ test("navigation rows align while the profile footer ignores the scroll rail", a
     source,
     /const unrailedRowPadding = usesDesktopTitlebar \? "px-\[5px\]" : "px-1\.5"/,
   );
-  // New Chat and the nav rows sit above the scroller and align with its rail.
   assert.equal(source.match(/(?<!const )rowPadding[,}]/g)?.length, 2);
-  // Pinned chats, custom sections, Projects, Recents, and training runs sit
-  // inside the scroller; the footer is the sixth unrailed use outside it.
+  // Five list rows inside the scroller, plus the footer outside it.
   assert.equal(source.match(/unrailedRowPadding[,}]/g)?.length, 6);
 
   const footer = source
@@ -113,7 +111,6 @@ test("the nav rows stay put while the chat list scrolls", async () => {
   const scroller = source.indexOf("<SidebarContent");
   assert.ok(nav > 0 && scroller > 0);
   assert.ok(nav < scroller, "nav group must sit above the list scroller, not inside it");
-  // Pinned rows plus an open workflow list outgrow a short window: the nav scrolls itself.
   const navClasses = source.slice(nav, source.indexOf("<SidebarGroupContent>", nav));
   assert.match(navClasses, /"min-h-0 max-h-\[50%\] overflow-y-auto overscroll-contain"/);
   assert.match(navClasses, /group-data-\[collapsible=icon\]:shrink /);

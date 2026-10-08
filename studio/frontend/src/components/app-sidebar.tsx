@@ -5482,8 +5482,7 @@ export function AppSidebar() {
         data-tour="navbar"
         className={cn(
           "group-data-[collapsible=icon]:px-0 pt-0 shrink-0 transition-[padding]",
-          // Outside the scroller the nav cannot scroll away: on a short window it scrolls itself
-          // rather than push Recents and the footer off screen. The rail clips, as it did inside the list.
+          // Short windows: the nav scrolls itself rather than push Recents and the footer off screen.
           "min-h-0 max-h-[50%] overflow-y-auto overscroll-contain",
           "group-data-[collapsible=icon]:shrink group-data-[collapsible=icon]:max-h-none group-data-[collapsible=icon]:overflow-hidden",
           rowPadding,
