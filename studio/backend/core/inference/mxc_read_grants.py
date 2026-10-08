@@ -326,6 +326,55 @@ def _package_aces(path: str) -> tuple[bool, bool]:
         local_free(descriptor)
 
 
+def _can_change_permissions(root: str) -> bool:
+    """Whether this account may rewrite the folder's DACL. Raises OSError when that cannot be told.
+
+    A Microsoft Store Python lives under Program Files\\WindowsApps, owned by TrustedInstaller,
+    which refuses even administrators (#12941).
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    # WRITE_DAC, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, OPEN_EXISTING,
+    # FILE_FLAG_BACKUP_SEMANTICS (needed to open a directory).
+    handle = create_file(root, 0x40000, 0x7, None, 3, 0x02000000, None)
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        if error == 5:  # ERROR_ACCESS_DENIED
+            return False
+        raise OSError(error, f"CreateFileW failed for {root}")
+    close_handle(handle)
+    return True
+
+
+def _grant_cannot_land(root: str) -> bool:
+    """This account cannot change the folder's DACL and it has no explicit package entry.
+
+    icacls rewrites the root before anything below it, so a grant that could not change the root
+    changed nothing, and no grant from Studio can be there to take back.
+    """
+    try:
+        return not _can_change_permissions(root) and not _package_aces(root)[1]
+    except OSError:
+        return False
+
+
 def _icacls(root: str, *args: str) -> tuple[bool, str]:
     system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or "C:\\Windows"
     icacls = os.path.join(system_root, "System32", "icacls.exe")
@@ -405,6 +454,10 @@ def _revoke_recorded_root(record: dict, key: str) -> str:
         # Only inherited Windows permissions remain; none belong to Studio.
         record.pop(key)
         return "dropped"
+    if record[key].get("state") == "pending" and _grant_cannot_land(key):
+        # The grant was denied at the root, so it never changed anything; retrying is denied too.
+        record.pop(key)
+        return "dropped"
     ok, output = _revoke(key)
     if ok:
         record.pop(key)
@@ -464,6 +517,16 @@ def _ensure_root(record: dict, root: str) -> bool:
         return True
     if covers and not pending:
         return True
+    if not explicit and _grant_cannot_land(root):
+        # A grant here is denied and so is the rollback; trying would refuse every launch for good.
+        if entry is not None:
+            record.pop(key)
+            _save_quietly(record)
+        logger.info(
+            "Keeping the per-launch MXC grant for %s: this account cannot change its permissions",
+            root,
+        )
+        return False
     if explicit and entry is None:
         # Someone else set an entry for that group here; /remove:g on opt-out would take theirs too.
         logger.info(
