@@ -5229,6 +5229,11 @@ else
         if [ "$BUILD_OK" = true ]; then
             # Set Release explicitly (llama.cpp only defaults to it on non-MSVC/Xcode).
             CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON -DGGML_NATIVE=ON $(_llama_relocatable_rpath_args)"
+            # --depth 1 makes llama.cpp stamp build 1; Studio needs the tag's number (#12798).
+            if [ -z "$_LLAMA_PR" ] && [ "$_RESOLVED_SOURCE_REF_KIND" != "commit" ] \
+                && [[ "$_RESOLVED_SOURCE_REF" =~ ^b([0-9]+)$ ]]; then
+                CMAKE_ARGS="$CMAKE_ARGS -DLLAMA_BUILD_NUMBER=${BASH_REMATCH[1]}"
+            fi
             _TRY_METAL_CPU_FALLBACK=false
             _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
             _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
