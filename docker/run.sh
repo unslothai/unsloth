@@ -407,33 +407,38 @@ if [[ $# -gt 0 ]]; then
             WORKDIR_FLAG=(-w /workspace/host)
             ;;
         *)
-            case "${1##*/}" in
-                python | python[0-9]* | pypy | pypy[0-9]* | bash | sh | zsh | accelerate | accelerate-launch | torchrun | deepspeed)
-                    _prev="$1"
-                    for _arg in "${@:2}"; do
-                        case "$_arg" in
-                            --*=*)
+            _runner="${1##*/}"
+            _runner_accepts_files=0
+            case "$_runner" in
+                accelerate | accelerate-launch | torchrun | deepspeed) _runner_accepts_files=1 ;;
+                python | python[0-9]* | pypy | pypy[0-9]* | bash | sh | zsh) ;;
+                *) _runner="" ;;
+            esac
+            if [[ -n "$_runner" ]]; then
+                _prev="$1"
+                for _arg in "${@:2}"; do
+                    case "$_arg" in
+                        --*=*)
+                            _prev=""
+                            continue
+                            ;;
+                        /workspace/host | /workspace/host/*)
+                            if [[ "$_prev" != --* || "$_arg" == *.py || "$_arg" == *.sh || ( $_runner_accepts_files -eq 1 && "$_arg" != /workspace/host && -f "$WORK_DIR/${_arg#/workspace/host/}" ) ]]; then
+                                WORKDIR_FLAG=(-w /workspace/host)
+                                break
+                            fi
+                            ;;
+                        */*)
+                            if [[ "$_prev" == --* ]]; then
                                 _prev=""
                                 continue
-                                ;;
-                            /workspace/host | /workspace/host/*)
-                                if [[ "$_prev" != --* || "$_prev" == --no_python || "$_arg" == *.py || "$_arg" == *.sh ]]; then
-                                    WORKDIR_FLAG=(-w /workspace/host)
-                                    break
-                                fi
-                                ;;
-                            */*)
-                                if [[ "$_prev" == --* ]]; then
-                                    _prev=""
-                                    continue
-                                fi
-                                break
-                                ;;
-                        esac
-                        _prev="$_arg"
-                    done
-                    ;;
-            esac
+                            fi
+                            break
+                            ;;
+                    esac
+                    _prev="$_arg"
+                done
+            fi
             ;;
     esac
 fi
