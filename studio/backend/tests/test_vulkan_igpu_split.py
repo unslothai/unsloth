@@ -223,3 +223,11 @@ def test_a_busy_card_too_small_alone_does_not_pull_in_the_igpu():
         shared_gpu_ids = SHARED,
     )
     assert (picked, use_fit) == ([IGPU], False)
+
+
+def test_the_fit_on_retry_takes_the_generated_split_back_out():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    retry = src[src.index("with forced --fit off; the fit estimate was optimistic") :]
+    retry = retry[: retry.index("self._fit_load_mode_flags")]
+    assert "_without_subsequence(_run, self._mixed_split_flags)" in retry
+    assert "self._auto_tensor_split_emitted = None" in retry

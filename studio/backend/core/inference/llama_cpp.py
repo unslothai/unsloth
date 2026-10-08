@@ -7952,6 +7952,9 @@ class LlamaCppBackend:
         # The "--load-mode none" tokens the FIT emitted, so paths that replace the
         # placement can take them back out. Empty for a mode the user asked for.
         self._fit_load_mode_flags: list[str] = []
+        # The discrete-first --tensor-split a mixed Vulkan pin emitted; the --fit on
+        # retry takes it back out (llama.cpp's fitter aborts on a user split).
+        self._mixed_split_flags: list[str] = []
         # The pair a launch in flight is committed to, None when none is. ONE attribute:
         # a separate marker and snapshot read out of step answered a save with
         # reload_required=false about a child already committed to the pre-save flags.
@@ -19045,6 +19048,7 @@ class LlamaCppBackend:
         self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
         self._fit_load_mode_flags = []
+        self._mixed_split_flags = []
         self._memory_pending_launch = None
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
@@ -24590,6 +24594,7 @@ class LlamaCppBackend:
                     self._tensor_split = None
                     self._auto_tensor_split = None
                     self._auto_tensor_split_emitted = None
+                self._mixed_split_flags = []
                 self._requested_gpu_ids = [int(i) for i in gpu_ids] if gpu_ids else None
                 self._gpu_ids = list(self._requested_gpu_ids) if self._requested_gpu_ids else None
                 # Manual offload skips the TP planner but still emits --split-mode
@@ -27952,7 +27957,11 @@ class LlamaCppBackend:
                         else None
                     )
                     if _mixed_split is not None:
-                        cmd.extend(["--tensor-split", self._format_tensor_split(_mixed_split)])
+                        self._mixed_split_flags = [
+                            "--tensor-split",
+                            self._format_tensor_split(_mixed_split),
+                        ]
+                        cmd.extend(self._mixed_split_flags)
                         if gpu_memory_mode != "manual":
                             self._auto_tensor_split_emitted = self._auto_split_fingerprint(
                                 _mixed_split
@@ -30348,6 +30357,10 @@ class LlamaCppBackend:
                             _run = list(run_cmd)
                             if "--fit" in _run:
                                 _run[_run.index("--fit") + 1] = "on"
+                            if self._mixed_split_flags:
+                                # common/fit.cpp aborts a multi-device fit on a set split.
+                                _run = _without_subsequence(_run, self._mixed_split_flags)
+                                self._auto_tensor_split_emitted = None
                             # Same reasoning as the page-lock below, one step
                             # earlier: the fit picked "none" because it had proved
                             # the load fits, and that proof is what just failed, so
