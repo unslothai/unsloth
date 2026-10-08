@@ -52,8 +52,7 @@ type Props = {
   messageId: string;
   messageHasRenderableRenderHtmlTool: boolean;
   streaming: boolean;
-  /** In the live tail box: rows grow upward inside a box of fixed height, so nothing they do
-   *  moves the thread and none of it may be corrected with a thread scroll write. */
+  /** In the live tail box: rows grow upward in a fixed box, so no thread correction applies. */
   bounded?: boolean;
 };
 
