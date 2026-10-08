@@ -105,7 +105,6 @@ export function ggufVariantFootprint(
   };
 }
 
-/** Cached, but Run would still fetch companions (#11637). */
 export function awaitsCompanions(
   downloaded: boolean | undefined,
   footprint: GgufVariantFootprint | null,
