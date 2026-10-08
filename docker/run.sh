@@ -383,7 +383,7 @@ if ! [[ "$STOP_BUDGET" =~ ^[0-9]+$ ]]; then
     printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S=%s is not a number of seconds.\n" "$STOP_BUDGET" >&2
     exit 1
 fi
-# 10# as in studio_launch.sh: a leading zero must not read as octal
+# matching studio_launch.sh, 10# prevents leading zeros from selecting octal
 STOP_TIMEOUT=$(( 10#$STOP_BUDGET + 30 ))
 
 declare -a PORT_FLAGS=()
@@ -392,7 +392,7 @@ if [[ -n "${UNSLOTH_PORTS:-}" ]]; then
     PORT_FLAGS=(${UNSLOTH_PORTS})
 fi
 
-# CI / piped invocations otherwise hit "the input device is not a TTY"
+# CI and piped invocations otherwise hit "the input device is not a TTY"
 TTY_FLAG=()
 if [ -t 0 ] && [ -t 1 ]; then
     TTY_FLAG=(-it)
@@ -439,7 +439,7 @@ if [[ $# -gt 0 && "$1" == "unsloth-run" ]]; then
     done
 fi
 
-# no set -x: it leaks HF_TOKEN/WANDB_API_KEY; this array form is nounset-safe on macOS Bash 3.2
+# set -x leaks HF_TOKEN/WANDB_API_KEY; this array form is nounset-safe on macOS Bash 3.2
 exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     ${GPU_FLAG[@]+"${GPU_FLAG[@]}"} \
     --ipc=host \
