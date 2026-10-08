@@ -391,7 +391,9 @@ def get_hip_id_by_gpu_index() -> Optional[dict[int, int]]:
     global _hip_id_map_cache
     with _hip_id_map_lock:
         cached = _hip_id_map_cache
-        if cached is None or (cached[1] is None and time.monotonic() - cached[0] >= _HIP_ID_MAP_NONE_TTL_S):
+        if cached is None or (
+            cached[1] is None and time.monotonic() - cached[0] >= _HIP_ID_MAP_NONE_TTL_S
+        ):
             cached = _hip_id_map_cache = (time.monotonic(), _read_hip_id_by_gpu_index())
     return None if cached[1] is None else dict(cached[1])
 
