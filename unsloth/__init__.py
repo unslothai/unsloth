@@ -634,6 +634,7 @@ if _IS_MLX:
     _MLX_TRAINING_CONFIG_FIELDS = {_field.name for _field in _dataclasses.fields(MLXTrainingConfig)}
     _MLX_TRAINING_ARGUMENT_ALIASES = {
         "max_length": "max_seq_length",
+        "loraplus_lr_ratio": "lora_plus_ratio",
     }
     _MLX_COMPAT_EXTRA_ARGUMENTS = frozenset(
         (
@@ -704,6 +705,8 @@ if _IS_MLX:
     def _normalize_mlx_training_value(key, value):
         if key == "eval_steps" and value is None:
             return 0
+        if key == "lora_plus_ratio" and value is None:
+            return 0.0
         if key == "num_train_epochs" and value is not None and not isinstance(value, bool):
             try:
                 epochs = float(value)
