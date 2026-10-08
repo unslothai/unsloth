@@ -508,7 +508,16 @@ def test_thinking_off_does_not_ask_for_thoughts(monkeypatch, model, kwargs):
 
 def test_thought_parts_stream_as_reasoning_not_answer(monkeypatch):
     sse = [
-        _event([{"text": "**Reading the riddle**", "thought": True}], finish_reason = None),
+        _event(
+            [
+                {
+                    "text": "**Reading the riddle**",
+                    "thought": True,
+                    "thoughtSignature": "SIG-THOUGHT",
+                }
+            ],
+            finish_reason = None,
+        ),
         _event([{"text": "The man is your son."}], finish_reason = None),
         _event([{"text": "", "thoughtSignature": "SIG"}]),
     ]
@@ -520,6 +529,12 @@ def test_thought_parts_stream_as_reasoning_not_answer(monkeypatch):
     answer = "".join(d.get("content") or "" for d in deltas)
     assert reasoning == "**Reading the riddle**", deltas
     assert answer == "The man is your son.", deltas
+    thought_extra = next(
+        delta["extra_content"]
+        for delta in deltas
+        if delta.get("reasoning_content") == "**Reading the riddle**"
+    )
+    assert thought_extra == {"google": {"thought": True, "thought_signature": "SIG-THOUGHT"}}
 
 
 def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
@@ -2057,6 +2072,37 @@ def test_assistant_text_thought_signature_replays_on_outbound_text_part(monkeypa
     text_parts = [p for p in parts if "text" in p]
     assert text_parts, parts
     assert text_parts[-1].get("thoughtSignature") == "SIG-TEXT", text_parts
+
+
+def test_assistant_signed_thought_replays_before_answer(monkeypatch):
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "the answer",
+                "extra_content": {
+                    "google": {
+                        "thought_parts": [
+                            {
+                                "text": "consider the clues",
+                                "thought_signature": "SIG-THOUGHT",
+                            }
+                        ]
+                    }
+                },
+            },
+            {"role": "user", "content": "again"},
+        ],
+    )
+    parts = captured["body"]["contents"][1]["parts"]
+    assert parts[0] == {
+        "text": "consider the clues",
+        "thought": True,
+        "thoughtSignature": "SIG-THOUGHT",
+    }
+    assert parts[1] == {"text": "the answer"}
 
 
 def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):

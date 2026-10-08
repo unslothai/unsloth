@@ -177,6 +177,12 @@ import {
   startsNewCodexToolRound,
   type CodexReasoningLedger,
 } from "../codex-reasoning";
+import {
+  type GeminiThoughtReplayPart,
+  geminiThoughtReplayPart,
+  pinGeminiPartThoughtSignature,
+  withGeminiThoughtReplayParts,
+} from "../gemini-thought-replay";
 
 import {
   createBoundaryScan,
@@ -1394,6 +1400,7 @@ function serializeAssistantReplayMessages(
   const pendingReasoningParts: string[] = [];
   let pendingToolCalls: SerializedToolCall[] = [];
   let pendingToolResults: SerializedToolResult[] = [];
+  let pendingGeminiThoughtParts: GeminiThoughtReplayPart[] = [];
   let imagePartsPending = imageParts.length > 0;
 
   let pendingLocalToolRoundId: number | null = null;
@@ -1405,6 +1412,7 @@ function serializeAssistantReplayMessages(
     const includeImageParts = imagePartsPending ? imageParts : [];
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
+    const hasGeminiThoughtParts = pendingGeminiThoughtParts.length > 0;
     const reasoningContent = pendingReasoningParts.join("\n");
     const incomplete =
       message.status?.type === "incomplete" ||
@@ -1417,7 +1425,13 @@ function serializeAssistantReplayMessages(
       incomplete,
     });
 
-    if (!force && !hasContent && !hasToolCalls && !hasReasoningContent) {
+    if (
+      !force &&
+      !hasContent &&
+      !hasToolCalls &&
+      !hasReasoningContent &&
+      !hasGeminiThoughtParts
+    ) {
       return;
     }
 
@@ -1436,6 +1450,12 @@ function serializeAssistantReplayMessages(
     }
     if (hasReasoningContent) {
       assistantMessage.reasoning_content = reasoningContent;
+    }
+    if (hasGeminiThoughtParts) {
+      assistantMessage.extra_content = withGeminiThoughtReplayParts(
+        assistantMessage.extra_content,
+        pendingGeminiThoughtParts,
+      );
     }
 
     if (hasToolCalls) {
@@ -1464,6 +1484,7 @@ function serializeAssistantReplayMessages(
     pendingReasoningParts.length = 0;
     pendingToolCalls = [];
     pendingToolResults = [];
+    pendingGeminiThoughtParts = [];
     imagePartsPending = false;
 
     pendingLocalToolRoundId = null;
@@ -1475,6 +1496,8 @@ function serializeAssistantReplayMessages(
         flushAssistantAndToolResults();
       }
       pendingReasoningParts.push(part.text);
+      const replayPart = geminiThoughtReplayPart(part);
+      if (replayPart) pendingGeminiThoughtParts.push(replayPart);
       continue;
     }
 
@@ -5997,24 +6020,8 @@ export function createOpenAIStreamAdapter(
           toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
           () => `${backendToolCallId}:${crypto.randomUUID()}`,
         );
-      // Latest Gemini text-part thoughtSignature, pinned onto the final text MessagePart so the
-      // next turn's replay carries it.
-      let latestTextThoughtSignature: string | undefined;
-      const pinTextThoughtSignature = <T extends { type: string }>(
-        parts: T[],
-      ): T[] => {
-        if (!latestTextThoughtSignature || parts.length === 0) return parts;
-        for (let i = parts.length - 1; i >= 0; i -= 1) {
-          if (parts[i].type === "text") {
-            parts[i] = {
-              ...parts[i],
-              _google_thought_signature: latestTextThoughtSignature,
-            } as T;
-            break;
-          }
-        }
-        return parts;
-      };
+      let latestGeminiThoughtSignature: string | undefined;
+      let latestGeminiTextSignature: string | undefined;
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -6057,7 +6064,16 @@ export function createOpenAIStreamAdapter(
         }
         assembled.push(...runs[boundaries.length]);
 
-        return pinTextThoughtSignature(assembled);
+        pinGeminiPartThoughtSignature(
+          assembled,
+          latestGeminiThoughtSignature,
+          true,
+        );
+        return pinGeminiPartThoughtSignature(
+          assembled,
+          latestGeminiTextSignature,
+          false,
+        );
       };
 
       const {
@@ -7591,11 +7607,17 @@ export function createOpenAIStreamAdapter(
                 >;
                 const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
-                  const sig = (eGoogle as Record<string, unknown>)
-                    .thought_signature;
+                  const googleRecord = eGoogle as Record<string, unknown>;
+                  const sig = googleRecord.thought_signature;
                   if (typeof sig === "string" && sig) {
-                    replayStateChanged ||= sig !== latestTextThoughtSignature;
-                    latestTextThoughtSignature = sig;
+                    const belongsToThought = googleRecord.thought === true;
+                    if (belongsToThought) {
+                      replayStateChanged ||= sig !== latestGeminiThoughtSignature;
+                      latestGeminiThoughtSignature = sig;
+                    } else {
+                      replayStateChanged ||= sig !== latestGeminiTextSignature;
+                      latestGeminiTextSignature = sig;
+                    }
                   }
                 }
                 const codexReasoning = extraRecord.openai_codex_reasoning;

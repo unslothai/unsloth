@@ -4243,14 +4243,36 @@ class ExternalProviderClient:
                                                     }
                                                 }
                                             )
-            # Gemini 3 strict function-calling requires text-part thoughtSignatures to be replayed on history; the
-            # frontend stows the latest one as extra_content.google.thought_signature on the assistant message and we
-            # pin it onto the last text part here.
-            if role == "assistant" and parts:
+            # Gemini requires signed parts to be replayed without moving their signatures between thought and answer
+            # text. The frontend keeps signed thoughts separate because OpenAI reasoning_content is not otherwise
+            # replayed to native Gemini.
+            if role == "assistant":
                 _msg_extra = msg.get("extra_content") if isinstance(msg, dict) else None
                 if isinstance(_msg_extra, dict):
                     _msg_g = _msg_extra.get("google") or {}
                     if isinstance(_msg_g, dict):
+                        _signed_thoughts = _msg_g.get("thought_parts")
+                        if isinstance(_signed_thoughts, list):
+                            _replayed_thoughts: list[dict[str, Any]] = []
+                            for _signed_thought in _signed_thoughts:
+                                if not isinstance(_signed_thought, dict):
+                                    continue
+                                _thought_text = _signed_thought.get("text")
+                                _thought_sig = _signed_thought.get("thought_signature")
+                                if (
+                                    not isinstance(_thought_text, str)
+                                    or not isinstance(_thought_sig, str)
+                                    or not _thought_sig
+                                ):
+                                    continue
+                                _replayed_thoughts.append(
+                                    {
+                                        "text": _thought_text,
+                                        "thought": True,
+                                        "thoughtSignature": _thought_sig,
+                                    }
+                                )
+                            parts[:0] = _replayed_thoughts
                         _msg_sig = _msg_g.get("thought_signature") or _msg_g.get("thoughtSignature")
                         if isinstance(_msg_sig, str) and _msg_sig:
                             for _idx in range(len(parts) - 1, -1, -1):
@@ -4905,10 +4927,14 @@ class ExternalProviderClient:
         def _gemini_part_extra(part: dict[str, Any]) -> Optional[dict[str, Any]]:
             """Return ``{"google": {"thought_signature": ...}}`` when the Gemini stream part carries
             a `thoughtSignature` we must replay on a follow-up turn (Gemini 3 image editing and
-            tool contexts both require an exact signature echo)."""
+            tool contexts both require an exact signature echo). Mark thought-summary signatures
+            so clients can keep them bound to reasoning rather than answer text."""
             sig = part.get("thoughtSignature") or part.get("thought_signature")
             if isinstance(sig, str) and sig:
-                return {"google": {"thought_signature": sig}}
+                google: dict[str, Any] = {"thought_signature": sig}
+                if part.get("thought") is True:
+                    google["thought"] = True
+                return {"google": google}
             return None
 
         # Gemini finish reasons -> OpenAI vocabulary.
