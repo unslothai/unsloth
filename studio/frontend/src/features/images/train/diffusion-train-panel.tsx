@@ -780,7 +780,12 @@ export function DiffusionTrainPanel({
   const continuingUploadName = isDatasetContinuation(uploadName, continuationDatasetName);
   const createsDataset = uploadMode && !continuingUploadName;
   const takenName = createsDataset ? existingDatasetName(uploadName, occupiedDatasets) : null;
-  const takenNameMessage = `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;
+  // a folder with no image or clip is not in the list, so it can only be continued from here.
+  const takenNameUnlisted =
+    takenName !== null && !(info?.datasets ?? []).some((d) => d.name === takenName);
+  const takenNameMessage = takenNameUnlisted
+    ? `A folder named "${takenName}" already exists but holds no images or clips yet, so it is not in the list. Add to it, or choose another name.`
+    : `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;
   useEffect(() => {
     if (!uploadMode || continuingUploadName) return;
     setUploadName((current) =>
@@ -1020,7 +1025,7 @@ export function DiffusionTrainPanel({
         setUploading(false);
       }
     },
-    [info, refreshInfo],
+    [refreshInfo],
   );
 
   const pickFolder = useCallback((name: string, createOnly = false) => {
@@ -1833,7 +1838,23 @@ export function DiffusionTrainPanel({
                   />
                 </div>
                 {takenName && (
-                  <p className="text-ui-11 leading-snug text-destructive">{takenNameMessage}</p>
+                  <div className="flex items-center gap-2 text-ui-11 text-destructive">
+                    <p className="leading-snug">{takenNameMessage}</p>
+                    {takenNameUnlisted && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 shrink-0 px-2 text-ui-11"
+                        onClick={() => {
+                          setUploadName(takenName);
+                          setContinuationDatasetName(takenName);
+                        }}
+                      >
+                        Add to it
+                      </Button>
+                    )}
+                  </div>
                 )}
                 {namesUnavailable && (
                   <div className="flex items-center gap-2 text-ui-11 text-destructive">

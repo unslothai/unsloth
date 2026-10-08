@@ -132,3 +132,16 @@ test("adding to the selected set still uploads into it", () => {
   assert.match(buttons, /void uploadTo\(dataset, files\)/);
   assert.doesNotMatch(buttons, /takenName|namesLoading/);
 });
+
+test("a taken folder that is not in the list can be continued from the new-set form", () => {
+  assert.match(
+    source,
+    /const takenNameUnlisted =\s+takenName !== null && !\(info\?\.datasets \?\? \[\]\)\.some\(\(d\) => d\.name === takenName\);/,
+  );
+  const form = source.slice(source.indexOf("{uploadMode ? ("));
+  const newSet = form.slice(0, form.indexOf(") : ("));
+  assert.match(
+    newSet,
+    /\{takenNameUnlisted && \([\s\S]*?setUploadName\(takenName\);\s+setContinuationDatasetName\(takenName\);[\s\S]*?Add to it/,
+  );
+});
