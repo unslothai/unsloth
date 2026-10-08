@@ -108,17 +108,18 @@ async function writeDownload(download: BrowserDownload, target: SaveHandle | nul
     return;
   }
   const savedName = saved?.name || picked?.name || name;
-  useBrowserHistoryStore.getState().recordDownload({
+  const historyId = useBrowserHistoryStore.getState().recordDownload({
     name: savedName,
     url,
     size: blob.size,
     contentType,
     nativeId: saved?.id,
   });
+  // Open uses the saved file when the app kept it; only otherwise does this session hold the bytes.
   const shown = finishDownload(
     key,
-    { name: savedName, size: blob.size, contentType, url, nativeId: saved?.id, failed: false },
-    { blob, name: savedName, contentType },
+    { name: savedName, size: blob.size, contentType, url, nativeId: saved?.id, historyId, failed: false },
+    saved && historyId ? undefined : { blob, name: savedName, contentType },
   );
   if (saved?.marked === false) {
     toast.warning(translate("browser.native.notMarked", { name: savedName }, getLocale()));

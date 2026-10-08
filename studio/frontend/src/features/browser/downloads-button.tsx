@@ -26,7 +26,7 @@ import {
   ArrowUpRight01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   type FinishedDownload,
   keptDownloadFile,
@@ -325,26 +325,29 @@ export function DownloadsButton({ className }: { className?: string }) {
   const finished = useDownloadActivity((state) => state.finished);
   const finishedSequence = useDownloadActivity((state) => state.finishedSequence);
   const [mode, setMode] = useState<"closed" | "list" | "finished">("closed");
-  const hovered = useRef(false);
-  // Only finishes after mount pop the notice; earlier ones just sit in the list.
+  const [hovered, setHovered] = useState(false);
+  // Only finishes after mount pop the notice. An open list shows recorded ones itself; the rest still need it.
   const [seen, setSeen] = useState(finishedSequence);
   if (finishedSequence !== seen) {
     setSeen(finishedSequence);
-    if (finished && mode !== "list") setMode("finished");
+    if (finished && (mode !== "list" || !finished.historyId)) {
+      setMode("finished");
+      setHovered(false);
+    }
   }
 
   useEffect(() => mountDownloadsButton(), []);
 
+  // Hovering holds the notice; leaving starts the countdown again.
   useEffect(() => {
-    if (mode !== "finished") return;
-    const timer = window.setTimeout(() => {
-      if (!hovered.current) setMode("closed");
-    }, COMPLETE_SHOWN_MS);
+    if (mode !== "finished" || hovered) return;
+    const timer = window.setTimeout(() => setMode("closed"), COMPLETE_SHOWN_MS);
     return () => window.clearTimeout(timer);
-  }, [mode, finishedSequence]);
+  }, [mode, hovered, finishedSequence]);
 
   const close = () => {
     setMode("closed");
+    setHovered(false);
     useDownloadActivity.getState().dismissFinished();
   };
   const label = t(active ? "browser.downloads.inProgressLabel" : "browser.downloads.title");
@@ -380,12 +383,8 @@ export function DownloadsButton({ className }: { className?: string }) {
         align="end"
         sideOffset={8}
         onOpenAutoFocus={(event) => mode === "finished" && event.preventDefault()}
-        onMouseEnter={() => {
-          hovered.current = true;
-        }}
-        onMouseLeave={() => {
-          hovered.current = false;
-        }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         className={cn(
           "browser-menu gap-2 rounded-[22px] p-2",
           mode === "finished" ? "w-80 p-3" : "w-96 max-h-[min(32rem,var(--radix-popover-content-available-height))]",

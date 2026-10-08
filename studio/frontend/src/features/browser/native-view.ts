@@ -221,21 +221,22 @@ function onNativeEvent(event: NativeEvent): void {
 function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
   const key = downloadKey(event.tabId, event.url);
   if (!event.done) return;
-  if (event.success) {
-    useBrowserHistoryStore.getState().recordDownload({
-      name: event.name,
-      url: event.url,
-      size: event.size ?? 0,
-      contentType: "",
-      nativeId: event.downloadId ?? undefined,
-    });
-  }
+  const historyId = event.success
+    ? useBrowserHistoryStore.getState().recordDownload({
+        name: event.name,
+        url: event.url,
+        size: event.size ?? 0,
+        contentType: "",
+        nativeId: event.downloadId ?? undefined,
+      })
+    : undefined;
   const shown = finishDownload(key, {
     name: event.name,
     size: event.size ?? 0,
     contentType: "",
     url: event.url,
     nativeId: event.downloadId ?? undefined,
+    historyId,
     failed: !event.success,
   });
   if (event.success && event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));

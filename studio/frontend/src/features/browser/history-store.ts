@@ -81,7 +81,8 @@ interface BrowserHistoryState {
   icons: Record<string, string>;
   recordVisit: (url: string, title: string) => void;
   recordIcon: (host: string, icon: string) => void;
-  recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">) => void;
+  /** The new row's id; undefined when download history is off. */
+  recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">) => string | undefined;
   removeVisit: (id: string) => void;
   removeVisits: (ids: ReadonlySet<string>) => void;
   removeDownload: (id: string) => void;
@@ -123,26 +124,29 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
           return { history, icons };
         }),
-      recordDownload: (item) =>
+      recordDownload: (item) => {
+        if (!useBrowserPrefsStore.getState().saveDownloadHistory) {
+          if (item.nativeId) forgetNativeDownloads([item.nativeId]);
+          return undefined;
+        }
+        const id = newId();
         set((state) => {
-          if (!useBrowserPrefsStore.getState().saveDownloadHistory) {
-            if (item.nativeId) forgetNativeDownloads([item.nativeId]);
-            return state;
-          }
           // A page picks these: bounded like a visit, keeping the download without an overlong address.
           const entry = {
             ...item,
             name: item.name.slice(0, MAX_TITLE_CHARS),
             url: item.url !== null && item.url.length <= MAX_URL_CHARS ? item.url : null,
             contentType: item.contentType.slice(0, MAX_TITLE_CHARS),
-            id: newId(),
+            id,
             downloadedAt: Date.now(),
           };
           const downloads = [entry, ...state.downloads];
           const dropped = downloads.slice(MAX_DOWNLOADS).flatMap((item) => (item.nativeId ? [item.nativeId] : []));
           forgetNativeDownloads(dropped);
           return { downloads: downloads.slice(0, MAX_DOWNLOADS) };
-        }),
+        });
+        return id;
+      },
       removeVisit: (id) => set((state) => ({ history: state.history.filter((item) => item.id !== id) })),
       removeVisits: (ids) => set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) })),
       removeDownload: (id) =>

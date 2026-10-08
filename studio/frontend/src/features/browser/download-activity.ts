@@ -5,7 +5,6 @@
 // Session only; history-store.ts keeps the lasting record.
 
 import { create } from "zustand";
-import { useBrowserHistoryStore } from "./history-store";
 
 export type FinishedDownload = {
   key: string;
@@ -74,24 +73,21 @@ export function abandonDownload(key: string): void {
   });
 }
 
-/** Ends `key` and shows the result on the Downloads button. Call after recordDownload so the result
- *  links to its history row. False when no button is on screen. */
+/** Ends `key` and shows the result on the Downloads button. `historyId`: what recordDownload returned.
+ *  False when no button is on screen. */
 export function finishDownload(
   key: string,
-  result: Omit<FinishedDownload, "key" | "historyId">,
+  result: Omit<FinishedDownload, "key">,
   file?: { blob: Blob; name: string; contentType: string },
 ): boolean {
-  const newest = useBrowserHistoryStore.getState().downloads[0];
-  const historyId =
-    !result.failed && newest && newest.name === result.name && Date.now() - newest.downloadedAt < 5_000
-      ? newest.id
-      : undefined;
-  if (file) keepFile(historyId ?? key, file);
+  // Unrecorded, its native id was forgotten (history-store.ts), so it can't open or reveal.
+  const nativeId = result.historyId ? result.nativeId : undefined;
+  if (file) keepFile(result.historyId ?? key, file);
   const active = { ...useDownloadActivity.getState().active };
   delete active[key];
   useDownloadActivity.setState((state) => ({
     active,
-    finished: { ...result, key, historyId },
+    finished: { ...result, nativeId, key },
     finishedSequence: state.finishedSequence + 1,
   }));
   return useDownloadActivity.getState().buttons > 0;

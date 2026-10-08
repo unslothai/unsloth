@@ -43,11 +43,12 @@ test("with download history off, downloads are not listed", () => {
   const history = useBrowserHistoryStore.getState();
   history.clearDownloads();
   useBrowserPrefsStore.getState().setSaveDownloadHistory(false);
-  history.recordDownload(download);
+  assert.equal(history.recordDownload(download), undefined);
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 0);
   useBrowserPrefsStore.getState().setSaveDownloadHistory(true);
-  history.recordDownload(download);
+  const id = history.recordDownload(download);
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+  assert.equal(useBrowserHistoryStore.getState().downloads[0].id, id);
 });
 
 test("shortening how long history is kept drops older visits at once", () => {
@@ -550,4 +551,20 @@ test("the download prompt offers Remember only for files a remembered answer can
   const source = readFileSync(new URL("../src/features/browser/download-approval.tsx", import.meta.url), "utf8");
   // A file that runs code asks whatever was remembered (approveDownload), so its prompt has no checkbox.
   assert.match(source, /\{request\?\.origin && !request\.dangerous \? \(\s*<label/);
+});
+
+test("a finished download links to its history row, and an unrecorded one drops its forgotten native id", async () => {
+  const { finishDownload, keptDownloadFile, useDownloadActivity } = await import(
+    "../src/features/browser/download-activity.ts"
+  );
+  const file = { blob: new Blob(["x"]), name: "x".repeat(300), contentType: "text/plain" };
+  const result = { name: file.name, size: 1, contentType: "text/plain", url: null, failed: false };
+  // A name past the history row's limit still links: the row's id comes from recordDownload.
+  finishDownload("save:1", { ...result, nativeId: "n1", historyId: "row1" }, file);
+  assert.equal(useDownloadActivity.getState().finished?.historyId, "row1");
+  assert.equal(useDownloadActivity.getState().finished?.nativeId, "n1");
+  assert.equal(keptDownloadFile("row1"), file);
+  // History off: the app forgot the native id, so Open and Show in folder can't use it.
+  finishDownload("save:2", { ...result, nativeId: "n2" });
+  assert.equal(useDownloadActivity.getState().finished?.nativeId, undefined);
 });

@@ -255,12 +255,13 @@ fn runs_code(path: &Path) -> bool {
     // Windows drops trailing dots and spaces, so `setup.exe.` still runs.
     let name = path
         .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
     let name = name.trim_end_matches(['.', ' ']);
     name.rsplit_once('.').is_some_and(|(_, ext)| {
-        let ext = ext.to_lowercase();
-        extensions.iter().any(|known| *known == ext)
+        // Windows compares names upper-cased, so `.m\u{17f}i` (long s) is `.MSI`.
+        let folded = [ext.to_lowercase(), ext.to_uppercase().to_lowercase()];
+        extensions.iter().any(|known| folded.contains(known))
     })
 }
 
@@ -751,6 +752,7 @@ mod tests {
             "x.jar",
             "Foo.app",
             "a.exe. ",
+            "installer.m\u{17f}i",
         ] {
             assert!(runs_code(Path::new(name)), "{name}");
         }
