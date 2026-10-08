@@ -249,6 +249,18 @@ def test_a_stray_byte_does_not_garble_a_labelled_page(monkeypatch):
     assert html.count("\ufffd") == 1
 
 
+def test_a_malformed_header_charset_does_not_fall_through_to_meta_or_utf8(monkeypatch):
+    body = b"<html><meta charset=utf-8><p>\xc2\x81</p></html>"
+    _fetch(
+        monkeypatch,
+        (None, body, "text/html"),
+        {"url": "https://example.com/", "charset": "shift_jis"},
+    )
+    html = json.loads(_call().body)["html"]
+    assert "<p>\uff82\ufffd</p>" in html
+    assert "\x81" not in html
+
+
 @pytest.mark.parametrize(
     "body, charset",
     [

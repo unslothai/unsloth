@@ -1137,20 +1137,18 @@ def _decode_html(raw: bytes, charset: Optional[str]) -> str:
     for bom, codec in _BOMS:
         if raw.startswith(bom):
             return raw.decode(codec, errors = "replace")
-    candidates = [_codec(charset)]
+    labelled = _codec(charset)
     sniffed = _META_CHARSET_RE.search(raw[:4096])
-    if sniffed:
-        candidates.append(
-            _codec(sniffed.group(1).decode("ascii", "ignore"), _WHATWG_CHARSET_CODECS)
-        )
-    labelled = next(filter(None, candidates), None)
-    for candidate in filter(None, candidates + ["utf-8"]):
-        try:
-            return raw.decode(candidate)
-        except UnicodeDecodeError:
-            continue
+    if labelled is None and sniffed:
+        labelled = _codec(sniffed.group(1).decode("ascii", "ignore"), _WHATWG_CHARSET_CODECS)
+    if labelled:
+        return raw.decode(labelled, errors = "replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
     # As browsers do: U+FFFD for bad bytes in a labelled page, windows-1252 for an unlabelled one.
-    return raw.decode(labelled or "cp1252", errors = "replace")
+    return raw.decode("cp1252", errors = "replace")
 
 
 def _attr(match: "re.Match[str] | None") -> Optional[str]:
