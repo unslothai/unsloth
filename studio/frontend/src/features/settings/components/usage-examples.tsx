@@ -395,8 +395,8 @@ START=$(curl -s ${base}/api/train/start \\
   -H "Content-Type: application/json" \\
   -d '${shSingle(JSON.stringify(trainBody, null, 2))}')
 echo "$START"
-# "status": "error" means another job is running; its job_id is not this run's.
-JOB_ID=$(echo "$START" | grep -v '"status":"error"' | sed 's/.*"job_id":"\\([^"]*\\)".*/\\1/')
+# No job_id on an HTTP error; "status": "error" means another job is running and its id is not ours.
+JOB_ID=$(echo "$START" | grep -v '"status":"error"' | grep -o '"job_id":"[^"]*"' | cut -d'"' -f4)
 
 # Wait: phase goes loading_model -> training -> completed (or error / stopped).
 while [ -n "$JOB_ID" ] && ! curl -s ${base}/api/train/status ${auth} \\
@@ -428,8 +428,8 @@ $start = curl.exe -s ${base}/api/train/start \`
   -H "Content-Type: application/json" \`
   -d "@train.json" | ConvertFrom-Json
 $start
-# "status": "error" means another job is running; its job_id is not this run's.
-if ($start.status -ne "error") {
+# No job_id on an HTTP error; "status": "error" means another job is running and its id is not ours.
+if ($start.job_id -and $start.status -ne "error") {
   # Wait: phase goes loading_model -> training -> completed (or error / stopped).
   do {
     Start-Sleep 10
