@@ -757,6 +757,8 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(f"{objective.upper()} cannot be combined with Continued Pretraining.")
         if self.is_dataset_image or self.is_dataset_audio or self.is_embedding:
             raise ValueError(f"{objective.upper()} supports text datasets only for now.")
+        if getattr(self, "is_decision", False):
+            raise ValueError(f"{objective.upper()} cannot be combined with decision training.")
         if self.dataset_streaming:
             raise ValueError(f"{objective.upper()} does not support dataset streaming yet.")
         if objective == "grpo" and not self.grpo_rewards:

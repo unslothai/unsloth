@@ -1380,6 +1380,23 @@ _RESUME_CACHE_FIELDS = (
     "dataset_local_path",
     "dataset_snapshot_path",
 )
+
+
+def _resume_reward_specs(request: TrainingStartRequest, stored: dict) -> list[dict]:
+    """A resume continues the checkpoint's objective: the run's stored reward rules, not the
+    library's current ones, which may have been edited or deleted since."""
+    specs = stored.get("reward_specs")
+    if not isinstance(specs, list):
+        return []
+    weights = {s.name: s.weight for s in request.grpo_rewards}
+    out = [
+        {**spec, "weight": weights[spec["name"]]}
+        for spec in specs
+        if isinstance(spec, dict) and spec.get("name") in weights and spec.get("rule")
+    ]
+    return out if len(out) == len(weights) else []
+
+
 _RESUME_CHECKPOINT_STRUCTURE_FIELDS = (
     "load_in_4bit",
     "use_lora",
@@ -1926,7 +1943,9 @@ async def start_training(
                 status_code = 400,
                 detail = f"{request.objective.upper()} is not available on Apple Silicon (MLX) yet.",
             )
-        if request.objective == "grpo":
+        if request.objective == "grpo" and resume_run:
+            reward_specs = _resume_reward_specs(request, training_run_config(resume_run))
+        if request.objective == "grpo" and not reward_specs:
             from core.training.rewards import RewardError, RewardNotFoundError, get_reward
 
             # Resolved here, under the caller's account, and stored with the run: later edits to a

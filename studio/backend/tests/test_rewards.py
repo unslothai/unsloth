@@ -108,6 +108,7 @@ def test_rule_types(body, text, reference, expected):
         (_md("Bad Name", "type: regex\npattern: x"), "lowercase"),
         (_md("t", "type: numeric\nbands: []"), "bands"),
         (_md("t", "type: numeric\nbands: [1, 2]"), "band"),
+        (_md("t", "type: exact_match\ncompare_to: completions"), "TRL passes"),
         (
             _md("t", "type: json_schema\nextract: {regex: '(.*)'}\nschema: {type: [object]}"),
             "schema.type",

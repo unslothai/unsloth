@@ -111,6 +111,11 @@ def _validate_extract(extract: Any) -> Optional[dict]:
     raise RewardError("extract needs 'between' or 'regex'.")
 
 
+# Names GRPOTrainer passes to reward functions itself (or never passes); a column cannot use them.
+_TRL_REWARD_ARGS = frozenset(
+    {"prompt", "prompts", "completion", "completions", "completion_ids", "trainer_state"}
+)
+
 # Seconds one user-pattern match may take before it scores as a miss (needs the regex module).
 MATCH_TIMEOUT_S = 1.0
 
@@ -166,6 +171,10 @@ def validate_rule(rule: dict) -> dict:
         column = rule.get("compare_to", "answer")
         if not isinstance(column, str) or not column:
             raise RewardError("compare_to must name a dataset column.")
+        if column in _TRL_REWARD_ARGS:
+            raise RewardError(
+                f"compare_to cannot be '{column}': TRL passes that name to rewards itself."
+            )
         out["compare_to"] = column
         # GSM8K-style references ("...reasoning #### 72") need their answer pulled out too.
         out["reference_extract"] = _validate_extract(rule.get("reference_extract"))
