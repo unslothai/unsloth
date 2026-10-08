@@ -359,3 +359,38 @@ def test_grpo_duplicate_rewards_are_matched_after_normalising():
             objective = "grpo",
             grpo_rewards = [{"name": "exact-answer"}, {"name": "EXACT-ANSWER"}],
         )
+
+
+@dataclasses.dataclass
+class _FakeGRPOConfigWithGenBatch(_FakeGRPOConfig):
+    per_device_train_batch_size: int = 8
+    gradient_accumulation_steps: int = 1
+    generation_batch_size: int = None
+
+
+@pytest.mark.parametrize("generations, expected", [(3, 36), (5, 40), (4, None)])
+def test_grpo_generation_batch_holds_whole_prompt_groups(monkeypatch, generations, expected):
+    fake = types.SimpleNamespace(
+        GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw
+    )
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    spec = {
+        "name": "len",
+        "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+    }
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {
+            "output_dir": "o",
+            "max_seq_length": 512,
+            "per_device_train_batch_size": 4,
+            "gradient_accumulation_steps": 8,
+        },
+        settings = {"num_generations": generations},
+        reward_specs = [spec],
+    )
+    assert kw["args"].generation_batch_size == expected
