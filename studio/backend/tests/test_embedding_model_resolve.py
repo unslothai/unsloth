@@ -488,6 +488,47 @@ def test_no_safetensors_fallback_for_a_model_st_cannot_open(client, monkeypatch)
     assert "needs a newer sentence-transformers or transformers" in body["error"]
 
 
+def test_a_spent_budget_does_not_undo_a_proven_incompatibility(client, monkeypatch):
+    """The backend check proves ST cannot open the model, then the GGUF search spends the whole budget. The
+    fallback check that follows cannot run, and must not answer "loadable" and offer the cached safetensors."""
+    from core.rag import embeddings
+
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
+    monkeypatch.setattr(
+        embeddings, "_resolve_auto_for_model", lambda model = None: "sentence-transformers"
+    )
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+    st6_modules = [{"type": "sentence_transformers.no_such_module.transformer.Transformer"}]
+    monkeypatch.setattr(
+        embeddings,
+        "_repo_json",
+        lambda name, filename, token: st6_modules if filename == "modules.json" else {},
+    )
+    pytest.importorskip("sentence_transformers")
+
+    def _search_spends_the_budget(candidates, token):
+        settings._EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() - 1)
+        return None
+
+    monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
+    monkeypatch.setattr(settings, "_remote_embedding_gguf_plan", _search_spends_the_budget)
+    monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, token: None)
+    monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda model: True)
+    monkeypatch.setattr(settings, "_safetensors_plan", lambda m, token: (m, ["model.safetensors"]))
+
+    body = _resolve(client, "acme/st6-embedder").json()
+    assert body["backend"] == "llama"
+    assert body["download_repo"] is None
+    assert "needs a newer sentence-transformers or transformers" in body["error"]
+    # Kept for that resolution only: a fixed folder or another caller's access must be asked afresh.
+    assert embeddings.sentence_transformers_known_unloadable("acme/st6-embedder") is False
+
+
 def test_st_load_check_keeps_the_plan_once_the_resolve_budget_is_spent(monkeypatch):
     from core.rag import embeddings
 

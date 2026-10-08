@@ -24,6 +24,7 @@ import os
 import re
 import threading
 from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from typing import Any, Callable
 
@@ -915,6 +916,29 @@ def _llama_server_runtime_available() -> bool:
 
 
 _ST_LOAD_PREFLIGHT_TIMEOUT_S = 5.0
+# Models proven unloadable inside one Settings resolution, so a later check there that cannot finish does not
+# undo the proof. Only that long: a local folder can be fixed, a repo republished, and the next caller may not
+# be allowed to read what this one read.
+_st_unloadable_proofs: ContextVar[set[str] | None] = ContextVar(
+    "st-unloadable-proofs", default = None
+)
+
+
+@contextmanager
+def st_load_proof_scope():
+    """Keep ``sentence_transformers_can_load`` proofs for the enclosed resolution. Nested scopes share one."""
+    marker = _st_unloadable_proofs.set(set()) if _st_unloadable_proofs.get() is None else None
+    try:
+        yield
+    finally:
+        if marker is not None:
+            _st_unloadable_proofs.reset(marker)
+
+
+def sentence_transformers_known_unloadable(model_name: str) -> bool:
+    """Whether a check earlier in this scope proved ``model_name`` unloadable. No network."""
+    proofs = _st_unloadable_proofs.get()
+    return proofs is not None and model_name in proofs
 
 
 def sentence_transformers_can_load(model_name: str) -> bool:
@@ -923,8 +947,20 @@ def sentence_transformers_can_load(model_name: str) -> bool:
     Two ways to know before downloading the weights: ``modules.json`` names a Sentence Transformers class
     this version does not have (embeddinggemma-2 was saved by 6.x and names ``sentence_transformers.base``
     modules, which 5.x lacks), or ``config.json`` names a ``model_type`` this transformers does not know.
-    True when either file cannot be read, so an unreachable repo keeps the plan it had.
+    True when either file cannot be read, so an unreachable repo keeps the plan it had. A proof from earlier
+    in the same ``st_load_proof_scope`` is returned without reading anything.
     """
+    if sentence_transformers_known_unloadable(model_name):
+        return False
+    if _st_load_preflight(model_name):
+        return True
+    proofs = _st_unloadable_proofs.get()
+    if proofs is not None:
+        proofs.add(model_name)
+    return False
+
+
+def _st_load_preflight(model_name: str) -> bool:
     try:
         from sentence_transformers.util import import_from_string
         from utils.utils import call_with_deadline

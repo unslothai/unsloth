@@ -2965,15 +2965,19 @@ def _call_with_embedding_resolve_budget(fn, *, name: str):
 
 
 def _with_embedding_resolve_budget(fn):
-    """Give one GET/PUT resolution a deadline shared by every Hub fallback."""
+    """Give one GET/PUT resolution a deadline shared by every Hub fallback, and one scope for the
+    sentence-transformers load proofs, so a check the spent deadline skips cannot undo an earlier one."""
 
     @functools.wraps(fn)
     def _wrapped(*args, **kwargs):
         if _EMBEDDING_RESOLVE_DEADLINE.get() is not None:
             return fn(*args, **kwargs)
+        from core.rag.embeddings import st_load_proof_scope
+
         marker = _EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() + _GGUF_LIST_DEADLINE_S)
         try:
-            return fn(*args, **kwargs)
+            with st_load_proof_scope():
+                return fn(*args, **kwargs)
         finally:
             _EMBEDDING_RESOLVE_DEADLINE.reset(marker)
 
@@ -3240,14 +3244,20 @@ def _sentence_transformers_fallback_allowed(model: str) -> bool:
 
 def _sentence_transformers_can_load(model: str) -> bool:
     """Whether the installed sentence-transformers can open ``model``. Inside the resolution's time budget, and
-    True when that is spent or the answer cannot be had."""
+    True when that is spent or the answer cannot be had, unless an earlier check already proved it cannot."""
     try:
         from core.rag import embeddings
+    except Exception:  # noqa: BLE001 - unimportable embedder: no proof either way
+        return True
+    # Before the budget: the plan's backend check may have proved this already, and a timeout must not undo it.
+    if embeddings.sentence_transformers_known_unloadable(model):
+        return False
+    try:
         return _call_with_embedding_resolve_budget(
             lambda: embeddings.sentence_transformers_can_load(model),
             name = "embed-settings-st-load-check",
         )
-    except Exception:  # noqa: BLE001 - spent budget or unimportable embedder: no proof either way
+    except Exception:  # noqa: BLE001 - spent budget: no proof either way
         return True
 
 
