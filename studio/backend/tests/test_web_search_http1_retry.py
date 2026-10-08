@@ -49,6 +49,13 @@ def _install_fake_ddgs(monkeypatch, primp_response):
     class Session:
         headers = {"user-agent": "UA", "accept-encoding": "gzip, br, zstd"}
 
+        def get_cookies(self, url):
+            return {"country": "us"} if url == "https://x/" else {}
+
+    class Session2:
+        headers = {"user-agent": "DDG"}
+        cookies = {"kl": "us-en"}
+
     class HttpClient:
         def __init__(
             self,
@@ -74,7 +81,7 @@ def _install_fake_ddgs(monkeypatch, primp_response):
             *,
             verify = True,
         ):
-            self.client = Session()
+            self.client = Session2()
 
         request = HttpClient.request
 
@@ -206,10 +213,11 @@ def test_primp_reset_replays_once_with_constructor_settings(fake_ddgs):
     assert fake_ddgs.state["calls"] == 1
     [(args, kwargs, config)] = fake_ddgs.replays
     assert args == ("POST", "https://x/") and kwargs == {"data": {"q": "weather"}}
+    assert 0 < config.pop("timeout") <= 4
     assert config == {
         "headers": {"user-agent": "UA"},
+        "cookies": {"country": "us"},
         "proxy": "socks5://p:1",
-        "timeout": 4,
         "verify": False,
         "follow_redirects": True,
     }
@@ -222,7 +230,17 @@ def test_duckduckgo_reset_replays_without_following_redirects(fake_ddgs):
     assert (resp.status_code, resp.text) == (200, "ok")
     [(_, kwargs, config)] = fake_ddgs.replays
     assert kwargs == {"method": "POST", "url": "https://html.duckduckgo.com/html/"}
-    assert config["timeout"] == 6 and config["follow_redirects"] is False
+    assert 0 < config["timeout"] <= 6 and config["follow_redirects"] is False
+    assert config["cookies"] == {"kl": "us-en"}
+
+
+def test_reset_after_the_timeout_is_spent_is_not_replayed(fake_ddgs, monkeypatch):
+    fake_ddgs.state["error"] = RESET
+    clock = iter([100.0, 104.5])
+    monkeypatch.setattr(tools.time, "monotonic", lambda: next(clock))
+    with pytest.raises(FakeDDGSException, match = "connection reset"):
+        fake_ddgs.HttpClient(timeout = 4).request("GET", "https://x/")
+    assert fake_ddgs.replays == []
 
 
 def test_failed_replay_raises_ddgs_exception_with_both_errors(fake_ddgs):

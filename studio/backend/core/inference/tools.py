@@ -17017,6 +17017,7 @@ def _ddgs_http1_replay(args, kwargs, config):
         verify = ssl.create_default_context(cafile = verify)
     with httpx.Client(
         headers = config["headers"],
+        cookies = config["cookies"],
         proxy = config["proxy"],
         timeout = config["timeout"],
         verify = verify,
@@ -17079,19 +17080,37 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
             pass
 
     def request(self, *args, **kwargs):
+        start = time.monotonic()
         try:
             return orig_request(self, *args, **kwargs)
         except Exception as exc:
             config = getattr(self, "_unsloth_http1_config", None)
             if config is None or not _is_connection_reset(exc):
                 raise
+            # The replay shares the original request's budget instead of starting a new one.
+            timeout = config.get("timeout")
+            if timeout:
+                timeout -= time.monotonic() - start
+                if timeout <= 0:
+                    raise
+            client = getattr(self, "client", None)
+            url = kwargs.get("url", args[1] if len(args) > 1 else None)
+            try:
+                # primp keeps engine cookies (Brave / Mojeek region) per URL, httpx in a jar.
+                if hasattr(client, "get_cookies"):
+                    cookies = client.get_cookies(str(url))
+                else:
+                    cookies = getattr(client, "cookies", None)
+            except Exception:
+                cookies = None
             # httpx may lack primp's zstd decoder, so let it pick accept-encoding.
-            session = getattr(getattr(self, "client", None), "headers", None) or {}
+            session = getattr(client, "headers", None) or {}
             headers = {k: v for k, v in dict(session).items() if k.lower() != "accept-encoding"}
             replay = {
                 "headers": headers,
+                "cookies": cookies,
                 "proxy": config.get("proxy"),
-                "timeout": config.get("timeout"),
+                "timeout": timeout,
                 "verify": config.get("verify", True),
                 "follow_redirects": follow_redirects,
             }
