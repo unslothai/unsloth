@@ -54,7 +54,7 @@ def _active_req_root(tmp_path_factory):
     shutil.copytree(REQ_ROOT, root)
     main = root / "diffusers-main.txt"
     text = main.read_text(encoding = "utf-8")
-    assert "\n# diffusers @ git+" in text, "the shipped main pin is no longer a commented line"
+    # A no-op once a future pin is uncommented, so the machinery tests keep running then too.
     main.write_text(text.replace("\n# diffusers @ git+", "\ndiffusers @ git+"), encoding = "utf-8")
     _ACTIVE_REQ_ROOT[:] = [root]
     yield root
@@ -1050,11 +1050,27 @@ def test_the_fast_path_is_forced_only_by_a_release_behind_the_pin(monkeypatch, i
     assert module._diffusers_main_needs_dependency_pass() is forced
 
 
-def test_the_shipped_prefetch_has_nothing_to_fetch(monkeypatch):
-    module = _release_module(monkeypatch, "install_python_stack_release_prefetch", "0.40.0")
+def test_the_release_prefetch_fetches_the_pin_into_scratch_only_when_behind(monkeypatch):
+    """A stale release is fetched (with its dependencies) where a timeout is survivable."""
+    module = _release_module(monkeypatch, "install_python_stack_release_prefetch", "0.41.0")
     monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: pytest.fail("spawned"))
     monkeypatch.setattr(module, "_bootstrap_uv", lambda: pytest.fail("bootstrapped uv"))
     assert module._prefetch_diffusers_main() == 1
+
+    module = _release_module(monkeypatch, "install_python_stack_release_prefetch2", "0.40.0")
+    monkeypatch.setattr(module, "_bootstrap_uv", lambda: True)
+    monkeypatch.setattr(module, "_has_working_git", lambda: pytest.fail("probed git"))
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return module.subprocess.CompletedProcess(cmd, 0, "")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    assert module._prefetch_diffusers_main() == 0
+    (cmd,) = calls
+    assert "--target" in cmd and "--no-deps" not in cmd
+    assert any(str(arg).endswith("diffusers-pin.txt") for arg in cmd), cmd
 
 
 def _release_repair(

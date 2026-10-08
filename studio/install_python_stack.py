@@ -11448,10 +11448,14 @@ def _prefetch_diffusers_main() -> int:
 
     global USE_UV
     req = REQ_ROOT / "diffusers-main.txt"
-    if (
+    release = not _diffusers_main_active(req)
+    if release:
+        # The release repair downloads too, and only a stop HERE is survivable: the backend
+        # records it and starts, where a stop inside the install would refuse every start.
+        if not _diffusers_release_behind() or _release_repair_failed():
+            return 1
+    elif (
         not req.is_file()
-        # A release is a wheel from the index: nothing to build ahead of the install.
-        or not _diffusers_main_active(req)
         or not _diffusers_main_requested()
         or not _diffusers_main_needs_dependency_pass()
         or _startup_repair_failed()
@@ -11468,11 +11472,14 @@ def _prefetch_diffusers_main() -> int:
         except OSError:
             pass
     # The same source _diffusers_main_step will install from, so the install hits this cache entry.
-    archive = None if _has_working_git() else _diffusers_main_archive(req)
+    archive = None if release or _has_working_git() else _diffusers_main_archive(req)
     scratch = Path(tempfile.mkdtemp(prefix = _PREFETCH_SCRATCH_PREFIX))
     temp_reqs: list[Path] = []
     try:
-        args = ("--no-deps", "--target", str(scratch))
+        # The release install takes its dependencies (huggingface_hub), so they are fetched too.
+        args = ("--target", str(scratch)) if release else ("--no-deps", "--target", str(scratch))
+        if release:
+            req = REQ_ROOT / "diffusers-pin.txt"
         if archive is not None:
             cmd = _build_uv_cmd((*args, f"diffusers @ {archive}"))
         else:

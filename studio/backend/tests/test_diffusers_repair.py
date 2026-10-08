@@ -177,7 +177,7 @@ def test_a_timed_out_repair_stops_the_installers_children_and_records_it(monkeyp
     """Stop uv children before app imports and record the timeout to prevent repeated retries."""
     pid_file, started = _slow_installer(monkeypatch, tmp_path)
     recorded = []
-    monkeypatch.setattr(dr, "_record_failure", lambda: recorded.append(True))
+    monkeypatch.setattr(dr, "_record_failure", lambda *a: recorded.append(True))
     lines = []
     assert dr._run_repair(lines.append) is False
     assert recorded == [True]
@@ -191,7 +191,7 @@ def test_a_peer_that_started_during_a_slow_prefetch_stops_startup(monkeypatch, t
     """The prefetch holds no lock, so a pass can begin under it; importing then mixes versions."""
     pid_file, started = _slow_installer(monkeypatch, tmp_path, timeout_s = 2)
     recorded = []
-    monkeypatch.setattr(dr, "_record_failure", lambda: recorded.append(True))
+    monkeypatch.setattr(dr, "_record_failure", lambda *a: recorded.append(True))
     monkeypatch.setattr(dr, "_peer_holds_pass", lambda: True)
     with pytest.raises(dr.PeerInstallInProgress, match = "Start Unsloth Studio again"):
         dr._run_repair(lambda _line: None)
@@ -205,7 +205,7 @@ def test_our_own_install_stopped_at_the_deadline_stops_startup(monkeypatch, tmp_
     """Stopped mid-install, packages may be half replaced: never import them, never record."""
     pid_file, started = _slow_installer(monkeypatch, tmp_path, timeout_s = 2)
     recorded = []
-    monkeypatch.setattr(dr, "_record_failure", lambda: recorded.append(True))
+    monkeypatch.setattr(dr, "_record_failure", lambda *a: recorded.append(True))
     with pytest.raises(dr.InstallInterrupted, match = "Start Unsloth Studio again"):
         dr._run_repair(lambda _line: None, prefetch = False)
     assert started == ["--repair-diffusers-main"]
@@ -218,7 +218,7 @@ def test_a_peer_still_in_the_pass_at_the_deadline_stops_startup_in_time(monkeypa
     """Abort at timeout if a peer is still installing, without changing its manifest."""
     pid_file, _started = _slow_installer(monkeypatch, tmp_path, timeout_s = 2)
     recorded = []
-    monkeypatch.setattr(dr, "_record_failure", lambda: recorded.append(True))
+    monkeypatch.setattr(dr, "_record_failure", lambda *a: recorded.append(True))
     monkeypatch.setattr(dr, "_peer_holds_pass", lambda: True)
     started = time.monotonic()
     with pytest.raises(dr.PeerInstallInProgress, match = "Start Unsloth Studio again"):
@@ -473,7 +473,7 @@ def test_a_current_release_starts_nothing(monkeypatch, installed):
 
 
 @pytest.mark.parametrize("env", [{}, {"UNSLOTH_DIFFUSERS_MAIN": "0"}])
-def test_a_release_behind_the_pin_is_repaired_without_a_prefetch(monkeypatch, env):
+def test_a_release_behind_the_pin_is_prefetched_then_repaired(monkeypatch, env):
     """UNSLOTH_DIFFUSERS_MAIN=0 asks for the release, which is what this installs."""
     _release_mode(monkeypatch, "0.40.0")
     # An old git-main failure must not strand the PyPI release.
@@ -485,7 +485,19 @@ def test_a_release_behind_the_pin_is_repaired_without_a_prefetch(monkeypatch, en
         dr, "_run_installer", lambda flag, timeout: flags.append(flag) or (dr._INSTALLED, "")
     )
     assert dr.repair_diffusers_before_imports() is True
-    assert flags == ["--repair-diffusers-main"]
+    assert flags == ["--prefetch-diffusers-main", "--repair-diffusers-main"]
+
+
+def test_a_timed_out_release_prefetch_records_the_release_key(monkeypatch):
+    """Or every start repeats a download this host cannot finish."""
+    _release_mode(monkeypatch, "0.40.0")
+    recorded = []
+    monkeypatch.setattr(
+        dr, "_record_failure", lambda main_active = True: recorded.append(main_active)
+    )
+    monkeypatch.setattr(dr, "_run_installer", lambda flag, timeout: (None, ""))
+    assert dr.repair_diffusers_before_imports() is False
+    assert recorded == [False]
 
 
 def test_release_mode_honours_the_autorepair_opt_out_and_its_own_failure(monkeypatch):

@@ -89,6 +89,10 @@ def _opted_out(main_active: bool = True) -> bool:
     return value in ("0", "false", "no", "off")
 
 
+def _target(main_active: bool) -> str:
+    return "main build" if main_active else "release"
+
+
 def _main_pin_active() -> bool:
     """Whether diffusers-main.txt pins a build. Commented out while a release carries every family,
     and then a healthy release install must start nothing."""
@@ -196,11 +200,12 @@ INTERRUPTED_MESSAGE = (
 )
 
 
-def _record_failure() -> None:
+def _record_failure(main_active: bool = True) -> None:
     """Suppress startup retries until an explicit update clears the failure key."""
+    key = "diffusers_main_repair" if main_active else "diffusers_release_repair"
     try:
         from studio.install_manifest import update_manifest
-        update_manifest(diffusers_main_repair = "failed")
+        update_manifest(**{key: "failed"})
     except Exception as exc:  # noqa: BLE001 - unrecorded means the next start tries again
         logger.warning("diffusers self-heal could not record its failure: %s", exc)
 
@@ -260,7 +265,11 @@ def _run_installer(flag: str, timeout: float) -> "tuple[int | None, str]":
     return proc.returncode, output or ""
 
 
-def _run_repair(echo: Callable[[str], None], prefetch: bool = True) -> bool:
+def _run_repair(
+    echo: Callable[[str], None],
+    prefetch: bool = True,
+    main_active: bool = True,
+) -> bool:
     started = time.monotonic()
     if prefetch:
         # The slow part (clone or download, then build) goes into uv's cache only, so stopping it
@@ -275,7 +284,7 @@ def _run_repair(echo: Callable[[str], None], prefetch: bool = True) -> bool:
             if _peer_holds_pass():
                 logger.warning("diffusers self-heal timed out while a peer's dependency pass ran")
                 raise PeerInstallInProgress(PEER_INSTALL_MESSAGE)
-            _record_failure()
+            _record_failure(main_active)
             echo(
                 f"  - the pinned Diffusers build took over {_REPAIR_TIMEOUT_S}s to download and "
                 "was stopped; run `unsloth studio update` to install it"
@@ -302,7 +311,7 @@ def _run_repair(echo: Callable[[str], None], prefetch: bool = True) -> bool:
         raise InstallInterrupted(INTERRUPTED_MESSAGE)
     if code == _INSTALLED:
         echo("  - installed the pinned Diffusers build")
-        logger.info("diffusers self-heal installed the pinned Diffusers main build")
+        logger.info("diffusers self-heal installed the pinned Diffusers %s", _target(main_active))
         return True
     if code != _NOTHING_TO_DO:
         echo(
@@ -346,12 +355,15 @@ def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: 
             logger.warning("diffusers self-heal skipped: %s already imported", ", ".join(loaded))
             return False
         echo("  - installing the pinned Diffusers build (first start after an update)...")
-        # A release is one wheel from the index: there is no source build to prefetch.
-        prefetch = main_active
+        prefetch = True
     elif _peer_holds_pass():
         echo("  - waiting for another Unsloth install or update to finish...")
         prefetch = False
     else:
         return False
-    logger.info("installing the pinned Diffusers main build. Set %s=1 to disable.", DISABLE_ENV_VAR)
-    return _run_repair(echo, prefetch = prefetch)
+    logger.info(
+        "installing the pinned Diffusers %s. Set %s=1 to disable.",
+        _target(main_active),
+        DISABLE_ENV_VAR,
+    )
+    return _run_repair(echo, prefetch = prefetch, main_active = main_active)
