@@ -446,3 +446,30 @@ def test_resume_refuses_a_changed_reward_set():
     )
     # Runs stored before reward specs were recorded keep resuming.
     assert not _resume_reward_mismatch({}, [S(name = "c", weight = 1.0)])
+
+
+def test_grpo_refuses_a_dataset_smaller_than_one_generation_batch(monkeypatch):
+    fake = types.SimpleNamespace(
+        GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw
+    )
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    spec = {
+        "name": "len",
+        "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+    }
+    args = dict(
+        model = None,
+        tokenizer = None,
+        eval_dataset = None,
+        config_args = {
+            "output_dir": "o",
+            "max_seq_length": 512,
+            "per_device_train_batch_size": 4,
+            "gradient_accumulation_steps": 4,
+        },
+        settings = {"num_generations": 4},
+        reward_specs = [spec],
+    )
+    with pytest.raises(ValueError, match = "at least 4 prompts"):
+        build_rl_trainer("grpo", train_dataset = [{"prompt": "x"}] * 3, **args)
+    assert build_rl_trainer("grpo", train_dataset = [{"prompt": "x"}] * 4, **args)

@@ -56,3 +56,20 @@ test("GRPO reward reference columns must come from the dataset", async () => {
     ["unit"],
   );
 });
+
+test("preview and objective selector show the objective the run will use", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (p: string) =>
+    readFileSync(
+      new URL(`../src/features/studio/${p}`, import.meta.url),
+      "utf8",
+    );
+  assert.match(
+    read("wizard/run-preview-card.tsx"),
+    /trainingObjective: effectiveTrainingObjective\(s\)/,
+  );
+  assert.match(
+    read("sections/rl/objective-select.tsx"),
+    /const objective = rlLocked \? "sft" : selected;/,
+  );
+});

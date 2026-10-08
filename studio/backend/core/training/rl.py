@@ -348,6 +348,18 @@ def build_rl_trainer(
             # the global batch: round batch x accumulation up to a multiple of both.
             group = batch * num_generations // math.gcd(batch, num_generations)
             grpo_base["generation_batch_size"] = -(-per_step // group) * group
+        prompts = grpo_base.get("generation_batch_size", per_step) // num_generations
+        try:
+            rows = len(train_dataset)
+        except TypeError:
+            rows = None
+        # TRL's sampler drops incomplete prompt groups: fewer rows than one batch trains nothing.
+        if rows is not None and rows < prompts:
+            raise ValueError(
+                f"GRPO needs at least {prompts} prompts per step (batch size x gradient "
+                f"accumulation / generations) but the dataset has {rows}. Lower the batch size or "
+                "gradient accumulation, or add rows."
+            )
         eval_batch = grpo_base.get("per_device_eval_batch_size")
         if eval_batch:
             # TRL evaluates whole prompt groups: the global eval batch must be a multiple of

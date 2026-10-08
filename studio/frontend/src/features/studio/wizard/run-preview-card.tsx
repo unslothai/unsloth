@@ -9,6 +9,7 @@ import {
 import { hfApiToken, ownerOf, useHfTokenStore } from "@/features/hub";
 import {
   TRAINING_METHOD_META,
+  effectiveTrainingObjective,
   isLocalTrainingModelSelection,
   useTrainingConfigStore,
   useTrainingReadiness,
@@ -368,7 +369,7 @@ export function RunPreviewCard({
       modelLocalPath: s.modelLocalPath,
       modelFormat: s.modelFormat,
       trainingMethod: s.trainingMethod,
-      trainingObjective: s.trainingObjective,
+      trainingObjective: effectiveTrainingObjective(s),
       datasetSource: s.datasetSource,
       dataset: s.dataset,
       uploadedFile: s.uploadedFile,

@@ -21,7 +21,7 @@ const HINT_KEYS: Record<TrainingObjective, TranslationKey> = {
 
 export function ObjectiveSelect(): ReactElement {
   const t = useT();
-  const objective = useTrainingConfigStore((s) => s.trainingObjective);
+  const selected = useTrainingConfigStore((s) => s.trainingObjective);
   const trainingMethod = useTrainingConfigStore((s) => s.trainingMethod);
   const setObjective = useTrainingConfigStore((s) => s.setTrainingObjective);
   const isMac = usePlatformStore((s) => s.deviceType) === "mac";
@@ -33,6 +33,8 @@ export function ObjectiveSelect(): ReactElement {
     : modelLocked
       ? t("rl.objective.modelLocked")
       : t("rl.objective.cptLocked");
+  // A locked selector shows what the run will use, not a stored RL choice it ignores.
+  const objective = rlLocked ? "sft" : selected;
 
   return (
     <div className="flex flex-col gap-1.5">
