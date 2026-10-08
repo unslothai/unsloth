@@ -17093,15 +17093,8 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
                 if timeout <= 0:
                     raise
             client = getattr(self, "client", None)
-            url = kwargs.get("url", args[1] if len(args) > 1 else None)
-            try:
-                # primp keeps engine cookies (Brave / Mojeek region) per URL, httpx in a jar.
-                if hasattr(client, "get_cookies"):
-                    cookies = client.get_cookies(str(url))
-                else:
-                    cookies = getattr(client, "cookies", None)
-            except Exception:
-                cookies = None
+            # httpx's jar only: primp 0.15 (ddgs 9.8.0) get_cookies aborts the process on a miss.
+            cookies = getattr(client, "cookies", None)
             # httpx may lack primp's zstd decoder, so let it pick accept-encoding.
             session = getattr(client, "headers", None) or {}
             headers = {k: v for k, v in dict(session).items() if k.lower() != "accept-encoding"}

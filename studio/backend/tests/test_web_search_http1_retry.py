@@ -50,7 +50,7 @@ def _install_fake_ddgs(monkeypatch, primp_response):
         headers = {"user-agent": "UA", "accept-encoding": "gzip, br, zstd"}
 
         def get_cookies(self, url):
-            return {"country": "us"} if url == "https://x/" else {}
+            raise AssertionError("primp 0.15 aborts the process when no cookie matches")
 
     class Session2:
         headers = {"user-agent": "DDG"}
@@ -216,7 +216,7 @@ def test_primp_reset_replays_once_with_constructor_settings(fake_ddgs):
     assert 0 < config.pop("timeout") <= 4
     assert config == {
         "headers": {"user-agent": "UA"},
-        "cookies": {"country": "us"},
+        "cookies": None,
         "proxy": "socks5://p:1",
         "verify": False,
         "follow_redirects": True,
