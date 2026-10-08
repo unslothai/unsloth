@@ -163,6 +163,29 @@ def test_template_that_concatenates_string_arguments_still_renders_them():
     assert prompt == 'web_search {"query": "x"}'
 
 
+class _SeparateStringToolTemplateTokenizer:
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tools = None,
+        **kwargs,
+    ):
+        if tools is None:
+            return "DEFAULT"
+        arguments = messages[1]["tool_calls"][0]["function"]["arguments"]
+        return "TOOL " + arguments
+
+
+def test_string_arguments_retry_before_dropping_the_tools_template():
+    prompt = apply_chat_template_for_generation(
+        _SeparateStringToolTemplateTokenizer(),
+        _conv('{"query": "x"}'),
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert prompt == 'TOOL {"query": "x"}'
+
+
 def test_deeply_nested_arguments_are_left_as_a_string():
     arguments = '{"x":' + "[" * 10000 + "0" + "]" * 10000 + "}"
     conv = _conv(arguments)

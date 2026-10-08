@@ -3269,7 +3269,11 @@ def apply_chat_template_for_generation(
         else {"add_generation_prompt": True}
     )
 
-    def _render(msgs: list, boundary: Optional[dict] = None) -> str:
+    def _render(
+        msgs: list,
+        boundary: Optional[dict] = None,
+        typeerror_fallback: Optional[list] = None,
+    ) -> str:
         boundary = _boundary_kwargs if boundary is None else boundary
         last_exc: Optional[Exception] = None
         for kwargs in attempts:
@@ -3282,6 +3286,16 @@ def apply_chat_template_for_generation(
                 )
             except TypeError as e:
                 last_exc = e
+                if typeerror_fallback is not None:
+                    try:
+                        return tokenizer.apply_chat_template(
+                            _swept_for(kwargs, typeerror_fallback),
+                            tokenize = False,
+                            **boundary,
+                            **kwargs,
+                        )
+                    except Exception:
+                        pass
                 continue
             except Exception as e:
                 last_exc = e
@@ -3290,7 +3304,7 @@ def apply_chat_template_for_generation(
             raise last_exc
         raise RuntimeError("apply_chat_template_for_generation: no attempt produced a result")
 
-    def _render_continuation_manually(msgs: list) -> str:
+    def _render_continuation_manually(msgs: list, typeerror_fallback: Optional[list] = None) -> str:
         """For tokenizers predating ``continue_final_message`` (TypeError above). Prefix and partial
         come from the SAME swept copy: an attempt that drops the tools kwarg re-sweeps for the
         default template, whose markup would otherwise survive raw."""
@@ -3301,12 +3315,20 @@ def apply_chat_template_for_generation(
                     swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
                 )
             except TypeError:
-                continue
+                if typeerror_fallback is None:
+                    continue
+                swept = _swept_for(kwargs, typeerror_fallback)
+                try:
+                    prefix = tokenizer.apply_chat_template(
+                        swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
+                    )
+                except Exception:
+                    continue
             partial = trailing_assistant_text(swept) or _continue_text
             return f"{strip_open_reasoning_prefill(prefix)}{partial}"
         raise TypeError("no attempt rendered the continuation prefix")
 
-    def _render_thought_continuation(msgs: list) -> str:
+    def _render_thought_continuation(msgs: list, typeerror_fallback: Optional[list] = None) -> str:
         # Templates render a final thought closed, so there is no boundary to cut at.
         for kwargs in attempts:
             swept = _swept_for(kwargs, msgs)
@@ -3315,24 +3337,32 @@ def apply_chat_template_for_generation(
                     swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
                 )
             except TypeError:
-                continue
+                if typeerror_fallback is None:
+                    continue
+                swept = _swept_for(kwargs, typeerror_fallback)
+                try:
+                    prefix = tokenizer.apply_chat_template(
+                        swept[:-1], tokenize = False, add_generation_prompt = True, **kwargs
+                    )
+                except Exception:
+                    continue
             return splice_resumed_thought(prefix, swept[-1]["reasoning_content"])
         raise TypeError("no attempt rendered the thought continuation prefix")
 
-    def _render_with_fallback(msgs: list) -> str:
+    def _render_with_fallback(msgs: list, typeerror_fallback: Optional[list] = None) -> str:
         if _resumes_thought:
-            return _render_thought_continuation(msgs)
+            return _render_thought_continuation(msgs, typeerror_fallback)
         try:
-            return _render(msgs)
+            return _render(msgs, typeerror_fallback = typeerror_fallback)
         except TypeError:
             if not _continuing:
                 raise
-            return _render_continuation_manually(msgs)
+            return _render_continuation_manually(msgs, typeerror_fallback)
 
     # mappings first because Qwen3.5 renders string arguments as an empty call instead of raising
     normalized = _normalize_tool_call_arguments(messages)
     try:
-        return _render_with_fallback(normalized)
+        return _render_with_fallback(normalized, messages if normalized is not messages else None)
     except Exception:
         candidates: list = []
         if normalized is not messages:
