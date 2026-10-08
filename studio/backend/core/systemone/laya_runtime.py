@@ -861,8 +861,17 @@ class _EngineAgent:
 
     def __init__(self, folder: Path, family: str, base: Path | None):
         from unsloth_zoo.mlx.decision import load_decision_model
+
         self.gpu = family != "laya"
         self.model = load_decision_model(folder, family = family, base_model = base)
+        # An encoder reads one question at a time, and its window is the encoder's (Julia-1: 8192).
+        self.positions = None
+        encoder = folder / "encoder" / "config.json"
+        if family == "laya" and encoder.is_file():
+            import json
+            self.positions = json.loads(encoder.read_text(encoding = "utf-8")).get(
+                "max_position_embeddings"
+            )
 
     def close(self) -> None:
         # A request that still holds this agent must not keep the weights on the GPU another owner now has.
@@ -892,6 +901,19 @@ class _EngineAgent:
                     "invalid_request_error",
                     f"State and questions are longer than {_ENGINE_TOKENS} tokens. Shorten them.",
                 )
+            if self.positions:
+                # [cls] question and options (at most max_head) [sep] state [sep], as unsloth-zoo lays it out.
+                state_text = (
+                    state if isinstance(state, str) else json.dumps(state, ensure_ascii = False)
+                )
+                read = tokenizer.encode(state_text, add_special_tokens = False)
+                limit = int(self.positions) - int(getattr(self.model, "max_head", 0)) - 3
+                if len(getattr(read, "ids", read)) > limit:
+                    raise Unavailable(
+                        422,
+                        "invalid_request_error",
+                        f"The state is longer than the {limit} tokens this model reads beside a question. Shorten it.",
+                    )
         try:
             return self.model.answer(state, questions)
         except DecisionUnsupportedError as exc:
