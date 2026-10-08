@@ -16918,7 +16918,7 @@ def _fetch_page_text(
 
     site_links = SiteLinks(url)
     text = html_to_markdown(body, main_content = True, site_links = site_links)
-    # A page that fits keeps its same-site links for the model to follow.
+    # a page that fits keeps same-site links so the model can follow them.
     if text and len(text) <= max_chars and len(text) <= _dense_char_limit(text, max_chars):
         return text
     return _truncate_page_text(site_links.strip(text), max_chars)
