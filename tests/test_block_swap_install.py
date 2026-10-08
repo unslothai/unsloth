@@ -727,6 +727,12 @@ def test_offload_layers_refuses_values_it_cannot_use(bad):
         _fns("legacy_offload_layers")["legacy_offload_layers"]({}, bad)
 
 
+def test_offload_layers_false_still_means_off():
+    legacy = _fns("legacy_offload_layers")["legacy_offload_layers"]
+    assert legacy({}, False) == 0
+    assert legacy({"block_swap_layers": False}) == 0
+
+
 def test_prefetch_depth_is_a_get_peft_model_option():
     arg = _fns("prefetch_depth_arg")["prefetch_depth_arg"]
     kwargs = {"prefetch_depth": "auto", "r": 16}

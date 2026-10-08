@@ -6537,6 +6537,9 @@ def legacy_offload_layers(kwargs, offload_layers = None):
     legacy = kwargs.pop("block_swap_layers", None)
     if offload_layers is None:
         offload_layers = 0 if legacy is None else legacy
+    if offload_layers is False:
+        # False always meant off; only True is ambiguous.
+        offload_layers = 0
     if offload_layers != "auto" and (
         isinstance(offload_layers, bool)
         or not isinstance(offload_layers, int)
