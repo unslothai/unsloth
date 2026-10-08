@@ -441,7 +441,7 @@ def test_worker_applies_the_budget_only_where_auto_offload_sizes_to_it():
 
 def test_multi_gpu_vision_and_audio_runs_skip_the_budget():
     # Core cannot offload a vision / audio load spread over GPUs, and LoRA setup allocates before it swaps,
-    # so a cap there would OOM; the budget is skipped (and hidden in the UI) for those runs.
+    # so a cap there would OOM; the budget is skipped for those runs, and the OOM hint must not name it.
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
@@ -455,6 +455,9 @@ def test_multi_gpu_vision_and_audio_runs_skip_the_budget():
     ):
         assert needle in gate
     skip = src.index("if _budget_unsupported:")
+    cleared = src[skip : src.index("elif _wants_budget:")]
+    assert 'config["offload_vram_gb"] = None' in cleared
+    assert 'config["offload_vram_gb_per_device"] = None' in cleared
     assert skip < src.index("elif _wants_budget:") < src.index("_apply_training_vram_budget(", skip)
 
 

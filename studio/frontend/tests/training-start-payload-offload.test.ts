@@ -12,7 +12,6 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 const {
-  offloadBudgetSupported,
   offloadHardwareSupported,
   offloadPayload,
   offloadSupported,
@@ -151,28 +150,4 @@ test("offload needs a CUDA or ROCm card that is not a unified-memory APU", () =>
   assert.equal(offloadPayload(saved, [], sys("xpu", [false])).offload_layers, 0);
   assert.equal(offloadPayload(saved, [], sys("rocm", [true])).offload_layers, 0);
   assert.equal(offloadPayload(saved, [], sys("cuda", [false])).offload_layers, 14);
-});
-
-test("an image or audio run on several GPUs offloads Auto without a budget", () => {
-  const cards = (n: number) => ({
-    status: "ready" as const,
-    device_backend: "cuda",
-    gpu: { available: true, devices: Array.from({ length: n }, (_, index) => ({ index })) },
-  });
-  const on = {
-    ...base,
-    offloadLayers: "auto" as const,
-    offloadVramGb: 8,
-    offloadVramGbPerDevice: { "0": 8, "1": 8 },
-  };
-  for (const dataset of [{ isDatasetImage: true }, { isDatasetAudio: true }]) {
-    const run = { ...on, ...dataset };
-    assert.equal(offloadBudgetSupported(run, cards(2) as never), false);
-    const out = offloadPayload(run, [0, 1], cards(2) as never);
-    assert.equal(out.offload_layers, "auto");
-    assert.equal(out.offload_vram_gb, null);
-    assert.equal(out.offload_vram_gb_per_device, null);
-    assert.equal(offloadPayload(run, [0], cards(1) as never).offload_vram_gb, 8);
-  }
-  assert.deepEqual(offloadPayload(on, [0, 1], cards(2) as never).offload_vram_gb_per_device, [8, 8]);
 });
