@@ -8,6 +8,7 @@ BeforeAll {
     $script:SetupPs1 = Join-Path $PSScriptRoot '..\..\studio\setup.ps1'
     . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-LlamaBuildToolsInstallAllowed')))
     . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-LlamaBuildToolsMissing')))
+    . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-SetupConsoleHeadless')))
     function Write-StudioLine { param([string]$Text, [string]$ForegroundColor) }
     $script:SetupText = Get-Content -LiteralPath $script:SetupPs1 -Raw
 }
@@ -43,14 +44,19 @@ Describe 'Test-LlamaBuildToolsInstallAllowed' {
         Should -Invoke Read-Host -Times 0 -Exactly
     }
 
-    It 'headless runs outside Unsloth Desktop keep installing, without a prompt' {
-        if (-not ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected)) {
-            Set-ItResult -Skipped -Because 'needs a redirected console, as under CI'
-            return
-        }
+    It 'a <Kind> run outside Unsloth Desktop answers <Expected> without a prompt' -ForEach @(
+        @{ Kind = 'headless'; Headless = $true; Expected = $true },
+        @{ Kind = 'terminal'; Headless = $false; Expected = $false }
+    ) {
         Mock Read-Host { throw 'prompted' }
-        Test-LlamaBuildToolsInstallAllowed | Should -BeTrue
+        Mock Test-SetupConsoleHeadless { $Headless }
+        Test-LlamaBuildToolsInstallAllowed | Should -Be $Expected
         Should -Invoke Read-Host -Times 0 -Exactly
+    }
+
+    It 'setup.ps1 never asks about the build tools' {
+        $body = Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-LlamaBuildToolsInstallAllowed'
+        $body | Should -Not -Match 'Read-Host'
     }
 
     It 'the opt-in still wins inside Unsloth Desktop' {
