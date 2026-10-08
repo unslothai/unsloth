@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 """A llama-server whose GPU device was lost is restarted instead of failing forever (#11453).
 
 Vulkan reports VK_ERROR_DEVICE_LOST as an exception llama-server catches, so the process
