@@ -921,145 +921,127 @@ async fn poll_url<R: Runtime>(app: AppHandle<R>) {
     }
 }
 
-/// A download starting or ending in a tab's view.
-pub(crate) enum TabDownload<'a> {
-    Requested {
-        url: Url,
-        destination: &'a mut PathBuf,
-        save_as: bool,
-    },
-    Finished {
-        url: Url,
-        path: Option<PathBuf>,
-        success: bool,
-    },
-}
-
-/// Stage a tab's download and ask about it, or settle it once finished. False refuses it.
-pub(crate) fn tab_download<R: Runtime>(
+/// Stage a tab's download and ask about it. False refuses it.
+pub(crate) fn download_requested<R: Runtime>(
     webview: &Webview<R>,
     download_tab: &str,
-    event: TabDownload<'_>,
+    url: Url,
+    destination: &mut PathBuf,
+    save_as: bool,
 ) -> bool {
     let app = webview.app_handle();
-    match event {
-        TabDownload::Requested {
-            url,
-            destination,
-            save_as,
-        } => {
-            if crate::browser_downloads::unanswered(app, download_tab)
-                >= crate::browser_downloads::MAX_UNANSWERED_PER_TAB
-            {
+    if crate::browser_downloads::unanswered(app, download_tab)
+        >= crate::browser_downloads::MAX_UNANSWERED_PER_TAB
+    {
+        let name = destination
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        emit_download_failed(app, download_tab, &url, &name);
+        return false;
+    }
+    let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
+        return false;
+    };
+    let path = {
+        let state = app.state::<BrowserViews>();
+        let mut inner = state.inner.lock().unwrap();
+        // macOS reports no path when a download finishes, so two of one URL at
+        // once couldn't be told apart: one at a time.
+        let busy = cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str());
+        let in_flight = inner.downloads.values().map(Vec::len).sum();
+        let starts = inner
+            .download_starts
+            .entry(download_tab.to_string())
+            .or_default();
+        if busy || !download_allowed(in_flight, starts, Instant::now()) {
+            drop(inner);
+            let _ = std::fs::remove_dir_all(&staging);
+            if !busy {
                 let name = destination
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 emit_download_failed(app, download_tab, &url, &name);
-                return false;
             }
-            let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
-                return false;
-            };
-            let path = {
-                let state = app.state::<BrowserViews>();
-                let mut inner = state.inner.lock().unwrap();
-                // macOS reports no path when a download finishes, so two of one URL at
-                // once couldn't be told apart: one at a time.
-                let busy = cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str());
-                let in_flight = inner.downloads.values().map(Vec::len).sum();
-                let starts = inner
-                    .download_starts
-                    .entry(download_tab.to_string())
-                    .or_default();
-                if busy || !download_allowed(in_flight, starts, Instant::now()) {
-                    drop(inner);
-                    let _ = std::fs::remove_dir_all(&staging);
-                    if !busy {
-                        let name = destination
-                            .file_name()
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                        emit_download_failed(app, download_tab, &url, &name);
-                    }
-                    return false;
-                }
-                let path = download_destination(&staging, destination, &HashSet::new());
-                inner
-                    .downloads
-                    .entry(url.to_string())
-                    .or_default()
-                    .push(path.clone());
-                path
-            };
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            *destination = path.clone();
-            crate::browser_downloads::add_pending(
-                app,
-                id.clone(),
-                download_tab.to_string(),
-                url.clone(),
-                path,
-            );
-            // "" before the view showed its own page: the frontend knows the tab's address or opener.
-            let committed = app
-                .state::<BrowserViews>()
-                .inner
-                .lock()
-                .unwrap()
-                .committed
-                .contains(download_tab);
-            let site = match webview.url() {
-                Ok(page) if committed => page.to_string(),
-                _ => String::new(),
-            };
-            emit(
-                app,
-                BrowserEvent::DownloadPrompt {
-                    tab_id: download_tab.to_string(),
-                    url: url.to_string(),
-                    site,
-                    name,
-                    id,
-                    save_as,
-                },
-            );
-            true
+            return false;
         }
-        TabDownload::Finished { url, path, success } => {
-            let (recorded, retired) = {
-                let state = app.state::<BrowserViews>();
-                let mut inner = state.inner.lock().unwrap();
-                let ViewsState {
-                    downloads,
-                    unexplained_finishes,
-                    ..
-                } = &mut *inner;
-                let key = url.to_string();
-                let mut unexplained = unexplained_finishes.remove(&key).unwrap_or(0);
-                let pending = downloads.entry(key.clone()).or_default();
-                let taken = take_finished(pending, &mut unexplained, path.as_deref());
-                if pending.is_empty() {
-                    downloads.remove(&key);
-                } else if unexplained > 0 {
-                    unexplained_finishes.insert(key, unexplained);
-                }
-                taken
-            };
-            // The reserved path first: the engine may report another spelling of it.
-            crate::browser_downloads::finished(
-                app,
-                [recorded.as_deref(), path.as_deref()],
-                success,
-            );
-            for staged in retired {
-                crate::browser_downloads::finished(app, [Some(&staged), None], false);
-            }
-            true
+        let path = download_destination(&staging, destination, &HashSet::new());
+        inner
+            .downloads
+            .entry(url.to_string())
+            .or_default()
+            .push(path.clone());
+        path
+    };
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    *destination = path.clone();
+    crate::browser_downloads::add_pending(
+        app,
+        id.clone(),
+        download_tab.to_string(),
+        url.clone(),
+        path,
+    );
+    // "" before the view showed its own page: the frontend knows the tab's address or opener.
+    let committed = app
+        .state::<BrowserViews>()
+        .inner
+        .lock()
+        .unwrap()
+        .committed
+        .contains(download_tab);
+    let site = match webview.url() {
+        Ok(page) if committed => page.to_string(),
+        _ => String::new(),
+    };
+    emit(
+        app,
+        BrowserEvent::DownloadPrompt {
+            tab_id: download_tab.to_string(),
+            url: url.to_string(),
+            site,
+            name,
+            id,
+            save_as,
+        },
+    );
+    true
+}
+
+/// Settle a finished download. Needs no view: its tab may have closed meanwhile.
+pub(crate) fn download_finished<R: Runtime>(
+    app: &AppHandle<R>,
+    url: Url,
+    path: Option<PathBuf>,
+    success: bool,
+) {
+    let (recorded, retired) = {
+        let state = app.state::<BrowserViews>();
+        let mut inner = state.inner.lock().unwrap();
+        let ViewsState {
+            downloads,
+            unexplained_finishes,
+            ..
+        } = &mut *inner;
+        let key = url.to_string();
+        let mut unexplained = unexplained_finishes.remove(&key).unwrap_or(0);
+        let pending = downloads.entry(key.clone()).or_default();
+        let taken = take_finished(pending, &mut unexplained, path.as_deref());
+        if pending.is_empty() {
+            downloads.remove(&key);
+        } else if unexplained > 0 {
+            unexplained_finishes.insert(key, unexplained);
         }
+        taken
+    };
+    // The reserved path first: the engine may report another spelling of it.
+    crate::browser_downloads::finished(app, [recorded.as_deref(), path.as_deref()], success);
+    for staged in retired {
+        crate::browser_downloads::finished(app, [Some(&staged), None], false);
     }
 }
 
@@ -1178,20 +1160,13 @@ fn create_view<R: Runtime>(
             NewWindowResponse::Deny
         })
         .on_download(move |webview, event| match event {
-            DownloadEvent::Requested { url, destination } => tab_download(
-                &webview,
-                &download_tab,
-                TabDownload::Requested {
-                    url,
-                    destination,
-                    save_as: false,
-                },
-            ),
-            DownloadEvent::Finished { url, path, success } => tab_download(
-                &webview,
-                &download_tab,
-                TabDownload::Finished { url, path, success },
-            ),
+            DownloadEvent::Requested { url, destination } => {
+                download_requested(&webview, &download_tab, url, destination, false)
+            }
+            DownloadEvent::Finished { url, path, success } => {
+                download_finished(webview.app_handle(), url, path, success);
+                true
+            }
             _ => false,
         })
         .zoom_hotkeys_enabled(false)

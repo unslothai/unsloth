@@ -1,6 +1,6 @@
 //! macOS context menu downloads (Download Image, Download Linked File, Download Video). WebKit
-//! hands them to a UI delegate callback wry lacks, so they never started. Route them through
-//! `tab_download` as a save-as.
+//! hands them to a navigation delegate callback wry lacks, so they never started. Route them
+//! through the panel's download path as a save-as.
 
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, ptr, rc::Rc};
 
@@ -17,16 +17,19 @@ use objc2_web_kit::{WKDownload, WKDownloadDelegate, WKWebView};
 use tauri::{Manager, Runtime, Webview};
 use url::Url;
 
-use crate::browser_webview::{tab_download, TabDownload};
+use crate::browser_webview::{download_finished, download_requested};
 
-type Handler = Rc<dyn Fn(TabDownload<'_>) -> bool>;
+/// Stages a tab's download; false refuses it.
+type Request = Rc<dyn Fn(Url, &mut PathBuf, bool) -> bool>;
+/// Settles a finished download. Holds no view, which may close first.
+type Finish = Rc<dyn Fn(Url, PathBuf, bool)>;
 type Hook = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut WKWebView, *mut WKDownload);
 
 thread_local! {
     /// Tab views by WKWebView address.
-    static VIEWS: RefCell<HashMap<usize, Handler>> = RefCell::new(HashMap::new());
-    /// Downloads in flight: their tab, address and destination.
-    static ACTIVE: RefCell<HashMap<usize, (Handler, Url, PathBuf)>> = RefCell::new(HashMap::new());
+    static VIEWS: RefCell<HashMap<usize, (Request, Finish)>> = RefCell::new(HashMap::new());
+    /// Downloads in flight: how to settle them, their address and destination.
+    static ACTIVE: RefCell<HashMap<usize, (Finish, Url, PathBuf)>> = RefCell::new(HashMap::new());
     /// A download keeps only a weak reference to its delegate.
     static DELEGATE: RefCell<Option<Retained<ContextDownloadDelegate>>> = const { RefCell::new(None) };
 }
@@ -69,7 +72,7 @@ define_class!(
     }
 );
 
-/// Send this tab's context menu downloads to `tab_download`.
+/// Send this tab's context menu downloads down the panel's download path.
 pub(crate) fn watch<R: Runtime>(webview: &Webview<R>, tab: &str) {
     let app = webview.app_handle().clone();
     let (label, tab) = (webview.label().to_string(), tab.to_string());
@@ -78,17 +81,22 @@ pub(crate) fn watch<R: Runtime>(webview: &Webview<R>, tab: &str) {
         let Some(view) = (unsafe { (platform.inner() as *const WKWebView).as_ref() }) else {
             return;
         };
-        let Some(ui) = (unsafe { view.UIDelegate() }) else {
+        let Some(navigation) = (unsafe { view.navigationDelegate() }) else {
             return;
         };
-        add_hook((*ui).as_ref());
+        add_hook((*navigation).as_ref());
         // WebKit caches which callbacks a delegate has when it is set: set it again.
-        unsafe { view.setUIDelegate(Some(&ui)) };
-        let handler: Handler = Rc::new(move |event| match app.get_webview(&label) {
-            Some(page) => tab_download(&page, &tab, event),
-            None => false,
+        unsafe { view.setNavigationDelegate(Some(&navigation)) };
+        let request_app = app.clone();
+        let request: Request = Rc::new(move |url, destination, save_as| {
+            let Some(page) = request_app.get_webview(&label) else {
+                return false;
+            };
+            download_requested(&page, &tab, url, destination, save_as)
         });
-        VIEWS.with(|views| views.borrow_mut().insert(key(view), handler));
+        let finish: Finish =
+            Rc::new(move |url, path, success| download_finished(&app, url, Some(path), success));
+        VIEWS.with(|views| views.borrow_mut().insert(key(view), (request, finish)));
     });
 }
 
@@ -96,7 +104,7 @@ fn key<T>(object: &T) -> usize {
     object as *const T as usize
 }
 
-/// Give wry's UI delegate class the private callback WebKit calls for context menu downloads.
+/// Give wry's navigation delegate class the private callback WebKit calls for context menu downloads.
 fn add_hook(ui: &AnyObject) {
     let class = ui.class();
     let name = sel!(_webView:contextMenuDidCreateDownload:);
@@ -146,37 +154,28 @@ unsafe extern "C-unwind" fn context_menu_did_create_download(
 /// Stage the download as a save-as. None refuses it.
 fn start(download: &WKDownload, suggested: &NSString) -> Option<PathBuf> {
     let view = unsafe { download.webView() }?;
-    let handler = VIEWS.with(|views| views.borrow().get(&key(&*view)).cloned())?;
+    let (request, finish) = VIEWS.with(|views| views.borrow().get(&key(&*view)).cloned())?;
     let address = unsafe { download.originalRequest() }?
         .URL()?
         .absoluteString()?;
     let url = Url::parse(&address.to_string()).ok()?;
     let mut destination = PathBuf::from(suggested.to_string());
-    let allowed = handler(TabDownload::Requested {
-        url: url.clone(),
-        destination: &mut destination,
-        save_as: true,
-    });
-    if !allowed {
+    if !request(url.clone(), &mut destination, true) {
         return None;
     }
     ACTIVE.with(|active| {
         active
             .borrow_mut()
-            .insert(key(download), (handler, url, destination.clone()))
+            .insert(key(download), (finish, url, destination.clone()))
     });
     Some(destination)
 }
 
 fn finish(download: &WKDownload, success: bool) {
-    let Some((handler, url, path)) =
+    let Some((finish, url, path)) =
         ACTIVE.with(|active| active.borrow_mut().remove(&key(download)))
     else {
         return;
     };
-    handler(TabDownload::Finished {
-        url,
-        path: Some(path),
-        success,
-    });
+    finish(url, path, success);
 }

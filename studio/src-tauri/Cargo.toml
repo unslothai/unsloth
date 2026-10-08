@@ -65,7 +65,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 # The browser panel's content rules (browser_webview.rs), snapshots and printing
 # (browser_capture.rs) and context menu downloads (browser_context_downloads.rs); wry already
 # builds this crate.
-objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKDownload", "WKDownloadDelegate", "WKUIDelegate", "WKUserContentController", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKSnapshotConfiguration", "objc2-app-kit", "objc2-core-foundation"] }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKDownload", "WKDownloadDelegate", "WKNavigationDelegate", "WKUserContentController", "WKWebView", "WKWebViewConfiguration", "WKWebsiteDataStore", "WKSnapshotConfiguration", "objc2-app-kit", "objc2-core-foundation"] }
 block2 = "0.6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
