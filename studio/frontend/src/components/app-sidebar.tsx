@@ -939,6 +939,66 @@ function MoreMenuItem({
   );
 }
 
+function ImagesMoreSubmenu({
+  icon,
+  label,
+  active,
+  disabled,
+  tooltip,
+  badge,
+  spinner,
+  onIntent,
+  onPick,
+  contentProps,
+}: {
+  icon: typeof ZapIcon;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  tooltip?: string;
+  badge?: string;
+  spinner?: boolean;
+  onIntent?: () => void;
+  onPick: (id: WorkflowId) => void;
+  contentProps: ComponentProps<typeof DropdownMenuSubContent>;
+}) {
+  const workflow = useImageWorkflowStore((s) => s.workflow);
+  const supported = useImageWorkflowStore((s) => s.supported);
+  const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  const current = active && pageMode === "create" ? workflow : null;
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger
+        disabled={disabled}
+        title={tooltip}
+        onPointerEnter={disabled ? undefined : onIntent}
+        onFocus={disabled ? undefined : onIntent}
+        className={cn("gap-2.5", active && "bg-accent/60")}
+      >
+        <HugeiconsIcon icon={icon} strokeWidth={1.75} />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {badge && <NavBadge label={badge} />}
+        {spinner && (
+          <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent {...contentProps} className="w-44 p-1">
+        {WORKFLOW_TABS.map((tab) => (
+          <DropdownMenuItem
+            key={tab.id}
+            onSelect={() => onPick(tab.id)}
+            disabled={!isWorkflowEnabled(tab.id, supported)}
+            className={cn(current === tab.id && "bg-accent/60")}
+          >
+            <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} />
+            <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
+
 function AudioMoreSubmenu({
   icon,
   label,
@@ -2908,6 +2968,12 @@ export function AppSidebar() {
     sidebarRowsLabelled &&
     !(navRows.images.active && imagesPageMode === "train");
   const audioWorkflowsListed = sidebarRowsLabelled;
+  // Sidebar and More-flyout picks directly set the workflow for Images.
+  const pickImageWorkflow = (workflowId: WorkflowId) => {
+    useImageWorkflowStore.getState().setWorkflow(workflowId);
+    navigate({ to: "/images" });
+    closeMobileIfOpen();
+  };
   // Sidebar and More-flyout picks only ask; the Audio page switches once it is free to.
   const pickAudioWorkflow = (workflowId: AudioWorkflowId) => {
     useAudioWorkspaceStore.getState().requestWorkflow(workflowId);
@@ -5664,6 +5730,27 @@ export function AppSidebar() {
                         const row = navRows[id];
                         // Same pending handling as the inline rows above.
                         const rowState = resolveNavRowState(row);
+                        if (id === "images") {
+                          return (
+                            <ImagesMoreSubmenu
+                              key={id}
+                              icon={row.icon}
+                              label={row.label}
+                              badge={row.badge}
+                              active={row.active}
+                              disabled={rowState.disabled}
+                              tooltip={rowState.tooltip}
+                              spinner={rowState.spinner}
+                              onIntent={row.onIntent}
+                              onPick={pickImageWorkflow}
+                              contentProps={{
+                                ...sidebarSubmenuOffsets,
+                                // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
+                                ...moreHover.content,
+                              }}
+                            />
+                          );
+                        }
                         if (id === "audio") {
                           return (
                             <AudioMoreSubmenu
