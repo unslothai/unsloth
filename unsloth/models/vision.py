@@ -146,6 +146,7 @@ from .loader_utils import (
     _get_fp8_mode_and_check_settings,
     _dequantize_leftover_fp8_params,
     _restore_dropped_fp8_scales,
+    _dequantize_multihead_attention_out_proj,
     _prepare_compressed_tensors_model,
     planner_class_mismatch_reason,
     planner_model_class,
@@ -3613,6 +3614,10 @@ class FastBaseModel:
                     variant = kwargs.get("variant"),
                     dtype = torch_dtype,
                 )
+                if _dequantize_multihead_attention_out_proj(model):
+                    logger.info(
+                        "Unsloth: dequantized 4-bit nn.MultiheadAttention out_proj weights."
+                    )
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
