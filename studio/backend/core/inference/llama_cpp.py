@@ -7952,8 +7952,7 @@ class LlamaCppBackend:
         # The "--load-mode none" tokens the FIT emitted, so paths that replace the
         # placement can take them back out. Empty for a mode the user asked for.
         self._fit_load_mode_flags: list[str] = []
-        # The discrete-first --tensor-split a mixed Vulkan pin emitted; the --fit on
-        # retry takes it back out (llama.cpp's fitter aborts on a user split).
+        # Mixed-pin --tensor-split tokens; the --fit on retry strips them (fit.cpp aborts on a set split).
         self._mixed_split_flags: list[str] = []
         # The pair a launch in flight is committed to, None when none is. ONE attribute:
         # a separate marker and snapshot read out of step answered a save with
@@ -9125,17 +9124,13 @@ class LlamaCppBackend:
         main_reserve_mib: float = 0.0,
         pipeline_mib: float = 0.0,
     ) -> Optional[List[float]]:
-        """``--tensor-split`` shares, positional over ``gpu_indices``, filling discrete
-        cards before shared-memory iGPUs, whose free "VRAM" is the host pool and would
-        otherwise win llama.cpp's free-memory split.
+        """Layer-count ``--tensor-split`` shares, positional over ``gpu_indices``, filling
+        discrete cards before shared-memory iGPUs (whose "free" is the host pool).
 
-        llama.cpp hands each device a contiguous run of layers by COUNT
-        (llama-model.cpp get_layer_buft_list), so the shares are layer counts:
-        ``layer_mib`` is each offloaded layer's resident MiB in load order, output
-        last, and a card takes the most layers whose heaviest contiguous run fits its
-        room. Each device first keeps its non-layer bytes (--fit off cannot catch an
-        overfilled one): ``per_device_mib`` everywhere, ``main_reserve_mib`` on device
-        0, ``pipeline_mib`` on the rest. None unless the pin mixes both kinds."""
+        llama.cpp cuts contiguous layer runs by COUNT (get_layer_buft_list): a card takes
+        the most layers whose heaviest run of ``layer_mib`` fits its room, after
+        ``per_device_mib``, ``main_reserve_mib`` (device 0) and ``pipeline_mib`` (the
+        rest). None unless the pin mixes both kinds and every run fits."""
         shared = set(shared_gpu_ids)
         discrete = [i for i in gpu_indices if i not in shared]
         igpus = [i for i in gpu_indices if i in shared]
@@ -9186,8 +9181,7 @@ class LlamaCppBackend:
                 return None
             start = end
         shares = [float(counts[i]) for i in gpu_indices]
-        # Each boundary half a layer early, so float rounding in llama.cpp's
-        # upper_bound can never hand a card one layer more than it was sized for.
+        # Boundaries half a layer early: float rounding in upper_bound cannot add a layer.
         first = next(k for k, v in enumerate(shares) if v > 0)
         if first != len(shares) - 1:
             shares[first] -= 0.5
@@ -9222,8 +9216,7 @@ class LlamaCppBackend:
             or spill_inputs.get("host_mmproj_bytes")
             or not _kv_offload_from_args(extra_args, env)
             or _extra_args_have_tensor_split(extra_args, env)
-            # A surviving device list owns the order the shares follow; a gpu_ids
-            # pin strips both before launch, so only an unpinned one survives.
+            # A surviving device list owns the share order; a gpu_ids pin strips it.
             or (
                 not pin_owns_devices
                 and (
@@ -9249,8 +9242,7 @@ class LlamaCppBackend:
             blk.spillable_bytes + blk.resident_bytes + w * kv_scale
             for blk, w in zip(layout.blocks, kv_weights)
         ]
-        # Trailing nextn/MTP blocks still occupy rows in llama.cpp's split
-        # (n_layer_all + 1); their tensors exist only when a draft engages.
+        # Trailing nextn rows count in llama.cpp's n_layer_all + 1; resident only with a draft.
         n_mtp = int(self._nextn_predict_layers or 0) if layout.has_excluded_blocks else 0
         if layout.has_excluded_blocks and n_mtp <= 0:
             return None
@@ -9267,9 +9259,8 @@ class LlamaCppBackend:
             + spill_inputs["extra_gpu_bytes"]
             + int(spill_inputs.get("env_mmproj_bytes") or 0)
         )
-        # Hybrid caches with no per-layer vector sit on 1 layer in N: a run can hold
-        # one attention layer more than its uniform share.
-        # Every device holds its own context reserve, as in _planned_tensor_spill.
+        # Context reserve per device (as _planned_tensor_spill); a hybrid run may hold one
+        # attention layer more than its uniform share.
         per_device = spill_inputs["ctx_compute_per_device"] + spill_inputs["soft_overhead"]
         if 0 < layout.n_attention_layers < n_blocks and len(kv_weights) == n_blocks:
             per_device += kv_total / layout.n_attention_layers
@@ -16451,8 +16442,7 @@ class LlamaCppBackend:
         usable_count = sum(1 for idx, free_mib in ranked if _usable(idx, free_mib) > overhead_mib)
         min_gpus = max(1, min(min_gpus, usable_count or 1))
 
-        # A discrete card another model runs on, too small alone, must not pull a
-        # card that holds this model by itself into a shared pin.
+        # A busy card too small alone must not pull a card that fits into a shared pin.
         if (
             min_gpus <= 1
             and ranked[0][0] in shared
@@ -25121,8 +25111,7 @@ class LlamaCppBackend:
                         frac = _vram_frac,
                         floor_mib = 0.0,
                     ):
-                        # Shared-memory iGPUs after every discrete card that can hold
-                        # its own per-device buffers, like _select_gpus.
+                        # iGPUs after every discrete card that holds its split buffers (_select_gpus).
                         usable = _gpu_usable(g, frac)
                         return (g[0] not in _shared_gpu_ids and usable > floor_mib, usable)
 
@@ -26563,9 +26552,8 @@ class LlamaCppBackend:
                             # headroom threshold as _select_gpus (#5106). Rank by the
                             # active pin fraction so the order matches the fit budget.
                             pin_fraction = _pin_fraction
-                            # Floor = the split reserve at the requested context, the most
-                            # _reserve_at below can ask: a card short of it must not hide an
-                            # iGPU that holds the model alone behind a failing prefix.
+                            # Floor = the most _reserve_at can ask, so a short card never hides an
+                            # iGPU that fits alone behind a failing prefix.
                             _rank_floor_mib = (
                                 _pipeline_overhead_bytes + _cc_bytes(effective_ctx, 2) // 2
                             ) / (1024 * 1024)
@@ -26655,10 +26643,8 @@ class LlamaCppBackend:
                                 ):
                                     # Keep the largest context the smallest card holds
                                     # rather than lose the subset to the 4096 drop below.
-                                    # Costs no context: subsets are prefixes of one
-                                    # ranking, so the smallest card never grows, and the
-                                    # reserve is the same function of context for every
-                                    # n > 1: a later subset clears the gate no higher.
+                                    # Costs no context: a longer prefix never has a larger
+                                    # smallest card, and the reserve is one function for n > 1.
                                     capped = self._cap_ctx_to_per_device_reserve(
                                         capped, _usable_mib, _reserve_at
                                     )
