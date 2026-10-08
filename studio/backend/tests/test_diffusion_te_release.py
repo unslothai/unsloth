@@ -118,6 +118,29 @@ def test_mps_budgets_the_int8_encoder_at_its_own_size():
     assert Q21_TE_BF16_MIB * scale >= Q21_TE_INT8_CONVROT_MIB
 
 
+def test_int8_convrot_linear_runs_on_this_accelerator():
+    """The int8 ConvRot projection the Apple Silicon path now loads: plain tensors, so it runs on MPS too."""
+    from core.inference.video_minimax_h3_te import _int8_convrot_linear_class
+
+    device = _device()
+    torch.manual_seed(0)
+    dense = torch.nn.Linear(512, 256, bias = True)
+    codes, scale = te_prequant.quantize_int8_convrot_weight(dense.weight.detach(), group_size = 256)
+    layer = _int8_convrot_linear_class()(512, 256, bias = True, group_size = 256)
+    layer.load_state_dict(
+        {"weight": codes, "weight_scale": scale, "bias": dense.bias.detach().to(torch.bfloat16)},
+        assign = True,
+    )
+    layer = layer.to(device)
+    x = torch.randn(4, 512)
+    with torch.no_grad():
+        got = layer(x.to(device)).float().cpu()
+        want = dense(x)
+    rel = (got - want).norm() / want.norm()
+    assert got.shape == (4, 256)
+    assert rel < 0.02, float(rel)
+
+
 # -- the load-time refusal ----------------------------------------------------------------------------------------
 
 
