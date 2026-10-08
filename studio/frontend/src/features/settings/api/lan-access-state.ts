@@ -5,7 +5,6 @@ export type LanAccessState = "off" | "online" | "error";
 export type LanAccessOwner = "launch" | "settings" | null;
 export type LanKeylessScope = "off" | "inference" | "full";
 export type LanAccessAddress = { address: string; public: boolean };
-// a saved address that is not up right now, like a Tailscale interface that is down, is still a choice
 export type LanAccessAddressChoice = LanAccessAddress & { detected: boolean };
 
 export type LanAccessStatus = {
@@ -188,7 +187,6 @@ export function lanAccessAddressesReadOnly(
   );
 }
 
-// detected addresses first, in the backend's order, then saved ones that are not up right now
 export function lanAccessAddressChoices(
   status: LanAccessStatus | null,
   selected: string[],
@@ -206,7 +204,6 @@ export function lanAccessAddressChoices(
   return choices;
 }
 
-// what Choose starts from: every private address, so a public one is only ever bound on purpose
 export function defaultLanAccessAddressSelection(
   status: LanAccessStatus | null,
 ): string[] {

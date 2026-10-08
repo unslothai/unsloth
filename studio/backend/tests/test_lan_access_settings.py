@@ -126,8 +126,6 @@ def test_saving_a_new_port_policy_clears_the_previous_bind_error():
     assert status["configured_port"] is None
 
 
-# ── address selection (#11822) ──
-
 # a public NIC address, a home Wi-Fi address and a Tailscale (CGNAT) address, as a VPS on a tailnet reports them
 _DETECTED = ["64.227.100.5", "192.168.1.24", "100.101.102.103"]
 
@@ -140,7 +138,6 @@ def test_address_persistence_defaults_to_automatic_and_validates(stored_settings
     )
     assert saved == ("100.101.102.103", "192.168.1.24")
     assert lan_settings.get_lan_access_addresses() == saved
-    # stored as a JSON list, the shape the settings table round-trips
     assert stored_settings[lan_settings.LAN_ACCESS_ADDRESSES_KEY] == [
         "100.101.102.103",
         "192.168.1.24",
@@ -197,12 +194,11 @@ def test_a_corrupt_saved_selection_reads_as_automatic_but_refuses_to_start(
     monkeypatch.setattr(studio_db, "get_app_setting", _addresses_unreadable)
     with pytest.raises(RuntimeError, match = "lan_access_addresses_unavailable"):
         lan_settings.start_lan_access(app)
-    # failing open here would bind the public addresses the user excluded
     assert calls == []
 
 
 def test_an_undecodable_saved_selection_refuses_to_start(monkeypatch):
-    # the real store: get_app_setting answers undecodable JSON with its fallback, which must not mean Automatic
+    # the real store: its fallback also answers undecodable JSON
     monkeypatch.setattr(studio_db, "get_app_setting", _REAL_GET_APP_SETTING)
     key = lan_settings.LAN_ACCESS_ADDRESSES_KEY
     assert lan_settings._read_lan_access_addresses(strict = True) is None
@@ -258,7 +254,6 @@ def test_saving_a_selection_clears_the_previous_error_and_refuses_while_online()
         )
     with pytest.raises(RuntimeError, match = "colab"):
         lan_settings.save_lan_access_addresses(_app(lan_access_is_colab = True), ["192.168.1.24"])
-    # a malformed choice is rejected before the listener state is even consulted
     with pytest.raises(ValueError):
         lan_settings.save_lan_access_addresses(_app(lan_access_launch_managed = True), ["nonsense"])
 
@@ -272,11 +267,9 @@ def test_status_offers_every_detected_address_and_flags_the_public_ones(monkeypa
         {"address": "100.101.102.103", "public": False},
     ]
     assert status["configured_addresses"] is None
-    # the response model carries both to the client
     response = routes.LanAccessResponse(**status)
     assert [entry.address for entry in response.available_addresses] == _DETECTED
     assert response.available_addresses[0].public is True
-    # a -H launch owns its bind, so the picker has nothing to offer
     assert (
         lan_settings.lan_access_status(_app(lan_access_launch_managed = True))["available_addresses"]
         == []
@@ -329,7 +322,6 @@ def test_the_addresses_route_validates_saves_and_refuses_while_online():
 
 
 def _record_binds(monkeypatch):
-    """Stop every start at the bind, recording which addresses it tried."""
     attempted = []
 
     def _refuse(address, _port):
@@ -342,13 +334,11 @@ def _record_binds(monkeypatch):
 
 
 def test_a_selection_binds_only_the_chosen_addresses(monkeypatch):
-    """The #11822 report: a VPS on a tailnet wants the Tailscale address only, never its public one."""
     attempted = _record_binds(monkeypatch)
     with pytest.raises(RuntimeError, match = "bind_failed"):
         lan_access.start_lan_listener(object(), object(), 8888, (), ("100.101.102.103",))
     assert attempted == ["100.101.102.103"]
 
-    # detection order wins, and a chosen address that is not up is skipped rather than fatal
     attempted.clear()
     with pytest.raises(RuntimeError, match = "bind_failed"):
         lan_access.start_lan_listener(

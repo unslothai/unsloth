@@ -268,8 +268,7 @@ def start_lan_listener(
     fallback_ports: tuple[int, ...] = (),
     selected_addresses: Optional[tuple[str, ...]] = None,
 ) -> tuple[str, ...]:
-    """Serve ``app`` on LAN addresses at the first bindable candidate port. ``selected_addresses`` narrows the
-    detected set to the user's choice; ``None`` binds everything detected."""
+    """Serve ``app`` on LAN addresses at the first bindable candidate port; ``selected_addresses=None`` binds all."""
     global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
 
     with _lock:

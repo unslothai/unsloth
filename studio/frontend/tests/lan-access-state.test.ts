@@ -309,8 +309,6 @@ test("port editing is limited to stopped, non-Colab LAN access", () => {
   );
 });
 
-// ── address selection (#11822) ──
-
 const TAILSCALE = "100.101.102.103";
 const WIFI = "192.168.1.24";
 const PUBLIC_IP = "64.227.100.5";
@@ -367,7 +365,6 @@ test("malformed address entries are dropped instead of rendered", () => {
     }),
   );
   assert.deepEqual(s.configuredAddresses, [WIFI]);
-  // only an explicit true marks an address public
   assert.deepEqual(s.availableAddresses, [
     { address: WIFI, public: false },
     { address: PUBLIC_IP, public: false },

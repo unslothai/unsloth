@@ -238,9 +238,7 @@ def lan_access_port_candidates() -> tuple[int, ...]:
 
 
 def normalize_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
-    """``None`` stays Automatic. Anything else must be a non-empty list of IPv4 literals the listener could bind,
-    returned de-duplicated in canonical form. An address need not be detected right now: a Tailscale or VPN
-    interface that is down at save time is still a legitimate choice, and the start skips it until it is up."""
+    """``None`` is Automatic; else a de-duplicated tuple of bindable IPv4 literals, detected right now or not."""
     if addresses is None:
         return None
     if not isinstance(addresses, (list, tuple)):
@@ -253,7 +251,6 @@ def normalize_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
             parsed = ipaddress.IPv4Address(value.strip())
         except ValueError:
             raise ValueError(f"{value!r} is not an IPv4 address.") from None
-        # the same addresses detect_lan_addresses drops: no other device can open them
         if (
             parsed.is_loopback
             or parsed.is_link_local
@@ -272,8 +269,7 @@ def normalize_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
 
 
 def _read_lan_access_addresses(*, strict: bool) -> Optional[tuple[str, ...]]:
-    """The saved selection. Strict reads come from a start, which must fail closed: falling back to Automatic on an
-    unreadable selection would bind the very public addresses the user excluded."""
+    """Strict reads (a start) fail closed: Automatic here would bind the addresses the user excluded."""
     try:
         from storage.studio_db import get_app_setting, get_app_settings
         stored = get_app_setting(LAN_ACCESS_ADDRESSES_KEY, _UNREADABLE)
@@ -299,7 +295,6 @@ def _read_lan_access_addresses(*, strict: bool) -> Optional[tuple[str, ...]]:
 
 
 def get_lan_access_addresses() -> Optional[tuple[str, ...]]:
-    """The valid saved selection, or ``None`` for Automatic/status fallback."""
     return _read_lan_access_addresses(strict = False)
 
 
@@ -314,7 +309,6 @@ def set_lan_access_addresses(addresses: Any) -> Optional[tuple[str, ...]]:
 
 
 def save_lan_access_addresses(app, addresses: Any) -> dict:
-    """Validated before the running check, so a malformed choice is refused whatever the listener state."""
     normalized = normalize_lan_access_addresses(addresses)
     with _management_lock:
         status = lan_access_status(app)
@@ -330,8 +324,7 @@ def save_lan_access_addresses(app, addresses: Any) -> dict:
 
 
 def _available_lan_addresses() -> list[dict]:
-    """What the address picker offers: every bindable address detected now, flagged when it is internet-routable.
-    Status must render whatever detection does, so a failure offers nothing rather than an error."""
+    """Detected addresses with a public flag; a detection failure offers nothing rather than failing status."""
     try:
         from lan_access import detect_lan_addresses, is_public_address
         return [
@@ -530,7 +523,6 @@ def lan_access_status(app) -> dict:
         "configured_addresses": list(configured_addresses)
         if configured_addresses is not None
         else None,
-        # a launch-managed bind is fixed by -H, so there is nothing to choose and nothing to detect for it
         "available_addresses": [] if launch_managed else _available_lan_addresses(),
         "active_port": active_port,
         "managed_by": managed_by,
