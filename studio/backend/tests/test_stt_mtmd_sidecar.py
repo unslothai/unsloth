@@ -1268,3 +1268,23 @@ def test_the_dictation_server_gets_a_per_launch_key_that_requests_send(
     assert sent[0]["Authorization"] == f"Bearer {key}"
     sidecar.unload()
     assert sidecar._api_key is None
+
+
+def test_a_build_without_api_key_file_still_starts_keyless(spawned, monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    commands = []
+    monkeypatch.delenv("UNSLOTH_LLAMA_SERVER_API_KEY", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_api_key_file": False}),
+    )
+    monkeypatch.setattr(
+        mtmd_mod.subprocess, "Popen", lambda cmd, **k: commands.append(list(cmd)) or _FakeProcess()
+    )
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("qwen3-asr-0.6b")
+    assert "--api-key-file" not in commands[0] and sidecar._api_key is None
+    sidecar.unload()

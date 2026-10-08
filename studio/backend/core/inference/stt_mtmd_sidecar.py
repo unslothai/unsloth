@@ -974,12 +974,16 @@ class MtmdSttSidecar:
                     "Unsloth is shutting down; not starting the MTMD server."
                 )
             from core.inference.llama_cpp import (
+                LlamaCppBackend,
                 _llama_server_api_key_enabled,
                 _write_direct_stream_key,
             )
 
             api_key = key_file = None
-            if _llama_server_api_key_enabled():
+            # A custom build without --api-key-file would exit on the flag; it runs keyless as before.
+            if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
+                binary
+            ).get("supports_api_key_file", True):
                 # A per-launch key, as for the chat server: a web page cannot drive this loopback server (it sends
                 # permissive CORS). llama-server reads the file once at startup, so it is removed once ready.
                 api_key = secrets.token_urlsafe(32)
