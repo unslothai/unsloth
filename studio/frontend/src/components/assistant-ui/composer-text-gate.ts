@@ -7,10 +7,12 @@
 // is tens of thousands of selector runs per character, and the keystroke stalls for hundreds of ms
 // on a fast desktop and seconds on a laptop. None of those rows can change: inside a message,
 // `composer` is that message's EDIT composer, and nothing under a message reads the thread's.
-// So the message rows get a client whose `subscribe` drops exactly the notifications in which
-// nothing changed but the thread composer's text. Every other change, including the composer's
-// attachments, dictation or edit state, passes through untouched. Reads are not gated: a row that
-// renders for any other reason still reads current state.
+// So the message rows get a client whose `subscribe` drops the notifications in which no scope's
+// STATE changed except the thread composer's text. Every other state change, including the
+// composer's attachments, dictation or edit state, passes through untouched. A change visible only
+// through scope methods would also be dropped; in assistant-ui 0.12 methods change only with the
+// runtime, which changes `thread.messages` too, so re-check this on an upgrade. Reads are not
+// gated: a row that renders for any other reason still reads current state.
 
 import type { AssistantClient } from "@assistant-ui/react";
 
@@ -122,9 +124,19 @@ export function createComposerTextGatedClient(
   let release: (() => void) | null = null;
   let last: Fingerprint | null = null;
 
+  // Fail open: a fingerprint that cannot be taken must never swallow a notification.
+  const fingerprint = (): Fingerprint | null => {
+    try {
+      return composerTextFingerprint(parent);
+    } catch (error) {
+      console.error("composer text gate: fingerprint error", error);
+      return null;
+    }
+  };
+
   const onParentNotify = () => {
-    const next = composerTextFingerprint(parent);
-    const skip = last !== null && sameFingerprint(last, next);
+    const next = fingerprint();
+    const skip = last !== null && next !== null && sameFingerprint(last, next);
     last = next;
     if (skip) return;
     for (const listener of listeners) {
@@ -139,7 +151,7 @@ export function createComposerTextGatedClient(
   const subscribe = (listener: Listener) => {
     listeners.add(listener);
     if (release === null) {
-      last = composerTextFingerprint(parent);
+      last = fingerprint();
       release = parent.subscribe(onParentNotify);
     }
     return () => {
