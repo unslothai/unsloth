@@ -9,7 +9,9 @@ GPU work or write model artifacts.
 from __future__ import annotations
 
 import hmac
+import ntpath
 import asyncio
+import posixpath
 from typing import Any
 
 from fastmcp import FastMCP
@@ -76,7 +78,20 @@ def _dump_redacted(value: Any) -> Any:
     """Diffusion status and run records name absolute output and checkpoint paths. A remote MCP
     caller is shown them the way an API-key caller is on the HTTP routes: as opaque references."""
     from hub.utils.host_paths import redact_host_paths
-    return redact_host_paths(_dump(value), via_api_key = True)
+    return _reference_absolute_paths(redact_host_paths(_dump(value), via_api_key = True))
+
+
+def _reference_absolute_paths(value: Any) -> Any:
+    """redact_host_paths keys on LLM field names, so diffusion's lora_path / ema_path / catalog_path
+    pass through it; any whole-string absolute path left is a host path."""
+    if isinstance(value, dict):
+        return {key: _reference_absolute_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_reference_absolute_paths(item) for item in value]
+    if isinstance(value, str) and (posixpath.isabs(value) or ntpath.isabs(value)):
+        from hub.utils.host_paths import cache_reference
+        return cache_reference(value) or ""
+    return value
 
 
 def _clamp(value: int, low: int, high: int) -> int:
@@ -181,8 +196,17 @@ def create_studio_mcp() -> FastMCP:
         from models.training import DiffusionTrainingStartRequest
         from routes.training import start_diffusion_training as start
 
+        from fastapi import HTTPException
+
+        from hub.utils.host_paths import redact_paths_in_text
+
         request = DiffusionTrainingStartRequest.model_validate(config)
-        return _dump_redacted(await start(request, current_subject = "mcp", via_api_key = True))
+        try:
+            result = await start(request, current_subject = "mcp", via_api_key = True)
+        except HTTPException as e:
+            # Refusals quote the resolved data_dir ("data_dir is not a directory: /home/...").
+            raise HTTPException(e.status_code, redact_paths_in_text(e.detail)) from None
+        return _dump_redacted(result)
 
     @mcp.tool
     async def stop_diffusion_training(save: bool = True) -> dict[str, Any]:

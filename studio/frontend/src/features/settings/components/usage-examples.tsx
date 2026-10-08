@@ -482,13 +482,20 @@ while True:
 files = [("files", open(p, "rb")) for p in ["cat1.png", "cat2.png"]]
 requests.post(f"{BASE}/api/train/diffusion/dataset", headers=HEADERS,
               data={"name": ${j(TRAIN.imageData)}}, files=files).raise_for_status()
-requests.post(f"{BASE}/api/train/diffusion/start", headers=HEADERS, json={
+image_job = {
     "base_model": ${j(TRAIN.imageBase)},
     "data_dir": ${j(TRAIN.imageData)},
     "output_dir": ${j(TRAIN.imageOut)},
     "instance_prompt": ${j(TRAIN.imagePrompt)},
     "train_steps": ${TRAIN.imageSteps},
-}).raise_for_status()
+}
+# The LLM worker exits a few seconds after "completed"; until then start answers 409.
+for _ in range(12):
+    r = requests.post(f"{BASE}/api/train/diffusion/start", headers=HEADERS, json=image_job)
+    if r.status_code != 409:
+        break
+    time.sleep(5)
+r.raise_for_status()
 
 while (s := requests.get(f"{BASE}/api/train/diffusion/status", headers=HEADERS).json())["active"]:
     print(s["step"], "/", s["total_steps"], s["loss"])

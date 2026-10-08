@@ -409,11 +409,22 @@ def test_diffusion_status_and_runs_hide_host_paths(monkeypatch):
     status = {
         "active": True,
         "output_dir": "/home/leo/.unsloth/outputs/cats-lora",
-        "lora_path": None,
+        "lora_path": "/home/leo/.unsloth/outputs/cats-lora/pytorch_lora_weights.safetensors",
+        "ema_path": None,
+        "catalog_path": "/home/leo/.unsloth/studio/loras/diffusion/cats-lora",
         "checkpoint_path": "C:\\Users\\leo\\.unsloth\\outputs\\cats-lora\\checkpoint-100",
         "data_dir": "cats",
+        "base_model": "stabilityai/stable-diffusion-xl-base-1.0",
     }
-    runs = {"runs": [{"job_id": "diff-1", "output_dir": "/home/leo/.unsloth/outputs/cats-lora"}]}
+    runs = {
+        "runs": [
+            {
+                "job_id": "diff-1",
+                "output_dir": "/home/leo/.unsloth/outputs/cats-lora",
+                "catalog_path": "/home/leo/.unsloth/studio/loras/diffusion/cats-lora",
+            }
+        ]
+    }
 
     async def fake_status(current_subject):
         return dict(status)
@@ -430,12 +441,42 @@ def test_diffusion_status_and_runs_hide_host_paths(monkeypatch):
     )
 
     seen = asyncio.run(_get_tool("get_diffusion_training_status").fn())
-    assert seen["active"] is True and seen["data_dir"] == "cats" and seen["lora_path"] is None
-    for key in ("output_dir", "checkpoint_path"):
+    assert seen["active"] is True and seen["data_dir"] == "cats" and seen["ema_path"] is None
+    assert seen["base_model"] == "stabilityai/stable-diffusion-xl-base-1.0"
+    for key in ("output_dir", "checkpoint_path", "lora_path", "catalog_path"):
         assert seen[key].startswith("ref:") and "leo" not in seen[key], (key, seen[key])
     listed = asyncio.run(_get_tool("list_diffusion_training_runs").fn())
     assert listed["runs"][0]["job_id"] == "diff-1"
-    assert listed["runs"][0]["output_dir"].startswith("ref:")
+    for key in ("output_dir", "catalog_path"):
+        assert listed["runs"][0][key].startswith("ref:"), (key, listed["runs"][0][key])
+
+
+def test_start_diffusion_training_refusal_hides_host_paths(monkeypatch):
+    from fastapi import HTTPException
+
+    class FakeDiffusionTrainingStartRequest:
+        @classmethod
+        def model_validate(cls, config):
+            return cls()
+
+    async def fake_start(request, current_subject, via_api_key):
+        raise HTTPException(400, "data_dir is not a directory: /home/leo/.unsloth/datasets/cats")
+
+    _stub_module(monkeypatch, "models")
+    _stub_module(
+        monkeypatch,
+        "models.training",
+        DiffusionTrainingStartRequest = FakeDiffusionTrainingStartRequest,
+    )
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", start_diffusion_training = fake_start)
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(_get_tool("start_diffusion_training").fn(config = {}))
+
+    assert raised.value.status_code == 400
+    assert raised.value.detail.startswith("data_dir is not a directory")
+    assert "leo" not in raised.value.detail
 
 
 def test_list_diffusion_training_runs_clamps_limit(monkeypatch):
