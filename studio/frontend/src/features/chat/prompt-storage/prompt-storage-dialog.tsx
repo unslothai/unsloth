@@ -99,6 +99,7 @@ import {
   ndjsonBody,
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
+import { savedBranchHead } from "../utils/branch-head";
 import { orderByParentChain } from "../utils/message-order";
 import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
@@ -256,7 +257,7 @@ async function loadConversationMessages(
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return [...instructions, ...raw];
-  const headId = liveBranchHeadId(liveBranch, raw);
+  const headId = branchHeadId(threadId, liveBranch, raw);
   return [
     ...instructions,
     ...orderByParentChain(raw, { includeSiblings, headId }),
@@ -287,12 +288,14 @@ async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> 
 }
 
 // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
-function liveBranchHeadId(
+function branchHeadId(
+  threadId: string,
   liveBranch: string[] | null,
   raw: Array<{ id: string }>,
 ): string | null | undefined {
   // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
-  if (!liveBranch?.length) return undefined;
+  // A chat not on screen exports the branch it was left on, the one reopening it shows.
+  if (!liveBranch?.length) return savedBranchHead(threadId, raw);
   const storedIds = new Set(raw.map((m) => m.id));
   return [...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null;
 }
@@ -1010,7 +1013,7 @@ export async function buildFineTuneJsonl(
     const ordered = hasParentIds
       ? (orderByParentChain(raw, {
           includeSiblings: false,
-          headId: liveBranchHeadId(liveBranch, raw),
+          headId: branchHeadId(id, liveBranch, raw),
         }) as typeof raw)
       : raw;
     const turns = messagesToFineTuneTurns([...instructions, ...ordered]);

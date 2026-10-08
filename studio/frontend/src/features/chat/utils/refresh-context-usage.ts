@@ -14,6 +14,7 @@ import { countChatInputTokens } from "../api/chat-api";
 import { isExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
+import { savedBranchHead } from "./branch-head";
 import { listStoredChatMessages } from "./chat-history-storage";
 import { orderBySelectedBranch } from "./message-order";
 
@@ -217,9 +218,10 @@ export async function refreshContextUsage(
     } else {
       const records = threadId ? await listStoredChatMessages(threadId) : [];
       if (stale()) return;
-      runMessages = orderBySelectedBranch(records).map(
-        storedMessageToRunMessage,
-      );
+      runMessages = orderBySelectedBranch(
+        records,
+        threadId ? savedBranchHead(threadId, records) : undefined,
+      ).map(storedMessageToRunMessage);
     }
 
     // /chat/count_tokens always 503s on images and /apply-template swaps each for a marker.

@@ -76,6 +76,38 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
   return chain.reverse();
 }
 
+// A saved branch head, followed down to its newest leaf: turns added under it since, from another
+// tab or device, extend that branch, and assistant-ui's import drops every descendant of the head
+// it is given. Undefined when the row is gone, which means the newest one. Parents resolve as the
+// history loader resolves them, so the leaf here is a leaf there.
+export function resolveSavedBranchHead<T extends ParentLinkedMessage>(
+  messages: T[],
+  savedHeadId: string | null | undefined,
+): string | undefined {
+  if (!savedHeadId) return undefined;
+  const sorted = messages.slice().sort(compareStoredMessages);
+  const resolveParent = createParentResolver();
+  const children = new Map<string, string[]>();
+  let found = false;
+  for (const message of sorted) {
+    if (message.id === savedHeadId) found = true;
+    const parentId = resolveParent(message);
+    if (parentId == null) continue;
+    const siblings = children.get(parentId) ?? [];
+    siblings.push(message.id);
+    children.set(parentId, siblings);
+  }
+  if (!found) return undefined;
+  let headId = savedHeadId;
+  const seen = new Set<string>([headId]);
+  for (;;) {
+    const next = children.get(headId)?.at(-1);
+    if (next === undefined || seen.has(next)) return headId;
+    seen.add(next);
+    headId = next;
+  }
+}
+
 // follow the newest parent chain because response slots can predate the next user message.
 export function orderByParentChain<T extends ParentLinkedMessage>(
   messages: T[],

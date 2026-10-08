@@ -15,6 +15,7 @@ import {
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { clearBranchHead } from "../utils/branch-head";
 import { clearComposerDraft } from "../utils/composer-draft";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
@@ -344,8 +345,11 @@ export async function deleteChatItems(
     cancelIfRunning(id);
   }
 
-  // Drop saved composer drafts so deleted threads leave no orphan keys.
-  for (const id of threadIds) clearComposerDraft(id);
+  // Drop saved composer drafts and branch heads so deleted threads leave no orphan keys.
+  for (const id of threadIds) {
+    clearComposerDraft(id);
+    clearBranchHead(id);
+  }
 
   // Optimistic tombstone: hide immediately; roll back on backend error.
   markChatThreadsDeleted(threadIds);

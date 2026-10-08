@@ -284,7 +284,9 @@ import {
   createAnnotationsFile,
 } from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { savedBranchHead } from "./utils/branch-head";
 import { estimateContextUsage } from "./utils/estimate-chat-tokens";
+import { orderBySelectedBranch } from "./utils/message-order";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
@@ -4252,7 +4254,11 @@ export function ChatPage({
       void listStoredChatMessages(threadId)
         .then((messages) => {
           const store = useChatRuntimeStore.getState();
-          const usage = savedUsageFor(messages, store) ?? estimateContextUsage(messages);
+          const branch = orderBySelectedBranch(
+            messages,
+            savedBranchHead(threadId, messages),
+          );
+          const usage = savedUsageFor(branch, store) ?? estimateContextUsage(branch);
           if (!usage) return;
           // Key by the thread this restore read, like the history loader: the await above can outlast a
           // switch away, and an unkeyed write would file this usage under the incoming thread.
