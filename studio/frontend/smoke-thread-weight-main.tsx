@@ -21,8 +21,11 @@ import {
   AssistantRuntimeProvider,
   type ChatModelAdapter,
   ExportedMessageRepository,
+  SimpleImageAttachmentAdapter,
   type ThreadMessageLike,
   useAui,
+  unstable_useRemoteThreadListRuntime,
+  type unstable_RemoteThreadListAdapter,
   useLocalRuntime,
 } from "@assistant-ui/react";
 import {
@@ -210,11 +213,28 @@ function buildMessages(
 }
 
 // A run would need a backend. Seeding goes through `thread.import`, which does not use this.
-const NEVER_RUNS: ChatModelAdapter = {
-  run: () => {
-    throw new Error("smoke-thread-weight does not run the model");
-  },
-};
+// `?stream=N` instead answers a sent message with N chunks of text 20ms apart, so the cost of
+// one streamed delta over a long thread can be measured without a backend (#12552).
+const STREAM_CHUNKS = Number(
+  new URLSearchParams(window.location.search).get("stream") ?? "0",
+);
+const NEVER_RUNS: ChatModelAdapter = STREAM_CHUNKS > 0
+  ? {
+      async *run({ abortSignal }) {
+        let text = "";
+        for (let chunk = 0; chunk < STREAM_CHUNKS; chunk++) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          if (abortSignal.aborted) return;
+          text += `word${chunk} `;
+          yield { content: [{ type: "text" as const, text }] };
+        }
+      },
+    }
+  : {
+      run: () => {
+        throw new Error("smoke-thread-weight does not run the model");
+      },
+    };
 
 function ThreadWeightApi({
   setThreadMounted,
@@ -225,6 +245,16 @@ function ThreadWeightApi({
 
   useEffect(() => {
     const api = {
+      /** Send one prompt, which `?stream=N` answers with N chunks. */
+      send(text: string): void {
+        aui.thread().append({
+          role: "user",
+          content: [{ type: "text", text }],
+        });
+      },
+      isRunning(): boolean {
+        return aui.thread().getState().isRunning;
+      },
       /** Replace the thread with `count` messages, oldest first. */
       seed(count: number, options?: SeedOptions): void {
         aui
@@ -363,8 +393,44 @@ function ThreadWeightApi({
   return null;
 }
 
+// `?remote=1` wraps the local runtime in the remote thread list the app uses
+// (runtime-provider.tsx), with an attachments adapter, so the composer and thread
+// states carry the same scopes and fields a real chat does.
+const REMOTE = new URLSearchParams(window.location.search).get("remote") === "1";
+
+const MEMORY_THREAD_LIST: unstable_RemoteThreadListAdapter = {
+  list: async () => ({ threads: [] }),
+  rename: async () => {},
+  archive: async () => {},
+  unarchive: async () => {},
+  delete: async () => {},
+  initialize: async (threadId) => ({ remoteId: threadId, externalId: undefined }),
+  generateTitle: async () => new ReadableStream() as never,
+  fetch: async (threadId) => ({
+    status: "regular",
+    remoteId: threadId,
+    externalId: undefined,
+    title: undefined,
+  }),
+};
+
+const ATTACHMENTS = new SimpleImageAttachmentAdapter();
+
+function useSmokeLocalRuntime() {
+  return useLocalRuntime(NEVER_RUNS, { adapters: { attachments: ATTACHMENTS } });
+}
+
+function useSmokeRuntime() {
+  return REMOTE
+    ? unstable_useRemoteThreadListRuntime({
+        runtimeHook: useSmokeLocalRuntime,
+        adapter: MEMORY_THREAD_LIST,
+      })
+    : useLocalRuntime(NEVER_RUNS);
+}
+
 function Harness(): ReactElement {
-  const runtime = useLocalRuntime(NEVER_RUNS);
+  const runtime = useSmokeRuntime();
   const [threadMounted, setThreadMounted] = useState(true);
   return (
     <TooltipProvider>
