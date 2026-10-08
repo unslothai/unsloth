@@ -15082,9 +15082,9 @@ _MIN_PAGE_CHARS = 2000
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 # Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections stripped during conversion.
 _MAX_FETCH_BYTES = 512 * 1024
-# News pages inline up to ~2.5 MB of styles and scripts before <body>, so HTML gets _MAX_FETCH_BYTES past <body>.
+# News pages inline up to ~2.5 MB of styles and scripts in <head>, so HTML gets _MAX_FETCH_BYTES past its end.
 _MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
-_BODY_TAG_RE = re.compile(rb"<body[\s/>]", re.IGNORECASE)
+_BODY_TAG_RE = re.compile(rb"<body[\s/>]|</head\s*>", re.IGNORECASE)
 # "%" is safe so an already-encoded URL is not re-encoded into %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
@@ -15780,7 +15780,7 @@ def _read_capped_body(
     cancel_event,
     body_window = None,
 ):
-    """read at most ``max_bytes``, and ``body_window`` past ``<body``, within the budget; ``(error_or_None, body)``."""
+    """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
     # HTTPError wraps the socket; tighten its deadline when present, while chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)

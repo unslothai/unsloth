@@ -428,9 +428,17 @@ def test_article_after_a_large_inline_head_is_read(monkeypatch):
             + b"x" * (4 * 1024 * 1024)
             + b"</script></body></html>",
         ),
+        (
+            "text/html",
+            b"<html><head><title>t</title></head><main>"
+            + b"<h1>Harbor ferry adds night service</h1><p>Boats run every thirty minutes.</p></main>"
+            + b"<script>"
+            + b"x" * (4 * 1024 * 1024)
+            + b"</script></html>",
+        ),
         ("text/plain", b"Harbor ferry adds night service\n" + b"log line\n" * (512 * 1024)),
     ],
-    ids = ["html", "text"],
+    ids = ["html", "html-without-body-tag", "text"],
 )
 def test_large_page_on_a_slow_link_still_returns_its_start(monkeypatch, content_type, body):
     clock = {"time": 1000.0}
