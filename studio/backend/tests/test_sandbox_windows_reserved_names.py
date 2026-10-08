@@ -122,9 +122,14 @@ def test_an_outside_hard_link_named_nul_still_refuses(monkeypatch, tmp_path):
         os_sandbox.scan_workdir_for_host_channels(str(workdir))
 
 
+def _on_disk(path):
+    # tmp_path is absolute; built here, not with the helper under test, so main runs the same fixture.
+    return _EXTENDED + path
+
+
 def _remove_extended(path):
     # pytest's own cleanup uses plain paths and cannot remove it.
-    extended = os_sandbox._extended_path(path)
+    extended = _on_disk(path)
     if os.path.isdir(extended):
         shutil.rmtree(extended)
     elif os.path.lexists(extended):
@@ -136,12 +141,12 @@ def test_a_nul_file_does_not_refuse_the_session_on_windows(tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     planted = str(workdir / "nul")
-    with open(os_sandbox._extended_path(planted), "w") as handle:
+    with open(_on_disk(planted), "w") as handle:
         handle.write("hi\n")
     try:
         # The defect this guards: a plain stat of the file answers for the NUL device.
         assert not stat.S_ISREG(os.lstat(planted).st_mode)
-        assert stat.S_ISREG(os.lstat(os_sandbox._extended_path(planted)).st_mode)
+        assert stat.S_ISREG(os.lstat(_on_disk(planted)).st_mode)
         assert os_sandbox.scan_workdir_for_host_channels(str(workdir)) == ()
     finally:
         _remove_extended(planted)
@@ -152,13 +157,13 @@ def test_a_nul_directory_is_walked_on_windows(tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     planted = str(workdir / "nul")
-    os.mkdir(os_sandbox._extended_path(planted))
+    os.mkdir(_on_disk(planted))
     try:
-        with open(os_sandbox._extended_path(os.path.join(planted, "out.txt")), "w") as handle:
+        with open(_on_disk(os.path.join(planted, "out.txt")), "w") as handle:
             handle.write("hi\n")
         assert os_sandbox.scan_workdir_for_host_channels(str(workdir)) == ()
         os.link(
-            os_sandbox._extended_path(os.path.join(planted, "out.txt")),
+            _on_disk(os.path.join(planted, "out.txt")),
             str(tmp_path / "outside.txt"),
         )
         with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "hard-linked from outside"):
@@ -182,7 +187,7 @@ def test_git_bash_redirect_to_nul_does_not_refuse_the_session(tmp_path):
     try:
         subprocess.run([bash, "-c", "echo hi > nul"], cwd = workdir, check = True, timeout = 60)
         assert stat.S_ISREG(
-            os.lstat(os_sandbox._extended_path(planted)).st_mode
+            os.lstat(_on_disk(planted)).st_mode
         ), "Git Bash did not leave a nul file"
         assert os_sandbox.scan_workdir_for_host_channels(str(workdir)) == ()
     finally:
