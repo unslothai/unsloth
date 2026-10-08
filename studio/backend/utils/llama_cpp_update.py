@@ -116,7 +116,7 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
 
 
 def _installed_build_number(binary: Optional[str]) -> Optional[int]:
-    """Best-effort build number from ``llama-server --version``. Current llama.cpp reports a semantic version then ``build NNNN``; older binaries put the build directly after ``version:``. None when unparseable or <= 1: a source build with no git tags reports build 1, treated as unknown (offer update)."""
+    """Best-effort build number from ``llama-server --version``. Current llama.cpp reports a semantic version then ``build NNNN``; older binaries put the build directly after ``version:``. A build <= 1 is what a ``git clone --depth 1`` source build stamps (setup's fallback, #12798), so it is recovered from the bNNNN tag naming the checkout's commit (_checkout_tag_build); None when that fails too, treated as unknown (offer update)."""
     if not binary:
         return None
     try:
@@ -134,10 +134,75 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     m = re.search(r"version:[^\r\n]*\bbuild\s+(\d+)\b", output)
     if not m:
         m = re.search(r"version:\s*(\d+)\b(?!\.)", output)
-    if not m:
+    if m and int(m.group(1)) > 1:
+        return int(m.group(1))
+    commit = re.search(r"version:[^\r\n]*\bcommit\s+([0-9a-fA-F]{7,64})\b", output) or re.search(
+        r"version:\s*\d+\s*\(([0-9a-fA-F]{7,64})\)", output
+    )
+    return _checkout_tag_build(binary, commit.group(1)) if commit else None
+
+
+def _checkout_tag_build(binary: str, reported_commit: str) -> Optional[int]:
+    """Build number of a source checkout from the ``bNNNN`` tag naming its HEAD, read from the git files (no git subprocess, no network): packed-refs (peeled entries included), loose refs/tags, and FETCH_HEAD, which is the only record setup.ps1's ``fetch --depth 1 origin bNNNN`` + ``checkout -B`` leaves. The commit the binary reports must be a prefix of HEAD, so a checkout moved after the build is not read as the binary's version. None on any mismatch or unreadable metadata."""
+    tags: list[tuple[str, str]] = []
+    packed: dict[str, str] = {}
+    try:
+        git_dir = next(
+            (p / ".git" for p in Path(binary).parents[:5] if (p / ".git").exists()), None
+        )
+        if git_dir is None or not git_dir.is_dir():
+            return None
+        head = (git_dir / "HEAD").read_text(encoding = "utf-8").strip()
+        packed_refs = git_dir / "packed-refs"
+        if packed_refs.is_file():
+            last_tag = None
+            for line in packed_refs.read_text(encoding = "utf-8").splitlines():
+                if line.startswith("^"):
+                    if last_tag:
+                        tags.append((line[1:].strip(), last_tag))
+                    continue
+                parts = line.split()
+                last_tag = None
+                if len(parts) == 2 and not line.startswith("#"):
+                    packed[parts[1]] = parts[0]
+                    if parts[1].startswith("refs/tags/"):
+                        last_tag = parts[1][len("refs/tags/") :]
+                        tags.append((parts[0], last_tag))
+        if head.startswith("ref:"):
+            ref = head[4:].strip()
+            loose = git_dir / ref
+            head = (
+                loose.read_text(encoding = "utf-8").strip()
+                if loose.is_file()
+                else packed.get(ref, "")
+            )
+        tags_dir = git_dir / "refs" / "tags"
+        if tags_dir.is_dir():
+            tags.extend(
+                (f.read_text(encoding = "utf-8").strip(), f.name)
+                for f in tags_dir.iterdir()
+                if f.is_file()
+            )
+        fetch_head = git_dir / "FETCH_HEAD"
+        if fetch_head.is_file():
+            for line in fetch_head.read_text(encoding = "utf-8").splitlines():
+                fm = re.match(r"([0-9a-fA-F]{40,64})\t[^\t]*\ttag '([^']+)'", line)
+                if fm:
+                    tags.append((fm.group(1), fm.group(2)))
+    except (OSError, UnicodeDecodeError, ValueError):
         return None
-    n = int(m.group(1))
-    return n if n > 1 else None
+    head = head.lower()
+    if not re.fullmatch(r"[0-9a-f]{40,64}", head):
+        return None
+    if not head.startswith(reported_commit.lower()):
+        return None
+    builds = [
+        int(tm.group(1))
+        for sha, name in tags
+        if sha.lower() == head and (tm := re.fullmatch(r"b(\d+)", name))
+    ]
+    builds = [n for n in builds if n > 1]
+    return max(builds) if builds else None
 
 
 def get_installed_llama_version() -> Optional[str]:
