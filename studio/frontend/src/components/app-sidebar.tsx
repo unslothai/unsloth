@@ -5486,7 +5486,6 @@ export function AppSidebar() {
           "min-h-0 max-h-[50%] overflow-y-auto overscroll-contain",
           "group-data-[collapsible=icon]:shrink group-data-[collapsible=icon]:max-h-none group-data-[collapsible=icon]:overflow-hidden",
           rowPadding,
-          // Scrolled: the nav stays above the list, give a little gap below it.
           scrolled ? "pb-[calc(5px*var(--ui-space-scale,1))]" : "pb-0",
         )}
       >
