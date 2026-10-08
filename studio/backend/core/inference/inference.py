@@ -1555,8 +1555,7 @@ class InferenceBackend:
                 if render_result is None:
                     raise
             else:
-                # If tools were requested but the (possibly overridden) template ignored
-                # them, fall back to the model's native template (shared with MLX).
+                # use the native template shared with MLX when an override ignores requested tools.
                 render_result = render_with_native_template_fallback(
                     formatted_prompt = formatted_prompt,
                     tokenizer = tokenizer,
@@ -1575,7 +1574,7 @@ class InferenceBackend:
             formatted_prompt = render_result.prompt
             reasoning_channel_markers = render_result.reasoning_channel_markers
             reasoning_channel_markers_resolved = True
-            # Suppress the tokenizer's BOS only when the template already emitted one.
+            # suppress the tokenizer's BOS only when the template already emitted one.
             add_special_tokens = not _prompt_already_has_bos(tokenizer, formatted_prompt)
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
