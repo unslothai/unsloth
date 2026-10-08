@@ -2858,9 +2858,7 @@ export function ChatPage({
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
-  // A ?new=<nonce> chat has no thread in the URL before or after its first send, and for the first render the
-  // store still holds the PREVIOUS chat's id until ThreadNewChatSwitch blanks it, so latch on having seen it
-  // blanked for this nonce.
+  // ?new=<nonce> lacks a URL thread; wait for ThreadNewChatSwitch to clear stale activeThreadId.
   const newChatBlankedRef = useRef<string | null>(null);
   if (
     search.new &&
@@ -2872,7 +2870,7 @@ export function ChatPage({
     search.new && newChatBlankedRef.current === search.new
       ? persistedActiveThreadId
       : null;
-  // A ?new chat keeps its first thread id: leaving Chat blanks activeThreadId and coming back restores it.
+  // retain the first thread id because leaving chat clears activeThreadId before returning.
   const newChatRef = useRef<{ nonce: string; threadId: string } | null>(null);
   if (
     search.new &&
