@@ -8,7 +8,9 @@ which has no ``generate()`` and, before TRL 0.26, no ``gradient_checkpointing_di
 wrapper of that context manager used to crash on both. Separately, transformers replaces every
 field of TRL's rollout GenerationConfig left at its global default (``top_p = 1.0``) with the
 model's own default (Qwen3 Instruct ships ``top_p = 0.8``), so PPO's KL and ratio would read
-logprobs from a truncated distribution.
+logprobs from a truncated distribution. Finally Unsloth's training forward drops the attention
+mask (it assumes right padding), while PPO left-pads every query, so the policy, reference and
+value forwards attended to the pads; PPO training opts those models into keeping the mask.
 
 The helpers are lifted with ``ast`` from ``unsloth/models/rl.py`` so the test stays CPU-only.
 """
@@ -27,7 +29,8 @@ RL_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.py"
 NAMES = (
     "_generation_target",
     "_hide_unsupported_gradient_checkpointing",
-    "_wrap_ppo_full_distribution_rollouts",
+    "_ppo_padding_mask_modules",
+    "_wrap_ppo_train",
 )
 
 
@@ -122,7 +125,7 @@ def test_ppo_rollouts_sample_full_distribution_then_restore():
     config = transformers.GenerationConfig(top_p = 0.8, top_k = 20, temperature = 0.7, min_p = 0.05)
     seen = {}
     trainer_cls = _trainer_class(seen)
-    NS["_wrap_ppo_full_distribution_rollouts"](trainer_cls)
+    NS["_wrap_ppo_train"](trainer_cls)
     assert trainer_cls(config).train() == "trained"
     # Filters transformers would copy over TRL's defaults are reset; TRL's explicit values stay.
     assert seen["top_p"] == 1.0 and seen["min_p"] is None
@@ -140,9 +143,9 @@ def test_ppo_rollouts_restore_on_error_and_wrap_once():
         def train(self):
             raise RuntimeError("oom")
 
-    NS["_wrap_ppo_full_distribution_rollouts"](_Trainer)
+    NS["_wrap_ppo_train"](_Trainer)
     first = _Trainer.train
-    NS["_wrap_ppo_full_distribution_rollouts"](_Trainer)
+    NS["_wrap_ppo_train"](_Trainer)
     assert _Trainer.train is first
     with pytest.raises(RuntimeError):
         _Trainer().train()
@@ -173,3 +176,54 @@ def test_rollout_logits_freed_after_scoring():
     tail = patched.split("unwrapped_model, logitss)", 1)[1]
     assert "logitss" not in tail
     assert edit("generate_completions", source) == source
+
+
+class _Module:
+    def __init__(
+        self,
+        *children,
+        base = False,
+    ):
+        self.children = children
+        if base:
+            self.embed_tokens = object()
+
+    def modules(self):
+        yield self
+        for child in self.children:
+            yield from child.modules()
+
+
+def test_ppo_training_keeps_padding_masks_then_restores():
+    transformers = pytest.importorskip("transformers")
+    policy_base, value_base, other_base = _Module(base = True), _Module(base = True), _Module(base = True)
+    seen = {}
+
+    class _Trainer:
+        def __init__(self):
+            self.policy_model = _Module(_Module(policy_base))
+            self.policy_model.generation_config = transformers.GenerationConfig()
+            self.value_model = _Module(value_base)
+            self.ref_model = None
+            self.reward_model = _Module(other_base)
+
+        def train(self):
+            seen["policy"] = policy_base._unsloth_keep_padding_mask
+            seen["value"] = value_base._unsloth_keep_padding_mask
+            seen["reward"] = getattr(other_base, "_unsloth_keep_padding_mask", None)
+
+    NS["_wrap_ppo_train"](_Trainer)
+    _Trainer().train()
+    # The reward model runs in eval mode, which already keeps the mask.
+    assert seen == {"policy": True, "value": True, "reward": None}
+    assert policy_base._unsloth_keep_padding_mask is False
+    assert value_base._unsloth_keep_padding_mask is False
+
+
+def test_llama_training_forward_mask_is_opt_in():
+    # Every other trainer keeps today's behaviour: training mode drops the mask unless the flag is set.
+    source = (RL_PATH.parent / "llama.py").read_text(encoding = "utf-8")
+    assert (
+        'elif self.training and not getattr(self, "_unsloth_keep_padding_mask", False):\n'
+        "        attention_mask = None\n"
+    ) in source
