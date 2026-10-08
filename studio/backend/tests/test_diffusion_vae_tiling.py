@@ -87,24 +87,32 @@ def test_axis_weights_partition_unity_and_skip_shared_edges(length):
     torch.testing.assert_close(total, torch.ones_like(total))
 
 
-def test_axis_weights_never_put_float64_on_the_device(monkeypatch):
+def test_axis_weights_keep_float64_off_a_device_without_it(monkeypatch):
     # MPS has no float64: the tiled encode on Apple Silicon raised before the first step (#12935).
-    made = []
-    for name in ("arange", "zeros", "ones"):
-        real = getattr(torch, name)
+    from torch.utils._python_dispatch import TorchDispatchMode
 
-        def spy(
-            *args,
-            _real = real,
-            **kwargs,
+    asked, made = [], []
+
+    class Record(TorchDispatchMode):
+        def __torch_dispatch__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
         ):
-            made.append((kwargs.get("dtype"), str(kwargs.get("device", "cpu"))))
-            return _real(*args, **kwargs)
+            out = func(*args, **(kwargs or {}))
+            if torch.is_tensor(out):
+                made.append((out.dtype, out.device.type))
+            return out
 
-        monkeypatch.setattr(torch, name, spy)
-    w = vt.axis_weights(vt.tile_starts(47), vt.TILE_LATENTS, 47, 16, torch, torch.device("meta"))
+    monkeypatch.setattr(vt, "float64_device", lambda device: asked.append(device) or "cpu")
+    target = torch.device("meta")
+    with Record():
+        w = vt.axis_weights(vt.tile_starts(47), vt.TILE_LATENTS, 47, 16, torch, target)
+    assert asked == [target]
     assert all(x.device.type == "meta" and x.dtype == torch.float32 for x in w)
-    assert all(dev == "cpu" for dtype, dev in made if dtype == torch.float64)
+    assert (torch.float64, "cpu") in made and (torch.float64, "meta") not in made
 
 
 @pytest.mark.parametrize("width, height", UI_SIZES)
