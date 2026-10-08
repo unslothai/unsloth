@@ -1202,11 +1202,6 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
         )
-    if request.is_decision:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Decision model training is not supported for MLX training yet.",
-        )
     if request.is_dataset_audio:
         raise HTTPException(
             status_code = 400,
@@ -1281,13 +1276,9 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
         from core.systemone.catalog import clef_unsupported_reason
         from utils.hardware import hardware
 
-        # Runs before _validate_training_platform: name the MLX limit, not a missing GPU.
-        if hardware.get_device() == hardware.DeviceType.MLX:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Decision model training is not supported for MLX training yet.",
-            )
-        if (reason := clef_unsupported_reason()) is not None:
+        # Apple Silicon trains Clef with MLX; elsewhere it needs the GPU the torch path runs on.
+        mlx = hardware.get_device() == hardware.DeviceType.MLX
+        if not mlx and (reason := clef_unsupported_reason()) is not None:
             raise HTTPException(status_code = 400, detail = reason)
         request.decision_layout = "llm" if llm else "clef"
         if request.model_subfolder is not None:
@@ -1516,6 +1507,18 @@ async def get_hardware_utilization(current_subject: str = Depends(get_current_su
     # Off-loop: the first call blocks on detection while the warm is importing torch.
     with gpu_query.display_reads():
         return await asyncio.to_thread(get_gpu_utilization)
+
+
+@router.get("/offload")
+async def get_offload_state(current_subject: str = Depends(get_current_subject)):
+    """Offload layers state from the last logged step: which decoder layers sit on the GPU or in
+    host RAM, prefetch depth, copy / stall / compute time, VRAM. ``{"active": false}`` when the run
+    does not offload. Polled by the live training view."""
+    progress = get_training_backend().trainer.get_training_progress()
+    offload = getattr(progress, "offload", None)
+    if not offload:
+        return {"active": False}
+    return {"active": True, **offload}
 
 
 @router.get("/hardware/visible")
@@ -1982,6 +1985,10 @@ async def start_training(
             "gradient_checkpointing": request.gradient_checkpointing.strip()
             if request.gradient_checkpointing and request.gradient_checkpointing.strip()
             else "unsloth",
+            "offload_layers": request.offload_layers,
+            "offload_vram_gb": request.offload_vram_gb,
+            "offload_vram_gb_per_device": request.offload_vram_gb_per_device,
+            "prefetch_depth": request.prefetch_depth,
             "use_rslora": request.use_rslora,
             "use_loftq": request.use_loftq,
             "use_dora": request.use_dora,
@@ -3632,6 +3639,25 @@ _DIFFUSION_DATASET_MEDIA_EXTS = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATAS
 _DIFFUSION_DATASET_TEXT_EXTS = {".txt", ".caption", ".jsonl"}
 
 
+def _reserved_diffusion_dataset_names() -> frozenset[str]:
+    """Names below the dataset root owned by other Studio dataset workflows."""
+    from utils.paths import (
+        dataset_uploads_root,
+        recipe_datasets_root,
+        seed_uploads_root,
+        unstructured_uploads_root,
+    )
+    return frozenset(
+        path.name.casefold()
+        for path in (
+            dataset_uploads_root(),
+            recipe_datasets_root(),
+            seed_uploads_root(),
+            unstructured_uploads_root(),
+        )
+    )
+
+
 def _resolve_dataset_caption(
     folder: Path, image_path: Path, meta_captions: dict[str, str]
 ) -> Optional[str]:
@@ -3669,11 +3695,8 @@ _DATASET_IMPORT_LOCKS_GUARD = threading.Lock()
 
 
 def _dataset_import_lock(folder: Path) -> "threading.Lock":
-    """One lock per dataset folder, so two imports cannot fill the same empty name at once. Keyed by
-    the resolved path (one folder can be reached by different names) and kept for the process
-    lifetime: there are a handful of folders and a Lock is tiny, while dropping one while another
-    thread holds it would defeat the point."""
-    key = str(folder.resolve(strict = False))
+    """serialize imports by case-folded resolved path; process-lifetime locks cannot disappear while held."""
+    key = str(folder.resolve(strict = False)).casefold()
     with _DATASET_IMPORT_LOCKS_GUARD:
         lock = _DATASET_IMPORT_LOCKS.get(key)
         if lock is None:
@@ -3839,6 +3862,8 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
     def scan() -> DiffusionTrainingInfoResponse:
         root = datasets_root()
         found: list[DiffusionDatasetSummary] = []
+        continuations: list[str] = []
+        reserved_names = _reserved_diffusion_dataset_names()
         try:
             # Skip hidden dirs: never user datasets, and an in-progress example import stages into a dot-prefixed
             # sibling.
@@ -3856,14 +3881,28 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
                 summary = _diffusion_dataset_summary(child)
             except OSError:
                 continue
-            # A clip-only folder is a real dataset for the video families, so admit on either count.
+            # clip-only folders are valid for video families.
             if summary.image_count > 0 or summary.clip_count > 0:
                 found.append(summary)
+            elif child.name.casefold() not in reserved_names:
+                # captions-only, or emptied by deleting its last item (hidden .thumbs may remain).
+                try:
+                    visible = [e for e in child.iterdir() if not e.name.startswith(".")]
+                    continuable = not visible or any(
+                        e.is_file() and e.suffix.lower() in _DIFFUSION_DATASET_TEXT_EXTS
+                        for e in visible
+                    )
+                except OSError:
+                    continuable = False
+                if continuable:
+                    continuations.append(child.name)
         families = [DiffusionTrainableFamily(**info) for info in _ui_trainable_families(found)]
         return DiffusionTrainingInfoResponse(
             datasets_root = str(root),
             outputs_root = str(outputs_root()),
             datasets = found,
+            dataset_names = [p.name for p in children],
+            continuation_dataset_names = continuations,
             families = families,
         )
 
@@ -3873,8 +3912,7 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
 _DATASET_NAME_RE = None
 
 
-# Reserved in EVERY directory on Windows, with or without an extension (NUL.txt is NUL). The superscript COM/LPT digits
-# count as digits to Win32 and are reserved too.
+# Windows reserves these names with any extension; superscript COM/LPT digits also count as digits in Win32.
 _WINDOWS_RESERVED_NAMES = frozenset(
     {"con", "prn", "aux", "nul"}
     | {f"com{d}" for d in "123456789¹²³"}
@@ -3947,13 +3985,11 @@ def _clean_diffusion_dataset_name(name: str) -> str:
 async def upload_diffusion_dataset(
     name: str = Form(...),
     files: list[UploadFile] = File(...),
+    create_only: bool = Form(False),
     current_subject: str = Depends(get_current_subject),
     _interlock: None = Depends(diffusion_dataset_interlock),
 ):
-    """Upload training images (and optional caption .txt / metadata.jsonl files) into a
-    named folder under the Unsloth datasets root, creating it if needed. Repeat uploads
-    into the same name accumulate, so large datasets can arrive in batches. The returned
-    name can be passed directly as ``data_dir`` to /diffusion/start."""
+    """repeat uploads accumulate in one Unsloth dataset folder; pass its name as ``data_dir`` to /diffusion/start."""
     import os
     import tempfile
 
@@ -3961,12 +3997,13 @@ async def upload_diffusion_dataset(
 
     _require_diffusion_dataset_mutable()
     cleaned = _clean_diffusion_dataset_name(name)
-    # Run the same symlink + root-containment check as the read/caption/delete endpoints before any write, so a
-    # symlinked name cannot make the upload write outside root.
+    if cleaned.casefold() in _reserved_diffusion_dataset_names():
+        raise HTTPException(
+            status_code = 400,
+            detail = f"'{cleaned}' is reserved for Studio's internal dataset storage.",
+        )
     folder = _resolve_dataset_folder(name, must_exist = False)
-    folder.mkdir(parents = True, exist_ok = True)
-    # Serialize against a concurrent import into the SAME folder: the training interlock counts
-    # mutations rather than excluding them. The duplicate-stem check below is inside the lock.
+    # serialize same-folder imports because the training interlock permits mutations; duplicate checks run here
     _lock = _dataset_import_lock(folder)
     if not _lock.acquire(blocking = False):
         raise HTTPException(
@@ -3976,17 +4013,49 @@ async def upload_diffusion_dataset(
                 "then upload again."
             ),
         )
+    created_folder = False
     try:
+        if create_only:
+            occupied = (
+                next(
+                    (
+                        p
+                        for p in folder.parent.iterdir()
+                        if p.is_dir()
+                        and not p.is_symlink()
+                        and p.name.casefold() == cleaned.casefold()
+                    ),
+                    None,
+                )
+                if folder.parent.is_dir()
+                else None
+            )
+            if occupied is not None:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Dataset '{occupied.name}' already exists. Pick it in the dataset list "
+                        "to add files, or choose another name."
+                    ),
+                )
+        try:
+            folder.mkdir(parents = True, exist_ok = not create_only)
+            created_folder = create_only
+        except FileExistsError:
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    f"Dataset '{cleaned}' already exists. Pick it in the dataset list to add "
+                    "files, or choose another name."
+                ),
+            )
         limit_bytes = get_upload_limit_bytes()
         total_bytes = 0
         uploaded = 0
         allowed = _DIFFUSION_DATASET_MEDIA_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
-        # Validate every filename up front so a valid file ahead of a bad one is not left on disk when the 400 fires;
-        # the upload is all-or-nothing.
+        # validate all filenames first so an invalid name cannot leave earlier files on disk
         names: list[str] = []
-        # Indexes over `names` so the three batch-local duplicate checks below are hash
-        # lookups, not scans over every earlier filename (O(N^2) at the 1000-file cap). First
-        # / insertion order is kept, so each error still names the filename the scans picked.
+        # use insertion-ordered indexes to avoid O(N^2) scans while preserving the filename reported in errors
         seen_names: set = set()
         first_name_by_casefold: dict = {}
         media_names_by_stem_cf: dict = {}
@@ -4159,6 +4228,13 @@ async def upload_diffusion_dataset(
             caption_count = summary.caption_count,
             uploaded = uploaded,
         )
+    except BaseException:
+        if created_folder:
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+        raise
     finally:
         _lock.release()
 

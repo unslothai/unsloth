@@ -2979,7 +2979,11 @@ class ChatCompletionRequest(BaseModel):
             "[x-unsloth] The external model's context window, in tokens. When "
             "Unsloth drops the oldest turns for a compaction_threshold, the prompt "
             "also leaves room for max_tokens within it, and max_tokens is lowered "
-            "if it would leave the prompt less than half of the window."
+            "if it would leave the prompt less than half of the window. With "
+            "context_overflow=truncate_oldest and no compaction_threshold, three "
+            "quarters of this window is used as the threshold; when this field is "
+            "also omitted, a vLLM, llama.cpp or Custom connection uses the window "
+            "its server reports on /models."
         ),
     )
     openai_code_exec_container_id: Optional[str] = Field(
@@ -5192,6 +5196,11 @@ class DiffusionStatusResponse(BaseModel):
         None,
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
         "keyed by Advanced control name; null when unloaded or unavailable.",
+    )
+    generation_defaults: Optional[Dict[str, float]] = Field(
+        None,
+        description = "Default steps and guidance for the loaded model (file header before base repo); "
+        "null when unloaded or on an engine that does not report it.",
     )
 
 

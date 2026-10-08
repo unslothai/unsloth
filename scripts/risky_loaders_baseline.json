@@ -251,6 +251,14 @@
       "reason": "Prefix-bounded to core.inference.<gallery>; the name comes from the fixed _GALLERIES table."
     },
     {
+      "file": "studio/backend/core/rag/embeddings.py",
+      "rule": "dynamic-import",
+      "sink": "import_from_string",
+      "digest": "ad319be07f7da5ad",
+      "count": 1,
+      "reason": "The metadata reference is accepted only with the sentence_transformers. prefix, so it can import installed package code only; non-package refs are skipped and the real loader performs the same lookup."
+    },
+    {
       "file": "studio/backend/core/systemone/laya_runtime.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -435,6 +443,14 @@
       "reason": "Loads unsloth's own _mlx_raw_text.py from the installed package directory; the path is derived from __file__."
     },
     {
+      "file": "unsloth/__init__.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "5f461f0c8175f45a",
+      "count": 1,
+      "reason": "Loads unsloth/models/decision_mlx.py from a fixed path inside this package on Apple Silicon, where importing unsloth.models would import torch; never a downloaded or user-supplied file."
+    },
+    {
       "file": "unsloth/_gpu_init.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -507,6 +523,14 @@
       "reason": "Imports the fixed literal peft.utils.transformers_weight_conversion held in a local."
     },
     {
+      "file": "unsloth/models/_decision_common.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "3738585f7559a2ad",
+      "count": 1,
+      "reason": "Imports the laya copy vendored in this repository at a fixed path (studio/backend/vendor/laya/__init__.py); never a downloaded or user-supplied file."
+    },
+    {
       "file": "unsloth/models/_utils.py",
       "rule": "dynamic-import",
       "sink": "get_class_from_dynamic_module",
@@ -547,20 +571,28 @@
       "reason": "Reads back a .pt file this function just wrote with torch.save into the local offload folder; never a downloaded file."
     },
     {
-      "file": "unsloth/models/decision.py",
-      "rule": "dynamic-import",
-      "sink": "spec_from_file_location",
-      "digest": "3738585f7559a2ad",
-      "count": 1,
-      "reason": "Imports the laya copy vendored in this repository at a fixed path (studio/backend/vendor/laya/__init__.py); never a downloaded or user-supplied file."
-    },
-    {
       "file": "unsloth/models/decision_gguf.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
       "digest": "6894b59960c95a35",
       "count": 1,
       "reason": "Loads Studio's standard-library gguf_export_contract.py from a constant path beside the unsloth package; nothing caller-supplied picks the file."
+    },
+    {
+      "file": "unsloth/models/decision_mlx.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "d4eff4fdda8d4ae4",
+      "count": 1,
+      "reason": "Loads the sibling _decision_common.py by a fixed name beside this file, so the MLX path shares the torch-free helpers without importing unsloth.models; nothing caller-supplied picks the file."
+    },
+    {
+      "file": "unsloth/models/decision_mlx.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "e1987e041e60a061",
+      "count": 1,
+      "reason": "Loads the sibling decision_gguf.py by a fixed name beside this file for GGUF export on MLX, without importing unsloth.models; nothing caller-supplied picks the file."
     },
     {
       "file": "unsloth/models/loader.py",

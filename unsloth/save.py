@@ -62,6 +62,7 @@ import psutil
 import re
 from .models.loader_utils import (
     get_model_name,
+    sync_load_when_quantizing,
     _resolve_hub_repo_cached_file,
     _tokenizer_cache_dir,
     _tokenizer_revision,
@@ -6102,12 +6103,13 @@ def _unsloth_save_torchao_with_given_config(
 
     # The original stays offloaded until the quantized copy is saved AND released, else both are resident at once and the restore OOMs.
     try:
-        quantized_model = auto_model.from_pretrained(
-            save_directory,
-            device_map = "auto",
-            quantization_config = quantization_config,
-            **kwargs,
-        )
+        with sync_load_when_quantizing(quantization_config, None):
+            quantized_model = auto_model.from_pretrained(
+                save_directory,
+                device_map = "auto",
+                quantization_config = quantization_config,
+                **kwargs,
+            )
 
         torchao_save_directory = save_directory + "-torchao"
 
@@ -6821,13 +6823,15 @@ def _unsloth_save_torchao(
         # Reload the staged 16bit checkpoint with torchao applied: bfloat16 is required, and device_map="auto" falls back to CPU, so this works on any hardware.
         print(f"Unsloth: Quantizing the merged model to torchao {kind}...")
         dtype_kw = {"torch_dtype": torch.bfloat16} if HAS_TORCH_DTYPE else {"dtype": torch.bfloat16}
-        quantized_model = auto_model.from_pretrained(
-            staging,
-            device_map = "auto",
-            quantization_config = TorchAoConfig(quant_type = quant_type),
-            trust_remote_code = model_trust,
-            **dtype_kw,
-        )
+        _reload_qconfig = TorchAoConfig(quant_type = quant_type)
+        with sync_load_when_quantizing(_reload_qconfig, None):
+            quantized_model = auto_model.from_pretrained(
+                staging,
+                device_map = "auto",
+                quantization_config = _reload_qconfig,
+                trust_remote_code = model_trust,
+                **dtype_kw,
+            )
         staged_tokenizer = auto_processor.from_pretrained(staging, trust_remote_code = tok_trust)
 
         quantized_model.save_pretrained(out_dir, safe_serialization = safe_serialization)

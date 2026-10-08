@@ -36,6 +36,7 @@ export {
   type ApiModelOverrides,
 } from "./api/model-overrides";
 export { useActiveModelConfig } from "./hooks/use-active-model-config";
+export { useVllmAvailable } from "./hooks/use-vllm-available";
 export type {
   DeletedModelRef,
   ExternalConnectionRef,

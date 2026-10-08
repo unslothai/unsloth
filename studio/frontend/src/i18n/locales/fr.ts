@@ -511,6 +511,7 @@ export const fr = {
     },
   },
   common: {
+    duplicate: "Dupliquer",
     cancel: "Annuler",
     close: "Fermer",
     delete: "Supprimer",
@@ -1166,6 +1167,8 @@ export const fr = {
     sandbox: {
       title: "Sandbox",
       description: "Indique si les appels d'outils Python et Terminal s'exécutent dans un bac à sable du système sur cet ordinateur.",
+      docs: "Documentation",
+      docsLabel: "Ouvrir la documentation du sandbox",
       toolsSection: "Cet ordinateur",
       refresh: "Actualiser",
       python: "Python",
@@ -2289,6 +2292,7 @@ export const fr = {
         "Impossible de charger toutes les quantifications. La commande utilisera la valeur de modèle disponible.",
       generatedCommand: "Commande générée",
       docs: "Documentation",
+      docsLabel: "Ouvrir la documentation de unsloth start",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2834,6 +2838,8 @@ export const fr = {
       revoking: "Révocation...",
       decisionApi: {
         title: "API de décision",
+        docs: "Documentation",
+        docsLabel: "Ouvrir la documentation de l'API de décision",
         description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",
@@ -2855,6 +2861,8 @@ export const fr = {
         backendAuto: "Automatique",
         backendDescription:
           "Automatique sert Clef via llama.cpp lorsque le modèle a une version GGUF, et se rabat sur PyTorch sinon. llama.cpp lit aussi les images.",
+        backendDescriptionMlx:
+          "Automatique sert le texte de Clef via MLX sur Apple Silicon, et via llama.cpp lorsque seule la version GGUF du modèle est chargée ou téléchargée. MLX ne lit que le texte ; llama.cpp lit aussi les images.",
         backendStatus: "Moteur d'exécution : {backend}",
         backendNone: "indisponible",
         mediaImages: "Lit le texte et les images.",
@@ -3454,6 +3462,31 @@ export const fr = {
         "Fraction du nombre total d'étapes d'entraînement entre les évaluations (0-1). Définissez 0 pour désactiver l'évaluation. Ex. 0,01 = évaluer tous les 1 % d'étapes.",
       seed: "Graine",
       seedTooltip: "Graine aléatoire pour la reproductibilité.",
+      offloadLayers: "Décharger des couches",
+      offloadLayersTooltip: "Garde des couches du décodeur en RAM système et transfère chacune vers le GPU juste avant son exécution, pour entraîner avec LoRA un modèle plus grand que votre VRAM. Auto en décharge le moins possible ; un nombre en décharge exactement autant. Nécessite le gradient checkpointing.",
+      offloadOff: "Désactivé",
+      offloadAuto: "Auto",
+      offloadCount: "Nombre",
+      offloadVramBudget: "Budget VRAM (Gio)",
+      offloadVramBudgetTooltip: "La VRAM maximale que cet entraînement peut utiliser. Auto décharge assez de couches pour rester en dessous, et deux entraînements peuvent partager une carte. Vide utilise toute la carte.",
+      offloadWholeCard: "toute la carte",
+      offloadVramBudgetGpu: "Budget VRAM GPU {index} (Gio)",
+      prefetchDepth: "Profondeur de préchargement",
+      prefetchDepthTooltip: "Nombre de couches déchargées copiées avant celle qui s'exécute. Auto commence à 1 et ne garde une réserve plus profonde que si elle réduit l'attente des copies de façon mesurable.",
+      offloadPanelTitle: "Couches déchargées",
+      offloadPanelGpu: "Sur le GPU",
+      offloadPanelHost: "En RAM système",
+      offloadPanelCopying: "Copie en cours",
+      offloadPanelSwapped: "déchargées",
+      offloadPanelStall: "attente des copies",
+      offloadPanelCopy: "copie par couche",
+      offloadPanelCompute: "calcul par couche",
+      offloadPanelVram: "VRAM",
+      offloadPanelDepth: "profondeur de préchargement",
+      offloadPanelPinned: "épinglée",
+      offloadPanelSweepNote: "La fenêtre mobile montre l'ordre de chargement des couches, ralenti pour être visible ; les chiffres sont mesurés sur la dernière étape.",
+      offloadPanelCard: "GPU {index}",
+      offloadPanelCardUnknown: "Carte inconnue",
       gradCheckpoint: "Checkpoint de gradient",
       gradCheckpointTooltip:
         "Échanger du calcul contre de la mémoire en recalculant les activations.",
@@ -3464,6 +3497,11 @@ export const fr = {
       readMore: "En savoir plus",
     },
     training: {
+      duplicateFailed: "Impossible de dupliquer l'entraînement",
+      duplicateDraftChanged:
+        "Les paramètres d'entraînement ont changé pendant le chargement. Réessayez de le dupliquer.",
+      duplicateNoModel:
+        "Cet entraînement n'a pas de configuration de modèle enregistrée.",
       startTraining: "Démarrer l'entraînement",
       starting: "Démarrage...",
       loadingModel: "Chargement du modèle...",
