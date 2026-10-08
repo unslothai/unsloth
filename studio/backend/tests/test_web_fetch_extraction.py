@@ -2142,6 +2142,25 @@ def test_table_spans_do_not_multiply_the_page_size():
     for html in (small_wide, wide, tall):
         assert len(html_to_markdown(html)) < 3 * len(html)
 
+    repeated = (
+        "<table><tr><td rowspan='1001'>"
+        + "x" * 100
+        + "</td></tr>"
+        + "<tr></tr>" * 1000
+        + "</table>"
+    )
+    rendered = html_to_markdown(repeated + "<p>Article sentinel.</p>")
+    assert rendered.index("Article sentinel.") < 16_000
+
+
+def test_generated_table_spans_do_not_make_a_main_content_candidate():
+    decoy = (
+        "<article><table><tr><td rowspan='51'>x</td></tr>" + "<tr></tr>" * 50 + "</table></article>"
+    )
+    body = "<main><p>" + "Real page body. " * 20 + "</p></main>"
+    out = html_to_markdown(f"<body>{decoy}{body}</body>", main_content = True)
+    assert "Real page body." in out
+
 
 def test_table_spans_stop_at_row_groups_tables_and_long_cells():
     def rows(html):
