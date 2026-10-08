@@ -298,14 +298,8 @@ def _patch_transformers_trainer_data_parallel():
 
 
 def _keep_unsloth_models_off_data_parallel(model, args):
-    """One GPU for an Unsloth LoRA model under any Trainer, as the TRL trainers already do.
-    Returns True when it changed `args`.
-
-    `_wrap_model` alone is too late and too narrow: Trainer.__init__ has already sized the
-    batch as `per_device_train_batch_size * n_gpu`, `training_step` still averages and divides
-    by `n_gpu`, and a wrapper that holds the model inside (SentenceTransformer) never shows
-    the marker at the top. On Kaggle T4x2 that sent Whisper's Seq2SeqTrainer into
-    `'int' object has no attribute 'mean'` and EmbeddingGemma into nn.DataParallel."""
+    """`args._n_gpu = 1` for a marked Unsloth model, as the TRL trainers do; True if changed.
+    Before Trainer.__init__: it sizes the batch from n_gpu, too early for `_wrap_model`."""
     try:
         if args is None or model is None or not hasattr(model, "modules"):
             return False
@@ -5154,7 +5148,7 @@ def patch_gradient_accumulation_fix(Trainer):
                 training_args = args[1]
             _keep_unsloth_models_off_data_parallel(model, training_args)
             _original_trainer_init(self, *args, **kwargs)
-            # Args the Trainer built itself: fix them now and the batch size it cached from them.
+            # Args the Trainer built itself; refresh the batch size it cached.
             if _keep_unsloth_models_off_data_parallel(
                 getattr(self, "model", None), getattr(self, "args", None)
             ):

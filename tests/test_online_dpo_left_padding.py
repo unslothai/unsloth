@@ -33,7 +33,7 @@ TRL_0_22_FORWARD = """
 """
 
 
-# TRL 0.18.2 and 0.19.x slice from prompt_ids.size(1) - 1 directly, with spaces around the colon.
+# TRL 0.18-0.19 spelling of the slice.
 TRL_0_18_FORWARD = """
     def _forward(self, model, prompt_ids, prompt_mask, completion_ids, completion_mask):
         num_tokens_to_truncate = max(prompt_ids.size(1) + completion_ids.size(1) - self.max_length, 0)

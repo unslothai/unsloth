@@ -227,8 +227,7 @@ def test_a_wheel_that_raises_anything_at_import_is_disabled(
 def test_a_broken_codec_with_a_remedy_is_reported_once(
     broken_torchcodec, monkeypatch, tmp_path, hint_from
 ):
-    # Kaggle / Colab vLLM: a torchcodec built for another torch fails to load. That used to be two
-    # UserWarnings about one package; the remedy now rides along with the fallback report.
+    # A torchcodec built for another torch: one warning carrying the remedy, not two.
     import sys
     import warnings
 

@@ -3029,7 +3029,6 @@ class FastSentenceTransformer(FastModel):
                 )
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
-                # One GPU under the trainer, as FastModel.get_peft_model marks its models.
                 from ._utils import _mark_unsloth_disable_data_parallel
 
                 _mark_unsloth_disable_data_parallel(peft_model)
@@ -3379,13 +3378,8 @@ def _patch_pooling_float16_accumulation():
 
 
 def _patch_dense_input_dtype():
-    """Feed Dense its own weight dtype.
-
-    The float32 pooled vector above meets a Dense head (EmbeddingGemma's 2_Dense / 3_Dense)
-    whose weights stay float16 on T4, and F.linear refuses the mix with "expected mat1 and
-    mat2 to have the same dtype" unless autocast is on. A mean-pooled vector is back in
-    float16 range, so casting it to the weight dtype is what the head saw before pooling
-    moved to float32."""
+    """Cast Dense input to its weight dtype: the float32 pooled vector meets float16 Dense
+    weights (EmbeddingGemma on T4), which F.linear refuses without autocast."""
     try:
         from sentence_transformers.models import Dense
     except Exception:

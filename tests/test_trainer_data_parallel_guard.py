@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""An Unsloth LoRA model under a plain Trainer on two GPUs (Kaggle T4x2) must train on one,
-as the TRL trainers already arrange. Seq2SeqTrainer (Whisper) died on
-`'int' object has no attribute 'mean'` and SentenceTransformerTrainer (EmbeddingGemma) in
-nn.DataParallel. Extracted with ast so no GPU is needed."""
+"""An Unsloth LoRA model under a plain Trainer on two GPUs trains on one (Kaggle T4x2 Whisper,
+EmbeddingGemma). Extracted with ast so no GPU is needed."""
 
 import ast
 import os

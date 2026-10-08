@@ -1344,8 +1344,7 @@ def test_a_model_that_fits_one_card_is_not_split(total_gib, capsys):
 
 
 def test_the_single_card_is_one_the_caller_allowed():
-    """max_memory {2, 3} on a four-GPU host withholds cuda:0 and cuda:1; "sequential" would
-    have filled cuda:0 anyway."""
+    """max_memory {2, 3} withholds cuda:0 and cuda:1."""
     seen = {}
 
     def planner(name, max_memory, **kw):
@@ -1364,7 +1363,7 @@ def test_the_single_card_is_one_the_caller_allowed():
     "total_gib, transient_gib, single",
     [
         (11.0, 0.0, True),  # 11.5 of 14.4 GiB: just under the 80% line
-        (11.2, 0.0, False),  # 11.7: just over
+        (11.2, 0.0, False),
         (10.0, 1.5, False),  # the load transient counts too
     ],
 )

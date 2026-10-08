@@ -7597,8 +7597,7 @@ def disable_torchcodec_if_broken():
                 if decodes
                 else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)"
             )
-            # One report for one broken codec: the version remedy, when there is one, rides along
-            # instead of arriving as a second warning about the same package.
+            # One warning per broken codec; the version remedy rides along.
             remedy = f" {remedy_hint}" if remedy_hint is not None else ""
             warnings.warn(
                 f"Unsloth: torchcodec is installed but {note}; {tail}.{remedy}", stacklevel = 2

@@ -555,11 +555,8 @@ def resolve_unsloth_device_map(
         return _declined
 
     def _plan_fits_first_device(plan, activation_share = 0.2):
-        """The first planned card, if the planned weights, head headroom and load transient fit on it
-        with `activation_share` of it still free, else None. That is about what a single T4 leaves
-        Gemma 3n E4B in float32 (9.7 GiB of weights), which its notebook trains in. The planned
-        cards are the ones the caller allowed, so a withheld card is never picked. Unknown fields
-        (an older planner) answer None, so the plan is used as before."""
+        """First allowed card if weights + headroom + load transient leave `activation_share` of it
+        free (about Gemma 3n E4B fp32 on a T4), else None, as for a planner without sizes."""
         try:
             budgets = plan.raw_budgets
             first = min(budgets)
@@ -659,9 +656,7 @@ def resolve_unsloth_device_map(
         return _declined
     single_device = _plan_fits_first_device(plan) if device_map == UNSLOTH_DEVICE_MAP else None
     if single_device is not None:
-        # Splitting a model one card holds buys nothing and costs cross-device bugs (Kaggle T4x2:
-        # Gemma 3n, DeepSeek-OCR and a Qwen3-0.6B distillation all died on "found at least two
-        # devices"). Load it onto the card the check measured; "unsloth_balanced" still splits.
+        # Splitting a model one card holds only adds cross-device bugs (Kaggle T4x2).
         print(
             f"Unsloth: Not splitting across GPUs; the model fits on cuda:{single_device} with room "
             f'to train. Pass device_map = "{UNSLOTH_BALANCED_DEVICE_MAP}" to split it anyway.'
