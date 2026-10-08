@@ -412,7 +412,7 @@ export function LanAccessSection() {
     status?.configuredPort ?? null,
   );
   const stopAction = status?.state === "online";
-  // a start (now or at boot) binds the saved choice, so an unsaved one would expose the addresses just unticked
+  // Start and auto-start bind the saved choice, never an unsaved one
   const actionDisabled =
     busy !== null ||
     (stopAction ? !status?.canStop : !status?.canStart || addressesDirty);
