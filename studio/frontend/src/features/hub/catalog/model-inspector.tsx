@@ -290,11 +290,11 @@ function ModelStatusChips({
     !isDataset &&
     unslothSupport.status === "unsupported" &&
     !unslothSupport.supportedIn;
+  const showVllm = !isDataset && unslothSupport.supportedIn === "vllm";
   // The format-unsupported chip already explains itself; this one covers the
   // supported-format model a chat-only host still can't run.
-  const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
+  const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported && !showVllm;
   const showVram = !isDataset && vramInfo && !isGguf;
-  const showVllm = !isDataset && unslothSupport.supportedIn === "vllm";
   if (!showUnsupported && !showChatOnly && !showVram && !showVllm) return null;
 
   const vramTone = vramInfo
