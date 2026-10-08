@@ -1326,19 +1326,60 @@ class _SizedPlan(_Plan):
         total_gib,
         budget_gib = 14.4,
         headroom_gib = 0.5,
+        devices = (0, 1),
+        transient_gib = 0.0,
     ):
-        super().__init__({"model.layers.0": 0, "lm_head": 1})
-        self.raw_budgets = {0: int(budget_gib * 2**30), 1: int(budget_gib * 2**30)}
+        super().__init__({"model.layers.0": devices[0], "lm_head": devices[-1]})
+        self.raw_budgets = {d: int(budget_gib * 2**30) for d in devices}
         self.total_weight_bytes = int(total_gib * 2**30)
         self.headroom_bytes = int(headroom_gib * 2**30)
-        self.load_transient_by_device = {}
+        self.load_transient_by_device = {devices[-1]: int(transient_gib * 2**30)}
 
 
 @pytest.mark.parametrize("total_gib", [1.2, 6.2, 9.7])  # Qwen3-0.6B, DeepSeek-OCR, Gemma 3n fp32
 def test_a_model_that_fits_one_card_is_not_split(total_gib, capsys):
     ns = _load(planner = lambda name, **kw: _SizedPlan(total_gib))
-    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
-    assert "fits on one GPU" in capsys.readouterr().out
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == {"": 0}
+    assert "fits on cuda:0" in capsys.readouterr().out
+
+
+def test_the_single_card_is_one_the_caller_allowed():
+    """max_memory {2, 3} on a four-GPU host withholds cuda:0 and cuda:1; "sequential" would
+    have filled cuda:0 anyway."""
+    seen = {}
+
+    def planner(name, max_memory, **kw):
+        seen["devices"] = sorted(max_memory)
+        return _SizedPlan(1.2, devices = sorted(max_memory))
+
+    ns = _load(devices = 4, planner = planner)
+    device_map = ns["resolve_unsloth_device_map"](
+        "unsloth", "m", planner_kwargs = {"max_memory": {3: "14GiB", 2: "14GiB"}}
+    )
+    assert seen["devices"] == [2, 3]
+    assert device_map == {"": 2}
+
+
+@pytest.mark.parametrize(
+    "total_gib, transient_gib, single",
+    [
+        (11.0, 0.0, True),  # 11.5 of 14.4 GiB: just under the 80% line
+        (11.2, 0.0, False),  # 11.7: just over
+        (10.0, 1.5, False),  # the load transient counts too
+    ],
+)
+def test_the_single_card_line_is_a_fifth_of_the_card_free(total_gib, transient_gib, single):
+    plan = _SizedPlan(total_gib, transient_gib = transient_gib)
+    ns = _load(planner = lambda name, **kw: plan)
+    expected = {"": 0} if single else plan.device_map
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == expected
+
+
+def test_a_plan_without_sizes_is_used_as_before():
+    """An older unsloth_zoo whose plan carries no sizes keeps its split."""
+    plan = _Plan({"model.layers.0": 0, "lm_head": 1})
+    ns = _load(planner = lambda name, **kw: plan)
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == plan.device_map
 
 
 def test_a_model_too_big_for_one_card_is_still_planned():
