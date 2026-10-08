@@ -20,7 +20,6 @@ export type BrowserDownload = {
   contentType: string;
   url: string | null;
   site?: string;
-  /** Asked for by a page opened beside a temporary chat. */
   temporary?: boolean;
 };
 
