@@ -39,7 +39,15 @@ class LlamaServerStatsLogger:
         self._url = f"{base_url.rstrip('/')}/metrics"
         # llama-server's --api-key covers /metrics.
         self._headers = dict(headers or {})
-        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        # Plain HTTP handlers only: build_opener's HTTPSHandler makes an SSL context, which this loopback scrape never needs.
+        self._opener = urllib.request.OpenerDirector()
+        for handler in (
+            urllib.request.ProxyHandler({}),
+            urllib.request.HTTPHandler(),
+            urllib.request.HTTPDefaultErrorHandler(),
+            urllib.request.HTTPErrorProcessor(),
+        ):
+            self._opener.add_handler(handler)
         self._log = logger
         self._interval = max(1.0, float(interval_s))
         self._stop = threading.Event()

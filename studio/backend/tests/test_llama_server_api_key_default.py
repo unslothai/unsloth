@@ -108,7 +108,7 @@ def test_stats_scrape_sends_the_key(monkeypatch):
 
 
 def test_capability_probe_reports_api_key_file_and_fails_open():
-    src = Path(llama_cpp.__file__).read_text()
+    src = Path(llama_cpp.__file__).read_text(encoding = "utf-8")
     assert '"supports_api_key_file": True' in src
     assert 'supports_api_key_file = _is_real("--api-key-file")' in src
     assert 'server_caps.get("supports_api_key_file", True)' in src
