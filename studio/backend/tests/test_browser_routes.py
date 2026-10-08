@@ -261,6 +261,16 @@ def test_a_malformed_header_charset_does_not_fall_through_to_meta_or_utf8(monkey
     assert "\x81" not in html
 
 
+def test_a_commented_meta_charset_is_ignored(monkeypatch):
+    body = b"<!-- <meta charset=shift_jis> --><p>caf\xc3\xa9</p>"
+    _fetch(
+        monkeypatch,
+        (None, body, "text/html"),
+        {"url": "https://example.com/", "charset": None},
+    )
+    assert "<p>café</p>" in json.loads(_call().body)["html"]
+
+
 @pytest.mark.parametrize(
     "body, charset",
     [

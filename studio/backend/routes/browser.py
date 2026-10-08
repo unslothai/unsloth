@@ -33,6 +33,7 @@ from core.inference.tools import (
     _WHATWG_CHARSET_CODECS,
     _fetch_url_raw,
     _normalize_url_scheme,
+    _sniff_meta_charset,
 )
 from loggers import get_logger
 
@@ -73,8 +74,6 @@ _CONTENT_ATTR_RE = re.compile(
 _REFRESH_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?([^'\"]*)['\"]?)?", re.IGNORECASE
 )
-_META_CHARSET_RE = re.compile(rb"""<meta[^<>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
-
 # The sandbox's opaque origin fails CORS module loads: self-contained modules are inlined, ones with imports keep src.
 _MODULE_SCRIPT_RE = re.compile(r"<script\b" + _TAG_BODY + r"\s*</script\s*>", re.IGNORECASE)
 # One start-tag attribute; quoted values are skipped whole so a name inside a value isn't matched.
@@ -1138,9 +1137,8 @@ def _decode_html(raw: bytes, charset: Optional[str]) -> str:
         if raw.startswith(bom):
             return raw.decode(codec, errors = "replace")
     labelled = _codec(charset)
-    sniffed = _META_CHARSET_RE.search(raw[:4096])
-    if labelled is None and sniffed:
-        labelled = _codec(sniffed.group(1).decode("ascii", "ignore"), _WHATWG_CHARSET_CODECS)
+    if labelled is None:
+        labelled = _sniff_meta_charset(raw[:4096], "text/html")
     if labelled:
         return raw.decode(labelled, errors = "replace")
     try:
