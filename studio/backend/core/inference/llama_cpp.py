@@ -3064,7 +3064,11 @@ def detect_reasoning_flags(
         # template only branches on 'max', so the literal scan misses 'high'. Add it
         # (matched on whole repo-name segments, so 'deepseek-v40' won't false-match)
         # to expose the full high/max ladder instead of max alone.
-        segments = re.split(r"[-_.]", (model_identifier or "").lower().split("/")[-1])
+        from core.inference.model_ids import hf_cache_repo_id
+
+        # A snapshot path's last component is the revision, so read it as its repo id first.
+        repo_name = hf_cache_repo_id(model_identifier) or model_identifier or ""
+        segments = re.split(r"[-_.]", repo_name.lower().split("/")[-1])
         is_dsv4 = "deepseek4" in segments or any(
             a == "deepseek" and b == "v4" for a, b in zip(segments, segments[1:])
         )

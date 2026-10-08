@@ -8808,6 +8808,52 @@ def _as_ollama_manifest_request(request):
     return request.model_copy(update = {"model_path": ref})
 
 
+def _as_local_scan_folder_request(request, owner_session: bool):
+    """*request* with a repo id whose GGUF copy sits outside the active hub cache (e.g. a scan folder) rewritten to it."""
+    from core.inference.local_model_resolver import _is_abs_path_id, resolve_local_gguf
+    from core.inference.model_ids import hf_cache_repo_id
+
+    identifier = (request.model_path or "").strip()
+    # Bare names mean unsloth/<name> remotely; a same-stemmed local file must not win them.
+    if (
+        not identifier
+        or "/" not in identifier
+        or is_ollama_manifest_ref(identifier)
+        or _is_abs_path_id(identifier)
+    ):
+        return request
+    # Owner session only (as _refused_repo_cached_gguf); a native lease names one exact artifact.
+    if not owner_session or getattr(request, "native_path_lease", None):
+        return request
+    wanted = f"{identifier}:{request.gguf_variant}" if request.gguf_variant else identifier
+    try:
+        resolved = resolve_local_gguf(wanted)
+    except Exception:
+        return request
+    if resolved is None:
+        return request
+    load_path, variant = str(resolved[0]), resolved[1]
+    # Only a GGUF snapshot of this repo: its path maps back to the repo id (status, unload, consent).
+    if not variant or (hf_cache_repo_id(load_path) or "").lower() != identifier.lower():
+        return request
+    # A repo directly in the active hub cache already loads by repo id without downloading.
+    try:
+        from hub.utils.hf_cache_state import same_existing_path
+        from routes.models import _resolve_hf_cache_dir
+
+        repo_dir = next(p for p in Path(load_path).parents if p.name.startswith("models--"))
+        if same_existing_path(repo_dir.parent, Path(_resolve_hf_cache_dir())):
+            return request
+    except Exception:
+        return request
+    logger.info(
+        "Resolved repo id '%s' to local path %s instead of downloading",
+        identifier,
+        load_path,
+    )
+    return request.model_copy(update = {"model_path": load_path, "gguf_variant": variant})
+
+
 async def _lease_ollama_model_ref(
     request: LoadRequest | ValidateModelRequest, *, operation: str, stack: ExitStack
 ) -> Optional[str]:
@@ -18072,6 +18118,14 @@ async def _load_model_impl(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    _requested_model_id = request.model_path
+    request = await asyncio.to_thread(
+        _as_local_scan_folder_request, request, _owner_session(fastapi_request)
+    )
+    # The client keeps the repo id it picked as the checkpoint; only the load reads the copy.
+    scan_folder_public_id = (
+        _requested_model_id if request.model_path != _requested_model_id else None
+    )
     if account_access.managed_account():
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
@@ -18323,7 +18377,9 @@ async def _load_model_impl(
             return _gguf_load_response(
                 llama_backend,
                 "already_loaded",
-                model_log_label if native_grant_backed else llama_backend.model_identifier,
+                model_log_label
+                if native_grant_backed
+                else scan_folder_public_id or llama_backend.model_identifier,
                 display_name = model_log_label if native_grant_backed else display_name,
                 is_local_model = _loaded_is_local_model(
                     llama_backend, native_grant_backed, llama_backend.model_identifier
@@ -19030,7 +19086,9 @@ async def _load_model_impl(
             return _gguf_load_response(
                 llama_backend,
                 "loaded",
-                model_log_label if native_grant_backed else public_model_identifier,
+                model_log_label
+                if native_grant_backed
+                else scan_folder_public_id or public_model_identifier,
                 display_name = model_log_label if native_grant_backed else config.display_name,
                 is_local_model = config.is_local,
                 inference_identifier = config.identifier,
@@ -19599,6 +19657,10 @@ async def validate_model(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    # The chat flow validates before /load; offline the remote probe would refuse the id.
+    request = await asyncio.to_thread(
+        _as_local_scan_folder_request, request, _owner_session(fastapi_request)
+    )
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
         _hf_offline_if_unreachable_for,
