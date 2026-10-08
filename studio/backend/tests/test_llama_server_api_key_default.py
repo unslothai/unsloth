@@ -69,7 +69,10 @@ def test_tool_guard_still_refuses_the_per_launch_key_file():
 
     assert tools._references_studio_credential("cat /tmp/x/llama_api_key_0123abcd")
     assert tools._references_studio_credential("cat /tmp/x/llama_api_key")
-    assert not tools._references_studio_credential("print('llama_api_key_x')")
+    # A basename or glob search finds the live file anywhere, so it is refused bare too.
+    assert tools._references_studio_credential("find / -name 'llama_api_key_*' -exec cat {} +")
+    # The unsuffixed name stays an ordinary identifier.
+    assert not tools._references_studio_credential("print(llama_api_key)")
 
 
 def test_stats_scrape_sends_the_key(monkeypatch):
@@ -87,16 +90,28 @@ def test_stats_scrape_sends_the_key(monkeypatch):
         def read(self):
             return b""
 
-    def _urlopen(request, timeout = None):
+    def _open(request, timeout = None):
         seen["auth"] = request.get_header("Authorization")
         return _Resp()
 
-    monkeypatch.setattr(llama_stats.urllib.request, "urlopen", _urlopen)
     logger = llama_stats.LlamaServerStatsLogger(
         "http://127.0.0.1:1", None, headers = {"Authorization": "Bearer k"}
     )
+    # The scrape never goes through an ambient proxy, which would receive the bearer.
+    assert not any(
+        isinstance(h, llama_stats.urllib.request.ProxyHandler) and h.proxies
+        for h in logger._opener.handlers
+    )
+    monkeypatch.setattr(logger._opener, "open", _open)
     logger._scrape()
     assert seen["auth"] == "Bearer k"
+
+
+def test_capability_probe_reports_api_key_file_and_fails_open():
+    src = Path(llama_cpp.__file__).read_text()
+    assert '"supports_api_key_file": True' in src
+    assert 'supports_api_key_file = _is_real("--api-key-file")' in src
+    assert 'server_caps.get("supports_api_key_file", True)' in src
 
 
 def _llama_requests(tree):

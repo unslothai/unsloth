@@ -9587,6 +9587,7 @@ class LlamaCppBackend:
                 # only a build whose --help positively lacks one drops it.
                 "supports_no_context_shift": True,
                 "supports_jinja": True,
+                "supports_api_key_file": True,
                 "supports_flash_attn": True,
                 "flash_attn_takes_value": True,
                 "supports_fit_ctx": False,
@@ -9643,6 +9644,7 @@ class LlamaCppBackend:
         # See the fallback dict: these fail open.
         supports_no_context_shift = True
         supports_jinja = True
+        supports_api_key_file = True
         supports_flash_attn = True
         flash_attn_takes_value = True
         supports_fit_ctx = False
@@ -9869,6 +9871,7 @@ class LlamaCppBackend:
             if probe_ok and blocks:
                 supports_no_context_shift = _is_real("--no-context-shift")
                 supports_jinja = _is_real("--jinja")
+                supports_api_key_file = _is_real("--api-key-file")
                 # Two answers, not one: whether the flag exists, and whether its
                 # declaration takes a value. A build predating flash attention
                 # has neither, and emitting the flag there is an immediate exit.
@@ -9982,6 +9985,7 @@ class LlamaCppBackend:
             "supports_kv_unified": supports_kv_unified,
             "supports_no_context_shift": supports_no_context_shift,
             "supports_jinja": supports_jinja,
+            "supports_api_key_file": supports_api_key_file,
             "supports_flash_attn": supports_flash_attn,
             "flash_attn_takes_value": flash_attn_takes_value,
             "supports_fit_ctx": supports_fit_ctx,
@@ -28456,7 +28460,14 @@ class LlamaCppBackend:
                 # permissive CORS).
                 import secrets as _secrets
 
-                if _llama_server_api_key_enabled():
+                _key_on = _llama_server_api_key_enabled()
+                if _key_on and not server_caps.get("supports_api_key_file", True):
+                    # A custom build predating --api-key-file would exit on the flag; run it keyless as before.
+                    logger.warning(
+                        "This llama-server build has no --api-key-file; starting it without an API key."
+                    )
+                    _key_on = False
+                if _key_on:
                     self._api_key = _secrets.token_urlsafe(32)
                     # Through a file, not argv: a command line is readable by every process of this Unix user, and the auth directory is not.
                     self._api_key_file = _write_direct_stream_key(self._api_key, self._api_key_file)

@@ -39,6 +39,7 @@ class LlamaServerStatsLogger:
         self._url = f"{base_url.rstrip('/')}/metrics"
         # llama-server's --api-key covers /metrics.
         self._headers = dict(headers or {})
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         self._log = logger
         self._interval = max(1.0, float(interval_s))
         self._stop = threading.Event()
@@ -60,7 +61,8 @@ class LlamaServerStatsLogger:
 
     def _scrape(self):
         try:
-            with urllib.request.urlopen(
+            # No proxy: the bearer must only ever go to the loopback server.
+            with self._opener.open(
                 urllib.request.Request(self._url, headers = self._headers), timeout = 3
             ) as r:
                 if r.status != 200:
