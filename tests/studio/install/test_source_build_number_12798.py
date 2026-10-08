@@ -1,9 +1,7 @@
-"""#12798: setup.sh / setup.ps1 source builds stamp the release tag's build number.
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-A --depth 1 clone has one commit, so llama.cpp's build-info.cmake reports build 1 and
-Studio shows the installed version as "unknown". The installers pass
--DLLAMA_BUILD_NUMBER=<N> for a bNNNN tag, and only for that.
-"""
+"""#12798: setup.sh / setup.ps1 pass -DLLAMA_BUILD_NUMBER=<N> for a bNNNN tag source build, and only then."""
 
 import re
 import shutil
@@ -90,7 +88,6 @@ def test_setup_ps1_sets_number_only_after_concrete_checkout():
     assert re.search(
         r"\} elseif \(\$UseConcreteRef\) \{\s*\$LlamaBuildNumber = \$TagBuildNumber", text[fresh:]
     )
-    # Step B consumes it.
     assert re.search(
         r"if \(\$LlamaBuildNumber\) \{\s*\$CmakeArgs \+= \"-DLLAMA_BUILD_NUMBER=\$LlamaBuildNumber\"",
         text,
@@ -98,7 +95,7 @@ def test_setup_ps1_sets_number_only_after_concrete_checkout():
 
 
 @requires_pwsh
-# PR builds never reach the two assignment sites (checked above), so only the ref parse is exercised here.
+# PR builds never reach the assignment sites (checked above).
 @pytest.mark.parametrize("ref,_pr,expected", [r for r in REFS if not r[1]])
 def test_setup_ps1_tag_parse(ref, _pr, expected):
     line = next(

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""#12798: a markerless llama.cpp built from a ``git clone --depth 1`` reports build 1, so the
-update banner read ``unknown -> <latest>`` forever. The build is recovered from the bNNNN tag
-naming the checkout's HEAD, using real shallow clones (file:// so --depth works offline)."""
+"""#12798: recover a --depth 1 source build's version from its bNNNN tag, on real offline shallow clones."""
 
 from __future__ import annotations
 
@@ -23,7 +21,7 @@ import utils.llama_cpp_update as upd  # noqa: E402
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason = "git not installed")
 
-# llama-server path -> what its --version prints; answered in-process so the test runs on Windows too.
+# Answered in-process so the test runs on Windows too.
 _VERSIONS: dict[str, str] = {}
 _real_run = subprocess.run
 

@@ -10554,8 +10554,7 @@ if ($LocalLlamaCppLinked) {
     # -- Step A: Clone or pull llama.cpp --
 
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
-    # A --depth 1 checkout has one commit, so llama.cpp stamps "build 1" and Studio cannot
-    # tell the installed version (#12798). Set only once the bNNNN tag is actually checked out.
+    # --depth 1 makes llama.cpp stamp build 1 (#12798); set only once the tag is checked out.
     $TagBuildNumber = if ($ResolvedSourceRef -match '^b(\d+)$') { $Matches[1] } else { $null }
     $LlamaBuildNumber = $null
 

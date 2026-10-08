@@ -116,7 +116,7 @@ def _resolve_prebuilt_for_host(*, force_refresh: bool = False) -> Optional[dict]
 
 
 def _installed_build_number(binary: Optional[str]) -> Optional[int]:
-    """Best-effort build number from ``llama-server --version``. Current llama.cpp reports a semantic version then ``build NNNN``; older binaries put the build directly after ``version:``. A build <= 1 is what a ``git clone --depth 1`` source build stamps (setup's fallback, #12798), so it is recovered from the bNNNN tag naming the checkout's commit (_checkout_tag_build); None when that fails too, treated as unknown (offer update)."""
+    """Best-effort build number from ``llama-server --version``. Current llama.cpp reports a semantic version then ``build NNNN``; older binaries put the build directly after ``version:``. A build <= 1 (setup's ``--depth 1`` source build, #12798) is recovered from the checkout's bNNNN tag; None when that fails, treated as unknown (offer update)."""
     if not binary:
         return None
     try:
@@ -143,8 +143,8 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
 
 
 def _checkout_tag_build(binary: str, reported_commit: str) -> Optional[int]:
-    """Build number of a source checkout from the ``bNNNN`` tag naming its HEAD, read from the git files (no git subprocess, no network): packed-refs (peeled entries included), loose refs/tags, and FETCH_HEAD, which is the only record setup.ps1's ``fetch --depth 1 origin bNNNN`` + ``checkout -B`` leaves. The commit the binary reports must be a prefix of HEAD, so a checkout moved after the build is not read as the binary's version. None on any mismatch or unreadable metadata."""
-    # tag name -> commits it names; a loose ref replaces its packed entry, as in git.
+    """Build number from the ``bNNNN`` tag naming the checkout's HEAD, from git files only. FETCH_HEAD is the only record setup.ps1's ``fetch --depth 1 origin bNNNN`` + ``checkout -B`` leaves. The binary's commit must prefix HEAD, so a checkout moved after the build is not misread. None on any mismatch."""
+    # A loose ref replaces its packed entry, as in git.
     tags: dict[str, set[str]] = {}
     packed: dict[str, str] = {}
     try:
