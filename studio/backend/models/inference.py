@@ -5192,6 +5192,11 @@ class DiffusionStatusResponse(BaseModel):
         description = "Per-control resolved value + provenance (source auto|explicit + reason), "
         "keyed by Advanced control name; null when unloaded or unavailable.",
     )
+    generation_defaults: Optional[Dict[str, float]] = Field(
+        None,
+        description = "Default steps and guidance for the loaded model (file header before base repo); "
+        "null when unloaded or on an engine that does not report it.",
+    )
 
 
 class DiffusionInferenceInfo(BaseModel):

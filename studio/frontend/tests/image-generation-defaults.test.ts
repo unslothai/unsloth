@@ -206,6 +206,10 @@ test("a community single file picked by path takes its family recipe once loaded
   // An unrecognised resident leaves the form alone.
   assert.equal(loadedRecipeFor(pick, "/models/unknown"), null);
   assert.equal(loadedRecipeFor(null, resident), null);
+  // The backend's header-read recipe wins: a renamed FLUX.1-dev keeps 20 steps, not its schnell base's 4.
+  const schnellBase = residentDefaultsKey("/models/my_flux.safetensors", "black-forest-labs/FLUX.1-schnell", null);
+  assert.deepEqual(loadedRecipeFor(pick, schnellBase, { steps: 20, guidance: 3.5 }), { steps: 20, guidance: 3.5 });
+  assert.equal(loadedRecipeFor(pick, schnellBase, { steps: 9, guidance: 0 }), null);
 });
 
 test("the Images page applies the loaded family recipe only to an untouched fallback form", () => {

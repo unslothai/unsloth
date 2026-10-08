@@ -14,6 +14,30 @@ _DENOISER_PREFIX = "model.diffusion_model."
 _PATCH_LOCK = threading.Lock()
 
 
+def whole_pipeline_gguf_resident_mib(path: Optional[str], *, dense_bytes: int = 2) -> Optional[int]:
+    """Resident MiB as ``load_whole_pipeline_gguf`` lays it out: quantized denoiser linears packed, every other tensor
+    dense at ``dense_bytes`` per element. None when the header cannot be read."""
+    try:
+        from gguf import GGMLQuantizationType, GGUFReader
+        tensors = GGUFReader(str(path)).tensors
+    except Exception:  # noqa: BLE001 - caller falls back to the packed-file estimate
+        return None
+    unquantized = {
+        GGMLQuantizationType.F32,
+        GGMLQuantizationType.F16,
+        GGMLQuantizationType.BF16,
+    }
+    total = 0
+    for t in tensors:
+        packed = (
+            t.name.startswith(_DENOISER_PREFIX)
+            and len(t.shape) == 2
+            and t.tensor_type not in unquantized
+        )
+        total += int(t.n_bytes) if packed else int(t.n_elements) * dense_bytes
+    return int(total * 1.05 / (1024 * 1024)) if total else None
+
+
 def split_whole_pipeline_checkpoint(checkpoint: dict, dtype: Any) -> tuple[dict, dict]:
     """(denoiser state dict still GGUF-packed, every other tensor dequantized at ``dtype``)."""
     from diffusers.quantizers.gguf.utils import GGUFParameter, dequantize_gguf_tensor

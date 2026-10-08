@@ -2650,6 +2650,7 @@ export function ImagesPage({
         const loadedRecipe = loadedRecipeFor(
           pickDefaults.current,
           residentDefaultsKey(loaded.repo_id ?? "", loaded.base_repo, loaded.resolved?.family_override),
+          loaded.generation_defaults,
         );
         pickDefaults.current = null;
         if (loadedRecipe && !pickRecipeSuperseded.current?.()) {

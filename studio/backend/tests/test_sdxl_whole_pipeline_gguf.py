@@ -247,3 +247,111 @@ def test_family_detection_for_the_pick_is_sdxl(tmp_path):
     _write_gguf(tmp_path / "RealVisXL_V4.0-q8_0.gguf", _SHAPES)
     fam = df.detect_family_for_pick(str(tmp_path), "RealVisXL_V4.0-q8_0.gguf")
     assert fam is not None and fam.name == "sdxl"
+
+
+def test_whole_pipeline_gguf_stages_only_the_base_config(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    from core.inference.diffusion import DiffusionBackend
+
+    _write_gguf(tmp_path / "RealVisXL_V4.0-q8_0.gguf", _SHAPES)
+    names = [
+        "model_index.json",
+        "unet/config.json",
+        "unet/diffusion_pytorch_model.safetensors",
+        "text_encoder/model.safetensors",
+        "tokenizer/vocab.json",
+        "vae/diffusion_pytorch_model.safetensors",
+    ]
+    listing = types.SimpleNamespace(
+        siblings = [types.SimpleNamespace(rfilename = n, size = 10**9) for n in names], sha = "abc"
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "HfApi",
+        lambda: types.SimpleNamespace(model_info = lambda *a, **k: listing),
+    )
+    _total, files = DiffusionBackend._estimate_download_bytes(
+        str(tmp_path),
+        "RealVisXL_V4.0-q8_0.gguf",
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        None,
+        kind = "gguf",
+        single_file_is_pipeline = True,
+    )
+    # The GGUF carries the UNet, text encoders and VAE: no base weight is staged.
+    assert sorted(files) == ["model_index.json", "tokenizer/vocab.json", "unet/config.json"]
+
+
+def test_whole_pipeline_gguf_resident_prices_dequantized_components(tmp_path, monkeypatch):
+    from core.inference import diffusion_gguf_pipeline as gp
+
+    q8, f16 = object(), object()
+    tensors = [
+        # quantized UNet linear: stays packed (100 bytes)
+        types.SimpleNamespace(
+            name = "model.diffusion_model.a.weight",
+            shape = [8, 8],
+            tensor_type = q8,
+            n_bytes = 100,
+            n_elements = 64,
+        ),
+        # quantized UNet conv and a quantized text encoder linear: both dequantized
+        types.SimpleNamespace(
+            name = "model.diffusion_model.c.weight",
+            shape = [2, 2, 2, 2],
+            tensor_type = q8,
+            n_bytes = 30,
+            n_elements = 16,
+        ),
+        types.SimpleNamespace(
+            name = "conditioner.embedders.0.w",
+            shape = [8, 8],
+            tensor_type = q8,
+            n_bytes = 70,
+            n_elements = 64,
+        ),
+    ]
+    fake = types.ModuleType("gguf")
+    fake.GGMLQuantizationType = types.SimpleNamespace(F32 = f16, F16 = f16, BF16 = f16)
+    fake.GGUFReader = lambda path: types.SimpleNamespace(tensors = tensors)
+    monkeypatch.setitem(sys.modules, "gguf", fake)
+    mib = 1024 * 1024
+    for t in tensors:
+        t.n_bytes *= mib
+        t.n_elements *= mib
+    # 100 packed + (16 + 64) * 2 dense = 260 MiB, plus the 5% margin
+    assert gp.whole_pipeline_gguf_resident_mib("x.gguf") == int(260 * 1.05)
+    assert gp.whole_pipeline_gguf_resident_mib("x.gguf", dense_bytes = 4) == int(420 * 1.05)
+    monkeypatch.setattr(fake, "GGUFReader", lambda path: (_ for _ in ()).throw(OSError("bad")))
+    assert gp.whole_pipeline_gguf_resident_mib("x.gguf") is None
+
+
+def test_status_reports_the_header_variant_recipe(tmp_path):
+    from core.inference.diffusion import _generation_defaults_for
+
+    # A renamed FLUX.1-dev whose base resolves to schnell: the header variant decides, as the OpenAI route does.
+    shapes = {
+        "double_blocks.0.img_attn.qkv.weight": [9216, 3072],
+        "single_blocks.0.linear1.weight": [21504, 3072],
+        "vector_in.in_layer.weight": [3072, 768],
+        "img_in.weight": [3072, 64],
+        "guidance_in.in_layer.weight": [3072, 256],
+    }
+    header = {k: {"dtype": "BF16", "shape": v, "data_offsets": [0, 0]} for k, v in shapes.items()}
+    raw = json.dumps(header).encode()
+    (tmp_path / "my_flux.safetensors").write_bytes(struct.pack("<Q", len(raw)) + raw)
+    assert dc.content_variant_hint(str(tmp_path), "my_flux.safetensors") == "flux.1-dev"
+    got = _generation_defaults_for(
+        str(tmp_path), "my_flux.safetensors", "black-forest-labs/FLUX.1-schnell"
+    )
+    assert (got["steps"], got["guidance"]) == df.default_generation_params("flux.1-dev")
+    assert (got["steps"], got["guidance"]) != df.default_generation_params(
+        "black-forest-labs/FLUX.1-schnell"
+    )
+    # SDXL fine-tune with an opaque name: its base names the family.
+    _write_gguf(tmp_path / "RealVisXL_V4.0-q8_0.gguf", _SHAPES)
+    got = _generation_defaults_for(
+        str(tmp_path), "RealVisXL_V4.0-q8_0.gguf", "stabilityai/stable-diffusion-xl-base-1.0"
+    )
+    assert got == {"steps": 25, "guidance": 7.0}
