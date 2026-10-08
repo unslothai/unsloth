@@ -178,3 +178,38 @@ def test_probe_failure_keeps_static(fake_cuda, monkeypatch):
     config = _llama_config()
     ids = torch.zeros(1, 1, dtype = torch.long)
     assert not _static_cache_does_not_fit(_model(config), ids, {"max_new_tokens": 4095})
+
+
+def _tiny_generate(monkeypatch, free_bytes):
+    """Real generate through unsloth_base_fast_generate on a random tiny Llama, with the
+    device reporting `free_bytes` free. Returns the cache class generate ended with."""
+    if not torch.cuda.is_available():
+        pytest.skip(reason = "the guard only measures CUDA devices")
+    from transformers import GenerationConfig, LlamaForCausalLM
+
+    torch.manual_seed(0)
+    model = LlamaForCausalLM(_llama_config()).to("cuda", torch.bfloat16).eval()
+    model.generation_config = GenerationConfig(max_length = 4096, pad_token_id = 0)
+    model._old_generate = model.generate
+    model.generate = types.MethodType(vision.unsloth_base_fast_generate, model)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (free_bytes, 80 * GB))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(vision.logger, "warning_once", lambda *a, **k: None)
+    ids = torch.ones(1, 5, dtype = torch.long, device = "cuda")
+    out = model.generate(
+        input_ids = ids,
+        attention_mask = torch.ones_like(ids),
+        max_new_tokens = 3,
+        do_sample = False,
+        return_dict_in_generate = True,
+    )
+    return type(out.past_key_values).__name__
+
+
+def test_generate_uses_dynamic_cache_when_static_does_not_fit(monkeypatch):
+    assert _tiny_generate(monkeypatch, free_bytes = 1024) == "DynamicCache"
+
+
+def test_generate_keeps_static_cache_when_it_fits(monkeypatch):
+    assert _tiny_generate(monkeypatch, free_bytes = 40 * GB) == "StaticCache"
