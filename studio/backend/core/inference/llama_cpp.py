@@ -610,6 +610,8 @@ class _LlamaStreamCancelled(Exception):
 # vulkan-hpp's DeviceLostError reads "vk::Queue::submit: ErrorDeviceLost"; the raw
 # enum name covers a VkResult reported without vulkan-hpp.
 _GPU_DEVICE_LOST_MARKERS = ("ErrorDeviceLost", "VK_ERROR_DEVICE_LOST")
+# How long a device loss seen in the server log waits before retiring the server.
+_DEVICE_LOST_LOG_GRACE_S = 2.0
 
 
 def _is_gpu_device_lost(exc: BaseException) -> bool:
@@ -17902,8 +17904,10 @@ class LlamaCppBackend:
         startup_len: Optional[int] = None
         log_bytes = 0
         levelled = to_info = False
+        proc = self._process
+        device_lost_seen = False
         try:
-            for line in self._process.stdout:
+            for line in proc.stdout:
                 line = line.rstrip()
                 if line:
                     lines = self._stdout_lines
@@ -17928,6 +17932,15 @@ class LlamaCppBackend:
                     if level is not None:
                         levelled = True
                         to_info = level.group(1) in "WE" or (ready and level.group(1) == "I")
+                        # Only the server's own error lines: unprefixed lines can be a
+                        # request dump carrying user text.
+                        if (
+                            not device_lost_seen
+                            and level.group(1) == "E"
+                            and any(marker in line for marker in _GPU_DEVICE_LOST_MARKERS)
+                        ):
+                            device_lost_seen = True
+                            self._retire_device_lost_server_soon(proc)
                     elif not levelled:
                         to_info = ready or _llama_line_is_warning_or_error(line, line_lower)
                     try:
@@ -35694,16 +35707,39 @@ class LlamaCppBackend:
                 or self._cancel_event.is_set()
             ):
                 return
-            logger.warning(
-                f"llama-server for '{self._model_identifier}' lost its GPU device "
-                "(the graphics driver reset it); restarting it. On Intel Arc with "
-                "Vulkan, GGML_VK_DISABLE_COOPMAT=1 may avoid the reset."
-            )
+            # Deliberate kill: the MTP crash watchdog must not read it as an MTP crash.
+            self._stop_mtp_crash_watchdog()
             try:
                 served_by.kill()
                 served_by.wait(timeout = 10)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        try:
+            logger.warning(
+                f"llama-server for '{self._model_identifier}' lost its GPU device "
+                "(the graphics driver reset it); restarted it. On Intel Arc with "
+                "Vulkan, GGML_VK_DISABLE_COOPMAT=1 may avoid the reset."
+            )
+        except Exception:
+            # The logger raises once stdout is closed; recovery must not.
+            pass
+
+    def _retire_device_lost_server_soon(self, served_by) -> None:
+        """Retire a server whose own log reported a lost GPU device.
+
+        Covers requests Studio does not parse itself (the OpenAI and Anthropic
+        passthrough), whose next request then respawns through the dead-server path.
+        The grace lets a Studio request that hit the same error retire and retry first.
+        """
+
+        def _retire():
+            time.sleep(_DEVICE_LOST_LOG_GRACE_S)
+            self._retire_device_lost_server(served_by)
+
+        try:
+            threading.Thread(target = _retire, daemon = True, name = "llama-device-lost").start()
+        except RuntimeError:
+            pass
 
     @contextlib.contextmanager
     def _open_chat_stream_with_respawn_retry(
@@ -36020,6 +36056,7 @@ class LlamaCppBackend:
         _apply_seeded_llama_request(payload, seed)
         payload["stream_options"] = {"include_usage": True}
 
+        served_by = getattr(self, "_process", None)
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
         in_thinking = False
@@ -36027,7 +36064,6 @@ class LlamaCppBackend:
         _metadata_usage = None
         _metadata_timings = None
         _metadata_finish_reason = None
-        served_by = getattr(self, "_process", None)
 
         def _replay_on_replacement_server():
             # One retry on a respawned server, bounded by the private flag. Only taken

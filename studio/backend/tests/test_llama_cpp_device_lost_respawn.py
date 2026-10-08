@@ -259,3 +259,64 @@ def test_a_late_caller_does_not_kill_the_replacement(harness):
 
     assert backend._process is replacement and replacement.poll() is None
     assert len(loads) == 1
+
+
+def _logging_child(line: str):
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            f"import sys, time; print({line!r}, flush = True); time.sleep(120)",
+        ],
+        stdout = subprocess.PIPE,
+        text = True,
+    )
+
+
+@pytest.mark.parametrize(
+    "line, retired",
+    [
+        (
+            "0.01.000.000 E slot iterate: id  0 | got exception: vk::Queue::submit: ErrorDeviceLost",
+            True,
+        ),
+        (
+            "0.01.000.000 I slot launch_slot_: id  0 | prompt: what does ErrorDeviceLost mean?",
+            False,
+        ),
+        ("what does vk::Queue::submit: ErrorDeviceLost mean?", False),
+    ],
+    ids = ["server_error", "info_line", "unprefixed_request_dump"],
+)
+def test_a_device_loss_in_the_server_log_retires_the_server(monkeypatch, line, retired):
+    # The passthrough endpoints forward llama-server's error untouched, so the
+    # server's own error log is what retires the server for them.
+    import core.inference.llama_cpp as llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_DEVICE_LOST_LOG_GRACE_S", 0.0)
+    child = _logging_child(line)
+    try:
+        backend = LlamaCppBackend()
+        backend._process = child
+        backend._model_identifier = "unsloth/test-GGUF"
+        drain = threading.Thread(target = backend._drain_stdout, daemon = True)
+        drain.start()
+        try:
+            child.wait(timeout = 5)
+        except subprocess.TimeoutExpired:
+            pass
+        assert (child.poll() is not None) is retired
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+
+
+def test_retiring_disarms_the_mtp_crash_watchdog(harness):
+    backend, first, _loads, _broken_hits, _healthy_hits = harness(DEVICE_LOST_BODY)
+    stop = threading.Event()
+    backend._mtp_watchdog_stop = stop
+
+    backend._retire_device_lost_server(first)
+
+    assert stop.is_set() and first.poll() is not None
