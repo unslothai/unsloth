@@ -16774,6 +16774,22 @@ _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE = (
     "build of this model instead."
 )
 
+# The optional vLLM engine loads compressed-tensors checkpoints (#11728); said only where it can run.
+_COMPRESSED_TENSORS_VLLM_HINT = (
+    " Or run it with vLLM: open this model's run settings and set Inference engine to vLLM."
+)
+
+
+def _vllm_engine_hint(engine: Optional[str]) -> str:
+    """Empty unless this host can run vLLM; ``wait = False`` keeps the GPU probe off this path."""
+    if engine not in (None, "auto"):
+        return ""
+    try:
+        from core.inference.engine_install import support_reason
+        return _COMPRESSED_TENSORS_VLLM_HINT if support_reason("vllm", wait = False) is None else ""
+    except Exception:
+        return ""
+
 
 def _diagnosis_text(msg: str) -> str:
     """``msg`` up to the startup-diagnostics block, which is not ours to read.
@@ -16818,7 +16834,7 @@ def _is_missing_compressed_tensors_error(msg: str) -> bool:
     return any(sig in lower_msg for sig in _MISSING_COMPRESSED_TENSORS_SIGNATURES)
 
 
-def _unsupported_quantization_detail(msg: str) -> Optional[str]:
+def _unsupported_quantization_detail(msg: str, engine: Optional[str] = None) -> Optional[str]:
     """The refusal to show for ``msg``, or None when it is not about quantization.
 
     One place to add a signature to, so load, native load and validate cannot drift.
@@ -16826,7 +16842,7 @@ def _unsupported_quantization_detail(msg: str) -> Optional[str]:
     if _is_unsupported_nvfp4_inference_error(msg):
         return _NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
     if _is_missing_compressed_tensors_error(msg):
-        return _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE
+        return _COMPRESSED_TENSORS_INFERENCE_UNSUPPORTED_MESSAGE + _vllm_engine_hint(engine)
     return None
 
 
@@ -19389,7 +19405,9 @@ async def _load_model_impl(
         raise
     except ValueError as e:
         redacted_msg = redact_native_paths(str(e))
-        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        _unsupported_quantization = _unsupported_quantization_detail(
+            redacted_msg, getattr(request, "engine", None)
+        )
         if _unsupported_quantization is not None:
             logger.warning(
                 "Unsupported quantization while loading '%s': %s",
@@ -19439,7 +19457,9 @@ async def _load_model_impl(
             raise HTTPException(status_code = 400, detail = HUB_TOKEN_REJECTED_ERROR)
         # Friendlier message for models Unsloth cannot load.
         redacted_msg = redact_native_paths(str(e))
-        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        _unsupported_quantization = _unsupported_quantization_detail(
+            redacted_msg, getattr(request, "engine", None)
+        )
         if _unsupported_quantization is not None:
             logger.warning(
                 "Unsupported quantization while loading '%s': %s",
@@ -20093,7 +20113,9 @@ async def validate_model(
                     "Check the name, or add a token with access to it in Settings."
                 ),
             )
-        _unsupported_quantization = _unsupported_quantization_detail(redacted_msg)
+        _unsupported_quantization = _unsupported_quantization_detail(
+            redacted_msg, getattr(request, "engine", None)
+        )
         if _unsupported_quantization is not None:
             logger.warning(
                 "Unsupported quantization while validating '%s': %s",
