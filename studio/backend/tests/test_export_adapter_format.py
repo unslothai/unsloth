@@ -444,3 +444,110 @@ def test_gguf_converter_uses_loaded_snapshot(monkeypatch, tmp_path):
     backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
     cmd = calls[-1][0]
     assert cmd[cmd.index("--base") + 1] == str(snap) and "--base-model-id" not in cmd
+
+
+def _fake_github(monkeypatch, routes):
+    """routes: url suffix or substring -> bytes/obj (served) or Exception (raised)."""
+    import io
+    import urllib.error
+
+    from utils import llama_cpp_source
+
+    urls = []
+
+    def _open(url, timeout = 60):
+        urls.append(url)
+        assert "ggml-org" not in url
+        for key, value in routes.items():
+            if url.endswith(key) or key in url:
+                if value is None:
+                    raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+                data = value if isinstance(value, bytes) else json.dumps(value).encode()
+                return io.BytesIO(data)
+        raise AssertionError(url)
+
+    monkeypatch.setattr(llama_cpp_source, "_open", _open)
+    return urls
+
+
+def test_gguf_converter_reads_exact_commit_source_archive(monkeypatch, tmp_path):
+    import hashlib
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    tag, commit = "b9000-mix-abc", "a" * 40
+    tarball = _fork_source_tarball(tag)
+    asset = f"llama.cpp-source-commit-{commit}.tar.gz"
+    _fake_github(
+        monkeypatch,
+        {
+            "/llama-prebuilt-sha256.json": {
+                "release_tag": tag,
+                "source_commit": commit,
+                "artifacts": {asset: {"sha256": hashlib.sha256(tarball).hexdigest()}},
+            },
+            f"/{asset}": tarball,
+        },
+    )
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
+
+
+def test_gguf_converter_bare_fork_tag_maps_to_mix_release_across_pages(monkeypatch, tmp_path):
+    import hashlib
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = lambda d: (
+        "unslothai/llama.cpp",
+        "b9000",
+    )
+    tag = "b9000-mix-def"
+    tarball = _fork_source_tarball(tag)
+    urls = _fake_github(
+        monkeypatch,
+        {
+            "/download/b9000/llama-prebuilt-sha256.json": None,
+            f"/download/{tag}/llama-prebuilt-sha256.json": {
+                "release_tag": tag,
+                "artifacts": {
+                    f"llama.cpp-source-{tag}.tar.gz": {
+                        "sha256": hashlib.sha256(tarball).hexdigest()
+                    }
+                },
+            },
+            f"/llama.cpp-source-{tag}.tar.gz": tarball,
+            "&page=1": [{"tag_name": f"b{9100 + i}-mix-x", "draft": False} for i in range(100)],
+            "&page=2": [{"tag_name": tag, "draft": False}],
+        },
+    )
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
+    assert any("&page=2" in u for u in urls)
+
+
+@pytest.mark.parametrize(
+    "revision,legacy",
+    [
+        (("unslothai/llama.cpp", "b9000-mix-abc"), "llama.cpp-source-b9000"),
+        ((None, None), "llama.cpp-source"),
+    ],
+)
+def test_gguf_converter_reuses_tree_from_previous_exporter_offline(
+    monkeypatch, tmp_path, revision, legacy
+):
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    zoo = sys.modules["unsloth_zoo.llama_cpp"]
+    zoo._resolve_converter_revision = lambda d: revision
+    zoo._converter_network_allowed = lambda: False
+    old = tmp_path / "home" / legacy
+    (old / "gguf-py").mkdir(parents = True)
+    (old / "convert_lora_to_gguf.py").write_text("")
+    _fake_github(monkeypatch, {})
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(old / "convert_lora_to_gguf.py")

@@ -1937,6 +1937,7 @@ class ExportBackend:
 
         default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
         source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
+        base_source_dir = source_dir
         # A user-set scripts dir is authoritative and is checked before any network revision lookup.
         pinned_dir = os.environ.get("UNSLOTH_LLAMA_CPP_SCRIPTS_DIR", "").strip()
         if pinned_dir:
@@ -1969,6 +1970,13 @@ class ExportBackend:
                 ]
                 if cached:
                     converter = os.path.join(cached[-1], "convert_lora_to_gguf.py")
+            # Trees the previous git-clone exporter left: llama.cpp-source-<upstream tag>, or
+            # llama.cpp-source when no revision was known.
+            legacy = base_source_dir + (f"-{tag.split('-mix-')[0]}" if tag else "")
+            if converter is None and os.path.isfile(
+                os.path.join(legacy, "convert_lora_to_gguf.py")
+            ):
+                converter = os.path.join(legacy, "convert_lora_to_gguf.py")
         if converter is None:
             if not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
                 raise RuntimeError(

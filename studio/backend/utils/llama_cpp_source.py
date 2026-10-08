@@ -32,7 +32,7 @@ def source_asset_name(tag: str) -> str:
 
 
 def is_fork_release_tag(repo: Optional[str], tag: Optional[str]) -> bool:
-    return repo == FORK_REPO and bool(tag)
+    return repo == FORK_REPO and bool(tag) and "-mix-" in tag
 
 
 def _asset_url(tag: Optional[str], name: str) -> str:
@@ -59,29 +59,43 @@ def _fetch_json(url: str):
 
 def _matching_fork_tag(upstream_tag: str) -> Optional[str]:
     """Newest non-draft fork release built on ``upstream_tag`` (tags are ``<upstream>-mix-<sha>``)."""
-    releases = _fetch_json(f"https://api.github.com/repos/{FORK_REPO}/releases?per_page=100")
     prefix = f"{upstream_tag}-mix-"
-    for release in releases if isinstance(releases, list) else []:
-        tag = release.get("tag_name") or ""
-        if not release.get("draft") and tag.startswith(prefix):
-            return tag
+    for page in range(1, 21):
+        releases = _fetch_json(
+            f"https://api.github.com/repos/{FORK_REPO}/releases?per_page=100&page={page}"
+        )
+        if not isinstance(releases, list) or not releases:
+            return None
+        for release in releases:
+            tag = release.get("tag_name") or ""
+            if not release.get("draft") and tag.startswith(prefix):
+                return tag
     return None
 
 
 def resolve_fork_release(repo: Optional[str], tag: Optional[str]) -> tuple[str, dict]:
     """(fork release tag, its llama-prebuilt-sha256.json) for a converter revision.
 
-    A fork release tag is used as is. Anything else (an old ggml-org marker, a bare bNNNN
-    tag, nothing) maps to the fork release built on that upstream tag, else the latest.
+    A fork tag is used as is; a bare tag the fork reports is tried as a release first. Anything
+    else (an old ggml-org marker, nothing) maps to the fork release built on that upstream tag,
+    else the latest.
     """
-    fork_tag: Optional[str] = tag if is_fork_release_tag(repo, tag) else None
-    if fork_tag is None and tag:
-        upstream = tag.split("-mix-")[0]
+    fork_tag: Optional[str] = None
+    checksums = None
+    if tag and ("-mix-" in tag or repo == FORK_REPO):
         try:
-            fork_tag = _matching_fork_tag(upstream)
+            checksums = _fetch_json(_asset_url(tag, SHA256_ASSET_NAME))
+            fork_tag = tag
         except Exception:
-            fork_tag = None
-    checksums = _fetch_json(_asset_url(fork_tag, SHA256_ASSET_NAME))
+            if "-mix-" in tag:
+                raise
+    if checksums is None:
+        if tag:
+            try:
+                fork_tag = _matching_fork_tag(tag.split("-mix-")[0])
+            except Exception:
+                fork_tag = None
+        checksums = _fetch_json(_asset_url(fork_tag, SHA256_ASSET_NAME))
     if not isinstance(checksums, dict):
         raise RuntimeError(f"{SHA256_ASSET_NAME} from {FORK_REPO} is not a JSON object")
     release_tag = checksums.get("release_tag") or fork_tag
@@ -94,14 +108,20 @@ def resolve_fork_release(repo: Optional[str], tag: Optional[str]) -> tuple[str, 
     return release_tag, checksums
 
 
-def expected_source_sha256(checksums: dict, release_tag: str) -> str:
-    entry = (checksums.get("artifacts") or {}).get(source_asset_name(release_tag))
-    digest = entry.get("sha256") if isinstance(entry, dict) else None
-    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
-        raise RuntimeError(
-            f"{FORK_REPO}@{release_tag} publishes no sha256 for {source_asset_name(release_tag)}"
-        )
-    return digest.lower()
+def source_artifact(checksums: dict, release_tag: str) -> tuple[str, str]:
+    """(asset name, sha256) of the release's source archive: the tag-named one, else the
+    exact-commit one (``llama.cpp-source-commit-<source_commit>.tar.gz``) the installer accepts."""
+    artifacts = checksums.get("artifacts") or {}
+    names = [source_asset_name(release_tag)]
+    commit = checksums.get("source_commit")
+    if isinstance(commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+        names.append(f"llama.cpp-source-commit-{commit.lower()}.tar.gz")
+    for name in names:
+        entry = artifacts.get(name)
+        digest = entry.get("sha256") if isinstance(entry, dict) else None
+        if isinstance(digest, str) and re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            return name, digest.lower()
+    raise RuntimeError(f"{FORK_REPO}@{release_tag} publishes no sha256 for its source archive")
 
 
 def safe_extract_tar(archive: Path, destination: Path) -> None:
@@ -133,10 +153,10 @@ def download_converter_source(repo: Optional[str], tag: Optional[str], parent: P
     target = Path(parent) / f"llama.cpp-source-{release_tag}"
     if (target / "convert_lora_to_gguf.py").is_file():
         return target
-    expected = expected_source_sha256(checksums, release_tag)
+    asset, expected = source_artifact(checksums, release_tag)
     Path(parent).mkdir(parents = True, exist_ok = True)
     with tempfile.TemporaryDirectory(dir = parent, prefix = ".llama.cpp-source-") as tmp:
-        archive = Path(tmp) / source_asset_name(release_tag)
+        archive = Path(tmp) / asset
         digest = hashlib.sha256()
         with (
             _open(_asset_url(release_tag, archive.name), timeout = 300) as response,
