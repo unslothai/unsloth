@@ -6021,7 +6021,7 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 
 /* Chat with files card above the composer. */
 .unsloth-files-panel {
-	@apply mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-4 pb-5;
+	@apply mb-2 flex w-full flex-col gap-5 overflow-hidden rounded-[24px] px-4 pt-4 pb-6;
 	container: files-panel / inline-size;
 	font-family: var(--font-sans);
 	background-color: #ffffff;
