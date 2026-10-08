@@ -306,6 +306,7 @@ class _TableFrame:
         "current_row",
         "cell_parts",
         "in_cell",
+        "cell_seq",
         "header_row_done",
         "row_has_th",
         "is_first_row",
@@ -321,6 +322,7 @@ class _TableFrame:
         self.current_row = renderer._current_row
         self.cell_parts = renderer._cell_parts
         self.in_cell = renderer._in_cell
+        self.cell_seq = renderer._cell_seq
         self.header_row_done = renderer._header_row_done
         self.row_has_th = renderer._row_has_th
         self.is_first_row = renderer._is_first_row
@@ -403,6 +405,7 @@ class _MarkdownRenderer(HTMLParser):
         self._cell_parts: list[str] = []
         self._in_cell: bool = False
         self._cell_seq: int = 0
+        self._next_cell_seq: int = 0
         self._header_row_done: bool = False
         self._row_has_th: bool = False
         self._is_first_row: bool = False
@@ -559,6 +562,7 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row = frame.current_row
         self._cell_parts = frame.cell_parts
         self._in_cell = frame.in_cell
+        self._cell_seq = frame.cell_seq
         self._header_row_done = frame.header_row_done
         self._row_has_th = frame.row_has_th
         self._is_first_row = frame.is_first_row
@@ -954,7 +958,8 @@ class _MarkdownRenderer(HTMLParser):
             self._finish_cell()
             self._cell_parts = []
             self._in_cell = True
-            self._cell_seq += 1
+            self._next_cell_seq += 1
+            self._cell_seq = self._next_cell_seq
             self._cell_colspan = min(max(1, _span_attr(attr_dict, "colspan")), 1000)
             # rowspan="0" runs to the end of the row group
             self._cell_rowspan = _span_attr(attr_dict, "rowspan") or 65534

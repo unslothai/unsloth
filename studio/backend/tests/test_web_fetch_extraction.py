@@ -2110,6 +2110,8 @@ def test_table_nested_in_a_header_inside_a_cell_keeps_its_columns():
     assert html_to_markdown(f"<body>{html}</body>", main_content = True) == html_to_markdown(
         f"<body>{html}</body>"
     )
+    continued = "<table><tr><td><header><table><tr><td>x</td></tr></table></header>after</td><td>sibling</td></tr></table>"
+    assert html_to_markdown(continued, main_content = True) == html_to_markdown(continued)
 
 
 def test_spanned_table_cells_stay_in_their_columns():
