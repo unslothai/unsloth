@@ -203,6 +203,8 @@ def test_an_inherited_projector_or_device_list_is_respected():
     for needle in (
         '"env_mmproj_bytes"',
         '"env_mmproj_unsized"',
+        '"host_mmproj_bytes"',
+        "_kv_offload_from_args(extra_args, env)",
         "_extra_args_main_device(extra_args) is None",
         '"LLAMA_ARG_DEVICE"',
     ):

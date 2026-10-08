@@ -27325,6 +27325,9 @@ class LlamaCppBackend:
                     # allowance, exactly what _fit_model_size and _fit_soft_overhead
                     # just charged, and the same abstain when it cannot be sized.
                     _spill_inputs["env_mmproj_unsized"] = _fit_env_mmproj_unsized
+                    _spill_inputs["host_mmproj_bytes"] = _mmproj_pinned_bytes + (
+                        _fit_env_mmproj_bytes if _fit_env_mmproj_on_host else 0
+                    )
                     _spill_inputs["env_mmproj_bytes"] = (
                         0
                         if _fit_env_mmproj_on_host
@@ -27920,6 +27923,10 @@ class LlamaCppBackend:
                         # the split cannot price its per-card share, so leave it off.
                         and not _spill_inputs["separate_draft_on_gpu"]
                         and not _spill_inputs.get("env_mmproj_unsized")
+                        # A host-resident cache or projector draws on the pool the iGPU
+                        # reports, which the split cannot see: llama.cpp's split, as before.
+                        and not _spill_inputs.get("host_mmproj_bytes")
+                        and _kv_offload_from_args(extra_args, env)
                         and not tensor_parallel
                         and not _extra_args_have_tensor_split(extra_args, env)
                         # A surviving device list owns the order the shares follow.
