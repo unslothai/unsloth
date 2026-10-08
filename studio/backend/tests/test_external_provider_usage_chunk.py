@@ -733,9 +733,9 @@ def test_other_providers_do_not_get_the_continuation_flags(monkeypatch, provider
         ("openrouter", True),
         ("kimi", True),
         ("llama_cpp", True),
+        ("ollama", True),
         # Any user-supplied base_url: a strict endpoint 400s on an unknown field.
         ("custom", False),
-        ("ollama", False),
         # "openai" is absent: it routes to /v1/responses, which reports usage itself.
     ],
 )
