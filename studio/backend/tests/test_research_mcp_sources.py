@@ -284,9 +284,7 @@ def test_research_tools_for_an_api_key_never_start_stdio_servers(notes_server, m
         return []
 
     monkeypatch.setattr(tools, "list_tools_async", probe)
-    listed = asyncio.run(
-        list_research_search_tools(current_subject = "alice", via_api_key = True)
-    )
+    listed = asyncio.run(list_research_search_tools(current_subject = "alice", via_api_key = True))
 
     assert probed == []
     assert [tool["tool"] for tool in listed] == ["search_notes", "search_papers"]
