@@ -209,6 +209,14 @@ export const ContextUsageBar: FC<
               </span>
             </div>
           )}
+          {input.compactionCount !== undefined && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">Automatic compactions</span>
+              <span className="font-mono tabular-nums">
+                {input.compactionCount}
+              </span>
+            </div>
+          )}
           {cached !== undefined && cached > 0 && (
             <div className="flex items-center justify-between gap-4">
               <span className="text-muted-foreground">Cache hits</span>
