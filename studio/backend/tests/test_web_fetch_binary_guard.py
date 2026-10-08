@@ -492,8 +492,18 @@ def test_html_body_locator_does_not_store_every_newline():
     assert peak < 4 * 1024 * 1024
 
 
-def test_unterminated_html_token_stops_at_the_body_window():
-    resp = _FakeResp(b"<" + b"x" * (4 * 1024 * 1024), "text/html")
+def test_unterminated_html_token_has_linear_reparse_work(monkeypatch):
+    payload = b"<" + b"x" * (4 * 1024 * 1024)
+    resp = _FakeResp(payload, "text/html")
+    scanned = 0
+    feed = tools.HTMLParser.feed
+
+    def counted_feed(parser, data):
+        nonlocal scanned
+        scanned += len(parser.rawdata) + len(data)
+        return feed(parser, data)
+
+    monkeypatch.setattr(tools.HTMLParser, "feed", counted_feed)
     error, body = tools._read_capped_body(
         resp,
         tools._MAX_HTML_FETCH_BYTES,
@@ -503,7 +513,22 @@ def test_unterminated_html_token_stops_at_the_body_window():
         body_window = tools._MAX_FETCH_BYTES,
     )
     assert error is None
-    assert len(body) == tools._MAX_FETCH_BYTES
+    assert body == payload
+    assert scanned < 3 * len(payload)
+
+
+@pytest.mark.parametrize(
+    "opening,closing", [(b"<!--", b"-->"), (b'<link href="data:image/png;base64,', b'">')]
+)
+def test_large_head_token_keeps_article(monkeypatch, opening, closing):
+    html = (
+        b"<html><head>"
+        + opening
+        + b"x" * (768 * 1024)
+        + closing
+        + b"</head><body><h1>Long token article marker</h1></body></html>"
+    )
+    assert "Long token article marker" in _fetch_with(monkeypatch, html, "text/html")
 
 
 @pytest.mark.parametrize(

@@ -15799,6 +15799,8 @@ class _HTMLBodyLocator(HTMLParser):
         self._prefix = b""
         self._decoder = None
         self._codec = "latin-1"
+        self._deferred = []
+        self._deferred_chars = 0
         try:
             codec = codecs.lookup(charset).name if charset else None
         except (LookupError, ValueError):
@@ -15824,15 +15826,22 @@ class _HTMLBodyLocator(HTMLParser):
                     data = data[len(bom) :]
                     break
             self._decoder = codecs.getincrementaldecoder(self._codec)(errors = "replace")
-        self.feed(self._decoder.decode(data))
+        decoded = self._decoder.decode(data)
+        if len(self.rawdata) > self._PENDING_LIMIT and not self.cdata_elem:
+            self._deferred.append(decoded)
+            self._deferred_chars += len(decoded)
+            if self._deferred_chars < len(self.rawdata):
+                return
+            decoded = "".join(self._deferred)
+            self._deferred.clear()
+            self._deferred_chars = 0
+        self.feed(decoded)
         if self.body_at is not None or len(self.rawdata) <= self._PENDING_LIMIT:
             return
         if self.cdata_elem:
             discard = len(self.rawdata) - self._CDATA_TAIL_BYTES
             self.updatepos(0, discard)
             self.rawdata = self.rawdata[discard:]
-        else:
-            self.body_at = self._absolute_offset
 
     def updatepos(self, i, j):
         if j > i:
