@@ -77,8 +77,7 @@ function localDateStamp(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-/** `<model> - <title> (YYYY-MM-DD)` for a single-chat export, dropping whichever part is missing.
- *  The model is the last segment of its id, so `unsloth/gemma-4-26b-a4b` reads as the model. */
+/** `<model> - <title> (YYYY-MM-DD)`, dropping a missing part; model = last segment of its id. */
 export function conversationExportBasename(
   thread:
     | { readonly title?: string | null; readonly modelId?: string | null }
@@ -89,8 +88,7 @@ export function conversationExportBasename(
   const model = filenamePart(thread?.modelId?.split("/").pop() ?? "");
   const title = filenamePart(thread?.title ?? "");
   const name = [model, title].filter(Boolean).join(" - ") || "conversation";
-  // Windows refuses a name ending in a dot or space.
-  // By code point, so an emoji at the cut is not split into a lone surrogate.
+  // Cut by code point (no lone surrogate); Windows refuses a trailing dot or space.
   const capped = Array.from(name)
     .slice(0, MAX_EXPORT_BASENAME_LENGTH)
     .join("")
