@@ -6,6 +6,7 @@ import {
   LR_DEFAULT_DECISION_FULL,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
+  RL_LEARNING_RATES,
 } from "@/config/training";
 import { getHfToken } from "@/features/hub";
 import { translate } from "@/i18n";
@@ -44,7 +45,9 @@ import {
   inferTrainingModelTypeFromFlags,
   resolveTrainingModelType,
 } from "../lib/model-type-capabilities";
+import { rlObjectiveSupported } from "../lib/rl-roles";
 import { runConfigDraftSelections } from "../lib/run-config-draft";
+import { parseRunConfigRlSettings } from "../lib/yaml-config";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import type {
   DatasetCacheReferenceOptions,
@@ -551,6 +554,20 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : {}),
             };
 
+            // Model YAML LRs are SFT-tuned; keep the RL objective's rate.
+            // Judged against the incoming model: an embedding or audio model runs SFT.
+            const objective = get().trainingObjective;
+            const rlLearningRate =
+              shouldApplyTrainingDefaults &&
+              !isDecision &&
+              objective !== "sft" &&
+              rlObjectiveSupported({
+                ...get(),
+                modelType: inferredModelType,
+                isEmbeddingModel: isEmbedding,
+              })
+                ? { learningRate: RL_LEARNING_RATES[objective] }
+                : {};
             // Fill a copied CPT run's missing history, but preserve values captured by
             // any method transition the user made while this request was pending.
             const fallbackProvenanceRefresh = options?.fillMethodProvenance
@@ -572,12 +589,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             };
             const restoreStreaming =
               !isDecision &&
+              get().trainingObjective === "sft" &&
               settingsBeforeDecision?.datasetStreaming === true &&
               nextStreamingState.datasetSource === "huggingface" &&
               nextStreamingState.maxSteps > 0;
 
             set({
               ...patch,
+              ...rlLearningRate,
               ...cptOverrides,
               ...cptTargetOverrides,
               ...deferredCompletionDefault,
@@ -662,14 +681,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   set({ isLoadingModelDefaults: false });
                   return;
                 }
+                const currentObjective = get().trainingObjective;
                 const lrPatch =
-                  !get().trainingMethodProvenance.learningRateManuallySet &&
-                  !modelConfigHasLR
-                    ? {
+                  get().trainingMethodProvenance.learningRateManuallySet ||
+                  (modelConfigHasLR && currentObjective === "sft")
+                    ? {}
+                    : {
                         learningRate:
-                          method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA,
-                      }
-                    : {};
+                          currentObjective !== "sft"
+                            ? RL_LEARNING_RATES[currentObjective]
+                            : method === "full"
+                              ? LR_DEFAULT_FULL
+                              : LR_DEFAULT_LORA,
+                      };
                 set({
                   trainingMethod: method,
                   ...lrPatch,
@@ -936,6 +960,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetEvalSplit: null,
         manualDatasetOptionsValid: true,
         datasetManualMapping: emptyManualMapping(),
+        rlRoleMapping: {},
         datasetSystemPrompt: "",
         datasetLabelMapping: {},
         datasetAdvisorNotification: null,
@@ -1272,6 +1297,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ...(patch.trainOnCompletions !== undefined
               ? { trainOnCompletionsDefaultPendingFor: null }
               : {}),
+            ...(trainingMethod === "cpt" ? { trainingObjective: "sft" } : {}),
           });
         },
         selectHfDataset: selectHfDatasetInternal,
@@ -1331,6 +1357,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetEvalSplit: null,
             manualDatasetOptionsValid: true,
             datasetManualMapping: emptyManualMapping(),
+            rlRoleMapping: {},
             datasetSliceStart: null,
             datasetSliceEnd: null,
             isDatasetImage: null,
@@ -1359,6 +1386,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetEvalSplit: null,
             manualDatasetOptionsValid: true,
             datasetManualMapping: emptyManualMapping(),
+            rlRoleMapping: {},
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
@@ -1619,6 +1647,48 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ targetModules });
         },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
+        setTrainingObjective: (trainingObjective) => {
+          const state = get();
+          if (state.trainingObjective === trainingObjective) return;
+          // CPT is its own objective; the selector disables RL for it, this keeps the store honest.
+          if (
+            (state.trainingMethod === "cpt" || !rlObjectiveSupported(state)) &&
+            trainingObjective !== "sft"
+          ) {
+            return;
+          }
+          const patch: Partial<TrainingConfigState> = { trainingObjective };
+          if (!state.trainingMethodProvenance.learningRateManuallySet) {
+            patch.learningRate =
+              trainingObjective === "sft"
+                ? state.trainingMethod === "full"
+                  ? LR_DEFAULT_FULL
+                  : (state.trainingMethodProvenance.modelAdapterLearningRate ??
+                    LR_DEFAULT_LORA)
+                : RL_LEARNING_RATES[trainingObjective];
+          }
+          setUserEdit(patch);
+        },
+        setRlBeta: (rlBeta) => setUserEdit({ rlBeta }),
+        setRlMaxPromptLength: (rlMaxPromptLength) =>
+          setUserEdit({ rlMaxPromptLength }),
+        setRlRoleMapping: (rlRoleMapping) => setUserEdit({ rlRoleMapping }),
+        setGrpoNumGenerations: (grpoNumGenerations) =>
+          setUserEdit({ grpoNumGenerations }),
+        setGrpoMaxCompletionLength: (grpoMaxCompletionLength) =>
+          setUserEdit({ grpoMaxCompletionLength }),
+        setGrpoTemperature: (grpoTemperature) =>
+          setUserEdit({ grpoTemperature }),
+        setGrpoSystemPrompt: (grpoSystemPrompt) =>
+          setUserEdit({ grpoSystemPrompt }),
+        setGrpoEnableThinking: (grpoEnableThinking) =>
+          setUserEdit({ grpoEnableThinking }),
+        setGrpoVariant: (grpoVariant) => setUserEdit({ grpoVariant }),
+        setGrpoMaskTruncatedCompletions: (grpoMaskTruncatedCompletions) =>
+          setUserEdit({ grpoMaskTruncatedCompletions }),
+        setGrpoEpsilonHigh: (grpoEpsilonHigh) =>
+          setUserEdit({ grpoEpsilonHigh }),
+        setGrpoRewards: (grpoRewards) => setUserEdit({ grpoRewards }),
         restoreRunConfig: (config) => {
           const selections = runConfigDraftSelections(config);
           const hyperparameters = mapBackendModelConfigToTrainingPatch({
@@ -1632,6 +1702,23 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainOnCompletionsManuallySet = true;
           _trainOnCompletionsExplicitModel = selections.selectedModel;
           setUserEdit({ ...hyperparameters, ...selections });
+          // RL runs keep their roles in custom_format_mapping, which selections read as chat roles.
+          const { trainingObjective, ...rl } = parseRunConfigRlSettings(config);
+          if (
+            trainingObjective !== "sft" &&
+            selections.modelType !== "decision" &&
+            get().trainingMethod !== "cpt"
+          ) {
+            setUserEdit({
+              ...rl,
+              trainingObjective,
+              rlRoleMapping: get().datasetManualMapping,
+              datasetManualMapping: {},
+              trainOnCompletions: false,
+              packing: false,
+              datasetStreaming: false,
+            });
+          }
           // Fetch capabilities without replacing the saved recipe.
           loadAndApplyModelDefaults(selections.selectedModel, {
             applyTrainingDefaults: false,

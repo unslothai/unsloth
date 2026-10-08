@@ -16,7 +16,8 @@ export type DatasetStreamingBlocker =
   | "embeddingModel"
   | "imageDataset"
   | "audioDataset"
-  | "appleSilicon";
+  | "appleSilicon"
+  | "rlObjective";
 
 export function getFileExtension(fileName: string): string {
   const extensionStart = fileName.lastIndexOf(".");
@@ -50,6 +51,7 @@ export function getDatasetStreamingBlockers({
   isVisionModel,
   maxSteps,
   trainOnCompletions,
+  trainingObjective = "sft",
 }: {
   datasetEvalSplit: string | null;
   datasetSource: DatasetSource;
@@ -63,6 +65,7 @@ export function getDatasetStreamingBlockers({
   isVisionModel: boolean;
   maxSteps: number;
   trainOnCompletions: boolean;
+  trainingObjective?: string;
 }): DatasetStreamingBlocker[] {
   const blockers: DatasetStreamingBlocker[] = [];
   if (datasetSource !== "huggingface") {
@@ -100,6 +103,9 @@ export function getDatasetStreamingBlockers({
   }
   if (isAppleSilicon) {
     blockers.push("appleSilicon");
+  }
+  if (trainingObjective !== "sft") {
+    blockers.push("rlObjective");
   }
   return blockers;
 }

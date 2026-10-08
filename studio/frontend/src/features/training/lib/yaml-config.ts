@@ -1,11 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  GRPO_VARIANTS,
+  type GrpoRewardSelection,
+  type GrpoVariant,
+  type TrainingObjective,
+} from "@/types/training";
 import * as yaml from "js-yaml";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState } from "../types/config";
 
-const EXPECTED_TOP_KEYS = new Set(["training", "lora", "logging", "inference"]);
+const EXPECTED_TOP_KEYS = new Set([
+  "training",
+  "lora",
+  "logging",
+  "inference",
+  "rl",
+]);
+const RL_OBJECTIVES = ["dpo", "orpo", "grpo"] as const;
 
 /**
  * Parse a YAML string into a BackendModelConfig suitable for
@@ -20,9 +33,7 @@ export function parseYamlConfig(text: string): BackendModelConfig {
   }
 
   const raw = parsed as Record<string, unknown>;
-  const unknownKeys = Object.keys(raw).filter(
-    (k) => !EXPECTED_TOP_KEYS.has(k),
-  );
+  const unknownKeys = Object.keys(raw).filter((k) => !EXPECTED_TOP_KEYS.has(k));
   if (unknownKeys.length > 0) {
     console.warn("Ignored unknown YAML keys:", unknownKeys.join(", "));
   }
@@ -36,13 +47,13 @@ export function parseYamlConfig(text: string): BackendModelConfig {
     typeof rawTraining === "object" &&
     !Array.isArray(rawTraining);
   let trainingObj: Record<string, unknown>;
-  if (!isPlainTrainingObject) {
-    trainingObj = { vision_image_size: null };
-  } else {
+  if (isPlainTrainingObject) {
     trainingObj = { ...(rawTraining as Record<string, unknown>) };
     if (!Object.hasOwn(trainingObj, "vision_image_size")) {
       trainingObj.vision_image_size = null;
     }
+  } else {
+    trainingObj = { vision_image_size: null };
   }
 
   return {
@@ -102,7 +113,7 @@ export function serializeConfigToYaml(
     training.vision_image_size = state.visionImageSize;
   }
 
-  const config = {
+  const config: Record<string, unknown> = {
     training,
     lora,
     // Include every non-secret logging field read by parseYamlConfig.
@@ -115,5 +126,147 @@ export function serializeConfigToYaml(
     },
   };
 
+  // SFT files stay exactly as before; the section only appears for RL objectives.
+  if (state.trainingObjective !== "sft") {
+    config.rl = {
+      objective: state.trainingObjective,
+      beta: state.rlBeta,
+      max_prompt_length: state.rlMaxPromptLength,
+      ...(state.trainingObjective === "grpo"
+        ? {
+            variant: state.grpoVariant,
+            num_generations: state.grpoNumGenerations,
+            max_completion_length: state.grpoMaxCompletionLength,
+            temperature: state.grpoTemperature,
+            epsilon_high: state.grpoEpsilonHigh,
+            mask_truncated_completions: state.grpoMaskTruncatedCompletions,
+            enable_thinking: state.grpoEnableThinking,
+            system_prompt: state.grpoSystemPrompt,
+            rewards: state.grpoRewards,
+          }
+        : {}),
+    };
+  }
+
   return yaml.dump(config, { lineWidth: -1, noRefs: true });
+}
+
+export interface YamlRlSettings {
+  trainingObjective: TrainingObjective;
+  rlBeta?: number | null;
+  rlMaxPromptLength?: number | null;
+  grpoVariant?: GrpoVariant;
+  grpoNumGenerations?: number;
+  grpoMaxCompletionLength?: number | null;
+  grpoTemperature?: number;
+  grpoEpsilonHigh?: number | null;
+  grpoMaskTruncatedCompletions?: boolean;
+  grpoEnableThinking?: boolean;
+  grpoSystemPrompt?: string;
+  grpoRewards?: GrpoRewardSelection[];
+}
+
+const isNum = (v: unknown): v is number =>
+  typeof v === "number" && Number.isFinite(v);
+const numOrNull = (v: unknown): number | null | undefined =>
+  v === null ? null : isNum(v) ? v : undefined;
+
+/** The objective and RL settings from a saved YAML. A file with no rl section is SFT;
+ * fields with the wrong type are dropped so the current value stays. */
+export function parseYamlRlSettings(text: string): YamlRlSettings {
+  const parsed = yaml.load(text) as Record<string, unknown> | null;
+  return parseRlSection(parsed?.rl);
+}
+
+/** A saved run's objective and RL settings. The stored config keeps them as `objective`,
+ * `rl_settings` (the same keys as the YAML rl section) and `reward_specs`. */
+export function parseRunConfigRlSettings(
+  config: Record<string, unknown>,
+): YamlRlSettings {
+  const settings = config.rl_settings;
+  return parseRlSection({
+    ...(settings !== null && typeof settings === "object" ? settings : {}),
+    objective: config.objective,
+    rewards: config.reward_specs,
+  });
+}
+
+function parseRlSection(rl: unknown): YamlRlSettings {
+  if (rl == null || typeof rl !== "object" || Array.isArray(rl)) {
+    return { trainingObjective: "sft" };
+  }
+  const r = rl as Record<string, unknown>;
+  const objective = RL_OBJECTIVES.find((o) => o === r.objective);
+  if (!objective) {
+    return { trainingObjective: "sft" };
+  }
+  const out: YamlRlSettings = { trainingObjective: objective };
+  const set = <K extends keyof YamlRlSettings>(
+    key: K,
+    value: YamlRlSettings[K] | undefined,
+  ) => {
+    if (value !== undefined) {
+      out[key] = value;
+    }
+  };
+  // Out-of-range values are dropped, matching the backend's TrainingStartRequest bounds.
+  const inRange = (v: unknown, lo: number, hi: number, loOpen = false) => {
+    const n = numOrNull(v);
+    return n == null || (n <= hi && (loOpen ? n > lo : n >= lo))
+      ? n
+      : undefined;
+  };
+  set("rlBeta", inRange(r.beta, 0, 10));
+  const intInRange = (v: unknown, lo: number, hi: number) => {
+    const n = inRange(v, lo, hi);
+    return n == null || Number.isInteger(n) ? n : undefined;
+  };
+  set("rlMaxPromptLength", intInRange(r.max_prompt_length, 16, Infinity));
+  if (objective !== "grpo") {
+    return out;
+  }
+  set(
+    "grpoVariant",
+    GRPO_VARIANTS.find((v) => v === r.variant),
+  );
+  set("grpoNumGenerations", intInRange(r.num_generations, 2, 16) ?? undefined);
+  set(
+    "grpoMaxCompletionLength",
+    intInRange(r.max_completion_length, 16, Infinity),
+  );
+  set(
+    "grpoTemperature",
+    isNum(r.temperature) && r.temperature > 0 && r.temperature <= 2
+      ? r.temperature
+      : undefined,
+  );
+  set("grpoEpsilonHigh", inRange(r.epsilon_high, 0, 1, true));
+  if (typeof r.mask_truncated_completions === "boolean") {
+    out.grpoMaskTruncatedCompletions = r.mask_truncated_completions;
+  }
+  if (typeof r.enable_thinking === "boolean") {
+    out.grpoEnableThinking = r.enable_thinking;
+  }
+  if (typeof r.system_prompt === "string") {
+    out.grpoSystemPrompt = r.system_prompt;
+  } else if (r.system_prompt === null) {
+    out.grpoSystemPrompt = "";
+  }
+  if (Array.isArray(r.rewards)) {
+    out.grpoRewards = r.rewards.flatMap((item) => {
+      const x = item as Record<string, unknown> | null;
+      return x && typeof x.name === "string" && x.name
+        ? [
+            {
+              name: x.name,
+              weight:
+                isNum(x.weight) && x.weight >= -10 && x.weight <= 10
+                  ? x.weight
+                  : 1,
+            },
+          ]
+        : [];
+    });
+  }
+  return out;
 }

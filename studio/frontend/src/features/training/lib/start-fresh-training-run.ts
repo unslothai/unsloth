@@ -32,6 +32,12 @@ import {
 import { checkDecisionDatasetColumns } from "./decision-dataset";
 import { shouldUseVisionDatasetCheck } from "./fresh-dataset-check";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
+import {
+  effectiveTrainingObjective,
+  missingRewardColumns,
+  missingRlRoles,
+} from "./rl-roles";
+import { listRewards } from "../api/rewards-api";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import { createTrainingStartInputIdentity } from "./training-start-inputs";
@@ -335,8 +341,7 @@ export async function startFreshTrainingRun(): Promise<boolean> {
 }
 
 type AttemptHfTokenResult =
-  | { ready: false }
-  | { ready: true; token: string | null };
+  { ready: false } | { ready: true; token: string | null };
 
 async function prepareAttemptHfToken(
   attempt: FreshTrainingStartAttempt,
@@ -396,13 +401,52 @@ async function prepareSelectedDataset(
     (isImage || isAudio) &&
     attempt.config.datasetSource === "huggingface" &&
     attempt.config.datasetKnownCached;
+  const requestedObjective = effectiveTrainingObjective(attempt.config);
   if (!applyDetectedDatasetModality(attempt, isImage, isAudio)) {
     return false;
+  }
+  // A modality found only now can rule out the chosen RL objective: stop, never train SFT instead.
+  if (
+    requestedObjective !== "sft" &&
+    effectiveTrainingObjective(attempt.config) === "sft"
+  ) {
+    return attempt.cancel(translate("rl.objective.modelLocked"));
   }
   if (recheckCachedDataset || recheckDetectedVisionDataset) {
     return prepareSelectedDataset(attempt, hfToken);
   }
   if (hasIncompatibleTrainingModalities(attempt.config)) {
+    return attempt.cancel();
+  }
+  const objective = effectiveTrainingObjective(attempt.config);
+  if (objective !== "sft" && attempt.config.trainingMethod !== "cpt") {
+    // RL reads Column roles, not the chat-role mapping.
+    const missing: string[] = missingRlRoles(
+      objective,
+      check.columns,
+      attempt.config.rlRoleMapping,
+    ).map((role) => translate(`rl.dataset.role.${role}`));
+    if (objective === "grpo" && missing.length === 0) {
+      // Rewards read their compare_to column; without it every row scores "missing".
+      const selected = new Set(attempt.config.grpoRewards.map((r) => r.name));
+      const compareTo = (await listRewards().catch(() => []))
+        .filter((r) => selected.has(r.name) && !r.shadowed)
+        .map((r) => r.rule?.compare_to)
+        .filter((c): c is string => typeof c === "string");
+      for (const column of missingRewardColumns(
+        compareTo,
+        check.columns,
+        attempt.config.rlRoleMapping,
+      )) {
+        missing.push(
+          column === "answer" ? translate("rl.dataset.role.answer") : column,
+        );
+      }
+    }
+    if (missing.length === 0) {
+      return true;
+    }
+    toast.error(translate("rl.dataset.missing", { roles: missing.join(", ") }));
     return attempt.cancel();
   }
   if (!needsManualMapping(attempt.config, check, isVlm, isAudio)) {

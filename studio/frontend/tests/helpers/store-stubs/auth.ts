@@ -15,7 +15,10 @@ export function setAuthFetchHandler(next: AuthFetchHandler | null): void {
 }
 
 /** Fail any unexpected network access. */
-export function authFetch(input: string, init?: RequestInit): Promise<Response> {
+export function authFetch(
+  input: string,
+  init?: RequestInit,
+): Promise<Response> {
   if (!handler) throw new Error("authFetch: no network in tests");
   return Promise.resolve(handler(input, init));
 }
@@ -26,4 +29,13 @@ export async function prepareHfTokenForUse(): Promise<null> {
 
 export function useIsAccountOwner(): boolean {
   return true;
+}
+
+export const AUTH_SESSION_CLEARED_EVENT = "unsloth:auth-session-cleared";
+let authSessionEpoch = 0;
+export function getAuthSessionEpoch(): number {
+  return authSessionEpoch;
+}
+export function bumpAuthSessionEpoch(): void {
+  authSessionEpoch += 1;
 }

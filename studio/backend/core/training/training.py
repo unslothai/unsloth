@@ -307,6 +307,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "use_loftq": values.get("use_loftq", False),
         "use_dora": values.get("use_dora", False),
         "train_on_completions": values.get("train_on_completions", False),
+        "objective": values.get("objective", "sft"),
+        "rl_settings": dict(values.get("rl_settings") or {}),
+        "reward_specs": list(values.get("reward_specs") or []),
         "finetune_vision_layers": values.get("finetune_vision_layers", True),
         "finetune_language_layers": values.get("finetune_language_layers", True),
         "finetune_attention_modules": values.get("finetune_attention_modules", True),
@@ -700,6 +703,8 @@ class TrainingProgress:
     # The end-of-run record has no step loss, so the progress filter would drop it, and with it the only
     # elapsed time that includes the final evaluation, checkpoint save and best-model reload.
     is_run_summary: bool = False
+    # Reward / KL / preference numbers from DPO, ORPO and GRPO logs, keyed as TRL logs them.
+    rl_metrics: Optional[dict] = None
 
 
 # Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
@@ -1216,6 +1221,7 @@ class TrainingBackend:
         self.grad_norm_step_history: list = []
         self.eval_loss_history: list = []
         self.eval_step_history: list = []
+        self.rl_metric_history: list[dict] = []
         self.eval_enabled: bool = False
         self.current_theme: str = "light"
 
@@ -1258,6 +1264,7 @@ class TrainingBackend:
             "grad_norm_step_history",
             "eval_loss_history",
             "eval_step_history",
+            "rl_metric_history",
         ):
             getattr(self, name).clear()
         self.current_job_id = self.current_start_request_id = None
@@ -1961,6 +1968,7 @@ class TrainingBackend:
             self.grad_norm_step_history.clear()
             self.eval_loss_history.clear()
             self.eval_step_history.clear()
+            self.rl_metric_history.clear()
             self.eval_enabled = False
             self._output_dir = config.get("output_dir") if resume_source_run_id else None
             self._progress.output_dir = self._output_dir
@@ -3186,6 +3194,17 @@ class TrainingBackend:
                 self._progress.grad_norm = event.get("grad_norm", self._progress.grad_norm)
                 self._progress.num_tokens = event.get("num_tokens", self._progress.num_tokens)
                 self._progress.eval_loss = event.get("eval_loss")
+                rl_metrics = event.get("rl_metrics")
+                self._progress.rl_metrics = rl_metrics
+                _rl_step = event.get("step", 0)
+                if (
+                    rl_metrics
+                    and _rl_step > 0
+                    and (
+                        not self.rl_metric_history or _rl_step > self.rl_metric_history[-1]["step"]
+                    )
+                ):
+                    self.rl_metric_history.append({"step": _rl_step, **rl_metrics})
                 _peak = event.get("peak_memory_gb")
                 if _peak is not None:
                     try:
@@ -3245,6 +3264,7 @@ class TrainingBackend:
                         "epoch": event.get("epoch"),
                         "num_tokens": event.get("num_tokens"),
                         "elapsed_seconds": event.get("elapsed_seconds"),
+                        "rl": event.get("rl_metrics") if step > 0 else None,
                     }
                 )
 

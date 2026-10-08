@@ -10,12 +10,10 @@ import {
 registerStoreStubResolver();
 installLocalStorageFake();
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
-const { useTrainingConfigStore: store } = await import(
-  "../src/features/training/stores/training-config-store.ts"
-);
-const { buildTrainingStartPayload } = await import(
-  "../src/features/training/api/mappers.ts"
-);
+const { useTrainingConfigStore: store } =
+  await import("../src/features/training/stores/training-config-store.ts");
+const { buildTrainingStartPayload } =
+  await import("../src/features/training/api/mappers.ts");
 
 function modelResponse(decision = false) {
   return Response.json({
@@ -214,4 +212,71 @@ test("late model details preserve settings captured by a new CPT transition", as
   assert.equal(store.getState().loraRank, 64);
   assert.deepEqual(store.getState().targetModules, ["v_proj"]);
   assert.equal(store.getState().trainOnCompletions, true);
+});
+
+test("a duplicated GRPO run keeps its objective, RL settings, rewards and column roles", async () => {
+  setAuthFetchHandler(() => modelResponse());
+  store.getState().restoreRunConfig({
+    model_name: "org/model",
+    hf_dataset: "org/data",
+    training_type: "LoRA/QLoRA",
+    custom_format_mapping: { question: "prompt", solution: "answer" },
+    objective: "grpo",
+    rl_settings: {
+      beta: 0.04,
+      num_generations: 8,
+      temperature: 0.7,
+      variant: "gspo",
+      system_prompt: null,
+    },
+    reward_specs: [
+      { name: "exact-answer", weight: 2, rule: { type: "exact_match" } },
+    ],
+  });
+  await settle();
+  const state = store.getState();
+  assert.equal(state.trainingObjective, "grpo");
+  assert.deepEqual(state.rlRoleMapping, {
+    question: "prompt",
+    solution: "answer",
+  });
+  assert.deepEqual(state.datasetManualMapping, {});
+  assert.equal(state.rlBeta, 0.04);
+  assert.equal(state.grpoNumGenerations, 8);
+  assert.equal(state.grpoVariant, "gspo");
+  assert.deepEqual(state.grpoRewards, [{ name: "exact-answer", weight: 2 }]);
+  const payload = buildTrainingStartPayload(state, null);
+  assert.equal(payload.objective, "grpo");
+  assert.deepEqual(payload.custom_format_mapping, {
+    question: "prompt",
+    solution: "answer",
+  });
+  assert.deepEqual(payload.grpo_rewards, [{ name: "exact-answer", weight: 2 }]);
+});
+
+test("switching to an RL objective and back restores the model's SFT learning rate", () => {
+  store.getState().reset();
+  store.setState({
+    modelType: "text",
+    trainingMethod: "qlora",
+    learningRate: 2e-5,
+    trainingMethodProvenance: {
+      ...store.getState().trainingMethodProvenance,
+      learningRateManuallySet: false,
+      modelAdapterLearningRate: 2e-5,
+    },
+  });
+  store.getState().setTrainingObjective("grpo");
+  assert.equal(store.getState().learningRate, 5e-6);
+  store.getState().setTrainingObjective("sft");
+  assert.equal(store.getState().learningRate, 2e-5);
+});
+
+test("trying an RL objective keeps the SFT-only toggles for the next SFT run", () => {
+  store.getState().reset();
+  store.setState({ trainOnCompletions: true, packing: true });
+  store.getState().setTrainingObjective("dpo");
+  store.getState().setTrainingObjective("sft");
+  assert.equal(store.getState().trainOnCompletions, true);
+  assert.equal(store.getState().packing, true);
 });

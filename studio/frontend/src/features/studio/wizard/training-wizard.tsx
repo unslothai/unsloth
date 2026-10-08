@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { NewBadge } from "@/components/new-badge";
 import { PICKER_TRIGGER_CLASS } from "@/components/resource-picker/picker-focus";
 import { SegmentedTabsList } from "@/components/segmented-tabs";
 import {
@@ -28,12 +29,15 @@ import {
   TRAINING_METHOD_ORDER,
   isTrainingMethodSupportedOnDevice,
   useTrainingConfigStore,
+  effectiveTrainingObjective,
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
   AiBrain01Icon,
+  Award01Icon,
+  BubbleChatEditIcon,
   Database02Icon,
   FloppyDiskIcon,
   Settings05Icon,
@@ -44,6 +48,11 @@ import { DatasetPanel } from "../sections/dataset-section";
 import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
 import { FieldHint } from "../sections/field-hint";
 import { ParamsSection } from "../sections/params-section";
+import { ObjectiveSelect } from "../sections/rl/objective-select";
+import { PromptFormatSection } from "../sections/rl/prompt-format-section";
+import { RewardsSection } from "../sections/rl/rewards-section";
+import { RlDatasetRoles } from "../sections/rl/rl-dataset-roles";
+import { RlParamsSection } from "../sections/rl/rl-params-section";
 import { ConfigActions } from "./config-actions";
 import type { ParamMode } from "./training-param-mode";
 
@@ -53,10 +62,12 @@ function SectionBox({
   icon,
   chipTint,
   titleAction,
+  titleBadge,
   children,
   dataTour,
 }: {
   title?: string;
+  titleBadge?: ReactNode;
   description?: string;
   icon?: IconSvgElement;
   chipTint?: string;
@@ -89,8 +100,9 @@ function SectionBox({
               </span>
             )}
             <div className="min-w-0">
-              <h2 className="select-none text-ui-13p5 font-semibold leading-ui-18 tracking-[-0.012em] text-foreground">
+              <h2 className="flex select-none items-center gap-1.5 text-ui-13p5 font-semibold leading-ui-18 tracking-[-0.012em] text-foreground">
                 {title}
+                {titleBadge}
               </h2>
               {description && (
                 <p className="text-ui-11p5 leading-ui-15 text-muted-foreground/85">
@@ -144,10 +156,12 @@ function ParamModeToggle({
 function SetupField({
   label,
   hint,
+  badge,
   children,
 }: {
   label: string;
   hint?: string;
+  badge?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -155,6 +169,7 @@ function SetupField({
       <span className="flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
         {label}
         {hint ? <FieldHint text={hint} label={label} /> : null}
+        {badge}
       </span>
       <div className="min-w-0">{children}</div>
     </div>
@@ -355,6 +370,9 @@ function ModelPanel() {
   const decisionCheckpoints = useTrainingConfigStore((s) =>
     s.modelType === "decision" ? s.decisionCheckpoints : null,
   );
+  const isDecisionModel = useTrainingConfigStore(
+    (s) => s.modelType === "decision",
+  );
   // Text and vision LLMs can also train as decision models; Laya, Clef, audio and embeddings cannot.
   const canTrainAsDecision = useTrainingConfigStore(
     (s) =>
@@ -404,6 +422,17 @@ function ModelPanel() {
           <CheckpointSelect checkpoints={decisionCheckpoints} />
         </SetupField>
       ) : null}
+      {isDecisionModel ? null : (
+        <div className="@md/train-section:col-span-2 @2xl/train-section:col-span-3">
+          <SetupField
+            label={t("rl.objective.label")}
+            hint={t("rl.objective.tooltip")}
+            badge={<NewBadge />}
+          >
+            <ObjectiveSelect />
+          </SetupField>
+        </div>
+      )}
     </div>
   );
 }
@@ -416,6 +445,9 @@ export function TrainingWizard({
   onParamModeChange: (next: ParamMode) => void;
 }) {
   const t = useT();
+  const objective = useTrainingConfigStore((s) =>
+    effectiveTrainingObjective(s),
+  );
   return (
     <div className="flex flex-col gap-6">
       <SectionBox
@@ -436,7 +468,36 @@ export function TrainingWizard({
         titleAction={<DatasetSourceToggleAction />}
       >
         <DatasetPanel />
+        {objective !== "sft" && (
+          <div className="mt-5">
+            <RlDatasetRoles objective={objective} />
+          </div>
+        )}
       </SectionBox>
+
+      {objective === "grpo" && (
+        <SectionBox
+          title={t("rl.prompt.title")}
+          titleBadge={<NewBadge />}
+          description={t("rl.prompt.description")}
+          icon={BubbleChatEditIcon}
+          chipTint="var(--chart-1)"
+        >
+          <PromptFormatSection />
+        </SectionBox>
+      )}
+
+      {objective === "grpo" && (
+        <SectionBox
+          title={t("rl.rewards.title")}
+          titleBadge={<NewBadge />}
+          description={t("rl.rewards.description")}
+          icon={Award01Icon}
+          chipTint="var(--chart-2)"
+        >
+          <RewardsSection />
+        </SectionBox>
+      )}
 
       <SectionBox
         title={t("studio.wizard.paramsTitle")}
@@ -449,6 +510,11 @@ export function TrainingWizard({
         }
       >
         <ParamsSection mode={paramMode} />
+        {objective !== "sft" && paramMode === "simple" && (
+          <div className="mt-5">
+            <RlParamsSection objective={objective} />
+          </div>
+        )}
       </SectionBox>
 
       <SectionBox

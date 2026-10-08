@@ -116,6 +116,7 @@ def test_the_terminal_summary_still_reports_elapsed_time():
         grad_norm = None
         num_tokens = 12345
         status_message = ""
+        rl_metrics = None
         warnings: list = []
 
     events = []
@@ -153,6 +154,7 @@ def test_a_lossless_mid_run_record_is_still_dropped():
         grad_norm = None
         num_tokens = 1
         status_message = ""
+        rl_metrics = None
         warnings: list = []
 
     events = []
@@ -189,6 +191,7 @@ def test_an_early_stopped_run_still_reports_its_duration():
         grad_norm = None
         num_tokens = 5
         status_message = ""
+        rl_metrics = None
         is_run_summary = True
         warnings: list = []
 

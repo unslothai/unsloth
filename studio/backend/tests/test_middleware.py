@@ -306,6 +306,16 @@ class TestMaxBodyMiddleware:
                 f"/api/browser{path}".startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
             ), path
 
+    def test_reward_posts_are_capped_before_auth(self, main_module):
+        from routes.rewards import router
+
+        posts = [route.path for route in router.routes if "POST" in route.methods]
+        assert posts
+        for path in posts:
+            assert any(
+                f"/api/rewards{path}".startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
+            ), path
+
     def test_auth_posts_are_capped_before_auth(self, main_module):
         # login / refresh / desktop-login are reachable without a session.
         from routes.auth import router

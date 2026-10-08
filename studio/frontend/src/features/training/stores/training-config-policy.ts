@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { DEFAULT_HYPERPARAMS } from "@/config/training";
+import { DEFAULT_HYPERPARAMS, DEFAULT_RL_SETTINGS } from "@/config/training";
 import { getLocale, translate } from "@/i18n";
 import type { DatasetFormat } from "@/types/training";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
@@ -111,6 +111,7 @@ export const initialTrainingConfigState: TrainingConfigState = {
   datasetCheckFailed: false,
   maxPositionEmbeddings: null,
   ...DEFAULT_HYPERPARAMS,
+  ...DEFAULT_RL_SETTINGS,
 };
 export function hasSeparateStreamingEvalSplit(
   state: Pick<

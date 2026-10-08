@@ -5,6 +5,7 @@ import {
   isRawTextDatasetFormat,
   toBackendTrainingType,
 } from "../lib/training-methods";
+import { effectiveTrainingObjective } from "../lib/rl-roles";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
 
@@ -83,16 +84,22 @@ export function buildTrainingStartPayload(
       ? [config.uploadedFile]
       : [];
   const s3Config = buildS3PayloadConfig(config);
+  const objective = isCpt ? "sft" : effectiveTrainingObjective(config);
+  const isRl = objective !== "sft";
+  // SFT-only toggles keep their stored value while RL is selected; the payload drops them.
+  const datasetStreaming = !isRl && config.datasetStreaming;
+  // RL rows carry their own roles (prompt, answer, chosen, ...), not the chat-role mapping.
+  const roleMapping = isRl ? config.rlRoleMapping : config.datasetManualMapping;
   const customFormatMapping: Record<string, unknown> | undefined =
-    !isDecision && Object.keys(config.datasetManualMapping).length > 0
-      ? { ...config.datasetManualMapping }
+    !isDecision && Object.keys(roleMapping).length > 0
+      ? { ...roleMapping }
       : undefined;
 
   // Inject conversion advisor metadata into the mapping (__ prefix keys)
   const hasAdvisorMeta =
     config.datasetSystemPrompt ||
     Object.keys(config.datasetLabelMapping).length > 0;
-  if (customFormatMapping && hasAdvisorMeta) {
+  if (customFormatMapping && hasAdvisorMeta && !isRl) {
     if (config.datasetSystemPrompt) {
       customFormatMapping.__system_prompt = config.datasetSystemPrompt;
     }
@@ -121,14 +128,13 @@ export function buildTrainingStartPayload(
       config.approvedRemoteCodeFingerprint ?? null,
     hf_dataset: hfDataset,
     dataset_known_cached:
-      hfDataset && !config.datasetStreaming ? config.datasetKnownCached : false,
+      hfDataset && !datasetStreaming ? config.datasetKnownCached : false,
     dataset_local_path:
-      hfDataset && !config.datasetStreaming ? config.datasetLocalPath : null,
+      hfDataset && !datasetStreaming ? config.datasetLocalPath : null,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
-    dataset_streaming:
-      hfDataset && !isDecision ? config.datasetStreaming : false,
+    dataset_streaming: hfDataset && !isDecision ? datasetStreaming : false,
     dataset_slice_start: parseSliceValue(config.datasetSliceStart),
     dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: localDatasets,
@@ -158,7 +164,7 @@ export function buildTrainingStartPayload(
     // that. Guarded by tests/training-start-payload-grad-norm.test.ts.
     max_grad_value: null,
     random_seed: config.randomSeed,
-    packing: isEmbedding || isDecision ? false : config.packing,
+    packing: isEmbedding || isDecision || isRl ? false : config.packing,
     // Laya's recipe needs torch AdamW; Clef keeps its recipe's (8-bit) optimizer.
     optim:
       isDecision && config.decisionLayout !== "clef"
@@ -176,9 +182,24 @@ export function buildTrainingStartPayload(
     use_dora: loraVariants && config.loraVariant === "dora",
     // CPT always trains on full sequences (no chat format masking)
     train_on_completions:
-      isEmbedding || isDecision || isCpt || isRawText
+      isEmbedding || isDecision || isCpt || isRawText || isRl
         ? false
         : config.trainOnCompletions,
+    objective,
+    rl_beta: isRl ? config.rlBeta : null,
+    rl_max_prompt_length: isRl ? config.rlMaxPromptLength : null,
+    grpo_num_generations: objective === "grpo" ? config.grpoNumGenerations : 4,
+    grpo_max_completion_length:
+      objective === "grpo" ? config.grpoMaxCompletionLength : null,
+    grpo_temperature: objective === "grpo" ? config.grpoTemperature : 1,
+    rl_system_prompt:
+      objective === "grpo" ? config.grpoSystemPrompt.trim() || null : null,
+    grpo_enable_thinking: objective === "grpo" && config.grpoEnableThinking,
+    grpo_variant: objective === "grpo" ? config.grpoVariant : "dapo",
+    grpo_mask_truncated_completions:
+      objective === "grpo" && config.grpoMaskTruncatedCompletions,
+    grpo_epsilon_high: objective === "grpo" ? config.grpoEpsilonHigh : null,
+    grpo_rewards: objective === "grpo" ? config.grpoRewards : [],
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,
