@@ -3943,7 +3943,6 @@ def test_the_loader_prices_the_output_rows_of_its_build(tmp_path, monkeypatch, b
     assert set(calls["flat"]) == {expected}
 
 
-# ---------------------------------------------------------------------------
 # MoE experts in host RAM: the larger prompt micro-batch.
 
 _GIB = 1024**3
@@ -4184,8 +4183,8 @@ def test_the_spill_planner_is_priced_at_the_raised_micro_batch(
 def test_the_load_mode_fit_prices_the_drafter_at_the_raised_micro_batch(
     tmp_path, _discrete_linux_host
 ):
-    """The drafter's reserve grows with the micro-batch, so the RAM fit that picks
-    the load mode must charge it at the raised value, as the placement does."""
+    """The drafter reserve grows with the micro-batch, so the load-mode RAM fit
+    charges it at the raised value, as the placement does."""
     backend, gguf = _moe_backend(tmp_path, **_SPILLED)
     backend.probe_server_capabilities = lambda _binary = None: {
         "mtp_token": "draft-mtp",

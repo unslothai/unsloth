@@ -2174,9 +2174,9 @@ def test_invalid_linux_topology_falls_back_to_psutil(monkeypatch):
 
 
 def test_a_larger_micro_batch_compute_buffer_spills_more_experts():
-    """The MoE expert-spill raise (ubatch 512 -> 2048) grows the compute buffer by
-    ~0.5-0.9 GiB. Priced into compute_buffer_flat, that VRAM has to come out of the
-    experts kept on the GPU rather than turning into a graph_reserve OOM."""
+    """The expert-spill raise (ubatch 512 -> 2048) adds ~0.5-0.9 GiB of compute
+    buffer. Priced into compute_buffer_flat, it comes out of the experts kept on the
+    GPU instead of becoming a graph_reserve OOM."""
     stub = _Stub(moe = 40)
     at_512 = _plan(
         stub, model_size = 30 * GIB, kv = 2 * GIB, free_mib = 12 * 1024, compute_flat = 300 * MIB
