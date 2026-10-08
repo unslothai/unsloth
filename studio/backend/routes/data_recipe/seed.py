@@ -974,6 +974,10 @@ def _decode_base64_payload(content_base64: str) -> bytes:
         raise HTTPException(status_code = 400, detail = "invalid base64 payload") from exc
 
 
+# Match the recipe's DuckDB read: inference made "007" -> 7 and a created_at number a date.
+_JSON_READ_OPTIONS = {"dtype": False, "convert_dates": False}
+
+
 def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[dict[str, Any]]:
     account_path(path)
     try:
@@ -1009,12 +1013,12 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
                 full_df.to_csv(tmp_csv, index = False, encoding = "utf-8")
                 tmp_csv.replace(path)
         elif ext == ".jsonl":
-            df = pd.read_json(path, lines = True).head(preview_size)
+            df = pd.read_json(path, lines = True, **_JSON_READ_OPTIONS).head(preview_size)
         elif ext == ".json":
             try:
-                df = pd.read_json(path).head(preview_size)
+                df = pd.read_json(path, **_JSON_READ_OPTIONS).head(preview_size)
             except ValueError:
-                df = pd.read_json(path, lines = True).head(preview_size)
+                df = pd.read_json(path, lines = True, **_JSON_READ_OPTIONS).head(preview_size)
         else:
             raise HTTPException(status_code = 422, detail = f"unsupported file type: {ext}")
     except HTTPException:

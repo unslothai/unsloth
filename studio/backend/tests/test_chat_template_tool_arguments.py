@@ -109,11 +109,87 @@ class _RecordingTokenizer:
         return "RENDERED"
 
 
-def test_lenient_template_receives_original_string_untouched():
-    # Lenient template must see the exact original string, not a coerced dict.
+def test_lenient_template_receives_arguments_as_a_mapping():
     tok = _RecordingTokenizer()
     apply_chat_template_for_generation(tok, _conv('{"query": "x"}'))
-    assert tok.seen_arguments == '{"query": "x"}'
+    assert tok.seen_arguments == {"query": "x"}
+
+
+_QWEN35_TOOL_CALL_TEMPLATE = """
+{%- for message in messages %}
+{%- if message.tool_calls %}
+{%- for tool_call in message.tool_calls %}
+{%- if tool_call.function is defined %}{%- set tool_call = tool_call.function %}{%- endif %}
+{{- '<tool_call>\\n<function=' + tool_call.name + '>\\n' }}
+{%- if tool_call.arguments is mapping %}
+{%- for args_name in tool_call.arguments %}
+{%- set args_value = tool_call.arguments[args_name] %}
+{{- '<parameter=' + args_name + '>\\n' }}
+{%- set args_value = args_value | tojson | safe if args_value is mapping or (args_value is sequence and args_value is not string) else args_value | string %}
+{{- args_value }}
+{{- '\\n</parameter>\\n' }}
+{%- endfor %}
+{%- endif %}
+{{- '</function>\\n</tool_call>' }}
+{%- endfor %}
+{%- endif %}
+{%- endfor %}
+"""
+
+
+class _JinjaTokenizer:
+    def __init__(self, template):
+        self.chat_template = template
+
+    def apply_chat_template(self, messages, **kwargs):
+        from transformers.utils.chat_template_utils import _compile_jinja_template
+        return _compile_jinja_template(self.chat_template).render(messages = messages)
+
+
+def test_qwen35_template_sees_the_arguments_of_an_earlier_call():
+    prompt = apply_chat_template_for_generation(
+        _JinjaTokenizer(_QWEN35_TOOL_CALL_TEMPLATE), _conv('{"query": "gpu prices"}')
+    )
+    assert "<parameter=query>\ngpu prices\n</parameter>" in prompt
+
+
+def test_template_that_concatenates_string_arguments_still_renders_them():
+    template = (
+        "{%- for message in messages %}{%- for tool_call in message.tool_calls or [] %}"
+        "{{- tool_call.function.name + ' ' + tool_call.function.arguments }}"
+        "{%- endfor %}{%- endfor %}"
+    )
+    prompt = apply_chat_template_for_generation(_JinjaTokenizer(template), _conv('{"query": "x"}'))
+    assert prompt == 'web_search {"query": "x"}'
+
+
+class _SeparateStringToolTemplateTokenizer:
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tools = None,
+        **kwargs,
+    ):
+        if tools is None:
+            return "DEFAULT"
+        arguments = messages[1]["tool_calls"][0]["function"]["arguments"]
+        return "TOOL " + arguments
+
+
+def test_string_arguments_retry_before_dropping_the_tools_template():
+    prompt = apply_chat_template_for_generation(
+        _SeparateStringToolTemplateTokenizer(),
+        _conv('{"query": "x"}'),
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+    )
+    assert prompt == 'TOOL {"query": "x"}'
+
+
+def test_deeply_nested_arguments_are_left_as_a_string():
+    arguments = '{"x":' + "[" * 10000 + "0" + "]" * 10000 + "}"
+    conv = _conv(arguments)
+    assert _normalize_tool_call_arguments(conv) is conv
 
 
 def test_messages_without_tool_calls_pass_through_unchanged():

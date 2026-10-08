@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
+import { isAccountOwner } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
@@ -9,6 +10,7 @@ import { translate } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
 import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
+import { getCachedSystemInfo } from "@/hooks/use-system";
 import { buildTrainingStartPayload } from "../api/mappers";
 import {
   TrainingStartError,
@@ -28,6 +30,7 @@ import {
   createDatasetCacheUsabilityIdentity,
   trainingDatasetCacheRejections,
 } from "./dataset-cache-rejection";
+import { checkDecisionDatasetColumns } from "./decision-dataset";
 import { shouldUseVisionDatasetCheck } from "./fresh-dataset-check";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
 import { isRawTextDatasetFormat } from "./training-methods";
@@ -57,6 +60,7 @@ const ROLE_REMAP: Record<string, Record<string, string>> = {
 type AttemptPhase = "preflight" | "transport" | "finished";
 
 function captureTrainingStartInputs(config: TrainingConfigState) {
+  // No hardware info: /api/system answering mid-start is not a user edit.
   return createTrainingStartInputIdentity(
     buildTrainingStartPayload(config, null),
     config,
@@ -260,6 +264,7 @@ export async function startFreshTrainingRun(): Promise<boolean> {
   const validation = validateTrainingConfig(
     attempt.config,
     usePlatformStore.getState().deviceType,
+    isAccountOwner(),
   );
   if (!validation.ok) {
     return attempt.cancel(translate(validation.errorKey));
@@ -359,6 +364,21 @@ async function prepareSelectedDataset(
   }
 
   const isVlm = shouldUseVisionDatasetCheck(attempt.config);
+  if (attempt.config.modelType === "decision") {
+    const missing = await checkDecisionDatasetColumns(
+      () => checkSelectedDataset(attempt, datasetName, hfToken, isVlm),
+      attempt.config.datasetSource === "upload" ? datasetName : null,
+    );
+    return (
+      missing !== null &&
+      (missing.length === 0 ||
+        attempt.cancel(
+          translate("studio.training.validation.decisionColumnsMissing", {
+            columns: missing.join(", "),
+          }),
+        ))
+    );
+  }
   const check = await checkSelectedDataset(
     attempt,
     datasetName,
@@ -523,12 +543,13 @@ async function submitFreshTrainingRun(
   const validation = validateTrainingConfig(
     attempt.config,
     usePlatformStore.getState().deviceType,
+    isAccountOwner(),
   );
   if (!validation.ok) {
     return attempt.cancel(translate(validation.errorKey));
   }
 
-  const payload = buildTrainingStartPayload(attempt.config, hfToken);
+  const payload = buildTrainingStartPayload(attempt.config, hfToken, getCachedSystemInfo());
   if (!attempt.enterTransport()) {
     return false;
   }

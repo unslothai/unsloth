@@ -139,9 +139,9 @@ def test_sampling_defaults_resolve_for_every_21_artifact_name():
         "unsloth/Qwen-Image-2.1-GGUF",
         "unsloth/Qwen-Image-2.1-FP8",
     ):
-        assert default_generation_params(name) == (40, 1.0), name
+        assert default_generation_params(name) == (25, 1.0), name
     # The generic key still owns the other Qwen-Image checkpoints.
-    assert default_generation_params("Qwen/Qwen-Image-2512") == (20, 4.0)
+    assert default_generation_params("Qwen/Qwen-Image-2512") == (50, 4.0)
 
 
 def test_explicit_edit_hands_ordered_rgba_images_and_explicit_geometry(backend21):

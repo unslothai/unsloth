@@ -81,8 +81,8 @@ def test_flux1_krea_dev_is_trusted_non_gguf():
 
 def test_flux1_krea_dev_generation_defaults():
     # Model-card recipe: 28 steps at guidance 4.5. The generic "krea" key (Turbo's 8-step no-CFG shape) must NOT swallow it, and the krea-2 defaults must stay intact.
-    assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (28, 4.5)
-    assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (28, 4.5)
+    assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (20, 3.5)
+    assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (20, 3.5)
     assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
@@ -108,7 +108,7 @@ def test_flux_dev_and_krea_do_not_inherit_the_schnell_nvfp4_checkpoint():
 
 def test_flux2_klein_generation_defaults_distinguish_base_from_distilled():
     for size in ("4B", "9B"):
-        assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (50, 4.0)
+        assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (20, 5.0)
         assert default_generation_params(f"unsloth/FLUX.2-klein-{size}") == (4, 1.0)
 
 
@@ -167,10 +167,10 @@ def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
 def test_zimage_base_generation_defaults_are_not_the_distilled_recipe():
     # The base is undistilled: 20 steps at guidance 4. The more specific "z-image-turbo" key sits
     # ahead of "z-image", so the 9-step CFG-free Turbo recipe must not swallow it.
-    assert default_generation_params("Tongyi-MAI/Z-Image") == (20, 4.0)
-    assert default_generation_params("unsloth/Z-Image-GGUF") == (20, 4.0)
-    assert default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (9, 0.0)
-    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF") == (9, 0.0)
+    assert default_generation_params("Tongyi-MAI/Z-Image") == (25, 3.0)
+    assert default_generation_params("unsloth/Z-Image-GGUF") == (25, 3.0)
+    assert default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (8, 0.0)
+    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF") == (8, 0.0)
 
 
 # ── lumina-2 family ──────────────────────────────────────────────────────────
@@ -346,8 +346,8 @@ def test_hidream_bf16_component_table_present():
 
 
 def test_ideogram4_generation_defaults():
-    # Model-card settings: 48 steps, guidance 7 (an exact match keeps the pipeline's recommended tapered schedule).
-    assert default_generation_params("ideogram-ai/ideogram-4-fp8") == (48, 7.0)
+    # ComfyUI's template: 20 steps at constant guidance 7 (an explicit 48 / 7 still keeps the card's tapered schedule).
+    assert default_generation_params("ideogram-ai/ideogram-4-fp8") == (20, 7.0)
 
 
 def test_ideogram4_bf16_reservation_table_present():
@@ -435,7 +435,14 @@ def test_qwen_image_2512_prequant_filenames_match_its_repo():
         assert source is not None
         assert source.location == "unsloth/Qwen-Image-2512-FP8"
         names = list(candidate_filenames_of(source))
-        assert names[0] == safetensors_name, names
+        # the int8 ComfyUI twin (Studio's int8 codes bit for bit) leads; Studio's own containers follow unchanged
+        own = [n for n in names if not n.endswith("-ComfyUI.safetensors")]
+        assert own[0] == safetensors_name, names
+        assert names[0] == (
+            safetensors_name.replace(".safetensors", "-ComfyUI.safetensors")
+            if scheme == "int8"
+            else safetensors_name
+        ), names
         assert pickle_name in names[1:], names
         # And the legacy repo-agnostic spelling stays last, for a repo predating the model-named one.
         assert names[-1] == f"transformer_{scheme}.pt", names
@@ -759,7 +766,9 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     )
 
 
-def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade():
+def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade(
+    monkeypatch, tmp_path
+):
     """``pip install -U 'diffusers>=0.41.0'`` has no candidate while 0.41.0 is unreleased, so the
     refusal has to name the pinned main build Studio actually installs for this class.
 
@@ -767,22 +776,30 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     host whose git exits non-zero: the install keeps diffusers 0.40.0, and the old text sent the
     reader to `pip install -r diffusers-main.txt`, which resolves the same git+https requirement
     and fails identically. The quoted zip URL needs no git, so it is the one line here that has to
-    stay true, hence the check that it names the commit the pin file actually carries."""
+    stay true, hence the check that it names the commit the pin file actually carries.
+
+    0.41.0 has since shipped, so this runs as the next unreleased pin would: the minimum marked
+    unreleased and diffusers-main.txt with its commit line uncommented."""
     import pathlib
     import re as _re
 
-    from core.inference.diffusion_families import (
-        _PIPELINE_MIN_DIFFUSERS,
-        _UNRELEASED_MIN_DIFFUSERS,
-        _too_old_message,
+    from core.inference import diffusion_families as families
+    from core.inference.diffusion_families import _PIPELINE_MIN_DIFFUSERS, _too_old_message
+
+    shipped = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
+    pin = tmp_path / "diffusers-main.txt"
+    pin.write_text(
+        shipped.read_text(encoding = "utf-8").replace("\n# diffusers @ git+", "\ndiffusers @ git+"),
+        encoding = "utf-8",
     )
+    monkeypatch.setattr(families, "_DIFFUSERS_MAIN_PIN", pin)
+    monkeypatch.setattr(families, "_UNRELEASED_MIN_DIFFUSERS", frozenset({"0.41.0"}))
 
     message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
     assert "pip install -U 'diffusers>=0.41.0'" not in message
     assert "has not been released yet" in message
     assert "git --version" in message, "the likely cause has to be checkable by the reader"
 
-    pin = pathlib.Path(__file__).resolve().parents[1] / "requirements" / "diffusers-main.txt"
     commit = _re.search(r"@([0-9a-fA-F]{40})\b", pin.read_text(encoding = "utf-8"))
     assert commit is not None, "the main pin must carry a full commit for the zip route to exist"
     assert (
@@ -796,7 +813,20 @@ def test_a_minimum_that_has_not_shipped_does_not_prescribe_an_impossible_upgrade
     # Every unreleased entry must still be a minimum some class actually declares, so a stale one
     # cannot sit here unnoticed after its release ships.
     declared = set(_PIPELINE_MIN_DIFFUSERS.values())
-    assert _UNRELEASED_MIN_DIFFUSERS <= declared, sorted(_UNRELEASED_MIN_DIFFUSERS - declared)
+    monkeypatch.undo()
+    unreleased = families._UNRELEASED_MIN_DIFFUSERS
+    assert unreleased <= declared, sorted(unreleased - declared)
+
+
+def test_qwen_image_21_on_0_40_points_at_the_released_0_41():
+    """0.41.0 is on PyPI: a 0.40.0 install is told to update, not sent to a git build."""
+    from core.inference.diffusion_families import _UNRELEASED_MIN_DIFFUSERS, _too_old_message
+
+    assert "0.41.0" not in _UNRELEASED_MIN_DIFFUSERS
+    message = _too_old_message("QwenImage21Pipeline", "qwen-image-2.1", "0.40.0")
+    assert "pip install -U 'diffusers>=0.41.0'" in message
+    assert "Settings, Check for updates" in message
+    assert "has not been released yet" not in message and "git" not in message, message
 
 
 def test_qwen_image_21_takes_reference_images_but_is_not_an_edit_only_family():

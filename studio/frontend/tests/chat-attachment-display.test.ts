@@ -250,7 +250,7 @@ test("every attachment opens in the Library's viewer, from the composer and from
   const preview = await readSrcAsync("components/assistant-ui/attachment-preview.tsx");
   const viewer = await readSrcAsync("components/assistant-ui/attachment-document-dialog.tsx");
   for (const dialog of [
-    "AttachmentImageDialog",
+    "ImageGalleryDialog",
     "AttachmentTextDialog",
     "AttachmentAudioDialog",
     "AttachmentVideoDialog",

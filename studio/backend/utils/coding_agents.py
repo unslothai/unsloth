@@ -27,7 +27,16 @@ _DEEPSEEK_HARNESS_FILE_MARKERS = (
 # unsloth_cli/commands/start.py. Each entry is the exact executable name that
 # subcommand launches, so a hit here means `unsloth start <agent>` can find the
 # binary on PATH without the user installing anything first.
-CODING_AGENTS: tuple[str, ...] = ("claude", "codex", "openclaw", "opencode", "hermes", "pi", "dsh")
+CODING_AGENTS: tuple[str, ...] = (
+    "claude",
+    "codex",
+    "openclaw",
+    "opencode",
+    "hermes",
+    "pi",
+    "dsh",
+    "vibe",
+)
 
 
 def is_deepseek_harness_executable(executable: str, *, allow_execution: bool = True) -> bool:

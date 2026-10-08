@@ -38,7 +38,7 @@ import {
   useSidebarWidth,
 } from "@/hooks/use-sidebar-width"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
+import { LayoutAlignLeftIcon, PanelLeftIcon } from "@hugeicons/core-free-icons"
 
 const noop = () => {}
 
@@ -541,7 +541,7 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar()
 
   return (
     <Button
@@ -556,7 +556,11 @@ function SidebarTrigger({
       }}
       {...props}
     >
-      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon
+        icon={(isMobile ? openMobile : open) ? PanelLeftIcon : LayoutAlignLeftIcon}
+        strokeWidth={1.75}
+        className="size-icon"
+      />
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   )

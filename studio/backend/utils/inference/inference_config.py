@@ -149,6 +149,12 @@ SAMPLING_FIELD_NAMES = tuple(_SAMPLING_FIELDS)
 # The five fields the Chat UI's mergeBackendRecommendedInference (presets/preset-policy.ts) seeds, auto-recommended here for request parity. repetition_penalty stays manual-only (client-sent or the UNSLOTH_SAMPLING_REPETITION_PENALTY pin), matching the UI where it is never auto-filled per model.
 _UI_RECOMMENDED_FIELDS = ("temperature", "top_p", "top_k", "min_p", "presence_penalty")
 
+# Mirrors resolveQwenThinkingParams in the Chat UI (qwen-sampling-table.ts).
+_QWEN3_THINKING_SAMPLING = {
+    True: {"temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0},
+    False: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0},
+}
+
 
 def _clean_sampling_value(field: str, val: Any):
     """Coerce ``val`` to the field's numeric type when it is a finite, in-range number, else None. Rejects bool, non-numeric, NaN/inf and out-of-range values so neither a bad operator env var nor a malformed model recommendation can reach llama-server. NaN matters because ``nan < lo`` and ``nan > hi`` are both False, so a plain range check would let it through. Coerce before the finiteness check: ``math.isfinite`` and ``float()`` raise ``OverflowError`` on an int too big for a C double (an oversized UNSLOTH_SAMPLING_TOP_K would otherwise 500 the request), while an in-range int is range-checked exactly and ``int()`` rejects a NaN/inf that reached an int field."""
@@ -204,10 +210,12 @@ def resolve_effective_sampling(
     explicit: Dict[str, Any],
     *,
     fill_defaults: bool = True,
-    preset_defaults: Optional[Dict[str, Any]] = None,
+    thinking: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Resolve the effective sampling params for a request. ``explicit`` maps each field in :data:`SAMPLING_FIELD_NAMES` to the client-sent value, or ``None`` when the client omitted it. Precedence, highest first: an operator ``UNSLOTH_SAMPLING_*`` pin, the client's explicit value, a custom llama.cpp INI's value (``preset_defaults``), the per-model recommendation, then the static schema default. When ``fill_defaults`` is False a field with none of the first four is omitted rather than set to the static default, so a raw proxy body (``/v1/completions``) keeps llama-server's own default for that field."""
+    """Resolve the effective sampling params for a request. ``explicit`` maps each field in :data:`SAMPLING_FIELD_NAMES` to the client-sent value, or ``None`` when the client omitted it. Precedence, highest first: an operator ``UNSLOTH_SAMPLING_*`` pin, the client's explicit value, the per-model recommendation, then the static schema default. When ``fill_defaults`` is False a field with none of the first three is omitted rather than set to the static default, so a raw proxy body (``/v1/completions``) keeps llama-server's own default for that field."""
     recommended = _recommended_sampling(model_id or "")
+    if thinking is not None and "qwen3" in (model_id or "").lower():
+        recommended = {**recommended, **_QWEN3_THINKING_SAMPLING[thinking]}
     effective: Dict[str, Any] = {}
     for field, (_env, default, _lo, _hi, _int) in _SAMPLING_FIELDS.items():
         override = _operator_sampling_override(field)
@@ -215,8 +223,6 @@ def resolve_effective_sampling(
             effective[field] = override
         elif explicit.get(field) is not None:
             effective[field] = explicit[field]
-        elif preset_defaults and field in preset_defaults:
-            effective[field] = preset_defaults[field]
         elif field in recommended:
             effective[field] = recommended[field]
         elif fill_defaults:

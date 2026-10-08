@@ -106,6 +106,40 @@ class ExportStatusResponse(BaseModel):
         None,
         description = "Error message of the most recently finished op, if it failed",
     )
+    decision: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "{layout, adapter_only} when the loaded checkpoint is a decision model",
+    )
+
+
+class DecisionExportInfo(BaseModel):
+    """GGUF export options for a decision model (Clef or Laya) checkpoint."""
+
+    is_decision: bool = Field(True, description = "True for a decision model checkpoint")
+    layout: Literal["clef", "laya"] = Field(..., description = "Decision checkpoint layout")
+    adapter_only: bool = Field(
+        False,
+        description = "True for a Clef folder holding LoRA adapters only (merged at export time)",
+    )
+    eligible: Optional[bool] = Field(
+        None,
+        description = "False when llama.cpp cannot serve this model; None when only the export can tell",
+    )
+    reason: Optional[str] = Field(None, description = "Why the checkpoint is not eligible")
+    quantizations: List[str] = Field(..., description = "Allowed GGUF quantizations, default first")
+    default_quantization: str = Field(..., description = "Default GGUF quantization")
+    output_dir: str = Field(..., description = "Where the GGUF files are written (<run folder>/gguf)")
+    existing_export: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Content of an earlier gguf/export.json, if valid",
+    )
+
+
+class ExportDecisionInfoResponse(BaseModel):
+    """Decision-model export info for a checkpoint path; decision is None for any other model."""
+
+    checkpoint_path: str
+    decision: Optional[DecisionExportInfo] = None
 
 
 class ExportOperationResponse(BaseModel):
@@ -176,6 +210,11 @@ class ExportMergedModelRequest(ExportCommonOptions):
         "When set, it overrides format_type. Lets the export UI expose the full set of formats "
         "beyond the quick buttons.",
     )
+    install_missing_dependencies: bool = Field(
+        False,
+        description = "User consent to install llm-compressor (or its shadow runtime) for "
+        "compressed-tensors export.",
+    )
 
 
 class ExportBaseModelRequest(ExportCommonOptions):
@@ -225,6 +264,32 @@ class ExportGGUFRequest(BaseModel):
         False,
         description = "If True, create a private Hugging Face Hub repository",
     )
+    npu_q4nx: bool = Field(
+        False,
+        description = "Also convert one Q4_0 / Q4_1 / Q4_K_M GGUF to FastFlowLM's Q4NX for the "
+        "AMD Ryzen AI NPU, written to <save_directory>/npu-q4nx.",
+    )
+
+
+class ConvertQ4NXRequest(BaseModel):
+    """Convert a GGUF that already exists to FastFlowLM Q4NX, without loading a model."""
+
+    save_directory: str = Field(..., description = "Directory the Q4NX folder is written into")
+
+    @field_validator("save_directory", mode = "before")
+    @classmethod
+    def _check_save_directory(cls, v):
+        return _validate_save_directory(v)
+
+    gguf_path: Optional[str] = Field(None, description = "A local .gguf file")
+    repo_id: Optional[str] = Field(None, description = "Hub repo holding the GGUF, with filename")
+    filename: Optional[str] = Field(None, description = "GGUF file in repo_id")
+    base_model: str = Field(
+        ...,
+        description = "The original (non-GGUF) Hub repo or local model folder; FastFlowLM needs "
+        "its config.json and tokenizer files.",
+    )
+    hf_token: Optional[str] = Field(None, description = "Hugging Face token for gated repos")
 
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):
@@ -251,3 +316,19 @@ class ExportLoRAAdapterRequest(ExportCommonOptions):
         description = "GGUF LoRA output float type (only used when gguf=True). "
         "Q8_0 falls back to F16 per tensor for dims not divisible by the block size (32).",
     )
+
+
+class LlmCompressorExportProbeResponse(BaseModel):
+    ready: bool
+    needs_consent: bool
+    consent_kind: Optional[Literal["shadow", "workspace"]] = None
+    install_summary: Optional[str] = None
+    workspace_install_command: str
+    shadow_path: str
+    autoinstall_disabled: bool
+    shadow_disabled: bool
+    offline: bool
+    blocked_reason: Optional[str] = None
+    python_executable: str
+    has_pip: bool
+    has_uv: bool

@@ -36,6 +36,7 @@ export {
   type ApiModelOverrides,
 } from "./api/model-overrides";
 export { useActiveModelConfig } from "./hooks/use-active-model-config";
+export { useVllmAvailable } from "./hooks/use-vllm-available";
 export type {
   DeletedModelRef,
   ExternalConnectionRef,
@@ -46,6 +47,7 @@ export type {
 } from "./components/model-selector";
 export { modelConfigInstanceKey } from "./model-config/config-signature";
 export { modelConfigDraftKey } from "./model-config/model-config-draft";
+export { splitQuantSuffix } from "./model-config/model-identity";
 export {
   clearModelConfigHandoff,
   createModelConfigHandoffRequestId,

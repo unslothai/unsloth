@@ -127,6 +127,34 @@ def _no_real_mxc_drive_aliases(monkeypatch):
 
 
 @pytest.fixture(autouse = True)
+def _forget_mxc_isolation_settings():
+    # Held for a second across tests that each get their own Studio home; only when already imported.
+    def _forget():
+        settings = sys.modules.get("utils.mxc_isolation_settings")
+        if settings is not None:
+            settings.forget_cached_setting()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
+def _no_background_sandbox_probes(monkeypatch):
+    # No warm-up thread and no background re-probe; each test starts with no cached tool answer.
+    monkeypatch.setenv("UNSLOTH_DISABLE_SANDBOX_WARMUP", "1")
+
+    def _forget():
+        os_sandbox = sys.modules.get("core.inference.os_sandbox")
+        if os_sandbox is not None:
+            os_sandbox.forget_tool_isolation()
+
+    _forget()
+    yield
+    _forget()
+
+
+@pytest.fixture(autouse = True)
 def _no_restricted_region_defaults(monkeypatch):
     # A host where Hugging Face is restricted would otherwise default the model source to ModelScope.
     monkeypatch.setenv("UNSLOTH_MIRROR_FALLBACK", "0")
@@ -183,10 +211,37 @@ def _reset_gpu_query_cache():
         if hw is not None and hasattr(hw, "_last_good_visible_info"):
             with hw._last_good_visible_lock:
                 hw._last_good_visible_info.clear()
+        amd = sys.modules.get("utils.hardware.amd")
+        if amd is not None and hasattr(amd, "_hip_id_map_lock"):
+            with amd._hip_id_map_lock:
+                amd._hip_id_map_cache = None
 
     _reset()
     yield
     _reset()
+
+
+@pytest.fixture(autouse = True)
+def _restore_fp32_matmul_precision():
+    # torchao's default config handler sets set_float32_matmul_precision("high") process-wide.
+    def _get():
+        getter = getattr(sys.modules.get("torch"), "get_float32_matmul_precision", None)
+        return getter() if getter is not None else None
+
+    before = _get() or "highest"
+    yield
+    after = _get()
+    if after is not None and after != before:
+        sys.modules["torch"].set_float32_matmul_precision(before)
+
+
+@pytest.fixture(autouse = True)
+def _reset_media_import_window(monkeypatch):
+    # A load path claims the window for the process; later prewarm tests would skip.
+    warm = sys.modules.get("utils.torch_warmup")
+    if warm is not None and hasattr(warm, "_media_import_claimed"):
+        monkeypatch.setattr(warm, "_media_import_claimed", False)
+        monkeypatch.setattr(warm, "_media_import_owner", None)
 
 
 @pytest.fixture(autouse = True)
