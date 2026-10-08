@@ -1119,8 +1119,7 @@ class TestTheProbeIsNotPaidForTwice:
 
 
 def test_a_previous_generation_sentinel_reads_as_unset(monkeypatch):
-    """`execute_tool` held from before a reload of tools stores that generation's sentinels (#11384).
-    Before the fix the context one reached the budget math as `object * int` and raised TypeError."""
+    """An `execute_tool` held across a reload of tools passes the old sentinels (#11384)."""
     stale = object()
     monkeypatch.setattr("state.tool_policy.require_tool_access", lambda **kw: None)
     seen = []

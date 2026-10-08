@@ -13978,7 +13978,7 @@ def execute_tool(
             "arguments to save room, not content, so nothing ran. Write the actual content "
             "out in full."
         )
-    # By type, not `is _TIMEOUT_UNSET`, for the same stale-sentinel reason as `_request_context_tokens`.
+    # By type, not `is _TIMEOUT_UNSET`: see `_request_context_tokens`.
     effective_timeout = (
         timeout if timeout is None or isinstance(timeout, (int, float)) else _EXEC_TIMEOUT
     )
@@ -16263,11 +16263,8 @@ def _loaded_context_tokens() -> int | None:
 
 
 def _request_context_tokens() -> int | None:
-    """The window `execute_tool` scoped to this request, else the process probe.
-
-    An int or None is final (None = asked, unknowable, e.g. an external provider). Anything else is
-    unset, read by type rather than `is _UNSET_CONTEXT_TOKENS`: an `execute_tool` held from before a
-    reload of this module stores the previous generation's sentinel (#11384)."""
+    """The request's window (an int, or None = unknowable: never probed), else the process probe. By type, not
+    `is _UNSET_CONTEXT_TOKENS`: an `execute_tool` held across a reload stores the old sentinel (#11384)."""
     scoped = _REQUEST_CONTEXT_TOKENS.get()
     if scoped is None or isinstance(scoped, int):
         return scoped
