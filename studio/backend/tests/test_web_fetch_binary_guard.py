@@ -417,6 +417,39 @@ def test_article_after_a_large_inline_head_is_read(monkeypatch):
     assert "Chapter 11 protection" in out
 
 
+@pytest.mark.parametrize(
+    "content_type,body",
+    [
+        (
+            "text/html",
+            b"<html><head><title>t</title></head><body><article>"
+            + b"<h1>Harbor ferry adds night service</h1><p>Boats run every thirty minutes.</p></article>"
+            + b"<script>" + b"x" * (4 * 1024 * 1024) + b"</script></body></html>",
+        ),
+        ("text/plain", b"Harbor ferry adds night service\n" + b"log line\n" * (512 * 1024)),
+    ],
+    ids = ["html", "text"],
+)
+def test_large_page_on_a_slow_link_still_returns_its_start(monkeypatch, content_type, body):
+    clock = {"time": 1000.0}
+    monkeypatch.setattr(tools.time, "monotonic", lambda: clock["time"])
+    resp = _FakeResp(body, content_type)
+    read = resp.read
+
+    def slow_read(n = None):
+        chunk = read(n)
+        clock["time"] += len(chunk) / (64 * 1024)
+        return chunk
+
+    resp.read = slow_read
+    monkeypatch.setattr(
+        tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["93.184.216.34"])
+    )
+    monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *a, **k: _FakeOpener(resp))
+    out = tools._fetch_page_text("https://example.com/thing", timeout = 30)
+    assert "Harbor ferry adds night service" in out
+
+
 def test_content_type_sanitized_in_message(monkeypatch):
     # Do not echo obs-folded header content into the model response.
     out = _fetch_with(monkeypatch, b"PK\x03\x04" * 500, "application/zip\r\n data: injected")

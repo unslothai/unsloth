@@ -15080,8 +15080,11 @@ _UNMEASURED_ROOM_MARGIN = 0.5
 _MIN_PAGE_CHARS = 2000
 # A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
-# Far above _MAX_PAGE_CHARS: news pages inline up to ~2.5 MB of styles and scripts before <body>.
-_MAX_FETCH_BYTES = 8 * 1024 * 1024
+# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections stripped during conversion.
+_MAX_FETCH_BYTES = 512 * 1024
+# News pages inline up to ~2.5 MB of styles and scripts before <body>, so HTML gets _MAX_FETCH_BYTES past <body>.
+_MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
+_BODY_TAG_RE = re.compile(rb"<body[\s/>]", re.IGNORECASE)
 # "%" is safe so an already-encoded URL is not re-encoded into %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
@@ -15769,8 +15772,8 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
             continue
 
 
-def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
-    """read at most ``max_bytes`` within the overall budget and return ``(error_or_None, body_bytes)``."""
+def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event, body_window = None):
+    """read at most ``max_bytes``, and ``body_window`` past ``<body``, within the budget; ``(error_or_None, body)``."""
     # HTTPError wraps the socket; tighten its deadline when present, while chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
@@ -15778,6 +15781,7 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
     read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
+    body_at = None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
@@ -15796,6 +15800,13 @@ def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
             break
         chunks.append(chunk)
         remaining -= len(chunk)
+        if body_window is not None and body_at is None:
+            got = max_bytes - remaining
+            seen = b"".join(chunks[-2:])
+            match = _BODY_TAG_RE.search(seen)
+            if match:
+                body_at = got - len(seen) + match.start()
+                remaining = min(remaining, body_at + body_window - got)
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
         try:
@@ -16024,10 +16035,16 @@ def _fetch_url_raw(
 
             # chunked reads recheck the fetch budget between chunks.
             declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
+            declared_html = raw_bytes_max is None and content_type in (
+                "text/html",
+                "application/xhtml+xml",
+            )
             if raw_bytes_max is not None:
                 read_limit = raw_bytes_max + 1
             elif declared_pdf:
                 read_limit = _MAX_PDF_FETCH_BYTES + 1
+            elif declared_html:
+                read_limit = _MAX_HTML_FETCH_BYTES
             else:
                 read_limit = max_bytes
             body_error, raw_bytes = _read_capped_body(
@@ -16036,6 +16053,7 @@ def _fetch_url_raw(
                 timeout,
                 deadline,
                 cancel_event,
+                body_window = max_bytes if declared_html else None,
             )
             if body_error is not None:
                 return body_error, "", ""
@@ -16052,10 +16070,10 @@ def _fetch_url_raw(
                     meta_out["cache_control"] = resp.headers.get("Cache-Control")
                     meta_out["age"] = resp.headers.get("Age")
                 return http_error, raw_bytes, content_type
-            if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
+            if not declared_pdf and len(raw_bytes) == read_limit and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
-                    _MAX_PDF_FETCH_BYTES - max_bytes + 1,
+                    _MAX_PDF_FETCH_BYTES - read_limit + 1,
                     timeout,
                     deadline,
                     cancel_event,
