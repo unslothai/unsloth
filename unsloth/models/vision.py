@@ -147,6 +147,7 @@ from .loader_utils import (
     _dequantize_leftover_fp8_params,
     _restore_dropped_fp8_scales,
     _prepare_compressed_tensors_model,
+    _dequantize_bitsandbytes_for_full_finetuning,
     planner_class_mismatch_reason,
     planner_model_class,
     exclude_no_placement_params,
@@ -3614,6 +3615,8 @@ class FastBaseModel:
                     dtype = torch_dtype,
                 )
                 _prepare_compressed_tensors_model(model, full_finetuning = full_finetuning)
+                if full_finetuning:
+                    _dequantize_bitsandbytes_for_full_finetuning(model, torch_dtype, model_name)
                 if load_in_16bit and not load_in_4bit and not load_in_8bit:
                     _dequantize_leftover_fp8_params(
                         model,
