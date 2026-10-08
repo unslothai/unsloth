@@ -5421,8 +5421,7 @@ export function AppSidebar() {
           "group-data-[collapsible=icon]:px-0 shrink-0 transition-[padding]",
           rowPadding,
           usesDesktopTitlebar ? "pt-[calc(11px*var(--ui-space-scale,1))]" : "pt-[calc(7px*var(--ui-space-scale,1))]",
-          // Scrolled: New Chat is pinned, give a little gap below it.
-          scrolled ? "pb-[calc(5px*var(--ui-space-scale,1))]" : "pb-px",
+          "pb-px",
         )}
       >
         <SidebarGroupContent>
@@ -5484,6 +5483,238 @@ export function AppSidebar() {
         </SidebarGroupContent>
       </SidebarGroup>
 
+      <SidebarGroup
+        data-tour="navbar"
+        className={cn(
+          "group-data-[collapsible=icon]:px-0 pt-0 shrink-0 transition-[padding]",
+          // Short windows: the nav scrolls itself rather than push Recents and the footer off screen.
+          "min-h-0 max-h-[50%] overflow-y-auto overscroll-contain",
+          "group-data-[collapsible=icon]:shrink group-data-[collapsible=icon]:max-h-none group-data-[collapsible=icon]:overflow-hidden",
+          rowPadding,
+          scrolled ? "pb-[calc(5px*var(--ui-space-scale,1))]" : "pb-0",
+        )}
+      >
+        <SidebarGroupContent>
+          <SidebarMenu>
+            {/* Order and pin state come from Settings -> Appearance ->
+                Sidebar navigation. */}
+            {inlineNavIds.map((id) => {
+              const row = navRows[id];
+              // A row whose capability is still unmeasured spins instead of blacking out.
+              const rowState = resolveNavRowState(row);
+              return (
+                <NavItem
+                  key={id}
+                  icon={row.icon}
+                  label={row.label}
+                  badge={row.badge}
+                  active={
+                    (id === "images" && imagesWorkflowsListed) ||
+                    (id === "audio" && audioWorkflowsListed)
+                      ? false
+                      : row.active
+                  }
+                  disabled={rowState.disabled}
+                  tooltip={rowState.tooltip}
+                  alwaysTooltip={rowState.pending}
+                  spinner={rowState.spinner}
+                  testId={`nav-row-${id}`}
+                  onClick={row.onClick}
+                  onIntent={row.onIntent}
+                  className={cn(
+                    row.className,
+                    id === "images" && "group/images-item",
+                    id === "audio" && "group/audio-item",
+                  )}
+                  // Off the Images page the list is folded, so the row offers a way to open it.
+                  overlay={
+                    id === "images" &&
+                    !row.active &&
+                    sidebarRowsLabelled ? (
+                      <ImagesNavDisclosure />
+                    ) : id === "audio" &&
+                      !row.active &&
+                      sidebarRowsLabelled ? (
+                      <AudioNavDisclosure />
+                    ) : undefined
+                  }
+                >
+                  {/* Images carries its workflows as rows beneath it. */}
+                  {id === "images" ? (
+                    <ImagesWorkflowList
+                      active={row.active}
+                      collapsed={!sidebarRowsLabelled}
+                      onPick={(workflowId) => {
+                        useImageWorkflowStore
+                          .getState()
+                          .setWorkflow(workflowId);
+                        navigate({ to: "/images" });
+                        closeMobileIfOpen();
+                      }}
+                    />
+                  ) : id === "audio" ? (
+                    <AudioWorkflowList
+                      active={row.active}
+                      collapsed={!sidebarRowsLabelled}
+                      onPick={pickAudioWorkflow}
+                    />
+                  ) : (
+                    row.children
+                  )}
+                </NavItem>
+              );
+            })}
+            {/* Unpinned destinations, behind one row. */}
+            {overflowNavIds.length > 0 && (
+              <SidebarMenuItem>
+                <DropdownMenu
+                  open={moreOpen}
+                  onOpenChange={setMoreOpen}
+                  modal={false}
+                >
+                  {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
+                  <Tooltip
+                    open={moreTooltipOpen && !moreOpen}
+                    onOpenChange={handleMoreTooltipOpenChange}
+                  >
+                    <TooltipPrimitive.Trigger asChild>
+                      <DropdownMenuTrigger asChild>
+                        <SidebarMenuButton
+                          ref={moreTriggerRef}
+                          {...moreHover.trigger}
+                          // More is a container, not a destination: no active style just because the current page
+                          // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
+                          // has left. Not data-state: the tooltip and menu triggers both write that one.
+                          data-menu-open={moreOpen ? "true" : undefined}
+                          // Pin a hover-opened flyout instead of letting the trigger toggle it shut.
+                          onPointerDown={(event) => {
+                            if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey) return;
+                            event.preventDefault();
+                            // An open preview never mounts again, so focus it as a click-open would.
+                            if (!morePinnedOpen && moreHover.open) {
+                              moreContentRef.current?.focus({ preventScroll: true });
+                            }
+                            setMoreOpen(!morePinnedOpen);
+                          }}
+                          className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
+                        >
+                          <HugeiconsIcon
+                            icon={MORE_DOTS_ICON}
+                            strokeWidth={1.75}
+                            className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
+                          />
+                          <span className="text-ui-14p5 leading-ui-19 tracking-nav">
+                            {t("shell.navigation.more")}
+                          </span>
+                        </SidebarMenuButton>
+                      </DropdownMenuTrigger>
+                    </TooltipPrimitive.Trigger>
+                    {/* Collapsed rail only; expanded rows show their label. */}
+                    <TooltipContent
+                      side="right"
+                      align="center"
+                      className="tooltip-compact"
+                      hidden={isMobile || sidebarState !== "collapsed"}
+                    >
+                      {t("shell.navigation.more")}
+                    </TooltipContent>
+                  </Tooltip>
+                  <DropdownMenuContent
+                    ref={moreContentRef}
+                    side="right"
+                    align="start"
+                    sideOffset={6}
+                    className="sidebar-more-menu w-48 p-1"
+                    {...moreHover.content}
+                    // The trigger handles its own presses.
+                    onPointerDownOutside={(event) => {
+                      if (moreTriggerRef.current?.contains(event.target as Node)) event.preventDefault();
+                    }}
+                    {...moreContentFocusProps}
+                    onCloseAutoFocus={(event) => {
+                      const chosen = moreChosen.current;
+                      moreChosen.current = false;
+                      if (!chosen) {
+                        event.preventDefault();
+                        return;
+                      }
+                      moreFocusReturning.current = true;
+                      queueMicrotask(() => {
+                        moreFocusReturning.current = false;
+                      });
+                    }}
+                  >
+                    {overflowNavIds.map((id) => {
+                      const row = navRows[id];
+                      // Same pending handling as the inline rows above.
+                      const rowState = resolveNavRowState(row);
+                      if (id === "audio") {
+                        return (
+                          <AudioMoreSubmenu
+                            key={id}
+                            icon={row.icon}
+                            label={row.label}
+                            badge={row.badge}
+                            active={row.active}
+                            disabled={rowState.disabled}
+                            tooltip={rowState.tooltip}
+                            spinner={rowState.spinner}
+                            onIntent={row.onIntent}
+                            onOpen={() => {
+                              setMoreOpen(false);
+                              row.onClick();
+                            }}
+                            onPick={pickAudioWorkflow}
+                            contentProps={{
+                              ...sidebarSubmenuOffsets,
+                              // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
+                              ...moreHover.content,
+                            }}
+                          />
+                        );
+                      }
+                      return (
+                        <MoreMenuItem
+                          key={id}
+                          icon={row.icon}
+                          label={row.label}
+                          badge={row.badge}
+                          active={row.active}
+                          disabled={rowState.disabled}
+                          tooltip={rowState.tooltip}
+                          spinner={rowState.spinner}
+                          onSelect={row.onClick}
+                          onIntent={row.onIntent}
+                        />
+                      );
+                    })}
+                    {/* Way out of the flyout: jump straight to the control that
+                        decides what lives here vs. on the sidebar itself.
+                        my-1 matches the menu's own p-1, so the gap either side
+                        of the rule equals the one under the last row. */}
+                    <DropdownMenuSeparator className="mx-1! my-1! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]" />
+                    <DropdownMenuItem
+                      onSelect={() =>
+                        useSettingsDialogStore
+                          .getState()
+                          .openDialog("appearance", {
+                            scrollTarget: "appearance-sidebar-nav",
+                          })
+                      }
+                    >
+                      <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                      <span className="min-w-0 flex-1 truncate">
+                        {t("shell.navigation.customizeSidebar")}
+                      </span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </SidebarMenuItem>
+            )}
+          </SidebarMenu>
+        </SidebarGroupContent>
+      </SidebarGroup>
+
       <SidebarContent
         ref={attachScroller}
         onScroll={(e) => syncScrollState(e.currentTarget)}
@@ -5502,234 +5733,6 @@ export function AppSidebar() {
           scrolled && "is-scrolled",
         )}
       >
-        <SidebarGroup
-          data-tour="navbar"
-          className={cn(
-            "group-data-[collapsible=icon]:px-0 py-0 shrink-0",
-            unrailedRowPadding,
-          )}
-        >
-
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {/* Order and pin state come from Settings -> Appearance ->
-                  Sidebar navigation. */}
-              {inlineNavIds.map((id) => {
-                const row = navRows[id];
-                // A row whose capability is still unmeasured spins instead of blacking out.
-                const rowState = resolveNavRowState(row);
-                return (
-                  <NavItem
-                    key={id}
-                    icon={row.icon}
-                    label={row.label}
-                    badge={row.badge}
-                    active={
-                      (id === "images" && imagesWorkflowsListed) ||
-                      (id === "audio" && audioWorkflowsListed)
-                        ? false
-                        : row.active
-                    }
-                    disabled={rowState.disabled}
-                    tooltip={rowState.tooltip}
-                    alwaysTooltip={rowState.pending}
-                    spinner={rowState.spinner}
-                    testId={`nav-row-${id}`}
-                    onClick={row.onClick}
-                    onIntent={row.onIntent}
-                    className={cn(
-                      row.className,
-                      id === "images" && "group/images-item",
-                      id === "audio" && "group/audio-item",
-                    )}
-                    // Off the Images page the list is folded, so the row offers a way to open it.
-                    overlay={
-                      id === "images" &&
-                      !row.active &&
-                      sidebarRowsLabelled ? (
-                        <ImagesNavDisclosure />
-                      ) : id === "audio" &&
-                        !row.active &&
-                        sidebarRowsLabelled ? (
-                        <AudioNavDisclosure />
-                      ) : undefined
-                    }
-                  >
-                    {/* Images carries its workflows as rows beneath it. */}
-                    {id === "images" ? (
-                      <ImagesWorkflowList
-                        active={row.active}
-                        collapsed={!sidebarRowsLabelled}
-                        onPick={(workflowId) => {
-                          useImageWorkflowStore
-                            .getState()
-                            .setWorkflow(workflowId);
-                          navigate({ to: "/images" });
-                          closeMobileIfOpen();
-                        }}
-                      />
-                    ) : id === "audio" ? (
-                      <AudioWorkflowList
-                        active={row.active}
-                        collapsed={!sidebarRowsLabelled}
-                        onPick={pickAudioWorkflow}
-                      />
-                    ) : (
-                      row.children
-                    )}
-                  </NavItem>
-                );
-              })}
-              {/* Unpinned destinations, behind one row. */}
-              {overflowNavIds.length > 0 && (
-                <SidebarMenuItem>
-                  <DropdownMenu
-                    open={moreOpen}
-                    onOpenChange={setMoreOpen}
-                    modal={false}
-                  >
-                    {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
-                    <Tooltip
-                      open={moreTooltipOpen && !moreOpen}
-                      onOpenChange={handleMoreTooltipOpenChange}
-                    >
-                      <TooltipPrimitive.Trigger asChild>
-                        <DropdownMenuTrigger asChild>
-                          <SidebarMenuButton
-                            ref={moreTriggerRef}
-                            {...moreHover.trigger}
-                            // More is a container, not a destination: no active style just because the current page
-                            // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
-                            // has left. Not data-state: the tooltip and menu triggers both write that one.
-                            data-menu-open={moreOpen ? "true" : undefined}
-                            // Pin a hover-opened flyout instead of letting the trigger toggle it shut.
-                            onPointerDown={(event) => {
-                              if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey) return;
-                              event.preventDefault();
-                              // An open preview never mounts again, so focus it as a click-open would.
-                              if (!morePinnedOpen && moreHover.open) {
-                                moreContentRef.current?.focus({ preventScroll: true });
-                              }
-                              setMoreOpen(!morePinnedOpen);
-                            }}
-                            className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:!size-[calc(28px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:my-[calc(2.5px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:mx-auto"
-                          >
-                            <HugeiconsIcon
-                              icon={MORE_DOTS_ICON}
-                              strokeWidth={1.75}
-                              className="size-icon! shrink-0 translate-x-0.5 group-data-[collapsible=icon]:translate-x-0 group-hover/menu-button:animate-icon-pop"
-                            />
-                            <span className="text-ui-14p5 leading-ui-19 tracking-nav">
-                              {t("shell.navigation.more")}
-                            </span>
-                          </SidebarMenuButton>
-                        </DropdownMenuTrigger>
-                      </TooltipPrimitive.Trigger>
-                      {/* Collapsed rail only; expanded rows show their label. */}
-                      <TooltipContent
-                        side="right"
-                        align="center"
-                        className="tooltip-compact"
-                        hidden={isMobile || sidebarState !== "collapsed"}
-                      >
-                        {t("shell.navigation.more")}
-                      </TooltipContent>
-                    </Tooltip>
-                    <DropdownMenuContent
-                      ref={moreContentRef}
-                      side="right"
-                      align="start"
-                      sideOffset={6}
-                      className="sidebar-more-menu w-48 p-1"
-                      {...moreHover.content}
-                      // The trigger handles its own presses.
-                      onPointerDownOutside={(event) => {
-                        if (moreTriggerRef.current?.contains(event.target as Node)) event.preventDefault();
-                      }}
-                      {...moreContentFocusProps}
-                      onCloseAutoFocus={(event) => {
-                        const chosen = moreChosen.current;
-                        moreChosen.current = false;
-                        if (!chosen) {
-                          event.preventDefault();
-                          return;
-                        }
-                        moreFocusReturning.current = true;
-                        queueMicrotask(() => {
-                          moreFocusReturning.current = false;
-                        });
-                      }}
-                    >
-                      {overflowNavIds.map((id) => {
-                        const row = navRows[id];
-                        // Same pending handling as the inline rows above.
-                        const rowState = resolveNavRowState(row);
-                        if (id === "audio") {
-                          return (
-                            <AudioMoreSubmenu
-                              key={id}
-                              icon={row.icon}
-                              label={row.label}
-                              badge={row.badge}
-                              active={row.active}
-                              disabled={rowState.disabled}
-                              tooltip={rowState.tooltip}
-                              spinner={rowState.spinner}
-                              onIntent={row.onIntent}
-                              onOpen={() => {
-                                setMoreOpen(false);
-                                row.onClick();
-                              }}
-                              onPick={pickAudioWorkflow}
-                              contentProps={{
-                                ...sidebarSubmenuOffsets,
-                                // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
-                                ...moreHover.content,
-                              }}
-                            />
-                          );
-                        }
-                        return (
-                          <MoreMenuItem
-                            key={id}
-                            icon={row.icon}
-                            label={row.label}
-                            badge={row.badge}
-                            active={row.active}
-                            disabled={rowState.disabled}
-                            tooltip={rowState.tooltip}
-                            spinner={rowState.spinner}
-                            onSelect={row.onClick}
-                            onIntent={row.onIntent}
-                          />
-                        );
-                      })}
-                      {/* Way out of the flyout: jump straight to the control that
-                          decides what lives here vs. on the sidebar itself.
-                          my-1 matches the menu's own p-1, so the gap either side
-                          of the rule equals the one under the last row. */}
-                      <DropdownMenuSeparator className="mx-1! my-1! h-0! border-t border-border/70 bg-transparent! dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]" />
-                      <DropdownMenuItem
-                        onSelect={() =>
-                          useSettingsDialogStore
-                            .getState()
-                            .openDialog("appearance", {
-                              scrollTarget: "appearance-sidebar-nav",
-                            })
-                        }
-                      >
-                        <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
-                        <span className="min-w-0 flex-1 truncate">
-                          {t("shell.navigation.customizeSidebar")}
-                        </span>
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </SidebarMenuItem>
-              )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
 
         {/* Pinned, the user's sections and Projects, in the order they were dragged into.
             Recents stays last, under them all. */}
