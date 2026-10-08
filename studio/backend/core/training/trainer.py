@@ -363,6 +363,9 @@ class UnslothTrainer:
         self.is_audio_vlm = False
         self._audio_type = None
         self._use_gradient_checkpointing = "unsloth"
+        self._offload_layers = 0
+        self._prefetch_depth = 2
+        self._offload_plan_shape = {}
         # True until a probe says otherwise, so a path that never probes cannot trip the inconclusive-detection guard.
         self._audio_type_known = True
         self._is_dataset_audio = False
@@ -571,6 +574,52 @@ class UnslothTrainer:
                 except Exception as e:
                     logger.error(f"Error in progress callback: {e}")
 
+    def _offload_load_kwargs(self, device_map = None) -> dict:
+        # Loading the offloaded layers straight into host RAM is what lets a model larger than the card load at all.
+        if not self._offload_layers:
+            return {}
+        # A fixed count loads to host only onto one card (core raises on a multi-GPU map); get_peft_model swaps it there.
+        if self._offload_layers != "auto" and device_map in ("unsloth_balanced", "balanced"):
+            return {}
+        return {
+            "offload_layers": self._offload_layers,
+            # Auto plans at load; without the run's batch and rank it sizes for batch 1, rank 16.
+            "device_map_planner_kwargs": {
+                "prefetch_depth": self._prefetch_depth,
+                **self._offload_plan_shape,
+            },
+        }
+
+    def _offload_peft_kwargs(self) -> dict:
+        if not self._offload_layers:
+            return {}
+        return {"offload_layers": self._offload_layers, "prefetch_depth": self._prefetch_depth}
+
+    def _offload_snapshot(self) -> Optional[dict]:
+        """Where each decoder layer is and what the last steps' copies cost, for the live panel."""
+        swapper = (
+            getattr(self.model, "_unsloth_block_swap", None) if self.model is not None else None
+        )
+        stats = getattr(swapper, "stats", None)
+        if stats is None:
+            return None
+        try:
+            snap = stats()
+            # JSON object keys must be strings.
+            snap["state"] = {str(k): v for k, v in snap["state"].items()}
+            if torch.cuda.is_available():
+                device = getattr(swapper, "device", None)
+                snap["vram_allocated_bytes"] = torch.cuda.memory_allocated(device)
+                snap["vram_peak_bytes"] = torch.cuda.max_memory_allocated(device)
+                snap["vram_total_bytes"] = torch.cuda.get_device_properties(device).total_memory
+                get_fraction = getattr(torch.cuda, "get_per_process_memory_fraction", None)
+                if get_fraction is not None:
+                    snap["vram_fraction"] = get_fraction(device)
+            return snap
+        except Exception as exc:
+            logger.debug("offload stats unavailable: %s", exc)
+            return None
+
     def _create_progress_callback(self):
         """Create a TrainerCallback for progress tracking. Reused by all training branches."""
         from transformers import TrainerCallback
@@ -689,6 +738,7 @@ class UnslothTrainer:
                     num_tokens = num_tokens,
                     eval_loss = logs.get("eval_loss", None),
                     is_run_summary = is_run_summary,
+                    offload = trainer_ref._offload_snapshot(),
                     status_message = "",
                 )
 
@@ -902,8 +952,15 @@ class UnslothTrainer:
         model_revision: Optional[str] = None,
         use_gradient_checkpointing: Union[str, bool] = "unsloth",
         on_model_resolved: Optional[Callable[[str], None]] = None,
+        offload_layers: Union[int, str] = 0,
+        prefetch_depth: Union[int, str] = 2,
+        offload_plan_shape: Optional[dict] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
+        # Offloading streams frozen base weights, so it has nothing to do in a full finetune.
+        self._offload_layers = 0 if full_finetuning else (offload_layers or 0)
+        self._prefetch_depth = prefetch_depth or 2
+        self._offload_plan_shape = {k: v for k, v in (offload_plan_shape or {}).items() if v}
         self.load_in_4bit = load_in_4bit
         self.trust_remote_code = trust_remote_code
         # The loader installs the checkpointing implementation; a full finetune never reinstalls it.
@@ -1123,6 +1180,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -1199,6 +1257,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -1216,6 +1275,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded vision model")
 
@@ -1245,6 +1305,7 @@ class UnslothTrainer:
                     use_exact_model_name = model_revision is not None,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded text model")
 
@@ -1297,6 +1358,9 @@ class UnslothTrainer:
                     model_revision = model_revision,
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     on_model_resolved = on_model_resolved,
+                    offload_layers = offload_layers,
+                    prefetch_depth = prefetch_depth,
+                    offload_plan_shape = offload_plan_shape,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -1447,6 +1511,7 @@ class UnslothTrainer:
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **self._offload_peft_kwargs(),
                 )
                 if self.is_audio_vlm:
                     peft_kwargs.update(
@@ -1524,6 +1589,7 @@ class UnslothTrainer:
                     use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
+                    **self._offload_peft_kwargs(),
                 )
             else:
                 logger.info(f"Text model LoRA configuration:")
@@ -1544,6 +1610,7 @@ class UnslothTrainer:
                     use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
+                    **self._offload_peft_kwargs(),
                 )
 
             if self.should_stop:

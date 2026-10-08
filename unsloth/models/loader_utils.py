@@ -768,6 +768,9 @@ def resolve_auto_block_swap(
         max_memory[d] = free if cap is None else min(free, cap)
 
     options = {k: planner_kwargs[k] for k in _BLOCK_SWAP_PLANNER_KEYS if k in planner_kwargs}
+    if "prefetch_depth" in options:
+        from ._utils import auto_plan_depth
+        options["prefetch_depth"] = auto_plan_depth(options["prefetch_depth"])
     try:
         planner_parameters = inspect.signature(plan_block_swap).parameters
     except (TypeError, ValueError):

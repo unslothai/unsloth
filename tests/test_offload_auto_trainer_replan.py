@@ -12,6 +12,7 @@ NAMES = (
     "_training_reserve_bytes",
     "_auto_block_swap_indices",
     "install_block_swap",
+    "auto_plan_depth",
     "_attach_block_swap",
     "_layer_devices",
     "_replan_auto_offload_safely",

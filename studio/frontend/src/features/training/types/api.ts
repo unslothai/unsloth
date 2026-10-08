@@ -61,6 +61,9 @@ export interface TrainingStartRequest {
   lora_dropout: number;
   target_modules: string[];
   gradient_checkpointing: string;
+  offload_layers: number | "auto";
+  offload_vram_gb: number | null;
+  prefetch_depth: number | "auto";
   use_rslora: boolean;
   use_loftq: boolean;
   use_dora: boolean;

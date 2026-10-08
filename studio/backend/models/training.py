@@ -7,7 +7,7 @@ import math
 import re
 from pathlib import Path, PureWindowsPath
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing import Any, Optional, List, Dict, Literal, Union
+from typing import Annotated, Any, Optional, List, Dict, Literal, Union
 
 from hub.schemas.inventory import ModelFormat
 from utils.hf_dataset_options import (
@@ -111,6 +111,10 @@ def _resolve_inventory_handle(value: str) -> str:
     except Exception:  # noqa: BLE001 -- a resolver that cannot import must not fail a run
         return value
     return resolve_inventory_handle(value)
+
+
+# The strings trainer.normalize_gradient_checkpointing turns into False.
+_CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
 
 
 class TrainingStartRequest(BaseModel):
@@ -571,6 +575,21 @@ class TrainingStartRequest(BaseModel):
     lora_dropout: float = Field(0.0, description = "LoRA dropout")
     target_modules: List[str] = Field(default_factory = list, description = "Target modules for LoRA")
     gradient_checkpointing: str = Field("", description = "Gradient checkpointing setting")
+    offload_layers: Union[Literal["auto"], Annotated[int, Field(ge = 0, le = 1024)]] = Field(
+        0,
+        description = "Decoder layers kept in host RAM and streamed to the GPU during training "
+        "(0 = off, 'auto' = as few as fit)",
+    )
+    offload_vram_gb: Optional[float] = Field(
+        None,
+        gt = 0,
+        le = 4096,
+        description = "VRAM this run may use, in GiB; offload_layers = 'auto' sizes to it",
+    )
+    prefetch_depth: Union[Literal["auto"], Annotated[int, Field(ge = 1, le = 8)]] = Field(
+        2,
+        description = "Offloaded layers fetched ahead of the one running ('auto' = measured)",
+    )
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
     use_dora: bool = Field(False, description = "Use DoRA")
@@ -655,6 +674,20 @@ class TrainingStartRequest(BaseModel):
         # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:
             raise ValueError("Either num_epochs or max_steps must be > 0; both cannot be 0.")
+        return self
+
+    @model_validator(mode = "after")
+    def _check_offload_has_checkpointing(self) -> "TrainingStartRequest":
+        # install_block_swap refuses swapped layers without checkpointing; say so before loading.
+        if (
+            self.offload_layers
+            and self.training_type != "Full Finetuning"
+            and self.gradient_checkpointing.strip().lower() in _CHECKPOINTING_OFF
+        ):
+            raise ValueError(
+                "offload_layers needs gradient checkpointing: set gradient_checkpointing to "
+                "'unsloth' or 'true', or offload_layers to 0."
+            )
         return self
 
     @model_validator(mode = "after")
