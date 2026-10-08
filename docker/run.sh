@@ -423,18 +423,35 @@ if [[ $# -gt 0 ]]; then
                     _runner=""
                     _script=""
                     for (( _i=1; _i < ${#_args[@]}; _i++ )); do
-                        case "${_args[$_i]}" in
-                            -c | -) break ;;
-                            -m)
-                                case "${_args[$((_i + 1))]:-}" in
-                                    accelerate.commands.launch | deepspeed.launcher.runner | torch.distributed.launch | torch.distributed.run)
-                                        _runner=launcher
+                        _arg="${_args[$_i]}"
+                        if [[ "$_arg" =~ ^-([bBdEhiIOPqRsSuvVx]*)([cmWX])(.*)$ ]]; then
+                            _kind="${BASH_REMATCH[2]}"
+                            _value="${BASH_REMATCH[3]}"
+                            case "$_kind" in
+                                c) break ;;
+                                m)
+                                    if [[ -z "$_value" ]]; then
+                                        _value="${_args[$((_i + 1))]:-}"
                                         _scan_from=$((_i + 2))
-                                        ;;
-                                esac
-                                break
-                                ;;
-                            -W | -X | --check-hash-based-pycs) _i=$((_i + 1)) ;;
+                                    else
+                                        _scan_from=$((_i + 1))
+                                    fi
+                                    case "$_value" in
+                                        accelerate.commands.launch | deepspeed.launcher.runner | torch.distributed.launch | torch.distributed.run)
+                                            _runner=launcher
+                                            ;;
+                                    esac
+                                    break
+                                    ;;
+                                W | X)
+                                    [[ -z "$_value" ]] && _i=$((_i + 1))
+                                    continue
+                                    ;;
+                            esac
+                        fi
+                        case "$_arg" in
+                            -) break ;;
+                            --check-hash-based-pycs) _i=$((_i + 1)) ;;
                             --)
                                 _script="${_args[$((_i + 1))]:-}"
                                 break
