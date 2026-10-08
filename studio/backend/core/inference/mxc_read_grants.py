@@ -42,8 +42,7 @@ _lock = threading.Lock()
 # Root -> folder identity whose whole tree passed the credential scan in this process; a folder
 # replaced at the same path, or a new process, scans again.
 _scanned: dict[str, dict[str, int] | None] = {}
-# Root -> folder identity where Windows refused the grant at the root in this process, so later
-# launches skip icacls; a new process tries once again.
+# Root -> folder identity whose grant Windows refused in this process; skipped until restart.
 _refused: dict[str, dict[str, int] | None] = {}
 
 
@@ -357,12 +356,7 @@ def _revoke(root: str) -> tuple[bool, str]:
 
 
 def _root_untouched(root: str) -> bool:
-    """No explicit package entry on the root after icacls failed there.
-
-    icacls writes the root before Windows propagates to anything below it, so a change refused at
-    the root changed nothing. A Microsoft Store Python under Program Files\\WindowsApps, owned by
-    TrustedInstaller, refuses both the grant and its rollback this way (#12941).
-    """
+    """icacls writes the root before propagating, so a refusal there changed nothing (#12941)."""
     try:
         return not _package_aces(root)[1]
     except OSError:
@@ -427,7 +421,6 @@ def _revoke_recorded_root(record: dict, key: str) -> str:
         _scanned.pop(key, None)
         return "revoked"
     if record[key].get("state") == "pending" and _root_untouched(key):
-        # The grant was refused at the root, so there is nothing of Studio's to remove.
         record.pop(key)
         return "dropped"
     logger.warning("Could not remove the persistent MXC read grant from %s: %s", key, output)
@@ -528,7 +521,7 @@ def _ensure_root(record: dict, root: str) -> bool:
             f"the MXC read grant on {root} failed ({output}) and the folder changed"
         )
     if _root_untouched(root):
-        # Refused at the root: nothing to roll back, and retrying every launch is refused too.
+        # e.g. Store Python under WindowsApps (TrustedInstaller): the rollback is refused too.
         record.pop(key, None)
         _save_quietly(record)
         _refused[key] = identity
