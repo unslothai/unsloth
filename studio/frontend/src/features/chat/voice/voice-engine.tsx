@@ -19,7 +19,7 @@ import { resetPromptQueuesForThread } from "@/components/assistant-ui/thread";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { ORB_IDLE_GRADIENT, orbConfig } from "@/components/assistant-ui/voice-orb";
 import { subscribeDictationLevel } from "@/features/chat/adapters/dictation-level";
-import { StudioModelDictationAdapter } from "@/features/chat/adapters/studio-model-dictation-adapter";
+import { StudioWhisperDictationAdapter } from "@/features/chat/adapters/studio-whisper-dictation-adapter";
 import { useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { deriveOrbState } from "@/features/chat/voice/orb-state";
@@ -109,9 +109,9 @@ const VOICE_NO_SPEECH_CUT_MS = 12_000;
 const VOICE_TRANSCRIBE_TIMEOUT_MS = 60_000;
 
 /**
- * Whether the plus menu may offer Voice at all. Listening is the gate: the batch
- * adapter needs a secure context and MediaRecorder. Without them, Voice could be
- * switched on and never produce a word.
+ * Whether the plus menu may offer Voice at all. Listening is the gate: the loop's
+ * Whisper adapter needs getUserMedia (secure contexts only) and Web Audio. Without
+ * them, Voice could be switched on and never produce a word.
  *
  * Speaking is deliberately not gated. The voice picker always offers a local GGUF
  * voice for the slot (VOICE_MODEL_DEFAULTS in chat-page.tsx) and ChatPage seeds
@@ -124,7 +124,7 @@ export function useVoiceAvailable(): boolean {
   // said "browser" -- which meant voice mode silently depended on an online
   // Google endpoint, and did not exist at all in the desktop WebView. It now
   // always runs a local transcription model, so this is the only thing to check.
-  return StudioModelDictationAdapter.isSupported();
+  return StudioWhisperDictationAdapter.isSupported();
 }
 
 export const VoiceEngine: FC = () => {

@@ -2117,3 +2117,38 @@ def test_a_voice_whose_parallel_slots_were_clamped_is_still_already_loaded(monke
     result = asyncio.run(routes_module.voice_load_model(request, "s"))
     assert result["status"] == "already_loaded"
     assert relaunched == []
+
+
+@pytest.mark.parametrize(
+    "requested, expected",
+    [(None, "ceiling"), (1000, 1000), (50_000, "ceiling")],
+)
+def test_streaming_speech_keeps_the_blocking_routes_token_ceiling(monkeypatch, requested, expected):
+    """Only the voice server's context bounded max_new_tokens, so a large-context voice took
+    tens of thousands of audio tokens past the ceiling /audio/speech enforces."""
+    seen = {}
+
+    def _stream(**kwargs):
+        seen.update(kwargs)
+        yield b"\x00\x00"
+
+    voice_backend = SimpleNamespace(
+        is_loaded = True,
+        _process = SimpleNamespace(poll = lambda: None),
+        _audio_type = "snac",
+        context_length = 131072,
+        _orpheus_voice_prefix_ok = lambda: True,
+        generate_audio_response_stream = _stream,
+    )
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice_backend)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+
+    async def _run():
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello", max_new_tokens = requested), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    asyncio.run(_run())
+    ceiling = routes_module.AUDIO_GENERATION_MAX_TOKENS
+    assert seen["max_new_tokens"] == (ceiling if expected == "ceiling" else expected)

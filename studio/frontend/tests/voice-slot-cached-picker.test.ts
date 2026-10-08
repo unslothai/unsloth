@@ -41,3 +41,16 @@ test("the dictation mic resumes its AudioContext before expecting frames", () =>
   );
   assert.match(adapter, /audioCtx = new AudioCtx\(\);[\s\S]{0,400}await audioCtx\.resume\(\);/);
 });
+
+test("Voice is offered wherever the loop's Whisper adapter can listen, MediaRecorder or not", () => {
+  const gate = readSrc("features/chat/voice/voice-engine.tsx").match(
+    /export function useVoiceAvailable\(\): boolean \{([\s\S]*?)\n\}/,
+  );
+  assert.ok(gate, "useVoiceAvailable not found");
+  assert.match(gate[1], /return StudioWhisperDictationAdapter\.isSupported\(\);/);
+  // Active voice mode dispatches to that adapter.
+  assert.match(
+    readSrc("features/chat/adapters/studio-dictation-adapter.tsx"),
+    /getVoiceMode\(\) === "active"\) \{\s*if \(StudioWhisperDictationAdapter\.isSupported\(\)\)/,
+  );
+});

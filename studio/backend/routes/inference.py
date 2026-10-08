@@ -24503,7 +24503,10 @@ async def openai_audio_speech_stream(
         _raise_if_prompt_leaves_no_speech_budget(text, context_length = context_length)
 
     voice_name = (body.voice or "").strip().lower() or "tara"
-    max_new_tokens = body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS
+    # The same ceiling _tts_max_new_tokens holds /audio/speech to; the field has no upper bound.
+    max_new_tokens = min(
+        body.max_new_tokens or AUDIO_GENERATION_MAX_TOKENS, AUDIO_GENERATION_MAX_TOKENS
+    )
     if context_length:
         max_new_tokens = min(
             max_new_tokens,
