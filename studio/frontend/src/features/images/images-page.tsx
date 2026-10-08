@@ -2646,8 +2646,7 @@ export function ImagesPage({
           setRememberedModel(remembered);
         }
         setBusy(null);
-        // A pick named no family (a community single file), so it got the fallback recipe; the loaded build names the
-        // family, and an untouched form takes that family's recipe (an SDXL fine-tune otherwise runs 9 steps, CFG 0).
+        // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
         const loadedRecipe = loadedRecipeFor(
           pickDefaults.current,
           residentDefaultsKey(loaded.repo_id ?? "", loaded.base_repo, loaded.resolved?.family_override),

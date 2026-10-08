@@ -3,10 +3,8 @@
 
 """Load a whole-pipeline GGUF (stable-diffusion.cpp ``convert`` of an SDXL checkpoint) through diffusers.
 
-diffusers' pipeline-level ``from_single_file`` reads a GGUF as packed bytes for every component, so the text encoders
-and VAE fail on their packed shapes (816 vs 768). The denoiser loads quantized through ``GGUFQuantizationConfig`` at
-model level, which accepts a state dict; the remaining components are dequantized once and handed to the pipeline
-loader in place of the file read.
+Pipeline-level ``from_single_file`` treats every component as packed GGUF bytes (text encoders fail 816 vs 768), so
+only the denoiser loads quantized; the rest is dequantized once and fed to the pipeline loader in place of the read.
 """
 
 import threading
@@ -42,9 +40,8 @@ def load_whole_pipeline_gguf(
     denoiser_attr: str = "unet",
     logger: Optional[Any] = None,
 ) -> Any:
-    """``pipeline_cls`` assembled from a GGUF holding the whole pipeline: the denoiser stays GGUF-quantized (dequantized
-    per forward at ``dtype``), the text encoders and VAE load dense at ``dtype``. ``pipe_kwargs`` are the
-    safetensors path's ``from_single_file`` kwargs (``config`` on the family base repo)."""
+    """Denoiser stays GGUF-quantized, text encoders and VAE load dense at ``dtype``; ``pipe_kwargs`` as for the
+    safetensors ``from_single_file``."""
     import diffusers
     import diffusers.loaders.single_file as single_file_mod
     from diffusers.loaders.single_file_utils import load_single_file_checkpoint
@@ -76,7 +73,6 @@ def load_whole_pipeline_gguf(
     original = single_file_mod.load_single_file_checkpoint
 
     def _read(link, *args, **kwargs):
-        # Only this file's read is redirected; any other single-file load keeps the real reader
         if str(link) == str(path):
             return rest
         return original(link, *args, **kwargs)

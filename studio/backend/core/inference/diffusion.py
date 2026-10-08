@@ -3211,8 +3211,7 @@ class DiffusionBackend:
 
         if not family_buildable_here(fam, model_kind = kind):
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
-        # A family whose single file IS the whole pipeline loads a GGUF only when it carries the whole pipeline too
-        # (stable-diffusion.cpp ``convert`` of a checkpoint); a denoiser-only GGUF has no companions to pair with.
+        # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
         if (
             kind == "gguf"
             and fam.single_file_is_pipeline

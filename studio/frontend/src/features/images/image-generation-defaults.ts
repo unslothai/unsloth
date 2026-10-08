@@ -65,9 +65,7 @@ export function defaultsKeyFor(repoId: string, familyOverride: unknown): string 
   return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
 }
 
-/** A pick whose path names no family (a community single file such as RealVisXL_V4.0.safetensors) seeds the fallback
- * recipe; once it loads, the resident build names its family, so that family's recipe replaces the fallback. Null keeps
- * the form as it is. */
+/** The loaded family's recipe for a pick that got the fallback (its name named no family), else null. */
 export function loadedRecipeFor(
   pickDefaults: { steps: number; guidance: number } | null | undefined,
   residentKey: string,

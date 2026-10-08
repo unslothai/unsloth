@@ -571,9 +571,8 @@ def offer_as_dit(path: str) -> bool:
 
 
 def whole_pipeline_gguf_family(path: Optional[str]) -> Optional[str]:
-    """Family of a GGUF that carries the WHOLE pipeline (denoiser, text encoders, VAE), for a family whose single
-    file is the pipeline (SDXL). stable-diffusion.cpp's ``convert`` writes exactly this from a Civitai / ComfyUI
-    ``checkpoints/`` file, with no ``general.architecture``. None for a denoiser-only GGUF or any other file."""
+    """Family of a GGUF carrying the whole pipeline (denoiser, text encoders, VAE) of a single-file-pipeline family
+    (SDXL), as stable-diffusion.cpp ``convert`` writes it. None otherwise."""
     if not path or not str(path).lower().endswith(".gguf"):
         return None
     info = inspect_checkpoint(str(path))

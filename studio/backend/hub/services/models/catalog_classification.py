@@ -260,9 +260,8 @@ def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> 
 
 
 def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
-    """The Images task for a GGUF holding a whole SDXL pipeline (sd.cpp ``convert`` output carries no
-    architecture, so neither its header label nor a community file name says what it is). Only arch-less or
-    ``sdxl`` files are read, so chat GGUFs never pay for a second header parse."""
+    """Images task for a whole-pipeline SDXL GGUF: sd.cpp ``convert`` writes no architecture, so the name fallback
+    would call it a chat model."""
     try:
         from core.inference.diffusion_content import whole_pipeline_gguf_family
 
