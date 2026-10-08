@@ -111,7 +111,6 @@ export function subscribeSavedRunSettings(onChange: () => void): () => void {
   };
 }
 
-/** The saved record itself, re-read when any model's saved settings change. */
 export function useSavedRunSettings(
   target: ModelPickTarget | null,
 ): PerModelConfig | null {
@@ -132,8 +131,7 @@ export function useHasSavedRunSettings(
   );
 }
 
-// `atReset`: the draft as the reset left it. One opened after the reset seeded defaults, and left
-// as is its next load would forget the restored record again.
+// An editor opened after the reset seeded defaults; left alone, its next load forgets again.
 function restoreDraftAfterUndo(
   draftKey: string,
   atReset: ModelConfigDraftSnapshot | null,

@@ -378,7 +378,6 @@ test("Hub settings configure the cached alias and share the row selection", () =
     source: "hub", isLora: false, isGguf: false, isDownloaded: true,
     pipelineTag: "text-generation",
   }]);
-  // The saved dot reads the record the gear writes.
   assert.deepEqual(gear.savedFor, { id: calls[0][0], meta: calls[0][1] });
   render("new/model", "model row").children[1].children[0].props.onConfigure();
   assert.deepEqual(calls[1], ["new/model", {

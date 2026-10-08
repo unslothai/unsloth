@@ -1520,7 +1520,6 @@ export type PerModelConfigSnapshot = {
   readonly stamps: Readonly<Record<string, string>>;
 };
 
-/** Every saved record as stored, shared by all tabs; see `unchangedSince` below. */
 export function perModelConfigSnapshot(): PerModelConfigSnapshot {
   return { records: readMapRaw(), stamps: readStamps() };
 }

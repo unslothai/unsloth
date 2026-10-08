@@ -114,7 +114,6 @@ export function ModelRowMenu({
   pin?: ModelRowMenuPin;
   /** Extra entries for actions this menu has no shape of its own for. */
   items?: readonly ModelRowMenuItem[];
-  /** Adds "Reset run settings" while this model has saved ones. */
   runSettings?: ModelPickTarget;
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;

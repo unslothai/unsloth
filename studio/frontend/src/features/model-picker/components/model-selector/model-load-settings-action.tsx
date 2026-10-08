@@ -24,7 +24,6 @@ export function ModelLoadSettingsAction({
   className?: string;
   /** Hover copy. The default describes a local load, so Connected rows override it. */
   tooltip?: string;
-  /** Marks the gear when this model has saved run settings. */
   savedFor?: ModelPickTarget;
 }) {
   const saved = useHasSavedRunSettings(savedFor ?? null);
