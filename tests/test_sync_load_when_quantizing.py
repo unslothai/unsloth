@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""sync_load_when_quantizing: on-the-fly 4bit loads go one tensor at a time. No GPU needed.
-
-transformers 5.0 to 5.3 materialises every checkpoint tensor at full precision on the card from
-worker threads while the main thread quantizes, so a bf16 Qwen3.5-27B that fits at 4bit runs out
-of memory during from_pretrained. Extracted with ast so nothing imports torch's CUDA stack.
-"""
+"""sync_load_when_quantizing, extracted with ast so nothing imports CUDA. No GPU needed."""
 
 import ast
 import contextlib
