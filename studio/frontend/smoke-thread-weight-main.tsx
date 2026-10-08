@@ -117,8 +117,7 @@ function userMarkdown(index: number): string {
  */
 type SeedOptions = {
   plainAssistants?: readonly number[] | "all";
-  /** Tool-loop replies (#12552): `rounds` x reasoning, tool call, answer; a context truncation
-   *  on every `compactionEvery`th reply. */
+  /** `rounds` x reasoning, tool call, answer per reply; truncation every `compactionEvery`th. */
   agent?: { rounds: number; compactionEvery?: number };
 };
 

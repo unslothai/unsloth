@@ -267,7 +267,6 @@ const ToolGroupImpl: FC<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
-  // Memoized on the message: these scan the group's parts and run on every store write (#12552).
   const containsUngroupedTool = useMessageMemo(
     (message) =>
       message.parts.slice(startIndex, endIndex + 1).some(holdsOwnOutput),

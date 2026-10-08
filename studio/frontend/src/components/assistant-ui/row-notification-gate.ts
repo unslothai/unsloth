@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Every assistant-ui store write re-runs every row's selectors (#12552), so each row subscribes
-// through a client that drops what cannot change it: a thread-composer keystroke reaches no row; a
-// same-length `thread.messages` change reaches rows from one before the first changed message (row
-// selectors read their own, earlier, or the next message, never two ahead); the same messages in a
-// new array reach all unless the runtime's repository is unchanged; anything else reaches all.
+// Every store write re-runs every row's selectors (#12552), so rows subscribe through a gate: a
+// keystroke reaches no row; a same-length `thread.messages` change reaches rows from one before
+// the first changed one (rows read their own, earlier or the next message); else every row.
 // Assumes scope methods change only with `thread.messages` (assistant-ui 0.12): recheck on upgrade.
 
 import type { AssistantClient } from "@assistant-ui/react";
@@ -52,7 +50,7 @@ function pushComposer(out: unknown[], composer: unknown): void {
   }
 }
 
-// Thread and thread-list states embed the composer, so compare their fields, not the container.
+// These states embed the composer, so compare their fields, not the container.
 function pushState(
   out: unknown[],
   state: unknown,
@@ -95,8 +93,8 @@ function scopeState(client: AssistantClient, key: string): unknown {
   return getState.call(methods);
 }
 
-// The runtime's message array: rebuilt on every repository write, hidden branches included, but not
-// when only the store rebuilds `thread.messages` (the first keystroke after a run does).
+// Rebuilt on every repository write, hidden branches included, but not when only the store rebuilds
+// `thread.messages` (the first keystroke after a run does).
 function repositoryRevision(client: AssistantClient): unknown {
   const thread = (client as unknown as Record<string, unknown>).thread;
   if (typeof thread !== "function") return UNKNOWN_REPOSITORY;
@@ -169,8 +167,7 @@ export function rowsToNotify(
       return Math.max(0, index - 1);
     }
   }
-  // Same messages in a new array after a repository write: a hidden branch changed, which selectors
-  // keyed on the array (research reply owners) must still hear.
+  // A hidden branch changed: selectors keyed on the array (research reply owners) must hear it.
   return last.repository !== UNKNOWN_REPOSITORY &&
     last.repository === next.repository
     ? "none"
@@ -203,7 +200,6 @@ export function createRowNotificationGate(
   let release: (() => void) | null = null;
   let last: RowFingerprint | null = null;
 
-  // Fail open: an unreadable state reaches every row.
   const fingerprint = (): RowFingerprint | null => {
     try {
       return rowFingerprint(parent);

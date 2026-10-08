@@ -14,9 +14,8 @@ function sameDeps(a: readonly unknown[], b: readonly unknown[]): boolean {
   return true;
 }
 
-/** `useAuiState(({ message }) => select(message))`, re-run only when the message state or `deps`
- *  change (#12552). `select` must read nothing but `message` and `deps`; `equal` keeps the previous
- *  result when a recompute matches it (the `useShallow` case). */
+/** `useAuiState(({ message }) => select(message))` re-run only when the message or `deps` change.
+ *  `select` must read nothing else; `equal` keeps the previous result when they match. */
 export function useMessageMemo<T>(
   select: (message: MessageState) => T,
   deps: readonly unknown[],

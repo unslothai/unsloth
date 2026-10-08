@@ -8,7 +8,7 @@ import { createRowNotificationGate } from "../src/components/assistant-ui/row-no
 
 type State = Record<string, unknown>;
 
-// Stand-in client: enumerable scopes with `getState`, one channel, the composer inside thread state.
+// Enumerable scopes with `getState`, one channel, the composer inside thread state.
 function fakeClient() {
   const messages: unknown[] = [
     { id: "m0" },

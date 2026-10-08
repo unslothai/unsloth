@@ -371,7 +371,7 @@ function ReasoningCopyButton({
 
   const aui = useAui();
 
-  // Read on click: as a selector it joined all the reasoning on every store write (#12552).
+  // Read on click: as a selector it joined all the reasoning on every store write.
   const handleCopy = useCallback(async () => {
     const reasoningText = aui
       .message()

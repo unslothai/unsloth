@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Message- and thread-wide values for selectors, computed once per revision (#12552): every store
-// write re-runs every selector, and assistant-ui rebuilds `parts` / `content` / `messages` on any
-// change and returns the same array otherwise, so the array identity is the revision key.
+// Computed once per revision (#12552): assistant-ui rebuilds `parts` / `content` / `messages` on
+// any change and keeps the same array otherwise, so the array identity is the revision key.
 
 import { isRenderableRenderHtmlToolPart } from "../../features/chat/artifacts/html-fences.ts";
 import { searchImagesSignature } from "../../features/chat/search-images/search-images.ts";
@@ -52,8 +51,7 @@ export const partsSearchImagesSignature = memoOnArray(
   ) => searchImagesSignature(parts),
 );
 
-// Preceding texts are slices of one joined string (as answerTextFromParts joins), sharing its buffer:
-// a string per part index held a quadratic amount of text.
+// Slices of one joined string (as answerTextFromParts joins); a string per part was quadratic.
 const precedingTextLayout = memoOnArray(
   (parts: ReadonlyArray<{ type: string; text?: unknown }>) => {
     const texts: string[] = [];
