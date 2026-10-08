@@ -1246,6 +1246,8 @@ export const en = {
     sandbox: {
       title: "Sandbox",
       description: "Whether Python and Terminal tool calls run inside an OS sandbox on this computer.",
+      docs: "Docs",
+      docsLabel: "Open the sandbox docs",
       toolsSection: "This computer",
       refresh: "Refresh",
       python: "Python",
@@ -2339,6 +2341,7 @@ export const en = {
         "Couldn't load all quantizations. The command will use the available model value.",
       generatedCommand: "Generated command",
       docs: "Docs",
+      docsLabel: "Open the unsloth start docs",
       agentDocs: "Open {agent} setup docs",
       copyGeneratedCommand: "Copy generated command",
       automaticSettingsNote:
@@ -2862,6 +2865,8 @@ export const en = {
       revoking: "Revoking...",
       decisionApi: {
         title: "Decision API",
+        docs: "Docs",
+        docsLabel: "Open the Decision API docs",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",

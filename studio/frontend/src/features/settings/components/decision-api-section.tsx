@@ -40,7 +40,11 @@ import {
 import { translate, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { PlayIcon, TaskDone01Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowUpRight01Icon,
+  PlayIcon,
+  TaskDone01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
@@ -65,6 +69,7 @@ import { DecisionTryDialog } from "./decision-try-dialog";
 import { SettingsRow } from "./settings-row";
 
 const DOWNLOAD_SCOPE = "systemone";
+const DOCS_URL = "https://unsloth.ai/docs/models/decision-laya";
 const POLL_MS = 5000;
 const RECOMMENDED_MODEL = "laya-multilingual";
 const ENV_DISABLE = "UNSLOTH_SYSTEMONE_DISABLE";
@@ -348,9 +353,22 @@ export function DecisionApiSection(): ReactElement | null {
           />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <h2 className="settings-heading text-base font-semibold font-heading">
-            {t("settings.apiKeys.decisionApi.title")}
-          </h2>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <h2 className="settings-heading text-base font-semibold font-heading">
+              {t("settings.apiKeys.decisionApi.title")}
+            </h2>
+            {/* title, not aria-label, so the accessible name stays the visible text. */}
+            <a
+              href={DOCS_URL}
+              target="_blank"
+              rel="noreferrer"
+              title={t("settings.apiKeys.decisionApi.docsLabel")}
+              className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              {t("settings.apiKeys.decisionApi.docs")}
+              <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+            </a>
+          </div>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.apiKeys.decisionApi.description")}
           </p>

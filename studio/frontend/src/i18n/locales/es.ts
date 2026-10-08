@@ -1166,6 +1166,8 @@ export const es = {
     sandbox: {
       title: "Sandbox",
       description: "Si las llamadas a herramientas de Python y Terminal se ejecutan dentro de un sandbox del sistema en este equipo.",
+      docs: "Documentación",
+      docsLabel: "Abrir la documentación del sandbox",
       toolsSection: "Este equipo",
       refresh: "Actualizar",
       python: "Python",
@@ -2286,6 +2288,7 @@ export const es = {
         "No se pudieron cargar todas las cuantizaciones. El comando usará el valor de modelo que esté disponible.",
       generatedCommand: "Comando generado",
       docs: "Documentación",
+      docsLabel: "Abrir la documentación de unsloth start",
       agentDocs: "Abrir la documentación de configuración de {agent}",
       copyGeneratedCommand: "Copiar el comando generado",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2827,6 +2830,8 @@ export const es = {
       revoking: "Revocando...",
       decisionApi: {
         title: "API de decisiones",
+        docs: "Documentación",
+        docsLabel: "Abrir la documentación de la API de decisiones",
         description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
