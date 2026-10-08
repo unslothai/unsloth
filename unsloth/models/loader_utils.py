@@ -1538,12 +1538,13 @@ def _offline_quantize_to_fp8(
             config = text_config
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
-        model = auto_model.from_pretrained(
-            model_name,
-            config = config,
-            revision = revision,
-            **load_kwargs,
-        )
+        with sync_load_when_quantizing(qconfig, config):
+            model = auto_model.from_pretrained(
+                model_name,
+                config = config,
+                revision = revision,
+                **load_kwargs,
+            )
         tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model

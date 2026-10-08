@@ -122,9 +122,11 @@ def _calls_inside_sync_load(src, callee):
         ("vision.py", "auto_model"),
         ("llama.py", "AutoModelForCausalLM"),
         ("llama.py", "AutoModelForSequenceClassification"),
+        ("loader_utils.py", "auto_model"),
+        ("../save.py", "auto_model"),
     ],
 )
-def test_the_causal_lm_loads_run_inside_the_helper(module, callee):
+def test_every_on_the_fly_quantizing_load_runs_inside_the_helper(module, callee):
     calls = _calls_inside_sync_load(_source(module), callee)
     assert calls, f"no {callee}.from_pretrained in {module}"
     assert all(wrapped for _, wrapped in calls), calls
