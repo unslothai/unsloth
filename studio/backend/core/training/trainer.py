@@ -2695,9 +2695,6 @@ class UnslothTrainer:
         dataset_slice_start: Optional[int] = None,
         dataset_slice_end: Optional[int] = None,
         is_cpt: bool = False,
-        objective: str = "sft",
-        rl_keep_columns: tuple = (),
-        rl_system_prompt: Optional[str] = None,
         s3_config: dict = None,
         dataset_local_files_only: bool = False,
         dataset_local_path: Optional[str] = None,
@@ -2706,6 +2703,9 @@ class UnslothTrainer:
         hf_token: Optional[str] = None,
         max_train_rows: Optional[int] = None,
         max_train_rows_seed: int = 3407,
+        objective: str = "sft",
+        rl_keep_columns: tuple = (),
+        rl_system_prompt: Optional[str] = None,
     ) -> Optional[tuple]:
         """Load and prepare a dataset for training.
 
