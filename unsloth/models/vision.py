@@ -2783,6 +2783,7 @@ class FastBaseModel:
         if auto_config is None and user_config is not None:
             auto_config = user_config
         _offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
+        _offload_layers_requested = _offload_layers
         if _offload_layers and load_layers_to_host is None:
             _offload_layers = refuse_block_swap_load(
                 _offload_layers,
@@ -3738,7 +3739,13 @@ class FastBaseModel:
                 model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
 
         except ValueError as error:
-            raise_if_bnb_cpu_spill(error, model_name, _offload_layers)
+            raise_if_bnb_cpu_spill(
+                error,
+                model_name,
+                _offload_layers_requested,
+                device_map = device_map,
+                load_in_8bit = load_in_8bit,
+            )
             raise
         finally:
             raise_handler.remove()

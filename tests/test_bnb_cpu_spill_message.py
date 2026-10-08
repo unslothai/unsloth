@@ -67,6 +67,18 @@ def test_spill_with_offload_already_requested(offload_layers):
     assert "max_seq_length" in str(info.value)
 
 
+def test_eight_bit_is_not_pointed_at_offload_layers():
+    with pytest.raises(ValueError) as info:
+        raise_if_bnb_cpu_spill(_spill_error(), "m", None, load_in_8bit = True)
+    assert "offload_layers" not in str(info.value)
+    assert "load_in_4bit = True" in str(info.value)
+
+
+def test_a_callers_own_dict_map_keeps_the_transformers_error():
+    original = _spill_error()
+    assert raise_if_bnb_cpu_spill(original, "m", device_map = {"model": 0, "lm_head": "cpu"}) is None
+
+
 @pytest.mark.parametrize(
     "error",
     [ValueError("Unrecognized configuration class"), RuntimeError(_BNB_CPU_SPILL_PREFIX)],
@@ -104,6 +116,7 @@ def test_both_loaders_route_load_errors_through_it(path, cls):
             isinstance(s, ast.Expr)
             and isinstance(s.value, ast.Call)
             and getattr(s.value.func, "id", None) == "raise_if_bnb_cpu_spill"
+            and getattr(s.value.args[2], "id", None).endswith("_offload_layers_requested")
             for s in h.body
         )
         and isinstance(h.body[-1], ast.Raise)

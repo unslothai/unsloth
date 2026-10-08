@@ -231,26 +231,33 @@ def raise_if_bnb_cpu_spill(
     error,
     model_name,
     offload_layers = None,
+    device_map = None,
+    load_in_8bit = False,
 ):
-    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error so the caller re-raises it unchanged."""
+    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error, and for a caller's own dict map (its CPU entries are a choice, and transformers' advice is the relevant one), so the caller re-raises it unchanged. `offload_layers` is what the caller asked for, before any planner declined it."""
     if not isinstance(error, ValueError) or not str(error).startswith(_BNB_CPU_SPILL_PREFIX):
+        return
+    if isinstance(device_map, dict):
         return
     free = ""
     try:
+        # The current card only: probing others would open a CUDA context on cards the caller may have withheld.
         if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.is_available():
-            free = ", ".join(
-                f"cuda:{i} has {torch.cuda.mem_get_info(i)[0] / 1024**3:.2f} GB free"
-                for i in range(torch.cuda.device_count())
+            device = torch.cuda.current_device()
+            free = (
+                f" (cuda:{device} has {torch.cuda.mem_get_info(device)[0] / 1024**3:.2f} GB free)"
             )
-            free = f" ({free})"
     except Exception:
         free = ""
-    if offload_layers:
+    if load_in_8bit:
+        # offload_layers supports 16-bit and 4-bit loads only.
+        hint = "Load in 4-bit (load_in_4bit = True) to halve the weights, or load a smaller model."
+    elif offload_layers:
         hint = "Lower max_seq_length or the batch size, load a smaller model, or add a GPU."
     else:
         hint = (
-            'Pass `offload_layers = "auto"` to from_pretrained to keep the decoder layers that do '
-            "not fit in host RAM and stream them in during training (slower, but it trains), "
+            'Pass `offload_layers = "auto"` to from_pretrained to keep the decoder layers the GPU '
+            "cannot hold in host RAM and stream them in during training (slower, but it trains), "
             "load a smaller model, or free GPU memory held by other programs."
         )
     raise ValueError(
