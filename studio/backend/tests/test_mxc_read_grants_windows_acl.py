@@ -68,24 +68,26 @@ def store_python(studio):
     (root / "Lib" / "encodings").mkdir(parents = True)
     (root / "python.exe").write_bytes(b"")
     (root / "Lib" / "encodings" / "__init__.py").write_text("")
-    _run(
-        "icacls",
-        str(root),
-        "/inheritance:r",
-        "/grant:r",
-        f"{TRUSTED_INSTALLER}:(OI)(CI)(F)",
-        f"{SYSTEM}:(OI)(CI)(RX)",
-        f"{ADMINISTRATORS}:(OI)(CI)(RX)",
-        f"{USERS}:(OI)(CI)(RX)",
-    )
-    _run("icacls", str(root), "/setowner", TRUSTED_INSTALLER, "/T", "/C")
-    yield str(root)
-    subprocess.run(["takeown", "/F", str(root), "/R", "/D", "Y"], capture_output = True)
-    subprocess.run(
-        ["icacls", str(root), "/grant", f"{ADMINISTRATORS}:(OI)(CI)(F)", "/T", "/C"],
-        capture_output = True,
-    )
-    shutil.rmtree(root, ignore_errors = True)
+    try:
+        _run(
+            "icacls",
+            str(root),
+            "/inheritance:r",
+            "/grant:r",
+            f"{TRUSTED_INSTALLER}:(OI)(CI)(F)",
+            f"{SYSTEM}:(OI)(CI)(RX)",
+            f"{ADMINISTRATORS}:(OI)(CI)(RX)",
+            f"{USERS}:(OI)(CI)(RX)",
+        )
+        _run("icacls", str(root), "/setowner", TRUSTED_INSTALLER, "/T", "/C")
+        yield str(root)
+    finally:
+        subprocess.run(["takeown", "/F", str(root), "/R", "/D", "Y"], capture_output = True)
+        subprocess.run(
+            ["icacls", str(root), "/grant", f"{ADMINISTRATORS}:(OI)(CI)(F)", "/T", "/C"],
+            capture_output = True,
+        )
+        shutil.rmtree(root, ignore_errors = True)
 
 
 def _record():
@@ -152,10 +154,16 @@ def _installed_packages() -> list[str]:
         return []
 
 
+@pytest.mark.skipif(
+    not os.environ.get("CI"), reason = "edits installed packages' ACLs; disposable CI runners only"
+)
 def test_real_windowsapps_packages_never_wedge_a_launch(studio):
     packages = _installed_packages()
     if not packages:
         pytest.skip("no readable Program Files\\WindowsApps packages on this host")
-    for package in packages:
-        mxc_read_grants.ensure([package])  # must not raise ReadGrantError
-    assert {v.get("state") for v in _record().values()} <= {"complete"}
+    try:
+        for package in packages:
+            mxc_read_grants.ensure([package])  # must not raise ReadGrantError
+        assert {v.get("state") for v in _record().values()} <= {"complete"}
+    finally:
+        mxc_read_grants.revoke_recorded()
