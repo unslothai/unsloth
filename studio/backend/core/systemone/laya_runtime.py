@@ -902,12 +902,12 @@ class _EngineAgent:
                     f"State and questions are longer than {_ENGINE_TOKENS} tokens. Shorten them.",
                 )
             if self.positions:
-                # [cls] question and options (at most max_head) [sep] state [sep], as unsloth-zoo lays it out.
+                # [cls] question [sep] options (with the question, at most max_head) [sep] state [sep], as unsloth-zoo lays it out.
                 state_text = (
                     state if isinstance(state, str) else json.dumps(state, ensure_ascii = False)
                 )
                 read = tokenizer.encode(state_text, add_special_tokens = False)
-                limit = int(self.positions) - int(getattr(self.model, "max_head", 0)) - 3
+                limit = int(self.positions) - int(getattr(self.model, "max_head", 0)) - 4
                 if len(getattr(read, "ids", read)) > limit:
                     raise Unavailable(
                         422,
