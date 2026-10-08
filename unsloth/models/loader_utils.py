@@ -3121,6 +3121,31 @@ def sync_load_when_quantizing(quantization_config, model_config):
         os.environ.pop(_ASYNC_LOAD_ENV, None)
 
 
+def gptq_trainable_quantization_config(model_config, user_quantization_config):
+    """GPTQConfig asking gptqmodel for a trainable kernel on a GPTQ checkpoint, else None.
+
+    gptqmodel's default kernels (Marlin / ExLlama) raise NotImplementedError on model.train(); only
+    `backend` is a loading attribute, so the checkpoint's own bits / group_size still apply.
+    """
+    if user_quantization_config is not None:
+        return None
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and not isinstance(qc, dict):
+        qc = qc.to_dict()
+    if not qc or str(qc.get("quant_method", "")).lower() != "gptq":
+        return None
+    if qc.get("backend") not in (None, "auto"):
+        return None
+    try:
+        from transformers import GPTQConfig
+        from transformers.utils import is_gptqmodel_available
+    except ImportError:
+        return None
+    if not is_gptqmodel_available() or "backend" not in inspect.signature(GPTQConfig).parameters:
+        return None
+    return GPTQConfig(bits = qc["bits"], backend = "auto_trainable")
+
+
 def warn_if_bitsandbytes_quantized_nothing(
     model,
     quantization_config,
