@@ -1324,7 +1324,7 @@ def _register_unregistered_single_file_classes(logger: Any = None) -> tuple:
 
 
 def _maybe_dequantize_gguf_one_dimensional(value: Any) -> Any:
-    """Dequantise a 1-D ``GGUFParameter``; diffusers only dequantises inside ``GGUFLinear`` layers."""
+    """diffusers dequantises only inside ``GGUFLinear``, so anything 1-D must arrive as values."""
     quant_shape = getattr(value, "quant_shape", None)
     if quant_shape is not None and len(quant_shape) == 1:
         from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
@@ -1333,11 +1333,8 @@ def _maybe_dequantize_gguf_one_dimensional(value: Any) -> Any:
 
 
 def _dequantize_gguf_one_dimensional(state_dict: Any) -> Any:
-    """Dequantise every 1-D packed tensor in a GGUF state dict before load."""
-    for name, have in list(state_dict.items()):
-        new = _maybe_dequantize_gguf_one_dimensional(have)
-        if new is not have:
-            state_dict[name] = new
+    for name, value in state_dict.items():
+        state_dict[name] = _maybe_dequantize_gguf_one_dimensional(value)
     return state_dict
 
 
@@ -1371,11 +1368,11 @@ def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
 
 
 def _install_gguf_dim_restore(logger: Any) -> None:
-    """Wrap diffusers' meta loader so a GGUF's trimmed dimensions are restored before its shape
-    check. Patched here rather than in the mapping fn because a GGUF whose tensor names already
-    match diffusers skips conversion entirely (``_should_convert_state_dict_to_diffusers``), so the
-    mapping fn never runs for it -- which is precisely the Z-Image case and pre-converted
-    Qwen-Image-2.1 GGUFs whose norm weights would otherwise stay packed (4096 vs 8192 at forward).
+    """Wrap diffusers' meta loader so a GGUF's packed 1-D tensors are dequantised and its trimmed
+    dimensions restored before the shape check. Patched here rather than in the mapping fn because
+    a GGUF whose tensor names already match diffusers skips conversion entirely
+    (``_should_convert_state_dict_to_diffusers``), so the mapping fn never runs for it -- which is
+    precisely the Z-Image case, and a Qwen-Image-2.1 GGUF exported in diffusers names.
 
     Both names are rebound, and the second one is the one that matters: ``single_file_model``
     imports the function at MODULE level (under ``if is_accelerate_available()``), so it holds its

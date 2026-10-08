@@ -127,30 +127,58 @@ class TestGgufTrimmedDimsAreRestored:
         out = _restore_gguf_trimmed_dims(model, sd)
         assert tuple(out["proj.weight"].shape) == (8, 4)
 
-    def test_a_packed_one_dimensional_norm_is_dequantized_on_the_no_conversion_path(self):
-        """Pre-converted Qwen-Image-2.1 GGUFs skip the mapping fn; 1-D norms must dequant here."""
+    def test_the_shim_dequantizes_only_packed_one_dimensional_tensors(self):
+        """A GGUF already in diffusers names skips the mapping fn, and diffusers dequantises only
+        inside ``GGUFLinear``, so a packed norm weight reached the forward as raw bytes: "size of
+        tensor a (4096) must match ... b (8192)" on a pre-converted Qwen-Image-2.1."""
+        import gguf
+        import numpy as np
+        from diffusers.loaders import single_file_model as sfm
+        from diffusers.models import model_loading_utils as mlu
+        from diffusers.quantizers.gguf.utils import GGUFParameter
+
+        from core.inference.diffusion import _install_gguf_dim_restore
+
+        def _packed(values, qtype_name):
+            qtype = getattr(gguf.GGMLQuantizationType, qtype_name)
+            raw = gguf.quants.quantize(values.numpy(), qtype).view(np.uint8)
+            return GGUFParameter(torch.from_numpy(raw.copy()), quant_type = qtype)
+
+        pad = torch.arange(-4.0, 4.0) / 4  # exact in bf16
+        norm = torch.linspace(-1.0, 1.0, 64)
+        sd = {
+            "cap_pad_token": _packed(pad, "BF16"),
+            "norm.weight": _packed(norm, "Q8_0"),
+            "proj.weight": _packed(torch.randn(4, 32), "Q8_0"),
+            "proj.bias": torch.zeros(4),
+        }
+        untouched = {name: sd[name] for name in ("proj.weight", "proj.bias")}
+        originals = (mlu.load_model_dict_into_meta, sfm.load_model_dict_into_meta)
+        seen: dict = {}
+
+        def _fake(model, state_dict, *args, **kwargs):
+            seen.update(state_dict)
+            return []
+
+        mlu.load_model_dict_into_meta = _fake
+        sfm.load_model_dict_into_meta = _fake
         try:
-            import gguf
-            from diffusers.quantizers.gguf.utils import GGUFParameter, dequantize_gguf_tensor
-        except Exception as exc:  # noqa: BLE001
-            pytest.skip(f"gguf support is not importable here: {type(exc).__name__}")
-        import torch
+            _install_gguf_dim_restore(logging.getLogger("t"))
+            sfm.load_model_dict_into_meta(self._model(), sd)
+        finally:
+            mlu.load_model_dict_into_meta, sfm.load_model_dict_into_meta = originals
 
-        from core.inference.diffusion import _dequantize_gguf_one_dimensional
-
-        qtype = gguf.GGMLQuantizationType.BF16
-        block_size, type_size = gguf.GGML_QUANT_SIZES[qtype]
-        n = 4 * block_size
-        finite = torch.linspace(-1.0, 1.0, n, dtype = torch.bfloat16)
-        raw = finite.view(torch.uint8).reshape(-1).clone()
-        packed = GGUFParameter(raw, quant_type = qtype)
-        expected = dequantize_gguf_tensor(GGUFParameter(raw.clone(), quant_type = qtype))
-
-        out = _dequantize_gguf_one_dimensional({"txt_in.text_norm.weight": packed})
-        tensor = out["txt_in.text_norm.weight"]
-        assert not hasattr(tensor, "quant_type")
-        assert tuple(tensor.shape) == (n,)
-        assert torch.equal(tensor, expected)
+        for name in ("cap_pad_token", "norm.weight"):
+            assert not hasattr(seen[name], "quant_type"), name
+            assert seen[name].is_floating_point(), name
+        # Dequantised first, or the trimmed axis cannot be matched against the packed byte count.
+        assert tuple(seen["cap_pad_token"].shape) == (1, 8)
+        assert torch.equal(seen["cap_pad_token"].flatten(), pad)
+        assert tuple(seen["norm.weight"].shape) == (64,)
+        assert torch.allclose(seen["norm.weight"].float(), norm, atol = 1e-2)
+        # Nothing else is touched: dequantising a packed matrix here would load the model dense.
+        for name, value in untouched.items():
+            assert seen[name] is value, name
 
     def test_the_shim_reaches_the_name_single_file_model_actually_calls(self):
         """``single_file_model`` imports the loader at module level, so it holds its own reference.
