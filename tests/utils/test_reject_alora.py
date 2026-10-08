@@ -49,10 +49,8 @@ def test_patch_entry_points_reject_alora(patch):
         patch(_model(**ALORA))
 
 
-def test_prewrapped_peft_model_is_rejected():
-    from peft import get_peft_model
+def _tiny_llama():
     from transformers import LlamaConfig, LlamaForCausalLM
-
     config = LlamaConfig(
         vocab_size = 64,
         hidden_size = 16,
@@ -61,6 +59,31 @@ def test_prewrapped_peft_model_is_rejected():
         num_attention_heads = 2,
         num_key_value_heads = 2,
     )
-    model = get_peft_model(LlamaForCausalLM(config), _model(**ALORA).peft_config["default"])
+    return LlamaForCausalLM(config)
+
+
+def test_requested_alora_is_rejected():
     with pytest.raises(NotImplementedError, match = "alora_invocation_tokens"):
-        FastLlamaModel.get_peft_model(model, r = 8, target_modules = ["q_proj"])
+        reject_alora(_model(), ALORA["alora_invocation_tokens"])
+
+
+@pytest.mark.parametrize(
+    "stored, requested", [(ALORA, {}), ({}, ALORA)], ids = ["stored", "requested"]
+)
+def test_prewrapped_peft_model_is_rejected(stored, requested):
+    from peft import get_peft_model
+    model = get_peft_model(_tiny_llama(), _model(**stored).peft_config["default"])
+    with pytest.raises(NotImplementedError, match = "alora_invocation_tokens"):
+        FastLlamaModel.get_peft_model(model, r = 8, target_modules = ["q_proj"], **requested)
+
+
+@pytest.mark.parametrize(
+    "get_peft_model",
+    [FastLlamaModel.get_peft_model, FastBaseModel.get_peft_model],
+    ids = ["llama", "base"],
+)
+def test_requested_alora_rejected_before_wrapping(get_peft_model):
+    model = _tiny_llama()
+    with pytest.raises(NotImplementedError, match = "alora_invocation_tokens"):
+        get_peft_model(model, r = 8, target_modules = ["q_proj"], **ALORA)
+    assert not hasattr(model, "peft_config")

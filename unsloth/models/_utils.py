@@ -5957,15 +5957,17 @@ def validate_init_target_parameters(init_lora_weights, target_parameters):
         )
 
 
-def reject_alora(model):
+def reject_alora(model, requested = None):
     # Unsloth's LoRA forwards never apply aLoRA's invocation offsets, so the adapter would fire on every token (#2471).
-    for config in (getattr(model, "peft_config", None) or {}).values():
-        if getattr(config, "alora_invocation_tokens", None) is not None:
-            raise NotImplementedError(
-                "Unsloth: Activated LoRA (`alora_invocation_tokens`) is not supported yet. "
-                "Unsloth would apply the adapter to every token, not only after the invocation tokens.\n"
-                "Use plain `transformers` + `peft` for aLoRA, or drop `alora_invocation_tokens` for a normal LoRA."
-            )
+    configs = (getattr(model, "peft_config", None) or {}).values()
+    if requested is not None or any(
+        getattr(c, "alora_invocation_tokens", None) is not None for c in configs
+    ):
+        raise NotImplementedError(
+            "Unsloth: Activated LoRA (`alora_invocation_tokens`) is not supported yet. "
+            "Unsloth would apply the adapter to every token, not only after the invocation tokens.\n"
+            "Use plain `transformers` + `peft` for aLoRA, or drop `alora_invocation_tokens` for a normal LoRA."
+        )
 
 
 def validate_init_lora_weights(
