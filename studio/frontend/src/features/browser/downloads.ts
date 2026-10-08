@@ -14,7 +14,15 @@ import { useBrowserHistoryStore } from "./history-store";
 import { type SavedNativeDownload, saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
 
-export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null; site?: string };
+export type BrowserDownload = {
+  blob: Blob;
+  name: string;
+  contentType: string;
+  url: string | null;
+  site?: string;
+  /** Asked for by a page opened beside a temporary chat. */
+  temporary?: boolean;
+};
 
 type SaveHandle = {
   name: string;
@@ -60,8 +68,8 @@ function approved(url: string | null, name: string, site?: string): Promise<bool
 
 /** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
 export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
-  // Taken now: approval and the save dialog can outlast the temporary chat.
-  const temporary = useChatRuntimeStore.getState().incognito;
+  // Taken now: the fetch, approval and the save dialog can outlast the temporary chat.
+  const temporary = download.temporary === true || useChatRuntimeStore.getState().incognito;
   if (target === undefined) {
     if (!(await approved(download.url, download.name, download.site))) return;
     // A save dialog needs a fresh click; a late approval waits for a click on Save instead.

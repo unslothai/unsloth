@@ -125,6 +125,22 @@ test("a download begun beside a temporary chat stays unlisted when it is saved a
   }
 });
 
+test("a file a temporary chat's page fetched stays unlisted when it is saved after the chat turns normal", async () => {
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  useBrowserHistoryStore.getState().clearDownloads();
+  const written: Blob[] = [];
+  const target = {
+    name: "late.bin",
+    createWritable: async () => ({ write: async (data: Blob) => void written.push(data), close: async () => {} }),
+  };
+  const download = { blob: new Blob(["x"]), name: "late.bin", contentType: "application/octet-stream", url: "https://a.example/late.bin" };
+  await saveBrowserDownload({ ...download, temporary: true }, target);
+  assert.equal(written.length, 1);
+  assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+  await saveBrowserDownload(download, target);
+  assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+});
+
 test("shortening how long history is kept drops older visits at once", () => {
   const now = Date.now();
   useBrowserPrefsStore.getState().setHistoryRetentionDays(0);

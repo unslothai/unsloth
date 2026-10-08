@@ -294,7 +294,7 @@ function WebPage({
           const name = page.fileName ?? fileNameFromUrl(page.url);
           if (!canShowFile(name, page.contentType)) {
             // The sending page, else the address asked for (not the redirect target), so another site's "allow" can't cover it.
-            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url });
+            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url, temporary: entry.temporary });
             if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
           }
         }
