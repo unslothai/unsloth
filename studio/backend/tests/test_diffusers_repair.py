@@ -457,16 +457,16 @@ def _release_mode(monkeypatch, installed):
         "version",
         lambda name: installed if name == "diffusers" else real_version(name),
     )
+    _installed_diffusers(monkeypatch, None)  # an index install, whatever the host has
 
 
 def test_the_shipped_main_pin_is_inactive():
     assert _REAL_MAIN_PIN_ACTIVE() is False
 
 
-@pytest.mark.parametrize("installed", ["0.41.0", "0.41.0.dev0"])
+@pytest.mark.parametrize("installed", ["0.41.0", "0.41.0.post1"])
 def test_a_current_release_starts_nothing(monkeypatch, installed):
     _release_mode(monkeypatch, installed)
-    _installed_diffusers(monkeypatch, None)  # an index install, which main mode would repair
     monkeypatch.setattr(dr, "_run_installer", lambda *a, **k: pytest.fail("started a repair"))
     lines = []
     assert dr.repair_diffusers_before_imports(lines.append) is False and lines == []

@@ -104,7 +104,7 @@ def _main_pin_active() -> bool:
 
 
 def _release_behind() -> bool:
-    """The installer's ``_diffusers_release_behind``, metadata only."""
+    """The installer's ``_diffusers_release_behind`` for an index install (the only kind repaired), metadata only."""
     try:
         from importlib.metadata import version
         from packaging.requirements import Requirement
@@ -127,7 +127,7 @@ def _release_behind() -> bool:
         for spec in requirement.specifier:
             if spec.operator == "==":
                 try:
-                    return Version(Version(installed).base_version) < Version(spec.version)
+                    return Version(installed) < Version(spec.version)
                 except Exception:  # noqa: BLE001 - an unparseable version is left alone
                     return False
     return False

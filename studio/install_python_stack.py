@@ -11262,14 +11262,18 @@ def _diffusers_release_target() -> "str | None":
 
 
 def _diffusers_release_behind() -> bool:
-    """Resident diffusers older than diffusers-pin.txt's ``==``, on release numbers (0.41.0.dev0 is current)."""
+    """Resident diffusers older than diffusers-pin.txt's ``==``; a git / zip / checkout build is judged on
+    release numbers (the main build's 0.41.0.dev0 is current), an index prerelease is not."""
     target = _diffusers_release_target()
     installed = _installed_distribution_version("diffusers")
     if target is None or installed is None:
         return False
+    direct = _recorded_direct_url("diffusers") or {}
+    built = any(k in direct for k in ("vcs_info", "archive_info", "dir_info"))
     try:
         from packaging.version import Version
-        return Version(Version(installed).base_version) < Version(target)
+        have = Version(installed)
+        return (Version(have.base_version) if built else have) < Version(target)
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False
 
@@ -11317,8 +11321,9 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     """
     req = REQ_ROOT / "diffusers-main.txt"
     if not req.is_file() or not _diffusers_main_active(req):
-        # Missing / damaged: the git route's residency check used to catch these on the way.
-        return _diffusers_release_behind() or not _payload_recorded_intact("diffusers")
+        # Missing too: the git route's residency check used to catch it on the way. (Not damaged at the same
+        # version: 11b's version check would skip it, forcing the pass on every update for nothing.)
+        return _diffusers_release_behind() or _installed_distribution_version("diffusers") is None
     if not _diffusers_main_requested():
         # Opted out while the build is still resident: 11b puts the release back.
         return _diffusers_main_resident(req)
@@ -11365,6 +11370,10 @@ def _release_repair_failed() -> bool:
 def _repair_diffusers_release() -> int:
     """11b alone for the startup self-heal, pass lock held: 0 installed, 1 nothing to do, 2 failed."""
     global USE_UV, _STEP, _TOTAL
+    direct = _recorded_direct_url("diffusers") or {}
+    # A checkout, git or zip build is the user's: also reached by a backend that waited out a peer.
+    if any(k in direct for k in ("vcs_info", "archive_info", "dir_info")):
+        return 1
     if not _diffusers_release_behind() or _release_repair_failed():
         return 1
     USE_UV = _bootstrap_uv()
@@ -11465,7 +11474,11 @@ def _prefetch_diffusers_main() -> int:
             cmd = _build_uv_cmd((*args, f"diffusers @ {archive}"))
         else:
             actual_req, temp_reqs = _effective_requirements(req)
-            cmd = _build_uv_cmd(args) + ["-r", _uv_safe_path(actual_req)]
+            # The release resolves its dependencies: the same constraints as the install, or the cache misses.
+            constraints = (
+                ["-c", _uv_safe_path(CONSTRAINTS)] if release and CONSTRAINTS.is_file() else []
+            )
+            cmd = _build_uv_cmd(args) + constraints + ["-r", _uv_safe_path(actual_req)]
         cmd, env = _pinned_cmd_and_env(cmd)
         result = subprocess.run(
             cmd,

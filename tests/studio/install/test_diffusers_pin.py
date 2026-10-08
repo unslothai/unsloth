@@ -1024,14 +1024,16 @@ def _release_module(
         lambda dist: installed if dist == "diffusers" else None,
     )
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda dist: installed is not None)
+    monkeypatch.setattr(module, "_recorded_direct_url", lambda dist: None)
     return module
 
 
-def test_a_missing_or_damaged_release_still_forces_the_pass(monkeypatch):
+def test_a_missing_release_still_forces_the_pass(monkeypatch):
     module = _release_module(monkeypatch, "install_python_stack_release_damaged", "0.41.0")
     assert module._diffusers_main_needs_dependency_pass() is False
+    # Same-version damage would not converge: 11b's version check skips it.
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda dist: False)
-    assert module._diffusers_main_needs_dependency_pass() is True
+    assert module._diffusers_main_needs_dependency_pass() is False
     module = _release_module(monkeypatch, "install_python_stack_release_missing", None)
     assert module._diffusers_main_needs_dependency_pass() is True
 
@@ -1051,13 +1053,27 @@ def test_the_shipped_main_step_skips_without_installing(monkeypatch):
 
 @pytest.mark.parametrize(
     "installed, forced",
-    [("0.41.0", False), ("0.41.0.dev0", False), ("0.42.0", False), ("0.40.0", True)],
+    [
+        ("0.41.0", False),
+        ("0.41.0.dev0", True),
+        ("0.41.0rc1", True),
+        ("0.42.0", False),
+        ("0.40.0", True),
+    ],
 )
 def test_the_fast_path_is_forced_only_by_a_release_behind_the_pin(monkeypatch, installed, forced):
     module = _release_module(monkeypatch, "install_python_stack_release_fast", installed)
     monkeypatch.setattr(module, "_has_working_git", lambda: pytest.fail("probed git"))
     assert module._diffusers_release_target() == "0.41.0"
     assert module._diffusers_main_needs_dependency_pass() is forced
+
+
+def test_a_git_or_zip_build_of_the_release_keeps_the_fast_path(monkeypatch):
+    """The retired main build reports 0.41.0.dev0 and carries everything 0.41.0 does."""
+    module = _release_module(monkeypatch, "install_python_stack_release_built", "0.41.0.dev0")
+    for direct in ({"vcs_info": {"vcs": "git"}}, {"archive_info": {}}):
+        monkeypatch.setattr(module, "_recorded_direct_url", lambda dist, d = direct: dict(d, url = "x"))
+        assert module._diffusers_main_needs_dependency_pass() is False
 
 
 def test_the_release_prefetch_fetches_the_pin_into_scratch_only_when_behind(monkeypatch):
@@ -1089,6 +1105,7 @@ def test_the_release_prefetch_fetches_the_pin_into_scratch_only_when_behind(monk
     (cmd,) = calls
     assert "--target" in cmd and "--no-deps" not in cmd
     assert asked == ["diffusers-pin.txt"]
+    assert "-c" in cmd and str(cmd[cmd.index("-c") + 1]).endswith("constraints.txt"), cmd
 
 
 def _release_repair(
@@ -1144,9 +1161,18 @@ def test_the_startup_repair_installs_the_release_behind_the_pin(monkeypatch):
 
 
 def test_the_startup_repair_leaves_a_current_release_alone(monkeypatch):
-    for installed in ("0.41.0", "0.41.0.dev0"):
+    for installed in ("0.41.0", "0.41.0.post1"):
         module, installs, _ = _release_repair(monkeypatch, "rel_repair_noop", installed)
         assert module._repair_diffusers_main() == 1 and installs == []
+
+
+def test_the_release_repair_leaves_a_user_build_alone(monkeypatch):
+    """Also reached by a backend that waited out a peer, which skips the startup provenance check."""
+    module, installs, _ = _release_repair(monkeypatch, "rel_repair_user", "0.40.0")
+    monkeypatch.setattr(
+        module, "_recorded_direct_url", lambda dist: {"url": "file:///x", "dir_info": {}}
+    )
+    assert module._repair_diffusers_main() == 1 and installs == []
 
 
 def test_a_failed_release_repair_is_recorded_and_not_retried(monkeypatch):
