@@ -159,6 +159,14 @@ test("a file a temporary chat's page fetched stays unlisted when it is saved aft
   assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
   await saveBrowserDownload(download, target);
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+  // Taken as normal before a temporary chat was shown: still listed.
+  useChatRuntimeStore.getState().setIncognito(true);
+  try {
+    await saveBrowserDownload({ ...download, temporary: false }, target);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+  }
+  assert.equal(useBrowserHistoryStore.getState().downloads.length, 2);
 });
 
 test("Save link as from a temporary chat stays unlisted when its fetch lands after the chat turns normal", async () => {

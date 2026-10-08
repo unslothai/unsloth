@@ -1044,7 +1044,8 @@ function tabDownload(tab: BrowserTab | undefined): BrowserDownload | undefined {
     ? {
         ...page,
         url: tab.displayUrl ?? (entry.kind === "web" ? entry.url : null),
-        temporary: entry.kind === "web" && entry.temporary === true,
+        // Only a temporary page's own flag: otherwise the chat shown when Download is clicked decides.
+        temporary: entry.kind === "web" && entry.temporary ? true : undefined,
       }
     : undefined;
 }

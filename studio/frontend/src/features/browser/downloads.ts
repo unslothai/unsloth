@@ -69,7 +69,7 @@ function approved(url: string | null, name: string, site?: string): Promise<bool
 /** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
 export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
   // Taken now: the fetch, approval and the save dialog can outlast the temporary chat.
-  const temporary = download.temporary === true || useChatRuntimeStore.getState().incognito;
+  const temporary = download.temporary ?? useChatRuntimeStore.getState().incognito;
   if (target === undefined) {
     if (!(await approved(download.url, download.name, download.site))) return;
     // A save dialog needs a fresh click; a late approval waits for a click on Save instead.
