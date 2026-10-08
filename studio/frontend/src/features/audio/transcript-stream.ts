@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export interface TranscriptRecord {
+import type { TranscriptDetails } from "./transcript-model.ts";
+
+type TranscriptTiming = Partial<
+  Pick<TranscriptDetails, "segments" | "words" | "speakers" | "source">
+>;
+
+export interface TranscriptRecord extends TranscriptTiming {
   id: string;
   title: string;
   text: string;
@@ -10,19 +16,24 @@ export interface TranscriptRecord {
   duration: number | null;
   created_at: string;
   archived: boolean;
+  speaker_names?: Record<string, string>;
+  segment_count?: number;
+  has_words?: boolean;
 }
 
 export interface TranscriptProgress {
   text: string;
   processed_seconds?: number;
   duration?: number;
+  phase?: "loading" | "downloading_aligner" | "transcribing";
 }
 
-export interface TranscriptResult {
+export interface TranscriptResult extends TranscriptTiming {
   text: string;
   model: string;
   duration: number | null;
   record: TranscriptRecord | null;
+  language?: string | null;
 }
 
 export async function readTranscriptStream(

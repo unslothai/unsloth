@@ -37,6 +37,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
 } from "react";
@@ -172,6 +173,7 @@ import {
   reconcileOrdinarySavedMessagesInView,
 } from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
+import { providerCompactionConnectionKey } from "./utils/provider-compaction";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
 import {
@@ -185,6 +187,7 @@ import {
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { createParentResolver } from "./utils/message-order";
+import { estimateContextUsage } from "./utils/estimate-chat-tokens";
 import {
   awaitStoredChatThreadWrites,
   deleteStoredChatThreads,
@@ -197,6 +200,7 @@ import {
   readStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
+  registerNewThreadIdSource,
   saveStoredChatMessage,
   saveStoredChatThread,
   syncStoredChatMessages,
@@ -218,10 +222,10 @@ import {
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
-  attachmentContentText,
   attachmentsSample,
-  isPastedTextFile,
 } from "./utils/pasted-text";
+import { annotationsOfFile } from "./utils/document-annotations";
+import { completeTextAttachment } from "./utils/queued-text-attachments";
 import {
   adoptPreStreamRunReservation,
   claimPreStreamRunReservation,
@@ -670,26 +674,9 @@ class TextAttachmentAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const text = await readTextAttachmentOnce(attachment.file);
-    return {
-      id: attachment.id,
-      type: "document",
-      name: attachment.name,
-      contentType: attachment.contentType,
-      content: [
-        {
-          type: "text",
-          // A pasted file gets its own tag and size, the markers that outlive the File once the message is stored.
-          text: attachmentContentText(
-            attachment.name,
-            text,
-            isPastedTextFile(attachment.file),
-            attachment.file.size,
-          ),
-        },
-      ],
-      status: { type: "complete" },
-    };
+    const annotations = annotationsOfFile(attachment.file);
+    const text = annotations ? "" : await readTextAttachmentOnce(attachment.file);
+    return completeTextAttachment(attachment, text);
   }
 
   remove(): Promise<void> {
@@ -977,8 +964,9 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
 const MAX_TOOL_ONLY_ATTACHMENT_BYTES = 200 * 1024 * 1024;
 
 /** Whether this turn's python tool runs in Studio's sandbox; chat-adapter.ts decides it the same way. */
-function pythonToolRunsInStudio(): boolean {
-  const state = useChatRuntimeStore.getState();
+export function pythonToolRunsInStudio(
+  state: Parameters<typeof codeToolsOn>[0] = useChatRuntimeStore.getState(),
+): boolean {
   // The effective Code state, as the send path computes it: Full access turns it on locally.
   const codeToolsEnabled = codeToolsOn(state);
   const external = parseExternalModelId(state.params.checkpoint);
@@ -1528,8 +1516,11 @@ function scheduleGenerationRecovery(
           }
           // Replay from 0 re-delivers already-saved chunks: apply them, but publish nothing.
           let advanced = false;
+          let recoveredProviderCompaction: ReturnType<
+            typeof toolRecovery.apply
+          >;
           if (update.event?.type === "chunk") {
-            toolRecovery.apply(
+            recoveredProviderCompaction = toolRecovery.apply(
               update.event.payload,
               raw.length,
               update.event.seq,
@@ -1584,6 +1575,30 @@ function scheduleGenerationRecovery(
                     currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
                     chunk.context_truncated,
                   ),
+                };
+              }
+              if (recoveredProviderCompaction) {
+                const sourceProviderType = update.run.requestPayload.provider_type;
+                const sourceModelId =
+                  update.run.requestPayload.external_model ??
+                  update.run.requestPayload.model;
+                currentMetadata = {
+                  ...currentMetadata,
+                  ...recoveredProviderCompaction,
+                  providerCompactionProviderType:
+                    typeof sourceProviderType === "string"
+                      ? sourceProviderType
+                      : undefined,
+                  providerCompactionModelId:
+                    typeof sourceModelId === "string"
+                      ? sourceModelId
+                      : undefined,
+                  providerCompactionConnectionKey:
+                    providerCompactionConnectionKey(
+                      update.run.requestPayload.provider_id,
+                      update.run.requestPayload.provider_base_url,
+                      update.run.requestPayload.provider_api_type,
+                    ),
                 };
               }
               if (chunk.quote_cut === true) quoteCut = true;
@@ -2661,6 +2676,7 @@ function useStudioRuntimeAdapters(
               promptTokens: number;
               completionTokens: number;
               totalTokens: number;
+              contextTokens?: number;
               cachedTokens: number;
               cacheWriteTokens?: number;
               modelId?: string;
@@ -2672,7 +2688,7 @@ function useStudioRuntimeAdapters(
         // MLX runs past it by design, and a thread whose recount is unsupported would never get another.
         const localLimit = store.loadedIsGguf ? store.loadedContextLength : null;
         const withinLocalLimit =
-          !localLimit || (savedUsage?.totalTokens ?? 0) <= localLimit;
+          !localLimit || (savedUsage?.contextTokens ?? savedUsage?.totalTokens ?? 0) <= localLimit;
         // Legacy unscoped usage (no modelId) is trusted only when a known local
         // window bounds the totals, so an old local turn can't be misattributed
         // to a newly-selected external provider.
@@ -2683,12 +2699,13 @@ function useStudioRuntimeAdapters(
         // The value, not a boolean: the writes below need the narrowing.
         const restoredUsage =
           savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
-        if (restoredUsage) {
+        const shownUsage = restoredUsage ?? estimateContextUsage(msgs);
+        if (shownUsage) {
           // Key by the thread this loader read, not whichever is active when the await resolves: a switch
           // inside it would file this thread's usage under the incoming one.
-          store.setThreadContextUsage(remoteId, restoredUsage);
+          store.setThreadContextUsage(remoteId, shownUsage);
           if (store.activeThreadId === remoteId) {
-            store.setContextUsage(restoredUsage);
+            store.setContextUsage(shownUsage);
           }
         }
         // Only when nothing was restored: saved usage is the last completion's exact totals, and
@@ -3313,6 +3330,17 @@ function ThreadNewChatSwitch({
   return null;
 }
 
+function NewThreadIdRegistrar(): null {
+  const aui = useAui();
+  // Register before passive effects read storage.
+  useLayoutEffect(
+    () =>
+      registerNewThreadIdSource(() => aui.threads().getState().newThreadId),
+    [aui],
+  );
+  return null;
+}
+
 function ActiveThreadSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -3613,8 +3641,9 @@ function ThreadContextUsageRecount({
     ) {
       return;
     }
-    // Only into a blank bar: restored or completion-written usage is exact, this is an estimate.
-    if (useChatRuntimeStore.getState().contextUsage != null) return;
+    // Only into a blank or estimated bar: restored or completion-written usage is exact.
+    const shown = useChatRuntimeStore.getState().contextUsage;
+    if (shown != null && !shown.estimated) return;
     void refreshContextUsage({ threadId: activeThreadId });
   }, [
     activeThreadId,
@@ -3977,6 +4006,7 @@ export function ChatRuntimeProvider({
       <ChatProjectScopeContext.Provider value={projectId ?? null}>
       <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
         <ComparePaneContext.Provider value={Boolean(pairId)}>
+        <NewThreadIdRegistrar />
         <ActiveThreadSync
           enabled={
             modelType === "base" &&

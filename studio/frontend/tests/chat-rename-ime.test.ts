@@ -5,9 +5,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
 import { readSrc } from "./helpers/kit.ts";
+import {
+  imeOwnsInputKeydown,
+  inputImeHandlers,
+  newInputImeState,
+} from "../src/features/chat/utils/composer-preferences.ts";
 
-// Execute the shipped callbacks, following composer-submit-path.test.ts. This
-// catches guards placed after preventDefault or after the rename side effects.
+// Runs the shipped callbacks to catch guards placed after preventDefault or side effects.
 function handler(
   file: string,
   inline: boolean | "escape",
@@ -23,7 +27,6 @@ function handler(
   const matches: ts.Node[] = [];
   function visit(node: ts.Node) {
     if (inline === "escape") {
-      // The rename dialog's DialogContent, which wraps the commitRename input.
       if (
         ts.isJsxAttribute(node) &&
         node.name.getText(source) === "onEscapeKeyDown" &&
@@ -72,7 +75,12 @@ function handler(
 function fixture(file: string, inline: boolean, dirty = true) {
   const effects: string[] = [];
   const skipRenameBlurRef = { current: false };
+  const renameImeRef = { current: newInputImeState() };
+  const ime = inputImeHandlers(renameImeRef.current);
+  let now = 1000;
   const onKey = handler(file, inline, {
+    imeOwnsInputKeydown,
+    renameImeRef,
     renameDirty: dirty,
     skipRenameBlurRef,
     commitRename: () => effects.push("save"),
@@ -83,14 +91,25 @@ function fixture(file: string, inline: boolean, dirty = true) {
     isComposing = false,
     keyCode = key === "Enter" ? 13 : 27,
   ) {
+    now += 1000;
     onKey({
       key,
       keyCode,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      timeStamp: now,
       nativeEvent: { isComposing, keyCode },
       preventDefault: () => effects.push("prevent"),
     });
   }
-  return { effects, skipRenameBlurRef, key };
+  // WebKit order (bug 165004): compositionend lands just before the committing 229 keydown.
+  function compose(start: boolean) {
+    if (start) ime.onCompositionStart();
+    else ime.onCompositionEnd({ timeStamp: now + 999 });
+  }
+  return { effects, skipRenameBlurRef, key, compose };
 }
 
 for (const [name, file, inline] of [
@@ -105,9 +124,13 @@ for (const [name, file, inline] of [
   ] as const) {
     test(`${name}: IME Enter (${isComposing}, ${keyCode}) keeps editing until a separate Enter`, () => {
       const f = fixture(file, inline);
+      f.compose(true);
+      if (!isComposing) f.compose(false);
       f.key("Enter", isComposing, keyCode);
       assert.deepEqual(f.effects, []);
       assert.equal(f.skipRenameBlurRef.current, false);
+      // Chrome/Firefox order: compositionend follows the composing keydown.
+      if (isComposing) f.compose(false);
       f.key("Enter");
       assert.equal(f.effects.filter((effect) => effect === "save").length, 1);
       if (inline) assert.equal(f.skipRenameBlurRef.current, true);
@@ -128,12 +151,31 @@ for (const dirty of [true, false]) {
   });
 }
 
-test("sidebar inline: an unchanged IME Enter does not close the input", () => {
+for (const [name, file, inline] of [
+  ["sidebar inline", "components/app-sidebar.tsx", true],
+  ["sidebar dialog", "components/app-sidebar.tsx", false],
+  ["thread sidebar dialog", "features/chat/thread-sidebar.tsx", false],
+] as const) {
+  test(`${name}: idle macOS Pinyin Enter (229, no composition) saves (#12137)`, () => {
+    const f = fixture(file, inline);
+    f.key("Enter", false, 229);
+    assert.equal(f.effects.filter((effect) => effect === "save").length, 1);
+  });
+
+  test(`${name}: open composition keeps a 229 Enter blocked`, () => {
+    const f = fixture(file, inline);
+    f.compose(true);
+    f.key("Enter", false, 229);
+    assert.deepEqual(f.effects, []);
+  });
+}
+
+test("sidebar inline: a separate idle Pinyin Enter closes an unchanged input", () => {
   const f = fixture("components/app-sidebar.tsx", true, false);
+  f.compose(true);
   f.key("Enter", true);
+  f.compose(false);
   f.key("Enter", false, 229);
-  assert.deepEqual(f.effects, []);
-  f.key("Enter");
   assert.deepEqual(f.effects, ["prevent", "close"]);
 });
 
@@ -142,8 +184,7 @@ for (const [name, file] of [
   ["thread sidebar dialog", "features/chat/thread-sidebar.tsx"],
 ] as const) {
   test(`${name}: candidate Escape does not close the dialog`, () => {
-    // Radix calls this from a document capture listener, before the input's
-    // onKeyDown, so the input guard alone cannot keep the dialog open.
+    // Radix fires this before the input's onKeyDown, so the input guard alone is not enough.
     const onEscape = handler(file, "escape", {});
     const press = (isComposing: boolean, keyCode: number) => {
       let prevented = false;
@@ -160,3 +201,116 @@ for (const [name, file] of [
     assert.equal(press(false, 27), false);
   });
 }
+
+// A lost compositionend (#5546, macOS input-method switch) must not pin later idle Pinyin Enters.
+for (const reset of ["onFocus", "onBlur"] as const) {
+  test(`missing compositionend is cleared by ${reset}`, () => {
+    const state = newInputImeState();
+    const ime = inputImeHandlers(state);
+    ime.onCompositionStart();
+    assert.equal(state.open, true);
+    ime[reset]();
+    const enter = {
+      key: "Enter",
+      keyCode: 229,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      timeStamp: 5000,
+      nativeEvent: { isComposing: false },
+    };
+    assert.equal(imeOwnsInputKeydown(enter, state), false);
+  });
+}
+
+const plainEnter = (keyCode: number, timeStamp: number) => ({
+  key: "Enter",
+  keyCode,
+  metaKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  altKey: false,
+  timeStamp,
+  nativeEvent: { isComposing: false },
+});
+
+test("focus change clears a recent compositionend so the next idle Pinyin Enter saves", () => {
+  const state = newInputImeState();
+  const ime = inputImeHandlers(state);
+  ime.onCompositionStart();
+  ime.onCompositionEnd({ timeStamp: 1000 });
+  ime.onBlur();
+  ime.onFocus();
+  assert.equal(imeOwnsInputKeydown(plainEnter(229, 1100), state), false);
+});
+
+test("a keyCode 13 candidate-confirming Enter inside an open composition is swallowed once", () => {
+  const state = newInputImeState();
+  const ime = inputImeHandlers(state);
+  ime.onCompositionStart();
+  assert.equal(imeOwnsInputKeydown(plainEnter(13, 2000), state), true);
+  ime.onCompositionEnd({ timeStamp: 2010 });
+  assert.equal(imeOwnsInputKeydown(plainEnter(229, 2100), state), false);
+});
+
+test("a Chrome-order composition does not swallow the next idle Pinyin Enter", () => {
+  const state = newInputImeState();
+  const ime = inputImeHandlers(state);
+  ime.onCompositionStart();
+  assert.equal(
+    imeOwnsInputKeydown(
+      {
+        ...plainEnter(229, 1000),
+        nativeEvent: { isComposing: true },
+      },
+      state,
+    ),
+    true,
+  );
+  ime.onCompositionEnd({ timeStamp: 1010 });
+  assert.equal(imeOwnsInputKeydown(plainEnter(229, 1100), state), false);
+});
+
+test("every rename input resets IME state on focus and blur", () => {
+  for (const file of [
+    "components/app-sidebar.tsx",
+    "features/chat/thread-sidebar.tsx",
+  ]) {
+    const source = ts.createSourceFile(
+      file,
+      readSrc(file),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    function visit(node: ts.Node) {
+      if (ts.isJsxAttributes(node)) {
+        const props = node.properties;
+        const spread = props.findIndex(
+          (p) =>
+            ts.isJsxSpreadAttribute(p) &&
+            p.expression.getText(source).startsWith("inputImeHandlers("),
+        );
+        if (spread >= 0) {
+          for (const name of ["onFocus", "onBlur"]) {
+            const override = props.findIndex(
+              (p, i) =>
+                i > spread &&
+                ts.isJsxAttribute(p) &&
+                p.name.getText(source) === name,
+            );
+            if (override >= 0)
+              assert.match(
+                props[override].getText(source),
+                /resetInputIme\(renameImeRef\.current\)/,
+                `${file}: ${name} override drops the IME reset`,
+              );
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+  }
+});

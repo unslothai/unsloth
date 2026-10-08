@@ -91,7 +91,7 @@ function listenAfter(server: Server, port: number, delayMs: number): void {
   }, delayMs).unref();
 }
 
-// The host below starts accepting at 3s: inside the new ladder, outside the old 250 + 750 + 1500ms one.
+// The old ladder was 250 + 750 + 1500ms: 4 attempts. The unowned-port case below starts its host at 3s.
 const SLOW_LOOPBACK_ACCEPT_DELAY_MS = 3_000;
 const OLD_LADDER_ATTEMPTS = 4;
 
@@ -103,14 +103,22 @@ test("a backend that accepts late is reached instead of declared not running", a
   });
   const originalFetch = globalThis.fetch;
   let attempts = 0;
+  // Start accepting once the old ladder's last attempt has been refused, not at a fixed
+  // time: a refused loopback connect takes about a second on Windows, so a timer at 3s
+  // let attempt 4 succeed there and the count could not tell the two ladders apart.
   globalThis.fetch = async (input, init) => {
     attempts += 1;
-    return await originalFetch(input, init);
+    try {
+      return await originalFetch(input, init);
+    } finally {
+      if (attempts === OLD_LADDER_ATTEMPTS && !server.listening) {
+        await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+      }
+    }
   };
 
   try {
-    listenAfter(server, port, SLOW_LOOPBACK_ACCEPT_DELAY_MS);
-    // The connects here are genuinely refused until 3s. `check_backend_is_gone` answers
+    // The connects here are genuinely refused until the old ladder is spent. `check_backend_is_gone` answers
     // false anyway, because a backend this app is bringing up owns the port before it binds
     // it -- which is why the fast path asks for absence rather than for presence.
     const authApi = loadAuthApi({ port, checkGone: () => false });

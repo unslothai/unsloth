@@ -19,6 +19,7 @@ from .loader_utils import (
     unmarked_device_map,
 )
 from ._utils import (
+    config_return_dict,
     SUPPORTS_BFLOAT16,
     resolve_model_class,
     resolve_encoder_attention_implementation,
@@ -99,11 +100,85 @@ def _ensure_sentence_attention_masks(model):
     return False
 
 
+def _is_force_float32_config(config):
+    """Mirror the loader's FORCE_FLOAT32 match (exact normalised type or substring of the joined types), for paths that skip FastModel."""
+    if config is None:
+        return False
+    from .loader import FORCE_FLOAT32
+
+    try:
+        from unsloth_zoo.compiler import get_transformers_model_type
+        model_types = list(get_transformers_model_type(config))
+    except Exception:
+        model_types = [getattr(config, "model_type", "") or ""]
+    model_types_all = ",".join(model_types).lower() + ","
+    normalised = {t.lower().replace("-", "").replace("_", "") for t in model_types}
+    return any(
+        name.lower().replace("-", "").replace("_", "") in normalised
+        or name.lower() in model_types_all
+        for name in FORCE_FLOAT32
+    )
+
+
+def _maybe_upcast_force_float32_inference(st_model):
+    inner = getattr(st_model[0], "auto_model", None)
+    if inner is None or not _is_force_float32_config(getattr(inner, "config", None)):
+        return False
+    params = list(st_model.parameters())
+    if SUPPORTS_BFLOAT16:
+        if any(p.dtype == torch.float16 for p in params):
+            print(f"Unsloth: {inner.config.model_type} does not support float16. Using bfloat16.")
+            st_model.to(torch.bfloat16)
+            return True
+        return False
+    low = sum(p.numel() for p in params if p.dtype in (torch.bfloat16, torch.float16))
+    if low == 0:
+        return False
+    device = params[0].device
+    if device.type == "cuda":
+        free, _ = torch.cuda.mem_get_info(device)
+        # Each 16-bit weight grows by 2 bytes; keep half the free memory for activations.
+        if low * 2 > 0.5 * free:
+            print(
+                f"Unsloth: {inner.config.model_type} does not support float16 and this GPU has no "
+                "bfloat16, but float32 weights do not fit. Keeping bfloat16 (emulated, slower). "
+                "Pass dtype = torch.float32 to force it."
+            )
+            return False
+    print(
+        f"Unsloth: {inner.config.model_type} does not support float16 and this GPU has no "
+        "bfloat16. Using float32."
+    )
+    st_model.to(torch.float32)
+    return True
+
+
+def _apply_max_seq_length(st_model, max_seq_length):
+    if max_seq_length is None:
+        return
+    limits = []
+    for module in st_model[0].modules():
+        embeddings = getattr(getattr(module, "auto_model", None), "embeddings", None)
+        position_embeddings = getattr(embeddings, "position_embeddings", None)
+        if isinstance(position_embeddings, torch.nn.Embedding):
+            # RoBERTa-style positions start after padding_idx, so 514 rows hold 512 tokens.
+            padding_idx = position_embeddings.padding_idx
+            limits.append(
+                position_embeddings.num_embeddings - (0 if padding_idx is None else padding_idx + 1)
+            )
+    if limits and max_seq_length > (limit := min(limits)):
+        print(
+            f"Unsloth: max_seq_length = {max_seq_length} is longer than this model supports. "
+            f"Using {limit}."
+        )
+        max_seq_length = limit
+    st_model.max_seq_length = max_seq_length
+
+
 def _normalize_save_method(save_method):
-    """Fold "MERGED_16BIT" and "merged 16bit" onto "merged_16bit". unsloth_save_model (save.py) normalizes case and spaces before validating, so the same spelling has to mean the same thing here, else a keyword call that worked before starts raising."""
+    """match unsloth_save_model case and spacing normalization before routing save requests."""
     if isinstance(save_method, str):
-        # Stripped BEFORE the spaces are folded, or " lora " becomes "_lora_" and the
-        # adapter guard below sends the request to the merge path instead.
+        # strip before replacing spaces so " lora " does not become "_lora_" and bypass the adapter guard.
         return save_method.strip().lower().replace(" ", "_")
     return save_method
 
@@ -835,7 +910,9 @@ class FastSentenceTransformer(FastModel):
                 if output_hidden_states is not None
                 else self.config.output_hidden_states
             )
-            return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+            return_dict = (
+                return_dict if return_dict is not None else config_return_dict(self.config)
+            )
 
             if input_ids is not None and inputs_embeds is not None:
                 raise ValueError(
@@ -2168,8 +2245,22 @@ class FastSentenceTransformer(FastModel):
         return int(max(20, final_threshold))
 
     @staticmethod
+    def _enable_unpadding(st_model, use_unpadding):
+        if not use_unpadding:
+            return
+        from ._sentence_transformer_unpadding import enable_sentence_transformer_unpadding
+        if not enable_sentence_transformer_unpadding(st_model, auto = use_unpadding == "auto"):
+            print(
+                "Unsloth: use_unpadding needs Transformers 5, a BERT / RoBERTa encoder, "
+                "mean pooling and flash-attn or xformers; training stays padded."
+            )
+
+    @staticmethod
     def _apply_torch_compile(model, mode = "default"):
         """Apply torch.compile to a SentenceTransformer model (with an accelerate unwrap_model bug workaround)."""
+        if getattr(model, "_unsloth_unpadding_installed", False):
+            from ._sentence_transformer_unpadding import disable_sentence_transformer_unpadding
+            disable_sentence_transformer_unpadding(model)
         if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
             compiled = torch.compile(inner_model, mode = mode)
@@ -2209,8 +2300,13 @@ class FastSentenceTransformer(FastModel):
         unsloth_tiled_mlp = False,
         pooling_mode = "mean",
         for_inference = False,
+        use_unpadding = False,
         **kwargs,
     ):
+        # use_unpadding: "auto" packs eligible training batches with >= 8192 padded slots,
+        # True packs every eligible batch (saves memory, can cost speed).
+        if use_unpadding not in (False, True, "auto") or type(use_unpadding) not in (bool, str):
+            raise ValueError('use_unpadding must be "auto", True, or False')
         try:
             from sentence_transformers import SentenceTransformer
             from sentence_transformers.models import Transformer, Pooling, Normalize
@@ -2317,23 +2413,19 @@ class FastSentenceTransformer(FastModel):
                 cache_dir = st_kwargs.get("cache_folder"),
                 revision = revision,
             )
-            # Load the snapshot that was checked. Without this the gate reads one commit of
-            # a branch and the load resolves the branch again, so a repository that advances
-            # in between is validated on the old files and loaded from the new ones.
-            #
-            # Whenever the gate resolved a commit, including when the caller named a
-            # revision. Restricting it to a falsey revision left `revision = "main"` racing
-            # exactly as before, and it does not override anyone's choice: _validated IS
-            # what the caller's own revision resolved to, so pinning only removes the second
-            # resolution. An explicit commit resolves to itself and the pin is a no-op.
+            # pin the validated commit so a moving branch cannot change between checking and loading.
             if _validated:
                 st_kwargs["revision"] = _validated
             st_model = SentenceTransformer(model_name, **st_kwargs)
+            # unsupported GPUs emulate bfloat16 slowly; float16 can yield non-finite activations.
+            if (dtype is None and not SUPPORTS_BFLOAT16) or dtype == torch.float16:
+                _maybe_upcast_force_float32_inference(st_model)
             if _ensure_sentence_attention_masks(
                 getattr(st_model[0], "auto_model", None)
             ) and hasattr(st_model[0], "unpad_inputs"):
-                # Refresh ST's cached capability decision after changing the backend.
+                # refresh ST cached backend capability after attention-mask patching.
                 st_model[0].unpad_inputs = st_model[0].unpad_inputs
+            _apply_max_seq_length(st_model, max_seq_length)
             st_model._unsloth_trust_remote_code = trust_remote_code
             return st_model
 
@@ -2341,15 +2433,32 @@ class FastSentenceTransformer(FastModel):
             kwargs["auto_model"] = AutoModel
 
         transformers4 = Version(transformers.__version__).major < 5
+        # config_kwargs must reach the config, not the model constructor.
+        config_kwargs = kwargs.pop("config_kwargs", None) or {}
         model_type = ""
-        config = None
-        try:
-            config = AutoConfig.from_pretrained(
-                model_name, token = token, trust_remote_code = trust_remote_code
-            )
+        config = kwargs.get("config", None)
+        if config is not None:
             model_type = getattr(config, "model_type", "")
-        except:
-            pass
+        else:
+            # merge caller config last to avoid duplicates and reuse the weight revision and cache.
+            _config_load_kwargs = {
+                "token": token,
+                "trust_remote_code": trust_remote_code,
+                "revision": revision,
+                "cache_dir": kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+                "local_files_only": kwargs.get("local_files_only", False),
+                **config_kwargs,
+            }
+            try:
+                config = AutoConfig.from_pretrained(model_name, **_config_load_kwargs)
+                model_type = getattr(config, "model_type", "")
+            except:
+                if config_kwargs:
+                    raise
+            if config_kwargs and config is not None:
+                kwargs["config"] = config
 
         # Fast encoder path: native torch.compile for encoder models (6x speedup), bypassing Unsloth's auto-compiler, whose @torch.compiler.disable decorators error for encoders on torch 2.9+. Set UNSLOTH_COMPILE_DISABLE=1 for the old path.
         is_encoder_model = model_type.lower() in FastSentenceTransformer.ENCODER_MODEL_TYPES
@@ -2431,7 +2540,7 @@ class FastSentenceTransformer(FastModel):
                 cache_dir = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
                 revision = revision,
             )
-            # Same race as the delegated route above, same pin.
+            # the delegated route has the same race and revision pin.
             st_model = SentenceTransformer(
                 model_name,
                 device = st_device,
@@ -2440,14 +2549,17 @@ class FastSentenceTransformer(FastModel):
                 revision = _validated or revision,
                 model_kwargs = model_kwargs,
                 cache_folder = kwargs.get("cache_dir") or kwargs.get("cache_folder"),
+                **({"config_kwargs": config_kwargs} if config_kwargs else {}),
             )
 
             st_model._unsloth_fast_encoder = True
+            _apply_max_seq_length(st_model, max_seq_length)
             _mark_full_finetuning(st_model[0].auto_model, full_finetuning)
             st_model._compile_mode = compile_mode
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
             st_model.no_modules = False
+            FastSentenceTransformer._enable_unpadding(st_model, use_unpadding)
             FastSentenceTransformer._patch_transformer_module_save_config(
                 st_model[0], getattr(st_model[0].auto_model, "config", None)
             )
@@ -2645,6 +2757,35 @@ class FastSentenceTransformer(FastModel):
         st_model = SentenceTransformer(modules = modules, device = st_device)
         st_model.no_modules = no_modules
 
+        from sentence_transformers.util import load_file_path
+
+        # sentence-transformers 2.x has no local_files_only parameter, so only pass it when set.
+        _local_only = {"local_files_only": True} if kwargs.get("local_files_only") else {}
+        # sentence-transformers >= 6 re-raises Hub errors other than "not found" here; the weights already loaded, so warn rather than fail.
+        try:
+            st_config_path = load_file_path(
+                model_name,
+                "config_sentence_transformers.json",
+                token = token,
+                cache_folder = kwargs.get("cache_dir")
+                or kwargs.get("cache_folder")
+                or os.environ.get("SENTENCE_TRANSFORMERS_HOME"),
+                revision = revision,
+                **_local_only,
+            )
+        except Exception as e:
+            print(
+                f"Unsloth: Could not read config_sentence_transformers.json for {model_name} ({e}). "
+                "Saved prompts and similarity_fn_name were not restored."
+            )
+            st_config_path = None
+        if st_config_path is not None:
+            with open(st_config_path, encoding = "utf8") as f:
+                st_config = json.load(f)
+            st_model.prompts.update(st_config.get("prompts") or {})
+            st_model.default_prompt_name = st_config.get("default_prompt_name")
+            st_model.similarity_fn_name = st_config.get("similarity_fn_name")
+
         def _save_pretrained_merged(
             self,
             save_directory,
@@ -2774,6 +2915,7 @@ class FastSentenceTransformer(FastModel):
 
         st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
         st_model._unsloth_trust_remote_code = trust_remote_code
+        FastSentenceTransformer._enable_unpadding(st_model, use_unpadding)
         return st_model
 
     @staticmethod
@@ -2929,6 +3071,14 @@ class FastSentenceTransformer(FastModel):
 
             transformer_module = model[0]
             inner_model = transformer_module.auto_model
+
+            # Multimodal embedding models carry vision / audio towers that text batches never run: an explicit leaf list would also adapt them, adding dead adapters and DDP unused-parameter errors. Default to the text model; gated on the towers so text-only models keep their old routing.
+            if any(
+                getattr(inner_model, name, None) is not None
+                for name in ("vision_tower", "audio_tower")
+            ):
+                kwargs.setdefault("finetune_vision_layers", False)
+                kwargs.setdefault("finetune_audio_layers", False)
 
             peft_model = FastModel.get_peft_model(
                 model = inner_model,
@@ -3190,5 +3340,40 @@ def _patch_st_trainer_load_from_checkpoint():
     SentenceTransformerTrainer._unsloth_load_from_checkpoint_patched = True
 
 
+def _patch_pooling_float16_accumulation():
+    """Pool float16 token embeddings in float32.
+
+    Pooling sums token embeddings in their own dtype, so float16 (T4 / V100, or Unsloth's
+    float32-forced mode, which keeps float16 weights) overflows to inf once a long input's
+    sum passes 65504, and Normalize turns that into NaN. Models whose token embeddings reach a
+    few thousand hit this on inputs of a few thousand tokens. bfloat16 / float32 are left alone;
+    the pooled vector stays float32 so Normalize and the loss don't overflow either."""
+    try:
+        from sentence_transformers.models import Pooling
+    except Exception:
+        return
+    if getattr(Pooling, "_unsloth_float16_pooling", False):
+        return
+    _original_forward = Pooling.forward
+
+    def forward(self, features, *args, **kwargs):
+        # encode() hands over a BatchEncoding (a UserDict, not a dict), so test for the mapping API.
+        token_embeddings = (
+            features.get("token_embeddings", None) if hasattr(features, "get") else None
+        )
+        if not (torch.is_tensor(token_embeddings) and token_embeddings.dtype == torch.float16):
+            return _original_forward(self, features, *args, **kwargs)
+        features["token_embeddings"] = token_embeddings.float()
+        try:
+            return _original_forward(self, features, *args, **kwargs)
+        finally:
+            features["token_embeddings"] = token_embeddings
+
+    forward.__wrapped__ = _original_forward
+    Pooling.forward = forward
+    Pooling._unsloth_float16_pooling = True
+
+
 _patch_sentence_transformer_trainer()
 _patch_st_trainer_load_from_checkpoint()
+_patch_pooling_float16_accumulation()

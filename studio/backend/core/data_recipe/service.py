@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from core.training.account_jobs import account_path, managed_account, validate_recipe_access
 import base64
+import functools
 import io
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -143,6 +145,77 @@ def _apply_data_designer_image_context_patch() -> None:
     ImageContext._auto_resolve_context_value = _patched_auto_resolve
     setattr(ImageContext, "_unsloth_image_context_patch_applied", True)
     _IMAGE_CONTEXT_PATCHED = True
+
+
+def _blank_missing_prompt_value(value: Any) -> Any:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return value
+
+
+def _allow_empty_prompt(_rendered_text: str) -> None:
+    return None
+
+
+# Filters that stringify their input before finalize runs, so a missing cell would still render "None" / "nan".
+_STRINGIFYING_FILTERS = (
+    "capitalize",
+    "escape",
+    "forceescape",
+    "lower",
+    "replace",
+    "string",
+    "title",
+    "trim",
+    "truncate",
+    "urlencode",
+)
+
+
+def _blank_missing_filter_input(filter_func: Any) -> Any:
+    value_index = 1 if hasattr(filter_func, "jinja_pass_arg") else 0
+
+    @functools.wraps(filter_func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        if len(args) > value_index:
+            args = (
+                *args[:value_index],
+                _blank_missing_prompt_value(args[value_index]),
+                *args[value_index + 1 :],
+            )
+        return filter_func(*args, **kwargs)
+
+    return wrapper
+
+
+def _apply_data_designer_prompt_blank_patch() -> None:
+    try:
+        from data_designer.engine.column_generators.utils.prompt_renderer import (  # pyright: ignore[reportMissingImports]
+            RecordBasedPromptRenderer,
+        )
+    except ImportError:
+        return
+
+    if getattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", False):
+        return
+
+    original_prepare = RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer
+
+    def _patched_prepare(self: Any, template_name: str, *args: Any, **kwargs: Any) -> None:
+        # render() prepares on every record; only patch the env this call creates, else filter wrappers nest per row.
+        already_prepared = self._template_prepared_in_multi_template_renderer(template_name)
+        original_prepare(self, template_name, *args, **kwargs)
+        if already_prepared:
+            return
+        env = self._render_func_registry[template_name].func.__self__
+        env.finalize = _blank_missing_prompt_value
+        env._assert_rendered_text_not_empty = _allow_empty_prompt
+        for name in _STRINGIFYING_FILTERS:
+            if name in env.filters:
+                env.filters[name] = _blank_missing_filter_input(env.filters[name])
+
+    RecordBasedPromptRenderer.prepare_jinja2_multi_template_renderer = _patched_prepare
+    setattr(RecordBasedPromptRenderer, "_unsloth_prompt_blank_patch_applied", True)
 
 
 def _require_public_provider_endpoint(endpoint: str) -> None:
@@ -415,6 +488,7 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     validate_recipe_access(recipe)
     account_path(artifact_path)
     _apply_data_designer_image_context_patch()
+    _apply_data_designer_prompt_blank_patch()
     from data_designer.interface.data_designer import DataDesigner  # pyright: ignore[reportMissingImports]
 
     if artifact_path is None:

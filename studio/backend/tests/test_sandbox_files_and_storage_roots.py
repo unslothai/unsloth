@@ -9,6 +9,7 @@ compiled cache landed in the launcher's CWD, and a deleted chat left its folder
 behind. Verified on Windows, macOS and Linux.
 """
 
+import asyncio
 import functools
 import hashlib
 import json
@@ -402,6 +403,7 @@ def test_sandbox_listing_route_exists():
     # :path so a file written into a subdirectory is reachable.
     assert sandbox_routes == [
         "/sandbox/{session_id}",
+        "/sandbox/{session_id}/open",
         "/sandbox/{session_id}/reveal",
         "/sandbox/{session_id}/{filename:path}",
     ]
@@ -3308,8 +3310,65 @@ def test_attachments_are_copied_into_the_sandbox_once(tmp_path, monkeypatch, dir
     assert list(outside.iterdir()) == []
 
 
+def test_a_python_call_that_edits_an_attachment_reports_it(tmp_path, monkeypatch):
+    from core import chat_originals
+
+    tools = _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    sheet, _ = chat_originals.save([b"a,b\n1,2\n"])
+    session = "__LOCALID_attachedit"
+    tools.materialize_sandbox_attachments(session, [(sheet, "report.csv")])
+    path = tools.sandbox_attachment_path(sheet, "report.csv")
+    beside = path.replace("report.csv", "report_filled.csv")
+
+    read_only = tools._python_exec(f"print(open({path!r}).read())", session_id = session)
+    assert "__FILES__" not in read_only
+
+    result = tools._python_exec(
+        f"open({path!r}, 'a').write('3,4\\n'); open({beside!r}, 'w').write('x\\n')",
+        session_id = session,
+    )
+    files = json.loads(result.split("__FILES__:")[1].split("\n")[0])
+    assert {entry["name"] for entry in files} == {path, beside}
+
+
+def test_an_attachment_copied_in_during_a_call_is_not_claimed_by_it(tmp_path, monkeypatch):
+    from core import chat_originals
+
+    tools = _shared_setup_1(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    session = "__LOCALID_sharedattach"
+    kept, _ = chat_originals.save([b"a,b\n1,2\n"])
+    tools.materialize_sandbox_attachments(session, [(kept, "kept.csv")])
+    workdir = tools._get_workdir(session)
+
+    def call(during):
+        token = tools._call_started(workdir)
+        before = tools._snapshot_workdir_files(workdir)
+        during()
+        try:
+            return tools._created_file_sentinels(workdir, before, None, token)
+        finally:
+            tools._call_finished(token)
+
+    def recopy_and_write():
+        tools.materialize_sandbox_attachments(session, [(kept, "kept.csv")])
+        with open(os.path.join(workdir, "out.txt"), "w") as handle:
+            handle.write("x")
+
+    result = call(recopy_and_write)
+    files = json.loads(result.split("__FILES__:")[1].split("\n")[0])
+    assert [entry["name"] for entry in files] == ["out.txt"]
+
+    other, _ = chat_originals.save([b"c,d\n"])
+    assert (
+        call(lambda: tools.materialize_sandbox_attachments(session, [(other, "other.csv")])) == ""
+    )
+    assert os.path.isfile(os.path.join(workdir, tools.sandbox_attachment_path(other, "other.csv")))
+
+
 def test_sandbox_attachment_paths_match_the_frontend():
-    """Same table as sandbox-attachments.test.ts: the client notes these paths to the model."""
+    """same table as sandbox-attachments.test.ts because the client notes these paths to the model."""
     from core.inference.tools import sandbox_attachment_path
 
     sha = "ab" * 32
@@ -6448,6 +6507,186 @@ def test_execute_tool_reports_a_bad_arg_instead_of_unknown_tool(tmp_path, monkey
     from core.inference import tools
     with pytest.raises(AttributeError):
         tools.execute_tool("python", {"code": 42}, session_id = "__LOCALID_badarg1")
+
+
+def _sandbox_route_setup(tmp_path, monkeypatch):
+    from routes import inference
+
+    sandbox = tmp_path / "sandbox" / "thread-1"
+    (sandbox / "outputs").mkdir(parents = True)
+    monkeypatch.setattr(
+        inference, "_sandbox_dir_for", lambda session_id, create = False: os.path.realpath(sandbox)
+    )
+    monkeypatch.setattr(inference, "_authenticate_header_or_query", _noop_async)
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    launched = []
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: launched.append(cmd))
+    # Windows opens with os.startfile: recorded too, so a test never launches a real app.
+    monkeypatch.setattr(os, "startfile", lambda path: launched.append([path]), raising = False)
+    return inference, sandbox, launched
+
+
+def _open(inference, name):
+    import asyncio
+    return asyncio.run(
+        inference.open_sandbox_file("thread-1", request = None, file = name, token = None, session = None)
+    )
+
+
+def test_opening_a_sandbox_document_hands_it_to_the_default_app(tmp_path, monkeypatch):
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    (sandbox / "outputs" / "report.pdf").write_bytes(b"%PDF-1.4")
+    assert _open(inference, "outputs/report.pdf") == {"status": "ok"}
+    # A private name for the same file, outside the sandbox.
+    (opened,) = [cmd[-1] for cmd in launched]
+    assert not opened.startswith(os.path.realpath(sandbox))
+    assert os.path.basename(opened) == "report.pdf"
+    assert os.path.samefile(opened, sandbox / "outputs" / "report.pdf")
+
+
+@pytest.mark.parametrize(
+    "name, status",
+    [
+        # Model-written: a script or app would run, not be viewed.
+        ("run.sh", 415),
+        ("run.command", 415),
+        ("page.html", 415),
+        ("Tool.app", 415),
+        ("link.pdf", 403),
+        ("../../secret.pdf", 404),
+        ("missing.pdf", 404),
+        ("outputs", 404),
+    ],
+)
+def test_opening_refuses_scripts_links_and_escapes(tmp_path, monkeypatch, name, status):
+    from fastapi import HTTPException
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    outside = tmp_path / "secret.pdf"
+    outside.write_bytes(b"%PDF-1.4")
+    (sandbox / "link.pdf").symlink_to(outside)
+    for script in ("run.sh", "run.command", "page.html", "Tool.app"):
+        (sandbox / script).write_text("x", encoding = "utf-8")
+    with pytest.raises(HTTPException) as caught:
+        _open(inference, name)
+    assert caught.value.status_code == status
+    assert launched == []
+
+
+def test_only_the_installation_owner_opens_or_reveals_files_on_the_host(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from hub.services.models import account_access
+
+    inference, sandbox, launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    (sandbox / "report.pdf").write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr(account_access, "managed_account", lambda: True)
+    with pytest.raises(HTTPException) as caught:
+        _open(inference, "report.pdf")
+    assert caught.value.status_code == 403
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            inference.reveal_sandbox_dir(
+                "thread-1", request = None, token = None, session = None, file = "report.pdf"
+            )
+        )
+    assert caught.value.status_code == 403
+    assert launched == []
+
+
+def test_a_file_swapped_for_a_link_after_the_check_opens_what_was_checked(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    report = tmp_path / "sandbox" / "report.pdf"
+    report.parent.mkdir()
+    report.write_bytes(b"%PDF-1.4 checked")
+    app = tmp_path / "Evil.app"
+    app.write_text("x", encoding = "utf-8")
+    real_link = os.link
+
+    def swap_then_link(src, dst, **kwargs):
+        os.unlink(src)
+        os.symlink(app, src)
+        return real_link(src, dst, **kwargs)
+
+    monkeypatch.setattr(path_utils.os, "link", swap_then_link)
+    staged = path_utils._stage_for_open(report, report.parent)
+    assert not staged.is_symlink()
+    assert staged.read_bytes() == b"%PDF-1.4 checked"
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "symlinked directories need privileges on Windows")
+def test_a_parent_swapped_for_a_link_is_refused(tmp_path, monkeypatch):
+    from utils.paths import path_utils
+
+    monkeypatch.setattr("utils.paths.storage_roots.cache_root", lambda: tmp_path / "cache")
+    sandbox, outside = tmp_path / "sandbox", tmp_path / "outside"
+    sandbox.mkdir()
+    outside.mkdir()
+    (outside / "secret.pdf").write_bytes(b"%PDF-1.4 secret")
+    # What the route checked was a real directory; by the open it is a link out.
+    (sandbox / "outputs").symlink_to(outside, target_is_directory = True)
+    with pytest.raises(FileNotFoundError):
+        path_utils._stage_for_open(sandbox / "outputs" / "secret.pdf", sandbox)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "symlinks need privileges on Windows")
+def test_a_parent_swapped_for_a_link_before_a_reveal_is_refused(tmp_path, monkeypatch):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from utils.paths import path_utils
+
+    inference, sandbox, _launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    (sandbox / "outputs").mkdir(exist_ok = True)
+    (sandbox / "outputs" / "report.csv").write_text("a,b", encoding = "utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "report.csv").write_text("secret", encoding = "utf-8")
+    checked = inference._sandbox_regular_file
+
+    def check_then_swap(*args):
+        result = checked(*args)
+        shutil.rmtree(sandbox / "outputs")
+        (sandbox / "outputs").symlink_to(outside, target_is_directory = True)
+        return result
+
+    monkeypatch.setattr(inference, "_sandbox_regular_file", check_then_swap)
+    revealed = []
+    monkeypatch.setattr(
+        path_utils, "reveal_in_file_manager", lambda path, **kw: revealed.append(path)
+    )
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(
+            inference.reveal_sandbox_dir(
+                "thread-1", request = None, token = None, session = None, file = "outputs/report.csv"
+            )
+        )
+    assert caught.value.status_code == 404
+    assert revealed == []
+
+
+def test_revealing_a_sandbox_file_selects_that_file(tmp_path, monkeypatch):
+    import asyncio
+
+    from utils.paths import path_utils
+
+    inference, sandbox, _launched = _sandbox_route_setup(tmp_path, monkeypatch)
+    target = sandbox / "outputs" / "report.csv"
+    target.write_text("a,b", encoding = "utf-8")
+    revealed = []
+    monkeypatch.setattr(
+        path_utils, "reveal_in_file_manager", lambda path, **kw: revealed.append(path)
+    )
+    result = asyncio.run(
+        inference.reveal_sandbox_dir(
+            "thread-1", request = None, token = None, session = None, file = "outputs/report.csv"
+        )
+    )
+    assert result["path"] == os.path.realpath(target)
+    assert revealed == [Path(os.path.realpath(target))]
 
 
 if __name__ == "__main__":

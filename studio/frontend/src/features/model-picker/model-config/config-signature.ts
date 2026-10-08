@@ -48,10 +48,14 @@ export function loadedConfigSignature(
     return "none";
   }
   return [
+    config.engine ?? "auto",
+    config.enginePrecision ?? "auto",
+    config.engineParallelism ?? "tensor",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",
     config.mlxKvQuant ?? "",
+    config.mlxInt8Prefill ? "1" : "0",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.specDraftCacheDtype ?? "",

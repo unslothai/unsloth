@@ -2,14 +2,24 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { readFastApiError } from "@/lib/format-fastapi-error";
+import {
+  formatFastApiDetail,
+  readFastApiError,
+} from "@/lib/format-fastapi-error";
+import type { DecisionResponse } from "../lib/decision-request";
 
 export type SystemOneDevice = "cpu" | "gpu";
+export type SystemOneBackend = "auto" | "llama.cpp" | "pytorch";
 
 export type SystemOneModel = {
   name: string;
   description: string;
   downloadBytes: number;
+  kind: "catalog" | "fine_tune";
+  label: string | null;
+  available: boolean;
+  unavailableReason: string | null;
+  llamaCppOnly: boolean;
 };
 
 export type SystemOneSettings = {
@@ -27,6 +37,13 @@ export type SystemOneSettings = {
   installing: boolean;
   error: string | null;
   mcpUrl: string;
+  backend: SystemOneBackend;
+  nativeCtx: number;
+  effectiveBackend: string | null;
+  loadedBackend: string | null;
+  fallbackReason: string | null;
+  inputModalities: string[];
+  layout: string | null;
 };
 
 export type SystemOneConnection = {
@@ -48,6 +65,8 @@ export type SystemOneSettingsPatch = {
   enabled?: boolean;
   model?: string;
   device?: SystemOneDevice;
+  backend?: SystemOneBackend;
+  nativeCtx?: number;
   expectedEnabled?: boolean;
   expectedModel?: string;
 };
@@ -72,8 +91,19 @@ type ApiSystemOneSettings = {
   device_locked: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_available: boolean;
-  // biome-ignore lint/style/useNamingConvention: API schema
-  models: { name: string; description: string; download_bytes: number }[];
+  models: {
+    name: string;
+    description: string;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    download_bytes: number;
+    kind?: "catalog" | "fine_tune";
+    label?: string | null;
+    available?: boolean;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    unavailable_reason?: string | null;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    llama_cpp_only?: boolean;
+  }[];
   // biome-ignore lint/style/useNamingConvention: API schema
   loaded_model: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -84,6 +114,18 @@ type ApiSystemOneSettings = {
   error: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   mcp_url: string;
+  backend?: SystemOneBackend;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  native_ctx?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  effective_backend?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  loaded_backend?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  fallback_reason?: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  input_modalities?: string[];
+  layout?: string | null;
 };
 
 type ApiSystemOneDownloadPlan = {
@@ -105,7 +147,8 @@ export function subscribeSystemOneSettings(
     listener((event as CustomEvent<SystemOneSettings>).detail);
   };
   window.addEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
-  return () => window.removeEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
+  return () =>
+    window.removeEventListener(SYSTEMONE_SETTINGS_EVENT, handleChange);
 }
 
 function publishSystemOneSettings(settings: SystemOneSettings) {
@@ -116,9 +159,10 @@ function publishSystemOneSettings(settings: SystemOneSettings) {
 }
 
 function toApiPatch(patch: SystemOneSettingsPatch) {
-  const { expectedEnabled, expectedModel, ...settings } = patch;
+  const { expectedEnabled, expectedModel, nativeCtx, ...settings } = patch;
   return {
     ...settings,
+    ...(nativeCtx !== undefined && { native_ctx: nativeCtx }),
     ...(expectedEnabled !== undefined && {
       expected_enabled: expectedEnabled,
     }),
@@ -139,6 +183,11 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
       name: m.name,
       description: m.description,
       downloadBytes: m.download_bytes,
+      kind: m.kind ?? "catalog",
+      label: m.label ?? null,
+      available: m.available ?? true,
+      unavailableReason: m.unavailable_reason ?? null,
+      llamaCppOnly: m.llama_cpp_only ?? false,
     })),
     loadedModel: settings.loaded_model,
     loadedDevice: settings.loaded_device,
@@ -146,6 +195,13 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     installing: settings.installing,
     error: settings.error,
     mcpUrl: settings.mcp_url,
+    backend: settings.backend ?? "auto",
+    nativeCtx: settings.native_ctx ?? 16384,
+    effectiveBackend: settings.effective_backend ?? null,
+    loadedBackend: settings.loaded_backend ?? null,
+    fallbackReason: settings.fallback_reason ?? null,
+    inputModalities: settings.input_modalities ?? ["text"],
+    layout: settings.layout ?? null,
   };
 }
 
@@ -223,8 +279,12 @@ export async function loadSystemOneConnections(): Promise<
 
 export async function resolveSystemOneDownload(
   model?: string,
+  backend?: SystemOneBackend,
 ): Promise<SystemOneDownloadPlan> {
-  const query = model ? `?${new URLSearchParams({ model })}` : "";
+  const params = new URLSearchParams();
+  if (model) params.set("model", model);
+  if (backend) params.set("backend", backend);
+  const query = params.size ? `?${params}` : "";
   const res = await authFetch(`${SETTINGS_PATH}/resolve${query}`);
   if (!res.ok) {
     throw new Error(
@@ -239,4 +299,72 @@ export async function resolveSystemOneDownload(
     cached: plan.cached,
     error: plan.error,
   };
+}
+
+const LOAD_WAIT_MS = 10 * 60 * 1000;
+
+export class DecisionError extends Error {
+  readonly status: number | null;
+
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function wait(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
+export async function runDecision(
+  body: unknown,
+  signal: AbortSignal,
+  onWaiting: (message: string) => void,
+): Promise<{ response: DecisionResponse; latencyMs: number }> {
+  const deadline = Date.now() + LOAD_WAIT_MS;
+  for (;;) {
+    const started = performance.now();
+    const res = await authFetch("/v1/systemone", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (res.ok) {
+      const response = (await res.json()) as DecisionResponse;
+      return { response, latencyMs: Math.round(performance.now() - started) };
+    }
+    const data = (await res.json().catch(() => null)) as {
+      detail?: unknown;
+    } | null;
+    const detail = data?.detail;
+    const fields =
+      detail && typeof detail === "object"
+        ? (detail as Record<string, unknown>)
+        : {};
+    const message =
+      (typeof fields.message === "string" ? fields.message : null) ??
+      formatFastApiDetail(detail) ??
+      res.statusText;
+    const loading = res.status === 503 && fields.error_type === "model_loading";
+    if (!loading || Date.now() > deadline || signal.aborted) {
+      throw new DecisionError(message, res.status);
+    }
+    onWaiting(message);
+    const retryAfter = Number(res.headers.get("Retry-After")) || 5;
+    await wait(Math.min(retryAfter * 1000, deadline - Date.now()), signal);
+    if (signal.aborted || Date.now() >= deadline) {
+      throw new DecisionError(message, res.status);
+    }
+  }
 }

@@ -14,6 +14,7 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -43,6 +44,29 @@ def _chunk(
 
 
 _USAGE = {"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17}
+# Final usage captured from FastFlowLM via Lemonade 11.9.0 on Strix Halo.
+# Durations are seconds; speeds are tokens per second.
+_FLM_USAGE = {
+    "prompt_tokens": 20,
+    "completion_tokens": 39,
+    "total_tokens": 59,
+    "active_kv_tokens": 59,
+    "max_kv_token_capacity": 8192,
+    "kv_token_occupancy_rate_percentage": 0.72021484375,
+    "load_duration": 5.2e-07,
+    "prefill_duration_ttft": 0.46033728,
+    "decoding_duration": 0.424696,
+    "prefill_speed_tps": 43.44640520967583,
+    "decoding_speed_tps": 91.83039162130089,
+}
+_FLM_TIMINGS = {
+    "prompt_n": 20,
+    "prompt_ms": pytest.approx(460.33728),
+    "prompt_per_second": pytest.approx(43.44640520967583),
+    "predicted_n": 39,
+    "predicted_ms": pytest.approx(424.696),
+    "predicted_per_second": pytest.approx(91.83039162130089),
+}
 
 
 def _script(prompt: str) -> str:
@@ -69,6 +93,10 @@ def _script(prompt: str) -> str:
             _chunk({"content": "hello E"})
             + _chunk({"content": "ND hidden"}, "stop", _USAGE)
             + "data: [DONE]\n\n"
+        )
+    if "TIMED" in prompt:
+        return (
+            _chunk({"content": "The moon."}) + _chunk({}, "stop", _FLM_USAGE) + "data: [DONE]\n\n"
         )
     if "THINK" in prompt:
         return (
@@ -314,6 +342,22 @@ def test_thinking_off_and_non_reasoning_models(flm):
     assert recorded[-1]["body"]["think"] is False
 
 
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        ({}, (0.6, 0.95)),
+        ({"enable_thinking": False}, (0.7, 0.8)),
+        ({"reasoning_effort": "none"}, (0.7, 0.8)),
+        ({"enable_thinking": False, "temperature": 0.3}, (0.3, 0.8)),
+    ],
+)
+def test_qwen_sampling_follows_the_thinking_mode(flm, fields, expected):
+    recorded = flm(reasoning = True)
+    _call(stream = False, **fields)
+    body = recorded[-1]["body"]
+    assert (body["temperature"], body["top_p"]) == expected
+
+
 def test_non_streaming_reply_is_collected_from_the_stream(flm):
     flm()
     status, body = _call(stream = False)
@@ -338,6 +382,48 @@ def test_streaming_rewrites_the_model_name(flm):
         "".join(c["choices"][0]["delta"].get("content") or "" for c in chunks)
         == "one two seven eight"
     )
+
+
+def test_a_streamed_reply_carries_fastflowlm_speeds_as_timings(flm):
+    flm()
+    status, lines = _call(stream = True, messages = [{"role": "user", "content": "TIMED"}])
+    assert status == 200
+    closing = [chunk for chunk in _data(lines) if chunk.get("usage")]
+    assert len(closing) == 1
+    assert closing[0]["usage"] == _FLM_USAGE
+    assert closing[0]["timings"] == _FLM_TIMINGS
+    assert closing[0]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_the_monitor_rates_an_npu_reply_from_fastflowlm_speeds(flm):
+    from core.inference.api_monitor import api_monitor
+
+    if not api_monitor.enabled:
+        pytest.skip("API monitor disabled")
+    flm()
+    _call(stream = True, messages = [{"role": "user", "content": "TIMED"}])
+    entry = api_monitor._entries[0]
+    assert entry.tok_per_sec == pytest.approx(91.83039162130089)
+    assert entry.prompt_tok_per_sec == pytest.approx(43.44640520967583)
+    assert entry.prompt_ms == pytest.approx(460.33728)
+    assert entry.decode_ms == pytest.approx(424.696)
+
+
+def test_a_reply_without_fastflowlm_speeds_gets_no_timings(flm):
+    flm()
+    _, lines = _call(stream = True)
+    assert not any("timings" in chunk for chunk in _data(lines))
+
+
+def test_fastflowlm_timings_leave_a_cached_prefix_out_of_the_prompt():
+    usage = dict(_FLM_USAGE, prompt_tokens = 120, prompt_tokens_details = {"cached_tokens": 100})
+    timings = ep_mod._fastflowlm_timings(usage)
+    assert timings["prompt_n"] == 20
+    assert timings["cache_n"] == 100
+    assert ep_mod._fastflowlm_timings(_USAGE) is None
+    assert ep_mod._fastflowlm_timings({"decoding_duration": True}) is None
+    assert ep_mod._fastflowlm_timings({"decoding_duration": float("nan")}) is None
+    assert ep_mod._fastflowlm_timings({"decoding_duration": 10**400}) is None
 
 
 @pytest.mark.parametrize("stream", [True, False])
@@ -909,6 +995,109 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     release.set()
     assert [event["event"] for event in second.follow()] == ["complete"]
     assert started == ["gemma3-4b-FLM"]
+
+
+def _wait_for(condition) -> None:
+    deadline = time.monotonic() + 10
+    while not condition():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+
+def test_running_downloads_are_listed_until_they_end(monkeypatch):
+    from routes import npu as npu_routes
+
+    release = threading.Event()
+
+    class _Npu:
+        def download(self, model_id):
+            yield {"event": "progress", "percent": 12}
+            yield {"event": "progress", "bytes_downloaded": 5}
+            assert release.wait(10)
+            yield {"event": "complete", "model": model_id, "percent": 100}
+
+    job = npu_routes._start_download(_Npu(), "lfm2-1.2b-FLM")
+    _wait_for(lambda: len(job.events) == 2)
+    listed = asyncio.run(npu_routes.list_npu_downloads())["downloads"]
+    assert {"model": "lfm2-1.2b-FLM", "percent": 12} in listed
+    release.set()
+    _wait_for(lambda: job.finished)
+    listed = asyncio.run(npu_routes.list_npu_downloads())["downloads"]
+    assert all(row["model"] != "lfm2-1.2b-FLM" for row in listed)
+
+
+def test_following_a_download_never_starts_one(monkeypatch):
+    from routes import npu as npu_routes
+
+    started: list[str] = []
+    release = threading.Event()
+
+    class _Npu:
+        def download(self, model_id):
+            started.append(model_id)
+            yield {"event": "progress", "percent": 30}
+            assert release.wait(10)
+            yield {"event": "complete", "model": model_id, "percent": 100}
+
+    monkeypatch.setattr(npu_routes, "get_npu_backend", lambda: _Npu())
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(npu_routes.follow_npu_download("qwen3-1.7b-FLM"))
+    assert missing.value.status_code == 404 and started == []
+
+    job = npu_routes._start_download(_Npu(), "qwen3-1.7b-FLM")
+    _wait_for(lambda: len(job.events) == 1)
+
+    async def follow():
+        response = await npu_routes.follow_npu_download("qwen3-1.7b-FLM")
+        release.set()
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(follow())
+    assert '"percent": 30' in chunks[0] and '"complete"' in chunks[-1]
+    assert started == ["qwen3-1.7b-FLM"]
+    _wait_for(lambda: "qwen3-1.7b-FLM" not in npu_routes._downloads)
+    with pytest.raises(HTTPException):
+        asyncio.run(npu_routes.follow_npu_download("qwen3-1.7b-FLM"))
+
+
+def test_a_failed_download_is_logged(monkeypatch):
+    from routes import npu as npu_routes
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        npu_routes,
+        "logger",
+        SimpleNamespace(info = lambda message: None, warning = warnings.append),
+    )
+
+    class _Npu:
+        def download(self, model_id):
+            yield {"event": "progress", "percent": 37}
+            raise nb.NpuError(f"Downloading {model_id} failed: connection reset")
+
+    job = npu_routes._start_download(_Npu(), "llama3.2-1b-FLM")
+    assert [event["event"] for event in job.follow()] == ["progress", "error"]
+    assert warnings == [
+        "NPU model download of llama3.2-1b-FLM failed at 37%: "
+        "Downloading llama3.2-1b-FLM failed: connection reset"
+    ]
+
+
+def test_npu_model_config_does_not_reach_hugging_face(monkeypatch):
+    from routes import models as models_route
+
+    def _hub(*args, **kwargs):
+        raise AssertionError("an NPU model id reached Hugging Face handling")
+
+    monkeypatch.setattr(models_route, "_get_model_size_bytes", _hub)
+    monkeypatch.setattr(models_route, "_require_model_access_or_caller_token", _hub)
+    result = asyncio.run(
+        models_route.get_model_config(
+            model_name = "lemonade:qwen3.5-9b-FLM", hf_token = None, current_subject = "tester"
+        )
+    )
+    assert result.id == "lemonade:qwen3.5-9b-FLM"
+    assert result.max_position_embeddings is None and not result.is_vision
 
 
 @pytest.mark.parametrize("stream", [True, False])

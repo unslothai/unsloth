@@ -32,6 +32,7 @@ def _make_client(monkeypatch, transcribe = None):
         engine = None,
         request = None,
         device = None,
+        **kwargs,
     ):
         calls.append(
             {
@@ -41,6 +42,7 @@ def _make_client(monkeypatch, transcribe = None):
                 "fast": fast,
                 "engine": engine,
                 "request": request,
+                **kwargs,
             }
         )
         if transcribe is not None:
@@ -911,3 +913,146 @@ def test_the_proxied_row_never_carries_a_local_path(monkeypatch):
     assert row["model"] == "whisper-v3"
     # Only the label is redacted; the provider is still asked for what the client sent.
     assert transcription_calls[-1]["model"] == "/home/ana/models/whisper-v3"
+
+
+_TIMED = {
+    "text": "Hi there. Bye.",
+    "language": "English",
+    "duration": 2.5,
+    "model": "audio-cpp/audio.cpp-gguf/VibeVoice-ASR-GGUF",
+    "segments": [
+        {"start": 0.0, "end": 1.0, "text": "Hi there.", "speaker": "0"},
+        {"start": 1.2, "end": 2.5, "text": "Bye.", "speaker": "1"},
+    ],
+    "words": [
+        {"start": 0.0, "end": 0.4, "word": "Hi"},
+        {"start": 0.4, "end": 1.0, "word": "there."},
+    ],
+    "speakers": [{"id": "0", "label": "Speaker 1"}, {"id": "1", "label": "Speaker 2"}],
+}
+
+
+def _audio_cpp(
+    monkeypatch,
+    tmp_path,
+    result = _TIMED,
+    **caps,
+):
+    """An audio.cpp ASR model; the upload's prepared copy is a file the route must remove."""
+    from core.inference import stt_capabilities
+
+    async def _result(raw):
+        return dict(result)
+
+    cli, calls = _make_client(monkeypatch, transcribe = _result)
+    monkeypatch.setattr(routes_module, "_stt_engine_for_model", lambda model: "audiocpp")
+    monkeypatch.setattr(routes_module, "_resolve_serving_stt_engine", lambda engine: engine)
+    caps = {"family": "vibevoice_asr", "timestamps": "always", "speakers": True, **caps}
+    monkeypatch.setattr(stt_capabilities, "capabilities_for", lambda model, engine: caps)
+    prepared = []
+
+    def _prepare(raw, rate):
+        path = tmp_path / f"upload.{rate}.wav"
+        path.write_bytes(raw)
+        prepared.append(path)
+        return path
+
+    monkeypatch.setattr(routes_module, "_prepared_upload", _prepare)
+    return cli, calls, prepared
+
+
+def test_audio_cpp_verbose_json_has_openai_segments_and_words(monkeypatch, tmp_path):
+    openai_types = pytest.importorskip("openai.types.audio.transcription_verbose")
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path)
+    data = {"response_format": "verbose_json", "timestamp_granularities[]": ["segment", "word"]}
+    resp = _post(cli, data = data)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    openai_types.TranscriptionVerbose.model_validate(body)
+    assert body["language"] == "English"
+    assert [(s["id"], s["start"], s["end"], s["text"]) for s in body["segments"]] == [
+        (0, 0.0, 1.0, "Hi there."),
+        (1, 1.2, 2.5, "Bye."),
+    ]
+    assert body["words"] == [
+        {"word": "Hi", "start": 0.0, "end": 0.4},
+        {"word": "there.", "start": 0.4, "end": 1.0},
+    ]
+    # VibeVoice times its spans at 24 kHz, so the upload is prepared at that rate and removed.
+    (path,) = prepared
+    assert path.name == "upload.24000.wav" and not path.exists()
+    assert calls[0]["source_path"] == path and calls[0]["timestamps"] is True
+
+
+def test_audio_cpp_diarized_json_names_speakers(monkeypatch, tmp_path):
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path)
+    resp = _post(cli, data = {"response_format": "diarized_json"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["task"], body["duration"], body["text"]) == ("transcribe", 2.5, "Hi there. Bye.")
+    assert body["segments"] == [
+        {
+            "type": "transcript.text.segment",
+            "id": "seg_0",
+            "start": 0.0,
+            "end": 1.0,
+            "text": "Hi there.",
+            "speaker": "Speaker 1",
+        },
+        {
+            "type": "transcript.text.segment",
+            "id": "seg_1",
+            "start": 1.2,
+            "end": 2.5,
+            "text": "Bye.",
+            "speaker": "Speaker 2",
+        },
+    ]
+    assert calls[0]["timestamps"] is False
+
+
+@pytest.mark.parametrize(
+    "caps, data, detail",
+    [
+        ({"speakers": False}, {"response_format": "diarized_json"}, "cannot tell speakers apart"),
+        (
+            {"timestamps": "unsupported"},
+            {"response_format": "verbose_json", "timestamp_granularities[]": "word"},
+            "cannot add timestamps",
+        ),
+    ],
+)
+def test_audio_cpp_refuses_what_the_model_cannot_add(monkeypatch, tmp_path, caps, data, detail):
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path, **caps)
+    resp = _post(cli, data = data)
+    assert resp.status_code == 422
+    assert detail in resp.json()["error"]["message"]
+    assert calls == [] and prepared == []
+
+
+@pytest.mark.parametrize("fmt", ["json", "text", "diarized_json"])
+def test_audio_cpp_granularities_need_verbose_json(monkeypatch, tmp_path, fmt):
+    cli, calls, prepared = _audio_cpp(monkeypatch, tmp_path)
+    resp = _post(cli, data = {"response_format": fmt, "timestamp_granularities[]": "word"})
+    assert (resp.status_code, resp.json()["error"]["param"]) == (400, "timestamp_granularities")
+    assert calls == [] and prepared == []
+
+
+def test_diarized_json_on_whisper_is_refused_before_any_work(monkeypatch):
+    cli, calls = _make_client(monkeypatch)
+    resp = _post(cli, data = {"response_format": "diarized_json"})
+    assert resp.status_code == 422
+    assert calls == []
+
+
+@pytest.mark.parametrize("reported, status", [("English", 200), (None, 501)])
+def test_audio_cpp_verbose_json_needs_no_language_when_the_model_reports_one(
+    monkeypatch, tmp_path, reported, status
+):
+    cli, calls, prepared = _audio_cpp(
+        monkeypatch, tmp_path, result = {**_TIMED, "language": reported}
+    )
+    resp = _post(cli, data = {"response_format": "verbose_json"})
+    assert resp.status_code == status, resp.text
+    if status == 200:
+        assert resp.json()["language"] == "English"

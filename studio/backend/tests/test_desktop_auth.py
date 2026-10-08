@@ -809,6 +809,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     settings_module.router = APIRouter()
     llama_module = ModuleType("routes.llama")
     llama_module.router = APIRouter()
+    engines_module = ModuleType("routes.engines")
+    engines_module.router = APIRouter()
     llama_compat_module = ModuleType("routes.llama_compat")
     llama_compat_module.router = APIRouter()
     # main.py imports this name alongside the router and calls it from serve_frontend.
@@ -827,6 +829,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     accounts_module.router = APIRouter()
     library_module = ModuleType("routes.library")
     library_module.router = APIRouter()
+    sandbox_capability_module = ModuleType("routes.sandbox_capability")
+    sandbox_capability_module.router = APIRouter()
     systemone_module = ModuleType("routes.systemone")
     systemone_module.router = APIRouter()
     # main.py mounts the Decisions MCP app from these at import.
@@ -852,6 +856,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes", routes_module)
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
+    monkeypatch.setitem(sys.modules, "routes.engines", engines_module)
     monkeypatch.setitem(sys.modules, "routes.llama_compat", llama_compat_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
@@ -860,6 +865,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
     monkeypatch.setitem(sys.modules, "routes.accounts", accounts_module)
     monkeypatch.setitem(sys.modules, "routes.library", library_module)
+    monkeypatch.setitem(sys.modules, "routes.sandbox_capability", sandbox_capability_module)
     monkeypatch.setitem(sys.modules, "routes.systemone", systemone_module)
 
     import studio.backend.main as backend_main

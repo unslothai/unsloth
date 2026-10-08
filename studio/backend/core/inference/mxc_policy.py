@@ -58,8 +58,14 @@ class MxcPolicyError(RuntimeError):
 
 
 def dacl_fallback_enabled() -> bool:
-    """Host opt-in to MXC's AppContainer tier, which temporarily adds ACEs to the granted host paths."""
-    return os.environ.get(DACL_FALLBACK_ENV, "").strip() == "1"
+    """Opt-in to the AppContainer tier (temporarily adds ACEs); env var if set, else the saved choice."""
+    if DACL_FALLBACK_ENV in os.environ:
+        return os.environ[DACL_FALLBACK_ENV].strip() == "1"
+    try:
+        from utils.mxc_isolation_settings import dacl_fallback_setting
+        return dacl_fallback_setting()
+    except Exception:  # noqa: BLE001 - outside the backend (installer, probe child) there is no setting
+        return False
 
 
 def _reject_grants_over_dacl_journal(grants: list[str]) -> None:
@@ -207,7 +213,12 @@ def _trusted_terminal_path_dirs(plan) -> list[str]:
 def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
     # Preserve the lexical executable for launch. Grants may use canonical roots,
     # but never broaden to the user profile or a drive root.
-    roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, sys.base_prefix, *extra]
+    # uv's managed Python base_prefix can be a version-independent junction.
+    # Resolve this interpreter-owned root before validation so the grant names
+    # the concrete runtime, not a redirect uv can retarget on upgrade. Keep
+    # strict reparse rejection for executables, workdirs and other grant inputs.
+    base_prefix = os.path.realpath(sys.base_prefix)
+    roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, base_prefix, *extra]
     roots.extend(site.getsitepackages())
     roots.append(str(Path(__file__).with_name("sandbox_site")))
     system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
@@ -438,6 +449,8 @@ def build_launch_request(
     readonly = _without_nested(runtime_roots + _model_read_roots(workdir, runtime_roots))
     _reject_grants_over_dacl_journal([workdir, *readonly])
     # Tier 3 walks every readonly tree per launch; a one-time grant on the runtime folders skips it.
+    # Read fresh: a grant made on a stale cached "on" would outlive another process's opt-out.
+    mxc_read_grants.refresh_saved_switches()
     if dacl_fallback_enabled():
         mxc_read_grants.ensure(runtime_roots)
     else:
