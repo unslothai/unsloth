@@ -21943,7 +21943,8 @@ async def _slot_status(current_subject: str):
             # expose a genuine user override.
             _reported_chat_template_override = llama_backend.chat_template_override
             _auto_chat_template_override = resolve_effective_chat_template_override(
-                model_identifier = _model_id,
+                # Public id: a scan-folder copy runs from its snapshot path, templates key on the repo.
+                model_identifier = _display_model_id or _model_id,
                 user_override = None,
             )
             if (
