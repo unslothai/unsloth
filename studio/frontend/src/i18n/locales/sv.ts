@@ -2679,8 +2679,6 @@ export const sv = {
         errorConsoleHideAction: "Dölj konsolen",
         errorLocation: "rad {line}, kolumn {column}",
         errorLine: "rad {line}",
-        errorLocationCompiled: "rad {line}, kolumn {column} i den kompilerade koden",
-        errorLineCompiled: "rad {line} i den kompilerade koden",
         consoleTitle: "Konsol",
         reloadCanvas: "Kör igen",
         consoleMessageCount: "{count} meddelande",

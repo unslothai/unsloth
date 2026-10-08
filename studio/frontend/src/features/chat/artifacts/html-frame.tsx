@@ -160,7 +160,7 @@ export function ArtifactHtmlFrame({
   onOutputCountChange?: (counts: { errors: number; total: number }) => void;
   // Only surfaces that can route the text to a composer pass this; without it there is no Fix button.
   onFixWithModel?: (prompt: string) => void;
-  // A React preview runs compiled code, so its line numbers are said to be in that code.
+  // A React preview runs compiled code, so its runtime line numbers aren't shown.
   kind?: "html" | "react";
 }) {
   const t = useT();
@@ -368,14 +368,9 @@ export function ArtifactHtmlFrame({
         });
   const locationLabel = (entry: CanvasConsoleEntry) => {
     if (entry.line <= 0) return "";
-    if (kind === "react") {
-      return entry.column > 0
-        ? t("settings.chat.artifacts.errorLocationCompiled", {
-            line: entry.line,
-            column: entry.column,
-          })
-        : t("settings.chat.artifacts.errorLineCompiled", { line: entry.line });
-    }
+    // A React preview's runtime positions point into compiled code nobody sees, and differ by
+    // browser; compile errors carry their source position in the message instead.
+    if (kind === "react") return "";
     return entry.column > 0
       ? t("settings.chat.artifacts.errorLocation", {
           line: entry.line,

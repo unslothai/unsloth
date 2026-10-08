@@ -13,6 +13,7 @@ import json
 import shutil
 import subprocess
 import threading
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -296,7 +297,6 @@ def test_at_most_four_compiles_run_at_once(monkeypatch):
     monkeypatch.setattr(rp, "compile_react_preview", blocking)
 
     async def main():
-        monkeypatch.setattr(rp, "_SEMAPHORE", asyncio.Semaphore(rp.MAX_CONCURRENT))
         tasks = [
             asyncio.create_task(rp.compile_react_preview_async(f"s{i}", "tsx")) for i in range(6)
         ]
@@ -312,6 +312,26 @@ def test_at_most_four_compiles_run_at_once(monkeypatch):
     assert state["peak"] == rp.MAX_CONCURRENT == 4
 
 
+def test_each_event_loop_gets_its_own_slots(monkeypatch):
+    # Studio imports this module on one thread and serves from a loop on another. A semaphore
+    # made at import is bound to the first loop that waits on it (on 3.9, to the import thread's
+    # loop), so queued compiles on any other loop raised "attached to a different loop".
+    def slow(source, lang):
+        time.sleep(0.05)
+        return {"status": "ok", "code": source, "deps": []}
+
+    monkeypatch.setattr(rp, "compile_react_preview", slow)
+
+    async def burst(tag):
+        return await asyncio.gather(
+            *(rp.compile_react_preview_async(f"{tag}{i}", "tsx") for i in range(rp.MAX_CONCURRENT + 2))
+        )
+
+    for tag in ("first", "second"):
+        results = asyncio.run(burst(tag))
+        assert [r["code"] for r in results] == [f"{tag}{i}" for i in range(rp.MAX_CONCURRENT + 2)]
+
+
 def test_a_cancelled_request_keeps_its_slot_until_node_exits(monkeypatch):
     release = threading.Event()
     started = []
@@ -323,8 +343,9 @@ def test_a_cancelled_request_keeps_its_slot_until_node_exits(monkeypatch):
 
     monkeypatch.setattr(rp, "compile_react_preview", blocking)
 
+    monkeypatch.setattr(rp, "MAX_CONCURRENT", 1)
+
     async def main():
-        monkeypatch.setattr(rp, "_SEMAPHORE", asyncio.Semaphore(1))
         first = asyncio.create_task(rp.compile_react_preview_async("a", "tsx"))
         while not started:
             await asyncio.sleep(0.01)

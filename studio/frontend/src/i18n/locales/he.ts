@@ -2594,8 +2594,6 @@ export const he = {
         errorConsoleHideAction: "הסתר קונסולה",
         errorLocation: "שורה {line}, עמודה {column}",
         errorLine: "שורה {line}",
-        errorLocationCompiled: "שורה {line}, עמודה {column} בקוד המהודר",
-        errorLineCompiled: "שורה {line} בקוד המהודר",
         consoleTitle: "קונסולה",
         reloadCanvas: "הרץ שוב",
         consoleMessageCount: "הודעה {count}",

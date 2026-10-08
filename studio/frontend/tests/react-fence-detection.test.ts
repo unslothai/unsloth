@@ -87,3 +87,11 @@ test("reactComponentName reads the default export, then App", () => {
   assert.equal(reactComponentName("const App = () => null;"), "App");
   assert.equal(reactComponentName("export default () => <p />;"), null);
 });
+
+test("reactComponentName stays linear on a long run of spaces", () => {
+  const spaces = " ".repeat(40_000);
+  const started = performance.now();
+  assert.equal(reactComponentName(`export default Widget${spaces}x`), null);
+  assert.ok(performance.now() - started < 200, "the name scan backtracked");
+  assert.equal(reactComponentName(`function Widget() {}\r\nexport default Widget;  \r\n`), "Widget");
+});

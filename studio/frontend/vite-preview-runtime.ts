@@ -17,7 +17,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { rolldown } from "rolldown";
+import { pathToFileURL } from "node:url";
+import type { rolldown } from "rolldown";
 import type { Plugin } from "vite";
 
 export interface PreviewRuntimeManifest {
@@ -114,6 +115,12 @@ const REACT_INTERNALS =
 const OWNING_PACKAGE =
   /^(.*[\\/]node_modules[\\/])((?:@[^\\/]+[\\/])?[^\\/]+)[\\/]/;
 
+/** Rolldown from the frontend's own node_modules, so a config loaded from another directory finds it too. */
+async function loadRolldown(root: string): Promise<typeof rolldown> {
+  const entry = createRequire(path.join(root, "package.json")).resolve("rolldown");
+  return ((await import(pathToFileURL(entry).href)) as { rolldown: typeof rolldown }).rolldown;
+}
+
 function readJson<T>(file: string): T {
   return JSON.parse(readFileSync(file, "utf8")) as T;
 }
@@ -200,7 +207,7 @@ async function bundleOne(
   }
   const source = entrySource(spec.modules ?? {});
   const ownsReact = spec.name === "react";
-  const bundle = await rolldown({
+  const bundle = await (await loadRolldown(root))({
     input: ENTRY,
     cwd: root,
     platform: "browser",

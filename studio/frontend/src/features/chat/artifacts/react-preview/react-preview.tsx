@@ -7,8 +7,10 @@ import { Spinner } from "@/components/ui/spinner";
 import { useT } from "@/i18n";
 import { useEffect, useState } from "react";
 import { ArtifactHtmlFrame } from "../html-frame";
-import { useChatArtifactsStore } from "../store";
 import { type UnavailableReason, compileReactPreview } from "./compile-api";
+import { needsNode, noteNodeAvailability } from "./node-availability";
+
+export { needsNode, noteNodeAvailability };
 
 export type PreparedReactPreview =
   | { status: "ready"; html: string }
@@ -39,10 +41,6 @@ export async function prepareReactPreview({
   } catch {
     return { status: "unavailable", reason: "failed" };
   }
-}
-
-export function needsNode(reason: UnavailableReason): boolean {
-  return reason === "node_missing" || reason === "transform_missing";
 }
 
 type PreviewState = { key: string; prepared: PreparedReactPreview } | null;
@@ -77,9 +75,7 @@ export function ReactPreview({
     void prepareReactPreview({ source, lang, title, signal: controller.signal })
       .then((prepared) => {
         if (controller.signal.aborted) return;
-        if (prepared.status === "unavailable" && needsNode(prepared.reason)) {
-          useChatArtifactsStore.getState().markReactPreviewUnavailable();
-        }
+        noteNodeAvailability(prepared);
         setState({ key: `${lang}\u0000${source}`, prepared });
       })
       .catch(() => {

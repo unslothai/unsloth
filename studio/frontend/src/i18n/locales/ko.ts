@@ -2478,8 +2478,6 @@ export const ko = {
         errorConsoleHideAction: "콘솔 숨기기",
         errorLocation: "{line}행, {column}열",
         errorLine: "{line}행",
-        errorLocationCompiled: "컴파일된 코드의 {line}행, {column}열",
-        errorLineCompiled: "컴파일된 코드의 {line}행",
         consoleTitle: "콘솔",
         reloadCanvas: "다시 실행",
         consoleMessageCount: "메시지 {count}개",

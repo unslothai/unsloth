@@ -236,7 +236,8 @@ export function extractReactFences(text: string): ReactFence[] {
 const COMPONENT_NAME_RES = [
   /\bexport\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/,
   /\bexport\s+default\s+class\s+([A-Za-z_$][\w$]*)/,
-  /\bexport\s+default\s+([A-Za-z_$][\w$]*)\s*;?\s*$/m,
+  // Tabs and spaces only, around an optional `;`: `\s*;?\s*` backtracks quadratically on a long run.
+  /\bexport\s+default\s+([A-Za-z_$][\w$]*)[ \t]*(?:;[ \t]*)?\r?$/m,
 ];
 
 /** The component's name for the card title, or null. */

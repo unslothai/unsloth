@@ -2491,8 +2491,6 @@ export const hi = {
         errorConsoleHideAction: "कंसोल छिपाएँ",
         errorLocation: "पंक्ति {line}, स्तंभ {column}",
         errorLine: "पंक्ति {line}",
-        errorLocationCompiled: "संकलित कोड की पंक्ति {line}, स्तंभ {column}",
-        errorLineCompiled: "संकलित कोड की पंक्ति {line}",
         consoleTitle: "कंसोल",
         reloadCanvas: "फिर से चलाएँ",
         consoleMessageCount: "{count} संदेश",

@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import threading
+import weakref
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -47,9 +48,21 @@ _TOOL_DIR = Path(__file__).resolve().parents[1] / "data_recipe" / "oxc-validator
 _SCRIPT = _TOOL_DIR / "compile-react.mjs"
 _TRANSFORM_PACKAGE = _TOOL_DIR / "node_modules" / "oxc-transform" / "package.json"
 
-_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT)
+# Made on first use: on Python 3.9 a semaphore created at import binds to the main thread's
+# loop, but Studio serves from a loop in another thread, so a queued compile would fail.
+_semaphores: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
 _cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 _cache_lock = threading.Lock()
+
+
+def _semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    semaphore = _semaphores.get(loop)
+    if semaphore is None:
+        semaphore = _semaphores[loop] = asyncio.Semaphore(MAX_CONCURRENT)
+    return semaphore
 
 
 def _unavailable(reason: str) -> dict[str, Any]:
@@ -198,7 +211,7 @@ async def compile_react_preview_async(source: str, lang: str) -> dict[str, Any]:
     cached = _cache_get(_cache_key(source, _normalize_lang(lang)))
     if cached is not None:
         return cached
-    async with _SEMAPHORE:
+    async with _semaphore():
         task = asyncio.ensure_future(asyncio.to_thread(compile_react_preview, source, lang))
         try:
             return await asyncio.shield(task)

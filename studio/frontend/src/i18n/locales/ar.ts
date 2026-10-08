@@ -2485,8 +2485,6 @@ export const ar = {
         errorConsoleHideAction: "إخفاء وحدة التحكم",
         errorLocation: "السطر {line}، العمود {column}",
         errorLine: "السطر {line}",
-        errorLocationCompiled: "السطر {line}، العمود {column} من الشيفرة المترجمة",
-        errorLineCompiled: "السطر {line} من الشيفرة المترجمة",
         consoleTitle: "وحدة التحكم",
         reloadCanvas: "تشغيل مرة أخرى",
         consoleMessageCount: "{count} رسالة",

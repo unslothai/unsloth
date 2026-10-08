@@ -137,9 +137,9 @@ export function buildCanvasFixPrompt(
   const name = title.replace(/\s+/g, " ").trim().slice(0, FIX_PROMPT_TITLE_MAX_CHARS);
   const shown = errors.slice(0, FIX_PROMPT_ERRORS_SHOWN);
   const lines = shown.map((entry, index) => {
-    const where = describeCanvasLocation(entry);
-    const of = kind === "react" ? " of the compiled code" : "";
-    return `${index + 1}. ${entry.text}${where ? ` (${where}${of})` : ""}`;
+    // A React preview's positions are in compiled code the model never saw.
+    const where = kind === "react" ? "" : describeCanvasLocation(entry);
+    return `${index + 1}. ${entry.text}${where ? ` (${where})` : ""}`;
   });
   const more = errors.length - shown.length;
   if (more > 0) lines.push(`…and ${more} more.`);

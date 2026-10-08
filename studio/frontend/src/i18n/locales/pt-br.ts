@@ -2501,8 +2501,6 @@ export const ptBR = {
         errorConsoleHideAction: "Ocultar console",
         errorLocation: "linha {line}, coluna {column}",
         errorLine: "linha {line}",
-        errorLocationCompiled: "linha {line}, coluna {column} do código compilado",
-        errorLineCompiled: "linha {line} do código compilado",
         consoleTitle: "Console",
         reloadCanvas: "Executar de novo",
         consoleMessageCount: "{count} mensagem",

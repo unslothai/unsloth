@@ -2481,8 +2481,6 @@ export const it = {
         errorConsoleHideAction: "Nascondi console",
         errorLocation: "riga {line}, colonna {column}",
         errorLine: "riga {line}",
-        errorLocationCompiled: "riga {line}, colonna {column} del codice compilato",
-        errorLineCompiled: "riga {line} del codice compilato",
         consoleTitle: "Console",
         reloadCanvas: "Esegui di nuovo",
         consoleMessageCount: "{count} messaggio",

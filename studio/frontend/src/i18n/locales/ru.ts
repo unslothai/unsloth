@@ -2497,8 +2497,6 @@ export const ru = {
         errorConsoleHideAction: "Скрыть консоль",
         errorLocation: "строка {line}, столбец {column}",
         errorLine: "строка {line}",
-        errorLocationCompiled: "строка {line}, столбец {column} скомпилированного кода",
-        errorLineCompiled: "строка {line} скомпилированного кода",
         consoleTitle: "Консоль",
         reloadCanvas: "Запустить снова",
         consoleMessageCount: "сообщений: {count}",

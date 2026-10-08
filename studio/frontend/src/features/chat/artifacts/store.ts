@@ -23,9 +23,9 @@ type ChatArtifactsState = {
   pendingFixPrompt: string | null;
   stageFixPrompt: (prompt: string) => void;
   clearFixPrompt: () => void;
-  // Set once a React preview finds no Node, so every React card can say why.
+  // Whether the last React compile found no Node, so every React card can say why.
   reactPreviewUnavailable: boolean;
-  markReactPreviewUnavailable: () => void;
+  setReactPreviewUnavailable: (unavailable: boolean) => void;
 };
 
 export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
@@ -33,5 +33,5 @@ export const useChatArtifactsStore = create<ChatArtifactsState>((set) => ({
   stageFixPrompt: (prompt) => set({ pendingFixPrompt: prompt }),
   clearFixPrompt: () => set({ pendingFixPrompt: null }),
   reactPreviewUnavailable: false,
-  markReactPreviewUnavailable: () => set({ reactPreviewUnavailable: true }),
+  setReactPreviewUnavailable: (reactPreviewUnavailable) => set({ reactPreviewUnavailable }),
 }));

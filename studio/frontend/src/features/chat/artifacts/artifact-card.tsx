@@ -37,7 +37,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { type ReactFenceLang, reactComponentName } from "./html-fences";
-import { needsNode, prepareReactPreview } from "./react-preview/react-preview";
+import { needsNode, noteNodeAvailability, prepareReactPreview } from "./react-preview/react-preview";
 import {
   hasAutoOpenedArtifact,
   rememberAutoOpenedArtifact,
@@ -103,12 +103,12 @@ async function openInDefaultBrowser(page: string | (() => Promise<string>)): Pro
 function reactPage(code: string, lang: ReactFenceLang, title: string): () => Promise<string> {
   return async () => {
     const prepared = await prepareReactPreview({ source: code, lang, title });
+    noteNodeAvailability(prepared);
     if (prepared.status === "ready") return prepared.html;
     if (prepared.status === "compile-error") {
       throw new PageOpenError("This component didn't compile. Open it in the Unsloth Browser to see why.");
     }
     if (needsNode(prepared.reason)) {
-      useChatArtifactsStore.getState().markReactPreviewUnavailable();
       throw new PageOpenError("React previews need Node.js. Install it, then re-run Unsloth setup.");
     }
     throw new PageOpenError("Couldn't prepare this preview.");
@@ -183,9 +183,16 @@ export function ArtifactCard({
   const isReact = kind === "react";
   const reactUnavailable = useChatArtifactsStore((state) => state.reactPreviewUnavailable);
   const shownView = useShownHtmlView(isReact ? `react:${artifact.id}` : artifact.id);
-  const reactTitle = reactComponentName(artifact.code) ?? displayReactFallbackTitle(artifact.title);
+  // Only React cards: an HTML card's code is never scanned for a component name.
+  const reactTitle = useMemo(
+    () =>
+      isReact
+        ? (reactComponentName(artifact.code) ?? displayReactFallbackTitle(artifact.title))
+        : null,
+    [artifact.code, artifact.title, isReact],
+  );
   const open = (view: FileViewMode) =>
-    isReact
+    isReact && reactTitle !== null
       ? openReactInBrowser({
           key: artifact.id,
           name: getArtifactFilename({ title: reactTitle }, lang),
@@ -206,9 +213,8 @@ export function ArtifactCard({
     openArtifactInBrowser(artifact, "preview");
   }, [artifact, autoOpen, isReact, isStreaming]);
 
-  const pageTitle = isReact
-    ? reactTitle
-    : (htmlDocumentTitle(artifact.code) ?? displayFallbackTitle(artifact.title));
+  const pageTitle =
+    reactTitle ?? htmlDocumentTitle(artifact.code) ?? displayFallbackTitle(artifact.title);
   const filename = isReact
     ? getArtifactFilename({ title: pageTitle }, lang)
     : getArtifactFilename({ title: pageTitle });

@@ -2445,8 +2445,6 @@ export const zhCN = {
         errorConsoleHideAction: "隐藏控制台",
         errorLocation: "第 {line} 行，第 {column} 列",
         errorLine: "第 {line} 行",
-        errorLocationCompiled: "编译后代码的第 {line} 行，第 {column} 列",
-        errorLineCompiled: "编译后代码的第 {line} 行",
         consoleTitle: "控制台",
         reloadCanvas: "重新运行",
         consoleMessageCount: "{count} 条消息",

@@ -2520,8 +2520,6 @@ export const fr = {
         errorConsoleHideAction: "Masquer la console",
         errorLocation: "ligne {line}, colonne {column}",
         errorLine: "ligne {line}",
-        errorLocationCompiled: "ligne {line}, colonne {column} du code compilé",
-        errorLineCompiled: "ligne {line} du code compilé",
         consoleTitle: "Console",
         reloadCanvas: "Relancer",
         consoleMessageCount: "{count} message",

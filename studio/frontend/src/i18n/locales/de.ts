@@ -2523,8 +2523,6 @@ export const de = {
         errorConsoleHideAction: "Konsole ausblenden",
         errorLocation: "Zeile {line}, Spalte {column}",
         errorLine: "Zeile {line}",
-        errorLocationCompiled: "Zeile {line}, Spalte {column} des kompilierten Codes",
-        errorLineCompiled: "Zeile {line} des kompilierten Codes",
         consoleTitle: "Konsole",
         reloadCanvas: "Erneut ausfuehren",
         consoleMessageCount: "{count} Meldung",

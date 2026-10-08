@@ -2468,8 +2468,6 @@ export const ja = {
         errorConsoleHideAction: "コンソールを隠す",
         errorLocation: "{line} 行目、{column} 列目",
         errorLine: "{line} 行目",
-        errorLocationCompiled: "コンパイル済みコードの {line} 行目、{column} 列目",
-        errorLineCompiled: "コンパイル済みコードの {line} 行目",
         consoleTitle: "コンソール",
         reloadCanvas: "もう一度実行",
         consoleMessageCount: "メッセージ {count} 件",
