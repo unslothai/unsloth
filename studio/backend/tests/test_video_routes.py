@@ -888,14 +888,16 @@ def test_status_passthrough(client, monkeypatch):
     )
     body = client.get("/api/inference/video/status").json()
     assert body["loaded"] is True and body["family"] == "ltx-2"
-    # ``artifact`` is additive on the response model: a record naming no hosted checkpoint is null.
+    # ``artifact`` / ``replaced`` are additive on the response model: a record naming neither is null.
     assert body["resolved"]["transformer_quant"] == {
         **resolved["transformer_quant"],
         "artifact": None,
+        "replaced": None,
     }
     assert body["resolved"]["text_encoder_quant"] == {
         **resolved["text_encoder_quant"],
         "artifact": None,
+        "replaced": None,
     }
     # Entries from an older backend (no requested/status) still parse, defaulted to "applied".
     assert body["resolved"]["speed_mode"]["requested"] is None
@@ -1646,7 +1648,8 @@ def test_video_download_plan_refuses_an_unsupported_combination_before_staging(c
         "/api/inference/video/download-plan",
         json = {
             "model_path": "MiniMaxAI/MiniMax-H3",
-            "gguf_filename": "minimax_h3_fl2va_pruned_int8_rowwise.safetensors",
+            # Only a ComfyUI-quantized denoiser loads as an H3 single file; the conditioner never does.
+            "gguf_filename": "qwen3vl_32b_minimax_h3_bf16.safetensors",
             "model_kind": "single_file",
         },
     )

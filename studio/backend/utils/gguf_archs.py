@@ -40,3 +40,13 @@ def is_speech_gguf_architecture(architecture: Optional[str]) -> bool:
     if normalized in SPEECH_GGUF_ARCHS:
         return True
     return any(marker in normalized for marker in _VOCODER_MARKERS)
+
+
+# ``general.architecture`` of every GGUF audio.cpp writes. Only audiocpp_server reads these (speech,
+# music, transcription); llama.cpp has no such architecture.
+AUDIO_CPP_GGUF_ARCHITECTURE = "audiocpp"
+
+
+def is_audio_cpp_gguf_architecture(architecture: Optional[str]) -> bool:
+    """Whether ``general.architecture`` names a GGUF only audio.cpp runs. Case- and space-insensitive."""
+    return bool(architecture) and architecture.strip().lower() == AUDIO_CPP_GGUF_ARCHITECTURE

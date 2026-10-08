@@ -43,6 +43,11 @@ _HIDDEN_STT_REPO_IDS = frozenset(
 )
 _HIDDEN_STT_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _HIDDEN_STT_REPO_IDS)
 
+# audio.cpp's umbrella repo: every speech, music and ASR package lives in one of its subfolders, so
+# the cache holds GGUFs the chat index would otherwise offer as a chat model. The Audio page and
+# Voice settings reach them through the audio.cpp catalog instead.
+_HIDDEN_AUDIO_CPP_REPO_IDS_LOWER = frozenset({"audio-cpp/audio.cpp-gguf"})
+
 # Curated Audio-page TTS checkpoints, which stay VISIBLE but must not be chat-loadable: a chat turn on one comes back as synthesized speech. Listed by id because config sniffing cannot catch them (Orpheus/OuteTTS are LlamaForCausalLM, Spark is Qwen2ForCausalLM) and a GGUF companion carries no tokenizer_config for the codec probe.
 _CURATED_TTS_REPO_IDS = frozenset(
     {
@@ -63,6 +68,12 @@ _CURATED_TTS_REPO_IDS_LOWER = frozenset(repo_id.lower() for repo_id in _CURATED_
 def is_curated_tts_repo_id(value: str | None) -> bool:
     """True only for Unsloth's exact curated TTS Hub repositories."""
     return bool(value and value.strip().lower() in _CURATED_TTS_REPO_IDS_LOWER)
+
+
+def is_audio_cpp_repo_id(value: str | None) -> bool:
+    """True for audio.cpp's umbrella repo. Hidden from chat like a curated STT repo, and like one still
+    emitted as a Model Hub management row, since that row is where its downloaded packages are deleted."""
+    return bool(value and value.strip().lower() in _HIDDEN_AUDIO_CPP_REPO_IDS_LOWER)
 
 
 def is_curated_stt_repo_id(value: str | None) -> bool:
@@ -161,6 +172,7 @@ def is_hidden_model(*values: str | None) -> bool:
         _PROBE_REPO_ID.lower(),
         *(repo_id.lower() for repo_id in _DEFAULT_EMBEDDING_REPO_IDS),
         *_HIDDEN_STT_REPO_IDS_LOWER,
+        *_HIDDEN_AUDIO_CPP_REPO_IDS_LOWER,
     }
     exact_paths: list[str] = []
     for model in {

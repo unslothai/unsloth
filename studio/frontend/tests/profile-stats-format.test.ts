@@ -150,6 +150,8 @@ test("profile counts follow the selected locale's plural rules", () => {
   assert.equal(formatProfileCount(2, "message", "it"), "2 messaggi");
   assert.equal(formatProfileCount(2, "token", "it"), "2 token");
   assert.equal(formatProfileCount(2, "step", "it"), "2 step");
+  assert.equal(formatProfileCount(1, "message", "sv"), "1 meddelande");
+  assert.equal(formatProfileCount(2, "message", "sv"), "2 meddelanden");
   assert.equal(formatProfileCount(5, "token", "en", "$&"), "$& tokens");
   assert.equal(formatProfileCount(5, "token", "en", "$'"), "$' tokens");
 
@@ -163,6 +165,9 @@ test("profile counts follow the selected locale's plural rules", () => {
   assert.equal(formatProfileCount(3, "message", "ar"), "3 رسائل");
   assert.equal(formatProfileCount(11, "message", "ar"), "11 رسالة");
   assert.equal(formatProfileCount(100, "message", "ar"), "100 رسالة");
+  assert.equal(formatProfileCount(1, "message", "he"), "הודעה אחת");
+  assert.equal(formatProfileCount(2, "message", "he"), "2 הודעות");
+  assert.equal(formatProfileCount(5, "token", "he"), "5 טוקנים");
   assert.equal(formatProfileCount(1200, "token", "ar", "1.2K"), "1.2K توكن");
 });
 

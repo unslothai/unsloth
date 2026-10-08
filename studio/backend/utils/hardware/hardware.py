@@ -459,6 +459,8 @@ def _adapter_name_is_live(name: Optional[str], live_names: list[str]) -> bool:
 
 # XPU-capable Intel PCI IDs (pciids.h: DG2/ATS-M, PVC, BMG); an allowlist since DG1 Iris Xe MAX is discrete but unsupported.
 _INTEL_XPU_PCI_ID_RANGES = ((0x5690, 0x56C2), (0x0B69, 0x0BE5), (0xE200, 0xE2FF))
+# Core Ultra iGPUs with Arc Graphics, which PyTorch XPU lists: the ids Intel compute-runtime (devices_base.inl) names Arc (MTL-H, ARL-H, LNL, PTL).
+_INTEL_XPU_PCI_IDS = frozenset((0x7D55, 0x7D51, 0x64A0, 0xB080, 0xB081, 0xB082, 0xB083))
 
 
 def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
@@ -468,7 +470,9 @@ def _intel_pci_device_is_xpu_class(device_dir: str) -> Optional[bool]:
             device_id = int(fh.read().strip(), 16)
     except (OSError, ValueError):
         return None
-    return any(lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES)
+    return device_id in _INTEL_XPU_PCI_IDS or any(
+        lo <= device_id <= hi for lo, hi in _INTEL_XPU_PCI_ID_RANGES
+    )
 
 
 def _linux_drm_sysfs_records(*, distinguish_failure: bool = False) -> "list[Dict[str, Any]] | None":
@@ -1407,21 +1411,28 @@ def _xpu_device_name_or_placeholder(torch) -> str:
         return "<unavailable>"
 
 
+# RDNA 3/3.5/4 only; gfx1250 is Instinct, so avoid a broad gfx12 prefix.
+_MIOPEN_SEARCH_CUTOFF_ARCH_PREFIXES = ("gfx110", "gfx115", "gfx120")
+
+
 def _configure_rocm_miopen(torch) -> None:
     if "MIOPEN_SEARCH_CUTOFF" in os.environ:
         return
     try:
         count = torch.cuda.device_count()
-        # Process-wide in MIOpen: any untested arch on a mixed host keeps the default.
-        if not count or any(
-            _props_gfx_arch(torch.cuda.get_device_properties(i)) != "gfx1151" for i in range(count)
+        # MIOpen's cutoff is process-wide, so every visible GPU must qualify.
+        if not count or not all(
+            _props_gfx_arch(torch.cuda.get_device_properties(i)).startswith(
+                _MIOPEN_SEARCH_CUTOFF_ARCH_PREFIXES
+            )
+            for i in range(count)
         ):
             return
     except Exception as exc:
         logger.debug("MIOpen search cutoff device probe failed: %s", exc)
         return
     os.environ.setdefault("MIOPEN_SEARCH_CUTOFF", "1")
-    logger.info("ROCm gfx1151: enabled MIOpen search cutoff (MIOPEN_SEARCH_CUTOFF=1)")
+    logger.info("ROCm RDNA: enabled MIOpen search cutoff (MIOPEN_SEARCH_CUTOFF=1)")
 
 
 def _detect_hardware_locked() -> DeviceType:
@@ -1474,17 +1485,27 @@ def _detect_hardware_locked() -> DeviceType:
                 print(f"Hardware detected: XPU -- {device_name} ({reason})")
                 return DEVICE
 
-        # Reuse the guarded answer: a raising second is_available() would skip the XPU branch below.
+        # reuse guarded result because another is_available() exception would skip XPU fallback
         if not cuda_unavailable:
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
             try:
                 device_name = torch.cuda.get_device_properties(0).name
             except Exception as e:
-                logger.debug("CUDA device 0 property probe failed: %s", e)
+                # failed CUDA init can make later PyTorch calls segfault, so log the cause
+                from utils.allocator_conf import ALLOCATOR_CONF_ENV_VARS
+
+                allocator_conf = {
+                    name: os.environ[name] for name in ALLOCATOR_CONF_ENV_VARS if name in os.environ
+                }
+                logger.error(
+                    "CUDA device 0 property probe failed: %r (allocator config: %s)",
+                    e,
+                    allocator_conf or "unset",
+                )
                 device_name = "<unavailable>"
 
-            # Distinguish ROCm from CUDA for display only (DeviceType stays CUDA). AMD SDK wheels do not set torch.version.hip, so fall back to __version__.
+            # AMD SDK wheels omit torch.version.hip; ROCm label uses __version__; DEVICE stays CUDA
             _hip_ver = getattr(torch.version, "hip", None)
             if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
@@ -4653,6 +4674,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         "CUDA_VISIBLE_DEVICES" not in os.environ
         and ("HIP_VISIBLE_DEVICES" in os.environ or "ROCR_VISIBLE_DEVICES" in os.environ)
     )
+    rocr_mask = False
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
         # ROCR_VISIBLE_DEVICES is Linux-only: Windows HIP has no ROCr layer, so a stray ROCR var there masks nothing and must not be read as the ordinal->physical mapping.
@@ -4661,6 +4683,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
             cuda_visible = hip_vis
         elif rocr_vis is not None:
             cuda_visible = rocr_vis
+            rocr_mask = True
     if cuda_visible is None:
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
 
@@ -4679,10 +4702,38 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
             "supports_explicit_gpu_ids": True,
         }
 
-    tokens = [value.strip() for value in cuda_visible.split(",") if value.strip()]
-    try:
-        numeric_ids = [int(value) for value in tokens]
-    except ValueError:
+    # Each runtime's own rule: a negative, empty or non-numeric index ends the list ("0,2,-1,1" exposes 0
+    # and 2). CUDA reads strtoul-style ("1gpu2" is 1) and empties the set on a repeat (torch's
+    # _parse_visible_devices); HIP takes only a plain index and skips a repeat, ROCr stops at one.
+    numeric_ids = []
+    for value in (token.strip() for token in cuda_visible.split(",")):
+        prefix = re.fullmatch(r"-?\d+", value) if _is_rocm_spec else re.match(r"[+-]?\d+", value)
+        if prefix is None:
+            # A UUID/MIG id, or a mask not starting with a number, keeps the UUID path below.
+            if value and (not numeric_ids or value.upper().startswith(("GPU-", "MIG-"))):
+                numeric_ids = None
+            break
+        gpu_id = int(prefix.group())
+        if gpu_id < 0:
+            break
+        if gpu_id in numeric_ids:
+            if _is_rocm_spec and not rocr_mask:
+                continue
+            if not _is_rocm_spec:
+                numeric_ids = []
+            break
+        numeric_ids.append(gpu_id)
+    if numeric_ids is None:
+        # nvidia-smi indices are PCI order, so they only name the same cards a numeric mask written back to a child would under PCI_BUS_ID (#8873).
+        if not _is_rocm_spec and os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
+            from . import nvidia
+            resolved_ids = nvidia.resolve_uuid_mask(cuda_visible)
+            if resolved_ids is not None:
+                return {
+                    "raw": cuda_visible,
+                    "numeric_ids": resolved_ids,
+                    "supports_explicit_gpu_ids": True,
+                }
         return {
             "raw": cuda_visible,
             "numeric_ids": None,
@@ -6021,8 +6072,13 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
         return []
     if allowed is not None:
         # visible_ordinal is the child's numbering, which follows the mask's order.
-        order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
-        rows.sort(key = lambda row: order.index(row["index"]))
+        try:
+            order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
+        except ValueError:
+            order = nvidia.resolve_uuid_mask(os.environ["CUDA_VISIBLE_DEVICES"].strip()) or []
+        rows.sort(
+            key = lambda row: order.index(row["index"]) if row["index"] in order else len(order)
+        )
     usage = nvidia.get_visible_gpu_utilization([row["index"] for row in rows])
     usage_by_index = {d.get("index"): d for d in usage.get("devices") or []}
     devices = []

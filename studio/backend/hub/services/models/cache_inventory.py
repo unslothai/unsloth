@@ -48,6 +48,7 @@ from hub.services.models.common import (
 from utils.paths.path_utils import is_appledouble_metadata
 from utils.audio_tokens import detect_local_tts_audio_type
 from utils.hidden_models import (
+    is_audio_cpp_repo_id,
     is_curated_stt_repo_id,
     is_curated_tts_repo_id,
     is_hidden_model,
@@ -474,7 +475,7 @@ def _cache_inventory_fields(
     ):
         capabilities["supports_vision"] = True
     # Qwen3-ASR's required mmproj is an audio projector, not a vision one, and stt_only covers any repo whose config sniffs as Whisper, curated or not: a third-party checkpoint or a user's own fine-tune is just as unchattable. can_chat is what auto-load and the chat picker filter on, neither of which looks at the task, so task-scoping alone would leave curated STT rows eligible for chat auto-load.
-    if stt_only or is_curated_stt_repo_id(repo_id):
+    if stt_only or is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id):
         capabilities["supports_vision"] = False
         capabilities["can_chat"] = False
     # The codec probe covers uncurated safetensors copies and native audio architectures are passed explicitly; a GGUF repo ships no tokenizer_config to probe, so the curated ids answer for those.
@@ -542,6 +543,11 @@ def _cached_row_companion(repo_id: str, snapshot: Optional[Path] = None) -> bool
         )
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return False
+
+
+_AUDIO_ONLY_GGUF_TASKS = frozenset(
+    {"text-to-speech", "text-to-audio", "automatic-speech-recognition", "audio-to-audio"}
+)
 
 
 def _cached_row_task(
@@ -630,7 +636,7 @@ def _scan_cached_gguf(
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
-                is_curated_stt = is_curated_stt_repo_id(repo_id)
+                is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
                 # Hide infra repos unless the user downloaded a variant: variant state only exists for user downloads, and curated STT repos are still emitted as management rows.
                 if is_hidden_infra and not is_curated_stt and not has_variant_state:
                     continue
@@ -663,12 +669,23 @@ def _scan_cached_gguf(
                     selected = gguf_identity.load_snapshot or gguf_snapshot,
                 )
                 row_audio_type = None
-                if row_task == "text-to-speech":
+                row_audio_workflows = None
+                if row_task in ("text-to-speech", "audio-to-audio"):
                     try:
                         from hub.services.models import catalog_classification
+
                         row_audio_type = catalog_classification._repo_gguf_audio_type(
                             repo_info, gguf_identity.load_snapshot or gguf_snapshot
                         )
+                        if row_task == "audio-to-audio" and row_audio_type != "audiocpp_sep":
+                            row_audio_type = None
+                        if row_audio_type in ("audiocpp_tts", "audiocpp_sep"):
+                            row_audio_workflows = catalog_classification._gguf_path_audio_workflows(
+                                gguf_identity.load_snapshot
+                                or gguf_snapshot
+                                or Path(repo_info.repo_path),
+                                (repo_id,),
+                            )
                     except Exception:
                         pass
                 row = {
@@ -683,6 +700,8 @@ def _scan_cached_gguf(
                     "partial_transport": None,
                     "partial_resumable": False,
                 }
+                if row_audio_workflows is not None:
+                    row["audio_workflows"] = row_audio_workflows
                 last_modified = max(last_modified, (existing or {}).get("last_modified", 0.0))
                 if last_modified > 0:
                     row["last_modified"] = last_modified
@@ -700,7 +719,8 @@ def _scan_cached_gguf(
                         gguf_snapshot = gguf_snapshot,
                         repo_info = repo_info,
                         hidden_infra = is_hidden_infra,
-                        tts_only = row_task == "text-to-speech",
+                        # Only the audio runtime serves these, standalone repos included (Yue2, MiniMax).
+                        tts_only = row_task in _AUDIO_ONLY_GGUF_TASKS,
                     )
                 )
                 # Preserve a snapshot-pinned load id for a single cache: refs/main can
@@ -1095,7 +1115,7 @@ def _scan_cached_models(
                     str(repo_path),
                     str(snapshot_path) if snapshot_path is not None else None,
                 )
-                is_curated_stt = is_curated_stt_repo_id(repo_id)
+                is_curated_stt = is_curated_stt_repo_id(repo_id) or is_audio_cpp_repo_id(repo_id)
                 snapshot_metadata = _cached_model_local_metadata(repo_path, snapshot_path)
                 is_whisper_stt = bool(snapshot_metadata.get("_hidden_stt"))
                 if is_hidden_infra and not is_curated_stt and not is_whisper_stt:

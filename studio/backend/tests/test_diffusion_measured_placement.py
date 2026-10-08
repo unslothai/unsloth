@@ -150,15 +150,52 @@ def test_16gb_encoder_room_and_kill_switch(q21_pipe, monkeypatch):
     assert _refine(q21_pipe, plan) is plan
 
 
-def test_12gb_partial_residency_sized_from_budget(q21_pipe):
+def test_12gb_keeps_the_whole_transformer_resident_encoders_streamed(q21_pipe, monkeypatch):
+    """12 GB: the flat margins fit only part of the int8 DiT; with encoders streamed the whole DiT fits the slack."""
+    monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
     plan = _flat_plan(9550, 12288)
     assert plan.offload_policy == dm.OFFLOAD_STREAMING
+    free = plan.device_memory.free_mib
     new = _refine(q21_pipe, plan)
-    assert new.offload_policy == dm.OFFLOAD_STREAMING
-    room = 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
+    assert new.offload_policy == dm.OFFLOAD_STREAMING and new.stream_transformer
+    assert new.resident_transformer_mib == 6922
+    assert new.resident_text_encoder_mib is None
+    assert new.estimates["resident_dit_slack_mib"] == 1228
+    # while the encoders run, the transformer drops back to the flat room the partial placement kept
+    assert (
+        new.estimates["encode_resident_transformer_mib"]
+        == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
+    )
+    assert 6922 + 644 + 2304 + 1228 <= free
+    assert new.as_public_dict()["resident_transformer_mib"] == 6922
+
+
+def test_12gb_partial_residency_when_the_whole_transformer_does_not_fit(q21_pipe, monkeypatch):
+    monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
+    # 500 MiB less free memory (a desktop session on the card): the whole DiT misses the slack, the flat room holds
+    plan = _flat_plan(9000, 12288)
+    assert 6922 + 644 + 2304 + 1228 > plan.device_memory.free_mib
+    new = _refine(q21_pipe, plan)
+    room = 9000 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
     assert new.resident_transformer_mib == room
     assert 0 < room < 6922
-    assert new.as_public_dict()["resident_transformer_mib"] == room
+    assert "resident_dit_slack_mib" not in new.estimates
+
+
+def test_whole_transformer_tier_kill_switch(q21_pipe, monkeypatch):
+    monkeypatch.setenv(dm.RESIDENT_DIT_ENV, "0")
+    new = _refine(q21_pipe, _flat_plan(9550, 12288))
+    assert new.resident_transformer_mib == 9550 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644
+
+
+def test_whole_transformer_tier_needs_streamed_encoders(q21_pipe, monkeypatch):
+    """A group plan whose encoders stay resident cannot trade them for the DiT: the tier leaves it alone."""
+    monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
+    plan = dm.replace(
+        _flat_plan(9550, 12288), offload_policy = dm.OFFLOAD_GROUP, stream_text_encoders = False
+    )
+    new = _refine(q21_pipe, plan)
+    assert int(new.resident_transformer_mib or 0) < 6922
 
 
 def test_no_room_keeps_flat_plan(q21_pipe):
@@ -237,6 +274,13 @@ def test_every_tier_fits_measured_need(q21_pipe, budget):
         + (0 if new.stream_text_encoders or new.offload_policy == dm.OFFLOAD_STREAMING else 8959)
     )
     assert int(new.resident_transformer_mib or 0) <= 6922
+    if "resident_dit_slack_mib" in new.estimates:
+        # the whole-DiT tier: every encoder streams, and weights + peak x margin + slack fit free memory
+        assert new.resident_transformer_mib == 6922 and not new.resident_text_encoder_mib
+        slack = new.estimates["resident_dit_slack_mib"]
+        assert slack >= max(1024, total // 10)
+        assert kept + 2304 + slack <= plan.device_memory.free_mib
+        return
     assert kept + head <= budget
 
 
@@ -352,13 +396,13 @@ def _family_names():
     "budget,total", [(21432, 24576), (13638, 16376), (9550, 12288), (5450, 8188)]
 )
 def test_only_measured_family_moves(q21_pipe, speed, budget, total):
-    """Every other supported family keeps its flat plan byte for byte, on every speed tier and budget."""
+    """Every unmeasured family keeps its flat plan byte for byte, on every speed tier and budget."""
     names = _family_names()
     assert "qwen-image-2.1" in names and len(names) > 5
     plan = _flat_plan(budget, total)
     for family in names:
         new = _refine(q21_pipe, plan, family = family, speed = speed)
-        if family == "qwen-image-2.1" and speed in ("default", "max"):
+        if family in ("qwen-image-2.1", "flux.1", "z-image") and speed in ("default", "max"):
             continue
         assert new is plan, family
 
@@ -377,7 +421,7 @@ def test_resident_group_keeps_copy_stream_wait(monkeypatch):
         def synchronize(self):
             Stream.waits += 1
 
-    module = object()
+    module = types.SimpleNamespace()
     stream = Stream()
     groups = [
         types.SimpleNamespace(
@@ -394,6 +438,13 @@ def test_resident_group_keeps_copy_stream_wait(monkeypatch):
     monkeypatch.setattr(dm, "_offload_groups", lambda m: groups)
     dm._keep_groups_resident(module, 1, "cpu")
     assert all(getattr(g, "_unsloth_resident", False) for g in groups)
+    # every group resident: nothing is ever queued on the copy stream, so there is nothing to wait for
+    for g in groups:
+        g.onload_()
+        g.offload_()
+    assert Stream.waits == 0
+    # one group of the module streams again (an oversized request): the resident ones wait for it again
+    module._unsloth_stream_state["streamed"] = 1
     for g in groups:
         g.onload_()
         g.offload_()
@@ -462,6 +513,130 @@ def test_partial_release_frees_only_what_the_request_needs(monkeypatch):
     assert all(next(b.parameters()).device.type == "cuda" for b in net.blocks)
 
 
+def _resident_hooked(torch, net):
+    from diffusers.hooks import apply_group_offloading
+
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    return net
+
+
+def _hookless_int8_transformer(monkeypatch):
+    """A resident int8 torchao transformer with no offload hooks (the 16 GB tier), its input and reference output."""
+    torch, _ = _cuda_offload_model()
+    pytest.importorskip("torchao")
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if not hasattr(cfg, "version"):
+        pytest.skip("torchao predates versioned configs")
+    cfg.version = 2
+    torch.manual_seed(0)
+    net = (
+        torch.nn.Sequential(
+            torch.nn.Linear(256, 512),
+            torch.nn.Sequential(*[torch.nn.Linear(512, 512) for _ in range(3)]),
+        )
+        .cuda()
+        .to(torch.bfloat16)
+    )
+    quantize_(net[1], cfg)
+    net.requires_grad_(False)
+    x = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = net(x)
+    return torch, net, x, ref
+
+
+def test_a_hookless_resident_transformer_takes_hooks_on_demand(monkeypatch):
+    """The 16 GB tier keeps the int8 transformer resident without offload hooks; an oversized request (an edit's
+    reference) gives it hooks, every group resident, so release_resident_groups can stream part of it."""
+    torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert dm.resident_group_mib(pipe) == 0
+    assert dm.hook_resident_denoiser(pipe, "cuda")
+    assert dm.resident_group_mib(pipe) > 0
+    assert not dm.hook_resident_denoiser(pipe, "cuda")  # already hooked
+    with torch.no_grad():
+        assert torch.equal(net(x), ref)
+        restore = dm.release_resident_groups(pipe, 1)
+        assert restore is not None
+        for _ in range(2):
+            assert torch.equal(net(x), ref)
+        restore()
+        assert torch.equal(net(x), ref)
+
+
+def test_an_unpinnable_resident_transformer_keeps_no_hooks(monkeypatch):
+    """Without room to pin it the apply would copy the whole transformer to pageable host RAM and stream it without
+    a copy stream, which the load refuses for torchao too; the request is refused as before instead."""
+    torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", raising = False)
+    monkeypatch.setattr(dm, "_pin_budget_mib", lambda: 0)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert not dm.hook_resident_denoiser(pipe, "cuda")
+    assert not dm._offload_groups(net)
+    assert dm.resident_group_mib(pipe) == 0
+    assert all(p.device.type == "cuda" for p in net.parameters())
+    with torch.no_grad():
+        assert torch.equal(net(x), ref)
+
+
+@pytest.mark.parametrize("failure", ["raises", "swallowed"])
+def test_a_failed_hook_install_leaves_the_transformer_resident(monkeypatch, failure):
+    """The apply moves the groups' weights to their host copies; a failure after it puts them back on the card,
+    whether the residency step raises or (as _keep_groups_resident does) reports it as 0 MiB kept."""
+    torch, net, x, ref = _hookless_int8_transformer(monkeypatch)
+    from core.inference.diffusion_offload_prefetch import module_prefetcher
+
+    keep = dm._keep_groups_resident
+
+    def _fail(*args, **kwargs):
+        assert module_prefetcher(net) is not None  # fails after the prefetcher's install
+        if failure == "raises":
+            raise RuntimeError("injected")
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("injected")
+
+        with monkeypatch.context() as m:
+            m.setattr(dm, "_storage_nbytes", _boom)
+            assert keep(*args, **kwargs) == 0  # the real helper swallows it
+        return 0
+
+    monkeypatch.setattr(dm, "_keep_groups_resident", _fail)
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert not dm.hook_resident_denoiser(pipe, "cuda")
+    assert not dm._offload_groups(net)
+    assert module_prefetcher(net) is None
+    assert not net._forward_pre_hooks and not net._forward_hooks
+    with torch.no_grad():
+        for _ in range(2):
+            assert torch.equal(net(x), ref)
+
+
+def test_generate_hooks_the_resident_transformer_only_when_the_release_falls_short():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    at = src.index("releasable_mib = resident_group_mib(state.pipe)")
+    assert "if guard_condition_pixels > 0 and extra_mib > releasable_mib:" in src[at : at + 200]
+    assert "hook_resident_denoiser(state.pipe," in src[at : at + 600]
+    assert (
+        src.index("restore_resident = release_resident_groups(state.pipe, extra_mib, logger)") > at
+    )
+
+
 def test_measured_request_extra(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_MEASURED_ACTIVATION", raising = False)
     pipe = types.SimpleNamespace(_unsloth_measured_reserve = (2304, "qwen-image-2.1", "default"))
@@ -487,3 +662,327 @@ def test_generate_releases_and_restores_resident_groups():
     finally_at = src.index("if restore_resident is not None:")
     assert "restore_resident()" in src[finally_at : finally_at + 200]
     assert "pipe._unsloth_measured_reserve = (" in src
+
+
+def _pinned_pipe(
+    monkeypatch,
+    resident_flags,
+    hf_hook = False,
+):
+    torch = pytest.importorskip("torch")
+    net = torch.nn.Linear(4, 4)
+    if hf_hook:
+        net._hf_hook = object()
+    groups = [types.SimpleNamespace(_unsloth_resident = flag) for flag in resident_flags]
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: groups if m is net else [])
+    return types.SimpleNamespace(transformer = net, text_encoder = torch.nn.Linear(4, 4))
+
+
+def test_denoiser_residency_follows_the_final_placement(monkeypatch):
+    """Residency reads the placement (16 GB: all 35 groups pinned), not the plan's stream flag."""
+    assert dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 35))
+    assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 23 + [False] * 12))
+    assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 35, hf_hook = True))
+    assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, []))
+
+
+def test_pinned_denoiser_reads_real_group_offload_hooks(monkeypatch):
+    """Real group offloading: pinned -> resident, released -> moving, restored -> resident."""
+    torch, net = _cuda_offload_model()
+    from diffusers.hooks import apply_group_offloading
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert not dm.denoisers_pinned_resident(pipe)  # hooked, nothing pinned: streams
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    assert dm.denoisers_pinned_resident(pipe)
+    restore = dm.release_resident_groups(pipe, 1024)
+    assert restore is not None and not dm.denoisers_pinned_resident(pipe)
+    restore()
+    assert dm.denoisers_pinned_resident(pipe)
+
+
+def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
+    torch, _ = _cuda_offload_model()
+    pytest.importorskip("torchao")
+    from diffusers.hooks import apply_group_offloading
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if not hasattr(cfg, "version"):
+        pytest.skip(
+            "torchao predates versioned configs; the v2 int8 layout this test pins is unavailable"
+        )
+    cfg.version = 2
+    torch.manual_seed(0)
+    net = (
+        torch.nn.Sequential(
+            torch.nn.Linear(256, 512),
+            torch.nn.Sequential(*[torch.nn.Linear(512, 512) for _ in range(3)]),
+        )
+        .cuda()
+        .to(torch.bfloat16)
+    )
+    quantize_(net[1], cfg)
+    x = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = net(x)
+    net.to("cpu")
+    kwargs = dict(
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    apply_group_offloading(net, **dm._torchao_group_offload_kwargs(net, kwargs, [0]))
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    with torch.no_grad():
+        assert torch.equal(net(x), ref)
+        restore = dm.release_resident_groups(pipe, 1024)
+        assert restore is not None
+        for _ in range(2):
+            assert torch.equal(net(x), ref)
+        restore()
+        for lin in net[1]:
+            # torchao 0.14 (torch <= 2.9) keeps the v1 layout, nesting its int8 data one subclass deeper
+            assert set(_inner_devices(lin.weight)) == {"cuda"}
+        assert torch.equal(net(x), ref)
+
+
+def _encode_release_pipe(monkeypatch):
+    """A real group-offloaded denoiser pinned whole; the encoder records which blocks are on the device."""
+    torch, net = _cuda_offload_model()
+    from diffusers.hooks import apply_group_offloading
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    x = torch.randn(3, 64)
+    ref = net.to("cuda")(x.cuda()).cpu()
+    net.to("cpu")
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+
+    def on_device():
+        return [next(b.parameters()).device.type for b in net.blocks]
+
+    class Encoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(8, 8).cuda()
+            self.seen: list = []
+            self.fail = False
+
+        def forward(self, t):
+            self.seen.append(on_device())
+            if self.fail:
+                raise RuntimeError("encode failed")
+            return self.proj(t)
+
+    enc = Encoder()
+    pipe = types.SimpleNamespace(components = {"transformer": net, "text_encoder": enc})
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    assert on_device() == ["cuda"] * 6
+    return torch, net, enc, pipe, x, ref, on_device
+
+
+def _whole_plan(whole_mib, encode_mib):
+    return types.SimpleNamespace(
+        resident_transformer_mib = whole_mib,
+        estimates = {"encode_resident_transformer_mib": encode_mib},
+    )
+
+
+def test_encode_streams_the_whole_resident_denoiser_back_to_the_flat_room(monkeypatch):
+    """12 GB whole-resident tier: while the text encoder runs, the denoiser groups past the flat room stream again
+    (the device state the partial placement had during the encode); the denoiser is whole again before step 0 and
+    stays bit-identical."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    block_mib = 4  # each 1024x1024 fp32 block is 4 MiB + bias
+    whole = 1024
+    assert dm.install_encode_release(pipe, _whole_plan(whole, whole - 2 * block_mib), None) == 1
+    for _ in range(2):  # per request; nothing accumulates
+        enc(torch.randn(2, 8, device = "cuda"))
+        assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+        assert on_device() == ["cuda"] * 6
+        assert dm.denoisers_pinned_resident(types.SimpleNamespace(transformer = net))
+        assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_release_restores_after_a_failed_encode(monkeypatch):
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    dm.install_encode_release(pipe, _whole_plan(1024, 0), None)
+    enc.fail = True
+    with pytest.raises(RuntimeError):
+        enc(torch.randn(2, 8, device = "cuda"))
+    assert enc.seen[-1] == ["cpu"] * 6  # encode room 0: every block streamed during the encode
+    assert on_device() == ["cuda"] * 6
+    enc.fail = False
+    enc(torch.randn(2, 8, device = "cuda"))
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_release_keeps_an_oversized_release_streamed(monkeypatch):
+    """Inside an oversized request (groups already streamed for a bigger canvas), the encode streams the same surplus
+    on top and pins back only its own groups, so the big denoise still runs with the oversized release in place."""
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    dm.install_encode_release(pipe, _whole_plan(1024, 1024 - 4), None)  # surplus covers one block
+    outer = dm.release_resident_groups(pipe, 4)  # the oversized request: one block
+    assert on_device() == ["cuda"] * 5 + ["cpu"]
+    enc(torch.randn(2, 8, device = "cuda"))
+    assert enc.seen[-1] == ["cuda"] * 4 + ["cpu"] * 2
+    assert on_device() == ["cuda"] * 5 + ["cpu"]  # the oversized release is still in force
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+    outer()
+    assert on_device() == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+
+
+def test_encode_release_only_for_the_whole_tier(monkeypatch):
+    torch, net, enc, pipe, x, ref, on_device = _encode_release_pipe(monkeypatch)
+    # the partial / 16 GB placements carry no encode room: nothing is hooked, the encode sees the placement as is
+    assert (
+        dm.install_encode_release(
+            pipe, types.SimpleNamespace(resident_transformer_mib = 1024, estimates = {}), None
+        )
+        == 0
+    )
+    assert dm.install_encode_release(pipe, _whole_plan(None, 0), None) == 0
+    enc(torch.randn(2, 8, device = "cuda"))
+    assert enc.seen[-1] == ["cuda"] * 6
+
+
+def test_generate_load_installs_the_encode_release():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    at = src.index("install_encode_release(pipe, plan, logger)")
+    # after the placement is applied and before the int8 GEMM reads the final residency
+    assert src.index("effective_policy, effective_tiling = apply_memory_plan(") < at
+    assert at < src.index("if denoisers_pinned_resident(pipe):", at)
+
+
+def _inner_devices(tensor):
+    names, _ = tensor.__tensor_flatten__()
+    out = []
+    for name in names:
+        inner = getattr(tensor, name)
+        out += (
+            _inner_devices(inner) if hasattr(inner, "__tensor_flatten__") else [inner.device.type]
+        )
+    return out
+
+
+def test_eager_offload_hooks_install_is_idempotent():
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    dm.install_group_offload_hooks_eager()
+    hooks = (
+        (go.GroupOffloadingHook, "pre_forward"),
+        (go.GroupOffloadingHook, "post_forward"),
+        (go.LayerExecutionTrackerHook, "pre_forward"),
+        (go.LazyPrefetchGroupOffloadingHook, "post_forward"),
+    )
+    patched = [cls.__dict__[name] for cls, name in hooks]
+    assert all(getattr(fn, "_unsloth_eager", False) for fn in patched)
+    assert dm.install_group_offload_hooks_eager() is False
+    assert [cls.__dict__[name] for cls, name in hooks] == patched
+
+
+def test_eager_offload_hooks_kill_switch(monkeypatch, traced_offload_hooks):
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    monkeypatch.setenv(dm.EAGER_OFFLOAD_HOOKS_ENV, "0")
+    assert dm.install_group_offload_hooks_eager() is False
+    assert not getattr(go.GroupOffloadingHook.__dict__["pre_forward"], "_unsloth_eager", False)
+
+
+def test_failed_release_keeps_the_copy_stream_wait(monkeypatch):
+    groups = [
+        types.SimpleNamespace(
+            stream = object(), _unsloth_resident = True, _unsloth_resident_bytes = 1 << 20
+        )
+        for _ in range(2)
+    ]
+    module = types.SimpleNamespace(_unsloth_resident_room = 1, _unsloth_stream_state = {"streamed": 0})
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: groups)
+
+    def boom(group):
+        raise RuntimeError("offload callback failed")
+
+    monkeypatch.setattr(dm, "_release_group", boom)
+    pipe = types.SimpleNamespace(components = {"transformer": module})
+    assert dm.release_resident_groups(pipe, 4) is None
+    assert module._unsloth_stream_state["streamed"] >= 1
+
+
+@pytest.mark.skipif(
+    not __import__("torch").cuda.is_available(), reason = "stream group offload needs a CUDA device"
+)
+def test_compiled_blocks_under_group_offload_skip_hook_tracing():
+    import torch
+
+    pytest.importorskip("diffusers.hooks.group_offloading")
+    from diffusers.hooks import apply_group_offloading
+    from torch._dynamo.utils import counters
+
+    dm.install_group_offload_hooks_eager()
+    torch.manual_seed(0)
+    make = lambda: torch.nn.Sequential(torch.nn.Linear(256, 256), torch.nn.GELU())
+    blocks = torch.nn.ModuleList([make() for _ in range(6)])
+    plain = [make().cuda() for _ in blocks]
+    for ref, block in zip(plain, blocks):
+        ref.load_state_dict(block.state_dict())
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = blocks
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = block(x)
+            return x
+
+    model = Model()
+    apply_group_offloading(
+        model,
+        onload_device = torch.device("cuda"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+    )
+    x = torch.randn(64, 256, device = "cuda")
+    with torch.no_grad():
+        for block in [*model.blocks, *plain]:
+            block.compile()
+        expected = x
+        for ref in plain:
+            expected = ref(expected)
+        torch._dynamo.reset()
+        counters.clear()
+        outs = [model(x) for _ in range(3)]
+    for out in outs:
+        torch.testing.assert_close(out, expected, rtol = 0, atol = 1e-6)
+    # Traced hooks add a graph per hook variant; eager hooks leave only the block graph.
+    assert counters["stats"]["unique_graphs"] <= 1

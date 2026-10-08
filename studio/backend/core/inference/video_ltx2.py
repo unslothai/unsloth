@@ -354,6 +354,241 @@ def _load_checkpoint_without_dit(checkpoint_path: Path | str) -> Optional[dict[s
         }
 
 
+DIRECT_LOAD_ENV = "UNSLOTH_VIDEO_DIRECT_LOAD"
+_DIRECT_CHUNK_BYTES = 16 << 20
+_DIRECT_BUFFERS = 16
+_DIRECT_THREADS = 8
+_SAFETENSORS_DTYPES = {
+    "BF16": "bfloat16",
+    "F16": "float16",
+    "F32": "float32",
+    "F64": "float64",
+    "I8": "int8",
+    "U8": "uint8",
+    "I16": "int16",
+    "I32": "int32",
+    "I64": "int64",
+    "BOOL": "bool",
+    "F8_E4M3": "float8_e4m3fn",
+    "F8_E5M2": "float8_e5m2",
+}
+
+
+_SWITCH_OFF = ("0", "off", "false", "no")
+
+
+def direct_load_enabled() -> bool:
+    import os
+    return (os.environ.get(DIRECT_LOAD_ENV) or "").strip().lower() not in _SWITCH_OFF
+
+
+def direct_load_device(device: Any) -> Optional[Any]:
+    """The device a resident LTX-2.3 checkpoint is read straight onto, or None."""
+    if not direct_load_enabled() or device is None:
+        return None
+    try:
+        import torch
+
+        dev = torch.device(device)
+        if dev.type != "cuda" or not torch.cuda.is_available():
+            return None
+        if dev.index is None:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        return dev
+    except Exception:  # noqa: BLE001 - an unparseable device keeps the host load
+        return None
+
+
+def _read_safetensors_header(path: str) -> tuple[int, dict[str, Any]]:
+    import json
+    import struct
+
+    with open(path, "rb") as handle:
+        (size,) = struct.unpack("<Q", handle.read(8))
+        header = json.loads(handle.read(size))
+    header.pop("__metadata__", None)
+    return 8 + size, header
+
+
+def read_safetensors_to_device(
+    checkpoint_path: Path | str,
+    device: Any,
+    keep: Any = None,
+    *,
+    chunk_bytes: int = _DIRECT_CHUNK_BYTES,
+    buffers: int = _DIRECT_BUFFERS,
+    threads: int = _DIRECT_THREADS,
+) -> Optional[dict[str, Any]]:
+    """Read the safetensors tensors passing ``keep`` straight into ``device`` memory via a pinned ring (46 GB: 13.5 s
+    host path vs 2.5 s). None for a dtype this reader does not map."""
+    import torch
+
+    path = str(checkpoint_path)
+    data_start, header = _read_safetensors_header(path)
+    entries = []
+    for name, info in header.items():
+        if keep is not None and not keep(name):
+            continue
+        dtype_name = _SAFETENSORS_DTYPES.get(str(info.get("dtype")))
+        dtype = getattr(torch, dtype_name, None) if dtype_name else None
+        if dtype is None:
+            return None
+        begin, end = (int(x) for x in info["data_offsets"])
+        entries.append((begin, end, name, dtype, tuple(int(x) for x in info["shape"])))
+    entries.sort()
+    device = torch.device(device)
+    out: dict[str, Any] = {}
+    jobs: list[tuple[int, int, Any, int]] = []
+    for begin, end, name, dtype, shape in entries:
+        tensor = torch.empty(shape, dtype = dtype, device = device)
+        out[name] = tensor
+        nbytes = end - begin
+        if nbytes != tensor.numel() * tensor.element_size():
+            raise ValueError(f"safetensors entry {name} has {nbytes} bytes for shape {shape}")
+        if nbytes == 0:
+            continue
+        flat = tensor.view(-1).view(torch.uint8)
+        offset = 0
+        while offset < nbytes:
+            size = min(chunk_bytes, nbytes - offset)
+            jobs.append((data_start + begin + offset, size, flat, offset))
+            offset += size
+    if not jobs:
+        return out
+    _copy_file_chunks(path, jobs, device, chunk_bytes, buffers, threads)
+    return out
+
+
+def _copy_file_chunks(
+    path: str,
+    jobs: list[tuple[int, int, Any, int]],
+    device: Any,
+    chunk_bytes: int,
+    buffers: int,
+    threads: int,
+) -> None:
+    """Copy ``(file offset, size, uint8 view, view offset)`` jobs; reads overlap the async uploads."""
+    import queue
+    from concurrent.futures import ThreadPoolExecutor
+
+    import torch
+
+    if torch.device(device).type != "cuda":
+        with open(path, "rb", buffering = 0) as handle:
+            for offset, size, flat, at in jobs:
+                view = memoryview(flat.numpy())[at : at + size]
+                handle.seek(offset)
+                got = 0
+                while got < size:
+                    read = handle.readinto(view[got:])
+                    if not read:
+                        raise EOFError(f"{path}: short read at {offset + got}")
+                    got += read
+        return
+    buffers = max(1, min(buffers, len(jobs)))
+    staging = [torch.empty(chunk_bytes, dtype = torch.uint8, pin_memory = True) for _ in range(buffers)]
+    done_events: list[Any] = [None] * buffers
+    handles: "queue.SimpleQueue[Any]" = queue.SimpleQueue()
+    opened: list[Any] = []
+
+    def _read(slot: int, offset: int, size: int) -> None:
+        event = done_events[slot]
+        if event is not None:
+            event.synchronize()
+        try:
+            handle = handles.get_nowait()
+        except queue.Empty:
+            handle = open(path, "rb", buffering = 0)
+            opened.append(handle)
+        try:
+            view = memoryview(staging[slot].numpy())[:size]
+            handle.seek(offset)
+            got = 0
+            while got < size:
+                read = handle.readinto(view[got:])
+                if not read:
+                    raise EOFError(f"{path}: short read at {offset + got}")
+                got += read
+        finally:
+            handles.put(handle)
+
+    stream = torch.cuda.Stream(device = device)
+    try:
+        with ThreadPoolExecutor(
+            max_workers = max(1, threads), thread_name_prefix = "unsloth-direct-load"
+        ) as pool:
+            pending = {}
+            for index in range(min(buffers, len(jobs))):
+                offset, size, _flat, _at = jobs[index]
+                pending[index] = pool.submit(_read, index % buffers, offset, size)
+            with torch.cuda.stream(stream):
+                for index, (offset, size, flat, at) in enumerate(jobs):
+                    slot = index % buffers
+                    pending.pop(index).result()
+                    flat[at : at + size].copy_(staging[slot][:size], non_blocking = True)
+                    event = torch.cuda.Event()
+                    event.record(stream)
+                    done_events[slot] = event
+                    following = index + buffers
+                    if following < len(jobs):
+                        next_offset, next_size, _f, _a = jobs[following]
+                        pending[following] = pool.submit(_read, slot, next_offset, next_size)
+            stream.synchronize()
+    finally:
+        try:
+            # A failed read leaves uploads queued from the staging ring.
+            stream.synchronize()
+        except Exception:  # noqa: BLE001
+            pass
+        for handle in opened:
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001
+                pass
+        # The side stream is synchronised above, so the default stream sees finished bytes.
+        del staging
+        try:
+            torch._C._host_emptyCache()
+        except Exception:  # noqa: BLE001 - older torch keeps the 256 MiB ring cached
+            pass
+
+
+def _load_checkpoint_without_dit_to_device(
+    checkpoint_path: Path | str, device: Any
+) -> Optional[dict[str, Any]]:
+    """``_load_checkpoint_without_dit`` onto ``device``; None falls back to the host read."""
+    if not str(checkpoint_path).lower().endswith(".safetensors"):
+        return None
+    try:
+        return read_safetensors_to_device(
+            checkpoint_path, device, keep = lambda key: _checkpoint_group(key)[0] != "dit"
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed direct read degrades to the host load
+        logger.warning("video.ltx23_direct_load: falling back to the host load (%s)", exc)
+        _release_device_cache()
+        return None
+
+
+def _release_device_cache() -> None:
+    try:
+        import torch
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_checkpoint_to_device(checkpoint_path: Path | str, device: Any) -> Optional[dict[str, Any]]:
+    """Every tensor of a safetensors checkpoint on ``device``; None falls back to the host read."""
+    if not str(checkpoint_path).lower().endswith(".safetensors"):
+        return None
+    try:
+        return read_safetensors_to_device(checkpoint_path, device)
+    except Exception as exc:  # noqa: BLE001 - a failed direct read degrades to the host load
+        logger.warning("video.ltx23_direct_load: falling back to the host load (%s)", exc)
+        _release_device_cache()
+        return None
+
+
 def _load_extras_file(
     filename: str,
     hf_token: Optional[str],
@@ -372,13 +607,120 @@ def _load_extras_file(
         reuse_other_cache_root = True,
         # the switch's locality gate cleared these three artifacts by name
         local_files_only = local_files_only,
+        gguf_header_delta = True,
     )
     return load_file(path)
 
 
+# sha256[:16] of ``proj_out.bias`` as bf16 bits: headers match across 2.3 variants, but this bias is retrained per
+# release and never quantized, so fp8 / int8 / GGUF repacks carry the release's values.
+LTX23_PROJ_OUT_BIAS_SHA = {
+    "b6a06f88015c612b": "distilled",  # ltx-2.3-22b-distilled (and -distilled-fp8)
+    "140a7d077a306ea9": "distilled",  # ltx-2.3-22b-distilled-1.1
+    "3d334d94df5daf30": "dev",  # ltx-2.3-22b-dev (and -dev-fp8)
+}
+_PROJ_OUT_BIAS_NAMES = (
+    "proj_out.bias",
+    "model.diffusion_model.proj_out.bias",
+    "diffusion_model.proj_out.bias",
+)
+_CONTENT_VARIANT_CACHE: dict[tuple[str, int, int], Optional[str]] = {}
+
+
+def _safetensors_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional[bytes]:
+    """One small tensor's values as bfloat16 bits, read through the header offsets (no other weight byte)."""
+    import json
+    import struct
+
+    import torch
+
+    with open(path, "rb") as fh:
+        (size,) = struct.unpack("<Q", fh.read(8))
+        if size <= 0 or size > 256 * 1024 * 1024:
+            return None
+        header = json.loads(fh.read(size))
+        entry = next((header[n] for n in names if isinstance(header.get(n), dict)), None)
+        if entry is None:
+            return None
+        dtype = {"F32": torch.float32, "F16": torch.float16, "BF16": torch.bfloat16}.get(
+            entry.get("dtype")
+        )
+        start, end = entry["data_offsets"]
+        if dtype is None or not 0 < end - start <= 1 << 20:
+            return None
+        fh.seek(8 + size + start)
+        raw = bytearray(fh.read(end - start))
+    values = torch.frombuffer(raw, dtype = dtype)
+    return values.to(torch.bfloat16).view(torch.int16).numpy().tobytes()
+
+
+def _gguf_tensor_bf16_bits(path: str, names: tuple[str, ...]) -> Optional[bytes]:
+    import numpy as np
+    import torch
+    from gguf import GGMLQuantizationType, GGUFReader
+
+    for tensor in GGUFReader(path).tensors:
+        if str(tensor.name) not in names:
+            continue
+        data = np.asarray(tensor.data)
+        if tensor.tensor_type == GGMLQuantizationType.F32:
+            values = torch.from_numpy(data.astype(np.float32).reshape(-1).copy())
+        elif tensor.tensor_type == GGMLQuantizationType.F16:
+            values = torch.from_numpy(data.astype(np.float16).reshape(-1).copy())
+        elif tensor.tensor_type == GGMLQuantizationType.BF16:
+            values = torch.from_numpy(data.reshape(-1).view(np.int16).copy()).view(torch.bfloat16)
+        else:
+            return None
+        return values.to(torch.bfloat16).view(torch.int16).numpy().tobytes()
+    return None
+
+
+def ltx23_checkpoint_variant(checkpoint_path: Path | str | None) -> Optional[str]:
+    """``"distilled"`` / ``"dev"`` from the checkpoint's CONTENT (a 128-value bias fingerprint), or None when the file
+    is not on disk, unreadable, or not a known LTX-2.3 release (a finetune): callers then fall back to the name. Reads
+    the header plus 256 bytes; cached on (path, size, mtime)."""
+    if not checkpoint_path:
+        return None
+    path = str(checkpoint_path)
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    key = (path, stat.st_size, stat.st_mtime_ns)
+    if key in _CONTENT_VARIANT_CACHE:
+        return _CONTENT_VARIANT_CACHE[key]
+    variant: Optional[str] = None
+    try:
+        import hashlib
+
+        reader = (
+            _gguf_tensor_bf16_bits
+            if path.lower().endswith(".gguf")
+            else _safetensors_tensor_bf16_bits
+        )
+        bits = reader(path, _PROJ_OUT_BIAS_NAMES)
+        if bits is not None:
+            variant = LTX23_PROJ_OUT_BIAS_SHA.get(hashlib.sha256(bits).hexdigest()[:16])
+    except Exception as exc:  # noqa: BLE001 -- the name decides instead
+        logger.debug("video.ltx23_variant_probe_failed: %s", exc)
+    _CONTENT_VARIANT_CACHE[key] = variant
+    return variant
+
+
+def ltx23_variant_identifier(checkpoint_path: Path | str | None) -> Optional[str]:
+    """An identifier naming the content-detected variant, to put FIRST in the id lists the generation defaults and the
+    distilled recipe read (``default_video_generation_params`` / ``ltx2_distilled_ids``), so the file's weights outrank
+    its name. None when the content is inconclusive, leaving the name to decide as before."""
+    variant = ltx23_checkpoint_variant(checkpoint_path)
+    return f"ltx-2.3-22b-{variant}" if variant else None
+
+
 def checkpoint_variant(checkpoint_path: Path | str) -> str:
-    """Which companion-weight set a checkpoint pairs with ("dev"/"distilled"). The distilled-1.1
-    refresh only retrained the DiT, so it shares the distilled companions."""
+    """Which companion-weight set a checkpoint pairs with ("dev"/"distilled"): the file's content when it is a known
+    release, else its name. The distilled-1.1 refresh only retrained the DiT, so it shares the distilled companions."""
+    by_content = ltx23_checkpoint_variant(checkpoint_path)
+    if by_content is not None:
+        return by_content
     return "dev" if "dev" in Path(checkpoint_path).name.lower() else "distilled"
 
 
@@ -840,6 +1182,75 @@ def _build_from_config(
     return model.to(torch_dtype)
 
 
+def ltx23_is_dit_key(key: str) -> bool:
+    """Whether a combined-checkpoint key belongs to the DiT (not the connectors, VAEs or vocoder)."""
+    return _checkpoint_group(key)[0] == "dit"
+
+
+def ltx23_is_dit_or_connector_key(key: str) -> bool:
+    """The keys a single-file DiT plan prices: the connectors stay in, as for a bf16 file."""
+    return _checkpoint_group(key)[0] in ("dit", "connectors")
+
+
+def _ltx23_pre_convert(state: dict[str, Any]) -> dict[str, Any]:
+    """Bare DiT keys with the 2.3-only prefixes renamed, as ``load_ltx23_transformer`` does before the converter."""
+    out: dict[str, Any] = {}
+    for key, value in state.items():
+        bare = key[len(_DIT_PREFIX) :] if key.startswith(_DIT_PREFIX) else key
+        for old, new in _TRANSFORMER_PRERENAME:
+            if bare.startswith(old):
+                bare = new + bare[len(old) :]
+                break
+        out[bare] = value
+    return out
+
+
+def load_ltx23_comfy_transformer(
+    checkpoint_path: Path | str,
+    scan: Any,
+    *,
+    base_repo: str,
+    torch_dtype: Any,
+    hf_token: Optional[str],
+    cache_dir: Optional[str] = None,
+    local_files_only: bool = False,
+    int8_backend: Optional[str] = None,
+    fp8_backend: Optional[str] = None,
+    family: Optional[str] = None,
+    target: Any = None,
+    logger: Any = None,
+) -> Any:
+    """The LTX-2.3 DiT of a ComfyUI-quantized single file, for ``load_ltx23_pipeline(transformer_override=...)``.
+
+    Reads only the DiT keys (the assembly reads the connectors, VAEs and vocoder from the same file), applies the
+    2.3 pre-rename and the stock converter, and keeps int8 / fp8 codes where ``load_comfy_quant_transformer`` can."""
+    from diffusers import LTX2VideoTransformer3DModel
+
+    from .diffusion_comfy_quant import load_comfy_quant_transformer
+
+    return load_comfy_quant_transformer(
+        LTX2VideoTransformer3DModel,
+        str(checkpoint_path),
+        scan,
+        {
+            "torch_dtype": torch_dtype,
+            "config": base_repo,
+            "subfolder": "transformer",
+            "token": hf_token,
+            "cache_dir": cache_dir,
+            "local_files_only": local_files_only,
+            **LTX_2_3_TRANSFORMER_CONFIG_OVERRIDES,
+        },
+        int8_backend = int8_backend,
+        fp8_backend = fp8_backend,
+        family = family,
+        target = target,
+        logger = logger,
+        keep_key = ltx23_is_dit_key,
+        pre_convert = _ltx23_pre_convert,
+    )
+
+
 def load_ltx23_transformer(
     dit_state: dict[str, Any],
     *,
@@ -848,6 +1259,7 @@ def load_ltx23_transformer(
     is_gguf: bool,
     hf_token: Optional[str],
     local_files_only: bool = False,
+    device: Optional[Any] = None,
 ) -> Any:
     import diffusers
     from diffusers import LTX2VideoTransformer3DModel
@@ -868,6 +1280,9 @@ def load_ltx23_transformer(
     }
     if is_gguf:
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
+    elif device is not None:
+        # Else the meta load copies every tensor back to the host.
+        kwargs["device"] = device
     return LTX2VideoTransformer3DModel.from_single_file(dit_state, **kwargs)
 
 
@@ -962,7 +1377,162 @@ def load_ltx23_audio_vae_and_vocoder(
     return audio_vae, vocoder.to(torch_dtype)
 
 
+PREFETCH_ENV = "UNSLOTH_VIDEO_PREFETCH"
+_PREFETCH_THREADS = 8
+_PREFETCH_CHUNK_BYTES = 16 << 20
+
+
+def prefetch_enabled() -> bool:
+    import os
+    return (os.environ.get(PREFETCH_ENV) or "").strip().lower() not in _SWITCH_OFF
+
+
+def _uncached_bytes(
+    path: str,
+    stride: int = 64 << 20,
+    window: int = 1 << 20,
+) -> int:
+    """Estimated bytes of ``path`` not in the page cache (sampled Linux ``mincore``); 0 when it cannot tell."""
+    import ctypes
+    import mmap
+    import os
+    import sys
+
+    if not sys.platform.startswith("linux"):
+        return 0
+    size = os.path.getsize(path)
+    if size == 0:
+        return 0
+    page = mmap.PAGESIZE
+    window = max(page, window - window % page)
+    stride = max(window, stride - stride % page)
+    with open(path, "rb") as handle:
+        mapped = mmap.mmap(handle.fileno(), size, access = mmap.ACCESS_COPY)
+    try:
+        anchor = ctypes.c_char.from_buffer(mapped)
+        try:
+            base = ctypes.addressof(anchor)
+            libc = ctypes.CDLL(None, use_errno = True)
+            libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p]
+            vector = (ctypes.c_ubyte * (window // page))()
+            sampled = missing = 0
+            for offset in range(0, size, stride):
+                length = min(window, size - offset)
+                pages = (length + page - 1) // page
+                if libc.mincore(base + offset, ctypes.c_size_t(length), vector) != 0:
+                    return 0
+                missing += bytes(vector)[:pages].count(0)
+                sampled += pages
+            return int(size * missing / sampled) if sampled else 0
+        finally:
+            del anchor
+    finally:
+        mapped.close()
+
+
+def _text_encoder_files(base_repo: str, cache_dir: Optional[str]) -> list[str]:
+    """The cached text encoder shards of ``base_repo`` (cache only, never a download)."""
+    import json
+    import os
+
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        index = try_to_load_from_cache(
+            base_repo, "text_encoder/model.safetensors.index.json", cache_dir = cache_dir
+        )
+        if not isinstance(index, str):
+            return []
+        with open(index, "r", encoding = "utf-8") as handle:
+            shards = sorted(set(json.load(handle).get("weight_map", {}).values()))
+    except Exception:  # noqa: BLE001 - not cached (the load downloads it) or an unreadable cache
+        return []
+    folder = os.path.dirname(index)
+    return [p for p in (os.path.join(folder, name) for name in shards) if os.path.isfile(p)]
+
+
+def start_prefetch(paths: list[str]) -> Optional[Any]:
+    """Warm the uncached parts of ``paths`` in the page cache on worker threads; a stop Event, or None when nothing
+    needs it or host RAM is too tight. Cold B200 cache: the Gemma3 shards otherwise read at ~1.7 GB/s after the checkpoint."""
+    import os
+    import threading
+
+    try:
+        uncached = [(path, _uncached_bytes(path)) for path in paths]
+    except Exception:  # noqa: BLE001 - residency unknown: leave the reads to the loader
+        return None
+    pending = [path for path, missing in uncached if missing > 0]
+    need = sum(missing for _path, missing in uncached)
+    if not pending or need < 1 << 30:
+        return None
+    try:
+        from .diffusion_memory import _available_system_memory_mib
+        available = _available_system_memory_mib()
+    except Exception:  # noqa: BLE001
+        available = None
+    if available is None or need > (int(available) << 20) // 2:
+        return None
+    stop = threading.Event()
+    jobs = []
+    for path in pending:
+        size = os.path.getsize(path)
+        jobs += [(path, offset) for offset in range(0, size, _PREFETCH_CHUNK_BYTES)]
+    lock = threading.Lock()
+    queue = iter(jobs)
+
+    def _worker() -> None:
+        buffer = bytearray(_PREFETCH_CHUNK_BYTES)
+        view = memoryview(buffer)
+        handles: dict[str, Any] = {}
+        try:
+            while not stop.is_set():
+                with lock:
+                    job = next(queue, None)
+                if job is None:
+                    return
+                path, offset = job
+                handle = handles.get(path)
+                if handle is None:
+                    handle = handles[path] = open(path, "rb", buffering = 0)
+                handle.seek(offset)
+                handle.readinto(view)
+        except Exception:  # noqa: BLE001 - a prefetch is only a hint
+            pass
+        finally:
+            for handle in handles.values():
+                handle.close()
+
+    for index in range(_PREFETCH_THREADS):
+        threading.Thread(target = _worker, name = f"unsloth-prefetch-{index}", daemon = True).start()
+    logger.info(
+        "video.ltx23_prefetch: warming %.1f GiB of %d text encoder file(s)",
+        need / 2**30,
+        len(pending),
+    )
+    return stop
+
+
 def load_ltx23_pipeline(
+    checkpoint_path: Path | str,
+    *,
+    base_repo: str,
+    text_encoder: Optional[Any] = None,
+    **kwargs: Any,
+) -> Any:
+    """Full LTX-2.3 pipeline (``_assemble_ltx23_pipeline``), warming the text encoder files beside the checkpoint read."""
+    prefetch = None
+    if text_encoder is None and prefetch_enabled():
+        prefetch = start_prefetch(_text_encoder_files(base_repo, _live_cache_dir()))
+    try:
+        return _assemble_ltx23_pipeline(
+            checkpoint_path, base_repo = base_repo, text_encoder = text_encoder, **kwargs
+        )
+    finally:
+        if prefetch is not None:
+            prefetch.set()
+
+
+def _assemble_ltx23_pipeline(
     checkpoint_path: Path | str,
     *,
     base_repo: str,
@@ -972,6 +1542,8 @@ def load_ltx23_pipeline(
     text_encoder: Optional[Any] = None,
     local_files_only: bool = False,
     transformer_override: Optional[Any] = None,
+    device: Optional[Any] = None,
+    text_encoder_device: Optional[Any] = None,
 ) -> Any:
     """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint. Assembled per-component
     (constructor, not from_pretrained) because the base model_index pins LTX2Vocoder while 2.3
@@ -986,7 +1558,9 @@ def load_ltx23_pipeline(
     base REPO ID rather than a staged snapshot (the 2.3 snapshot lacks the base VAEs, so
     ``_base_local_dir`` is deliberately None here), so without the flag the base config, the
     scheduler, the tokenizer, the dense Gemma3 encoder and the companion VAE/vocoder artifacts are
-    all fetched by a load that promised to fetch nothing."""
+    all fetched by a load that promised to fetch nothing.
+
+    ``device`` / ``text_encoder_device`` (resident plans only) read the checkpoint / build the Gemma3 encoder there."""
     import transformers
 
     from .ltx2_import_compat import ensure_ltx2_pipelines_importable
@@ -1003,7 +1577,24 @@ def load_ltx23_pipeline(
         LTX23_EXTRAS_REPO,
     )
     state = None
-    if transformer_override is not None and not is_gguf:
+    on_device = False
+    if device is not None and not is_gguf:
+        import time
+
+        began = time.perf_counter()
+        if transformer_override is not None:
+            state = _load_checkpoint_without_dit_to_device(checkpoint_path, device)
+        else:
+            state = load_checkpoint_to_device(checkpoint_path, device)
+        on_device = state is not None
+        if on_device:
+            logger.info(
+                "video.ltx23_direct_load: read %.1f GiB onto %s in %.1f s",
+                sum(t.numel() * t.element_size() for t in state.values()) / 2**30,
+                device,
+                time.perf_counter() - began,
+            )
+    if state is None and transformer_override is not None and not is_gguf:
         state = _load_checkpoint_without_dit(checkpoint_path)
     if state is None:
         state = load_single_file_checkpoint(str(checkpoint_path))
@@ -1032,6 +1623,7 @@ def load_ltx23_pipeline(
             is_gguf = is_gguf,
             hf_token = hf_token,
             local_files_only = local_files_only,
+            device = device if on_device else None,
         )
     connectors = load_ltx23_connectors(
         groups["connectors"],
@@ -1081,7 +1673,10 @@ def load_ltx23_pipeline(
     scheduler = _sub("scheduler")
     tokenizer = _sub("tokenizer")
     if text_encoder is None:
-        text_encoder = _sub("text_encoder", torch_dtype = torch_dtype)
+        encoder_kwargs: dict[str, Any] = {"torch_dtype": torch_dtype}
+        if text_encoder_device is not None:
+            encoder_kwargs["device_map"] = {"": text_encoder_device}
+        text_encoder = _sub("text_encoder", **encoder_kwargs)
 
     return LTX2Pipeline(
         scheduler = scheduler,

@@ -108,6 +108,11 @@ def _gpu_record_helpers(source: str) -> str:
             "_amd_smi_gpu_records",
             "_gfx_arch_slots",
             "_amd_smi_hip_order",
+            "_amd_prefer_discrete_gfx",
+            "_amd_gfx_is_shadowing_integrated",
+            "_amd_gfx_has_wheel_route",
+            "_amd_arch_index_family_for_gfx",
+            "_amd_generic_tag_carries_gfx",
         )
     )
 
@@ -2309,6 +2314,28 @@ class TestGfx1102Rocm64Floor:
         """HIP exposes devices through CUDA_VISIBLE_DEVICES too, so it must select the target."""
         preamble = "rocminfo() { printf 'Name: gfx1100\\nName: gfx1200\\n'; }\n" + "".join(
             f"export {assignment}\n" for assignment in mask.split()
+        )
+        assert self._run_install_sh_routing(preamble) == expected
+
+    @pytest.mark.parametrize(
+        ("arches", "mask", "expected"),
+        (
+            # An unmasked iGPU listed first used to pick the wheels and strand the dGPU.
+            (("gfx1036", "gfx1201"), "", _RDNA4_LEAF),
+            (("gfx1103", "gfx1201"), "", _RDNA4_LEAF),
+            (("gfx1201", "gfx1036"), "", _RDNA4_LEAF),
+            # A mask names the device, so the iGPU it selects keeps the route.
+            (("gfx1036", "gfx1201"), "HIP_VISIBLE_DEVICES=0", "rocm6.1"),
+            (("gfx1036", "gfx1201"), "CUDA_VISIBLE_DEVICES=0", "rocm6.1"),
+            (("gfx1036",), "", "rocm6.1"),
+        ),
+    )
+    def test_install_sh_prefers_the_discrete_gpu_over_a_leading_igpu(self, arches, mask, expected):
+        preamble = (
+            "rocminfo() { printf '"
+            + "".join(f"Name: {a}\\n" for a in arches)
+            + "'; }\n"
+            + "".join(f"export {assignment}\n" for assignment in mask.split())
         )
         assert self._run_install_sh_routing(preamble) == expected
 
@@ -7447,8 +7474,6 @@ class TestHipSdkInstalledButDeviceInaccessible:
 # TEST: --rocm-gfx forwarding -- setup.sh/setup.ps1 forward their resolved gfx
 # arch to install_llama_prebuilt.py so the per-gfx prebuilt is picked.
 
-_SETUP_SH_PATH = PACKAGE_ROOT / "studio" / "setup.sh"
-
 
 class TestNormalizeForwardedGfx:
     """A forwarded gfx string is reduced to a single clean gfx token."""
@@ -7798,7 +7823,6 @@ def test_pick_rocm_gfx_target_same_arch_multi_gpu(monkeypatch):
 # TEST: WSL ROCDXG fixes -- drop-in persistence + system-HIP-before-bundle
 
 
-_INSTALL_SH_PATH = PACKAGE_ROOT / "install.sh"
 _LLAMA_CPP_PATH = PACKAGE_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py"
 
 
