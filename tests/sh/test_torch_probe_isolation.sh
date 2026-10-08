@@ -69,7 +69,7 @@ _unisolated=$(grep -nE '(_VENV_PY"|VENV_DIR/bin/python") -c' "$INSTALL_SH" \
     | grep -E "import torch|version\(_p\)" || true)
 assert_eq "no venv torch probe in install.sh runs without -I" "" "$_unisolated"
 for _probe in '_torch_trio_pins=$("$_VENV_PY" -I -c' \
-              '_installed_torch_version_for_tag' \
+              '"$_VENV_PY" -I -c "import torch; print(torch.__version__)"' \
               '_PREV_TORCH_VER=$(_run_bounded "$VENV_DIR/bin/python" -I -c'; do
     assert_contains "install.sh still carries: $_probe" "$(cat "$INSTALL_SH")" "$_probe"
 done
