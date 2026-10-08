@@ -356,6 +356,10 @@ def PatchRL(FastLanguageModel):
                 setattr(current_trainer, unwrap, unsloth_unwrap_model_for_generation)
             except:
                 continue
+    # TRL >= 0.29 keeps PPO only under trl.experimental, which the trl.trainer walk above never sees.
+    ppo_module = _import_trl_experimental_trainers().get("ppo")
+    if ppo_module is not None and hasattr(ppo_module, unwrap):
+        setattr(ppo_module, unwrap, unsloth_unwrap_model_for_generation)
     Trainer.prediction_step = unsloth_prediction_step
 
 
