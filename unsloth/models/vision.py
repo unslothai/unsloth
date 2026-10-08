@@ -4255,6 +4255,29 @@ class FastBaseModel:
             skip = _vllm_unmovable_embedding_modules(model, target_modules),
         )
         _raise_if_no_lora_targets_left(target_modules, _moved, target_parameters)
+        # add_new_tokens rows stay frozen at their mean init otherwise, and on a padded vocab PEFT saves neither matrix, so reload drops them (#1343). Matches FastLanguageModel; skipped under vLLM, which cannot train them.
+        if (
+            getattr(model, "_need_to_train_embeddings", False)
+            and finetune_language_layers
+            and getattr(model, "vllm_engine", None) is None
+        ):
+            if modules_to_save is None:
+                modules_to_save = []
+            elif isinstance(modules_to_save, str):
+                modules_to_save = [modules_to_save]
+            else:
+                modules_to_save = list(modules_to_save)
+            _missing = [
+                m
+                for m in ("embed_tokens", "lm_head")
+                if m not in _embedding_leaves(modules_to_save)
+            ]
+            if _missing:
+                print(
+                    "Unsloth: You added new tokens but did not specify if you wanted to "
+                    "train the lm_head and embed_tokens.\nWe must turn it on for you."
+                )
+                modules_to_save.extend(_missing)
         ensure_weight_tying = _effective_weight_tying(
             model,
             modules_to_save,
