@@ -544,3 +544,10 @@ test("a blocked site's blob: page can't download past the block", async () => {
   useDownloadSitesStore.getState().setSite("https://a.example", null);
   prefs.setAskBeforeDownloading(true);
 });
+
+test("the download prompt offers Remember only for files a remembered answer can cover", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/features/browser/download-approval.tsx", import.meta.url), "utf8");
+  // A file that runs code asks whatever was remembered (approveDownload), so its prompt has no checkbox.
+  assert.match(source, /\{request\?\.origin && !request\.dangerous \? \(\s*<label/);
+});
