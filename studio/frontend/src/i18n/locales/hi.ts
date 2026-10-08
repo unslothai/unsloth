@@ -2816,6 +2816,8 @@ export const hi = {
         backendAuto: "ऑटो",
         backendDescription:
           "मॉडल का GGUF बिल्ड होने पर ऑटो Clef को llama.cpp से चलाता है, वरना PyTorch पर चला जाता है। llama.cpp इमेज भी पढ़ता है।",
+        backendDescriptionMlx:
+          "Apple Silicon पर ऑटो Clef का टेक्स्ट MLX से चलाता है, और केवल मॉडल का GGUF बिल्ड लोड या डाउनलोड होने पर llama.cpp से। MLX केवल टेक्स्ट पढ़ता है; llama.cpp इमेज भी पढ़ता है।",
         backendStatus: "रनटाइम: {backend}",
         backendNone: "उपलब्ध नहीं",
         mediaImages: "टेक्स्ट और इमेज पढ़ता है।",

@@ -672,6 +672,40 @@ def test_apple_silicon_answers_text_through_the_mlx_engine(home, client, engine,
     assert laya_runtime.select(kev)[0].backend == "mlx"
 
 
+def test_the_mlx_runtime_serves_only_through_the_engine(home, client, engine, monkeypatch):
+    served, folder = _clef_fine_tune(home, "clef_mlx_2"), home / "clef_mlx_2"
+    kev = catalog.CHECKPOINTS["kev-4b"]
+    assert _put(client, enabled = True, model = "kev-4b", backend = "mlx").status_code == 200
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["mlx_available"] and settings["effective_backend"] == "mlx"
+    described = {m["name"]: "llama.cpp or MLX" in m["description"] for m in settings["models"]}
+    assert described["kev-4b"] and not described["kev-0.8b"]
+    assert _post(client, served).headers["x-unsloth-decision-backend"] == "mlx"
+    tuned = catalog.fine_tune(served)
+    # Unlike Auto, a downloaded GGUF does not take the request.
+    monkeypatch.setattr(laya_runtime, "_native_unavailable", lambda *args: None)
+    monkeypatch.setattr(laya_runtime, "is_cached", laya_runtime._is_native)
+    assert laya_runtime.select(kev)[0].backend == "mlx"
+    assert laya_runtime.mlx_ready(kev) and not laya_runtime.native_ready(kev)
+    assert _post(client).headers["x-unsloth-decision-backend"] == "mlx"
+    with pytest.raises(laya_runtime.Unavailable, match = "Images are served only by llama.cpp"):
+        laya_runtime.select(kev, ["png"])
+    (folder / "config.json").rename(folder / "adapter_config.json")
+    (folder / "model.safetensors").rename(folder / "adapter_model.safetensors")
+    with pytest.raises(laya_runtime.Unavailable, match = "has no MLX form"):
+        laya_runtime.select(tuned)
+    assert _put(client, device = "cpu").status_code == 200
+    settings = client.get("/api/settings/systemone").json()
+    assert not settings["mlx_available"] and settings["effective_backend"] is None
+    assert not any("MLX" in m["description"] for m in settings["models"])
+    assert "needs Apple Silicon" in settings["fallback_reason"] and _post(client).status_code == 400
+    plan = client.get("/api/settings/systemone/resolve", params = {"backend": "mlx"}).json()
+    assert (plan["repo"], plan["cached"]) == (None, False) and "needs Apple Silicon" in plan[
+        "error"
+    ]
+    assert _put(client, backend = "mlx-lm").status_code == 400
+
+
 def test_the_mlx_engine_asks_by_id_and_reports_what_it_refuses(home, client, engine):
     assert _put(client, enabled = True, model = "julia-1").status_code == 200
     questions = {"urgent": {"type": "noul"}, "late": {"type": "noul", "instructions": "Late?"}}

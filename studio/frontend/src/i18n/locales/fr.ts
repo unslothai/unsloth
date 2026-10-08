@@ -2855,6 +2855,8 @@ export const fr = {
         backendAuto: "Automatique",
         backendDescription:
           "Automatique sert Clef via llama.cpp lorsque le modèle a une version GGUF, et se rabat sur PyTorch sinon. llama.cpp lit aussi les images.",
+        backendDescriptionMlx:
+          "Automatique sert le texte de Clef via MLX sur Apple Silicon, et via llama.cpp lorsque seule la version GGUF du modèle est chargée ou téléchargée. MLX ne lit que le texte ; llama.cpp lit aussi les images.",
         backendStatus: "Moteur d'exécution : {backend}",
         backendNone: "indisponible",
         mediaImages: "Lit le texte et les images.",

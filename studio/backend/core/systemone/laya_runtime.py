@@ -388,6 +388,8 @@ def select(
 
     from .native_worker import request_gap
 
+    if (preference or get_backend()) == MLX and checkpoint.layout in ("clef", GGUF):
+        return _select_mlx(checkpoint, images), None
     if (mlx := _mlx_choice(checkpoint, images, questions, preference or get_backend())) is not None:
         return mlx, None
     if checkpoint.layout == GGUF:
@@ -432,6 +434,23 @@ def select(
     if images:
         raise Unavailable(400, "api_usage_error", f"Images are served only by llama.cpp: {reason}")
     return checkpoint, reason
+
+
+def _select_mlx(checkpoint: Checkpoint, images) -> Checkpoint:
+    """The MLX runtime answers through the engine or not at all, whatever llama.cpp has loaded or downloaded."""
+    if images:
+        raise Unavailable(
+            400,
+            "api_usage_error",
+            "Images are served only by llama.cpp; set the Decision API runtime to Auto or llama.cpp.",
+        )
+    if not _engine_available():
+        reason = "The MLX runtime needs Apple Silicon with the Decision API on the GPU."
+    elif (target := _mlx_target(checkpoint)) is not None:
+        return target
+    else:
+        reason = f"{checkpoint.name} has no MLX form."
+    raise Unavailable(400, "api_usage_error", f"{reason} Set the Decision API runtime to Auto.")
 
 
 def _select_gguf(checkpoint: Checkpoint, questions, preference: str) -> Checkpoint:
@@ -479,12 +498,17 @@ def effective_backend(checkpoint) -> tuple[str | None, str | None]:
     return target.backend, reason
 
 
+def mlx_available() -> bool:
+    """Whether the MLX runtime can be chosen here."""
+    return _engine_available()
+
+
 def mlx_ready(checkpoint) -> bool:
     """Whether the MLX engine could serve this entry here under the runtime setting."""
     from utils.systemone_settings import get_backend
     return (
         isinstance(checkpoint, Checkpoint)
-        and get_backend() == "auto"
+        and get_backend() in ("auto", MLX)
         and _mlx_target(checkpoint) is not None
     )
 
@@ -496,7 +520,7 @@ def native_ready(checkpoint) -> bool:
     from utils.systemone_settings import get_backend
 
     native = _native_target(checkpoint)
-    return get_backend() != "pytorch" and _native_unavailable(checkpoint, native) is None
+    return get_backend() in ("auto", LLAMA_CPP) and _native_unavailable(checkpoint, native) is None
 
 
 def input_modalities(checkpoint) -> list[str]:
@@ -696,8 +720,18 @@ def download_plan(checkpoint: Checkpoint, preference: str | None = None) -> dict
     if not _is_mlx(checkpoint) and (checkpoint.layout == GGUF or not _is_native(checkpoint)):
         try:
             checkpoint = select(checkpoint, preference = preference)[0]
-        except Unavailable:
-            pass
+        except Unavailable as exc:
+            from utils.systemone_settings import get_backend
+
+            # The MLX runtime has no other form to fall back to, so nothing is offered for download.
+            if (preference or get_backend()) == MLX:
+                return {
+                    "repo": None,
+                    "files": [],
+                    "size_bytes": 0,
+                    "cached": False,
+                    "error": exc.message,
+                }
     if _is_mlx(checkpoint) and checkpoint.layout == GGUF:
         return _mlx_plan(checkpoint)
     cached = is_cached(checkpoint)

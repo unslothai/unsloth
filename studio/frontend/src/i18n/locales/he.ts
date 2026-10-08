@@ -2921,6 +2921,8 @@ export const he = {
         backendAuto: "אוטומטי",
         backendDescription:
           "במצב אוטומטי Clef מוגש דרך llama.cpp כשלמודל יש גרסת GGUF, ואחרת דרך PyTorch. llama.cpp קורא גם תמונות.",
+        backendDescriptionMlx:
+          "במצב אוטומטי טקסט של Clef מוגש דרך MLX ב-Apple Silicon, ודרך llama.cpp כשרק גרסת ה-GGUF של המודל טעונה או הורדה. MLX קורא טקסט בלבד; llama.cpp קורא גם תמונות.",
         backendStatus: "סביבת ריצה: {backend}",
         backendNone: "לא זמין",
         mediaImages: "קורא טקסט ותמונות.",

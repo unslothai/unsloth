@@ -2759,6 +2759,8 @@ export const zhCN = {
         backendAuto: "自动",
         backendDescription:
           "自动模式下，模型有 GGUF 版本时通过 llama.cpp 提供 Clef，否则回退到 PyTorch。llama.cpp 还能读取图片。",
+        backendDescriptionMlx:
+          "自动模式下，在 Apple Silicon 上通过 MLX 提供 Clef 文本；仅模型的 GGUF 版本已加载或已下载时通过 llama.cpp 提供。MLX 仅读取文本；llama.cpp 还能读取图片。",
         backendStatus: "运行时：{backend}",
         backendNone: "不可用",
         mediaImages: "可读取文本和图片。",

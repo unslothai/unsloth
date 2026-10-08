@@ -2800,6 +2800,8 @@ export const ko = {
         backendAuto: "자동",
         backendDescription:
           "자동은 모델에 GGUF 빌드가 있으면 llama.cpp로 Clef를 제공하고, 없으면 PyTorch로 대체합니다. llama.cpp는 이미지도 읽습니다.",
+        backendDescriptionMlx:
+          "자동은 Apple Silicon에서 Clef 텍스트를 MLX로 제공하고, 모델의 GGUF 빌드만 로드되었거나 다운로드된 경우 llama.cpp로 제공합니다. MLX는 텍스트만 읽고, llama.cpp는 이미지도 읽습니다.",
         backendStatus: "런타임: {backend}",
         backendNone: "사용할 수 없음",
         mediaImages: "텍스트와 이미지를 읽습니다.",
