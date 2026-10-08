@@ -389,22 +389,25 @@ const imageTrainBody = {
 
 function curlTrainingUnix(base: string, key: string): string {
   const auth = `-H "Authorization: Bearer ${key}"`;
-  return `# LLM LoRA fine-tune. Returns a job_id.
-curl ${base}/api/train/start \\
+  return `# LLM LoRA fine-tune.
+START=$(curl -s ${base}/api/train/start \\
   ${auth} \\
   -H "Content-Type: application/json" \\
-  -d '${shSingle(JSON.stringify(trainBody, null, 2))}'
+  -d '${shSingle(JSON.stringify(trainBody, null, 2))}')
+echo "$START"
+# "status": "error" means another job is running; its job_id is not this run's.
+JOB_ID=$(echo "$START" | grep -v '"status":"error"' | sed 's/.*"job_id":"\\([^"]*\\)".*/\\1/')
 
-# Poll: phase goes loading_model -> training -> completed (or error / stopped).
-curl ${base}/api/train/status ${auth}
+# Wait: phase goes loading_model -> training -> completed (or error / stopped).
+while [ -n "$JOB_ID" ] && ! curl -s ${base}/api/train/status ${auth} \\
+  | grep -qE '"phase":"(completed|error|stopped)"'; do sleep 10; done
 
-# Stop early and save a checkpoint.
-curl ${base}/api/train/stop \\
-  ${auth} \\
-  -H "Content-Type: application/json" \\
-  -d '{"expected_job_id": "JOB_ID", "save": true}'
+# Stop early and save a checkpoint (from another terminal, with this JOB_ID):
+# curl ${base}/api/train/stop ${auth} -H "Content-Type: application/json" \\
+#   -d "{\\"expected_job_id\\": \\"$JOB_ID\\", \\"save\\": true}"
 
-# Image (SDXL) LoRA: upload images (+ optional .txt captions), then train.
+# Image (SDXL) LoRA. The LLM worker exits a few seconds after "completed".
+sleep 10
 curl ${base}/api/train/diffusion/dataset \\
   ${auth} \\
   -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
@@ -417,25 +420,30 @@ curl ${base}/api/train/diffusion/status ${auth}`;
 
 function curlTrainingWindows(base: string, key: string): string {
   const auth = `-H "Authorization: Bearer ${key}"`;
-  return `# LLM LoRA fine-tune. Returns a job_id.
+  return `# LLM LoRA fine-tune.
 $body = '${psSingle(JSON.stringify(trainBody, null, 2))}'
 Set-Content -Path train.json -Value $body -Encoding ascii
-curl.exe ${base}/api/train/start \`
+$start = curl.exe -s ${base}/api/train/start \`
   ${auth} \`
   -H "Content-Type: application/json" \`
-  -d "@train.json"
+  -d "@train.json" | ConvertFrom-Json
+$start
+# "status": "error" means another job is running; its job_id is not this run's.
+if ($start.status -ne "error") {
+  # Wait: phase goes loading_model -> training -> completed (or error / stopped).
+  do {
+    Start-Sleep 10
+    $s = curl.exe -s ${base}/api/train/status ${auth} | ConvertFrom-Json
+    "$($s.phase) $($s.message)"
+  } until ($s.phase -in "completed", "error", "stopped")
+}
 
-# Poll: phase goes loading_model -> training -> completed (or error / stopped).
-curl.exe ${base}/api/train/status ${auth}
+# Stop early and save a checkpoint (from another window, with this job_id):
+# @{expected_job_id = $start.job_id; save = $true} | ConvertTo-Json | Set-Content stop.json -Encoding ascii
+# curl.exe ${base}/api/train/stop ${auth} -H "Content-Type: application/json" -d "@stop.json"
 
-# Stop early and save a checkpoint.
-Set-Content -Path stop.json -Value '{"expected_job_id": "JOB_ID", "save": true}' -Encoding ascii
-curl.exe ${base}/api/train/stop \`
-  ${auth} \`
-  -H "Content-Type: application/json" \`
-  -d "@stop.json"
-
-# Image (SDXL) LoRA: upload images (+ optional .txt captions), then train.
+# Image (SDXL) LoRA. The LLM worker exits a few seconds after "completed".
+Start-Sleep 10
 curl.exe ${base}/api/train/diffusion/dataset \`
   ${auth} \`
   -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
@@ -461,7 +469,11 @@ HEADERS = {"Authorization": ${j(`Bearer ${key}`)}}
 # LLM LoRA fine-tune
 r = requests.post(f"{BASE}/api/train/start", headers=HEADERS, json=${pyDict(trainBody)})
 r.raise_for_status()
-job_id = r.json()["job_id"]
+started = r.json()
+# "error" means another job is running; its job_id is not this run's.
+if started["status"] == "error":
+    raise SystemExit(started["message"])
+job_id = started["job_id"]
 
 while True:
     status = requests.get(f"{BASE}/api/train/status", headers=HEADERS).json()
