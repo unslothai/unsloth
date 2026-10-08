@@ -2837,6 +2837,8 @@ export const de = {
       revoking: "Wird widerrufen...",
       decisionApi: {
         title: "Entscheidungs-API",
+        docs: "Dokumentation",
+        docsLabel: "Dokumentation zur Entscheidungs-API öffnen",
         description: "Beantworte Ja/Nein-, Auswahl- und Bewertungsfragen zu Text mit einem Modell auf diesem Rechner oder einem Entscheidungsmodell aus den Verbindungen. Funktioniert mit dem TypeSafe-SDK.",
         enable: "Anfragen beantworten",
         enableDescription: "Stellt /v1/systemone bereit. Beim Einschalten wird das Modell heruntergeladen.",

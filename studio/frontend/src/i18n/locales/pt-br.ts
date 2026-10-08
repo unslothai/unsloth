@@ -2809,6 +2809,8 @@ export const ptBR = {
       revoking: "Revogando...",
       decisionApi: {
         title: "API de decisões",
+        docs: "Documentação",
+        docsLabel: "Abrir a documentação da API de decisões",
         description: "Responda a perguntas de sim/não, múltipla escolha e pontuação sobre texto com um modelo neste computador ou um modelo de decisões das Conexões. Funciona com o SDK da TypeSafe.",
         enable: "Atender solicitações",
         enableDescription: "Atende /v1/systemone. Ao ativar, o modelo é baixado.",

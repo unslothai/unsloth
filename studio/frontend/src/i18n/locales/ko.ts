@@ -2783,6 +2783,8 @@ export const ko = {
       revoking: "폐기 중...",
       decisionApi: {
         title: "판단 API",
+        docs: "문서",
+        docsLabel: "판단 API 문서 열기",
         description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
         enable: "요청 처리",
         enableDescription: "/v1/systemone을 제공합니다. 켜면 모델을 다운로드합니다.",

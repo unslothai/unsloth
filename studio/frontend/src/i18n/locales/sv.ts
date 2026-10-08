@@ -3001,6 +3001,8 @@ export const sv = {
       revoking: "Återkallar ...",
       decisionApi: {
         title: "Decision API",
+        docs: "Dokumentation",
+        docsLabel: "Öppna dokumentationen för Decision API",
         description:
           "Besvara ja/nej-frågor, flervalsfrågor och poängfrågor om text med en modell på denna dator eller en beslutsmodell från Anslutningar. Fungerar med TypeSafe SDK.",
         enable: "Hantera begäranden",

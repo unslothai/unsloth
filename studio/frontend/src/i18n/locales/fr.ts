@@ -2838,6 +2838,8 @@ export const fr = {
       revoking: "Révocation...",
       decisionApi: {
         title: "API de décision",
+        docs: "Documentation",
+        docsLabel: "Ouvrir la documentation de l'API de décision",
         description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",

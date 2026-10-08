@@ -2763,6 +2763,8 @@ export const ja = {
       revoking: "失効中...",
       decisionApi: {
         title: "判定 API",
+        docs: "ドキュメント",
+        docsLabel: "判定 API のドキュメントを開く",
         description: "このマシン上のモデル、または接続の判定モデルで、テキストに関するはい/いいえ・選択式・スコアの質問に答えます。TypeSafe SDK で使えます。",
         enable: "リクエストに応答",
         enableDescription: "/v1/systemone を提供します。オンにするとモデルをダウンロードします。",

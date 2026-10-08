@@ -2796,6 +2796,8 @@ export const it = {
       revoking: "Revoca in corso...",
       decisionApi: {
         title: "API decisionale",
+        docs: "Documentazione",
+        docsLabel: "Apri la documentazione dell'API decisionale",
         description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello su questo computer o un modello decisionale dalle Connessioni. Funziona con l'SDK di TypeSafe.",
         enable: "Rispondi alle richieste",
         enableDescription: "Gestisce /v1/systemone. Attivandolo si scarica il modello.",

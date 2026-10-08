@@ -2830,6 +2830,8 @@ export const es = {
       revoking: "Revocando...",
       decisionApi: {
         title: "API de decisiones",
+        docs: "Documentación",
+        docsLabel: "Abrir la documentación de la API de decisiones",
         description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",

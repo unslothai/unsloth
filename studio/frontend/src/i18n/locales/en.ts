@@ -2865,6 +2865,8 @@ export const en = {
       revoking: "Revoking...",
       decisionApi: {
         title: "Decision API",
+        docs: "Docs",
+        docsLabel: "Open the Decision API docs",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",

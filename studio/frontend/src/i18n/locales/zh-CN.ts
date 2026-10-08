@@ -2742,6 +2742,8 @@ export const zhCN = {
       revoking: "撤销中...",
       decisionApi: {
         title: "决策 API",
+        docs: "文档",
+        docsLabel: "打开决策 API 文档",
         description: "使用本机模型或连接中的决策模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",
         enable: "处理请求",
         enableDescription: "提供 /v1/systemone。开启后会下载模型。",
