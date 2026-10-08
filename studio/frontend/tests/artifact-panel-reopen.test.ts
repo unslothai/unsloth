@@ -124,3 +124,12 @@ test("a new chat started inside a project closes the previous project chat's pag
   // the project URL stays ?project=, so projectNewThreadNonce distinguishes its chats.
   assert.match(key, /`project:\$\{view\.projectId\}:\$\{projectNewThreadNonce\}`/);
 });
+
+test("a project chat keeps its pages when its new thread gains a URL", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
+  // ProjectLanding shows a newly-created thread before its row changes the route to ?thread=.
+  // Both representations use the same identity once the runtime has assigned the thread id.
+  assert.match(key, /view\.mode === "project"\s*\? activeThreadId\s*\? `single:\$\{activeThreadId\}`/);
+  assert.match(key, /view\.threadId \?\? newChatShownId \?\? activeThreadId/);
+});

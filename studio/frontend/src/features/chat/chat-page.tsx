@@ -3406,7 +3406,9 @@ export function ChatPage({
     view.mode === "single"
       ? `single:${view.threadId ?? newChatShownId ?? activeThreadId ?? view.newThreadNonce ?? "new"}`
       : view.mode === "project"
-        ? `project:${view.projectId}:${projectNewThreadNonce}`
+        ? activeThreadId
+          ? `single:${activeThreadId}`
+          : `project:${view.projectId}:${projectNewThreadNonce}`
         : artifactViewKey;
   // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
   useEffect(() => {
