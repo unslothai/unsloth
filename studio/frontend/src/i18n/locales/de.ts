@@ -467,6 +467,14 @@ export const de = {
     queueingOnHint: "Neue Nachrichten warten auf ihren Platz.",
     queueingHintShared: "Die Warteschlange bleibt erhalten.",
   },
+  turns: {
+    label: "Runde {number}",
+    bookmarkedLabel: "Runde {number}, mit Lesezeichen",
+    bookmarked: "Mit Lesezeichen",
+    bookmark: "Lesezeichen für Runde setzen",
+    removeBookmark: "Lesezeichen entfernen",
+    navigator: "Runden",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Chat-Optionen",
@@ -2455,6 +2463,9 @@ export const de = {
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
+      turnNavigation: "Rundennavigation",
+      turnNavigationDescription:
+        "Jede Runde nummerieren, Lesezeichen für Runden setzen und in langen Chats über eine Leiste am Rand zwischen ihnen springen.",
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",

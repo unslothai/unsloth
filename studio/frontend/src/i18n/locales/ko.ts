@@ -467,6 +467,14 @@ export const ko = {
     queueingOnHint: "새 메시지는 순서를 기다립니다.",
     queueingHintShared: "대기열은 유지됩니다.",
   },
+  turns: {
+    label: "턴 {number}",
+    bookmarkedLabel: "턴 {number}, 북마크됨",
+    bookmarked: "북마크됨",
+    bookmark: "턴 북마크",
+    removeBookmark: "북마크 해제",
+    navigator: "턴",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "채팅 옵션",
@@ -2410,6 +2418,9 @@ export const ko = {
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
+      turnNavigation: "턴 탐색",
+      turnNavigationDescription:
+        "각 턴에 번호를 붙이고, 턴을 북마크하고, 긴 채팅 옆의 막대에서 턴 사이를 이동합니다.",
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',

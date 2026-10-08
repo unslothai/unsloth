@@ -2413,6 +2413,9 @@ export const it = {
         "Mostra i metadati del modello nelle risposte dell'assistente.",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
+      turnNavigation: "Navigazione per turni",
+      turnNavigationDescription:
+        "Numera ogni turno, aggiungi turni ai segnalibri e passa dall'uno all'altro da una barra accanto alle chat lunghe.",
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
@@ -2947,6 +2950,14 @@ export const it = {
         docsWindows: "Windows",
       },
     },
+  },
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, nei segnalibri",
+    bookmarked: "Nei segnalibri",
+    bookmark: "Aggiungi il turno ai segnalibri",
+    removeBookmark: "Rimuovi segnalibro",
+    navigator: "Turni",
   },
   // The chat header's "…" menu.
   chatMenu: {

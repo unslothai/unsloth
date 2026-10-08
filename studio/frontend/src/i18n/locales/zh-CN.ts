@@ -467,6 +467,14 @@ export const zhCN = {
     queueingOnHint: "新消息会排队并按顺序执行。",
     queueingHintShared: "队列会保留。",
   },
+  turns: {
+    label: "第 {number} 轮",
+    bookmarkedLabel: "第 {number} 轮，已加书签",
+    bookmarked: "已加书签",
+    bookmark: "为此轮添加书签",
+    removeBookmark: "移除书签",
+    navigator: "对话轮次",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "聊天选项",
@@ -2377,6 +2385,9 @@ export const zhCN = {
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
+      turnNavigation: "对话轮次导航",
+      turnNavigationDescription:
+        "为每一轮编号、为轮次添加书签，并在长对话旁的导航条中快速跳转。",
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",

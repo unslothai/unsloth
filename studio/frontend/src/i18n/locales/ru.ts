@@ -467,6 +467,14 @@ export const ru = {
     queueingOnHint: "Новые сообщения ждут своей очереди.",
     queueingHintShared: "Очередь сохраняется.",
   },
+  turns: {
+    label: "Ход {number}",
+    bookmarkedLabel: "Ход {number}, в закладках",
+    bookmarked: "В закладках",
+    bookmark: "Добавить ход в закладки",
+    removeBookmark: "Удалить закладку",
+    navigator: "Ходы",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Параметры чата",
@@ -2429,6 +2437,9 @@ export const ru = {
         "Показывать метаданные модели в ответах ассистента.",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
+      turnNavigation: "Навигация по ходам",
+      turnNavigationDescription:
+        "Нумеровать каждый ход, добавлять ходы в закладки и переходить между ними с помощью полосы рядом с длинными чатами.",
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",

@@ -134,6 +134,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.webSearch.images",
     "settings.chat.modelDisclaimer",
     "settings.chat.inlineEditResponse",
+    "settings.chat.turnNavigation",
     "settings.chat.groups.menu.title",
   ],
   browser: [

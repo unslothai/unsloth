@@ -467,6 +467,14 @@ export const hi = {
     queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार करते हैं।",
     queueingHintShared: "कतार बनी रहती है।",
   },
+  turns: {
+    label: "टर्न {number}",
+    bookmarkedLabel: "टर्न {number}, बुकमार्क किया गया",
+    bookmarked: "बुकमार्क किया गया",
+    bookmark: "टर्न बुकमार्क करें",
+    removeBookmark: "बुकमार्क हटाएँ",
+    navigator: "टर्न",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "चैट विकल्प",
@@ -2423,6 +2431,9 @@ export const hi = {
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को More मेन्यू के बजाय हर जवाब पर दिखाएँ।",
+      turnNavigation: "टर्न नेविगेशन",
+      turnNavigationDescription:
+        "हर टर्न को नंबर दें, टर्न बुकमार्क करें और लंबी चैट के किनारे की पट्टी से उनके बीच जाएँ।",
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',

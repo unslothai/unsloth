@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useBookmarkedTurnsStore } from "../stores/bookmarked-turns-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { chatHistoryClearBoundary } from "./chat-history-clear-boundary";
 import { clearStoredChats, countStoredChats } from "./chat-history-storage";
@@ -24,5 +25,7 @@ export async function clearAllChats(options: { deleteFiles?: boolean } = {}) {
     stopChatThread(threadId);
   }
   requestPromptQueueStop();
-  return await clearStoredChats(options);
+  const result = await clearStoredChats(options);
+  useBookmarkedTurnsStore.getState().forgetThreads(result.deletedThreadIds);
+  return result;
 }

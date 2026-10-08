@@ -467,6 +467,14 @@ export const ptBR = {
     queueingOnHint: "Mensagens novas esperam a vez.",
     queueingHintShared: "A fila é mantida.",
   },
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, nos favoritos",
+    bookmarked: "Nos favoritos",
+    bookmark: "Adicionar turno aos favoritos",
+    removeBookmark: "Remover dos favoritos",
+    navigator: "Turnos",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Opções do chat",
@@ -2433,6 +2441,9 @@ export const ptBR = {
         "Mostra os metadados do modelo nas respostas do assistente.",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
+      turnNavigation: "Navegação por turnos",
+      turnNavigationDescription:
+        "Numera cada turno, adiciona turnos aos favoritos e permite pular entre eles por uma barra ao lado de conversas longas.",
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',

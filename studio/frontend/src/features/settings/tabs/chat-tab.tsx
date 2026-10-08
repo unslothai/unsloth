@@ -204,6 +204,12 @@ export function ChatTab() {
   const setAutoScrollWhileGenerating = useChatPreferencesStore(
     (state) => state.setAutoScrollWhileGenerating,
   );
+  const showTurnNavigation = useChatPreferencesStore(
+    (state) => state.showTurnNavigation,
+  );
+  const setShowTurnNavigation = useChatPreferencesStore(
+    (state) => state.setShowTurnNavigation,
+  );
   const showScrollToBottomButton = useChatPreferencesStore(
     (state) => state.showScrollToBottomButton,
   );
@@ -577,6 +583,16 @@ export function ChatTab() {
             aria-label={t("settings.chat.inlineEditResponse")}
             checked={showInlineEditResponse}
             onCheckedChange={setShowInlineEditResponse}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.turnNavigation")}
+          description={t("settings.chat.turnNavigationDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.turnNavigation")}
+            checked={showTurnNavigation}
+            onCheckedChange={setShowTurnNavigation}
           />
         </SettingsRow>
         <SettingsRow

@@ -3,12 +3,14 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { CHAT_PROJECTS_UPDATED_EVENT } from "../api/chat-api";
+import { useBookmarkedTurnsStore } from "../stores/bookmarked-turns-store";
 import type { ProjectRecord } from "../types";
 import {
   createStoredChatProject,
   deleteStoredChatProject,
   isExpectedBackgroundChatStorageError,
   listStoredChatProjects,
+  listStoredChatThreads,
   moveStoredChatItemToProject,
   updateStoredChatProject,
 } from "../utils/chat-history-storage";
@@ -143,7 +145,11 @@ export async function deleteChatProject(
   projectId: string,
   args: { deleteFiles?: boolean } = {},
 ): Promise<void> {
+  // A failed lookup only leaves stale bookmarks; it must not block the delete.
+  const threads = await listStoredChatThreads({ projectId }).catch(() => []);
+  const threadIds = threads.map((t) => t.id);
   const kept = await deleteStoredChatProject(projectId, args);
+  useBookmarkedTurnsStore.getState().forgetThreads(threadIds);
   // The member chats went with the project, so their own sandboxes are reachable from nothing: the
   // same offer an ordinary chat delete makes, and a sandbox the backend could not remove is kept
   // even when asked to go.

@@ -467,6 +467,14 @@ export const ar = {
     queueingOnHint: "الرسائل الجديدة تنتظر دورها.",
     queueingHintShared: "يبقى الطابور كما هو.",
   },
+  turns: {
+    label: "الدور {number}",
+    bookmarkedLabel: "الدور {number}، عليه إشارة مرجعية",
+    bookmarked: "عليه إشارة مرجعية",
+    bookmark: "إضافة إشارة مرجعية للدور",
+    removeBookmark: "إزالة الإشارة المرجعية",
+    navigator: "الأدوار",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "خيارات المحادثة",
@@ -2417,6 +2425,9 @@ export const ar = {
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
+      turnNavigation: "التنقل بين الأدوار",
+      turnNavigationDescription:
+        "ترقيم كل دور وإضافة إشارات مرجعية للأدوار والانتقال بينها من شريط بجانب المحادثات الطويلة.",
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',

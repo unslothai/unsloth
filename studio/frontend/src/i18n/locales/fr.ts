@@ -467,6 +467,14 @@ export const fr = {
     queueingOnHint: "Les nouveaux messages attendent leur tour.",
     queueingHintShared: "La file d’attente est conservée.",
   },
+  turns: {
+    label: "Tour {number}",
+    bookmarkedLabel: "Tour {number}, en signet",
+    bookmarked: "En signet",
+    bookmark: "Ajouter le tour aux signets",
+    removeBookmark: "Retirer le signet",
+    navigator: "Tours",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "Options de la discussion",
@@ -2452,6 +2460,9 @@ export const fr = {
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
+      turnNavigation: "Navigation par tour",
+      turnNavigationDescription:
+        "Numéroter chaque tour, ajouter des tours aux signets et passer de l’un à l’autre depuis une barre à côté des longues discussions.",
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
