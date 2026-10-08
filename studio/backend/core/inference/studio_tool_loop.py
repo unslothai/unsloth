@@ -1705,9 +1705,8 @@ async def stream_with_studio_tools(
         elif tool_choice == "none":
             unrun_reason = _TOOL_CHOICE_NONE
         if unrun_reason is not None:
-            # The relayed tool_calls delta already drew a card; close it like every other unrun call. Through `calls`
-            # (executes nothing): it mints the card id the client drew for an id-less call, which reading the slots
-            # directly missed, leaving that card spinning.
+            # The relayed delta already drew a card: close it like any unrun call, via `calls` (executes nothing), which
+            # mints the id the client drew for an id-less call.
             for raw_call in turn.calls(used_call_ids, painted_card_ids):
                 unrun_id = raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
                 name = raw_call["function"]["name"]

@@ -200,7 +200,7 @@ def test_a_truncated_call_under_tool_choice_none_closes_once_as_truncated(execut
 
 
 def test_tool_choice_none_closes_every_refused_card_by_the_id_the_client_drew(executed):
-    """An id-less call is painted under a minted ``tool_call_<index>``; each refused call closes its own card."""
+    """Each refused call closes its own card, an id-less one under the minted ``tool_call_<index>``."""
     named = json.loads(_call_line()[6:])
     idless = json.loads(_call_line()[6:])
     idless["choices"][0]["delta"]["tool_calls"][0].update(index = 1)
