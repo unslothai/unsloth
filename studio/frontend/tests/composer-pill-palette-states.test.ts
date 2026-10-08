@@ -7,8 +7,6 @@ import test from "node:test";
 import { COLOR_THEME_IDS } from "../src/features/settings/lib/color-themes.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-// Dark pills rest at full ink and turn --primary when on (#12025).
-
 const CSS = readSrc("index.css");
 const TOKEN = /(--[\w-]+):\s*([^;]+);/g;
 const HEX = /^#[0-9a-f]{6}$/i;
