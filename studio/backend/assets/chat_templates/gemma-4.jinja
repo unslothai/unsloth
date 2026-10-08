@@ -1,9 +1,4 @@
-{#
-  Template: Google Gemma 4 Canonical Chat Template
-  Author: Google Gemma Engineering Team
-  Published: 2026-07-09
-  Context: Fixed tool-calling loops, turn closures, and thinking content-ordering.
-#}
+{# Google Gemma 4 template for larger variants, which emit empty thought blocks when thinking is off. #}
 {%- macro format_parameters(properties, required, filter_keys=false) -%}
     {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
     {%- set ns = namespace(found_first=false) -%}
@@ -180,16 +175,13 @@
     {{- '<tool_response|>' -}}
 {%- endmacro -%}
 
-{#- ===== SETUP ===== -#}
 {%- set ns = namespace(prev_message_type=None, prev_non_tool_role=None) -%}
 {%- set loop_messages = messages -%}
 {%- set enable_thinking = enable_thinking | default(false) -%}
 {%- set preserve_thinking = preserve_thinking | default(false) -%}
 {{- bos_token -}}
-{#- Handle System/Tool Definitions Block -#}
 {%- if enable_thinking or tools or (messages and messages[0]['role'] in ['system', 'developer']) -%}
     {{- '<|turn>system\n' -}}
-    {#- Inject Thinking token at the very top of the FIRST system turn -#}
     {%- if enable_thinking -%}
         {{- '<|think|>\n' -}}
         {%- set ns.prev_message_type = 'think' -%}
@@ -223,19 +215,17 @@
     {%- endif -%}
 {%- endfor -%}
 
-{#- Loop through messages -#}
 {%- for message in loop_messages -%}
     {%- if message['role'] != 'tool' -%}
     {%- set ns.prev_message_type = None -%}
     {%- set role = 'model' if message['role'] == 'assistant' else message['role'] -%}
-    {#- Detect continuation using tracked state - O(1) instead of O(n) backward scan -#}
+    {#- tracked state avoids an O(n) backward scan -#}
     {%- set continue_same_model_turn = (role == 'model' and ns.prev_non_tool_role == 'assistant') -%}
     {%- if not continue_same_model_turn -%}
         {{- '<|turn>' + role + '\n' }}
 
     {%- endif -%}
 
-    {#- Render reasoning/reasoning_content as thinking channel -#}
     {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
     {%- set thinking_gate = (loop.index0 > ns_turn.last_user_idx) or (preserve_thinking and message.get('tool_calls')) -%}
     {%- if thinking_text and thinking_gate -%}
@@ -349,7 +339,6 @@
             {{- captured_content -}}
             {%- set has_content = captured_content | trim | length > 0 -%}
 
-        {#- Forward-scan: find next non-tool message role for continuation detection -#}
         {%- set next_nt = namespace(role=None, found=false) -%}
         {%- for j in range(loop.index0 + 1, loop_messages | length) -%}
             {%- if not next_nt.found -%}
@@ -375,7 +364,6 @@
             {%- set ns.prev_message_type = None -%}
         {%- endif -%}
 
-    {#- Track previous non-tool role for next iteration (avoids O(n) backward scan) -#}
     {%- set ns.prev_non_tool_role = message['role'] -%}
     {%- endif -%}
 {%- endfor -%}

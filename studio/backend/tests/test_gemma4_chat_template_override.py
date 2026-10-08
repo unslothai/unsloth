@@ -355,16 +355,8 @@ def test_enable_thinking_gates_think_token():
     assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
 
 
-# ── Reload dedup interaction (why the route resolves the effective override) ──
-
-
 def test_already_in_target_state_consistent_with_bundled_override():
-    """The backend dedup compares the incoming override against the live one.
-
-    The route resolves the bundled template up front so a re-load that omits
-    ``chat_template_override`` still matches (no spurious reload), while a raw
-    ``None`` would not.
-    """
+    """the bundled template replaces None before dedup to prevent needless reloads"""
     LlamaCppBackend, GgufLoadIntent = _import_backend()
 
     class _FakeProcess:
