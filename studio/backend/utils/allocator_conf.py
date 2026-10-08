@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Early PyTorch allocator-config normalization for Unsloth processes."""
+"""early PyTorch allocator-config normalization for Unsloth processes."""
 
 import os
 import re
@@ -14,8 +14,7 @@ ALLOCATOR_CONF_ENV_VARS = (
     "PYTORCH_HIP_ALLOC_CONF",
 )
 
-# A `key:value` option whose whole value is a boolean in any case. Bracketed lists such as
-# roundup_power2_divisions:[32:256,64:128] only hold numbers, so they never match.
+# bracketed numeric lists such as roundup_power2_divisions:[32:256,64:128] cannot match.
 _BOOL_OPTION = re.compile(
     r"(?P<head>(?:^|,)\s*[A-Za-z_][A-Za-z0-9_]*\s*:\s*)(?P<value>true|false)(?=\s*(?:,|$))",
     re.IGNORECASE,
@@ -29,14 +28,7 @@ def _canonical_bool(match: "re.Match[str]") -> str:
 def normalize_allocator_conf(
     env: Optional[MutableMapping[str, str]] = None,
 ) -> List[Tuple[str, str, str]]:
-    """Capitalize allocator booleans PyTorch would reject, such as ``expandable_segments:false``.
-
-    PyTorch accepts only ``True``/``False``. Anything else makes the first CUDA init raise
-    ``ValueError ... in ConfigTokenizer``, and a later CUDA call in the same process then
-    finds a half-initialized allocator and segfaults (an access violation on Windows), so
-    Studio would crash with no cause in its logs. Must run before anything initializes
-    CUDA. Returns ``(name, old, new)`` for each variable it changed.
-    """
+    """normalize before CUDA init to avoid PyTorch parser failures; returns (name, old, new)."""
     environ = os.environ if env is None else env
     changed = []
     for name in ALLOCATOR_CONF_ENV_VARS:

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the early PyTorch allocator-config normalization."""
+"""covers early PyTorch allocator-config normalization."""
 
 import os
 import subprocess
@@ -49,7 +49,7 @@ def test_noncanonical_booleans_are_capitalized(name, raw, expected):
         "roundup_power2_divisions:[32:256,64:128,256:64,>:32]",
         "backend:cudaMallocAsync",
         "garbage_collection_threshold:0.6",
-        # Not a case problem, so left for PyTorch to report.
+        # non-case errors remain for PyTorch to report.
         "expandable_segments:1",
         "expandable_segments:falsey",
         "",
@@ -81,8 +81,7 @@ def test_uses_os_environ_and_is_idempotent(monkeypatch):
     assert normalize_allocator_conf() == []
 
 
-# The backend's consumer boundary: `import main` runs before anything initializes CUDA (it must not import
-# torch at all, see test_startup_defers_torch.py), so the fixed value is what torch and every worker see.
+# `import main` must normalize before CUDA without importing torch so workers inherit the fixed value.
 def test_import_main_normalizes_the_allocator_config():
     env = {k: v for k, v in os.environ.items() if k not in ALLOCATOR_CONF_ENV_VARS}
     env["PYTORCH_ALLOC_CONF"] = "expandable_segments:false"

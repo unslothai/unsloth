@@ -93,8 +93,6 @@ class TestGetDevice:
 
     @needs_torch
     def test_detect_survives_device0_probe_failure(self, capsys):
-        # is_available() True but the device-0 name probe raises: startup must
-        # still resolve CUDA rather than crash.
         with (
             patch("utils.hardware.hardware._has_torch", return_value = True),
             patch("torch.cuda.is_available", return_value = True),
@@ -106,7 +104,7 @@ class TestGetDevice:
 
     @needs_torch
     def test_device0_probe_failure_is_logged_with_allocator_config(self, monkeypatch):
-        # A failed first CUDA init can crash the process later, so its cause must reach the log, not just debug.
+        # failed CUDA initialization can crash later, so log its cause at error rather than debug
         monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising = False)
         monkeypatch.delenv("PYTORCH_HIP_ALLOC_CONF", raising = False)
         monkeypatch.setenv("PYTORCH_ALLOC_CONF", "expandable_segments:maybe")

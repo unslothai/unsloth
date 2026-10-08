@@ -42,7 +42,7 @@ try:
 except Exception:
     pass
 
-# Before torch first touches the GPU, which parses these; spawned workers inherit the fix.
+# normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
 for _name, _old, _new in _normalize_allocator_conf():
