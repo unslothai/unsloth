@@ -10,7 +10,7 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { layerPlacement } = await import("../src/features/studio/sections/offload-panel-layout.ts");
+const { layerPlacement, offloadCountFromInput } = await import("../src/features/studio/sections/offload-panel-layout.ts");
 
 test("the window follows the offloaded order, not the layer index", () => {
   // Spread placement: every other layer offloaded.
@@ -27,4 +27,10 @@ test("the window stops at the last offloaded layer", () => {
 
 test("nothing offloaded is all resident", () => {
   assert.deepEqual(layerPlacement(3, [], 2, 0), ["resident", "resident", "resident"]);
+});
+
+test("clearing the Count box keeps the last count instead of turning offload off", () => {
+  for (const text of ["", "0", "-3", "abc"]) assert.equal(offloadCountFromInput(text), null);
+  assert.equal(offloadCountFromInput("14"), 14);
+  assert.equal(offloadCountFromInput("6.7"), 6);
 });

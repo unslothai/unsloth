@@ -17,3 +17,9 @@ export function layerPlacement(
     return "host";
   });
 }
+
+/** The layer count a Count box edit sets, or null to keep the current one (empty, zero, not a number). */
+export function offloadCountFromInput(text: string): number | null {
+  const count = Math.floor(Number(text));
+  return count > 0 ? count : null;
+}
