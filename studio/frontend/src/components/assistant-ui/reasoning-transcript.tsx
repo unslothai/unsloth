@@ -43,12 +43,18 @@ import {
 } from "./use-intent-aware-autoscroll";
 import { cn } from "@/lib/utils";
 
+// Twice the live box's tallest cap (18rem in reasoning.tsx).
+const BOUNDED_TAIL_PX = 576;
+
 type Props = {
   initialAnchor?: ReasoningReadingAnchor;
   documents: readonly string[];
   messageId: string;
   messageHasRenderableRenderHtmlTool: boolean;
   streaming: boolean;
+  /** In the live tail box: rows grow upward inside a box of fixed height, so nothing they do
+   *  moves the thread and none of it may be corrected with a thread scroll write. */
+  bounded?: boolean;
 };
 
 const CodeFragment = memo(
@@ -293,6 +299,7 @@ export function ReasoningTranscript({
   messageId,
   messageHasRenderableRenderHtmlTool,
   streaming,
+  bounded = false,
 }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const [index] = useState(() => new ReasoningTranscriptIndex());
@@ -381,6 +388,18 @@ export function ReasoningTranscript({
         fragments.forEach((fragment, i) => {
           if (protectedKeys.has(fragment.key)) mounted.add(i);
         });
+      if (bounded) {
+        // The box shows the end of the trace; the measured offset lags a fast-growing one.
+        let height = 0;
+        for (
+          let i = fragments.length - 1;
+          i >= 0 && height < BOUNDED_TAIL_PX;
+          i -= 1
+        ) {
+          mounted.add(i);
+          height += virtualizer.measurementsCache[i]?.size ?? 0;
+        }
+      }
       return [...mounted].sort((a, b) => a - b);
     },
     // TanStack reports measurement corrections; the thread controller owns all scroll writes.
@@ -395,6 +414,7 @@ export function ReasoningTranscript({
     // Ref measurements run before the virtualizer observes the shared viewport.
     // Its offset is still zero then: applying that correction would send a reader
     // back to the beginning when a live trace first crosses the threshold.
+    !bounded &&
     virtualizer.scrollElement !== null &&
     item.end < (viewport()?.scrollTop ?? 0);
 
@@ -427,7 +447,7 @@ export function ReasoningTranscript({
       if (width && width !== rect.width) {
         // Capture before reflow: a long user message above us may push the whole
         // transcript offscreen at the new width before ResizeObserver runs.
-        if (readingAnchor) {
+        if (readingAnchor && !bounded) {
           setAnchor(readingAnchor);
           setAnchoring(true);
         }
@@ -460,7 +480,8 @@ export function ReasoningTranscript({
       scroll.removeEventListener("scroll", schedule);
       cancelAnimationFrame(frame);
     };
-  }, [viewport, virtualizer]);
+    // Lifting the cap moves the root without resizing it: re-measure its offset.
+  }, [viewport, virtualizer, bounded]);
 
   useLayoutEffect(() => {
     if (!anchoring || !anchor) return;
@@ -470,12 +491,12 @@ export function ReasoningTranscript({
       const row = root.current?.querySelector(`[data-index="${anchor.index}"]`);
       const passage =
         row && reasoningTextRange(row, anchor.text, anchor.occurrence);
-      if (passage)
+      if (passage && !bounded)
         adjustAbove(passage.getBoundingClientRect().top - anchor.top);
       setAnchoring(false);
     });
     return () => cancelAnimationFrame(frame);
-  }, [anchor, anchoring, adjustAbove]);
+  }, [anchor, anchoring, adjustAbove, bounded]);
 
   useEffect(() => {
     const element = root.current;
