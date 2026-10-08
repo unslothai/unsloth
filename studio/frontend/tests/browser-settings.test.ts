@@ -94,6 +94,12 @@ test("a navigation asked for as temporary stays temporary in a normal chat", () 
   store.navigate(tabId, { url: "https://example.com/after" });
   const after = currentEntry(useBrowserStore.getState().tabs.find((item) => item.id === tabId)!);
   assert.equal(after.kind === "web" && after.temporary, undefined);
+  // A page noted as normal stays normal when it is kept during a temporary chat.
+  useChatRuntimeStore.getState().setIncognito(true);
+  store.navigate(tabId, { url: "https://example.com/kept", temporary: false });
+  useChatRuntimeStore.getState().setIncognito(false);
+  const kept = currentEntry(useBrowserStore.getState().tabs.find((item) => item.id === tabId)!);
+  assert.equal(kept.kind === "web" && kept.temporary, undefined);
   store.closeTab(tabId);
 });
 

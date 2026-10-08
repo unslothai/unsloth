@@ -210,10 +210,10 @@ export function currentEntry(tab: BrowserTab): BrowserEntry {
   return tab.history[tab.index] ?? { kind: "newtab" };
 }
 
-function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string, temporary = false): BrowserEntry {
+function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string, temporary?: boolean): BrowserEntry {
   const entry: Extract<BrowserEntry, { kind: "web" }> =
     method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
-  if (temporary || useChatRuntimeStore.getState().incognito) entry.temporary = true;
+  if (temporary ?? useChatRuntimeStore.getState().incognito) entry.temporary = true;
   return from ? { ...entry, from } : entry;
 }
 
