@@ -96,8 +96,7 @@ Describe 'Test-LlamaBuildToolsMissing' {
         function Get-NvccMajor { param($Nvcc) $Major }
         $HasNvidiaDriverEvidence = $true
         $CmakeGenerator = $null
-        $script:VsInstallPath = $null
-        $script:VsInstallPath = 'Z:\none'
+        $script:VsInstallPath = $TestDrive
         Test-LlamaBuildToolsMissing | Should -Be $Expected
     }
 
