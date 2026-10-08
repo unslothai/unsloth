@@ -6216,7 +6216,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         return isinstance(node, ast.Name) and node.id in numpy_aliases
 
     def _allow_pickle_position(node) -> "int | None":
-        # allow_pickle's positional index when node is a numpy pickle loader, else None.
+        # allow_pickle's positional index when node is a numpy pickle loader, else None. A conditional or boolean
+        # callee ((np.load if a else json.load)(...)) counts if any branch is a loader.
+        if isinstance(node, (ast.IfExp, ast.BoolOp)):
+            branches = [node.body, node.orelse] if isinstance(node, ast.IfExp) else node.values
+            return next(
+                (pos for pos in map(_allow_pickle_position, branches) if pos is not None), None
+            )
         if isinstance(node, ast.Name):
             return pickle_fn_aliases.get(node.id)
         if isinstance(node, ast.Attribute):
