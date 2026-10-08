@@ -64,14 +64,32 @@ test("a captions-only set created in this form remains available for follow-up f
 });
 
 test("the new-set form waits for the set list before it uploads", () => {
-  assert.match(source, /const namesLoading = uploadMode && info === null;/);
+  assert.match(source, /const namesLoading = uploadMode && info === null && !infoLoadFailed;/);
+  assert.match(source, /const namesUnavailable = uploadMode && info === null && infoLoadFailed;/);
+});
+
+test("a failed initial set-list request can be retried without enabling uploads", () => {
+  const refresh = source.slice(
+    source.indexOf("const refreshInfo"),
+    source.indexOf("// On first activation"),
+  );
+  assert.match(refresh, /setInfoLoadFailed\(false\)/);
+  assert.match(refresh, /catch \{\s+setInfoLoadFailed\(true\)/);
+
+  const form = source.slice(source.indexOf("{uploadMode ? ("));
+  const newSet = form.slice(0, form.indexOf(") : ("));
+  assert.match(newSet, /\{namesUnavailable && \(/);
+  assert.match(newSet, /onClick=\{\(\) => void refreshInfo\(\)\}/);
+  assert.match(newSet, />\s*Retry\s*<\/Button>/);
 });
 
 test("the new-set form does not upload into a set that already exists", () => {
   const form = source.slice(source.indexOf("{uploadMode ? ("));
   const newSet = form.slice(0, form.indexOf(") : ("));
   assert.equal(
-    newSet.match(/disabled=\{uploading \|\| namesLoading \|\| takenName !== null\}/g)?.length,
+    newSet.match(
+      /disabled=\{uploading \|\| namesLoading \|\| namesUnavailable \|\| takenName !== null\}/g,
+    )?.length,
     2,
   );
   assert.match(newSet, /\{takenName && \(/);
@@ -84,6 +102,8 @@ test("the new-set form does not upload into a set that already exists", () => {
   assert.ok(drop.indexOf("if (takenName)") < drop.indexOf("await uploadTo("));
   assert.ok(drop.indexOf("if (namesLoading)") >= 0);
   assert.ok(drop.indexOf("if (namesLoading)") < drop.indexOf("await uploadTo("));
+  assert.ok(drop.indexOf("if (namesUnavailable)") >= 0);
+  assert.ok(drop.indexOf("if (namesUnavailable)") < drop.indexOf("await uploadTo("));
   assert.match(drop, /await uploadTo\(dropTarget, dropped, createsDataset\)/);
 
   assert.match(newSet, /void uploadTo\(uploadName\.trim\(\), files, createsDataset\)/);

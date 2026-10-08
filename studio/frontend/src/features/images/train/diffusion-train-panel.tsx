@@ -402,6 +402,7 @@ export function DiffusionTrainPanel({
   }) => void;
 }) {
   const [info, setInfo] = useState<DiffusionTrainingInfo | null>(null);
+  const [infoLoadFailed, setInfoLoadFailed] = useState(false);
   const families = useMemo(() => mergeFamilies(info?.families), [info?.families]);
 
   const setFamilyName = onFamilyNameChange;
@@ -542,11 +543,13 @@ export function DiffusionTrainPanel({
   const [resumingJobId, setResumingJobId] = useState<string | null>(null);
 
   const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
+    setInfoLoadFailed(false);
     try {
       const i = await getDiffusionTrainingInfo();
       setInfo(i);
       return i;
     } catch {
+      setInfoLoadFailed(true);
       return null;
     }
   }, []);
@@ -767,7 +770,8 @@ export function DiffusionTrainPanel({
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
   // A deleted dataset leaves a name that no longer resolves; fall back to the upload form.
   const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
-  const namesLoading = uploadMode && info === null;
+  const namesLoading = uploadMode && info === null && !infoLoadFailed;
+  const namesUnavailable = uploadMode && info === null && infoLoadFailed;
   const occupiedDatasets = datasetNamesForCreation(info);
   const continuingUploadName = isDatasetContinuation(uploadName, continuationDatasetName);
   const createsDataset = uploadMode && !continuingUploadName;
@@ -1026,6 +1030,10 @@ export function DiffusionTrainPanel({
         toast.error("Your image sets are still loading. Drop again in a moment.");
         return;
       }
+      if (namesUnavailable) {
+        toast.error("Could not load your image sets. Retry before dropping files.");
+        return;
+      }
       if (takenName) {
         toast.error(takenNameMessage);
         return;
@@ -1057,7 +1065,15 @@ export function DiffusionTrainPanel({
       }
       await uploadTo(dropTarget, dropped, createsDataset);
     },
-    [dropTarget, uploadTo, createsDataset, namesLoading, takenName, takenNameMessage],
+    [
+      dropTarget,
+      uploadTo,
+      createsDataset,
+      namesLoading,
+      namesUnavailable,
+      takenName,
+      takenNameMessage,
+    ],
   );
 
   const onStart = useCallback(async () => {
@@ -1788,13 +1804,13 @@ export function DiffusionTrainPanel({
                       }
                       fileInputRef.current?.click();
                     }}
-                    disabled={uploading || namesLoading || takenName !== null}
+                    disabled={uploading || namesLoading || namesUnavailable || takenName !== null}
                   >
                     <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
                     {uploading ? "Uploading..." : "Upload"}
                   </Button>
                   <FolderPickButton
-                    disabled={uploading || namesLoading || takenName !== null}
+                    disabled={uploading || namesLoading || namesUnavailable || takenName !== null}
                     onPick={() => {
                       if (!uploadName.trim()) {
                         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
@@ -1806,6 +1822,20 @@ export function DiffusionTrainPanel({
                 </div>
                 {takenName && (
                   <p className="text-ui-11 leading-snug text-destructive">{takenNameMessage}</p>
+                )}
+                {namesUnavailable && (
+                  <div className="flex items-center gap-2 text-ui-11 text-destructive">
+                    <span>Could not load existing image sets.</span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-2 text-ui-11"
+                      onClick={() => void refreshInfo()}
+                    >
+                      Retry
+                    </Button>
+                  </div>
                 )}
                 <p className="text-ui-11 leading-snug text-muted-foreground">
                   {isTauri ? "Pick files or a folder." : "Pick files or a folder, or drop them here."}{" "}
