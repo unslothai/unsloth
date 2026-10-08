@@ -27,12 +27,6 @@ const PART_STYLE: Record<
     track: "bg-emerald-500/25",
     text: "text-emerald-600 dark:text-emerald-400",
   },
-  other: {
-    label: "other",
-    fill: "bg-muted-foreground/70",
-    track: "bg-muted-foreground/20",
-    text: "text-muted-foreground",
-  },
 };
 
 /** The bar split by what each part of the download is, the cached model included. */

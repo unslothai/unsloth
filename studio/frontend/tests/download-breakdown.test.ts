@@ -65,7 +65,7 @@ test("a malformed persisted breakdown is dropped", () => {
   assert.deepEqual(breakdownOfPersisted(qwen), { breakdown: qwen });
 });
 
-test("the cached checkpoint lands on the first companion only when nothing stages it", () => {
+test("the checkpoint lands on the first companion, cached or staged first", () => {
   const companions = [
     { repoId: "a", checkpoint: false },
     { repoId: "b", checkpoint: false },
@@ -74,8 +74,32 @@ test("the cached checkpoint lands on the first companion only when nothing stage
     withCachedCheckpoint(companions, 2.5 * GB).map((e) => e.cachedCheckpointBytes),
     [2.5 * GB, undefined],
   );
+  // FLUX.2-klein-9B: the GGUF downloads as its own entry, the companion bar still shows the model.
   const withModel = [{ repoId: "m", checkpoint: true }, ...companions];
-  assert.equal(withCachedCheckpoint(withModel, 2.5 * GB), withModel);
+  assert.deepEqual(
+    withCachedCheckpoint(withModel, 5.9 * GB).map((e) => e.cachedCheckpointBytes),
+    [undefined, 5.9 * GB, undefined],
+  );
+});
+
+test("tokenizer and scheduler files count as the text encoder, so the bar has three parts", () => {
+  const parts = downloadParts(
+    {
+      fileBytes: {
+        "model_index.json": 1e3,
+        "scheduler/scheduler_config.json": 1e3,
+        "text_encoder/model-00001-of-00002.safetensors": 16 * GB,
+        "tokenizer/tokenizer.json": 16e6,
+        "vae/diffusion_pytorch_model.safetensors": 168e6,
+      },
+      cachedCheckpointBytes: 5.9 * GB,
+    },
+    0,
+  );
+  assert.deepEqual(
+    parts?.map((p) => p.kind),
+    ["model", "encoder", "vae"],
+  );
 });
 
 test("staging carries the plan's per-file sizes and the cached checkpoint", () => {

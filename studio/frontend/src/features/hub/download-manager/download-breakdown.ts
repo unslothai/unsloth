@@ -3,7 +3,7 @@
 
 import type { DownloadBreakdown } from "./download-manager-types";
 
-export type DownloadPartKind = "model" | "encoder" | "vae" | "other";
+export type DownloadPartKind = "model" | "encoder" | "vae";
 
 export interface DownloadPart {
   kind: DownloadPartKind;
@@ -14,14 +14,16 @@ export interface DownloadPart {
 // Same patterns assetLabel reads an entry's file list with.
 const ENCODER = /text_encoder|clip|t5|qwen.*vl/i;
 const VAE = /vae|decoder|codec/i;
+const MODEL = /transformer|unet|\.gguf$/i;
 
+// Three parts only: the small leftovers (tokenizer, scheduler, model_index.json) count as the text encoder.
 function partOf(file: string): DownloadPartKind {
-  if (ENCODER.test(file)) return "encoder";
   if (VAE.test(file)) return "vae";
-  return "other";
+  if (MODEL.test(file) && !ENCODER.test(file)) return "model";
+  return "encoder";
 }
 
-const ORDER: DownloadPartKind[] = ["model", "encoder", "vae", "other"];
+const ORDER: DownloadPartKind[] = ["model", "encoder", "vae"];
 
 /** Bar segments for a companion download, or null when it doesn't split into two or more parts.
  *  Files arrive one at a time in name order (`snapshot_download`, `max_workers=1`), so the job's
@@ -75,15 +77,17 @@ export function breakdownOfPersisted(
   };
 }
 
-/** Puts a cached checkpoint's size on the first companion entry, so its row shows what's already
- *  on device. Only when the plan has no checkpoint entry left to download. */
+/** Puts the checkpoint's size on the first companion entry, so its bar shows model, text encoder and
+ *  VAE together. A checkpoint the plan still downloads is its own entry, staged first, so it's on
+ *  device by the time the companions run. */
 export function withCachedCheckpoint<T extends { checkpoint?: boolean }>(
   entries: T[],
   checkpointBytes: number | undefined,
 ): (T & { cachedCheckpointBytes?: number })[] {
   if (!checkpointBytes || checkpointBytes <= 0) return entries;
-  if (entries.some((e) => e.checkpoint)) return entries;
+  const first = entries.findIndex((e) => !e.checkpoint);
+  if (first < 0) return entries;
   return entries.map((e, i) =>
-    i === 0 ? { ...e, cachedCheckpointBytes: checkpointBytes } : e,
+    i === first ? { ...e, cachedCheckpointBytes: checkpointBytes } : e,
   );
 }
