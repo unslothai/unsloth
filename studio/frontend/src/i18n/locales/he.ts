@@ -2860,6 +2860,8 @@ export const he = {
       usageTools: "כלים",
       exampleCurlTools: "curl + כלים",
       examplePythonTools: "Python + כלים",
+      exampleCurlTraining: "curl + אימון",
+      examplePythonTraining: "Python + אימון",
       exampleJavaScriptTools: "JavaScript + כלים",
       exampleCurlAdvanced: "curl + מתקדם",
       examplePythonAdvanced: "Python + מתקדם",
