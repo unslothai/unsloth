@@ -6500,6 +6500,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                             if not isinstance(tgt_el, ast.Name):
                                 continue
                             tid = tgt_el.id
+                            if _is_numpy_load(val_el):
+                                load_fn_aliases.add(tid)  # r, _ = (np.load, 1)
                             if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
                                 open_aliases.add(tid)
                             elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:

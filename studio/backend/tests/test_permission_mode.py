@@ -2343,6 +2343,7 @@ def test_python_classifier(code, unsafe):
             True,
         ),
         ("import numpy as np\ndef read(f):\n return f('a.npy', None, True)\nread(np.load)", True),
+        ("import numpy as np\nloader, _ = (np.load, None)\nloader('a.npy', None, True)", True),
     ],
 )
 def test_python_classifier_numpy_allow_pickle(code, unsafe):
