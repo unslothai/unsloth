@@ -1558,7 +1558,7 @@ test("an html table keeps its columns when a cell is empty", async () => {
   );
 });
 
-test("a Word row keeps its columns past skipped grid cells, tabs and nested tables", async () => {
+test("a Word row keeps its columns past skipped grid cells, tabs, line breaks and nested tables", async () => {
   const ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
   const p = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
   const row = (cells: string, pr = "") => `<w:tr>${pr}${cells}</w:tr>`;
@@ -1573,6 +1573,7 @@ test("a Word row keeps its columns past skipped grid cells, tabs and nested tabl
           `<w:tc><w:p><w:r><w:t>A</w:t><w:tab/><w:t>B</w:t></w:r></w:p></w:tc>` +
           `<w:tc>${nested}<w:p/></w:tc>`,
       ) +
+      row(`<w:tc>${p("11:00")}</w:tc><w:tc><w:p><w:r><w:t>Line one</w:t><w:br/><w:t>Line two</w:t></w:r></w:p></w:tc><w:tc>${p("C")}</w:tc>`) +
       "</w:tbl></w:body></w:document>",
   );
   const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
@@ -1581,8 +1582,13 @@ test("a Word row keeps its columns past skipped grid cells, tabs and nested tabl
   globals.XMLSerializer = XmlSerializer;
   try {
     const { default: mammoth } = await import("mammoth");
-    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxTableRows(bytes)) });
-    assert.equal(value, "Time\tMon\tTue\n\n\tLab 3\tLab 4\n\n\t\tOnly Tue\n\n10:00\tA B\tRoom 4 \n\n");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxTableRows(writeDocxBreaksAndCheckboxes(bytes))),
+    });
+    assert.equal(
+      value,
+      "Time\tMon\tTue\n\n\tLab 3\tLab 4\n\n\t\tOnly Tue\n\n10:00\tA B\tRoom 4 \n\n11:00\tLine one Line two\tC\n\n",
+    );
   } finally {
     Object.assign(globals, original);
   }

@@ -1021,9 +1021,16 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
         for (let i = 0; i < before; i++) line.appendChild(tab());
         cells.forEach((cell, index) => {
           if (index) line.appendChild(tab());
-          // A tab inside a cell, a nested table's included, would read as the next column.
-          for (const t of Array.from(cell.getElementsByTagNameNS(w, "tab"))) {
-            if ((t.parentNode as Element | null)?.localName === "r") t.parentNode?.replaceChild(space(), t);
+          // A tab or line break inside a cell, a nested table's included, would read as the next column or row.
+          for (const local of ["tab", "br", "cr"]) {
+            for (const mark of Array.from(cell.getElementsByTagNameNS(w, local))) {
+              if ((mark.parentNode as Element | null)?.localName === "r") mark.parentNode?.replaceChild(space(), mark);
+            }
+          }
+          for (const t of Array.from(cell.getElementsByTagNameNS(w, "t"))) {
+            for (const text of Array.from(t.childNodes)) {
+              if (text.nodeValue?.includes("\n")) t.replaceChild(doc.createTextNode(text.nodeValue.replace(/\n/g, " ")), text);
+            }
           }
           Array.from(cell.getElementsByTagNameNS(w, "p"))
             .filter((p) => outermost(p, cell))
