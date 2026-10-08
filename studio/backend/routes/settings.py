@@ -2888,7 +2888,6 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
 
 
 def _no_embedding_weights_error(candidates: list[str]) -> str:
-    """Error after the caller has already exhausted GGUF and ST resolution."""
     checked = " or ".join(repr(c) for c in candidates)
     return (
         f"No GGUF weights found in {checked}, and no safetensors to fall back to. "
@@ -2897,7 +2896,6 @@ def _no_embedding_weights_error(candidates: list[str]) -> str:
 
 
 def _st_cannot_load_error(model: str, candidates: list[str]) -> str:
-    """Error when no GGUF was found and the model's safetensors need a newer sentence-transformers or transformers."""
     checked = " or ".join(repr(c) for c in candidates)
     return (
         f"No GGUF weights found in {checked}, and {model!r} needs a newer sentence-transformers or "
@@ -2915,8 +2913,7 @@ def get_embedding_model(
 class EmbeddingModelResolveResponse(BaseModel):
     embedding_model: str
     backend: Literal["llama", "sentence-transformers"]
-    # Repo the picker hands the download manager, and the files to take from it. Split GGUF plans contain
-    # every shard in the selected family; both None when nothing needs fetching or when ``error`` is set.
+    # download source; split plans include every shard; both fields are None on no fetch or error
     download_repo: Optional[str] = None
     files: Optional[list[str]] = None
     cached: bool = False
@@ -2950,7 +2947,7 @@ _EMBEDDING_RESOLVE_DEADLINE: ContextVar[float | None] = ContextVar(
 
 
 def _call_with_embedding_resolve_budget(fn, *, name: str):
-    """Run one remote probe inside the resolution's single time budget."""
+    """run one remote probe within the shared resolution deadline."""
     deadline = _EMBEDDING_RESOLVE_DEADLINE.get()
     timeout = (
         _GGUF_LIST_DEADLINE_S
@@ -2965,8 +2962,7 @@ def _call_with_embedding_resolve_budget(fn, *, name: str):
 
 
 def _with_embedding_resolve_budget(fn):
-    """Give one GET/PUT resolution a deadline shared by every Hub fallback, and one scope for the
-    sentence-transformers load proofs, so a check the spent deadline skips cannot undo an earlier one."""
+    """share one deadline and ST proof scope so timeout skips cannot erase earlier results."""
 
     @functools.wraps(fn)
     def _wrapped(*args, **kwargs):
@@ -2985,7 +2981,7 @@ def _with_embedding_resolve_budget(fn):
 
 
 def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
-    """List a Hub repo without letting a blackholed route pin Settings forever."""
+    """bound Hub listing time so a blackholed route cannot pin Settings."""
     from huggingface_hub import list_repo_files
     return _call_with_embedding_resolve_budget(
         lambda: list_repo_files(repo, token = hf_token),
@@ -3234,7 +3230,6 @@ def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str
 
 
 def _sentence_transformers_fallback_allowed(model: str) -> bool:
-    """Whether a newly selected model can actually be served by ST in this process."""
     try:
         from core.rag import embeddings
         return embeddings.sentence_transformers_fallback_allowed(model)
@@ -3243,12 +3238,11 @@ def _sentence_transformers_fallback_allowed(model: str) -> bool:
 
 
 def _sentence_transformers_can_load(model: str) -> bool:
-    """Whether the installed sentence-transformers can open ``model``, within the resolution's budget."""
     try:
         from core.rag import embeddings
     except Exception:  # noqa: BLE001 - unimportable embedder: no proof either way
         return True
-    # Before the budget, so a timeout cannot undo the plan's earlier proof.
+    # check known failures before the deadline so a timeout cannot erase earlier proof
     if embeddings.sentence_transformers_known_unloadable(model):
         return False
     try:
@@ -3261,7 +3255,7 @@ def _sentence_transformers_can_load(model: str) -> bool:
 
 
 def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Optional[int]:
-    """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the hub does not say."""
+    """return total file bytes for confirmation, or None when Hub omits the sizes."""
     try:
         from huggingface_hub import model_info
 
@@ -3458,8 +3452,7 @@ def _resolve_embedding_model_plan(
         )
     plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(resolved, token)
     if plan is None:
-        # The loader's offline fallback accepts any complete cached quant from
-        # any candidate only after its bounded online listing fails.
+        # the offline fallback accepts any complete cached quant after bounded online listing fails
         cached_repo = _cached_embedding_gguf(candidates, require_variant = False)
         if cached_repo and not _authorized(cached_repo):
             cached_repo = None
@@ -3470,17 +3463,11 @@ def _resolve_embedding_model_plan(
                 download_repo = cached_repo,
                 cached = True,
             )
-        # No GGUF from this publisher: run it on its own safetensors only when
-        # configuration/runtime policy can actually select ST for this model.
+        # use publisher safetensors only when this process can select ST
         st_allowed = _sentence_transformers_fallback_allowed(resolved)
-        # And only when ST can open it, or the download never loads.
         st_unloadable = st_allowed and not _sentence_transformers_can_load(resolved)
         st_plan = _safetensors_plan(resolved, token) if st_allowed and not st_unloadable else None
-        # The GGUF branches above are gated and this one was not. The plan answers with the
-        # repo the snapshot is FILED under, which for a slashless alias is not the name the
-        # caller typed, and the response then reports it cached: that is how a denied caller
-        # discovers the operator's private weights and force-saves them as the embedder.
-        # Reading our own disk to find the repo is fine; naming it back is what is gated.
+        # authorize the plan's repo to avoid exposing a cached private repo through an alias
         if st_plan is not None and not _authorized(st_plan[0]):
             st_plan = None
         if st_plan is None:
@@ -3498,15 +3485,12 @@ def _resolve_embedding_model_plan(
             embedding_model = resolved,
             backend = "sentence-transformers",
             download_repo = st_repo,
-            # Same alias-aware predicate, asked about the repo the plan named
-            # rather than the alias the user typed, which the gate above authorized.
+            # check the authorized plan repo because slashless aliases are cached under sentence-transformers/
             cached = _cached_snapshot_has_st_weights(st_repo),
             size_bytes = _hf_snapshot_size(st_repo, token),
         )
     repo, files = plan
-    # A gated repo can publish its filenames, so a plan coming back is not authorization to
-    # report the operator's copy of it. The repo the plan names need not be the one the
-    # caller asked about, so it is authorized in its own right like every other candidate.
+    # authorize the resolved repo before reporting whether the operator has its exact files cached
     if _authorized(repo) and _cached_embedding_gguf_files(repo, files):
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
