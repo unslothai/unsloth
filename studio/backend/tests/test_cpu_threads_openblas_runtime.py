@@ -64,6 +64,8 @@ def fake_windows(monkeypatch):
         return _FakeLib(calls)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    # Pinned: the cap is clamped to the core count, and CI runners can have as few as 3.
+    monkeypatch.setattr(os, "cpu_count", lambda: 32)
     monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising = False)
     monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
     monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
@@ -101,7 +103,6 @@ def test_process_configuration_caps_a_loaded_rocm_openblas(
 
 def test_user_openblas_value_is_what_reaches_the_dll(fake_windows, clean_thread_env, monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", sys.modules.get("torch") or object())
-    monkeypatch.setattr(os, "cpu_count", lambda: 32)
     monkeypatch.setenv("OPENBLAS_NUM_THREADS", "6")
 
     configure_cpu_threads()
