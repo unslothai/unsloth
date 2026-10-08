@@ -349,10 +349,16 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
 def _document_source_citation(source: dict) -> str:
     filename = str(source.get("filename") or "Document")
     if source.get("kind") == "mcp":
-        return f"[MCP: {filename}]"
+        return f"[MCP: {_mcp_source_label(source)}]"
     if source.get("page") is not None:
         return f"[Document: {filename}, p. {source['page']}]"
     return f"[Document: {filename}]"
+
+
+def _mcp_source_label(source: dict) -> str:
+    filename = str(source.get("filename") or "MCP source")
+    label = " ".join(filename.replace("[", "").replace("]", "").split())
+    return label or "MCP source"
 
 
 def _allowed_document_citations(sources: list[dict]) -> set[str]:

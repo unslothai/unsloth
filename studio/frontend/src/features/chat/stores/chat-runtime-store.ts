@@ -139,6 +139,7 @@ export const CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY =
   "unsloth_chat_deep_research_model_timeout";
 export const CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY =
   "unsloth_chat_deep_research_mcp_sources";
+export const MAX_RESEARCH_MCP_SOURCES = 20;
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -253,18 +254,40 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   }
 }
 
+function normalizeResearchMcpSources(value: unknown): ResearchMcpSource[] {
+  if (!Array.isArray(value)) return [];
+  const sources: ResearchMcpSource[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const serverId = item?.serverId;
+    const tool = item?.tool;
+    if (
+      typeof serverId !== "string" ||
+      serverId.length < 1 ||
+      serverId.length > 200 ||
+      typeof tool !== "string" ||
+      tool.length < 1 ||
+      tool.length > 500
+    ) {
+      continue;
+    }
+    const key = `${serverId}\0${tool}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sources.push({ serverId, tool });
+    if (sources.length === MAX_RESEARCH_MCP_SOURCES) break;
+  }
+  return sources;
+}
+
 function loadResearchMcpSources(): ResearchMcpSource[] {
   if (typeof window === "undefined") return [];
   try {
-    const parsed: unknown = JSON.parse(
-      window.localStorage.getItem(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY) || "[]",
+    return normalizeResearchMcpSources(
+      JSON.parse(
+        window.localStorage.getItem(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY) || "[]",
+      ),
     );
-    return Array.isArray(parsed)
-      ? parsed.filter(
-          (item): item is ResearchMcpSource =>
-            typeof item?.serverId === "string" && typeof item?.tool === "string",
-        )
-      : [];
   } catch {
     return [];
   }
@@ -5442,12 +5465,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setResearchMcpSources: (researchMcpSources) =>
-    set(() => {
+    set((state) => {
+      const sources = normalizeResearchMcpSources(researchMcpSources);
       persistSetting(
         CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY,
-        JSON.stringify(researchMcpSources),
+        JSON.stringify(sources),
       );
-      return { researchMcpSources };
+      return {
+        researchMcpSources: sources,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set(() => {

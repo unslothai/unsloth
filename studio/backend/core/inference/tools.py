@@ -13812,9 +13812,13 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     return _mcp_listing(listed), complete
 
 
-async def get_enabled_mcp_tools(include_stdio: bool = True) -> list[dict]:
+async def get_enabled_mcp_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
     # Keep the SQLite-backed server list off the event loop.
     servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
     # Never spawn stdio servers when stdio is disabled on this host.
     if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
@@ -13882,19 +13886,22 @@ def mcp_search_argument(name: str, tool: dict) -> str | None:
     prop = properties.get(key) if isinstance(key, str) else None
     if not isinstance(prop, dict) or prop.get("type") != "string" or "enum" in prop:
         return None
-    tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", _mcp_raw_tool_name(name)))
-    if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name) or is_high_risk_tool_call(name, {key: ""}):
+    if is_potentially_unsafe_tool_call(name, {key: ""}):
         return None
     return key
 
 
-async def mcp_search_tools(include_stdio: bool = True) -> list[dict]:
+async def mcp_search_tools(
+    include_stdio: bool = True, server_ids: set[str] | None = None
+) -> list[dict]:
     from state.tool_policy import get_tool_policy
 
     if get_tool_policy() is False:
         return []
-    await get_enabled_mcp_tools(include_stdio)
+    await get_enabled_mcp_tools(include_stdio = include_stdio, server_ids = server_ids)
     servers = _enabled_mcp_servers(await asyncio.to_thread(mcp_servers_db.list_servers))
+    if server_ids is not None:
+        servers = [server for server in servers if server["id"] in server_ids]
     if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     found = []

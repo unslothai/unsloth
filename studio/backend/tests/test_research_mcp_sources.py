@@ -61,6 +61,8 @@ def notes_server(tmp_path, monkeypatch):
             _tool("delete_note", "note_id"),
             _tool("lookup_pair", "left", "right"),
             _tool("get_secret_token", "query"),
+            _tool("schedule_meeting", "query"),
+            _tool("complete_task", "query"),
         ],
     )
     yield
@@ -75,6 +77,71 @@ def test_research_lists_only_read_only_single_query_mcp_tools(notes_server):
         ("Project Notes", "search_notes"),
         ("Project Notes", "search_papers"),
     ]
+
+
+def test_credentialless_discovery_never_starts_stdio_servers(monkeypatch):
+    from core.inference import tools as tools_mod
+
+    servers = [
+        {
+            "id": "local",
+            "display_name": "Local",
+            "url": "python server.py",
+            "is_enabled": True,
+            "use_oauth": False,
+        },
+        {
+            "id": "remote",
+            "display_name": "Remote",
+            "url": "https://notes.example/mcp",
+            "is_enabled": True,
+            "use_oauth": False,
+        },
+    ]
+    calls = []
+
+    async def fake_list_tools(url, **kwargs):
+        calls.append(url)
+        return [_tool("search_notes", "query")]
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_servers_db, "list_servers", lambda: servers)
+    monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake_list_tools)
+
+    tools = asyncio.run(tools_mod.mcp_search_tools(include_stdio = False))
+
+    assert calls == ["https://notes.example/mcp"]
+    assert [tool["serverId"] for tool in tools] == ["remote"]
+
+
+def test_run_discovery_only_probes_selected_servers(monkeypatch):
+    from core.inference import tools as tools_mod
+
+    servers = [
+        {
+            "id": server_id,
+            "display_name": server_id.title(),
+            "url": f"https://{server_id}.example/mcp",
+            "is_enabled": True,
+            "use_oauth": False,
+        }
+        for server_id in ("selected", "unused")
+    ]
+    calls = []
+
+    async def fake_list_tools(url, **kwargs):
+        calls.append(url)
+        return [_tool("search_notes", "query")]
+
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    monkeypatch.setattr(mcp_servers_db, "list_servers", lambda: servers)
+    monkeypatch.setattr(tools_mod, "list_tools_async", fake_list_tools)
+
+    tools = asyncio.run(tools_mod.mcp_search_tools(server_ids = {"selected"}))
+
+    assert calls == ["https://selected.example/mcp"]
+    assert [tool["serverId"] for tool in tools] == ["selected"]
 
 
 def test_research_drops_mcp_servers_the_account_does_not_have(notes_server):
@@ -92,6 +159,42 @@ def test_research_drops_mcp_servers_the_account_does_not_have(notes_server):
         {"modelId": "local-model"},
     )
     assert config["mcpSources"] == [{"serverId": "notes", "tool": "search_notes"}]
+
+
+def test_mcp_evidence_keeps_content_from_every_source():
+    from core.research_runs import _mcp_evidence
+
+    sources = [
+        {
+            "kind": "mcp",
+            "filename": f"Source {index}",
+            "snippet": f"marker-{index} " + "x" * 4000,
+        }
+        for index in range(3)
+    ]
+    evidence = _mcp_evidence(sources)
+
+    assert len(evidence) < 6500
+    for index in range(3):
+        assert f"marker-{index}" in evidence
+
+
+def test_mcp_citation_normalizes_untrusted_source_labels():
+    from core.research.citations import (
+        _document_source_citation,
+        _validate_report_document_sources,
+    )
+
+    source = {"kind": "mcp", "filename": "Project ]\n[ Notes · search"}
+    citation = _document_source_citation(source)
+
+    assert citation == "[MCP: Project Notes · search]"
+    assert _validate_report_document_sources(f"Claim {citation}.", [source]) == (
+        f"Claim {citation}."
+    )
+    assert _validate_report_document_sources(
+        "Claim [Document: Project Notes · search].", [source]
+    ) == ("Claim .")
 
 
 def test_selected_mcp_tools_search_every_step_and_are_cited(notes_server, monkeypatch):

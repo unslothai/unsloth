@@ -30,6 +30,7 @@ import {
 } from "../api/mcp-servers-api";
 import {
   DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  MAX_RESEARCH_MCP_SOURCES,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { MAX_RESEARCH_MODEL_TIMEOUT_SECONDS } from "../utils/mirrored-chat-settings";
@@ -157,8 +158,6 @@ function DomainList({
   );
 }
 
-const MAX_RESEARCH_MCP_SOURCES = 20;
-
 const matches = (tool: ResearchMcpTool, value: ResearchMcpSource) =>
   value.serverId === tool.serverId && value.tool === tool.tool;
 
@@ -189,6 +188,9 @@ function McpSourceList({
       cancelled = true;
     };
   }, [onChange]);
+  const availableValues = values.filter((value) =>
+    tools?.some((tool) => matches(tool, value)),
+  );
 
   return (
     <div className="space-y-2">
@@ -196,7 +198,7 @@ function McpSourceList({
         <div className="text-sm font-medium">MCP search sources</div>
         <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
           Every research search also sends its query to the tools turned on
-          here.
+          here. Choose up to {MAX_RESEARCH_MCP_SOURCES}.
         </p>
       </div>
       {tools === null ? (
@@ -224,14 +226,19 @@ function McpSourceList({
             <Switch
               checked={values.some((value) => matches(tool, value))}
               disabled={
-                values.length >= MAX_RESEARCH_MCP_SOURCES &&
-                !values.some((value) => matches(tool, value))
+                !values.some((value) => matches(tool, value)) &&
+                availableValues.length >= MAX_RESEARCH_MCP_SOURCES
               }
               onCheckedChange={(checked) =>
                 onChange(
                   checked
-                    ? [...values, { serverId: tool.serverId, tool: tool.tool }]
-                    : values.filter((value) => !matches(tool, value)),
+                    ? [
+                        ...availableValues,
+                        { serverId: tool.serverId, tool: tool.tool },
+                      ].slice(0, MAX_RESEARCH_MCP_SOURCES)
+                    : availableValues.filter(
+                        (value) => !matches(tool, value),
+                      ),
                 )
               }
               aria-label={`Search with ${tool.serverName} ${tool.tool}`}

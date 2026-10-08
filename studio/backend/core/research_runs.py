@@ -53,6 +53,7 @@ from core.research.citations import (
     _allowed_document_citations,
     _citation_title,
     _document_source_citation,
+    _mcp_source_label,
     _validate_report,
 )
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
@@ -1373,7 +1374,9 @@ class ResearchSupervisor:
                     "kind": "mcp",
                     "chunkId": f"{tool['name']}:{position}",
                     "documentId": tool["name"],
-                    "filename": f"{tool['serverName']} · {tool['tool']}",
+                    "filename": _mcp_source_label(
+                        {"filename": f"{tool['serverName']} · {tool['tool']}"}
+                    ),
                     "page": None,
                     "score": None,
                     "snippet": text[:4000],
@@ -2423,7 +2426,9 @@ class ResearchSupervisor:
         mcp_tools = (
             [
                 tool
-                for tool in await mcp_search_tools()
+                for tool in await mcp_search_tools(
+                    server_ids = {server_id for server_id, _tool in selected_mcp}
+                )
                 if (tool["serverId"], tool["tool"]) in selected_mcp
             ]
             if selected_mcp
