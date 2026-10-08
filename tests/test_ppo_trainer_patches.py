@@ -18,7 +18,9 @@ The helpers are lifted with ``ast`` from ``unsloth/models/rl.py`` so the test st
 from __future__ import annotations
 
 import ast
+import copy
 import functools
+import inspect
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -28,6 +30,8 @@ import pytest
 RL_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.py"
 NAMES = (
     "_generation_target",
+    "_generate_accepts_use_model_defaults",
+    "_caller_sampling_only",
     "_hide_unsupported_gradient_checkpointing",
     "_ppo_padding_mask_modules",
     "_wrap_ppo_train",
@@ -37,18 +41,15 @@ NAMES = (
 def _load():
     tree = ast.parse(RL_PATH.read_text(encoding = "utf-8"), filename = str(RL_PATH))
     wanted = [
-        node
-        for node in tree.body
-        if (isinstance(node, ast.FunctionDef) and node.name in NAMES)
-        or (
-            isinstance(node, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id == "_PPO_ROLLOUT_FILTER_KEYS" for t in node.targets
-            )
-        )
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in NAMES
     ]
-    assert len(wanted) == len(NAMES) + 1, [getattr(n, "name", "assign") for n in wanted]
-    namespace = {"functools": functools, "contextmanager": contextmanager}
+    assert len(wanted) == len(NAMES), [n.name for n in wanted]
+    namespace = {
+        "copy": copy,
+        "functools": functools,
+        "inspect": inspect,
+        "contextmanager": contextmanager,
+    }
     exec(compile(ast.Module(body = wanted, type_ignores = []), str(RL_PATH), "exec"), namespace)
     return namespace
 
@@ -107,40 +108,52 @@ def test_models_with_gradient_checkpointing_api_untouched():
         assert model.is_gradient_checkpointing is True
 
 
-def _trainer_class(seen):
+class _Generator:
+    def __init__(self, generation_config):
+        self.generation_config = generation_config
+
+
+def test_ppo_rollouts_keep_caller_sampling():
+    transformers = pytest.importorskip("transformers")
+    model_config = transformers.GenerationConfig(
+        top_p = 0.8, top_k = 20, temperature = 0.7, min_p = 0.05, eos_token_id = 5, pad_token_id = 7
+    )
+    trl_config = transformers.GenerationConfig(
+        max_new_tokens = 8, temperature = 0.7, top_k = 0, top_p = 1.0, do_sample = True
+    )
+    kwargs = {"input_ids": "ids", "generation_config": trl_config}
+    out = NS["_caller_sampling_only"](_Generator(model_config), kwargs)
+    if not NS["_generate_accepts_use_model_defaults"]():
+        # transformers 5 only fills fields left unset, and TRL sets its sampling fields explicitly.
+        assert out is kwargs
+        return
+    assert out["use_model_defaults"] is False and out["input_ids"] == "ids"
+    passed = out["generation_config"]
+    assert (passed.top_p, passed.top_k, passed.min_p) == (1.0, 0, None)
+    # Stopping still follows the model (TRL writes its stop token there).
+    assert (passed.eos_token_id, passed.pad_token_id) == (5, 7)
+    assert trl_config.eos_token_id is None and model_config.top_p == 0.8
+
+
+def test_ppo_rollouts_respect_explicit_use_model_defaults():
+    transformers = pytest.importorskip("transformers")
+    kwargs = {"generation_config": transformers.GenerationConfig(), "use_model_defaults": True}
+    assert (
+        NS["_caller_sampling_only"](_Generator(transformers.GenerationConfig()), kwargs) is kwargs
+    )
+    assert NS["_caller_sampling_only"](_Generator(None), {"max_new_tokens": 4}) == {
+        "max_new_tokens": 4
+    }
+
+
+def test_ppo_train_wrapped_once_and_mask_cleared_on_error():
+    base = _Module(base = True)
+
     class _Trainer:
-        def __init__(self, generation_config):
-            self.policy_model = type("P", (), {"generation_config": generation_config})()
+        policy_model = _Module(base)
 
         def train(self):
-            gc = self.policy_model.generation_config
-            seen.update(top_p = gc.top_p, top_k = gc.top_k, temperature = gc.temperature, min_p = gc.min_p)
-            return "trained"
-
-    return _Trainer
-
-
-def test_ppo_rollouts_sample_full_distribution_then_restore():
-    transformers = pytest.importorskip("transformers")
-    config = transformers.GenerationConfig(top_p = 0.8, top_k = 20, temperature = 0.7, min_p = 0.05)
-    seen = {}
-    trainer_cls = _trainer_class(seen)
-    NS["_wrap_ppo_train"](trainer_cls)
-    assert trainer_cls(config).train() == "trained"
-    # Filters transformers would copy over TRL's defaults are reset; TRL's explicit values stay.
-    assert seen["top_p"] == 1.0 and seen["min_p"] is None
-    assert seen["top_k"] == 20 and seen["temperature"] == 0.7
-    assert (config.top_p, config.min_p) == (0.8, 0.05)
-
-
-def test_ppo_rollouts_restore_on_error_and_wrap_once():
-    transformers = pytest.importorskip("transformers")
-    config = transformers.GenerationConfig(top_p = 0.8)
-
-    class _Trainer:
-        policy_model = type("P", (), {"generation_config": config})()
-
-        def train(self):
+            assert base._unsloth_keep_padding_mask is True
             raise RuntimeError("oom")
 
     NS["_wrap_ppo_train"](_Trainer)
@@ -149,7 +162,7 @@ def test_ppo_rollouts_restore_on_error_and_wrap_once():
     assert _Trainer.train is first
     with pytest.raises(RuntimeError):
         _Trainer().train()
-    assert config.top_p == 0.8
+    assert base._unsloth_keep_padding_mask is False
 
 
 def test_rollout_logits_freed_after_scoring():

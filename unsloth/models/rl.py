@@ -16,6 +16,7 @@ __all__ = [
 
 import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+import copy
 import copyreg
 import functools
 import importlib
@@ -160,6 +161,34 @@ def _generation_target(unwrapped_model):
     return getattr(unwrapped_model, "policy", unwrapped_model)
 
 
+def _generate_accepts_use_model_defaults():
+    try:
+        from transformers.generation.utils import GenerationMixin
+        return "use_model_defaults" in inspect.signature(GenerationMixin.generate).parameters
+    except Exception:
+        return False
+
+
+def _caller_sampling_only(model, kwargs):
+    # transformers 4.50+ (before 5.0) fills every field of a passed GenerationConfig left at its global
+    # default (top_p = 1.0) from the model's own, so PPO rollouts of Qwen3 Instruct sampled with
+    # top_p = 0.8 and generate's scores no longer matched the logprobs PPO trains on. Keep the
+    # caller's sampling settings; only the token ids still come from the model (TRL sets eos there).
+    generation_config = kwargs.get("generation_config", None)
+    if (
+        generation_config is None
+        or "use_model_defaults" in kwargs
+        or not _generate_accepts_use_model_defaults()
+    ):
+        return kwargs
+    generation_config = copy.deepcopy(generation_config)
+    model_config = getattr(model, "generation_config", None)
+    for key in ("bos_token_id", "eos_token_id", "pad_token_id", "decoder_start_token_id"):
+        if getattr(generation_config, key, None) is None:
+            setattr(generation_config, key, getattr(model_config, key, None))
+    return {**kwargs, "generation_config": generation_config, "use_model_defaults": False}
+
+
 @contextmanager
 def _hide_unsupported_gradient_checkpointing(model):
     # TRL < 0.26 PPO's PolicyAndValueWrapper reports is_gradient_checkpointing but lacks the
@@ -237,6 +266,8 @@ def PatchRL(FastLanguageModel):
             original_generate = generator.generate
 
             def generate_with_clone(*args, **kwargs):
+                if generator is not unwrapped_model:
+                    kwargs = _caller_sampling_only(generator, kwargs)
                 out = original_generate(*args, **kwargs)
                 if isinstance(out, torch.Tensor):
                     return out.clone()
@@ -772,18 +803,6 @@ def _wrap_full_eval_keeps_trainable_dtype(trainer_cls):
         setattr(trainer_cls, loop_name, _make(original, loop_name))
 
 
-# Sampling filters that reshape the distribution PPO samples rollouts from.
-_PPO_ROLLOUT_FILTER_KEYS = (
-    "top_p",
-    "min_p",
-    "typical_p",
-    "epsilon_cutoff",
-    "eta_cutoff",
-    "repetition_penalty",
-    "no_repeat_ngram_size",
-)
-
-
 def _ppo_padding_mask_modules(trainer):
     # Unsloth's training forward drops the attention mask (it assumes right padding), but PPO
     # left-pads every query, so policy and value forwards would attend to the pads.
@@ -799,9 +818,6 @@ def _ppo_padding_mask_modules(trainer):
 
 
 def _wrap_ppo_train(trainer_cls):
-    # PPO's KL and ratio read rollout logprobs off generate's scores. transformers swaps every field of
-    # TRL's GenerationConfig left at its global default (top_p = 1.0) for the model's own default
-    # (Qwen3 Instruct: top_p = 0.8), so the scores come from a truncated distribution and bias both.
     if not hasattr(trainer_cls, "train"):
         return
     original = trainer_cls.train
@@ -809,23 +825,12 @@ def _wrap_ppo_train(trainer_cls):
         return
 
     def wrapped(self, *args, **kwargs):
-        generation_config = getattr(getattr(self, "policy_model", None), "generation_config", None)
-        saved = {}
-        if generation_config is not None:
-            from transformers import GenerationConfig
-            defaults = GenerationConfig()
-            for key in _PPO_ROLLOUT_FILTER_KEYS:
-                if hasattr(generation_config, key) and hasattr(defaults, key):
-                    saved[key] = getattr(generation_config, key)
-                    setattr(generation_config, key, getattr(defaults, key))
         masked = list(_ppo_padding_mask_modules(self))
         for module in masked:
             module._unsloth_keep_padding_mask = True
         try:
             return original(self, *args, **kwargs)
         finally:
-            for key, value in saved.items():
-                setattr(generation_config, key, value)
             for module in masked:
                 module._unsloth_keep_padding_mask = False
 
