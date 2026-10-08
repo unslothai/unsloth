@@ -13225,11 +13225,15 @@ def _estimate_gguf_required_gb(
         # Mirrors load_model's #11308 rule: Auto on tensor split runs a loadable MTP sidecar, not DFlash.
         if _auto_dflash:
             from core.inference.llama_server_args import _effective_tensor_parallel
+            from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+
             _tp_mtp = getattr(config, "gguf_mtp_file", None)
+            _tp_main = getattr(config, "gguf_file", None)
             if (
                 _tp_mtp
                 and _effective_tensor_parallel(llama_extra_args, tensor_parallel)
                 and Path(_tp_mtp).is_file()
+                and not (_tp_main and (read_gguf_nextn_predict_layers(str(_tp_main)) or 0) > 0)
                 and _mtp_drafter_loads_standalone(str(_tp_mtp))
             ):
                 try:

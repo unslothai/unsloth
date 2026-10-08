@@ -3284,6 +3284,33 @@ def test_auto_keeps_dflash_under_tensor_split_when_the_binary_cannot_run_mtp(mon
     assert seen["dflash_promoted"] is True
 
 
+def test_auto_keeps_dflash_under_tensor_split_for_an_extras_drafter(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        extra_args = ["-sm", "tensor", "--model-draft", "/models/dflash-model.gguf"],
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_for_a_target_with_an_embedded_head(monkeypatch):
+    import utils.models.gguf_metadata as gguf_metadata
+
+    monkeypatch.setattr(gguf_metadata, "read_gguf_nextn_predict_layers", lambda _path: 1)
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_promoted"] is True
+
+
 def test_auto_keeps_dflash_under_tensor_split_without_an_mtp_drafter(monkeypatch):
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,

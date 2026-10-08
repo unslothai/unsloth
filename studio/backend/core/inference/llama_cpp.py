@@ -23998,10 +23998,17 @@ class LlamaCppBackend:
             )
 
             def _auto_dflash_blocked_by_tensor() -> bool:
-                if _auto_tensor_split and mtp_draft_path:
+                # Only when the discovered sidecar is what launches: not with an extras drafter or an embedded head.
+                if (
+                    _auto_tensor_split
+                    and mtp_draft_path
+                    and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
+                ):
                     try:
+                        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
                         return bool(
                             _launch_caps(binary).get("mtp_token")
+                            and not (read_gguf_nextn_predict_layers(model_path) or 0) > 0
                             and _mtp_drafter_loads_standalone(mtp_draft_path)
                         )
                     except Exception:
