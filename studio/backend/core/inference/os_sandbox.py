@@ -240,10 +240,35 @@ class _ScanBudgetExceeded(Exception):
     """The walk ran out of budget: not a hazard, so it must not refuse an `auto` launch."""
 
 
+def _extended_path(path: str) -> str:
+    """The \\\\?\\ spelling of a Windows path, which reaches a file named nul, con or com1 instead of the device."""
+    import ntpath
+
+    if path.startswith(("\\\\?\\", "\\\\.\\")):
+        return path
+    # normpath is string-only; abspath would hand back \\.\nul for C:\work\nul, the device again.
+    absolute = ntpath.normpath(path)
+    drive, rest = ntpath.splitdrive(absolute)
+    if not drive or not rest.startswith("\\"):
+        absolute = ntpath.normpath(ntpath.join(os.getcwd(), absolute))
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+# The real filesystem API, not sys.platform: tests stand in a Windows platform over a POSIX tmp_path.
+_NT_PATHS = os.name == "nt"
+
+
+def _entry_path(path: str) -> str:
+    # Git Bash's `> nul` leaves a real file a plain Win32 stat reports as the NUL device.
+    return _extended_path(path) if _NT_PATHS else path
+
+
 def directory_signature(path: str) -> tuple:
     """Identity plus mtime for one directory, the unit a cached verdict is re-checked in."""
     try:
-        info = os.stat(path)
+        info = os.stat(_entry_path(path))
     except OSError:
         return (path, None)
     return (path, info.st_dev, info.st_ino, info.st_mtime_ns)
@@ -283,7 +308,7 @@ def _host_channel_hazard(
                 )
             path = os.path.join(base, name)
             try:
-                info = os.lstat(path)
+                info = os.lstat(_entry_path(path))
             except OSError:
                 return f"changed during its safety scan: {path}"
             # Windows only: MXC grants the workdir by path, so a junction or symlink inside it widens the grant.
@@ -292,8 +317,9 @@ def _host_channel_hazard(
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
-                # Misses a same-filesystem bind mount; Linux also asks the mount table.
-                if os.path.ismount(path):
+                # Misses a same-filesystem bind mount; Linux also asks the mount table. A Windows mounted folder is a
+                # reparse point, refused above, and ntpath.ismount calls a directory named nul the \\.\nul device root.
+                if not _NT_PATHS and os.path.ismount(path):
                     return f"contains a nested host mount: {path}"
                 continue
             if not stat.S_ISREG(info.st_mode):
