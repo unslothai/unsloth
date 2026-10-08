@@ -292,9 +292,48 @@ class SiteLinks:
             self._found[link] = text
 
     def strip(self, markdown: str) -> str:
-        for link in sorted(self._found, key = len, reverse = True):
-            markdown = markdown.replace(link, self._found[link])
-        return markdown
+        out: list[str] = []
+        fence = 0
+        for line in markdown.split("\n"):
+            moved = _fence_state(line, fence)
+            if moved == fence and not fence and "](" in line:
+                line = self._strip_line(line)
+            fence = moved
+            out.append(line)
+        return "\n".join(out)
+
+    def _strip_line(self, line: str) -> str:
+        parts: list[str] = []
+        opens: list[int] = []
+        last, i, n = 0, 0, len(line)
+        while i < n:
+            char = line[i]
+            if char == "\\":
+                i += 2
+                continue
+            if char == "[":
+                opens.append(i)
+            elif char == "]" and opens:
+                start = opens.pop()
+                if i + 1 < n and line[i + 1] == "(":
+                    j, depth = i + 2, 1
+                    while j < n and depth:
+                        if line[j] == "\\":
+                            j += 2
+                            continue
+                        depth += (line[j] == "(") - (line[j] == ")")
+                        j += 1
+                    if not depth:
+                        text = self._found.get(line[start:j])
+                        if text is not None:
+                            parts.append(line[last:start])
+                            parts.append(text)
+                            last = j
+                        i = j
+                        continue
+            i += 1
+        parts.append(line[last:])
+        return "".join(parts)
 
 
 class _MarkdownRenderer(HTMLParser):
