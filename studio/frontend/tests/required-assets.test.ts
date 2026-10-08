@@ -93,7 +93,11 @@ test("the download manager names companion files, falling back to required asset
   );
   assert.equal(
     assetLabel(
-      { repoId: "Qwen/Qwen-Image-2.1", bytes: 0, files: ["scheduler/config.json"] },
+      {
+        repoId: "Qwen/Qwen-Image-2.1",
+        bytes: 0,
+        files: ["scheduler/config.json"],
+      },
       "Required assets",
     ),
     "Required assets",
@@ -103,5 +107,8 @@ test("the download manager names companion files, falling back to required asset
     "Required assets",
   );
   // Without a fallback the dialog keeps naming the repo.
-  assert.equal(assetLabel({ repoId: "Qwen/Qwen-Image-2.1", bytes: 0 }), "Qwen-Image-2.1");
+  assert.equal(
+    assetLabel({ repoId: "Qwen/Qwen-Image-2.1", bytes: 0 }),
+    "Qwen-Image-2.1",
+  );
 });

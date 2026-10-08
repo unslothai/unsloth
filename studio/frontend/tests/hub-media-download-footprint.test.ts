@@ -35,6 +35,7 @@ const {
   companionPlanRequests,
   ggufVariantFootprint,
   resolveCompanionBytes,
+  withCompanionBytes,
 } = await import("../src/features/hub/hooks/use-media-companion-bytes.ts");
 
 function entry(repo: string, bytes: number, checkpoint = false) {
@@ -207,11 +208,32 @@ test("a cached GGUF reads as partial until Run has its companions", () => {
     awaitsCompanions(true, ggufVariantFootprint(done, pending)),
     true,
   );
-  assert.equal(awaitsCompanions(true, ggufVariantFootprint(done, cached)), false);
+  assert.equal(
+    awaitsCompanions(true, ggufVariantFootprint(done, cached)),
+    false,
+  );
   // No plan yet (or a non-media page): keep the plain On device badge.
   assert.equal(awaitsCompanions(true, null), false);
   assert.equal(
     awaitsCompanions(false, ggufVariantFootprint(variant("Q5_K_M"), pending)),
     false,
   );
+});
+
+test("a re-plan with nothing left clears the group's pending companions", () => {
+  const pending = new Map([["qwen-image-2.1", COMPANION_BYTES]]);
+  assert.equal(
+    withCompanionBytes(pending, "qwen-image-2.1", COMPANION_BYTES),
+    pending,
+  );
+  const done = withCompanionBytes(pending, "qwen-image-2.1", null);
+  assert.equal(done.has("qwen-image-2.1"), false);
+  assert.equal(
+    awaitsCompanions(
+      true,
+      ggufVariantFootprint(variant("Q5_K_M", { downloaded: true }), done),
+    ),
+    false,
+  );
+  assert.equal(pending.get("qwen-image-2.1"), COMPANION_BYTES);
 });
