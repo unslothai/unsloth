@@ -1698,28 +1698,22 @@ async def stream_with_studio_tools(
                     continue
                 turn.text.append(span)
                 yield _sse({"choices": [{"index": 0, "delta": {"content": span}}]})
-        # Truncation first: half-written arguments are never shown, whatever tool_choice said.
+        # Truncation wins: half-written arguments are never shown.
         unrun_reason = None
         if truncated:
             unrun_reason = _TOOL_TRUNCATED
         elif tool_choice == "none":
             unrun_reason = _TOOL_CHOICE_NONE
         if unrun_reason is not None:
-            # A call the provider streamed as a tool_calls delta was relayed as it arrived, so the client already has
-            # a card for it, and refusing to run it leaves that card open for the rest of the response. Close it the
-            # way every other unrun call is closed. Structured only: a healed call was never streamed, the span
-            # released just above tells the user about a truncated one, and "none" promotes none at all. Through
-            # `calls`, which never executes anything: it is what mints the card id for a call the provider gave none,
-            # and the client drew its card under that same spelling. Reading the slots directly left every id-less
-            # call out, so the card the deltas painted spun for the rest of the response. Calls it drops -- nameless,
-            # or a fork whose object never closed -- have no card of ours to close either.
+            # The relayed tool_calls delta already drew a card; close it like every other unrun call. Through `calls`
+            # (executes nothing): it mints the card id the client drew for an id-less call, which reading the slots
+            # directly missed, leaving that card spinning.
             for raw_call in turn.calls(used_call_ids, painted_card_ids):
                 unrun_id = raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
                 name = raw_call["function"]["name"]
                 for card_line in _unrun_call_card(
                     tool_name = name,
                     tool_call_id = unrun_id,
-                    # Cut off mid-write, there is nothing well formed to show; the result says what happened.
                     arguments = {} if truncated else raw_call.get("arguments"),
                     result = unrun_reason,
                     provenance = _unrun_provenance(name, round_id + 1),
