@@ -71,7 +71,10 @@ def _real_static_cache_bytes(config, batch, max_cache_len, dtype):
 def _require_early_initialization():
     from transformers import StaticCache
     if not hasattr(StaticCache, "early_initialization"):
-        pytest.skip("StaticCache.early_initialization not in this transformers")
+        pytest.skip(
+            reason = "the reference, StaticCache.early_initialization, is missing from this "
+            "transformers; the remaining tests still check the estimate",
+        )
 
 
 @pytest.mark.parametrize("batch", [1, 3])
