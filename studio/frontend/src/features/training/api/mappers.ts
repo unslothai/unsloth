@@ -82,6 +82,16 @@ export function offloadHardwareSupported(
   return devices.length === 0 || devices.some((device) => device.unified_memory !== true);
 }
 
+/** Whether a VRAM budget can apply: an image / audio run on several GPUs offloads only at LoRA setup, after adapters
+ * allocate, so the worker skips the cap there (it would OOM before any layer moved). */
+export function offloadBudgetSupported(
+  config: Pick<TrainingConfigState, "isDatasetImage" | "isDatasetAudio">,
+  system: Pick<SystemInfoResponse, "gpu"> | null | undefined,
+): boolean {
+  const cards = system?.gpu?.available ? (system.gpu.devices ?? []).length : 0;
+  return !(cards > 1 && (config.isDatasetImage === true || config.isDatasetAudio));
+}
+
 /** The offload fields, sent off wherever the controls are hidden. `gpuIndices` are the GPUs
  * training can see; with more than one, the budget goes out per card. */
 export function offloadPayload(
@@ -96,6 +106,8 @@ export function offloadPayload(
     | "offloadVramGb"
     | "offloadVramGbPerDevice"
     | "prefetchDepth"
+    | "isDatasetImage"
+    | "isDatasetAudio"
   >,
   gpuIndices: readonly number[] = [],
   system: Parameters<typeof offloadHardwareSupported>[0] = null,
@@ -122,7 +134,7 @@ export function offloadPayload(
         ? config.offloadVramGb
         : null,
     offload_vram_gb_per_device:
-      multi && layers === "auto"
+      multi && layers === "auto" && !(config.isDatasetImage === true || config.isDatasetAudio)
         ? perDeviceBudgetPayload(config.offloadVramGbPerDevice, gpuIndices)
         : null,
     prefetch_depth: depth,

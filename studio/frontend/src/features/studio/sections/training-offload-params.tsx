@@ -27,7 +27,7 @@ function modeOf(value: OffloadLayers): OffloadMode {
 
 const PREFETCH_CHOICES: PrefetchDepth[] = ["auto", 1, 2, 3, 4];
 
-export function OffloadLayersParams(): ReactElement {
+export function OffloadLayersParams({ budget = true }: { budget?: boolean }): ReactElement {
   const t = useT();
   const store = useTrainingConfigStore(
     useShallow((state) => ({
@@ -95,13 +95,13 @@ export function OffloadLayersParams(): ReactElement {
           )}
         </div>
       </ParamsRow>
-      {mode === "auto" && cards.length > 0 && (
+      {mode === "auto" && budget && cards.length > 0 && (
         <ParamsRow
           label={t("studio.params.offloadVramBudget")}
           tooltip={t("studio.params.offloadVramBudgetTooltip")}
         >
           {/* One box per training GPU, four to a line; empty uses the whole card. */}
-          <div className="flex max-w-[22.25rem] flex-wrap justify-end gap-1.5">
+          <div className="flex max-w-[calc(356px*var(--ui-space-scale,1))] flex-wrap justify-end gap-1.5">
             {cards.map((card) => (
               <Input
                 key={card.index}
@@ -121,13 +121,13 @@ export function OffloadLayersParams(): ReactElement {
                     e.target.value === "" || !(gb > 0) ? null : gb,
                   );
                 }}
-                className="w-[5.25rem] pl-3 pr-7 font-mono placeholder:font-sans"
+                className="w-[calc(84px*var(--ui-space-scale,1))] pl-3 pr-7 font-mono placeholder:font-sans"
               />
             ))}
           </div>
         </ParamsRow>
       )}
-      {mode === "auto" && cards.length === 0 && (
+      {mode === "auto" && budget && cards.length === 0 && (
         <ParamsRow
           label={t("studio.params.offloadVramBudget")}
           tooltip={t("studio.params.offloadVramBudgetTooltip")}

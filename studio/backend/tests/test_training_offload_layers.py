@@ -439,27 +439,23 @@ def test_worker_applies_the_budget_only_where_auto_offload_sizes_to_it():
     )
 
 
-def test_multi_gpu_vision_and_audio_runs_cap_after_load():
-    # Core cannot offload a vision / audio load spread over GPUs, so capping before it would OOM the load.
+def test_multi_gpu_vision_and_audio_runs_skip_the_budget():
+    # Core cannot offload a vision / audio load spread over GPUs, and LoRA setup allocates before it swaps,
+    # so a cap there would OOM; the budget is skipped (and hidden in the UI) for those runs.
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
         encoding = "utf-8"
     )
-    gate = src[src.index("_budget_after_load = ") :][:300]
+    gate = src[src.index("_budget_unsupported = ") :][:300]
     for needle in (
         "len(gpu_ids or []) > 1",
         'config.get("is_dataset_image")',
         'config.get("is_dataset_audio")',
     ):
         assert needle in gate
-    assert "if _wants_budget and not _budget_after_load:\n        _apply_budget()" in src
-    deferred = src.index("if _budget_after_load:\n            _apply_budget()")
-    assert (
-        src.index('"type": "model_load_completed"')
-        < deferred
-        < src.index("trainer.prepare_model_for_training(")
-    )
+    skip = src.index("if _budget_unsupported:")
+    assert skip < src.index("elif _wants_budget:") < src.index("_apply_training_vram_budget(", skip)
 
 
 def test_disabled_checkpointing_aliases_match_the_trainer():

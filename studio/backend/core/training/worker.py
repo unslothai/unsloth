@@ -4287,15 +4287,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         and not config.get("is_decision")
         and not config.get("is_embedding")
     )
-    # Vision / audio loads on several GPUs cannot offload at load (core plans Auto at LoRA setup there), so their
-    # model must load uncapped; the cap then goes on before LoRA setup, which swaps enough layers to fit it.
-    _budget_after_load = (
+    # Vision / audio loads on several GPUs cannot offload at load, and LoRA setup allocates adapters before it swaps:
+    # a cap would OOM either step, so those runs offload Auto uncapped (the UI hides the budget for them).
+    _budget_unsupported = (
         _wants_budget
         and len(gpu_ids or []) > 1
         and bool(config.get("is_dataset_image") or config.get("is_dataset_audio"))
     )
 
-    def _apply_budget():
+    if _budget_unsupported:
+        logger.info(
+            "Training VRAM budget not applied: multi-GPU vision / audio runs offload at LoRA setup"
+        )
+    elif _wants_budget:
         try:
             import torch as _torch_budget
             _apply_training_vram_budget(
@@ -4306,9 +4310,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         except Exception as _budget_err:
             logger.warning("Could not apply the training VRAM budget: %s", _budget_err)
-
-    if _wants_budget and not _budget_after_load:
-        _apply_budget()
 
     if config.get("is_decision", False):
         try:
@@ -4678,9 +4679,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     }
                 )
             return
-
-        if _budget_after_load:
-            _apply_budget()
 
         _emit_resource_provenance(
             event_queue,
