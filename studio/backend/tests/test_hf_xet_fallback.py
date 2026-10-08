@@ -460,6 +460,58 @@ def test_optional_loader_keeps_a_submodule_a_late_zoo_init_failure_left_loaded(m
         shim._reset_optional_module_cache()
 
 
+_XET_ENV_SWITCHES = (
+    "UNSLOTH_DISABLE_XET",
+    "UNSLOTH_STABLE_DOWNLOADS",
+    "HF_HUB_DISABLE_XET",
+    "UNSLOTH_FORCE_XET",
+)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {},
+        {"HF_HUB_DISABLE_XET": "1"},
+        {"UNSLOTH_DISABLE_XET": "true"},
+        {"UNSLOTH_STABLE_DOWNLOADS": "on"},
+        {"UNSLOTH_FORCE_XET": "1"},
+        {"UNSLOTH_FORCE_XET": "1", "HF_HUB_DISABLE_XET": "yes"},
+        {"HF_HUB_DISABLE_XET": "0"},
+    ],
+)
+def test_operator_xet_switches_survive_a_missing_health_module(monkeypatch, env):
+    """With hf_xet_health unloadable (older zoo, or a GPU host whose zoo import failed and skips the light retry),
+    the operator's env switches must still decide, or Auto picks Xet and the worker gets HF_HUB_DISABLE_XET=0."""
+    for name in _XET_ENV_SWITCHES:
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(shim, "_load_optional", lambda name: None)
+    monkeypatch.setitem(shim._optional_modules, "unsloth_zoo.hf_xet_health", None)
+    got, cached = shim.xet_health(), shim.cached_xet_health()
+    switched = any(value.lower() in ("1", "true", "yes", "on") for value in env.values())
+    assert (got is not None) is switched and (cached is not None) is switched
+
+    # The verdicts themselves must match zoo's, read from the installed package rather than restated here.
+    real = pytest.importorskip("unsloth_zoo.hf_xet_health")
+    if not hasattr(real, "XetHealth"):
+        pytest.skip("installed unsloth_zoo predates XetHealth")
+    expected = real.xet_health(probe = False)
+    if expected.source != "forced":
+        # No override set: zoo measures the machine, the shim has nothing to say without it.
+        assert got is None and cached is None
+        return
+    for verdict in (got, cached):
+        assert (verdict.use_xet, verdict.reason, verdict.source) == (
+            expected.use_xet,
+            expected.reason,
+            expected.source,
+        )
+        assert bool(verdict) is bool(expected)
+        assert shim.xet_health_is_forced(verdict)
+
+
 def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     """GPU detection in unsloth_zoo's __init__ raises NotImplementedError on a GPU-less host. The shim
     retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, restores the env, and degrades if the retry fails.

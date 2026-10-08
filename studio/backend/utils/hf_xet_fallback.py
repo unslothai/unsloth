@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -244,9 +245,38 @@ def _load_optional(module_name: str) -> Any:
         return module
 
 
+@dataclass(frozen = True)
+class _EnvXetHealth:
+    """Same fields as zoo's ``XetHealth``, for the env-var verdicts below."""
+
+    use_xet: bool
+    reason: str
+    source: str = "forced"
+
+    def __bool__(self) -> bool:
+        return self.use_xet
+
+
+def _env_xet_health() -> Any:
+    """zoo's two operator overrides, read here when ``unsloth_zoo.hf_xet_health`` could not be loaded.
+
+    Without this an older zoo, or a GPU host whose zoo import failed (no light-init retry there), answers
+    "no opinion", Auto picks Xet and the worker gets ``HF_HUB_DISABLE_XET=0`` over the operator's ``1``.
+    Mirrors the env checks at the top of ``unsloth_zoo.hf_xet_health.xet_health``; ``None`` otherwise."""
+
+    def _on(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+    if _on("UNSLOTH_DISABLE_XET") or _on("UNSLOTH_STABLE_DOWNLOADS") or _on("HF_HUB_DISABLE_XET"):
+        return _EnvXetHealth(False, "Xet disabled by environment")
+    if _on("UNSLOTH_FORCE_XET"):
+        return _EnvXetHealth(True, "Xet forced by environment")
+    return None
+
+
 def _xet_health_from(module: Any, **kwargs: Any) -> Any:
     if module is None:
-        return None
+        return _env_xet_health()
     try:
         return module.xet_health(**kwargs)
     except Exception as exc:  # noqa: BLE001
