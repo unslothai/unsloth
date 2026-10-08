@@ -4229,7 +4229,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         and not config.get("is_embedding")
     )
     # Vision / audio loads on several GPUs cannot offload at load, and LoRA setup allocates adapters before it swaps:
-    # a cap would OOM either step, so those runs offload Auto uncapped (the UI hides the budget for them).
+    # a cap would OOM either step, so those runs offload Auto uncapped.
     _budget_unsupported = (
         _wants_budget
         and len(gpu_ids or []) > 1
@@ -4240,6 +4240,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         logger.info(
             "Training VRAM budget not applied: multi-GPU vision / audio runs offload at LoRA setup"
         )
+        # An out-of-memory error then must not blame a cap that was never set.
+        config["offload_vram_gb"] = None
     elif _wants_budget:
         try:
             import torch as _torch_budget

@@ -26,7 +26,7 @@ function modeOf(value: OffloadLayers): OffloadMode {
 
 const PREFETCH_CHOICES: PrefetchDepth[] = ["auto", 1, 2, 3, 4];
 
-export function OffloadLayersParams({ budget = true }: { budget?: boolean }): ReactElement {
+export function OffloadLayersParams(): ReactElement {
   const t = useT();
   const store = useTrainingConfigStore(
     useShallow((state) => ({
@@ -88,7 +88,7 @@ export function OffloadLayersParams({ budget = true }: { budget?: boolean }): Re
           )}
         </div>
       </ParamsRow>
-      {mode === "auto" && budget && (
+      {mode === "auto" && (
         <ParamsRow
           label={t("studio.params.offloadVramBudget")}
           tooltip={t("studio.params.offloadVramBudgetTooltip")}
