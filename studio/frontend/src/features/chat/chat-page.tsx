@@ -2871,7 +2871,7 @@ export function ChatPage({
     search.new && newChatBlankedRef.current === search.new
       ? persistedActiveThreadId
       : null;
-  // retain the first thread id because leaving chat clears activeThreadId before returning.
+  // leaving Chat clears activeThreadId and restores it later, so the shown thread id is latched.
   const newChatIdentityBlankedRef = useRef<string | null>(null);
   if (search.new && activeThreadId === null) {
     newChatIdentityBlankedRef.current = search.new;
