@@ -449,6 +449,9 @@ curl.exe ${base}/api/train/diffusion/start \`
 curl.exe ${base}/api/train/diffusion/status ${auth}`;
 }
 
+// Strings and numbers only, so the JSON text is also a Python dict literal.
+const pyDict = (body: object): string => JSON.stringify(body, null, 4);
+
 function pythonTrainingSnippet(base: string, key: string): string {
   return `import time
 import requests
@@ -457,13 +460,7 @@ BASE = ${j(base)}
 HEADERS = {"Authorization": ${j(`Bearer ${key}`)}}
 
 # LLM LoRA fine-tune
-r = requests.post(f"{BASE}/api/train/start", headers=HEADERS, json={
-    "model_name": ${j(TRAIN.model)},
-    "training_type": "LoRA/QLoRA",
-    "hf_dataset": ${j(TRAIN.dataset)},
-    "format_type": "auto",
-    "max_steps": ${TRAIN.maxSteps},
-})
+r = requests.post(f"{BASE}/api/train/start", headers=HEADERS, json=${pyDict(trainBody)})
 r.raise_for_status()
 job_id = r.json()["job_id"]
 
@@ -482,13 +479,7 @@ while True:
 files = [("files", open(p, "rb")) for p in ["cat1.png", "cat2.png"]]
 requests.post(f"{BASE}/api/train/diffusion/dataset", headers=HEADERS,
               data={"name": ${j(TRAIN.imageData)}}, files=files).raise_for_status()
-image_job = {
-    "base_model": ${j(TRAIN.imageBase)},
-    "data_dir": ${j(TRAIN.imageData)},
-    "output_dir": ${j(TRAIN.imageOut)},
-    "instance_prompt": ${j(TRAIN.imagePrompt)},
-    "train_steps": ${TRAIN.imageSteps},
-}
+image_job = ${pyDict(imageTrainBody)}
 # The LLM worker exits a few seconds after "completed"; until then start answers 409.
 for _ in range(12):
     r = requests.post(f"{BASE}/api/train/diffusion/start", headers=HEADERS, json=image_job)
