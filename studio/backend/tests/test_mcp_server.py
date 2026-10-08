@@ -404,8 +404,6 @@ def test_stop_diffusion_training_forwards_save(monkeypatch):
 
 
 def test_diffusion_status_and_runs_hide_host_paths(monkeypatch):
-    """The HTTP routes take no via_api_key and return absolute paths; a remote MCP caller is an
-    API-key caller, so output_dir and checkpoint_path come back as opaque references."""
     status = {
         "active": True,
         "output_dir": "/home/leo/.unsloth/outputs/cats-lora",

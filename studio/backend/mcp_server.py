@@ -75,15 +75,13 @@ def _dump(value: Any) -> Any:
 
 
 def _dump_redacted(value: Any) -> Any:
-    """Diffusion status and run records name absolute output and checkpoint paths. A remote MCP
-    caller is shown them the way an API-key caller is on the HTTP routes: as opaque references."""
+    """Host paths as opaque references; the second pass catches diffusion fields (lora_path,
+    ema_path, catalog_path) that redact_host_paths has no name for."""
     from hub.utils.host_paths import redact_host_paths
     return _reference_absolute_paths(redact_host_paths(_dump(value), via_api_key = True))
 
 
 def _reference_absolute_paths(value: Any) -> Any:
-    """redact_host_paths keys on LLM field names, so diffusion's lora_path / ema_path / catalog_path
-    pass through it; any whole-string absolute path left is a host path."""
     if isinstance(value, dict):
         return {key: _reference_absolute_paths(item) for key, item in value.items()}
     if isinstance(value, list):

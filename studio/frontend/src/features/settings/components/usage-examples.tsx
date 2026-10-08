@@ -378,8 +378,7 @@ const trainBody = {
   format_type: "auto",
   max_steps: TRAIN.maxSteps,
 };
-// The upload above sends bare images, and the preflight refuses a set with no captions. The
-// instance prompt captions every image that has no .txt of its own.
+// The preflight refuses uncaptioned images; instance_prompt captions those without a .txt.
 const imageTrainBody = {
   base_model: TRAIN.imageBase,
   data_dir: TRAIN.imageData,
