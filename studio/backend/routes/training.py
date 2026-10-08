@@ -3968,6 +3968,7 @@ async def upload_diffusion_dataset(
                 "then upload again."
             ),
         )
+    created_folder = False
     try:
         if create_only:
             occupied = (
@@ -3994,6 +3995,7 @@ async def upload_diffusion_dataset(
                 )
         try:
             folder.mkdir(parents = True, exist_ok = not create_only)
+            created_folder = create_only
         except FileExistsError:
             raise HTTPException(
                 status_code = 409,
@@ -4181,6 +4183,13 @@ async def upload_diffusion_dataset(
             caption_count = summary.caption_count,
             uploaded = uploaded,
         )
+    except BaseException:
+        if created_folder:
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+        raise
     finally:
         _lock.release()
 

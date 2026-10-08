@@ -240,6 +240,12 @@ export function datasetNamesForCreation(info: {
   return info?.dataset_names?.map((name) => ({ name })) ?? info?.datasets ?? [];
 }
 
+export function isDatasetContinuation(name: string, continuationName: string | null): boolean {
+  return (
+    continuationName !== null && name.trim().toLowerCase() === continuationName.toLowerCase()
+  );
+}
+
 export function freeDatasetName(datasets: { name: string }[]): string {
   let name = "my-images";
   for (let i = 2; existingDatasetName(name, datasets); i += 1) {

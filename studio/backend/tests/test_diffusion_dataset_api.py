@@ -699,6 +699,24 @@ def test_create_only_upload_refuses_every_occupied_spelling(client, ds_root):
     assert (ds_root / "fresh" / "new.png").is_file()
 
 
+def test_create_only_upload_removes_a_new_folder_after_validation_failure(client, ds_root):
+    rejected = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "retryable", "create_only": "true"},
+        files = [("files", ("bad.exe", b"not a dataset file", "application/octet-stream"))],
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert not (ds_root / "retryable").exists()
+
+    retried = client.post(
+        "/api/train/diffusion/dataset",
+        data = {"name": "retryable", "create_only": "true"},
+        files = [("files", ("sample.png", _png_bytes(), "image/png"))],
+    )
+    assert retried.status_code == 200, retried.text
+    assert (ds_root / "retryable" / "sample.png").is_file()
+
+
 # ── import: promotion is all-or-nothing ──────────────────────────────────────
 def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypatch):
     # atomic promotion prevents a failed import from satisfying the image_count idempotency check

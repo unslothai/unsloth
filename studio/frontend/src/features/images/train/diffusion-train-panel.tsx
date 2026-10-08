@@ -89,6 +89,7 @@ import {
   existingStemClash,
   filesFromDataTransfer,
   freeDatasetName,
+  isDatasetContinuation,
   metadataKeyedOnSubfolders,
   oversizedChunk,
   selectDatasetFiles,
@@ -456,6 +457,7 @@ export function DiffusionTrainPanel({
 
   const [dataset, setDataset] = useState<string>(UPLOAD_DATASET);
   const [uploadName, setUploadName] = useState("my-images");
+  const [continuationDatasetName, setContinuationDatasetName] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Adds to the selected set; the other input creates a new one.
@@ -767,7 +769,9 @@ export function DiffusionTrainPanel({
   const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
   const namesLoading = uploadMode && info === null;
   const occupiedDatasets = datasetNamesForCreation(info);
-  const takenName = uploadMode ? existingDatasetName(uploadName, occupiedDatasets) : null;
+  const continuingUploadName = isDatasetContinuation(uploadName, continuationDatasetName);
+  const createsDataset = uploadMode && !continuingUploadName;
+  const takenName = createsDataset ? existingDatasetName(uploadName, occupiedDatasets) : null;
   const takenNameMessage = `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;
   // Trainable items in the picked dataset, images and clips alike. caption_count is the folder
   // total over both kinds, so every ratio must be against this and not image_count.
@@ -979,10 +983,13 @@ export function DiffusionTrainPanel({
           );
         }
         if (newCaptionsOnly) {
+          setContinuationDatasetName(res.name);
           toast.info(
             `"${res.name}" holds captions but no images or clips yet, so it stays out of the ` +
               "dataset picker until you add some.",
           );
+        } else {
+          setContinuationDatasetName(null);
         }
         if (misKeyed) {
           toast.info(
@@ -1051,9 +1058,9 @@ export function DiffusionTrainPanel({
         toast.error("That drop had no files in it.");
         return;
       }
-      await uploadTo(dropTarget, dropped, uploadMode);
+      await uploadTo(dropTarget, dropped, createsDataset);
     },
-    [dropTarget, uploadTo, uploadMode, namesLoading, takenName, takenNameMessage],
+    [dropTarget, uploadTo, createsDataset, namesLoading, takenName, takenNameMessage],
   );
 
   const onStart = useCallback(async () => {
@@ -1656,7 +1663,11 @@ export function DiffusionTrainPanel({
                     if (ex) void importExample(ex);
                     return;  // the controlled value stays put while the import runs
                   }
-                  if (v === UPLOAD_DATASET && existingDatasetName(uploadName, occupiedDatasets)) {
+                  if (
+                    v === UPLOAD_DATASET &&
+                    !continuingUploadName &&
+                    existingDatasetName(uploadName, occupiedDatasets)
+                  ) {
                     setUploadName(freeDatasetName(occupiedDatasets));
                   }
                   setDataset(v);
@@ -1764,7 +1775,7 @@ export function DiffusionTrainPanel({
                     onChange={(e) => {
                       const files = Array.from(e.target.files ?? []);
                       e.target.value = "";
-                      void uploadTo(uploadName.trim(), files, true);
+                      void uploadTo(uploadName.trim(), files, createsDataset);
                     }}
                   />
                   {/* The pick is the confirmation, so it uploads without a second click. */}
@@ -1792,7 +1803,7 @@ export function DiffusionTrainPanel({
                         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
                         return;
                       }
-                      pickFolder(uploadName.trim(), true);
+                      pickFolder(uploadName.trim(), createsDataset);
                     }}
                   />
                 </div>

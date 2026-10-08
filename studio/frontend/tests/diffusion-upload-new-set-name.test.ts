@@ -8,6 +8,7 @@ import {
   datasetNamesForCreation,
   existingDatasetName,
   freeDatasetName,
+  isDatasetContinuation,
 } from "../src/features/images/train/dataset-files.ts";
 
 import { readSrcAsync } from "./helpers/kit.ts";
@@ -49,6 +50,15 @@ test("names of occupied but untrainable folders still reserve a new-set name", (
   );
 });
 
+test("a captions-only set created in this form remains available for follow-up files", () => {
+  assert.equal(isDatasetContinuation("captions-only", "captions-only"), true);
+  assert.equal(isDatasetContinuation(" CAPTIONS-ONLY ", "captions-only"), true);
+  assert.equal(isDatasetContinuation("another-set", "captions-only"), false);
+  assert.equal(isDatasetContinuation("captions-only", null), false);
+  assert.match(source, /setContinuationDatasetName\(res\.name\)/);
+  assert.match(source, /const createsDataset = uploadMode && !continuingUploadName;/);
+});
+
 test("the new-set form waits for the set list before it uploads", () => {
   assert.match(source, /const namesLoading = uploadMode && info === null;/);
 });
@@ -70,10 +80,10 @@ test("the new-set form does not upload into a set that already exists", () => {
   assert.ok(drop.indexOf("if (takenName)") < drop.indexOf("await uploadTo("));
   assert.ok(drop.indexOf("if (namesLoading)") >= 0);
   assert.ok(drop.indexOf("if (namesLoading)") < drop.indexOf("await uploadTo("));
-  assert.match(drop, /await uploadTo\(dropTarget, dropped, uploadMode\)/);
+  assert.match(drop, /await uploadTo\(dropTarget, dropped, createsDataset\)/);
 
-  assert.match(newSet, /void uploadTo\(uploadName\.trim\(\), files, true\)/);
-  assert.match(newSet, /pickFolder\(uploadName\.trim\(\), true\)/);
+  assert.match(newSet, /void uploadTo\(uploadName\.trim\(\), files, createsDataset\)/);
+  assert.match(newSet, /pickFolder\(uploadName\.trim\(\), createsDataset\)/);
   assert.match(source, /uploadDiffusionDataset\(name, chunks\[0\], createOnly\)/);
   assert.match(apiSource, /form\.append\("create_only", createOnly \? "true" : "false"\)/);
 });
