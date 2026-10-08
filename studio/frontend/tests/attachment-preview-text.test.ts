@@ -1568,6 +1568,7 @@ test("a Word row keeps its columns past skipped grid cells, tabs, line breaks an
       row(`<w:tc>${p("Time")}</w:tc><w:tc>${p("Mon")}</w:tc><w:tc>${p("Tue")}</w:tc>`) +
       row(`<w:tc>${p("Lab 3")}</w:tc><w:tc>${p("Lab 4")}</w:tc>`, '<w:trPr><w:gridBefore w:val="1"/></w:trPr>') +
       row(`<w:tc>${p("Only Tue")}</w:tc>`, '<w:trPr><w:gridBefore w:val="2"/></w:trPr>') +
+      row(`<w:tc>${p("Only Time")}</w:tc>`, '<w:trPr><w:gridAfter w:val="2"/></w:trPr>') +
       row(
         `<w:tc>${p("10:00")}</w:tc>` +
           `<w:tc><w:p><w:r><w:t>A</w:t><w:tab/><w:t>B</w:t></w:r></w:p></w:tc>` +
@@ -1587,7 +1588,7 @@ test("a Word row keeps its columns past skipped grid cells, tabs, line breaks an
     });
     assert.equal(
       value,
-      "Time\tMon\tTue\n\n\tLab 3\tLab 4\n\n\t\tOnly Tue\n\n10:00\tA B\tRoom 4 \n\n11:00\tLine one Line two\tC\n\n",
+      "Time\tMon\tTue\n\n\tLab 3\tLab 4\n\n\t\tOnly Tue\n\nOnly Time\t\t\n\n10:00\tA B\tRoom 4 \n\n11:00\tLine one Line two\tC\n\n",
     );
   } finally {
     Object.assign(globals, original);
@@ -1623,6 +1624,34 @@ test("an html table keeps its columns under a rowspan and leaves code in a cell 
   assert.equal(
     extracted,
     "Time\tMon\tTue\tWed\n\n09:00\tScience\tArt\tPE\n\n10:00\t\tMaths\tFrench\n\n11:00\tMusic\t\t\n\nship()\n\ndef ship():\n    return 1",
+  );
+});
+
+test("an html rowspan of zero covers the rest of its row group", async () => {
+  const cell = (text: string, rowspan?: string) =>
+    Object.assign(element("td", textNode(text)), {
+      getAttribute: (name: string) => (name === "rowspan" ? (rowspan ?? null) : null),
+    });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("All day", "0"), cell("Mon 09:00"), cell("Tue 09:00")),
+            element("tr", cell("Mon 10:00"), cell("Tue 10:00")),
+          ),
+          element("tbody", element("tr", cell("Evening"), cell("Mon 18:00"), cell("Tue 18:00"))),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "All day\tMon 09:00\tTue 09:00\n\n\tMon 10:00\tTue 10:00\n\nEvening\tMon 18:00\tTue 18:00",
   );
 });
 
