@@ -196,6 +196,32 @@ def test_tool_choice_none_does_not_double_close_a_truncated_call(executed):
     assert "output limit" in ends[0]["result"]
 
 
+def test_tool_choice_none_closes_every_refused_card_by_the_id_the_client_drew(executed):
+    """An id-less call is painted under a minted ``tool_call_<index>``; each refused call closes its own card."""
+    named = json.loads(_call_line()[6:])
+    idless = json.loads(_call_line()[6:])
+    idless["choices"][0]["delta"]["tool_calls"][0].update(index = 1)
+    del idless["choices"][0]["delta"]["tool_calls"][0]["id"]
+    transport = FakeTransport(
+        [["data: " + json.dumps(named), "data: " + json.dumps(idless), _DONE], [_DONE]]
+    )
+    lines = _run(transport, tool_choice = "none")
+
+    assert executed == []
+    assert len(transport.requests) == 1
+
+    starts = _events(lines, "tool_start")
+    ends = _events(lines, "tool_end")
+    assert [event["tool_call_id"] for event in starts] == ["c1", "tool_call_1"]
+    assert [event["tool_call_id"] for event in ends] == ["c1", "tool_call_1"]
+    assert all(event["arguments"] == {"query": "x"} for event in starts)
+
+    # Closed before the empty badge the client ends the provider turn on.
+    frames = [json.loads(line[6:]) for line in lines if line.startswith("data: {")]
+    last_end = max(at for at, frame in enumerate(frames) if frame.get("type") == "tool_end")
+    assert {"type": "tool_status", "content": ""} in frames[last_end:]
+
+
 def test_tool_choice_none_still_withdraws_the_catalog(executed):
     """The outbound half of the same contract must not have regressed."""
     transport = FakeTransport([[_call_line(), _finish("tool_calls")], [_DONE]])
