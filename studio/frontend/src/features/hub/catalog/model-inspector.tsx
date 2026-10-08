@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useVllmAvailable } from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -293,7 +294,9 @@ function ModelStatusChips({
   // supported-format model a chat-only host still can't run.
   const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showChatOnly && !showVram) return null;
+  // The Default engine cannot load this format; the optional vLLM engine this host supports can.
+  const showVllm = !isDataset && unslothSupport.supportedIn === "vllm";
+  if (!showUnsupported && !showChatOnly && !showVram && !showVllm) return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -340,6 +343,28 @@ function ModelStatusChips({
             <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
               Still downloadable to your Hugging Face cache.
             </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {showVllm && (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="warning" label="Requires vLLM" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            The default engine cannot load this format. Choose vLLM as the
+            Inference engine in this model's run settings.
+            {unslothSupport.reason && (
+              <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
+                {unslothSupport.reason}
+              </span>
+            )}
           </TooltipContent>
         </Tooltip>
       )}
@@ -485,6 +510,7 @@ export const ModelInspector = memo(function ModelInspector({
   const supportTagsKey = model?.tags?.join("\0") ?? "";
   const supportLibraryName = model?.libraryName;
   const supportQuantMethod = model?.quantMethod;
+  const vllmAvailable = useVllmAvailable();
   const unslothSupport = useMemo<UnslothSupport>(() => {
     return classifyUnslothSupport({
       modelId: supportModelId,
@@ -493,8 +519,10 @@ export const ModelInspector = memo(function ModelInspector({
       libraryName: supportLibraryName,
       deviceType,
       quantMethod: supportQuantMethod,
+      vllmAvailable,
     });
   }, [
+    vllmAvailable,
     deviceType,
     supportLibraryName,
     supportModelId,

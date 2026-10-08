@@ -55,6 +55,22 @@ REFUSALS = {
 }
 
 
+VLLM_HINT = " Or run it with vLLM: open this model's run settings and set Inference engine to vLLM."
+
+
+@pytest.fixture(autouse = True)
+def _host_without_vllm():
+    """Every test reads as on a host that cannot run vLLM unless it says otherwise.
+
+    The hint depends on the GPU, so without this the suite would pass or fail by machine.
+    """
+    with patch(
+        "core.inference.engine_install.support_reason",
+        return_value = "Requires an NVIDIA GPU with compute capability 8.0 or newer.",
+    ):
+        yield
+
+
 def _load_route_module():
     spec = importlib.util.spec_from_file_location(
         "inference_route_compressed_tensors_error",
@@ -318,3 +334,64 @@ def test_the_refusal_names_no_quantization_scheme():
     assert "bitsandbytes 4-bit" in refusal
 
     assert "NVFP4" in inference_route._NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
+
+
+@pytest.mark.parametrize("message", REFUSALS.values(), ids = list(REFUSALS))
+@pytest.mark.parametrize("native", [False, True])
+def test_a_host_that_can_run_vllm_is_pointed_at_it(message, native):
+    """#11728: the optional vLLM engine loads these checkpoints, so where it can run, say so."""
+    with patch("core.inference.engine_install.support_reason", return_value = None):
+        load_error = _load_failure(message, native = native)
+        validate_error = _validation_failure(message, native = native)
+
+    assert load_error.status_code == 500
+    assert load_error.detail == EXPECTED + VLLM_HINT
+    assert validate_error.status_code == 400
+    assert validate_error.detail == EXPECTED + VLLM_HINT
+    assert "pip install" not in load_error.detail
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Checking for a supported NVIDIA GPU.",
+        "Managed engines currently require Linux x86_64 or Windows x64.",
+        RuntimeError("probe failed"),
+    ],
+    ids = ["probe-pending", "unsupported-host", "probe-raises"],
+)
+def test_no_hint_unless_this_host_can_run_vllm(reason):
+    """A pending probe, an unsupported host or a failing check all leave today's message."""
+    inference_route = _load_route_module()
+    kwargs = {"side_effect": reason} if isinstance(reason, Exception) else {"return_value": reason}
+    with patch("core.inference.engine_install.support_reason", **kwargs):
+        assert inference_route._unsupported_quantization_detail(CONFIG_IMPORT_ERROR) == EXPECTED
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_no_hint_when_the_request_already_chose_an_optional_engine(engine):
+    inference_route = _load_route_module()
+    with patch("core.inference.engine_install.support_reason", return_value = None):
+        assert (
+            inference_route._unsupported_quantization_detail(CONFIG_IMPORT_ERROR, engine)
+            == EXPECTED
+        )
+        assert (
+            inference_route._unsupported_quantization_detail(CONFIG_IMPORT_ERROR, "auto")
+            == EXPECTED + VLLM_HINT
+        )
+
+
+def test_the_vllm_hint_never_touches_other_refusals():
+    """MLX's NVFP4 refusal and unrelated errors are unchanged on a vLLM-capable host."""
+    inference_route = _load_route_module()
+    with patch("core.inference.engine_install.support_reason", return_value = None):
+        assert (
+            inference_route._unsupported_quantization_detail(
+                "Unsloth: 'x' has per-module MLX quantization metadata {'format': 'nvfp4-pack-quantized'}"
+            )
+            == inference_route._NVFP4_INFERENCE_UNSUPPORTED_MESSAGE
+        )
+        assert (
+            inference_route._unsupported_quantization_detail("Network connection timed out") is None
+        )
