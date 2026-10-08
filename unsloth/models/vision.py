@@ -1107,8 +1107,7 @@ def _zoo_supports_idefics3_fast_inference():
 
 # Need an unsloth_zoo that rebuilds MoE blocks from vLLM.
 VLLM_ZOO_MOE_VLM = ("qwen3_5_moe", "gemma4", "gemma4_text")
-# Dense Gemma-4 shares the model type. Older unsloth_zoo let vLLM profile the audio tower,
-# which aborted the process, so dense checkpoints need the zoo that turns audio off.
+# Dense Gemma-4 needs a zoo that disables vLLM audio profiling (older zoo aborts there).
 VLLM_DENSE_NEEDS_ZOO_VLM = ("gemma4", "gemma4_text")
 
 
@@ -1120,7 +1119,6 @@ def _is_sparse_moe_config(config):
 
 
 def _zoo_supports_dense_gemma4_fast_inference():
-    # Older unsloth_zoo releases abort in vLLM's audio profiling on Gemma-4 E2B / E4B.
     try:
         from unsloth_zoo.vllm_utils import (  # noqa: F401
             _get_multimodal_engine_args,
