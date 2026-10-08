@@ -10,9 +10,12 @@ import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
+import { approveDownload, downloadSiteOf } from "./download-approval-queue";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
+import { decideNativeDownload } from "./native-downloads";
 import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
 export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
@@ -47,13 +50,19 @@ type NativeEvent =
       done: boolean;
       success: boolean;
       downloadId: string | null;
-    };
+      /** False when the file couldn't be marked as downloaded from the internet; null where nothing marks. */
+      marked?: boolean | null;
+    }
+  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
 const t = (key: TranslationKey, values?: InterpolationValues) => translate(key, values, getLocale());
 
 const views = new Map<string, number>();
+// Tabs this page has opened a view for. A download from any other tab started under the account
+// signed in before the last reload (an account switch reloads), so it isn't this account's to list.
+const openedTabs = new Set<string>();
 let recency: string[] = [];
 const zooms = new Map<string, number>();
 const icons = new Map<string, string>();
@@ -109,9 +118,33 @@ function listenOnce(): void {
   );
 }
 
+/** Always answered: an unanswered download would sit in staging until the app quits. */
+function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
+  const { id, url, site, name } = event;
+  const entry = tab ? currentEntry(tab) : null;
+  // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
+  const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
+  const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
+  void decided
+    .then(async (allow) => {
+      await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
+      if (allow) toast(t("browser.native.downloading", { name }));
+    })
+    .catch(() => undefined);
+}
+
 function onNativeEvent(event: NativeEvent): void {
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === event.tabId);
+  if (event.kind === "downloadPrompt") {
+    onDownloadPrompt(event, tab);
+    return;
+  }
+  // A download outlives its page: it often lands after the tab closed or moved on, and still belongs in history.
+  if (event.kind === "download") {
+    if (openedTabs.has(event.tabId)) onDownload(event);
+    return;
+  }
   if (!tab || currentEntry(tab).kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
   switch (event.kind) {
@@ -153,11 +186,11 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        store.openUrl(event.url, { newTab: true });
+        store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
       } else {
         prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
           label: t("browser.native.open"),
-          onClick: () => store.openUrl(event.url, { newTab: true }),
+          onClick: () => store.openUrl(event.url, { newTab: true, from: shownUrl(tab) }),
         });
       }
       break;
@@ -168,22 +201,24 @@ function onNativeEvent(event: NativeEvent): void {
         onClick: () => openExternalLink(event.url),
       });
       break;
-    case "download":
-      if (!event.done) {
-        toast(t("browser.native.downloading", { name: event.name }));
-      } else if (event.success) {
-        history.recordDownload({
-          name: event.name,
-          url: event.url,
-          size: event.size ?? 0,
-          contentType: "",
-          nativeId: event.downloadId ?? undefined,
-        });
-        toast.success(t("browser.native.downloaded", { name: event.name }));
-      } else {
-        toast.error(t("browser.native.downloadFailed", { name: event.name }));
-      }
-      break;
+  }
+}
+
+function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
+  if (!event.done) {
+    toast(t("browser.native.downloading", { name: event.name }));
+  } else if (event.success) {
+    useBrowserHistoryStore.getState().recordDownload({
+      name: event.name,
+      url: event.url,
+      size: event.size ?? 0,
+      contentType: "",
+      nativeId: event.downloadId ?? undefined,
+    });
+    if (event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
+    else toast.success(t("browser.native.downloaded", { name: event.name }));
+  } else {
+    toast.error(t("browser.native.downloadFailed", { name: event.name }));
   }
 }
 
@@ -447,6 +482,7 @@ async function applyView(desired: Desired): Promise<void> {
     return true;
   };
   try {
+    openedTabs.add(tabId);
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
     clearSnapshot();

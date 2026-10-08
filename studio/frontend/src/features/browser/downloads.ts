@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { getLocale, translate } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { fileNameFromUrl, withBaseUrl } from "./address";
+import { fileNameFromUrl, isWebUrl, safeDownloadName, withBaseUrl } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
+import { approveDownload } from "./download-approval-queue";
+import { isDangerousDownload } from "./download-safety";
 import { useBrowserHistoryStore } from "./history-store";
-import { saveNativeDownload } from "./native-downloads";
+import { type SavedNativeDownload, saveNativeDownload } from "./native-downloads";
 import { useBrowserPrefsStore } from "./prefs-store";
 
-export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null };
+export type BrowserDownload = { blob: Blob; name: string; contentType: string; url: string | null; site?: string };
 
 type SaveHandle = {
   name: string;
@@ -23,9 +26,8 @@ function saveFilePicker(): SaveFilePicker | null {
   return typeof picker === "function" ? picker : null;
 }
 
-/** The desktop app always asks; the web build needs the browser's save dialog (Chromium). */
 export function canAskWhereToSave(): boolean {
-  return !isTauri && saveFilePicker() !== null;
+  return isTauri || saveFilePicker() !== null;
 }
 
 function asksWhereToSave(): boolean {
@@ -44,25 +46,45 @@ async function pickSaveTarget(name: string): Promise<SaveHandle | null> {
   const picker = saveFilePicker();
   if (!picker || !asksWhereToSave()) return null;
   try {
-    return await picker({ suggestedName: name });
+    return await picker({ suggestedName: safeDownloadName(name) });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw new DownloadCancelledError();
     return null;
   }
 }
 
-/** Save a file from the panel and add it to the download history. `target` is a save location
- *  already picked, or null for none; left out, the dialog opens here when Settings asks. */
-export async function saveBrowserDownload(
-  { blob, name, contentType, url }: BrowserDownload,
-  target?: SaveHandle | null,
-): Promise<void> {
-  let saved: { id: string; name: string } | null = null;
+function approved(url: string | null, name: string, site?: string): Promise<boolean> {
+  return url && isWebUrl(url) ? approveDownload(url, name, site ?? url) : Promise.resolve(true);
+}
+
+/** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
+export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
+  if (target === undefined) {
+    if (!(await approved(download.url, download.name, download.site))) return;
+    // A save dialog needs a fresh click; a late approval waits for a click on Save instead.
+    if (saveNeedsClick()) {
+      const locale = getLocale();
+      toast(translate("browser.downloadPrompt.ready", { name: safeDownloadName(download.name) }, locale), {
+        action: {
+          label: translate("browser.downloadPrompt.save", {}, locale),
+          onClick: () => void writeDownload(download, undefined),
+        },
+      });
+      return;
+    }
+  }
+  await writeDownload(download, target);
+}
+
+async function writeDownload(download: BrowserDownload, target: SaveHandle | null | undefined): Promise<void> {
+  const { blob, contentType, url } = download;
+  const name = safeDownloadName(download.name);
+  let saved: SavedNativeDownload | null = null;
   let picked: SaveHandle | null = null;
   try {
     if (isTauri) {
       // The app keeps the path so Download history can reveal it.
-      saved = await saveNativeDownload(blob, name);
+      saved = await saveNativeDownload(blob, name, useBrowserPrefsStore.getState().askWhereToSave, url);
       if (!saved) return;
     } else {
       picked = target === undefined ? await pickSaveTarget(name) : target;
@@ -85,6 +107,9 @@ export async function saveBrowserDownload(
     contentType,
     nativeId: saved?.id,
   });
+  if (saved?.marked === false) {
+    toast.warning(translate("browser.native.notMarked", { name: saved.name || name }, getLocale()));
+  }
 }
 
 // Well inside the ~5 s a click lets a page open the save dialog.
@@ -111,6 +136,7 @@ export async function saveLinkAs(url: string): Promise<void> {
   // The dialog needs the menu click, which a slow fetch outlasts: ask with the resolved name
   // when the fetch is quick, else with the URL's.
   let target: SaveHandle | null | undefined;
+  let asked: string | undefined;
   if (asksWhereToSave()) {
     const quick = await Promise.race([
       pending.then(
@@ -121,8 +147,11 @@ export async function saveLinkAs(url: string): Promise<void> {
     ]);
     // A link that already failed has nothing to save: report it without asking for a name.
     if (quick && "error" in quick) throw quick.error;
+    const name = quick?.download.name ?? fileNameFromUrl(url);
+    asked = name;
     try {
-      target = await pickSaveTarget(quick?.download.name ?? fileNameFromUrl(url));
+      if (!(await approved(url, name))) throw new DownloadCancelledError();
+      target = await pickSaveTarget(name);
     } catch (error) {
       // No save after all: stop the fetch, which the backend drops on disconnect.
       controller.abort();
@@ -131,5 +160,10 @@ export async function saveLinkAs(url: string): Promise<void> {
       throw error;
     }
   }
-  await saveBrowserDownload(await pending, target);
+  const download = await pending;
+  // Approved under the address's name: a file that turns out to run code asks again, by its own name.
+  if (asked !== undefined && isDangerousDownload(download.name) && !isDangerousDownload(asked)) {
+    if (!(await approved(url, download.name))) return;
+  }
+  await saveBrowserDownload(download, target);
 }

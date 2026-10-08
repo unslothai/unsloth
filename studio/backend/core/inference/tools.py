@@ -15665,16 +15665,11 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
 
 
 def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
-    """Read up to ``max_bytes``, enforcing the overall budget between chunks. A single
-    ``resp.read(max_bytes)`` can block for the whole transfer if the server dribbles bytes just
-    inside each socket-inactivity timeout, so the body is read in chunks with the budget
-    re-checked (and the socket timeout re-tightened toward the deadline) each round. The joined
-    bytes are identical to one capped read. Returns ``(error_or_None, body_bytes)``."""
-    # Best-effort handle on the underlying socket so its timeout tightens as the deadline nears; absent on test
-    # doubles, where the between-chunk budget check still bounds the read.
-    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
-    # A buffered read(n) keeps receiving until n bytes arrive, so a drip never reaches the
-    # budget check; read1 returns after one receive.
+    """read at most ``max_bytes`` within the overall budget and return ``(error_or_None, body_bytes)``."""
+    # HTTPError wraps the socket; tighten its deadline when present, while chunk checks bound test doubles without one
+    fp = getattr(resp, "fp", None)
+    sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
+    # use read1 because buffered read(n) can keep receiving until n bytes arrive and bypass the budget check
     read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
@@ -15798,34 +15793,13 @@ def _fetch_url_raw(
     post_data: bytes | None = None,
     meta_out: dict | None = None,
     host_headers = None,
+    error_page: bool = False,
 ) -> tuple[str | None, "str | bytes", str]:
-    """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
-
-    ``host_headers(host)`` adds headers for one hop, chosen by the host that hop goes to, so a
-    redirect to another site does not carry them.
-
-    ``post_data`` sends a urlencoded POST (kept on 307/308, dropped on other redirects).
-    ``meta_out`` receives the final ``url``, ``charset`` and ``filename`` (Content-Disposition) of a
-    successful binary-mode fetch, and
-    ``bot_check`` on HTTP errors.
-
-    ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
-    or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
-    gates apply either way.
-
-    ``error`` is a user-facing message string when the fetch failed, else ``None``. Blocks
-    private/loopback/link-local targets and caps the download size. No input reaches the caller as
-    an exception: the URL is model-supplied, so every malformed form resolves to one of these
-    strings.
-
-    ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch (redirect hops and
-    body read included) and ``cancel_event`` aborts it when the caller goes away; both default off.
-    """
+    """fetch with SSRF protection; binary reads stay capped, HTML error pages require binary mode, per-hop headers do not cross redirects, and deadlines cover redirects and body reads."""
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
-    # Before the policy gate: it requires an http(s) scheme, so a bare host would be refused there and never reach the
-    # fetch.
+    # normalize before the policy gate because a bare host would otherwise fail its http(s) scheme check.
     url = _normalize_url_scheme(url)
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
@@ -15852,6 +15826,7 @@ def _fetch_url_raw(
         current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
         pending_post = post_data
+        http_error = None
 
         for _hop in range(5):
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
@@ -15903,40 +15878,46 @@ def _fetch_url_raw(
                 headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
             req = urllib.request.Request(request_url, headers = headers, data = pending_post)
             try:
-                # Cap the socket timeout at the time left on the overall deadline so a single slow hop cannot outlast
-                # the whole fetch budget.
+                # cap the socket timeout at the remaining deadline so one slow hop cannot outlast the fetch budget.
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
                     if meta_out is not None:
                         meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
-                location = e.headers.get("Location")
-                if not location:
-                    return "Failed to fetch URL: redirect missing Location header.", "", ""
-                current_url = urljoin(current_url, location)
-                # 307/308 keep the POST; other redirects turn it into a GET.
-                if e.code not in (307, 308):
-                    pending_post = None
-                hop_error, current_host, pinned_ips = _redirect_hop(
-                    current_url,
-                    website_policy,
-                    deadline,
-                    cancel_event,
-                )
-                if hop_error is not None:
-                    return hop_error, "", ""
-                continue
+                    http_error = f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    declared = e.headers.get("Content-Type") and e.headers.get_content_type()
+                    if (
+                        not error_page
+                        or raw_bytes_max is None
+                        or declared not in (None, "", "text/html", "application/xhtml+xml")
+                    ):
+                        return http_error, "", ""
+                    resp = e
+                else:
+                    location = e.headers.get("Location")
+                    if not location:
+                        return "Failed to fetch URL: redirect missing Location header.", "", ""
+                    current_url = urljoin(current_url, location)
+                    # 307/308 preserve POST; other redirects switch to GET.
+                    if e.code not in (307, 308):
+                        pending_post = None
+                    hop_error, current_host, pinned_ips = _redirect_hop(
+                        current_url,
+                        website_policy,
+                        deadline,
+                        cancel_event,
+                    )
+                    if hop_error is not None:
+                        return hop_error, "", ""
+                    continue
 
-            # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
-            # callers can tell a missing header apart from a server that really declared text/plain.
+            # get_content_type() defaults missing headers to "text/plain" per RFC 2045; use "" to distinguish them.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
             else:
                 content_type = (resp.headers.get_content_type() or "").lower()
 
-            # Success: read the capped body enforcing the budget between chunks (see _read_capped_body), so a
-            # slow-drip server can't stretch a single resp.read past the deadline.
+            # chunked reads recheck the fetch budget between chunks.
             declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
             if raw_bytes_max is not None:
                 read_limit = raw_bytes_max + 1
@@ -15954,8 +15935,7 @@ def _fetch_url_raw(
             if body_error is not None:
                 return body_error, "", ""
 
-            # A missing or wrong PDF MIME type is common: once the initial text-sized read identifies PDF magic,
-            # finish the bounded download to reach the EOF xref.
+            # missing or wrong PDF MIME types require a bounded tail read to reach the EOF xref.
             if raw_bytes_max is not None:
                 if len(raw_bytes) > raw_bytes_max:
                     return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type
@@ -15963,7 +15943,10 @@ def _fetch_url_raw(
                     meta_out["url"] = current_url
                     meta_out["charset"] = resp.headers.get_content_charset()
                     meta_out["filename"] = resp.headers.get_filename()
-                return None, raw_bytes, content_type
+                    meta_out["allow_origin"] = resp.headers.get("Access-Control-Allow-Origin")
+                    meta_out["cache_control"] = resp.headers.get("Cache-Control")
+                    meta_out["age"] = resp.headers.get("Age")
+                return http_error, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
@@ -20950,7 +20933,7 @@ def sandbox_attachment_path(sha256: str, name: str) -> str:
         stem, ext = os.path.splitext(base)
         ext = ext if len(ext.encode()) <= 16 else ""
         room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
-        # Stripped again so the basename the frontend sends back derives this same path.
+        # strip again so the basename the frontend sends back derives the same path.
         base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
     if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
         base = "_" + base
@@ -20960,24 +20943,34 @@ def sandbox_attachment_path(sha256: str, name: str) -> str:
 def materialize_sandbox_attachments(
     session_id: "str | None", attachments: "list[tuple[str, str]]"
 ) -> None:
-    """Copy chat attachment originals into the sandbox, leaving one already there so edits survive."""
+    """copy chat attachment originals into the sandbox, preserving existing copies so edits survive."""
     from core import chat_originals
     with _session_in_flight(session_id):
         workdir = _get_workdir(session_id)
-        for sha256, name in attachments:
-            source = chat_originals.originals_dir() / sha256
-            if not source.is_file():
-                continue
-            try:
-                _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
-            except (OSError, ValueError):
-                logger.warning(
-                    "could not copy attachment %s into the sandbox", sha256, exc_info = True
-                )
+        missing = [
+            (sha256, name, chat_originals.originals_dir() / sha256)
+            for sha256, name in attachments
+            if not os.path.lexists(os.path.join(workdir, sandbox_attachment_path(sha256, name)))
+        ]
+        missing = [entry for entry in missing if entry[2].is_file()]
+        if not missing:
+            return
+        # register the copy as a call so concurrent chats sharing the workdir cannot claim it.
+        token = _call_started(workdir)
+        try:
+            for sha256, name, source in missing:
+                try:
+                    _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+                except (OSError, ValueError):
+                    logger.warning(
+                        "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                    )
+        finally:
+            _call_finished(token)
 
 
 def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
-    """The spill writer's discipline: no link followed, and `os.link` never replaces a name."""
+    """match the spill writer: follow no links; `os.link` never replaces existing names."""
     *dirs, name = relative.split("/")
     tmp = f".tmp-{uuid.uuid4().hex[:12]}"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -21819,8 +21812,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     # this walk runs twice per tool call.
     visited = 0
     hash_budget = 0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES
-    # Walked, not listed: a script writing outputs/report.csv is ordinary, and a top-level listing saw only the
-    # directory and dropped it.
+    # walked to include nested outputs such as outputs/report.csv that a top-level listing drops.
     for base, dirs, names in os.walk(workdir):
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
@@ -21828,24 +21820,26 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
         # depth 0 is the workdir itself, whose files are one segment.
         relative = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
-        # Dot-directories stay out: .git, .cache and friends are where the noise lives. Dot-FILES are reported, since
-        # .gitignore is a real artifact.
+        # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
+            else [
+                d
+                for d in dirs
+                if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
+                and _servable_segment(d)
+            ]
         )
         for name in names:
-            # Only at the top: a tool that wrote archive/.unsloth_sandbox made an ordinary file, and dropping it hid
-            # it from every listing while still counting it as a reason to keep the sandbox.
+            # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
                 continue
             if not _servable_segment(name):
                 continue
             path = os.path.join(base, name)
             try:
-                # One lstat where isfile + islink + stat were three, on every file of every walk. A link is not a
-                # regular file to lstat, so this drops the same entries the pair did.
+                # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)
                 if not S_ISREG(stat.st_mode):
                     continue

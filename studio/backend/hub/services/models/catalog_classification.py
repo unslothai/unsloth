@@ -138,11 +138,12 @@ def _name_hint_media_task(
     an unrecognised name means, hence *unmatched*.
     """
     from core.inference.video_families import detect_video_family
+    from core.inference.video_moe_pair import moe_pick_pairs
 
     for hint in name_hints:
         family = detect_video_family(hint) if hint else None
         if family is not None:
-            if not getattr(family, "is_moe", False) and _video_family_buildable(family):
+            if moe_pick_pairs(family, *name_hints) and _video_family_buildable(family):
                 return _VIDEO_GEN_TASK
             return _UNSUPPORTED_DIFFUSION_TASK
     from core.inference.diffusion_families import detect_family_for_pick
@@ -281,6 +282,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
         )
     if normalized in _VIDEO_GGUF_ARCHS:
         from core.inference.video_families import detect_video_family
+        from core.inference.video_moe_pair import moe_pick_pairs
 
         family = detect_video_family("", override = normalized)
         if family is None:
@@ -291,7 +293,7 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
                         break
         if (
             family is not None
-            and not getattr(family, "is_moe", False)
+            and moe_pick_pairs(family, *name_hints)
             and _video_family_buildable(family)
         ):
             return _VIDEO_GEN_TASK
@@ -495,6 +497,14 @@ def _local_family_needles(model) -> tuple[str, ...]:
             needles.append(single)
     except Exception:
         pass
+    try:
+        # A renamed loose checkpoint: its header still names the family.
+        path = Path(model.path)
+        if path.suffix.lower() == ".safetensors" and path.is_file():
+            from core.inference.diffusion_content import inspect_checkpoint
+            needles.append(inspect_checkpoint(str(path)).family)
+    except Exception:
+        pass
     return tuple(needle for needle in needles if needle)
 
 
@@ -659,6 +669,22 @@ def _is_sd_cpp_companion_repo(repo_id: str) -> bool:
         return False
 
 
+def _untrusted_repo_single_files_loadable(repo_info, selected: Optional[Path] = None) -> bool:
+    """An untrusted cached repo of single ``.safetensors`` files (no pipeline index) still loads per
+    file; mirrors ``single_file_load_allowed``."""
+    try:
+        if _repo_has_pipeline_index(repo_info, selected):
+            return False
+        from core.inference.diffusion_single_file_trust import SAFETENSORS_SUFFIX
+        for revision in getattr(repo_info, "revisions", None) or ():
+            for cached in getattr(revision, "files", None) or ():
+                if str(getattr(cached, "file_name", "")).endswith(SAFETENSORS_SUFFIX):
+                    return True
+    except Exception:  # noqa: BLE001 -- a classification failure keeps the row untrusted
+        return False
+    return False
+
+
 def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[str]:
     repo_id = getattr(repo_info, "repo_id", "") or ""
     try:
@@ -667,7 +693,10 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
 
         family = detect_video_family(repo_id)
         if family is not None:
-            if not _is_trusted_video_repo(repo_id) or not _video_family_buildable(family):
+            trusted = _is_trusted_video_repo(repo_id) or _untrusted_repo_single_files_loadable(
+                repo_info, selected
+            )
+            if not trusted or not _video_family_buildable(family):
                 return None
             return _VIDEO_GEN_TASK
     except Exception:
@@ -681,7 +710,10 @@ def _cached_repo_task(repo_info, selected: Optional[Path] = None) -> Optional[st
         if _is_sd_cpp_companion_repo(repo_id):
             return None
         family = detect_family(repo_id)
-        if not _is_trusted_diffusion_repo(repo_id) or family is None:
+        trusted = _is_trusted_diffusion_repo(repo_id) or _untrusted_repo_single_files_loadable(
+            repo_info, selected
+        )
+        if not trusted or family is None:
             return None
         if not family_pipeline_available(family):
             return None

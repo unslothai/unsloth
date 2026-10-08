@@ -73,6 +73,7 @@ interface SettingsDialogState {
   // Set when something asks for one connection's settings (the picker's Connected group gear).
   // ConnectionsTab hands it to the form, then clears it. Same lifetime as archivedRequested.
   connectionRequested: string | null;
+  decisionTryRequested: string | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
   openArchivedMedia: (shelf: Exclude<ArchivedShelf, "chats">) => void;
@@ -82,6 +83,8 @@ interface SettingsDialogState {
   openLogs: (family?: string, sourcePath?: string | null) => void;
   consumeLogFamilyRequest: () => void;
   consumeConnectionRequest: () => void;
+  openDecisionTry: (model: string) => void;
+  consumeDecisionTryRequest: () => void;
   consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
@@ -209,6 +212,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   logSourcePathRequested: null,
   logRequestSeq: 0,
   connectionRequested: null,
+  decisionTryRequested: null,
   openDialog: (requestedTab, options) =>
     set((state) => {
       const { tab, target } = resolveScrollRequest(requestedTab, options?.scrollTarget);
@@ -275,6 +279,19 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   consumeLogFamilyRequest: () =>
     set({ logFamilyRequested: null, logSourcePathRequested: null }),
   consumeConnectionRequest: () => set({ connectionRequested: null }),
+  openDecisionTry: (model) =>
+    set((state) => ({
+      open: true,
+      activeTab: "api-keys",
+      scrollTarget: "api-keys-decision-api",
+      archivedRequested: null,
+      logFamilyRequested: null,
+      logSourcePathRequested: null,
+      connectionRequested: null,
+      decisionTryRequested: model,
+      ...focusForOpen(state),
+    })),
+  consumeDecisionTryRequest: () => set({ decisionTryRequested: null }),
   consumeScrollTarget: (target) =>
     set((state) => ({
       scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,
@@ -290,6 +307,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       logFamilyRequested: null,
       logSourcePathRequested: null,
       connectionRequested: null,
+      decisionTryRequested: null,
     }),
   setActiveTab: (tab) => {
     try {

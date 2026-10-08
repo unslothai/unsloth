@@ -651,6 +651,44 @@ def load_prequant_text_encoder(
         return None
 
 
+def supplied_component_pipe_kwargs(
+    base: str,
+    *,
+    dtype: Any,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    family: Optional[str] = None,
+    logger: Any = None,
+) -> dict[str, Any]:
+    """Supplied text-encoder / VAE modules by component. Never swallows a failure: the base repo's weights for
+    these components were not downloaded, so there is nothing to fall back to."""
+    from .diffusion_comfy_components import active_component_overrides, load_override_modules
+
+    overrides = active_component_overrides()
+    if overrides is None or not overrides.files:
+        return {}
+    from utils.hf_cache_settings import active_hf_hub_cache
+
+    return load_override_modules(
+        overrides,
+        base = base,
+        dtype = dtype,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        family = family,
+        cache_dir = active_hf_hub_cache(),
+        logger = logger if logger is not None else _module_logger(),
+    )
+
+
+def _module_logger() -> Any:
+    try:
+        from loggers import get_logger
+        return get_logger(__name__)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def te_prequant_pipe_kwargs(
     fam: Any,
     base: str,
@@ -661,6 +699,41 @@ def te_prequant_pipe_kwargs(
     hf_token: Optional[str] = None,
     logger: Any = None,
     local_files_only: bool = False,
+) -> dict[str, Any]:
+    supplied = supplied_component_pipe_kwargs(
+        base,
+        dtype = dtype,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        family = getattr(fam, "name", None),
+        logger = logger,
+    )
+    injected = _te_prequant_pipe_kwargs(
+        fam,
+        base,
+        te_quant_mode = te_quant_mode,
+        target = target,
+        dtype = dtype,
+        hf_token = hf_token,
+        logger = logger,
+        local_files_only = local_files_only,
+        skip_components = tuple(supplied),
+    )
+    injected.update(supplied)
+    return injected
+
+
+def _te_prequant_pipe_kwargs(
+    fam: Any,
+    base: str,
+    *,
+    te_quant_mode: Optional[str],
+    target: Any,
+    dtype: Any,
+    hf_token: Optional[str] = None,
+    logger: Any = None,
+    local_files_only: bool = False,
+    skip_components: tuple = (),
 ) -> dict[str, Any]:
     """Component overrides for pipeline assembly: ``{<component>: <pre-cast encoder>}``
     for every ``TE_PREQUANT_COMPONENTS`` attr the family hosts a pre-cast checkpoint for
@@ -685,6 +758,8 @@ def te_prequant_pipe_kwargs(
         mode = normalize_te_quant(te_quant_mode) or TE_QUANT_FP8
         injected: dict[str, Any] = {}
         for component, source in sources.items():
+            if component in skip_components:
+                continue
             trim = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None))
             encoder = load_prequant_text_encoder(
                 base,

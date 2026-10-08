@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import HTTPException
+from markdown_it import MarkdownIt
 
 from core import research_runs
 from core.research.citations import (
@@ -257,9 +258,7 @@ def test_document_citation_regex_does_not_backtrack_catastrophically():
 
 
 def test_citation_title_strips_brackets_for_catalog_and_citation():
-    # Search titles routinely carry a bracketed prefix ("[PDF] ..."), and the prompt tells the
-    # model to copy the catalog title verbatim into the link label, where a bracket makes the
-    # citation unmatchable. Catalog and citation writer share this helper so they agree.
+    # brackets make verbatim link labels unmatchable; catalog and citation paths share this helper.
     assert (
         _citation_title({"title": "[PDF] Annual Report 2024"}, "https://x/a")
         == "PDF Annual Report 2024"
@@ -268,10 +267,28 @@ def test_citation_title_strips_brackets_for_catalog_and_citation():
     assert _citation_title({}, "https://x/a") == "https://x/a"
 
 
+def test_citation_title_with_a_pipe_keeps_its_table_row_intact():
+    report = "| Model | Context |\n|---|---|\n| Qwen3 [blog](https://q.example/) | 128K |"
+    sources = [{"url": "https://q.example/", "title": "Qwen3: Think Deeper | Qwen"}]
+    tokens = MarkdownIt("commonmark").enable("table").parse(_validate_report(report, sources, []))
+    body = tokens[[token.type for token in tokens].index("tbody_open") :]
+    row = [token.children for token in body if token.type == "inline"]
+    assert len(row) == 2
+    assert [child.type for child in row[0]] == ["text", "link_open", "text", "link_close"]
+    assert row[0][1].attrGet("href") == "https://q.example/"
+    assert row[0][2].content == "Qwen3: Think Deeper | Qwen"
+    assert row[1][0].content == "128K"
+
+
+def test_citation_title_with_an_escaped_pipe_keeps_its_backslash_and_its_row():
+    report = "| Tool | Note |\n|---|---|\n| grep [doc](https://g.example/) | alternation |"
+    sources = [{"url": "https://g.example/", "title": r"grep a\|b | Docs"}]
+    validated = _validate_report(report, sources, [])
+    assert r"[grep a\\\|b \| Docs](https://g.example/)" in validated
+
+
 def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
-    # Budgeting only the evidence cannot prevent an overflow: at a small context the
-    # untrimmable scaffolding (system prompt, plan, source catalogs) is already several times
-    # the window, and the old floor added 1500 chars on top of that.
+    # fixed scaffolding can exceed a small context before any trimmable evidence is added.
     monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: None)
     assert research_runs._prompt_char_budget(4096) is None
     assert research_runs._trimmable_budget(None, 99_999, 500) == 500
@@ -279,7 +296,6 @@ def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
     monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 16384)
     total = research_runs._prompt_char_budget(4096)
     assert total == int((16384 - 4096) * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
-    # A trimmable section never exceeds what is left, and never goes negative.
     assert research_runs._trimmable_budget(total, 0, 1_000) == 1_000
     assert research_runs._trimmable_budget(total, total - 10, 1_000) == 10
     assert research_runs._trimmable_budget(total, total + 5_000, 1_000) == 0

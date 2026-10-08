@@ -1152,6 +1152,19 @@ def _compile_repeated_blocks(
                 install_zimage_fused(transformer, logger, offload_active = offload_active)
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "z-image fused attention", exc)
+        if type(transformer).__name__ == "QwenImage21Transformer2DModel":
+            # after the int8 GEMM swap, whose leftovers it reads
+            try:
+                from .diffusion_qwenimage21_fused import install as install_q21_fused
+                install_q21_fused(
+                    transformer,
+                    logger,
+                    offload_active = offload_active
+                    if denoiser_offloaded is None
+                    else bool(denoiser_offloaded),
+                )
+            except Exception as exc:  # noqa: BLE001 - optimisation only
+                _warn(logger, "qwen-image-2.1 convrot sharing", exc)
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
