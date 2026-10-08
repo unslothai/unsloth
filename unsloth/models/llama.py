@@ -54,6 +54,7 @@ from .loader_utils import (
     requested_device_map,
     resolve_unsloth_device_map,
     resolve_auto_block_swap,
+    sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
 from ..utils.packing import (
@@ -116,7 +117,7 @@ from unsloth.models._attn_mask_compat import (
 )
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
-from ..kernels.utils import has_mxfp4_base
+from ..kernels.utils import _has_active_lora_bias, has_mxfp4_base
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from .vision import FastBaseModel, _is_text_seq2seq_config
@@ -1292,7 +1293,8 @@ def LlamaModel_fast_forward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
 
-    if use_cache:
+    # The inference norms write in place, which breaks a later backward (#895).
+    if use_cache and not hidden_states.requires_grad:
         if IS_FALCON_H1:
             hidden_states = fast_rms_layernorm_inference(self.final_layernorm, hidden_states)
         else:
@@ -3167,16 +3169,17 @@ class FastLlamaModel:
                         else:
                             setattr(model_config, _cfg_key, _cfg_val)
                 try:
-                    model = AutoModelForSequenceClassification.from_pretrained(
-                        model_name,
-                        config = model_config,
-                        device_map = device_map,
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                        attn_implementation = preferred_attn_impl,
-                        revision = revision,
-                        **kwargs,
-                    )
+                    with sync_load_when_quantizing(kwargs.get("quantization_config"), model_config):
+                        model = AutoModelForSequenceClassification.from_pretrained(
+                            model_name,
+                            config = model_config,
+                            device_map = device_map,
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            attn_implementation = preferred_attn_impl,
+                            revision = revision,
+                            **kwargs,
+                        )
                 finally:
                     disarm_fp8_to_nf4(model_config)
                 # Defensive: ensure the task head is in a floating dtype, guarding against any path leaving it
@@ -3247,30 +3250,34 @@ class FastLlamaModel:
                     if (_modelopt_rewritten or _fp8_to_nf4) and user_config is None:
                         move_config_overrides_onto_config(model_config, kwargs)
                     try:
+                        with sync_load_when_quantizing(
+                            kwargs.get("quantization_config"), model_config
+                        ):
+                            model = AutoModelForCausalLM.from_pretrained(
+                                model_name,
+                                config = model_config,
+                                device_map = device_map,
+                                token = token,
+                                trust_remote_code = trust_remote_code,
+                                attn_implementation = preferred_attn_impl,
+                                revision = revision,
+                                **kwargs,
+                            )
+                    finally:
+                        # The load deep-copied the config; give the caller's object its fp8 block back.
+                        disarm_fp8_to_nf4(model_config)
+                else:
+                    with sync_load_when_quantizing(kwargs.get("quantization_config"), model_config):
                         model = AutoModelForCausalLM.from_pretrained(
                             model_name,
-                            config = model_config,
                             device_map = device_map,
                             token = token,
+                            max_position_embeddings = max_position_embeddings,
                             trust_remote_code = trust_remote_code,
                             attn_implementation = preferred_attn_impl,
                             revision = revision,
                             **kwargs,
                         )
-                    finally:
-                        # The load deep-copied the config; give the caller's object its fp8 block back.
-                        disarm_fp8_to_nf4(model_config)
-                else:
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_name,
-                        device_map = device_map,
-                        token = token,
-                        max_position_embeddings = max_position_embeddings,
-                        trust_remote_code = trust_remote_code,
-                        attn_implementation = preferred_attn_impl,
-                        revision = revision,
-                        **kwargs,
-                    )
                 warn_if_bitsandbytes_quantized_nothing(
                     model, kwargs.get("quantization_config", None), model_name
                 )
@@ -4355,10 +4362,13 @@ class FastLlamaModel:
                         and (len(getattr(up_proj, "lora_magnitude_vector", []) or []) == 0)
                         and (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0)
                         and not has_mxfp4_base(gate_proj, up_proj, down_proj)
+                        and not _has_active_lora_bias(gate_proj)
+                        and not _has_active_lora_bias(up_proj)
+                        and not _has_active_lora_bias(down_proj)
                     ):
-                        # See stackoverflow.com/questions/50599045 on replacing a function within a class of a module.
+                        # MethodType binds the replacement; see stackoverflow.com/questions/50599045.
                         if hasattr(mlp_module, "_unsloth_forward"):
-                            # Then the mlp has been patched to use TiledMLP.
+                            # _unsloth_forward identifies an existing TiledMLP patch.
                             mlp_module._unsloth_forward = types.MethodType(
                                 _apply_lora_mlp, mlp_module
                             )
@@ -4385,6 +4395,9 @@ class FastLlamaModel:
                     and (len(getattr(k_proj, "lora_magnitude_vector", []) or []) == 0)
                     and (len(getattr(v_proj, "lora_magnitude_vector", []) or []) == 0)
                     and not has_mxfp4_base(q_proj, k_proj, v_proj)
+                    and not _has_active_lora_bias(q_proj)
+                    and not _has_active_lora_bias(k_proj)
+                    and not _has_active_lora_bias(v_proj)
                 ):
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -4403,6 +4416,7 @@ class FastLlamaModel:
                     and (getattr(o_proj, "base_layer", o_proj).bias is None)
                     and (len(getattr(o_proj, "lora_magnitude_vector", []) or []) == 0)
                     and not has_mxfp4_base(o_proj)
+                    and not _has_active_lora_bias(o_proj)
                 ):
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
@@ -4412,7 +4426,6 @@ class FastLlamaModel:
                         "are not enabled or a bias term (like in Qwen) is used."
                     )
 
-        # A zero count reads as a failure, so say why the fused kernels were skipped.
         unfused_reason = _fused_lora_skip_reason(
             lora_dropout, bias, float32_base, fsdp = fused_lora_declined_for_fsdp
         )

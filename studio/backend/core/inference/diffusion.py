@@ -210,6 +210,7 @@ from . import diffusion_compile_cache as compile_cache
 from .diffusion_compile_config import family_filters_reductions
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
+from . import diffusion_te_release as te_release
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
@@ -1242,6 +1243,8 @@ class _LoadState:
     variant_hint: str = ""
     # Promoted tiers leave no room for a later ControlNet.
     calibrated_placement: bool = False
+    # Unified memory only: frees the text encoders during each denoise and reloads them before they run again.
+    te_releaser: Any = None
 
 
 @dataclass
@@ -8085,6 +8088,7 @@ class DiffusionBackend:
                     load_bg_compile = (
                         bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
                     )
+                    te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,
                         family = fam,
@@ -8128,6 +8132,7 @@ class DiffusionBackend:
                             repo_id,
                             base,
                         ),
+                        te_releaser = te_releaser,
                     )
                     # Serialize publication with cancellation.
                     with self._load_cancel_lock:
@@ -10798,6 +10803,9 @@ class DiffusionBackend:
                         def _enter_denoise_phase(gen = gen) -> None:
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
+                            # The prompt is encoded: the encoders are idle until the next prompt, so free them.
+                            if state.te_releaser is not None:
+                                state.te_releaser.release()
 
                         chunk_ticker[0] = _CompletedStepTicker(steps)
 
@@ -11177,6 +11185,8 @@ class DiffusionBackend:
         cuda_graph.uninstall_all(state.cuda_graphs)
         uninstall_static_step_skip(state.pipe)
         prompt_cache.release(state.pipe)
+        if state.te_releaser is not None:
+            state.te_releaser.close()
         for aux in (*self._aux_pipes.values(), *self._cn_pipes.values()):
             prompt_cache.release(aux)
         gguf_compile.uninstall_all()
