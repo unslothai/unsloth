@@ -661,7 +661,7 @@ def test_upload_rejects_extension_case_variant_sidecar_collision(client, ds_root
 
 
 def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root):
-    # Re-uploading the EXACT same name is an allowed overwrite, and a .txt caption for the same stem is the kohya flow.
+    # exact-name overwrites are allowed, and same-stem .txt files are Kohya captions
     assert (
         _upload(client, "styleset", [("sample.png", _png_bytes((10, 20, 30)))]).status_code == 200
     )
@@ -701,11 +701,10 @@ def test_create_only_upload_refuses_every_occupied_spelling(client, ds_root):
 
 # ── import: promotion is all-or-nothing ──────────────────────────────────────
 def test_import_promotion_leaves_no_partial_dataset_on_failure(ds_root, monkeypatch):
-    # The staging dir is promoted in one atomic rename. If it fails, the folder must be left with NO images rather than a
-    # half-filled dataset the image_count>0 idempotency check would accept. Simulate the failure and assert a clean retry.
+    # atomic promotion prevents a failed import from satisfying the image_count idempotency check
     import os
 
-    # A client that returns the 500 (as production does) instead of re-raising.
+    # match production by returning 500 responses instead of reraising server exceptions
     app = FastAPI()
     app.include_router(training_router, prefix = "/api/train")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
