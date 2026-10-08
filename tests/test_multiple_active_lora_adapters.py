@@ -32,13 +32,17 @@ class _Block(torch.nn.Module):
         self.act_fn = torch.nn.SiLU()
 
 
-def _peft_block(adapters):
+def _peft_block(adapters, lora_bias = False):
     from peft import LoraConfig, get_peft_model
 
     torch.manual_seed(3407)
     targets = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     cfg = lambda r: LoraConfig(
-        r = r, lora_alpha = 2 * r, target_modules = targets, init_lora_weights = False
+        r = r,
+        lora_alpha = 2 * r,
+        target_modules = targets,
+        init_lora_weights = False,
+        lora_bias = lora_bias,
     )
     model = get_peft_model(_Block(), cfg(2), adapter_name = "a")
     if adapters > 1:
@@ -47,6 +51,10 @@ def _peft_block(adapters):
     model = model.to("cuda", torch.bfloat16)
     for name, p in model.named_parameters():
         p.requires_grad_("lora_" in name)
+    if lora_bias:
+        with torch.no_grad():
+            for proj in targets:
+                model.base_model.model.get_submodule(proj).lora_B["a"].bias.normal_()
     return model, model.base_model.model
 
 
@@ -100,6 +108,23 @@ def test_qkv_o_mlp_match_peft(adapters):
     if adapters > 1:
         # The second adapter must be in the graph, not just the first.
         assert any(".b." in n for n in qkv) and any(".b." in n for n in mlp)
+
+
+def test_qkv_o_mlp_match_peft_with_lora_bias():
+    from unsloth.kernels import apply_lora_mlp_swiglu, apply_lora_o, apply_lora_qkv
+
+    model, block = _peft_block(1, lora_bias = True)
+    _check(
+        lambda X: apply_lora_qkv(block, X),
+        lambda X: (block.q_proj(X), block.k_proj(X), block.v_proj(X)),
+        model,
+    )
+    _check(lambda X: apply_lora_o(block, X), block.o_proj, model)
+    _check(
+        lambda X: apply_lora_mlp_swiglu(block, X),
+        lambda X: block.down_proj(block.act_fn(block.gate_proj(X)) * block.up_proj(X)),
+        model,
+    )
 
 
 @pytest.mark.parametrize("adapters", [1, 2])
