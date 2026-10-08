@@ -91,6 +91,7 @@ function harness(
       ];
     },
   };
+  let pickedFiles: ((files: File[]) => void) | null = null;
   const nativeStore = Object.assign(() => nativePending, {
     getState: () => nativeState,
   });
@@ -131,7 +132,17 @@ function harness(
       "react/jsx-runtime": stubJsxRuntime(),
       "@hugeicons/react": {},
       "@hugeicons/core-free-icons": {},
+      "lucide-react": {},
       "@/lib/tick-icon": {},
+      "@/lib/api-base": { isTauri: false },
+      "@/lib/open-file-picker": {
+        openFilePicker: (_accept: string, onFiles: (files: File[]) => void) => {
+          pickedFiles = onFiles;
+        },
+      },
+      "@/components/assistant-ui/attachment": {},
+      "@/components/ui/spinner": {},
+      "./preview-store": { useDocumentPreviewStore: () => undefined },
       "@/lib/chevron-icons": {},
       "@assistant-ui/react": { useAui: () => ({ threadListItem: () => item }) },
       "@/lib/utils": { cn: () => "" },
@@ -146,6 +157,8 @@ function harness(
         chatHistoryClearBoundary: { capture: () => 0 },
         ChatThreadDeletedError: class extends Error {},
         isThreadIncognito: () => incognito,
+        isPastedTextFile: () => false,
+        annotationsOfFile: () => null,
         getStoredChatThread: async () => undefined,
         ensureStoredChatThread: async (threadId: string) => {
           if (storedIds.has(threadId)) return { id: threadId };
@@ -220,14 +233,9 @@ function harness(
     });
   }
   function pick() {
-    const input = findElement(tree, "input")!;
-    const onChange = input.props.onChange as (event: unknown) => void;
-    onChange({
-      target: {
-        files: [new File(["document"], "report.docx")],
-        value: "report.docx",
-      },
-    });
+    const addCard = findComponent(tree, "AddFilesCard")!;
+    (addCard.props.onClick as () => void)();
+    pickedFiles!([new File(["document"], "report.docx")]);
   }
   return {
     render,
@@ -360,6 +368,26 @@ function findElement(node: unknown, type: string): StubElement | undefined {
   return findElement(element.props.children, type);
 }
 
+function findComponent(node: unknown, name: string): StubElement | undefined {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findComponent(child, name);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  if (!node || typeof node !== "object" || !("props" in node)) return undefined;
+  const element = node as StubElement;
+  if (typeof element.type === "function" && element.type.name === name) return element;
+  return findComponent(element.props.children, name);
+}
+
+/** The KB panel's "Manage files" button. */
+function manageFiles(tree: StubElement): StubElement {
+  const panel = findComponent(tree, "ChatFilesPanel")!;
+  return panel.props.headerControls as StubElement;
+}
+
 function kbDialog(tree: StubElement): StubElement | undefined {
   return findElement(tree, "KnowledgeBaseDialog");
 }
@@ -417,13 +445,10 @@ test("the drop's Add still opens its knowledge base after the chat's source move
   assert.deepEqual(app.uploads, []);
 });
 
-test("the knowledge base chip opens that knowledge base without uploading anything", () => {
+test("the knowledge base panel opens that knowledge base without uploading anything", () => {
   const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
   app.render();
-  const chip = (app.tree.props.children as StubElement[]).find(
-    (child) => typeof child?.type === "function",
-  )!;
-  (chip.props.onOpen as () => void)();
+  (manageFiles(app.tree).props.onClick as () => void)();
   app.render();
   const dialog = kbDialog(app.tree)!;
   assert.equal(dialog.props.open, true);
@@ -436,10 +461,7 @@ test("an open dialog keeps its place when deleting the active knowledge base mov
   // tree would remount, replaying its animation and dropping its state.
   const app = harness({ ragSource: { type: "kb", kbId: "kb-1" } });
   app.render();
-  const chip = (app.tree.props.children as StubElement[]).find(
-    (child) => typeof child?.type === "function",
-  )!;
-  (chip.props.onOpen as () => void)();
+  (manageFiles(app.tree).props.onClick as () => void)();
   app.render();
   const place = (tree: StubElement) => ({
     root: tree.type,

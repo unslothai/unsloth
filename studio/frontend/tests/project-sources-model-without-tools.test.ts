@@ -46,7 +46,19 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
     "react/jsx-runtime": jsxRuntime,
     "@hugeicons/react": { HugeiconsIcon: Nothing },
     "@hugeicons/core-free-icons": {},
+    "lucide-react": new Proxy({}, { get: () => Nothing }),
     "@/lib/tick-icon": {},
+    "@/lib/api-base": { isTauri: false },
+    "@/lib/open-file-picker": { openFilePicker: () => undefined },
+    "@/components/assistant-ui/attachment": {
+      AttachmentKindIcon: Nothing,
+      FileCardBody: ({ name }: { name: string }) =>
+        React.createElement("span", null, name),
+    },
+    "@/components/ui/spinner": { Spinner: Nothing },
+    "./preview-store": {
+      useDocumentPreviewStore: selectorStore({ openPreview: () => undefined }),
+    },
     "@/lib/chevron-icons": {},
     "@assistant-ui/react": { useAui: () => ({}) },
     "@/lib/utils": {
@@ -61,6 +73,7 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
     "@/features/chat": {
       isThreadIncognito: () => false,
       chatHistoryClearBoundary: { capture: () => 0 },
+      attachmentFileKind: () => "pdf",
     },
     "@/features/native-intents": {
       useNativeAttachmentTargetKey: () => null,
@@ -79,10 +92,7 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
     },
     "../types/rag": { RAG_UPLOAD_ACCEPT: "", isLinkedFolderManaged: () => false },
     "@/components/ui/alert-dialog": new Proxy({}, { get: () => Passthrough }),
-    "./document-status-chip": {
-      DocumentStatusChip: ({ filename }: { filename: string }) =>
-        React.createElement("span", null, filename),
-    },
+    "./document-status-chip": { STAGE_LABELS: {} },
     "./knowledge-base-dialog": { KnowledgeBaseDialog: Nothing },
     "./staged-source": { EXPIRY_GRACE_MS: 0 },
     "./use-rag-documents": {
