@@ -108,7 +108,6 @@ def _gpu_record_helpers(source: str) -> str:
             "_amd_smi_gpu_records",
             "_gfx_arch_slots",
             "_amd_smi_hip_order",
-            # the unmasked discrete-over-iGPU pick (#7776)
             "_amd_prefer_discrete_gfx",
             "_amd_gfx_is_shadowing_integrated",
             "_amd_gfx_has_wheel_route",
