@@ -36,6 +36,9 @@ test("with vLLM, compressed-tensors, AWQ and GPTQ are marked as vLLM-runnable", 
     reason: "Detected compressed-tensors quantization.",
     supportedIn: "vllm",
   });
+  for (const pipelineTag of ["text-generation", "image-text-to-text"]) {
+    assert.equal(classifyUnslothSupport({ ...NVFP4, pipelineTag, vllmAvailable: true }).supportedIn, "vllm", pipelineTag);
+  }
   for (const quantMethod of ["awq", "GPTQ", " compressed-tensors "]) {
     const support = classifyUnslothSupport({ modelId: "owner/model", quantMethod, deviceType: "cuda", vllmAvailable: true });
     assert.equal(support.status, "unsupported");
@@ -62,6 +65,9 @@ test("vLLM does not excuse any other reason a model cannot run in chat", () => {
     { pipelineTag: "text-to-image" },
     { pipelineTag: "automatic-speech-recognition" },
     { pipelineTag: "text-to-speech" },
+    { pipelineTag: "feature-extraction" },
+    { pipelineTag: "sentence-similarity" },
+    { pipelineTag: "text-classification" },
     { tags: ["onnx"] },
     { tags: ["diffusers"] },
     { modelId: "owner/model-exl2" },

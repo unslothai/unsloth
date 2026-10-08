@@ -135,8 +135,9 @@ const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "gptq",
 ]);
 const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
-// Studio's vLLM engine refuses audio models (_reject_unsupported_managed_kind).
-const AUDIO_TASK = /^(audio|automatic-speech|text-to-speech|text-to-audio)/;
+// Chat tasks only: Studio's vLLM engine refuses audio (_reject_unsupported_managed_kind) and
+// embeddings are not served through it. Untagged repos (unsloth/Qwen3.8-27B-NVFP4) are chat.
+const VLLM_CHAT_TASKS: ReadonlySet<string> = new Set(["text-generation", "image-text-to-text"]);
 
 // Generation tasks the Images / Video pages handle. Mirrors IMAGE_GEN_TASKS and the video picker's tasks; image-to-video is included for LTX-2.3.
 const IMAGE_PAGE_TASKS: ReadonlySet<string> = new Set([
@@ -242,7 +243,7 @@ export function classifyUnslothSupport({
   const library = libraryName?.toLowerCase().trim() || null;
   const formatTags = excludedFormatTagsForDevice(deviceType);
   const normalizedQuant = normalizeQuantMethod(quantMethod);
-  const vllmRuns = vllmAvailable && !(pipeline && AUDIO_TASK.test(pipeline));
+  const vllmRuns = vllmAvailable && (!pipeline || VLLM_CHAT_TASKS.has(pipeline));
 
   // GGUF runs through llama.cpp regardless of the base model's quant config, so
   // the HF quant_method must not disqualify a GGUF repo.
