@@ -188,7 +188,7 @@ def test_the_launch_hands_placement_back_wherever_it_cannot_price_it():
         "_extra_args_have_tensor_split(extra_args, env)",
         "_extra_args_main_device(extra_args) is not None",
         '"LLAMA_ARG_DEVICE"',
-        "_sidecar_adapter_bytes(extra_args)",
+        "_sidecar_adapter_paths(extra_args)",
         '"kv_layer_weights"',
         '"compute_buffer_flat"',
         '"extra_gpu_bytes"',
@@ -206,3 +206,8 @@ def test_the_launch_records_what_it_emitted():
     ]
     assert "self._mixed_split_flags = [" in arm
     assert "self._auto_tensor_split_emitted = self._auto_split_fingerprint(" in arm
+
+
+def test_an_igpu_run_that_overflows_its_room_leaves_the_split_off():
+    # The pooled fit passes (10 of 10), but the 9 MiB layer would land on the 1 MiB iGPU.
+    assert split([DGPU, IGPU], {DGPU: 9.0, IGPU: 1.0}, SHARED, [1.0, 9.0]) is None

@@ -9178,6 +9178,13 @@ class LlamaCppBackend:
                     else left // len(igpus)
                 )
                 given += counts[i]
+        # The runs llama.cpp will really cut, in device order: each must fit its room.
+        start = 0
+        for i in gpu_indices:
+            end = start + int(counts[i])
+            if prefix[end] - prefix[start] > max(0.0, room[i]):
+                return None
+            start = end
         shares = [float(counts[i]) for i in gpu_indices]
         # Each boundary half a layer early, so float rounding in llama.cpp's
         # upper_bound can never hand a card one layer more than it was sized for.
@@ -9219,9 +9226,11 @@ class LlamaCppBackend:
             or str(env.get("LLAMA_ARG_DEVICE", "")).strip()
         ):
             return None
-        adapter_bytes = _sidecar_adapter_bytes(extra_args)
+        # Adapters may target only some layers, which a total cannot place.
+        if _sidecar_adapter_paths(extra_args):
+            return None
         layout = self._tensor_spill_layout(spill_inputs.get("model_path"))
-        if adapter_bytes is None or layout is None or not layout.complete or not layout.blocks:
+        if layout is None or not layout.complete or not layout.blocks:
             return None
         n_blocks = len(layout.blocks)
         kv_total = int(spill_inputs["kv_cache_bytes"] or 0)
@@ -9229,10 +9238,8 @@ class LlamaCppBackend:
         if len(kv_weights) != n_blocks or sum(kv_weights) <= 0:
             kv_weights = [1] * n_blocks
         kv_scale = kv_total / sum(kv_weights)
-        # Adapters follow their base tensors' layers (_sidecar_adapter_bytes).
-        per_block_extra = adapter_bytes / n_blocks
         layer_bytes = [
-            blk.spillable_bytes + blk.resident_bytes + w * kv_scale + per_block_extra
+            blk.spillable_bytes + blk.resident_bytes + w * kv_scale
             for blk, w in zip(layout.blocks, kv_weights)
         ]
         # The output layer rides index n_layer (the last device's run); an engaged
