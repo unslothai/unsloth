@@ -25,6 +25,7 @@ if str(_BACKEND) not in sys.path:
 
 from core.inference.chat_template_helpers import (  # noqa: E402
     _normalize_tool_call_arguments,
+    _repair_orphan_tool_results,
     _split_parallel_tool_calls,
     apply_chat_template_for_generation,
 )
@@ -124,6 +125,96 @@ def test_render_repairs_orphan_tool_result_after_native_template_failure():
     assert [message["role"] for message in repaired] == ["user", "assistant", "tool"]
     assert repaired[1]["tool_calls"][0]["id"] == "replayed_tool_1"
     assert repaired[2]["tool_call_id"] == "replayed_tool_1"
+
+
+class _CallLinkedToolTokenizer:
+    """gpt-oss rule: a result must answer a call id of the assistant turn before its run of
+    results; two assistant turns in a row fail an alternation check."""
+
+    def __init__(self):
+        self.seen_messages = []
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize = False,
+        add_generation_prompt = True,
+        **kw,
+    ):
+        self.seen_messages.append(messages)
+        call_ids = None
+        previous_role = None
+        for message in messages:
+            role = message.get("role")
+            if role == "assistant" and previous_role == "assistant":
+                raise ValueError("Conversation roles must alternate")
+            if role == "assistant":
+                call_ids = {call.get("id") for call in message.get("tool_calls") or ()}
+            elif role == "tool":
+                if not call_ids or message.get("tool_call_id") not in call_ids:
+                    raise ValueError(
+                        "Message has tool role, but there was no previous assistant message with a tool call!"
+                    )
+            else:
+                call_ids = None
+            previous_role = role
+        return "RENDERED"
+
+
+def test_render_gives_an_assistant_text_turn_the_orphan_call():
+    tok = _CallLinkedToolTokenizer()
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "assistant", "content": "checking"},
+        {"role": "tool", "tool_call_id": "c1", "name": "web_search", "content": "21C sunny"},
+    ]
+
+    assert apply_chat_template_for_generation(tok, messages) == "RENDERED"
+    repaired = tok.seen_messages[-1]
+    assert [message["role"] for message in repaired] == ["user", "assistant", "tool"]
+    assert repaired[1]["content"] == "checking"
+    assert [call["id"] for call in repaired[1]["tool_calls"]] == ["c1"]
+    assert "tool_calls" not in messages[1]
+
+
+def test_render_links_every_result_of_an_orphan_run():
+    tok = _CallLinkedToolTokenizer()
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "tool", "tool_call_id": "c1", "name": "web_search", "content": "21C sunny"},
+        {"role": "tool", "name": "web_fetch", "content": "rain later"},
+    ]
+
+    assert apply_chat_template_for_generation(tok, messages) == "RENDERED"
+    repaired = tok.seen_messages[-1]
+    assert [message["role"] for message in repaired] == ["user", "assistant", "tool", "tool"]
+    calls = repaired[1]["tool_calls"]
+    assert [call["id"] for call in calls] == ["c1", "replayed_tool_3"]
+    assert [call["function"]["name"] for call in calls] == ["web_search", "web_fetch"]
+    assert repaired[3]["tool_call_id"] == "replayed_tool_3"
+
+
+def test_orphan_repair_is_idempotent_and_leaves_linked_results_alone():
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "tool", "name": "web_search", "content": "21C sunny"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}]},
+        {"role": "tool", "tool_call_id": "c2", "content": "rain"},
+    ]
+    snapshot = json.loads(json.dumps(messages))
+
+    repaired = _repair_orphan_tool_results(messages)
+    assert [message["role"] for message in repaired] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+    ]
+    assert repaired[3:] == messages[2:]
+    assert _repair_orphan_tool_results(repaired) is repaired
+    assert messages == snapshot
 
 
 def test_render_keeps_valid_tool_result_history_unchanged():
