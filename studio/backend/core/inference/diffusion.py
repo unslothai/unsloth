@@ -3414,9 +3414,9 @@ class DiffusionBackend:
             vae_file = vae_file,
         )
         if (
-            fam.single_file_is_pipeline
+            _has_active_lora(loras)
+            and getattr(fam, "single_file_is_pipeline", False)
             and resolve_model_kind(gguf_filename, model_kind) == "gguf"
-            and _has_active_lora(loras)
         ):
             raise ValueError(_WHOLE_PIPELINE_GGUF_LORA_MSG)
         # Refuse an EXPLICIT precision this host can never honor BEFORE the load starts, so the route answers 409 with
