@@ -241,7 +241,6 @@ class SyntheticDataKit:
 
         self.model_name = model_name
         self.max_seq_length = max_seq_length
-        self.port = _pick_vllm_port(port)
 
         from transformers import AutoConfig, AutoTokenizer
 
@@ -292,6 +291,8 @@ class SyntheticDataKit:
         if "model" in engine_args:
             del engine_args["model"]
 
+        # Picked here, not before the model download, so a released fallback port is not left free for minutes.
+        self.port = _pick_vllm_port(port)
         subprocess_commands = [
             "vllm",
             "serve",
