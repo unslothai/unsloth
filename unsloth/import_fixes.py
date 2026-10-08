@@ -4905,8 +4905,7 @@ def patch_enable_input_require_grads():
         output.requires_grad_(True)
 
     def make_inputs_embeds_require_grads(module, args, kwargs):
-        # Passing inputs_embeds skips the embedding hook, so reentrant checkpointing
-        # gave the adapters no gradient (#2178). An alias leaves the caller's tensor alone.
+        # inputs_embeds skips the embedding hook, so reentrant checkpointing starved the adapters (#2178).
         inputs_embeds = kwargs.get("inputs_embeds")
         if (
             not isinstance(inputs_embeds, torch.Tensor)

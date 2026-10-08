@@ -53,7 +53,6 @@ def test_precomputed_inputs_embeds_match_input_ids():
     assert torch.equal(loss_ids, loss_embeds)
     assert grad_ids.abs().sum() > 0
     torch.testing.assert_close(grad_embeds, grad_ids)
-    # The caller's tensor is aliased, never flipped in place.
     assert not embeds.requires_grad and embeds.grad is None
 
 
