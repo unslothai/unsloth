@@ -414,6 +414,7 @@ class _MarkdownRenderer(HTMLParser):
         self._row_spans: dict[int, tuple[str, int]] = {}
         self._table_stack: list[_TableFrame] = []
         self._span_chars: int = 0
+        self._has_generated_spans: bool = False
         self._span_char_limit: int = min(_MAX_SPAN_CHARS, max(0, span_char_limit))
         self._in_row: bool = False
 
@@ -585,7 +586,8 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row.append(cell_text)
         if self._span_chars >= self._span_char_limit:
             return
-        extra_col_cost = 9 if not self._header_row_done else 3
+        outer_cells = sum(frame.in_cell for frame in self._table_stack)
+        extra_col_cost = 9 + 2 * outer_cells if not self._header_row_done else 3 + outer_cells
         extra_cols = min(
             self._cell_colspan - 1,
             (self._span_char_limit - self._span_chars) // extra_col_cost,
@@ -593,23 +595,26 @@ class _MarkdownRenderer(HTMLParser):
         self._current_row.extend([""] * extra_cols)
         generated = extra_col_cost * extra_cols
         self._span_chars += generated
+        self._has_generated_spans |= bool(extra_cols)
         if self._cell_rowspan > 1:
             repeated = cell_text if len(cell_text) <= _MAX_REPEATED_CELL_CHARS else ""
             for i in range(extra_cols + 1):
                 self._row_spans[col + i] = (repeated if i == 0 else "", self._cell_rowspan)
 
     def _fill_spanned_cells(self, width: int) -> None:
+        outer_cells = sum(frame.in_cell for frame in self._table_stack)
         while self._span_chars < self._span_char_limit and (
             len(self._current_row) < width or len(self._current_row) in self._row_spans
         ):
             span = self._row_spans.get(len(self._current_row))
             text = span[0] if span else ""
-            cost = len(text) + 3
+            cost = len(text) + 3 + (text.count("|") + 1) * outer_cells
             if self._span_chars + cost > self._span_char_limit:
                 self._span_chars = self._span_char_limit
                 break
             self._current_row.append(text)
             self._span_chars += cost
+            self._has_generated_spans = True
 
     def _finish_row(self) -> None:
         in_row, self._in_row = self._in_row, False
@@ -617,7 +622,9 @@ class _MarkdownRenderer(HTMLParser):
             return
         if not self._current_row:
             # a wholly generated row also adds its opening pipe, newline, and enclosing quote prefixes
-            row_cost = 3 + 2 * len(self._bq_stack)
+            row_cost = (
+                3 + 2 * len(self._bq_stack) + sum(frame.in_cell for frame in self._table_stack)
+            )
             self._span_chars = min(self._span_char_limit, self._span_chars + row_cost)
         self._fill_spanned_cells(max(self._row_spans, default = -1) + 1)
         if self._span_chars >= self._span_char_limit:
@@ -816,6 +823,7 @@ class _MarkdownRenderer(HTMLParser):
         if self._scope_tags is not None and tag in self._scope_tags:
             self._flush_header_frames()
             if self._scope_depth == 0:
+                self._span_chars = 0
                 self._scope_seg_start = len(self._out)
                 self._seg_dropped_start = self._dropped_chars
                 self._seg_heading_texts = []
@@ -1284,7 +1292,7 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
             span_char_limit = 0,
             header_decisions = renderer.header_decisions,
         )
-        if renderer._span_chars
+        if renderer._has_generated_spans
         else renderer
     )
     best_len = 0

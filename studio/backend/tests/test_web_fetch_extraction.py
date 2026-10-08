@@ -2159,6 +2159,14 @@ def test_table_spans_do_not_multiply_the_page_size():
         + "</table></blockquote><p>Article sentinel.</p>"
     )
     assert html_to_markdown(quoted).index("Article sentinel.") < 16_000
+    nested = (
+        "<table><tr><td>"
+        + "s" * 7000
+        + "<table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table></td></tr></table><p>Article sentinel.</p>"
+    )
+    assert html_to_markdown(nested).index("Article sentinel.") < 16_000
 
 
 def test_generated_table_spans_do_not_make_a_main_content_candidate():
@@ -2179,6 +2187,16 @@ def test_generated_table_spans_do_not_make_a_main_content_candidate():
     for decoy in decoys:
         out = html_to_markdown(f"<body>{decoy}{body}</body>", main_content = True)
         assert "Real page body." in out
+
+    exhausted = (
+        "<article><table><tr><td colspan='1000' rowspan='2'>x</td></tr><tr></tr></table></article>"
+    )
+    substantive = (
+        "<article><p>"
+        + "Real page body. " * 20
+        + "</p><table><tr><td rowspan='2'>rank</td><td>one</td></tr><tr><td>two</td></tr></table></article>"
+    )
+    assert "| rank | two |" in html_to_markdown(exhausted + substantive, main_content = True)
 
 
 def test_table_spans_stop_at_row_groups_tables_and_long_cells():
