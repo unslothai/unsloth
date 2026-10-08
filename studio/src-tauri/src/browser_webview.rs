@@ -242,6 +242,11 @@ enum BrowserEvent {
         /// Marked as from the internet: false if that failed (the panel warns), None where nothing marks.
         marked: Option<bool>,
     },
+    /// An approved download that left no file (its save dialog was cancelled).
+    DownloadCancelled {
+        tab_id: String,
+        url: String,
+    },
     DownloadPrompt {
         tab_id: String,
         url: String,
@@ -556,6 +561,16 @@ pub(crate) fn emit_download_done<R: Runtime>(
             success: true,
             download_id,
             marked,
+        },
+    );
+}
+
+pub(crate) fn emit_download_cancelled<R: Runtime>(app: &AppHandle<R>, tab_id: &str, url: &Url) {
+    emit(
+        app,
+        BrowserEvent::DownloadCancelled {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
         },
     );
 }

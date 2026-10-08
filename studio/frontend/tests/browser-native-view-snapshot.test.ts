@@ -231,6 +231,49 @@ test("a finished download is listed and reported after its tab closed, and warns
   }
 });
 
+test("an approved download runs on the Downloads button until it lands or its save is cancelled", async () => {
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewActivity?: string[];
+    nativeViewApprove?: boolean;
+    nativeViewDownloadsButton?: boolean;
+  };
+  g.nativeViewApprove = true;
+  g.nativeViewDownloadsButton = true;
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    g.nativeViewSeen = [];
+    g.nativeViewActivity = [];
+    const prompt = { kind: "downloadPrompt", tabId, site: "https://example.org/", name: "a.zip" };
+    g.nativeViewListener?.({ payload: { ...prompt, url: "https://example.org/a.zip", id: "p1" } });
+    g.nativeViewListener?.({ payload: { ...prompt, url: "https://example.org/b.zip", id: "p2" } });
+    await frame();
+    g.nativeViewListener?.({
+      payload: {
+        kind: "download", tabId, url: "https://example.org/a.zip", name: "a.zip", path: null, size: 3,
+        done: true, success: true, downloadId: "d1", marked: true,
+      },
+    });
+    g.nativeViewListener?.({ payload: { kind: "downloadCancelled", tabId, url: "https://example.org/b.zip" } });
+    assert.deepEqual(g.nativeViewActivity, [
+      `begin native:${tabId}:https://example.org/a.zip`,
+      `begin native:${tabId}:https://example.org/b.zip`,
+      `finish native:${tabId}:https://example.org/a.zip`,
+      `abandon native:${tabId}:https://example.org/b.zip`,
+    ]);
+    // The button shows it running, so no "downloading" toast.
+    assert.deepEqual(g.nativeViewSeen, [{ level: "history", message: "d1" }]);
+  } finally {
+    g.nativeViewApprove = false;
+    g.nativeViewDownloadsButton = false;
+    stop();
+  }
+});
+
 test("with a Downloads button on screen, a download shows there, not as a toast", async () => {
   const stop = startNativeViews();
   const g = globalThis as {

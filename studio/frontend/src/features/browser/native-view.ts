@@ -11,7 +11,7 @@ import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
 import { approveDownload, downloadSiteOf } from "./download-approval-queue";
-import { beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
+import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
@@ -54,7 +54,8 @@ type NativeEvent =
       /** False when the file couldn't be marked as downloaded from the internet; null where nothing marks. */
       marked?: boolean | null;
     }
-  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string };
+  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string }
+  | { kind: "downloadCancelled"; tabId: string; url: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
@@ -119,6 +120,9 @@ function listenOnce(): void {
   );
 }
 
+/** One running download in the Downloads button, from approval until it ends. */
+const downloadKey = (tabId: string, url: string) => `native:${tabId}:${url}`;
+
 /** Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
   const { id, url, site, name } = event;
@@ -126,19 +130,27 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
   // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
   const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
   const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
+  const key = downloadKey(event.tabId, url);
   void decided
     .then(async (allow) => {
       await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
-      if (allow) toast(t("browser.native.downloading", { name }));
+      if (!allow) return;
+      beginDownload(key, name);
+      if (useDownloadActivity.getState().buttons === 0) toast(t("browser.native.downloading", { name }));
     })
-    .catch(() => undefined);
+    .catch(() => abandonDownload(key));
 }
+
 
 function onNativeEvent(event: NativeEvent): void {
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === event.tabId);
   if (event.kind === "downloadPrompt") {
     onDownloadPrompt(event, tab);
+    return;
+  }
+  if (event.kind === "downloadCancelled") {
+    abandonDownload(downloadKey(event.tabId, event.url));
     return;
   }
   // A download outlives its page: it often lands after the tab closed or moved on, and still belongs in history.
@@ -207,12 +219,8 @@ function onNativeEvent(event: NativeEvent): void {
 
 /** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
 function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
-  const key = `native:${event.tabId}:${event.url}`;
-  if (!event.done) {
-    beginDownload(key, event.name);
-    if (useDownloadActivity.getState().buttons === 0) toast(t("browser.native.downloading", { name: event.name }));
-    return;
-  }
+  const key = downloadKey(event.tabId, event.url);
+  if (!event.done) return;
   if (event.success) {
     useBrowserHistoryStore.getState().recordDownload({
       name: event.name,

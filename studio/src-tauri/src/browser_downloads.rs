@@ -615,6 +615,9 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
                 Some(download_id),
                 marked,
             ),
+            Ok(None) if matches!(entry.decision, Some(Decision::Allow { .. })) => {
+                crate::browser_webview::emit_download_cancelled(&app, &entry.tab_id, &entry.url)
+            }
             Ok(None) => {}
             Err(_) => crate::browser_webview::emit_download_failed(
                 &app,
