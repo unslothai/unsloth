@@ -8,6 +8,7 @@ kept cuda12 install must stop counting as covering it."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -250,3 +251,33 @@ class TestWindowsBelowTheFloorGetsTheCpuBundle:
     def test_a_cuda_11_driver_keeps_its_old_route(self, monkeypatch):
         # Below CUDA 12 nothing changes: no prebuilt, so setup source-builds as before.
         assert self._choices(monkeypatch, (11, 8)) == []
+
+
+class TestTheSourceStageDoesNotKeepABrokenCudaPrebuilt:
+    # setup.sh asks --check-existing-install before skipping the rebuild. A cuda12 prebuilt
+    # still answers --version below the floor, so without this every update kept it.
+    def _tree(self, tmp_path, marker):
+        if marker is not None:
+            (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
+                json.dumps(marker), encoding = "utf-8"
+            )
+        return tmp_path
+
+    def test_a_cuda_prebuilt_below_the_floor_is_rebuilt(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "_existing_install_runs", lambda *_a: True)
+        tree = self._tree(tmp_path, {"backend": "cuda", "runtime_line": "cuda12"})
+        assert not m.reusable_existing_install(tree, host("Linux", (12, 2)))
+
+    @pytest.mark.parametrize("driver", [(12, 4), (13, 0), None])
+    def test_from_the_floor_it_is_kept_as_before(self, tmp_path, monkeypatch, driver):
+        monkeypatch.setattr(m, "_existing_install_runs", lambda *_a: True)
+        tree = self._tree(tmp_path, {"backend": "cuda", "runtime_line": "cuda12"})
+        assert m.reusable_existing_install(tree, host("Linux", driver))
+
+    def test_a_genuine_source_build_is_kept_as_before(self, tmp_path):
+        assert m.reusable_existing_install(self._tree(tmp_path, None), host("Linux", (12, 2)))
+
+    def test_a_cpu_prebuilt_is_kept_as_before(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(m, "_existing_install_runs", lambda *_a: True)
+        tree = self._tree(tmp_path, {"backend": "cpu"})
+        assert m.reusable_existing_install(tree, host("Linux", (12, 2)))

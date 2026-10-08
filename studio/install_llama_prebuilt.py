@@ -9629,6 +9629,11 @@ def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
     """
     if not (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
         return True
+    # #12842: a CUDA prebuilt still answers --version on a driver below the floor but
+    # loads no kernel, and every update would keep it, so let the rebuild run.
+    marker = load_prebuilt_metadata(install_dir) or {}
+    if marker_backend(marker) == "cuda" and driver_below_cuda_prebuilt_floor(host):
+        return False
     return _existing_install_runs(install_dir, host)
 
 
