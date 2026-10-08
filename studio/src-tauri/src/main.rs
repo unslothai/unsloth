@@ -876,8 +876,9 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-// wry resizes the WebView container with SWP_ASYNCWINDOWPOS, so a fast drag can leave
-// it at an older size. Re-read the client rect when this runs and resize synchronously.
+// wry's WM_SIZE handler sets the controller bounds before resizing the container (with
+// SWP_ASYNCWINDOWPOS), and a fast drag can leave the page at an older size. Resize the
+// container, then the controller, to the client rect read now.
 #[cfg(windows)]
 fn sync_webview_bounds(window: &tauri::Window) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller;
