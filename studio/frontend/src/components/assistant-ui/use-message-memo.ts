@@ -36,7 +36,11 @@ export function useMessageMemo<T>(
   } | null>(null);
   return useAuiState(({ message }) => {
     const last = memo.current;
-    if (last !== null && last.message === message && sameDeps(last.deps, deps)) {
+    if (
+      last !== null &&
+      last.message === message &&
+      sameDeps(last.deps, deps)
+    ) {
       return last.value;
     }
     const next = select(message);

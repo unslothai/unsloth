@@ -3,11 +3,11 @@
 
 "use client";
 
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
 
 import {
   isSearchImagesToolResult,

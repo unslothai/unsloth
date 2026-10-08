@@ -17,7 +17,10 @@ import {
   partsSearchImagesSignature,
   partsTextKey,
 } from "../src/components/assistant-ui/message-derived.ts";
-import { shouldShowCompactionNotice, compactionBoundary } from "../src/features/chat/utils/context-truncation.ts";
+import {
+  shouldShowCompactionNotice,
+  compactionBoundary,
+} from "../src/features/chat/utils/context-truncation.ts";
 import {
   precedingTextForMessagePart,
   searchImagesSignature,
@@ -86,7 +89,9 @@ function walk(
   for (const message of messages) {
     if (message.role !== "assistant") continue;
     const value = (
-      message.metadata as { custom?: { contextTruncation?: unknown } } | undefined
+      message.metadata as
+        | { custom?: { contextTruncation?: unknown } }
+        | undefined
     )?.custom?.contextTruncation as Parameters<typeof compactionBoundary>[0];
     const dropped = compactionBoundary(value);
     if (shouldShowCompactionNotice(value, previousDropped)) {
@@ -106,13 +111,57 @@ test("compaction notice ids match the per-message walk", () => {
   const messages = [
     { id: "u0", role: "user" },
     { id: "a0", role: "assistant" },
-    { id: "a1", role: "assistant", metadata: truncation({ dropped_messages: 4, boundary_messages: 4, fits: true }) },
-    { id: "a2", role: "assistant", metadata: truncation({ dropped_messages: 4, boundary_messages: 4, fits: true }) },
-    { id: "a3", role: "assistant", metadata: truncation({ dropped_messages: 2, boundary_messages: 3, checkpoint_started: true }) },
-    { id: "a4", role: "assistant", metadata: truncation({ dropped_messages: 8, boundary_messages: 9, fits: true }) },
-    { id: "a5", role: "assistant", metadata: truncation({ dropped_messages: 0 }) },
-    { id: "a6", role: "assistant", metadata: truncation({ dropped_messages: 5, fits: false }) },
-    { id: "u1", role: "user", metadata: truncation({ dropped_messages: 50, boundary_messages: 50 }) },
+    {
+      id: "a1",
+      role: "assistant",
+      metadata: truncation({
+        dropped_messages: 4,
+        boundary_messages: 4,
+        fits: true,
+      }),
+    },
+    {
+      id: "a2",
+      role: "assistant",
+      metadata: truncation({
+        dropped_messages: 4,
+        boundary_messages: 4,
+        fits: true,
+      }),
+    },
+    {
+      id: "a3",
+      role: "assistant",
+      metadata: truncation({
+        dropped_messages: 2,
+        boundary_messages: 3,
+        checkpoint_started: true,
+      }),
+    },
+    {
+      id: "a4",
+      role: "assistant",
+      metadata: truncation({
+        dropped_messages: 8,
+        boundary_messages: 9,
+        fits: true,
+      }),
+    },
+    {
+      id: "a5",
+      role: "assistant",
+      metadata: truncation({ dropped_messages: 0 }),
+    },
+    {
+      id: "a6",
+      role: "assistant",
+      metadata: truncation({ dropped_messages: 5, fits: false }),
+    },
+    {
+      id: "u1",
+      role: "user",
+      metadata: truncation({ dropped_messages: 50, boundary_messages: 50 }),
+    },
   ];
   const ids = compactionNoticeMessageIds(messages);
   for (const message of messages) {

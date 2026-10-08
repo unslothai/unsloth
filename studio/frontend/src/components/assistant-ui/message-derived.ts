@@ -64,8 +64,9 @@ export const partsHaveNonEmptyText = memoOnArray((parts: readonly PartLike[]) =>
 
 /** The search-image signature of the parts (see searchImagesSignature). */
 export const partsSearchImagesSignature = memoOnArray(
-  (parts: ReadonlyArray<{ type: string; toolName?: string; result?: unknown }>) =>
-    searchImagesSignature(parts),
+  (
+    parts: ReadonlyArray<{ type: string; toolName?: string; result?: unknown }>,
+  ) => searchImagesSignature(parts),
 );
 
 const precedingTextByIndex = memoOnArray(
