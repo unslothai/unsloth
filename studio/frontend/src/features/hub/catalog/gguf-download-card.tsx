@@ -262,15 +262,50 @@ interface GgufVariantMenuItem {
   footprint: GgufVariantFootprint | null;
 }
 
-/** Model plus uncached companion size, with the breakdown on hover. */
+/** Model plus uncached companion size, with the breakdown on hover. A quant already on disk shows
+ *  only what Run still has to fetch, so it does not read as ready while its assets are missing. */
 function GgufVariantSizeLabel({
   label,
   footprint,
+  downloaded = false,
 }: {
   label: string;
   footprint: GgufVariantFootprint | null;
+  downloaded?: boolean;
 }) {
   if (!footprint) return <>{label}</>;
+  if (downloaded) {
+    return (
+      <Tooltip delayDuration={0}>
+        <TooltipTrigger asChild={true}>
+          <span
+            data-model-download-footprint={true}
+            data-model-needs-required-assets={true}
+            className="inline-flex items-center gap-1"
+          >
+            {formatFootprintBytes(footprint.companionBytes)} more to run
+            {/* Align the icon with the digits. */}
+            <HugeiconsIcon
+              icon={HelpCircleIcon}
+              aria-hidden={true}
+              className="size-3 shrink-0 -translate-y-[0.08em] text-muted-foreground/80"
+              strokeWidth={1.8}
+            />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="tooltip-compact">
+          <span className="font-medium">
+            The model file is on device. Run downloads{" "}
+            {formatFootprintBytes(footprint.companionBytes)} of required assets
+            first
+          </span>
+          <span className="ml-1 text-muted-foreground">
+            · text encoder and VAE, once, shared by every quant
+          </span>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild={true}>
@@ -590,6 +625,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
           <GgufVariantSizeLabel
             label={item.downloadSizeLabel}
             footprint={item.footprint}
+            downloaded={item.downloaded}
           />
         </span>
         {/* Options only apply to files on disk; placeholder keeps the size
@@ -1187,6 +1223,7 @@ export function GgufDownloadCard({
                       <GgufVariantSizeLabel
                         label={selectedDownloadSizeLabel}
                         footprint={selectedFootprint}
+                        downloaded={Boolean(selected.downloaded)}
                       />
                     </span>
                   )}
