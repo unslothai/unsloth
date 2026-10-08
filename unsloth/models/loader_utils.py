@@ -1538,12 +1538,13 @@ def _offline_quantize_to_fp8(
             config = text_config
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
-        model = auto_model.from_pretrained(
-            model_name,
-            config = config,
-            revision = revision,
-            **load_kwargs,
-        )
+        with sync_load_when_quantizing(qconfig, config):
+            model = auto_model.from_pretrained(
+                model_name,
+                config = config,
+                revision = revision,
+                **load_kwargs,
+            )
         tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
@@ -3062,6 +3063,27 @@ def _bnb_bits_requested(quantization_config):
     if get("load_in_8bit", False):
         return 8
     return None
+
+
+_ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
+
+
+@contextlib.contextmanager
+def sync_load_when_quantizing(quantization_config, model_config):
+    """Sync-load on-the-fly quantization: transformers 5.0-5.3 worker threads put full-precision
+    tensors on the card faster than they are quantized (5.4+ already loads these synchronously)."""
+    if (
+        quantization_config is None
+        or getattr(model_config, "quantization_config", None) is not None
+        or _ASYNC_LOAD_ENV in os.environ
+    ):
+        yield
+        return
+    os.environ[_ASYNC_LOAD_ENV] = "1"
+    try:
+        yield
+    finally:
+        os.environ.pop(_ASYNC_LOAD_ENV, None)
 
 
 def warn_if_bitsandbytes_quantized_nothing(
