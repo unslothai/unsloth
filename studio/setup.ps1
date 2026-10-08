@@ -2752,6 +2752,8 @@ function Find-VsBuildTools {
 function Test-LlamaBuildToolsMissing {
     if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $true }
     if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) { return $true }
+    # The CUDA build installs the Toolkit (several GB) via Resolve-CudaToolkit -RequireOrExit.
+    if ($HasNvidiaDriverEvidence -and -not (Find-Nvcc)) { return $true }
     return (-not $script:VsInstallPath) -and (-not (Find-VsBuildTools))
 }
 

@@ -65,11 +65,15 @@ Describe 'Test-LlamaBuildToolsMissing' {
         @{ Case = 'git is absent'; Git = $false; Cmake = $true; Vs = 'C:\VS'; Expected = $true },
         @{ Case = 'cmake is absent'; Git = $true; Cmake = $false; Vs = 'C:\VS'; Expected = $true },
         @{ Case = 'Build Tools are absent'; Git = $true; Cmake = $true; Vs = $null; Expected = $true },
+        @{ Case = 'the CUDA Toolkit is absent on NVIDIA'; Git = $true; Cmake = $true; Vs = 'C:\VS'; Nvidia = $true; Nvcc = $null; Expected = $true },
+        @{ Case = 'nothing is absent on NVIDIA'; Git = $true; Cmake = $true; Vs = 'C:\VS'; Nvidia = $true; Nvcc = 'C:\nvcc.exe'; Expected = $false },
         @{ Case = 'nothing is absent'; Git = $true; Cmake = $true; Vs = 'C:\VS'; Expected = $false }
     ) {
         Mock Get-Command { if ($Git) { [pscustomobject]@{ Name = 'git' } } } -ParameterFilter { $Name -eq 'git' }
         Mock Get-Command { if ($Cmake) { [pscustomobject]@{ Name = 'cmake' } } } -ParameterFilter { $Name -eq 'cmake' }
         function Find-VsBuildTools { $null }
+        function Find-Nvcc { $Nvcc }
+        $HasNvidiaDriverEvidence = [bool]$Nvidia
         $script:VsInstallPath = $Vs
         Test-LlamaBuildToolsMissing | Should -Be $Expected
     }
