@@ -10,7 +10,7 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { offloadHardwareSupported, offloadPayload, offloadSupported } = await import("../src/features/training/api/mappers.ts");
+const { offloadBudgetSupported, offloadHardwareSupported, offloadPayload, offloadSupported } = await import("../src/features/training/api/mappers.ts");
 const { initialTrainingConfigState } = await import(
   "../src/features/training/stores/training-config-policy.ts"
 );
@@ -92,4 +92,24 @@ test("offload needs a CUDA or ROCm card that is not a unified-memory APU", () =>
   assert.equal(offloadPayload(saved, sys("xpu", [false])).offload_layers, 0);
   assert.equal(offloadPayload(saved, sys("rocm", [true])).offload_layers, 0);
   assert.equal(offloadPayload(saved, sys("cuda", [false])).offload_layers, 14);
+});
+
+test("an image or audio run on several GPUs offloads Auto without a budget", () => {
+  const cards = (n: number) => ({
+    status: "ready" as const,
+    device_backend: "cuda",
+    gpu: { available: true, devices: Array.from({ length: n }, (_, index) => ({ index })) },
+  });
+  const on = { ...base, offloadLayers: "auto" as const, offloadVramGb: 8 };
+  for (const dataset of [{ isDatasetImage: true }, { isDatasetAudio: true }]) {
+    const run = { ...on, ...dataset };
+    assert.equal(offloadBudgetSupported(run, cards(2) as never), false);
+    assert.deepEqual(offloadPayload(run, cards(2) as never), {
+      offload_layers: "auto",
+      offload_vram_gb: null,
+      prefetch_depth: 2,
+    });
+    assert.equal(offloadPayload(run, cards(1) as never).offload_vram_gb, 8);
+  }
+  assert.equal(offloadPayload(on, cards(2) as never).offload_vram_gb, 8);
 });

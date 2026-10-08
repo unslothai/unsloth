@@ -28,7 +28,11 @@ import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow } from "./params-section-controls";
 import { OffloadLayersParams } from "./training-offload-params";
-import { offloadHardwareSupported, offloadSupported } from "@/features/training/api/mappers";
+import {
+  offloadBudgetSupported,
+  offloadHardwareSupported,
+  offloadSupported,
+} from "@/features/training/api/mappers";
 import { useSystemInfo } from "@/hooks/use-system";
 
 const VISION_IMAGE_SIZE_PRESETS = [256, 384, 512, 768, 1024, 1536, 2048];
@@ -133,6 +137,7 @@ export function TrainingMemoryParams(): ReactElement {
       isDecision: state.modelType === "decision",
       modelType: state.modelType,
       isDatasetImage: state.isDatasetImage,
+      isDatasetAudio: state.isDatasetAudio,
       visionImageSize: state.visionImageSize,
       setVisionImageSize: state.setVisionImageSize,
       setPacking: state.setPacking,
@@ -250,7 +255,7 @@ export function TrainingMemoryParams(): ReactElement {
         </Select>
       </ParamsRow>
       {!isMac && offloadHardwareSupported(system) && offloadSupported(store) && (
-        <OffloadLayersParams />
+        <OffloadLayersParams budget={offloadBudgetSupported(store, system)} />
       )}
       {showPacking && (
         <PackingOption
