@@ -94,6 +94,31 @@ def _is_remote_code(cls):
     return "transformers_modules" in (getattr(cls, "__module__", "") or "")
 
 
+def _name_input_embedding(cls, module):
+    # transformers 5 ports drop the accessor; the inherited one finds only `embed_tokens` (EXAONE 3.5 keeps `wte`).
+    if "get_input_embeddings" in cls.__dict__:
+        return False
+    try:
+        module.get_input_embeddings()
+        return False
+    except NotImplementedError:
+        pass
+    for name in _EMBEDDING_ATTRIBUTES:
+        if isinstance(getattr(module, name, None), torch.nn.Embedding):
+
+            def get_input_embeddings(self):
+                return getattr(self, name)
+
+            def set_input_embeddings(self, value):
+                setattr(self, name, value)
+
+            cls.get_input_embeddings = get_input_embeddings
+            if "set_input_embeddings" not in cls.__dict__:
+                cls.set_input_embeddings = set_input_embeddings
+            return True
+    return False
+
+
 _OUTPUT_HEAD_ATTRIBUTES = ("lm_head", "output", "embed_out", "output_layer")
 
 
@@ -393,6 +418,8 @@ def apply_remote_code_shims(model):
             continue
         seen.add(cls)
         if accessor_requires_arguments(cls.get_input_embeddings) and _repair_accessor(cls):
+            repaired.append(f"{cls.__name__}.get_input_embeddings")
+        elif _is_remote_code(cls) and _name_input_embedding(cls, module):
             repaired.append(f"{cls.__name__}.get_input_embeddings")
     cls = type(model)
     if _is_remote_code(cls) and _output_accessor_is_broken(model) and _repair_output_accessor(cls):

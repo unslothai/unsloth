@@ -549,6 +549,7 @@ def device(monkeypatch):
             "cuda": hardware.DeviceType.CUDA,
             "cpu": hardware.DeviceType.CPU,
             "xpu": hardware.DeviceType.XPU,
+            "mlx": hardware.DeviceType.MLX,
         }[kind]
         monkeypatch.setattr(hardware, "get_device", lambda: value)
         monkeypatch.setattr(hardware, "DEVICE", value)
@@ -643,3 +644,9 @@ def test_clef_training_is_refused_without_an_nvidia_or_amd_gpu(route, device, tm
     laya = _request(model_name = str(_laya_folder(tmp_path / "laya")))
     route._validate_decision_request(laya)
     assert laya.decision_layout == "laya"
+    # Apple Silicon trains a Clef, and a language model given a decision head, with MLX.
+    device("mlx")
+    for folder in (tmp_path / "c", _llm_folder(tmp_path / "l")):
+        request = _request(model_name = str(folder))
+        route._validate_decision_request(request)
+        assert request.decision_layout == {"c": "clef", "l": "llm"}[folder.name]

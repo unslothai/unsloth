@@ -1833,7 +1833,7 @@ test("a losing claim does not follow the row onto the next branch", () => {
   const rows = readSrc("components/assistant-ui/progressive-messages.tsx");
   assert.match(
     rows,
-    /<MessageByIndexProvider key=\{index\}/,
+    /<AuiProvider key=\{index\} value=\{gate\.row\(index\)\}>\s*<MessageByIndexProvider index=\{index\}>/,
     "rows are no longer keyed by index; this test needs rewriting",
   );
 
