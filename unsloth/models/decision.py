@@ -8,13 +8,10 @@ __all__ = [
 
 import contextlib
 import copy
-import functools
-import importlib.util
 import json
 import math
 import os
 import random
-import sys
 import tempfile
 import types
 from collections import Counter
@@ -32,44 +29,7 @@ from ._utils import (
 )
 from .loader_utils import is_distributed
 from ._decision_fast import compiled_encoder, pad_length
-from ._decision_common import (  # noqa: F401
-    TRAIN_MAX_LEN,
-    TRAIN_HEAD_MAX_LEN,
-    HOLDOUT_MAX,
-    MIN_CALIBRATION_ITEMS,
-    QUESTION_TYPES,
-    _FILES,
-    _DIRS,
-    _CLEF_HEAD_FILES,
-    _ADAPTER_CONFIG,
-    CLEF_MAX_LEN,
-    CLEF_SERVE_MAX_LEN,
-    _VENDORED_LAYA,
-    HEAD_TEMPERATURE_RANGE,
-    DecisionDataError,
-    _laya,
-    is_decision_checkpoint,
-    is_clef_checkpoint,
-    _is_clef_adapter,
-    _is_clef_repo,
-    _is_plain_lm,
-    _checkpoint_folder,
-    _lm_subfolder,
-    _parsed,
-    _internal,
-    _option_keys,
-    _label,
-    _target,
-    _target_for,
-    _clef_question,
-    _predicted,
-    _metrics,
-    _fit_temperature,
-    _fit_temperatures,
-    _served_temperatures,
-    _calibrate_clef,
-    _served_lengths,
-)
+from ._decision_common import *  # noqa: F401,F403
 
 HEAD_LEARNING_RATE = 1e-4
 # DecisionTrainer defaults for Clef; every key is also a DecisionTrainer argument.

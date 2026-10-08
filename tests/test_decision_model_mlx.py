@@ -180,16 +180,19 @@ def test_decision_helpers_are_one_torch_free_module_for_both_backends():
     common = sys.modules["unsloth._decision_common"]
     assert unsloth._decision_mlx._metrics is common._metrics
     root = Path(unsloth.__file__).parent / "models"
-    shared = ast.parse((root / "_decision_common.py").read_text()).body
+    shared = ast.parse((root / "_decision_common.py").read_text(encoding = "utf-8")).body
     # Loaded by path on MLX, where unsloth.models and its torch imports are never imported.
     modules = [a.name for n in shared if isinstance(n, ast.Import) for a in n.names]
     modules += [n.module for n in shared if isinstance(n, ast.ImportFrom)]
     assert {name.split(".")[0] for name in modules}.isdisjoint({"torch", "transformers"})
-    torch_module = ast.parse((root / "decision.py").read_text()).body
-    for module in (torch_module, ast.parse((root / "decision_mlx.py").read_text()).body):
+    torch_module = ast.parse((root / "decision.py").read_text(encoding = "utf-8")).body
+    for module in (
+        torch_module,
+        ast.parse((root / "decision_mlx.py").read_text(encoding = "utf-8")).body,
+    ):
         assert {n.name for n in module if hasattr(n, "name")}.isdisjoint(common.__all__)
     taken = [n for n in torch_module if getattr(n, "module", None) == "_decision_common"]
-    assert {a.name for n in taken for a in n.names} == set(common.__all__)
+    assert [a.name for n in taken for a in n.names] == ["*"]
 
 
 @pytest.fixture
