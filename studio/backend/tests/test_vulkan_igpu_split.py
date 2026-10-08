@@ -140,3 +140,26 @@ def test_the_launch_reserves_the_non_layer_bytes():
     arm = src[src.index("_mixed_split = (") : src.index("if _mixed_split is not None:")]
     for key in ("compute_buffer_flat", "soft_overhead", "extra_gpu_bytes"):
         assert key in arm
+
+
+def test_a_card_too_full_for_its_split_buffers_does_not_outrank_the_igpu():
+    picked, use_fit = LlamaCppBackend._select_gpus(
+        10000 * MIB,
+        [(DGPU, 900), (IGPU, 14352)],
+        usable_fraction = 0.9,
+        per_device_overhead_bytes = 1024 * MIB,
+        shared_gpu_ids = SHARED,
+    )
+    assert (picked, use_fit) == ([IGPU], False)
+
+
+def test_the_projector_is_reserved_not_split():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    arm = src[src.index("_mixed_split = (") : src.index("if _mixed_split is not None:")]
+    assert '_spill_inputs["model_size"] - mmproj_size' in arm
+
+
+def test_every_auto_placement_sort_ranks_discrete_first():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert "key = lambda g: _gpu_usable(" not in src
+    assert src.count("key = lambda g: _gpu_rank(") == 3

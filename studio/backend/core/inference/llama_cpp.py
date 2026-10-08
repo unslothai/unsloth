@@ -16304,7 +16304,12 @@ class LlamaCppBackend:
         # card can have less usable room than a less-used small one.
         _shared = set(shared_gpu_ids or ())
         ranked = sorted(
-            gpus, key = lambda g: (g[0] not in _shared, _usable(g[0], g[1])), reverse = True
+            gpus,
+            key = lambda g: (
+                g[0] not in _shared and _usable(g[0], g[1]) > overhead_mib,
+                _usable(g[0], g[1]),
+            ),
+            reverse = True,
         )
 
         # Cap a downgraded multi-GPU request to the usable count so it doesn't pull
@@ -24964,6 +24969,16 @@ class LlamaCppBackend:
                             sysmem_fallback = _sysmem_fallback,
                         )
 
+                    def _gpu_rank(
+                        g,
+                        frac = _vram_frac,
+                        floor_mib = 0.0,
+                    ):
+                        # Shared-memory iGPUs after every discrete card that can hold
+                        # its own per-device buffers, like _select_gpus.
+                        usable = _gpu_usable(g, frac)
+                        return (g[0] not in _shared_gpu_ids and usable > floor_mib, usable)
+
                     def _pool_budget_mib(subset, frac):
                         # Sum each GPU's own usable budget. Pooling free and total
                         # separately would let an unknown-total GPU (MIG/vGPU/N/A)
@@ -25844,7 +25859,11 @@ class LlamaCppBackend:
                         def _probe_rank(drafter: bool) -> list:
                             return sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(g, _probe_frac(drafter)),
+                                key = lambda g: _gpu_rank(
+                                    g,
+                                    _probe_frac(drafter),
+                                    _pipeline_overhead_bytes / (1024 * 1024),
+                                ),
                                 reverse = True,
                             )
 
@@ -26242,7 +26261,11 @@ class LlamaCppBackend:
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(g, _vram_frac - _flat_mtp_reserve),
+                                key = lambda g: _gpu_rank(
+                                    g,
+                                    _vram_frac - _flat_mtp_reserve,
+                                    _pipeline_overhead_bytes / (1024 * 1024),
+                                ),
                                 reverse = True,
                             )
                             best_cap = 0
@@ -26394,7 +26417,11 @@ class LlamaCppBackend:
                             # active pin fraction so the order matches the fit budget.
                             pin_fraction = _pin_fraction
                             ranked = sorted(
-                                gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
+                                gpus,
+                                key = lambda g: _gpu_rank(
+                                    g, pin_fraction, _pipeline_overhead_bytes / (1024 * 1024)
+                                ),
+                                reverse = True,
                             )
                             # Skips _select_gpus, so apply its cap: count only cards
                             # whose usable VRAM clears the per-device layer overhead.
@@ -26477,10 +26504,10 @@ class LlamaCppBackend:
                                 ):
                                     # Keep the largest context the smallest card holds
                                     # rather than lose the subset to the 4096 drop below.
-                                    # Costs no context: subsets are prefixes of a
-                                    # usable-descending ranking and the reserve is the
-                                    # same function of context for every n > 1, so any
-                                    # later subset clears the gate no higher than this.
+                                    # Costs no context: subsets are prefixes of one
+                                    # ranking, so the smallest card never grows, and the
+                                    # reserve is the same function of context for every
+                                    # n > 1: a later subset clears the gate no higher.
                                     capped = self._cap_ctx_to_per_device_reserve(
                                         capped, _usable_mib, _reserve_at
                                     )
@@ -27868,7 +27895,10 @@ class LlamaCppBackend:
                             list(gpu_indices),
                             _spill_inputs["gpu_usable_mib"],
                             _shared_gpu_ids,
-                            (_spill_inputs["model_size"] + _spill_inputs["kv_cache_bytes"])
+                            (
+                                max(0, _spill_inputs["model_size"] - mmproj_size)
+                                + _spill_inputs["kv_cache_bytes"]
+                            )
                             / (1024 * 1024),
                             _spill_inputs["ctx_compute_per_device"] / (1024 * 1024),
                             (
