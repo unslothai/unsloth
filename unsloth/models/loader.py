@@ -999,6 +999,10 @@ class FastLanguageModel(FastLlamaModel):
             or dtype == torch.float32
         )
 
+        # Same fallback as FastModel, before requiring vLLM: it cannot run below compute capability 7.
+        if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
+            print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+            fast_inference = False
         if fast_inference:
             if importlib.util.find_spec("vllm") is None:
                 raise _vllm_unavailable_error()

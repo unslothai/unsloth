@@ -209,6 +209,11 @@ def apply_pre_volta_compile_workaround(
         import torch._dynamo
         dynamo_config = torch._dynamo.config
     dynamo_config.disable = True
+    # torch >= 2.12 keeps that assignment per thread, and backward (checkpoint recompute) runs on
+    # autograd worker threads, so also set the process-wide default those threads fall back to.
+    entry = getattr(dynamo_config, "_config", {}).get("disable", None)
+    if entry is not None and hasattr(entry, "default"):
+        entry.default = True
     return True
 
 

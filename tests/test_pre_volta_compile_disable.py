@@ -61,3 +61,24 @@ def test_other_compile_switches_the_user_set_are_kept():
     env = {"UNSLOTH_COMPILE_DISABLE": "partial"}
     device_type.apply_pre_volta_compile_workaround(6, env, SimpleNamespace(disable = False))
     assert env["UNSLOTH_COMPILE_DISABLE"] == "partial"
+
+
+def test_worker_threads_see_the_disable_too():
+    """torch >= 2.12 config writes are ContextVar-local; autograd's backward threads must see it."""
+    import subprocess
+    import sys
+
+    code = (
+        "import threading, torch._dynamo\n"
+        "from unsloth import device_type\n"
+        "from torch.utils._config_module import ConfigModule\n"
+        # The workaround runs at import, before _gpu_init mirrors config writes across threads.
+        "ConfigModule.__setattr__ = getattr(ConfigModule.__setattr__, '__wrapped__', ConfigModule.__setattr__)\n"
+        "assert device_type.apply_pre_volta_compile_workaround(6, {})\n"
+        "seen = []\n"
+        "t = threading.Thread(target = lambda: seen.append(torch._dynamo.config.disable))\n"
+        "t.start(); t.join()\n"
+        "assert seen == [True], seen\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output = True, text = True)
+    assert result.returncode == 0, result.stderr[-2000:]
