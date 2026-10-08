@@ -32,10 +32,7 @@ PIN_FILE = REQ_ROOT / "diffusers-pin.txt"
 # installed by the step immediately after the release pin and by nothing else, which the tests here
 # pin down rather than assume.
 MAIN_FILE = REQ_ROOT / "diffusers-main.txt"
-# The shipped MAIN_FILE has its requirement commented out while a release carries every family.
-# The git-main machinery is kept for the next unreleased model, so its tests run against a copy of
-# the requirements tree with that line uncommented (``_active_main``), and the shipped state is
-# asserted on its own below.
+# Git-main tests run on a copy with the commit line uncommented (``_active_main``); the shipped state is below.
 _ACTIVE_REQ_ROOT: list = []
 
 # The shape install_python_stack._filter_requirements writes: a dot, the source stem,
@@ -54,14 +51,12 @@ def _active_req_root(tmp_path_factory):
     shutil.copytree(REQ_ROOT, root)
     main = root / "diffusers-main.txt"
     text = main.read_text(encoding = "utf-8")
-    # A no-op once a future pin is uncommented, so the machinery tests keep running then too.
     main.write_text(text.replace("\n# diffusers @ git+", "\ndiffusers @ git+"), encoding = "utf-8")
     _ACTIVE_REQ_ROOT[:] = [root]
     yield root
 
 
 def _active_main() -> pathlib.Path:
-    """diffusers-main.txt with its commit line uncommented, as when a future pin re-enables it."""
     return _ACTIVE_REQ_ROOT[0] / "diffusers-main.txt"
 
 
@@ -184,7 +179,6 @@ def test_the_shipped_main_build_is_commented_out_but_keeps_its_commit():
 
 
 def _probe_module(name: str, active: bool = True):
-    """The installer as a module; ``active`` points it at the uncommented main pin."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(name, STACK)
@@ -469,8 +463,7 @@ def test_the_pin_step_runs_after_every_other_requirements_install():
     """Ordering matters: a later `uv pip install -r ...` can re-resolve diffusers back to a
     release. Keeping the pin last means nothing is left that could walk it forward."""
     source = _code_only(STACK.read_text(encoding = "utf-8"))
-    # The pass's own install, which is the last one: the startup repair installs the same file
-    # from a helper defined earlier in the module.
+    # The pass's own install is the last one; the startup repair's comes earlier.
     pin_at = source.rindex('req = REQ_ROOT / "diffusers-pin.txt"')
     later = [
         name
@@ -1008,9 +1001,6 @@ def test_the_startup_prefetch_fills_the_cache_and_never_the_environment(monkeypa
     assert module._prefetch_diffusers_main() == 1 and len(runs) == 2, "pip has no cache to fill"
 
 
-# Release mode: the SHIPPED diffusers-main.txt pins nothing, so diffusers-pin.txt is the target.
-
-
 def _release_module(
     monkeypatch,
     name,
@@ -1039,7 +1029,6 @@ def test_a_missing_release_still_forces_the_pass(monkeypatch):
 
 
 def test_the_shipped_main_step_skips_without_installing(monkeypatch):
-    """One progress slot, a "skipped" record (clears a stale "failed"), and no pip call."""
     module = _release_module(monkeypatch, "install_python_stack_release_step")
     monkeypatch.setattr(module, "pip_install_try", lambda *a, **k: pytest.fail("installed"))
     monkeypatch.setattr(module, "_has_working_git", lambda: pytest.fail("probed git"))
@@ -1069,7 +1058,6 @@ def test_the_fast_path_is_forced_only_by_a_release_behind_the_pin(monkeypatch, i
 
 
 def test_a_git_or_zip_build_of_the_release_keeps_the_fast_path(monkeypatch):
-    """The retired main build reports 0.41.0.dev0 and carries everything 0.41.0 does."""
     module = _release_module(monkeypatch, "install_python_stack_release_built", "0.41.0.dev0")
     for direct in ({"vcs_info": {"vcs": "git"}}, {"archive_info": {}}):
         monkeypatch.setattr(module, "_recorded_direct_url", lambda dist, d = direct: dict(d, url = "x"))
@@ -1077,7 +1065,6 @@ def test_a_git_or_zip_build_of_the_release_keeps_the_fast_path(monkeypatch):
 
 
 def test_the_release_prefetch_fetches_the_pin_into_scratch_only_when_behind(monkeypatch):
-    """A stale release is fetched (with its dependencies) where a timeout is survivable."""
     module = _release_module(monkeypatch, "install_python_stack_release_prefetch", "0.41.0")
     monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: pytest.fail("spawned"))
     monkeypatch.setattr(module, "_bootstrap_uv", lambda: pytest.fail("bootstrapped uv"))
@@ -1167,7 +1154,6 @@ def test_the_startup_repair_leaves_a_current_release_alone(monkeypatch):
 
 
 def test_the_release_repair_leaves_a_user_build_alone(monkeypatch):
-    """Also reached by a backend that waited out a peer, which skips the startup provenance check."""
     module, installs, _ = _release_repair(monkeypatch, "rel_repair_user", "0.40.0")
     monkeypatch.setattr(
         module, "_recorded_direct_url", lambda dist: {"url": "file:///x", "dir_info": {}}

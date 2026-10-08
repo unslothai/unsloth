@@ -508,8 +508,7 @@ def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch, prefix
 def test_the_single_file_branch_uses_studio_loader_only_without_from_single_file():
     import inspect
 
-    # Whitespace-free, so a formatter rewrapping the condition cannot break the check. Krea 2 stays on Studio's
-    # loader even where diffusers (0.41+) gives it from_single_file, which rounds its fp32 norms to bf16.
+    # Whitespace-free, so a formatter rewrapping the condition cannot break the check.
     source = "".join(inspect.getsource(studio).split())
     gate = source.index('ifkind!="gguf"and(nothasattr(transformer_cls,"from_single_file")')
     assert source.index('=="Krea2Transformer2DModel"', gate) < source.index(

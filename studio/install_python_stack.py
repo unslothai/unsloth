@@ -11321,8 +11321,7 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     """
     req = REQ_ROOT / "diffusers-main.txt"
     if not req.is_file() or not _diffusers_main_active(req):
-        # Missing too: the git route's residency check used to catch it on the way. (Not damaged at the same
-        # version: 11b's version check would skip it, forcing the pass on every update for nothing.)
+        # Not same-version damage: 11b's version check would skip it and force the pass on every update.
         return _diffusers_release_behind() or _installed_distribution_version("diffusers") is None
     if not _diffusers_main_requested():
         # Opted out while the build is still resident: 11b puts the release back.
@@ -11474,7 +11473,7 @@ def _prefetch_diffusers_main() -> int:
             cmd = _build_uv_cmd((*args, f"diffusers @ {archive}"))
         else:
             actual_req, temp_reqs = _effective_requirements(req)
-            # The release resolves its dependencies: the same constraints as the install, or the cache misses.
+            # Same constraints as the install, or its resolve misses the cache.
             constraints = (
                 ["-c", _uv_safe_path(CONSTRAINTS)] if release and CONSTRAINTS.is_file() else []
             )

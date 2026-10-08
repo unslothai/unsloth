@@ -43,8 +43,7 @@ def _reset(monkeypatch):
     monkeypatch.setattr(dr, "_peer_holds_pass", lambda: False)
     monkeypatch.setattr(dr, "_installer_would_skip", lambda *a, **k: False)
     monkeypatch.setattr(dr, "_loaded_replaceable_modules", lambda: [])
-    # The git-main route, as when diffusers-main.txt carries an uncommented commit. The shipped
-    # file pins nothing (release mode), which the tests at the end of this file cover.
+    # Git-main route; release mode (the shipped file) is covered at the end.
     monkeypatch.setattr(dr, "_main_pin_active", lambda: True)
 
 
@@ -443,9 +442,6 @@ def test_the_installer_exposes_the_repair_flag():
     assert '["--prefetch-diffusers-main"]' in source
 
 
-# Release mode: the SHIPPED diffusers-main.txt pins nothing, so the target is diffusers-pin.txt.
-
-
 def _release_mode(monkeypatch, installed):
     import importlib.metadata
 
@@ -474,7 +470,6 @@ def test_a_current_release_starts_nothing(monkeypatch, installed):
 
 @pytest.mark.parametrize("env", [{}, {"UNSLOTH_DIFFUSERS_MAIN": "0"}])
 def test_a_release_behind_the_pin_is_prefetched_then_repaired(monkeypatch, env):
-    """UNSLOTH_DIFFUSERS_MAIN=0 asks for the release, which is what this installs."""
     _release_mode(monkeypatch, "0.40.0")
     # An old git-main failure must not strand the PyPI release.
     _manifest(monkeypatch, {"diffusers_main_repair": "failed"})
@@ -503,7 +498,6 @@ def test_release_mode_never_replaces_a_build_the_user_put_there(monkeypatch, dir
 
 
 def test_a_timed_out_release_prefetch_records_the_release_key(monkeypatch):
-    """Or every start repeats a download this host cannot finish."""
     _release_mode(monkeypatch, "0.40.0")
     recorded = []
     monkeypatch.setattr(
