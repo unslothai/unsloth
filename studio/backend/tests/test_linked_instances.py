@@ -721,3 +721,124 @@ def test_status_and_info_report_a_rebound_http_remote_offline(monkeypatch):
     assert asyncio.run(linked_instances.probe(instance))["online"] is False
     assert asyncio.run(linked_instances.fetch_info(instance))["online"] is False
     assert sent == []
+
+
+def test_linked_url_images_are_served_from_this_machine(monkeypatch):
+    import base64
+    import io
+
+    from PIL import Image
+
+    import routes.inference as inference
+    from core.inference import image_gallery
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (16, 8), (1, 2, 3)).save(buffer, format = "PNG")
+    remote = {
+        "created": 5,
+        "data": [{"b64_json": base64.b64encode(buffer.getvalue()).decode(), "revised_prompt": "p"}],
+    }
+    saved = []
+
+    def save(image, meta):
+        saved.append((image.size, meta))
+        return {"id": "local-1"}
+
+    monkeypatch.setattr(image_gallery, "save", save)
+    monkeypatch.setattr(inference, "_sign_image_id", lambda image_id: "tok")
+    request = Request(
+        {
+            "type": "http",
+            "scheme": "http",
+            "server": ("studio.local", 8888),
+            "path": "/v1/x",
+            "headers": [(b"host", b"studio.local:8888")],
+        }
+    )
+    response = inference._linked_images_as_local_urls(
+        request, json.dumps(remote).encode(), "a cat", ({"name": "wsl"}, "unsloth/flux")
+    )
+    item = json.loads(response.body)["data"][0]
+    assert item == {
+        "revised_prompt": "p",
+        "url": "http://studio.local:8888/api/inference/images/gallery/local-1/file-signed?token=tok",
+    }
+    assert saved[0][0] == (16, 8)
+    assert saved[0][1]["model"] == "@wsl/unsloth/flux"
+
+
+def test_forward_applies_body_overrides(monkeypatch):
+    linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    seen = {}
+
+    def handler(request: httpx.Request):
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json = {"data": []})
+
+    _remote(handler, monkeypatch)
+    body = {"model": "@wsl/unsloth/flux", "prompt": "x", "response_format": "url"}
+    request = _request(body)
+
+    async def run():
+        target = await linked_instances.resolve(request, body["model"])
+        return await linked_instances.forward(
+            request, "images/generations", target, body_overrides = {"response_format": "b64_json"}
+        )
+
+    asyncio.run(run())
+    assert seen["body"]["response_format"] == "b64_json"
+    assert seen["body"]["model"] == "unsloth/flux"
+
+
+def test_a_linked_url_image_request_never_returns_the_remotes_own_url(monkeypatch):
+    import base64
+    import io
+
+    from fastapi import Response
+    from PIL import Image
+
+    import routes.inference as inference
+    from core.inference import image_gallery
+    from models.inference import ImageGenerationRequest
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buffer, format = "PNG")
+    b64 = base64.b64encode(buffer.getvalue()).decode()
+    remote_url = "http://10.0.0.5:8888/api/inference/images/gallery/r1/file-signed?token=x"
+
+    async def resolve(request, model):
+        return ({"id": "i", "name": "wsl"}, "unsloth/flux")
+
+    async def forward(request, path, target, **kwargs):
+        if (kwargs.get("body_overrides") or {}).get("response_format") == "b64_json":
+            data = {"created": 1, "data": [{"b64_json": b64}]}
+        else:
+            data = {"created": 1, "data": [{"url": remote_url}]}
+        return Response(json.dumps(data), media_type = "application/json")
+
+    monkeypatch.setattr(inference.linked_instances, "resolve", resolve)
+    monkeypatch.setattr(inference.linked_instances, "forward", forward)
+    monkeypatch.setattr(image_gallery, "save", lambda image, meta: {"id": "local-1"})
+    monkeypatch.setattr(inference, "_sign_image_id", lambda image_id: "tok")
+    request = Request(
+        {
+            "type": "http",
+            "scheme": "http",
+            "server": ("studio.local", 8888),
+            "path": "/v1/x",
+            "headers": [(b"host", b"studio.local:8888")],
+        }
+    )
+    endpoint = getattr(
+        inference.openai_image_generations, "__wrapped__", inference.openai_image_generations
+    )
+    response = asyncio.run(
+        endpoint(
+            ImageGenerationRequest(prompt = "a cat", model = "@wsl/unsloth/flux"),
+            request,
+            current_subject = "unsloth",
+            hf_token = None,
+        )
+    )
+    url = json.loads(response.body)["data"][0]["url"]
+    assert url.startswith("http://studio.local:8888/api/inference/images/gallery/local-1/")

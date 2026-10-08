@@ -47493,6 +47493,45 @@ def _absolute_image_url(request: Request, image_id: str) -> str:
     return str(request.base_url).rstrip("/") + relative
 
 
+def _linked_images_as_local_urls(
+    request: Request, content: bytes, prompt: str, linked: tuple
+) -> Response:
+    from PIL import Image
+
+    from core.inference import image_gallery
+
+    instance, remote_model = linked
+    try:
+        payload = json.loads(content)
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code = 502,
+            detail = f"Linked instance '{instance['name']}' returned no image data.",
+        )
+    created = payload.get("created") or int(time.time())
+    for index, item in enumerate(payload.get("data") or []):
+        encoded = item.pop("b64_json", None) if isinstance(item, dict) else None
+        if not encoded:
+            continue
+        image = Image.open(io.BytesIO(base64.b64decode(encoded)))
+        image.load()
+        record = image_gallery.save(
+            image,
+            {
+                "prompt": prompt,
+                "width": image.width,
+                "height": image.height,
+                "model": f"{linked_instances.MODEL_PREFIX}{instance['name']}/{remote_model}",
+                "batch_index": index,
+                "created_at": float(created),
+            },
+        )
+        item["url"] = _absolute_image_url(request, record["id"])
+    return JSONResponse(payload)
+
+
 @studio_router.get("/images/gallery/{image_id}/file-signed")
 async def get_gallery_image_file_signed(image_id: str, token: str = Query(...)):
     """Serve one gallery PNG gated by the HMAC token instead of the bearer, for the
@@ -47535,7 +47574,23 @@ async def openai_image_generations(
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
     if linked := await linked_instances.resolve(request, body.model):
-        return await _forward_linked(request, "images/generations", linked, current_subject)
+        if body.response_format == "b64_json":
+            return await _forward_linked(request, "images/generations", linked, current_subject)
+        # The remote's URLs name its own host, which a caller of this machine may not reach:
+        # take the pixels and serve them from this gallery instead.
+        response = await linked_instances.forward(
+            request,
+            "images/generations",
+            linked,
+            subject = current_subject,
+            via_api_key = _request_used_api_key(request),
+            body_overrides = {"response_format": "b64_json"},
+        )
+        if response.status_code >= 400:
+            return response
+        return await asyncio.to_thread(
+            _linked_images_as_local_urls, request, response.body, body.prompt, linked
+        )
     # Refused before the row is opened, as on /audio/speech: a request rejected before any
     # work is not traffic worth a red error row.
     if body.stream:

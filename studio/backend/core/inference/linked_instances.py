@@ -267,6 +267,7 @@ async def forward(
     *,
     subject: Optional[str] = None,
     via_api_key: bool = False,
+    body_overrides: Optional[dict] = None,
 ) -> Response:
     """POST the caller's JSON body to ``<instance>/v1/<path>`` with the model id unwrapped.
 
@@ -283,6 +284,7 @@ async def forward(
         via_api_key = via_api_key,
     )
     body["model"] = remote_model
+    body.update(body_overrides or {})
     if dropped := strip_tool_fields(body, instance):
         logger.info(
             "linked_instance_tools_stripped",
