@@ -15771,6 +15771,8 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
 class _HTMLBodyLocator(HTMLParser):
     """locate the explicit or implied document body without matching markup inside head content."""
 
+    _PENDING_LIMIT = 65536
+    _CDATA_TAIL_BYTES = 64
     _HEAD_ELEMENTS = frozenset(
         {
             "base",
@@ -15797,6 +15799,14 @@ class _HTMLBodyLocator(HTMLParser):
 
     def feed_bytes(self, data):
         self.feed(data.decode("latin-1"))
+        if self.body_at is not None or len(self.rawdata) <= self._PENDING_LIMIT:
+            return
+        if self.cdata_elem:
+            discard = len(self.rawdata) - self._CDATA_TAIL_BYTES
+            self.updatepos(0, discard)
+            self.rawdata = self.rawdata[discard:]
+        else:
+            self.body_at = self._absolute_offset
 
     def updatepos(self, i, j):
         self._absolute_offset += max(0, j - i)

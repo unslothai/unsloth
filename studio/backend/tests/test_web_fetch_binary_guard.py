@@ -467,6 +467,20 @@ def test_html_body_locator_does_not_store_every_newline():
     assert peak < 4 * 1024 * 1024
 
 
+def test_unterminated_html_token_stops_at_the_body_window():
+    resp = _FakeResp(b"<" + b"x" * (4 * 1024 * 1024), "text/html")
+    error, body = tools._read_capped_body(
+        resp,
+        tools._MAX_HTML_FETCH_BYTES,
+        timeout = 5,
+        deadline = None,
+        cancel_event = None,
+        body_window = tools._MAX_FETCH_BYTES,
+    )
+    assert error is None
+    assert len(body) == tools._MAX_FETCH_BYTES
+
+
 @pytest.mark.parametrize(
     "content_type,body",
     [
