@@ -385,6 +385,17 @@ def test_no_light_gpu_init_retry_on_an_accelerator_host(monkeypatch):
             sys.modules["utils.hf_xet_fallback"] = saved_shim
 
 
+@pytest.mark.parametrize("backend, expected", [("cuda", True), ("xpu", True), ("mps", False)])
+def test_gpu_present_ignores_mps(monkeypatch, backend, expected):
+    """An MPS-only Mac without MLX has no real triton to shadow and needs the light-init retry."""
+    probe = lambda name: _types.SimpleNamespace(is_available = lambda: name == backend)
+    fake_torch = _types.ModuleType("torch")
+    fake_torch.cuda, fake_torch.xpu = probe("cuda"), probe("xpu")
+    fake_torch.backends = _types.SimpleNamespace(mps = probe("mps"))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    assert shim._gpu_present() is expected
+
+
 def test_optional_loader_does_not_retry_under_light_gpu_init_on_an_accelerator_host(monkeypatch):
     """_load_optional is reached by xet_health() before every download. Its retry under
     UNSLOTH_ZOO_DISABLE_GPU_INIT=1 makes unsloth_zoo put its pass-through triton stub in sys.modules

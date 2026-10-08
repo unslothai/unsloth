@@ -56,6 +56,7 @@ def _gpu_present() -> bool:
 
     Only torch is consulted (already imported by the time any download helper runs), and any
     failure answers False so a genuinely torch-less host keeps the light-init retry below.
+    MPS does not count: unsloth_zoo's full init rejects it, so the light path is the only one there.
     """
     try:
         import torch
@@ -63,7 +64,6 @@ def _gpu_present() -> bool:
         return False
     for probe in (
         lambda: torch.cuda.is_available(),
-        lambda: torch.backends.mps.is_available(),
         lambda: torch.xpu.is_available(),
     ):
         try:
@@ -108,7 +108,7 @@ def _load_shared() -> bool:
             _shared_import_error = exc
             import os as _os
 
-            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take its MLX/CPU path,
+            # ...but NOT on a CUDA/XPU host (see _gpu_present). That flag makes unsloth_zoo take its MLX/CPU path,
             # injecting triton and bitsandbytes STUBS into sys.modules for the process. On a working GPU box those stubs
             # raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
             if _gpu_present():
