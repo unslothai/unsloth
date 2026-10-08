@@ -592,6 +592,9 @@ export function useTauriBackend() {
       // NEEDS_ELEVATION is not a real error: the Rust side also emits install-needs-elevation (sets
       // needs-elevation status). Don't race with it by setting install-error here.
       if (msg.includes("NEEDS_ELEVATION")) return;
+      // install-failed is emitted before the command returns and already set this error
+      // with its disk-full flag; setting it again here would clear that flag.
+      if (statusRef.current === "install-error") return;
       setBackendError(msg, "install-error");
     }
   }

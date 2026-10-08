@@ -202,7 +202,11 @@ function InstallErrorContent({
 }) {
   if (diskFull && error) {
     return (
-      <DiskFullInstallDialog error={error} onRetryInstall={onRetryInstall} />
+      <DiskFullInstallDialog
+        error={error}
+        onRetryInstall={onRetryInstall}
+        onCopyDiagnostics={onCopyDiagnostics}
+      />
     );
   }
 
@@ -225,9 +229,11 @@ function InstallErrorContent({
 function DiskFullInstallDialog({
   error,
   onRetryInstall,
+  onCopyDiagnostics,
 }: {
   error: string;
   onRetryInstall: () => void;
+  onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
   const [copied, setCopied] = useState(false);
   const [manualPrompt, setManualPrompt] = useState<string | null>(null);
@@ -261,7 +267,6 @@ function DiskFullInstallDialog({
           <Button variant="muted" size="hero" onClick={() => void copyPrompt()}>
             {copied ? "Prompt copied" : "Copy cleanup prompt"}
           </Button>
-          <Button size="hero" onClick={onRetryInstall}>Try Again</Button>
         </div>
         {manualPrompt && (
           <textarea
@@ -272,6 +277,9 @@ function DiskFullInstallDialog({
           />
         )}
       </div>
+      <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
+        <Button size="hero" onClick={onRetryInstall}>Try Again</Button>
+      </DiagnosticsCopyActions>
     </>
   );
 }
