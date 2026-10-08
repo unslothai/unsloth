@@ -40,6 +40,8 @@ export interface DiffusionStatus {
   // Resolved load kind: "gguf" | "single_file" | "pipeline". Gates GGUF-only controls. Null when not loaded.
   model_kind?: string | null;
   gguf_filename?: string | null;
+  // Supplied text-encoder / VAE files: pipeline component -> basename.
+  component_files?: Record<string, string> | null;
   // Selected GGUF quant. Newer backends report this separately from the compute dtype.
   gguf_variant?: string | null;
   cpu_offload: boolean;
@@ -120,12 +122,16 @@ export interface DiffusionLoadRequest {
   display_repo_id?: string;
   // Optional now: required for the gguf / single_file kinds, omitted for a full pipeline loaded via from_pretrained.
   gguf_filename?: string;
-  // How to load the model (omit to auto-detect from gguf_filename). Non-GGUF kinds are restricted to unsloth/* repos.
+  // How to load the model (omit to auto-detect from gguf_filename). A single_file .safetensors loads from any repo;
+  // pipeline loads are restricted to unsloth/* repos, the official bases, or a local path.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
   hf_token?: string;
   cpu_offload?: boolean;
+  // Separate .safetensors files (e.g. ComfyUI models/text_encoders, models/vae); gguf / single_file only.
+  text_encoder_file?: string | string[];
+  vae_file?: string;
   // Advanced (load-time) tuning. All optional; omit for the backend's auto defaults.
   speed_mode?: "off" | "eager" | "default" | "max";
   transformer_quant?: "auto" | "none" | "off" | "int8" | "fp8" | "nvfp4" | "mxfp8";

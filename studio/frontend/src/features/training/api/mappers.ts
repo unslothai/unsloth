@@ -80,11 +80,14 @@ export function buildTrainingStartPayload(
   hfToken: string | null,
 ): TrainingStartRequest {
   const isDecision = config.modelType === "decision";
-  const isClef = isDecision && config.decisionLayout === "clef";
+  // Laya trains in 16-bit (LoRA or full); Clef and an LLM decision model also take QLoRA.
+  const hasLlmBackbone =
+    isDecision &&
+    (config.decisionLayout === "clef" || config.decisionLayout === "llm");
   const trainingMethod =
     isDecision &&
     config.trainingMethod !== "full" &&
-    !(isClef && config.trainingMethod === "qlora")
+    !(hasLlmBackbone && config.trainingMethod === "qlora")
       ? "lora"
       : config.trainingMethod;
   const isCpt = trainingMethod === "cpt";
@@ -132,8 +135,8 @@ export function buildTrainingStartPayload(
     model_local_path: config.modelKnownCached ? config.modelLocalPath : null,
     model_format: config.modelFormat,
     load_in_4bit: trainingLoadsIn4Bit({ ...config, trainingMethod }),
-    // Hidden for decision runs: Laya always trains at 1024 tokens, Clef at its recipe's length.
-    max_seq_length: isDecision && !isClef ? 1024 : config.contextLength,
+    // Hidden for decision runs: Laya always trains at 1024 tokens, Clef and LLMs at the recipe's length.
+    max_seq_length: isDecision && !hasLlmBackbone ? 1024 : config.contextLength,
     vision_image_size:
       config.isVisionModel && config.isDatasetImage === true && !isDeepseekOcr
         ? config.visionImageSize
