@@ -430,7 +430,6 @@ def test_disabled_checkpointing_aliases_match_the_trainer():
         for n in ast.parse(src).body
         if isinstance(n, ast.FunctionDef) and n.name == "normalize_gradient_checkpointing"
     )
-    # The alias tuple whose branch returns False.
     off = next(
         ast.literal_eval(node.test.comparators[0])
         for node in ast.walk(fn)

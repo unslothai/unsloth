@@ -82,8 +82,8 @@ export function offloadHardwareSupported(
   return devices.length === 0 || devices.some((device) => device.unified_memory !== true);
 }
 
-/** The offload fields, sent off whenever `offloadSupported` is false (the controls are hidden then).
- * `gpuIndices` are the GPUs training can see; with more than one, the budget goes out per card. */
+/** The offload fields, sent off wherever the controls are hidden. `gpuIndices` are the GPUs
+ * training can see; with more than one, the budget goes out per card. */
 export function offloadPayload(
   config: Pick<
     TrainingConfigState,
