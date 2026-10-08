@@ -611,6 +611,10 @@ class _MarkdownRenderer(HTMLParser):
         in_row, self._in_row = self._in_row, False
         if not self._current_row and not (in_row and self._row_spans):
             return
+        if not self._current_row:
+            # a wholly generated row also adds its opening pipe, newline, and enclosing quote prefixes
+            row_cost = 3 + 2 * len(self._bq_stack)
+            self._span_chars = min(self._span_char_limit, self._span_chars + row_cost)
         self._fill_spanned_cells(max(self._row_spans, default = -1) + 1)
         if self._span_chars >= self._span_char_limit:
             self._row_spans = {}
@@ -618,6 +622,8 @@ class _MarkdownRenderer(HTMLParser):
             self._row_spans = {
                 col: (text, rows - 1) for col, (text, rows) in self._row_spans.items() if rows > 1
             }
+        if not self._current_row:
+            return
         line = "| " + " | ".join(self._current_row) + " |"
         self._emit_replay(line + "\n")
         if not self._header_row_done and (self._row_has_th or self._is_first_row):

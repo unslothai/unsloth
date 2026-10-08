@@ -2151,6 +2151,12 @@ def test_table_spans_do_not_multiply_the_page_size():
     )
     rendered = html_to_markdown(repeated + "<p>Article sentinel.</p>")
     assert rendered.index("Article sentinel.") < 16_000
+    quoted = (
+        "<blockquote><table><tr><td rowspan='3000'>x</td></tr>"
+        + "<tr></tr>" * 2999
+        + "</table></blockquote><p>Article sentinel.</p>"
+    )
+    assert html_to_markdown(quoted).index("Article sentinel.") < 16_000
 
 
 def test_generated_table_spans_do_not_make_a_main_content_candidate():
