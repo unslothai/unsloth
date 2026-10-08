@@ -236,6 +236,7 @@ class _HeaderFrame:
         "outer_in_pre",
         "outer_in_code",
         "outer_bq_depth",
+        "outer_table_depth",
     )
 
     def __init__(
@@ -247,6 +248,7 @@ class _HeaderFrame:
         in_code: int,
         bq_depth: int,
         list_depth: int,
+        table_depth: int,
     ):
         self.depth = depth
         self.parts: list[str] = []
@@ -264,6 +266,7 @@ class _HeaderFrame:
         self.outer_in_pre = in_pre
         self.outer_in_code = in_code
         self.outer_bq_depth = bq_depth
+        self.outer_table_depth = table_depth
         # both exclude heading text: it is kept anyway, so it must not vote on dropping the rest
         self.text_chars: int = 0
         self.link_chars: int = 0
@@ -285,6 +288,39 @@ class _HeaderFrame:
             # the closing tag's blank line lands after the heading mark pops, so terminate it here
             return headings + "\n\n" if headings.strip() else headings
         return "".join(self.parts)
+
+
+class _TableFrame:
+    """Outer table state suspended while a nested table is rendered."""
+
+    __slots__ = (
+        "current_row",
+        "cell_parts",
+        "in_cell",
+        "header_row_done",
+        "row_has_th",
+        "is_first_row",
+        "cell_colspan",
+        "cell_rowspan",
+        "row_spans",
+        "in_row",
+        "outer_bq_depth",
+        "parts",
+    )
+
+    def __init__(self, renderer: _MarkdownRenderer):
+        self.current_row = renderer._current_row
+        self.cell_parts = renderer._cell_parts
+        self.in_cell = renderer._in_cell
+        self.header_row_done = renderer._header_row_done
+        self.row_has_th = renderer._row_has_th
+        self.is_first_row = renderer._is_first_row
+        self.cell_colspan = renderer._cell_colspan
+        self.cell_rowspan = renderer._cell_rowspan
+        self.row_spans = renderer._row_spans
+        self.in_row = renderer._in_row
+        self.outer_bq_depth = len(renderer._bq_stack)
+        self.parts: list[str] = []
 
 
 class _MarkdownRenderer(HTMLParser):
@@ -361,6 +397,7 @@ class _MarkdownRenderer(HTMLParser):
         self._cell_colspan: int = 1
         self._cell_rowspan: int = 1
         self._row_spans: dict[int, tuple[str, int]] = {}
+        self._table_stack: list[_TableFrame] = []
         self._span_chars: int = 0
         self._span_char_limit: int = min(_MAX_SPAN_CHARS, max(0, span_char_limit))
         self._in_row: bool = False
@@ -385,6 +422,8 @@ class _MarkdownRenderer(HTMLParser):
             return self._cell_seq != frame.outer_cell_seq
         if self._in_pre:
             return not frame.outer_in_pre
+        if self._table_stack and self._table_depth() > frame.outer_table_depth:
+            return True
         return len(self._bq_stack) > frame.outer_bq_depth
 
     def _emit(self, text: str) -> None:
@@ -422,6 +461,8 @@ class _MarkdownRenderer(HTMLParser):
             self._cell_parts.append(text)
         elif self._in_pre:
             self._pre_parts.append(text)
+        elif self._table_stack and len(self._bq_stack) <= self._table_stack[-1].outer_bq_depth:
+            self._table_stack[-1].parts.append(text)
         elif self._bq_stack:
             self._bq_stack[-1].append(text)
         else:
@@ -473,6 +514,49 @@ class _MarkdownRenderer(HTMLParser):
         return "\n".join(prefixed)
 
     # Table helpers: flush open cells/rows so omitted </td>/</tr> don't lose data.
+    def _table_depth(self) -> int:
+        return len(self._table_stack) + int(self._in_table)
+
+    def _start_table(self) -> None:
+        if self._in_table:
+            self._table_stack.append(_TableFrame(self))
+        self._in_table = True
+        self._current_row = []
+        self._cell_parts = []
+        self._in_cell = False
+        self._header_row_done = False
+        self._row_has_th = False
+        self._is_first_row = True
+        self._cell_colspan = 1
+        self._cell_rowspan = 1
+        self._row_spans = {}
+        self._in_row = False
+        self._emit("\n\n")
+
+    def _finish_table(self) -> None:
+        self._finish_cell()
+        self._finish_row()
+        self._row_spans = {}
+        self._emit("\n")
+        if not self._table_stack:
+            self._in_table = False
+            return
+
+        frame = self._table_stack.pop()
+        nested = "".join(frame.parts)
+        self._current_row = frame.current_row
+        self._cell_parts = frame.cell_parts
+        self._in_cell = frame.in_cell
+        self._header_row_done = frame.header_row_done
+        self._row_has_th = frame.row_has_th
+        self._is_first_row = frame.is_first_row
+        self._cell_colspan = frame.cell_colspan
+        self._cell_rowspan = frame.cell_rowspan
+        self._row_spans = frame.row_spans
+        self._in_row = frame.in_row
+        self._in_table = True
+        self._emit_replay(nested)
+
     def _finish_cell(self) -> None:
         if not self._in_cell:
             return
@@ -695,6 +779,7 @@ class _MarkdownRenderer(HTMLParser):
                         self._inline_code_depth,
                         len(self._bq_stack),
                         len(self._list_stack),
+                        self._table_depth(),
                     )
                 )
         elif _is_hidden_element(attr_dict):
@@ -828,11 +913,7 @@ class _MarkdownRenderer(HTMLParser):
             self._emit("`")
 
         elif tag == "table":
-            self._in_table = True
-            self._header_row_done = False
-            self._is_first_row = True
-            self._row_spans = {}
-            self._emit("\n\n")
+            self._start_table()
 
         elif tag == "tr":
             self._finish_cell()
@@ -924,11 +1005,7 @@ class _MarkdownRenderer(HTMLParser):
             self._row_spans = {}
 
         elif tag == "table":
-            self._finish_cell()
-            self._finish_row()
-            self._row_spans = {}
-            self._in_table = False
-            self._emit("\n")
+            self._finish_table()
 
     def _text_suppressed(self) -> bool:
         if self._skip_depth or self._hidden_marks:
@@ -987,6 +1064,8 @@ class _MarkdownRenderer(HTMLParser):
             self._inline_code_depth -= 1
             self._emit("`")
 
+        while self._table_stack:
+            self._finish_table()
         self._finish_cell()
         self._finish_row()
 

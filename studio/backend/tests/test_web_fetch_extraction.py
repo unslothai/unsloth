@@ -2153,6 +2153,8 @@ def test_table_spans_stop_at_row_groups_tables_and_long_cells():
     assert rows(footer)[-1] == "| Total | 5 |"
     nested = "<table><tr><td>T1</td><td><table><tr><td rowspan=2>GK</td><td>P1</td></tr></table></td></tr><tr><td>T2</td><td>S2</td></tr></table>"
     assert rows(nested)[-1] == "| T2 | S2 |"
+    nested_under_span = "<table><tr><td rowspan=2>A</td><td><table><tr><td>B</td></tr></table></td></tr><tr><td>C</td></tr></table>"
+    assert rows(nested_under_span)[-1] == "| A | C |"
     to_group_end = "<table><tr><th>G</th><th>N</th></tr><tbody><tr><th rowspan=0>g</th><td>1</td></tr><tr><td>2</td></tr></tbody><tbody><tr><td>h</td><td>3</td></tr></tbody></table>"
     assert rows(to_group_end)[-3:] == ["| g | 1 |", "| g | 2 |", "| h | 3 |"]
     sidebar = (
