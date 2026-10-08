@@ -4221,13 +4221,22 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 2b. Training VRAM budget ──
     _budget_gb = config.get("offload_vram_gb")
     # Only "auto" sizes to a budget, and only LoRA runs outside decision / embedding offload.
-    if (
+    _wants_budget = bool(
         _budget_gb
         and config.get("offload_layers") == "auto"
         and config.get("training_type", "LoRA/QLoRA") in ("LoRA/QLoRA", "Continued Pretraining")
         and not config.get("is_decision")
         and not config.get("is_embedding")
-    ):
+    )
+    # Vision / audio loads on several GPUs cannot offload at load (core plans Auto at LoRA setup there), so their
+    # model must load uncapped; the cap then goes on before LoRA setup, which swaps enough layers to fit it.
+    _budget_after_load = (
+        _wants_budget
+        and len(gpu_ids or []) > 1
+        and bool(config.get("is_dataset_image") or config.get("is_dataset_audio"))
+    )
+
+    def _apply_budget():
         try:
             import torch as _torch_budget
             if _torch_budget.cuda.is_available():
@@ -4258,6 +4267,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     )
         except Exception as _budget_err:
             logger.warning("Could not apply the training VRAM budget: %s", _budget_err)
+
+    if _wants_budget and not _budget_after_load:
+        _apply_budget()
 
     if config.get("is_decision", False):
         try:
@@ -4627,6 +4639,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     }
                 )
             return
+
+        if _budget_after_load:
+            _apply_budget()
 
         _emit_resource_provenance(
             event_queue,
