@@ -32,6 +32,8 @@ PIN_FILE = REQ_ROOT / "diffusers-pin.txt"
 # installed by the step immediately after the release pin and by nothing else, which the tests here
 # pin down rather than assume.
 MAIN_FILE = REQ_ROOT / "diffusers-main.txt"
+# Git-main tests run on a copy with the commit line uncommented (``_active_main``); the shipped state is below.
+_ACTIVE_REQ_ROOT: list = []
 
 # The shape install_python_stack._filter_requirements writes: a dot, the source stem,
 # "-filtered-", then tempfile's random suffix. NamedTemporaryFile's suffixes are
@@ -39,6 +41,23 @@ MAIN_FILE = REQ_ROOT / "diffusers-main.txt"
 _GENERATED_FILTER = re.compile(r"\.[\w.-]+-filtered-\w{8}\.txt")
 STACK = REPO_ROOT / "studio" / "install_python_stack.py"
 INSTALL_SH = REPO_ROOT / "install.sh"
+
+
+@pytest.fixture(scope = "session", autouse = True)
+def _active_req_root(tmp_path_factory):
+    import shutil
+
+    root = tmp_path_factory.mktemp("active_main") / "requirements"
+    shutil.copytree(REQ_ROOT, root)
+    main = root / "diffusers-main.txt"
+    text = main.read_text(encoding = "utf-8")
+    main.write_text(text.replace("\n# diffusers @ git+", "\ndiffusers @ git+"), encoding = "utf-8")
+    _ACTIVE_REQ_ROOT[:] = [root]
+    yield root
+
+
+def _active_main() -> pathlib.Path:
+    return _ACTIVE_REQ_ROOT[0] / "diffusers-main.txt"
 
 
 def _requirements(path: pathlib.Path) -> list[str]:
@@ -79,7 +98,9 @@ def test_the_pin_file_exists_and_names_the_first_supported_release():
     assert PIN_FILE.is_file(), f"{PIN_FILE} is missing"
     lines = _requirements(PIN_FILE)
     modern = [line for line in lines if 'python_version >= "3.10"' in line]
-    assert modern == ['diffusers==0.40.0 ; python_version >= "3.10"'], modern
+    assert modern == ['diffusers==0.41.0 ; python_version >= "3.10"'], modern
+    legacy = [line for line in lines if 'python_version < "3.10"' in line]
+    assert legacy == ['diffusers==0.36.0 ; python_version < "3.10"'], legacy
     assert "://" not in modern[0], "the released dependency must not require a source build"
     assert 'python_version >= "3.10"' in modern[0], (
         "diffusers dropped Python 3.9 in 0.38, so the release needs a >= 3.10 marker or "
@@ -121,7 +142,7 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
     base would otherwise be on whatever main happened to be that morning.
     """
     assert MAIN_FILE.is_file(), f"{MAIN_FILE} is missing"
-    lines = _requirements(MAIN_FILE)
+    lines = _requirements(_active_main())
     assert len(lines) == 1, lines
     spec = lines[0]
     assert spec.startswith("diffusers @ git+"), spec
@@ -142,15 +163,29 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
     # install, so a filename compare answers a different question and passes by accident.
     call = "\n    _diffusers_main_step()\n"
     assert call in source, "the main-build step is never called"
-    assert source.index(call) > source.index('req = REQ_ROOT / "diffusers-pin.txt"')
+    assert source.index(call) > source.rindex('req = REQ_ROOT / "diffusers-pin.txt"')
 
 
-def _probe_module(name: str):
+def test_the_shipped_main_build_is_commented_out_but_keeps_its_commit():
+    """0.41.0 is on PyPI: nothing installs from git, and re-enabling is one uncomment away."""
+    assert _requirements(MAIN_FILE) == []
+    text = MAIN_FILE.read_text(encoding = "utf-8")
+    assert re.search(r"^# diffusers @ git\+https://\S+@[0-9a-f]{40}$", text, re.M), text
+    assert re.search(r"^# archive-sha256: [0-9a-f]{64}$", text, re.M)
+    module = _probe_module("install_python_stack_probe_shipped", active = False)
+    assert module._diffusers_main_active() is False
+    assert module._diffusers_main_resident() is False
+    assert module._diffusers_main_supersedes_release() is False
+
+
+def _probe_module(name: str, active: bool = True):
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(name, STACK)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    if active:
+        module.REQ_ROOT = _ACTIVE_REQ_ROOT[0]
     return module
 
 
@@ -217,8 +252,8 @@ def test_the_main_build_falls_back_to_the_zip_when_there_is_no_git(monkeypatch):
     assert kwargs.get("req") is None, "the git requirement file must not be handed to pip here"
     spec = [arg for arg in args if arg.startswith("diffusers @ ")]
     assert len(spec) == 1, args
-    revision = _requirements(MAIN_FILE)[0].rpartition("@")[2].strip().lower()
-    digest = module._archive_sha256_in_requirements(MAIN_FILE)
+    revision = _requirements(_active_main())[0].rpartition("@")[2].strip().lower()
+    digest = module._archive_sha256_in_requirements(_active_main())
     assert digest is not None and re.fullmatch(r"[0-9a-f]{64}", digest), digest
     # The fragment is what pip and uv verify; the commit in the URL checks no bytes.
     assert spec[0] == (
@@ -230,8 +265,8 @@ def test_the_main_build_falls_back_to_the_zip_when_there_is_no_git(monkeypatch):
 def test_the_zip_route_is_skipped_without_exactly_one_pinned_digest(tmp_path, monkeypatch):
     """No single valid digest, no zip route: the host keeps the release."""
     module = _probe_module("install_python_stack_probe2e")
-    spec = _requirements(MAIN_FILE)[0]
-    digest = module._archive_sha256_in_requirements(MAIN_FILE)
+    spec = _requirements(_active_main())[0]
+    digest = module._archive_sha256_in_requirements(_active_main())
     pin = tmp_path / "diffusers-main.txt"
 
     pin.write_text(f"{spec}\n", encoding = "utf-8")
@@ -294,7 +329,7 @@ def test_an_archive_install_reads_back_as_resident(monkeypatch):
     """
     module = _probe_module("install_python_stack_probe2c")
 
-    revision = _requirements(MAIN_FILE)[0].rpartition("@")[2].strip().lower()
+    revision = _requirements(_active_main())[0].rpartition("@")[2].strip().lower()
     archive = f"https://github.com/huggingface/diffusers/archive/{revision}.zip"
     monkeypatch.setattr(module, "_payload_recorded_intact", lambda *a, **k: True)
 
@@ -303,7 +338,7 @@ def test_an_archive_install_reads_back_as_resident(monkeypatch):
         "_recorded_direct_url",
         lambda dist: {"url": archive, "archive_info": {"hash": "sha256=abc"}},
     )
-    assert module._direct_reference_is_installed(MAIN_FILE, "diffusers") is True
+    assert module._direct_reference_is_installed(_active_main(), "diffusers") is True
 
     # A zip of a DIFFERENT commit is not this one, which is the whole reason the SHA has to be in
     # the URL: an archive records no ref, so the URL is the only provenance there is.
@@ -313,7 +348,7 @@ def test_an_archive_install_reads_back_as_resident(monkeypatch):
         "_recorded_direct_url",
         lambda dist: {"url": other, "archive_info": {"hash": "sha256=abc"}},
     )
-    assert module._direct_reference_is_installed(MAIN_FILE, "diffusers") is False
+    assert module._direct_reference_is_installed(_active_main(), "diffusers") is False
 
 
 def test_the_zip_route_refuses_anything_it_cannot_pin():
@@ -428,7 +463,8 @@ def test_the_pin_step_runs_after_every_other_requirements_install():
     """Ordering matters: a later `uv pip install -r ...` can re-resolve diffusers back to a
     release. Keeping the pin last means nothing is left that could walk it forward."""
     source = _code_only(STACK.read_text(encoding = "utf-8"))
-    pin_at = source.index("diffusers-pin.txt")
+    # The pass's own install is the last one; the startup repair's comes earlier.
+    pin_at = source.rindex('req = REQ_ROOT / "diffusers-pin.txt"')
     later = [
         name
         for name in (
@@ -963,3 +999,175 @@ def test_the_startup_prefetch_fills_the_cache_and_never_the_environment(monkeypa
     assert module._prefetch_diffusers_main() == 2
     monkeypatch.setattr(module, "_bootstrap_uv", lambda: False)
     assert module._prefetch_diffusers_main() == 1 and len(runs) == 2, "pip has no cache to fill"
+
+
+def _release_module(
+    monkeypatch,
+    name,
+    installed = "0.41.0",
+):
+    module = _probe_module(name, active = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
+    monkeypatch.setattr(
+        module,
+        "_installed_distribution_version",
+        lambda dist: installed if dist == "diffusers" else None,
+    )
+    monkeypatch.setattr(module, "_payload_recorded_intact", lambda dist: installed is not None)
+    monkeypatch.setattr(module, "_recorded_direct_url", lambda dist: None)
+    return module
+
+
+def test_a_missing_release_still_forces_the_pass(monkeypatch):
+    module = _release_module(monkeypatch, "install_python_stack_release_damaged", "0.41.0")
+    assert module._diffusers_main_needs_dependency_pass() is False
+    # Same-version damage would not converge: 11b's version check skips it.
+    monkeypatch.setattr(module, "_payload_recorded_intact", lambda dist: False)
+    assert module._diffusers_main_needs_dependency_pass() is False
+    module = _release_module(monkeypatch, "install_python_stack_release_missing", None)
+    assert module._diffusers_main_needs_dependency_pass() is True
+
+
+def test_the_shipped_main_step_skips_without_installing(monkeypatch):
+    module = _release_module(monkeypatch, "install_python_stack_release_step")
+    monkeypatch.setattr(module, "pip_install_try", lambda *a, **k: pytest.fail("installed"))
+    monkeypatch.setattr(module, "_has_working_git", lambda: pytest.fail("probed git"))
+    progressed, steps = [], {}
+    monkeypatch.setattr(module, "_progress", lambda label, *a, **k: progressed.append(label))
+    monkeypatch.setattr(module, "_record_step", lambda name, state: steps.__setitem__(name, state))
+    module._diffusers_main_step()
+    assert len(progressed) == 1 and "skipped" in progressed[0], progressed
+    assert steps == {"diffusers-main.txt": "skipped"}
+
+
+@pytest.mark.parametrize(
+    "installed, forced",
+    [
+        ("0.41.0", False),
+        ("0.41.0.dev0", True),
+        ("0.41.0rc1", True),
+        ("0.42.0", False),
+        ("0.40.0", True),
+    ],
+)
+def test_the_fast_path_is_forced_only_by_a_release_behind_the_pin(monkeypatch, installed, forced):
+    module = _release_module(monkeypatch, "install_python_stack_release_fast", installed)
+    monkeypatch.setattr(module, "_has_working_git", lambda: pytest.fail("probed git"))
+    assert module._diffusers_release_target() == "0.41.0"
+    assert module._diffusers_main_needs_dependency_pass() is forced
+
+
+def test_a_git_or_zip_build_of_the_release_keeps_the_fast_path(monkeypatch):
+    module = _release_module(monkeypatch, "install_python_stack_release_built", "0.41.0.dev0")
+    for direct in ({"vcs_info": {"vcs": "git"}}, {"archive_info": {}}):
+        monkeypatch.setattr(module, "_recorded_direct_url", lambda dist, d = direct: dict(d, url = "x"))
+        assert module._diffusers_main_needs_dependency_pass() is False
+
+
+def test_the_release_prefetch_fetches_the_pin_into_scratch_only_when_behind(monkeypatch):
+    module = _release_module(monkeypatch, "install_python_stack_release_prefetch", "0.41.0")
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: pytest.fail("spawned"))
+    monkeypatch.setattr(module, "_bootstrap_uv", lambda: pytest.fail("bootstrapped uv"))
+    assert module._prefetch_diffusers_main() == 1
+
+    module = _release_module(monkeypatch, "install_python_stack_release_prefetch2", "0.40.0")
+    monkeypatch.setattr(module, "_bootstrap_uv", lambda: True)
+    monkeypatch.setattr(module, "_has_working_git", lambda: pytest.fail("probed git"))
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return module.subprocess.CompletedProcess(cmd, 0, "")
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    # Windows ARM64 rewrites the file to a filtered copy, so read what was asked for, not the path.
+    asked = []
+    real_effective = module._effective_requirements
+    monkeypatch.setattr(
+        module,
+        "_effective_requirements",
+        lambda req: asked.append(req.name) or real_effective(req),
+    )
+    assert module._prefetch_diffusers_main() == 0
+    (cmd,) = calls
+    assert "--target" in cmd and "--no-deps" not in cmd
+    assert asked == ["diffusers-pin.txt"]
+    assert "-c" in cmd and str(cmd[cmd.index("-c") + 1]).endswith("constraints.txt"), cmd
+
+
+def _release_repair(
+    monkeypatch,
+    name,
+    installed,
+    manifest = None,
+    install_ok = True,
+):
+    import contextlib
+
+    state = {"version": installed}
+    module = _release_module(monkeypatch, name)
+    monkeypatch.setattr(
+        module,
+        "_installed_distribution_version",
+        lambda dist: state["version"] if dist == "diffusers" else None,
+    )
+    monkeypatch.setattr(
+        module.install_manifest, "pass_lock", lambda *a, **k: contextlib.nullcontext(True)
+    )
+    monkeypatch.setattr(module.install_manifest, "read_manifest", lambda *a, **k: manifest or {})
+    recorded = []
+    monkeypatch.setattr(
+        module.install_manifest, "update_manifest", lambda **extra: recorded.append(extra)
+    )
+    monkeypatch.setattr(module, "_bootstrap_uv", lambda: True)
+    monkeypatch.setattr(module, "_progress", lambda *a, **k: None)
+    monkeypatch.setattr(module, "_diffusers_main_step", lambda: pytest.fail("ran the git step"))
+    installs = []
+
+    def fake_install(
+        label,
+        *args,
+        req = None,
+        **kwargs,
+    ):
+        installs.append(req)
+        if install_ok:
+            state["version"] = "0.41.0"
+        return install_ok
+
+    monkeypatch.setattr(module, "pip_install_try", fake_install)
+    return module, installs, recorded
+
+
+def test_the_startup_repair_installs_the_release_behind_the_pin(monkeypatch):
+    # An old git-main failure must not strand the PyPI release.
+    old = {"diffusers_main_repair": "failed", "step_results": {"diffusers-main.txt": "failed"}}
+    module, installs, recorded = _release_repair(monkeypatch, "rel_repair_ok", "0.40.0", old)
+    assert module._repair_diffusers_main() == 0
+    assert [req.name for req in installs] == ["diffusers-pin.txt"] and recorded == []
+
+
+def test_the_startup_repair_leaves_a_current_release_alone(monkeypatch):
+    for installed in ("0.41.0", "0.41.0.post1"):
+        module, installs, _ = _release_repair(monkeypatch, "rel_repair_noop", installed)
+        assert module._repair_diffusers_main() == 1 and installs == []
+
+
+def test_the_release_repair_leaves_a_user_build_alone(monkeypatch):
+    module, installs, _ = _release_repair(monkeypatch, "rel_repair_user", "0.40.0")
+    monkeypatch.setattr(
+        module, "_recorded_direct_url", lambda dist: {"url": "file:///x", "dir_info": {}}
+    )
+    assert module._repair_diffusers_main() == 1 and installs == []
+
+
+def test_a_failed_release_repair_is_recorded_and_not_retried(monkeypatch):
+    module, installs, recorded = _release_repair(
+        monkeypatch, "rel_repair_fail", "0.40.0", install_ok = False
+    )
+    assert module._repair_diffusers_main() == 2 and len(installs) == 1
+    assert recorded == [{"diffusers_release_repair": "failed"}]
+    module, installs, _ = _release_repair(
+        monkeypatch, "rel_repair_fail2", "0.40.0", {"diffusers_release_repair": "failed"}
+    )
+    assert module._repair_diffusers_main() == 1 and installs == []

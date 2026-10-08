@@ -7172,10 +7172,12 @@ class DiffusionBackend:
                                 )
                                 comfy_compile = comfy_torchao_quantized(transformer)
                             else:
-                                if kind != "gguf" and not hasattr(
-                                    transformer_cls, "from_single_file"
+                                if kind != "gguf" and (
+                                    not hasattr(transformer_cls, "from_single_file")
+                                    # diffusers 0.41's from_single_file rounds Krea 2's fp32 norms to bf16.
+                                    or getattr(transformer_cls, "__name__", "")
+                                    == "Krea2Transformer2DModel"
                                 ):
-                                    # Krea 2: diffusers gives the class no single-file loader at all.
                                     transformer = load_original_layout_transformer(
                                         transformer_cls, single_file_path, sf_kwargs, logger
                                     )
