@@ -58,8 +58,8 @@ type Annotation = {
   frame?: Frame;
   request: string;
 };
-/** A drag's box, offset from its content so it scrolls with it. */
-type Frame = { left: number; top: number; width: number; height: number };
+/** A drag's box, offset from its content so it scrolls with it, at the zoom it was drawn at. */
+type Frame = { left: number; top: number; width: number; height: number; zoom: number };
 type Pending = { id: number | null; ranges: Range[]; quote: string; frame?: Frame };
 type Box = { left: number; top: number; width: number; height: number };
 
@@ -200,15 +200,24 @@ function boxOf(ranges: Range[], origin: DOMRect): Box | null {
   };
 }
 
+/** Effective CSS zoom at the content; 1 where the browser can't report it. */
+function zoomAt(ranges: Range[]): number {
+  const node = ranges[0]?.startContainer;
+  const element = node instanceof Element ? node : node?.parentElement;
+  return element?.currentCSSZoom ?? 1;
+}
+
 /** A drag's box if any, else the box around the content. */
 function markBoxOf(ranges: Range[], frame: Frame | undefined, origin: DOMRect): Box | null {
   const content = boxOf(ranges, origin);
   if (!content || !frame) return content;
+  // Scale by the zoom change since the drag, as the content did.
+  const k = zoomAt(ranges) / frame.zoom;
   return {
-    left: content.left + frame.left,
-    top: content.top + frame.top,
-    width: frame.width,
-    height: frame.height,
+    left: content.left + PAD + frame.left * k,
+    top: content.top + PAD + frame.top * k,
+    width: frame.width * k,
+    height: frame.height * k,
   };
 }
 
@@ -346,10 +355,11 @@ export function AnnotateLayer({
       const content = area ? boxOf(ranges, new DOMRect()) : null;
       const frame = area && content
         ? {
-            left: area.left - content.left,
-            top: area.top - content.top,
+            left: area.left - content.left - PAD,
+            top: area.top - content.top - PAD,
             width: area.width,
             height: area.height,
+            zoom: zoomAt(ranges),
           }
         : undefined;
       setPending({ id: null, ranges, quote, frame });

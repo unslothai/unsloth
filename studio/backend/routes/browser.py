@@ -800,8 +800,10 @@ _ANNOTATE_JS = r"""
             if (mark.ranges) {
               const box = boxOf(mark.ranges);
               if (!box || !mark.frame) return box;
-              const { dx, dy, width, height } = mark.frame;
-              return { left: box.left + dx, top: box.top + dy, width, height };
+              // Scale by the zoom change since the drag, as the content did.
+              const { dx, dy, width, height, zoom } = mark.frame;
+              const k = zoomOf() / zoom;
+              return { left: box.left + PAD + dx * k, top: box.top + PAD + dy * k, width: width * k, height: height * k };
             }
             const { element, dx, dy, width, height } = mark.anchor;
             if (!element.isConnected) return null;
@@ -915,7 +917,7 @@ _ANNOTATE_JS = r"""
             // Keep a drag's box as drawn, not shrunk to its text.
             const content = area && boxOf(ranges);
             const frame = content
-              ? { dx: area.left - content.left, dy: area.top - content.top, width: area.width, height: area.height }
+              ? { dx: area.left - content.left - PAD, dy: area.top - content.top - PAD, width: area.width, height: area.height, zoom: zoomOf() }
               : null;
             createMark({ ranges, frame }, { quote, image: picture !== null, alt: picture || "", area: false });
           };
