@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { toast } from "@/lib/toast";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type NpuModel,
   type NpuStatus,
@@ -47,10 +47,22 @@ export function useNpuCatalog(
   const onStatusChange = source?.onStatusChange;
   // Listing starts lemond, so wait for a validated runtime.
   const ready = status?.ready === true;
+  const statusChange = useRef(onStatusChange);
+  useEffect(() => {
+    statusChange.current = onStatusChange;
+  });
 
   useEffect(() => {
     if (!ready) return;
-    void refreshNpuModels();
+    // The first listing after a Studio update can upgrade the runtime; if that fails,
+    // re-read the status so the setup notice offers Try again.
+    void refreshNpuModels().then((listed) => {
+      if (listed) return;
+      getNpuStatus().then(
+        (next) => statusChange.current?.(next),
+        () => undefined,
+      );
+    });
     listNpuDownloads().then(
       (running) => {
         for (const { model, percent } of running) {
