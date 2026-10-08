@@ -11,6 +11,7 @@ import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
 import { approveChosenDownload, approveDownload, downloadSiteOf } from "./download-approval-queue";
+import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
@@ -52,8 +53,11 @@ type NativeEvent =
       downloadId: string | null;
       /** False when the file couldn't be marked as downloaded from the internet; null where nothing marks. */
       marked?: boolean | null;
+      /** The downloadPrompt `id` it was asked under; null when refused before asking. */
+      promptId?: string | null;
     }
-  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string; saveAs: boolean };
+  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string; saveAs: boolean }
+  | { kind: "downloadCancelled"; tabId: string; url: string; promptId: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
@@ -118,6 +122,9 @@ function listenOnce(): void {
   );
 }
 
+/** One running download in the Downloads button, from approval until it ends. */
+const downloadKey = (promptId: string) => `native:${promptId}`;
+
 /** Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
   const { id, url, site, name, saveAs } = event;
@@ -131,19 +138,29 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
       : saveAs
         ? approveChosenDownload(url, name)
         : approveDownload(url, name, asking);
+  const key = downloadKey(id);
   void decided
     .then(async (allow) => {
+      // Begun before deciding: a file that finished while the prompt was open lands at once.
+      if (allow) beginDownload(key, name);
       await decideNativeDownload(id, allow, saveAs || useBrowserPrefsStore.getState().askWhereToSave);
-      if (allow) toast(t("browser.native.downloading", { name }));
+      // Still running: one that landed during the decide call has already said so.
+      const { active, buttons } = useDownloadActivity.getState();
+      if (allow && buttons === 0 && key in active) toast(t("browser.native.downloading", { name }));
     })
-    .catch(() => undefined);
+    .catch(() => abandonDownload(key));
 }
+
 
 function onNativeEvent(event: NativeEvent): void {
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === event.tabId);
   if (event.kind === "downloadPrompt") {
     onDownloadPrompt(event, tab);
+    return;
+  }
+  if (event.kind === "downloadCancelled") {
+    abandonDownload(downloadKey(event.promptId));
     return;
   }
   // A download outlives its page: it often lands after the tab closed or moved on, and still belongs in history.
@@ -210,22 +227,32 @@ function onNativeEvent(event: NativeEvent): void {
   }
 }
 
+/** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
 function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
-  if (!event.done) {
-    toast(t("browser.native.downloading", { name: event.name }));
-  } else if (event.success) {
-    useBrowserHistoryStore.getState().recordDownload({
-      name: event.name,
-      url: event.url,
-      size: event.size ?? 0,
-      contentType: "",
-      nativeId: event.downloadId ?? undefined,
-    });
-    if (event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
-    else toast.success(t("browser.native.downloaded", { name: event.name }));
-  } else {
-    toast.error(t("browser.native.downloadFailed", { name: event.name }));
-  }
+  // Refused before asking, it never ran: there's nothing to end, only a result to show.
+  const key = event.promptId ? downloadKey(event.promptId) : `native:${event.tabId}:${event.url}`;
+  if (!event.done) return;
+  const historyId = event.success
+    ? useBrowserHistoryStore.getState().recordDownload({
+        name: event.name,
+        url: event.url,
+        size: event.size ?? 0,
+        contentType: "",
+        nativeId: event.downloadId ?? undefined,
+      })
+    : undefined;
+  const shown = finishDownload(key, {
+    name: event.name,
+    size: event.size ?? 0,
+    contentType: "",
+    url: event.url,
+    nativeId: event.downloadId ?? undefined,
+    historyId,
+    failed: !event.success,
+  });
+  if (event.success && event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
+  else if (!shown && event.success) toast.success(t("browser.native.downloaded", { name: event.name }));
+  else if (!shown) toast.error(t("browser.native.downloadFailed", { name: event.name }));
 }
 
 // Pages can ask in a loop: one prompt on screen, replaced at most once a second.

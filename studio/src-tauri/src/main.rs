@@ -2260,6 +2260,7 @@ fn main() {
             browser_capture::browser_capture,
             browser_downloads::browser_download_save,
             browser_downloads::browser_download_reveal,
+            browser_downloads::browser_download_open,
             browser_downloads::browser_download_exists,
             browser_downloads::browser_download_forget,
             browser_downloads::browser_download_decide,

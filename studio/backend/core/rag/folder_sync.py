@@ -76,11 +76,16 @@ _LOCKFILES = frozenset(
 
 
 def _is_ignored_scan_dir(name: str, path: str) -> bool:
-    return name.lower() in _IGNORE_SCAN_DIRS or os.path.exists(os.path.join(path, "pyvenv.cfg"))
+    # hidden subtrees can contain application configuration and plugins such as .obsidian.
+    return (
+        name.startswith(".")
+        or name.lower() in _IGNORE_SCAN_DIRS
+        or os.path.exists(os.path.join(path, "pyvenv.cfg"))
+    )
 
 
 def _is_ignored_scan_file(name: str) -> bool:
-    # .env and Terraform state hold plaintext secrets that retrieval would paste into prompts; lockfiles are noise.
+    # .env and Terraform state can expose plaintext secrets in retrieval; lockfiles add noise.
     lower = name.lower()
     if lower == ".env" or lower.startswith(".env.") or lower.endswith(".env"):
         return True
@@ -1205,7 +1210,7 @@ def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
 
 
 def _source_reappeared(root: str, relative_path: str) -> bool:
-    """Check scanner eligibility without following a replaced path component."""
+    """check scanner eligibility without following a replaced path component."""
     path = PurePosixPath(relative_path)
     parts = path.parts
     if (
@@ -1217,6 +1222,9 @@ def _source_reappeared(root: str, relative_path: str) -> bool:
         raise _FolderChanged("Linked folder mapping has an invalid relative path")
     current = root
     for index, part in enumerate(parts):
+        # previously indexed dot directories are excluded even if they still exist
+        if index < len(parts) - 1 and part.startswith("."):
+            return False
         current = os.path.join(current, part)
         try:
             current_stat = os.lstat(current)
