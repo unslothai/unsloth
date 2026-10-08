@@ -314,6 +314,15 @@ def test_current_tool_reasoning_survives_a_suppressed_call_result(tpl):
     assert rendered.index("SECRET_THOUGHT") < rendered.index("The duplicate call was not executed.")
 
 
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_model_thinks_again_after_a_tool_result(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    assert _render_with(tpl, messages, enable_thinking = True).endswith(
+        "<tool_response|><|channel>thought\n"
+    )
+    assert _render_with(tpl, messages, enable_thinking = False).endswith("<tool_response|>")
+
+
 def test_enable_thinking_gates_think_token():
     assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking = True)
     assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
