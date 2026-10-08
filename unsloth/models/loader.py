@@ -654,13 +654,19 @@ def _resolve_omni_auto_model(
     return None
 
 
-def _resolve_speech_seq2seq_auto_model(model_config, **hub_kwargs):
+def _resolve_speech_seq2seq_auto_model(
+    model_config,
+    trust_remote_code = None,
+    **hub_kwargs,
+):
     """AutoModelForSpeechSeq2Seq when it maps this config (Whisper, Moonshine), else None."""
     import transformers
 
     auto_class = getattr(transformers, "AutoModelForSpeechSeq2Seq", None)
     try:
-        if auto_class is not None and resolve_model_class(auto_class, model_config, **hub_kwargs):
+        if auto_class is not None and resolve_model_class(
+            auto_class, model_config, trust_remote_code = trust_remote_code, **hub_kwargs
+        ):
             return auto_class
     except Exception:
         pass
