@@ -147,3 +147,29 @@ def test_ppo_rollouts_restore_on_error_and_wrap_once():
     with pytest.raises(RuntimeError):
         _Trainer().train()
     assert config.top_p == 0.8
+
+
+def test_rollout_logits_freed_after_scoring():
+    ppo = pytest.importorskip("trl.trainer.ppo_trainer")
+    if not hasattr(ppo, "PPOTrainer"):
+        pytest.skip("TRL without trl.trainer.ppo_trainer.PPOTrainer")
+    import inspect
+
+    path = RL_PATH.with_name("rl_replacements.py")
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "ppo_trainer_free_rollout_logits"
+    )
+    namespace = {}
+    exec(compile(ast.Module(body = [node], type_ignores = []), str(path), "exec"), namespace)
+    edit = namespace["ppo_trainer_free_rollout_logits"]
+
+    source = inspect.getsource(ppo.PPOTrainer.train)
+    patched = edit("train", source)
+    assert "unwrapped_model, logitss)" in patched
+    # Nothing past the rollout reads them.
+    tail = patched.split("unwrapped_model, logitss)", 1)[1]
+    assert "logitss" not in tail
+    assert edit("generate_completions", source) == source
