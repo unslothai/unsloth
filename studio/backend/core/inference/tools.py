@@ -115,8 +115,7 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
-# What primp / httpx say when a connection is cut mid-request (#12638). Not "connection error": DNS
-# failures and refused connections are not resets, and replaying them only adds delay.
+# Not "connection error": DNS failures and refused connections are not resets (#12638).
 _DDGS_RESET_MARKERS = (
     "connection reset",
     "h2 connection driver error",
@@ -17007,12 +17006,10 @@ def _install_yahoo_layout_parser(text_engines) -> None:
 
 
 def _is_connection_reset(exc) -> bool:
-    """True when ``exc`` reports a connection cut mid-request; ddgs quotes the transport error in its own."""
     return any(marker in f"{type(exc).__name__}: {exc}".lower() for marker in _DDGS_RESET_MARKERS)
 
 
 def _ddgs_http1_replay(args, kwargs, config):
-    """Send one ddgs request through a throwaway HTTP/1.1-only httpx client; return the read response."""
     import httpx
 
     verify = config["verify"]
@@ -17033,15 +17030,8 @@ def _ddgs_http1_replay(args, kwargs, config):
 
 
 def _install_ddgs_http1_retry() -> None:
-    """Replay a ddgs request once over plain HTTP/1.1 when its connection is reset (#12638).
-
-    ddgs sends every engine but DuckDuckGo through primp, which impersonates a browser, always
-    offers HTTP/2 and has no HTTP/1.1-only mode; DuckDuckGo goes through httpx with HTTP/2 on. Some
-    networks reset those connections while curl and requests still work, so after a reset the
-    request is replayed through httpx with HTTP/2 off and a stock TLS context, as requests sends it.
-    A request that succeeds never reaches the replay, so healthy networks see no change. Idempotent:
-    each class is wrapped once and marked. Never raises: search must work without it.
-    """
+    """Replay a ddgs request once over plain HTTP/1.1 after a connection reset (#12638): primp has
+    no HTTP/1.1-only mode. Successful requests are untouched; wraps each class once; never raises."""
     try:
         import inspect
 
@@ -17062,7 +17052,7 @@ def _install_ddgs_http1_retry() -> None:
         except ImportError:
             http_client2 = None
         if http_client2 is not None and hasattr(http_client2, "HttpClient2"):
-            # follow_redirects=False is HttpClient2's own setting; primp follows redirects.
+            # HttpClient2 does not follow redirects; primp does.
             targets.append((http_client2.HttpClient2, _wrapper(http_client2.Response), False))
 
         with _DDGS_HTTP1_RETRY_LOCK:
@@ -17095,7 +17085,7 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
             config = getattr(self, "_unsloth_http1_config", None)
             if config is None or not _is_connection_reset(exc):
                 raise
-            # Session headers (user agent, engine headers); httpx sets its own accept-encoding.
+            # httpx may lack primp's zstd decoder, so let it pick accept-encoding.
             session = getattr(getattr(self, "client", None), "headers", None) or {}
             headers = {k: v for k, v in dict(session).items() if k.lower() != "accept-encoding"}
             replay = {
