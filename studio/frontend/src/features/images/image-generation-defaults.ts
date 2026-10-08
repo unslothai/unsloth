@@ -65,8 +65,7 @@ export function defaultsKeyFor(repoId: string, familyOverride: unknown): string 
   return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
 }
 
-/** The loaded model's recipe for a pick that got the fallback (its name named no family), else null. ``reported`` is
- * the backend's own (it reads the file header, so a renamed FLUX.1-dev is not given its schnell base's recipe). */
+/** The loaded model's recipe for a pick that got the fallback (its name named no family), else null. */
 export function loadedRecipeFor(
   pickDefaults: { steps: number; guidance: number } | null | undefined,
   residentKey: string,
