@@ -454,6 +454,31 @@ def test_body_text_inside_head_script_does_not_end_the_read(monkeypatch):
     assert "Actual article body" in out
 
 
+@pytest.mark.parametrize("reference", ["&#10;", "&#x20;", "&Tab;", "&NewLine;"])
+def test_whitespace_reference_in_large_head_keeps_article(monkeypatch, reference):
+    html = (
+        "<html><head>"
+        + reference
+        + "<style>"
+        + "x" * (768 * 1024)
+        + "</style></head><body><h1>Whitespace article marker</h1></body></html>"
+    ).encode()
+    assert "Whitespace article marker" in _fetch_with(monkeypatch, html, "text/html")
+
+
+@pytest.mark.parametrize(
+    "codec", ["utf-16", "utf-32", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"]
+)
+def test_wide_encoded_large_head_keeps_article(monkeypatch, codec):
+    html = (
+        "<html><head><style>/*"
+        + "🌍" * (200 * 1024)
+        + "*/</style></head><body><h1>Wide article marker</h1></body></html>"
+    ).encode(codec)
+    content_type = "text/html" if codec in ("utf-16", "utf-32") else f"text/html; charset={codec}"
+    assert "Wide article marker" in _fetch_with(monkeypatch, html, content_type)
+
+
 def test_html_body_locator_does_not_store_every_newline():
     tracemalloc.start()
     try:

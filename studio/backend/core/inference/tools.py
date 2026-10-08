@@ -15790,15 +15790,41 @@ class _HTMLBodyLocator(HTMLParser):
     )
     _HEAD_TEXT_ELEMENTS = frozenset({"noframes", "noscript", "script", "style", "title"})
 
-    def __init__(self):
+    def __init__(self, charset = None):
         super().__init__(convert_charrefs = False)
         self.body_at = None
         self._absolute_offset = 0
         self._head_text_depth = 0
         self._template_depth = 0
+        self._prefix = b""
+        self._decoder = None
+        self._codec = "latin-1"
+        try:
+            codec = codecs.lookup(charset).name if charset else None
+        except (LookupError, ValueError):
+            codec = None
+        if codec in ("utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"):
+            self._codec = codec if codec.endswith(("-le", "-be")) else codec + "-le"
 
     def feed_bytes(self, data):
-        self.feed(data.decode("latin-1"))
+        if self._decoder is None:
+            self._prefix += data
+            if len(self._prefix) < 4:
+                return
+            data, self._prefix = self._prefix, b""
+            for bom, codec in (
+                (codecs.BOM_UTF32_LE, "utf-32-le"),
+                (codecs.BOM_UTF32_BE, "utf-32-be"),
+                (codecs.BOM_UTF16_LE, "utf-16-le"),
+                (codecs.BOM_UTF16_BE, "utf-16-be"),
+            ):
+                if data.startswith(bom):
+                    self._codec = codec
+                    self._absolute_offset = len(bom)
+                    data = data[len(bom) :]
+                    break
+            self._decoder = codecs.getincrementaldecoder(self._codec)(errors = "replace")
+        self.feed(self._decoder.decode(data))
         if self.body_at is not None or len(self.rawdata) <= self._PENDING_LIMIT:
             return
         if self.cdata_elem:
@@ -15809,7 +15835,12 @@ class _HTMLBodyLocator(HTMLParser):
             self.body_at = self._absolute_offset
 
     def updatepos(self, i, j):
-        self._absolute_offset += max(0, j - i)
+        if j > i:
+            self._absolute_offset += (
+                j - i
+                if self._codec == "latin-1"
+                else len(self.rawdata[i:j].encode(self._codec, errors = "replace"))
+            )
         return super().updatepos(i, j)
 
     def _offset(self):
@@ -15880,10 +15911,11 @@ class _HTMLBodyLocator(HTMLParser):
             self._mark_body()
 
     def handle_entityref(self, name):
-        if self.body_at is None and not self._template_depth and not self._head_text_depth:
-            self._mark_body()
+        from html import unescape
+        self.handle_data(unescape("&" + name + ";"))
 
-    handle_charref = handle_entityref
+    def handle_charref(self, name):
+        self.handle_entityref("#" + name)
 
 
 def _read_capped_body(
@@ -15893,6 +15925,7 @@ def _read_capped_body(
     deadline,
     cancel_event,
     body_window = None,
+    charset = None,
 ):
     """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
     # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
@@ -15903,7 +15936,7 @@ def _read_capped_body(
     chunks = []
     remaining = max_bytes
     body_at = None
-    body_locator = _HTMLBodyLocator() if body_window is not None else None
+    body_locator = _HTMLBodyLocator(charset) if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
@@ -16177,6 +16210,7 @@ def _fetch_url_raw(
                 deadline,
                 cancel_event,
                 body_window = max_bytes if declared_html else None,
+                charset = resp.headers.get_content_charset() if declared_html else None,
             )
             if body_error is not None:
                 return body_error, "", ""
