@@ -15772,7 +15772,14 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
             continue
 
 
-def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event, body_window = None):
+def _read_capped_body(
+    resp,
+    max_bytes,
+    timeout,
+    deadline,
+    cancel_event,
+    body_window = None,
+):
     """read at most ``max_bytes``, and ``body_window`` past ``<body``, within the budget; ``(error_or_None, body)``."""
     # HTTPError wraps the socket; tighten its deadline when present, while chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)

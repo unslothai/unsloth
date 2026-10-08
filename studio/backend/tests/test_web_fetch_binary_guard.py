@@ -424,7 +424,9 @@ def test_article_after_a_large_inline_head_is_read(monkeypatch):
             "text/html",
             b"<html><head><title>t</title></head><body><article>"
             + b"<h1>Harbor ferry adds night service</h1><p>Boats run every thirty minutes.</p></article>"
-            + b"<script>" + b"x" * (4 * 1024 * 1024) + b"</script></body></html>",
+            + b"<script>"
+            + b"x" * (4 * 1024 * 1024)
+            + b"</script></body></html>",
         ),
         ("text/plain", b"Harbor ferry adds night service\n" + b"log line\n" * (512 * 1024)),
     ],
