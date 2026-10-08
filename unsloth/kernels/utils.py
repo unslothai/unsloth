@@ -361,6 +361,19 @@ def _has_active_dora_adapter(proj):
     return any(adapter in magnitude for adapter in adapters)
 
 
+def _has_active_lora_bias(proj):
+    # PEFT lora_bias=True gives lora_B a bias, which the fast LoRA paths never add.
+    lora_B = getattr(proj, "lora_B", None)
+    if not lora_B or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        return False
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    if isinstance(adapters, str):
+        adapters = (adapters,)
+    return any(adapter in lora_B and lora_B[adapter].bias is not None for adapter in adapters)
+
+
 def has_mxfp4_base(*projs):
     """A packed MXFP4 base that cannot hand its bytes to the fused LoRA kernels (they would then hold a 16-bit
     weight until backward): use PEFT. Bases with ``mxfp4_quant_state`` pass ``weight_packed`` + that state instead."""
@@ -1389,7 +1402,11 @@ def fast_linear_forward(
     temp_lora = None,
     out = None,
 ):
-    if _has_multiple_active_adapters(proj) or _has_active_dora_adapter(proj):
+    if (
+        _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+    ):
         result = proj(X)
         return result if out is None else out.copy_(result)
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
