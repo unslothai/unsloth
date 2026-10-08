@@ -346,7 +346,15 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
         ("python", "-u", "/workspace/host/train.py", "--data", "data/train.jsonl"),
         ("bash", "/workspace/host/train"),
         ("/workspace/host/train.sh",),
+        ("accelerate-launch", "/workspace/host/train.py"),
         ("accelerate", "launch", "--multi_gpu", "/workspace/host/train.py"),
+        ("accelerate", "launch", "--no_python", "/workspace/host/train"),
+        (
+            "accelerate",
+            "launch",
+            "--config_file=/workspace/host/config.yaml",
+            "/workspace/host/train.py",
+        ),
         (
             "accelerate",
             "launch",

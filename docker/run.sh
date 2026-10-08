@@ -408,12 +408,16 @@ if [[ $# -gt 0 ]]; then
             ;;
         *)
             case "${1##*/}" in
-                python | python[0-9]* | pypy | pypy[0-9]* | bash | sh | zsh | accelerate | torchrun | deepspeed)
+                python | python[0-9]* | pypy | pypy[0-9]* | bash | sh | zsh | accelerate | accelerate-launch | torchrun | deepspeed)
                     _prev="$1"
                     for _arg in "${@:2}"; do
                         case "$_arg" in
+                            --*=*)
+                                _prev=""
+                                continue
+                                ;;
                             /workspace/host | /workspace/host/*)
-                                if [[ "$_prev" != --* || "$_arg" == *.py || "$_arg" == *.sh ]]; then
+                                if [[ "$_prev" != --* || "$_prev" == --no_python || "$_arg" == *.py || "$_arg" == *.sh ]]; then
                                     WORKDIR_FLAG=(-w /workspace/host)
                                     break
                                 fi
