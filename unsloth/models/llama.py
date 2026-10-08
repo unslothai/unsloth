@@ -3663,6 +3663,8 @@ class FastLlamaModel:
         **kwargs,
     ):
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
+        # A model pre-wrapped by peft.get_peft_model returns early below, before patch_peft_model.
+        reject_alora(model)
         # The flag reflects the LAST load, not this model.
         _text_seq2seq = _is_text_seq2seq_config(getattr(model, "config", None))
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1" or _text_seq2seq:

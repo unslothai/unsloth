@@ -47,3 +47,20 @@ def test_other_models_pass(model):
 def test_patch_entry_points_reject_alora(patch):
     with pytest.raises(NotImplementedError, match = "alora_invocation_tokens"):
         patch(_model(**ALORA))
+
+
+def test_prewrapped_peft_model_is_rejected():
+    from peft import get_peft_model
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    config = LlamaConfig(
+        vocab_size = 64,
+        hidden_size = 16,
+        intermediate_size = 32,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+    )
+    model = get_peft_model(LlamaForCausalLM(config), _model(**ALORA).peft_config["default"])
+    with pytest.raises(NotImplementedError, match = "alora_invocation_tokens"):
+        FastLlamaModel.get_peft_model(model, r = 8, target_modules = ["q_proj"])
