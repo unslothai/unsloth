@@ -597,6 +597,7 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
         return;
     };
     let app = app.clone();
+    let id = id.to_string();
     tauri::async_runtime::spawn(async move {
         let staging = entry.staged.parent().map(Path::to_path_buf);
         let result = match (entry.decision, entry.finished) {
@@ -615,9 +616,15 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
                 &path,
                 Some(download_id),
                 marked,
+                &id,
             ),
             Ok(None) if matches!(entry.decision, Some(Decision::Allow { .. })) => {
-                crate::browser_webview::emit_download_cancelled(&app, &entry.tab_id, &entry.url)
+                crate::browser_webview::emit_download_cancelled(
+                    &app,
+                    &entry.tab_id,
+                    &entry.url,
+                    &id,
+                )
             }
             Ok(None) => {}
             Err(_) => crate::browser_webview::emit_download_failed(
@@ -625,6 +632,7 @@ fn settle<R: Runtime>(app: &AppHandle<R>, id: &str) {
                 &entry.tab_id,
                 &entry.url,
                 &entry.name,
+                Some(&id),
             ),
         }
     });

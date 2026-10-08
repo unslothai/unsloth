@@ -68,22 +68,30 @@ function revealTarget(target: Target, onFailed: (name: string) => void): (() => 
   return () => void revealNativeDownload(id).catch(() => onFailed(target.name));
 }
 
-/** Desktop downloads missing from disk, by native id; rechecked while the list is open. */
-function useMissing(downloads: DownloadItem[], enabled: boolean): ReadonlySet<string> {
+/** Desktop downloads missing from disk, by native id. Checked as the list opens, on window focus, and
+ *  after an action fails, as the Downloads page does. */
+function useMissing(downloads: DownloadItem[], enabled: boolean) {
   const [missing, setMissing] = useState<ReadonlySet<string>>(() => new Set());
+  const [checks, setChecks] = useState(0);
+  // Keyed by the ids, not the array, which is new on every render.
+  const ids = downloads.flatMap((item) => (item.nativeId ? [item.nativeId] : [])).join("\n");
   useEffect(() => {
-    if (!enabled || !isTauri) return;
-    const ids = downloads.flatMap((item) => (item.nativeId ? [item.nativeId] : []));
+    if (!enabled || !isTauri || !ids) return;
+    const list = ids.split("\n");
     let live = true;
-    nativeDownloadsExist(ids).then(
-      (found) => live && setMissing(new Set(ids.filter((_, index) => !found[index]))),
-      () => undefined,
-    );
+    const check = () =>
+      nativeDownloadsExist(list).then(
+        (found) => live && setMissing(new Set(list.filter((_, index) => !found[index]))),
+        () => undefined,
+      );
+    void check();
+    window.addEventListener("focus", check);
     return () => {
       live = false;
+      window.removeEventListener("focus", check);
     };
-  }, [downloads, enabled]);
-  return missing;
+  }, [ids, enabled, checks]);
+  return { missing, recheck: () => setChecks((count) => count + 1) };
 }
 
 function KindTile({ name, contentType, muted }: { name: string; contentType: string; muted?: boolean }) {
@@ -102,16 +110,21 @@ function KindTile({ name, contentType, muted }: { name: string; contentType: str
 function DownloadRow({
   item,
   missing,
+  onFailed,
   onDone,
 }: {
   item: DownloadItem;
   missing: boolean;
+  /** After Open or Show in folder fails, so the row can learn the file is gone. */
+  onFailed: () => void;
   onDone: () => void;
 }) {
   const t = useT();
   const locale = useLocale();
-  const failed = (key: "browser.downloads.openFailed" | "browser.pages.revealFailed") => (name: string) =>
+  const failed = (key: "browser.downloads.openFailed" | "browser.pages.revealFailed") => (name: string) => {
     toast.error(t(key, { name }));
+    onFailed();
+  };
   const target: Target = { ...item, keptId: item.id };
   const open = missing ? undefined : openTarget(target, failed("browser.downloads.openFailed"));
   const reveal = missing ? undefined : revealTarget(target, failed("browser.pages.revealFailed"));
@@ -193,7 +206,7 @@ function RecentDownloads({ open, onDone }: { open: boolean; onDone: () => void }
   const downloads = useBrowserHistoryStore((state) => state.downloads);
   const active = useDownloadActivity((state) => state.active);
   const recent = downloads.slice(0, RECENT_COUNT);
-  const missing = useMissing(recent, open);
+  const { missing, recheck } = useMissing(recent, open);
   const running = Object.entries(active);
   return (
     <>
@@ -228,6 +241,7 @@ function RecentDownloads({ open, onDone }: { open: boolean; onDone: () => void }
               key={item.id}
               item={item}
               missing={item.nativeId !== undefined && missing.has(item.nativeId)}
+              onFailed={recheck}
               onDone={onDone}
             />
           ))}

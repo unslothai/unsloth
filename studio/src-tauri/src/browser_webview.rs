@@ -241,11 +241,14 @@ enum BrowserEvent {
         download_id: Option<String>,
         /// Marked as from the internet: false if that failed (the panel warns), None where nothing marks.
         marked: Option<bool>,
+        /// The DownloadPrompt `id` it was asked under; None when refused before asking.
+        prompt_id: Option<String>,
     },
     /// An approved download that left no file (its save dialog was cancelled).
     DownloadCancelled {
         tab_id: String,
         url: String,
+        prompt_id: String,
     },
     DownloadPrompt {
         tab_id: String,
@@ -545,6 +548,7 @@ pub(crate) fn emit_download_done<R: Runtime>(
     path: &Path,
     download_id: Option<String>,
     marked: Option<bool>,
+    prompt_id: &str,
 ) {
     emit(
         app,
@@ -561,16 +565,23 @@ pub(crate) fn emit_download_done<R: Runtime>(
             success: true,
             download_id,
             marked,
+            prompt_id: Some(prompt_id.to_string()),
         },
     );
 }
 
-pub(crate) fn emit_download_cancelled<R: Runtime>(app: &AppHandle<R>, tab_id: &str, url: &Url) {
+pub(crate) fn emit_download_cancelled<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    url: &Url,
+    prompt_id: &str,
+) {
     emit(
         app,
         BrowserEvent::DownloadCancelled {
             tab_id: tab_id.to_string(),
             url: url.to_string(),
+            prompt_id: prompt_id.to_string(),
         },
     );
 }
@@ -580,6 +591,7 @@ pub(crate) fn emit_download_failed<R: Runtime>(
     tab_id: &str,
     url: &Url,
     name: &str,
+    prompt_id: Option<&str>,
 ) {
     emit(
         app,
@@ -593,6 +605,7 @@ pub(crate) fn emit_download_failed<R: Runtime>(
             success: false,
             download_id: None,
             marked: None,
+            prompt_id: prompt_id.map(str::to_string),
         },
     );
 }
@@ -1059,7 +1072,7 @@ fn create_view<R: Runtime>(
                             .file_name()
                             .map(|name| name.to_string_lossy().into_owned())
                             .unwrap_or_default();
-                        emit_download_failed(app, &download_tab, &url, &name);
+                        emit_download_failed(app, &download_tab, &url, &name, None);
                         return false;
                     }
                     let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
@@ -1085,7 +1098,7 @@ fn create_view<R: Runtime>(
                                     .file_name()
                                     .map(|name| name.to_string_lossy().into_owned())
                                     .unwrap_or_default();
-                                emit_download_failed(app, &download_tab, &url, &name);
+                                emit_download_failed(app, &download_tab, &url, &name, None);
                             }
                             return false;
                         }

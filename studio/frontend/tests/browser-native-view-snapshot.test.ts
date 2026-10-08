@@ -255,21 +255,51 @@ test("an approved download runs on the Downloads button until it lands or its sa
     g.nativeViewListener?.({
       payload: {
         kind: "download", tabId, url: "https://example.org/a.zip", name: "a.zip", path: null, size: 3,
-        done: true, success: true, downloadId: "d1", marked: true,
+        done: true, success: true, downloadId: "d1", marked: true, promptId: "p1",
       },
     });
-    g.nativeViewListener?.({ payload: { kind: "downloadCancelled", tabId, url: "https://example.org/b.zip" } });
-    assert.deepEqual(g.nativeViewActivity, [
-      `begin native:${tabId}:https://example.org/a.zip`,
-      `begin native:${tabId}:https://example.org/b.zip`,
-      `finish native:${tabId}:https://example.org/a.zip`,
-      `abandon native:${tabId}:https://example.org/b.zip`,
-    ]);
+    g.nativeViewListener?.({
+      payload: { kind: "downloadCancelled", tabId, url: "https://example.org/b.zip", promptId: "p2" },
+    });
+    assert.deepEqual(g.nativeViewActivity, ["begin native:p1", "begin native:p2", "finish native:p1", "abandon native:p2"]);
     // The button shows it running, so no "downloading" toast.
     assert.deepEqual(g.nativeViewSeen, [{ level: "history", message: "d1" }]);
   } finally {
     g.nativeViewApprove = false;
     g.nativeViewDownloadsButton = false;
+    stop();
+  }
+});
+
+test("two downloads of one address run apart: the first to land doesn't end the other", async () => {
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewActivity?: string[];
+    nativeViewApprove?: boolean;
+  };
+  g.nativeViewApprove = true;
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const url = "https://example.org/same.zip";
+    g.nativeViewSeen = [];
+    g.nativeViewActivity = [];
+    const prompt = { kind: "downloadPrompt", tabId, url, site: "https://example.org/", name: "same.zip" };
+    g.nativeViewListener?.({ payload: { ...prompt, id: "p1" } });
+    g.nativeViewListener?.({ payload: { ...prompt, id: "p2" } });
+    await frame();
+    g.nativeViewListener?.({
+      payload: {
+        kind: "download", tabId, url, name: "same.zip", path: null, size: 3,
+        done: true, success: true, downloadId: "d1", marked: true, promptId: "p1",
+      },
+    });
+    assert.deepEqual(g.nativeViewActivity, ["begin native:p1", "begin native:p2", "finish native:p1"]);
+  } finally {
+    g.nativeViewApprove = false;
     stop();
   }
 });
@@ -296,14 +326,14 @@ test("a download that finished while its prompt was open doesn't keep spinning",
       g.nativeViewListener?.({
         payload: {
           kind: "download", tabId, url, name: "big.zip", path: null, size: 3,
-          done: true, success: true, downloadId: "d1", marked: true,
+          done: true, success: true, downloadId: "d1", marked: true, promptId: "p1",
         },
       });
     g.nativeViewListener?.({
       payload: { kind: "downloadPrompt", tabId, url, site: "https://example.org/", name: "big.zip", id: "p1" },
     });
     await frame();
-    assert.deepEqual(g.nativeViewActivity, [`begin native:${tabId}:${url}`, `finish native:${tabId}:${url}`]);
+    assert.deepEqual(g.nativeViewActivity, ["begin native:p1", "finish native:p1"]);
   } finally {
     g.nativeViewApprove = false;
     g.nativeViewDecide = undefined;

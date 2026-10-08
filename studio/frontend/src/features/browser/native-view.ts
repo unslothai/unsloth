@@ -53,9 +53,11 @@ type NativeEvent =
       downloadId: string | null;
       /** False when the file couldn't be marked as downloaded from the internet; null where nothing marks. */
       marked?: boolean | null;
+      /** The downloadPrompt `id` it was asked under; null when refused before asking. */
+      promptId?: string | null;
     }
   | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string }
-  | { kind: "downloadCancelled"; tabId: string; url: string };
+  | { kind: "downloadCancelled"; tabId: string; url: string; promptId: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
@@ -121,7 +123,7 @@ function listenOnce(): void {
 }
 
 /** One running download in the Downloads button, from approval until it ends. */
-const downloadKey = (tabId: string, url: string) => `native:${tabId}:${url}`;
+const downloadKey = (promptId: string) => `native:${promptId}`;
 
 /** Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
@@ -130,7 +132,7 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
   // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
   const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
   const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
-  const key = downloadKey(event.tabId, url);
+  const key = downloadKey(id);
   void decided
     .then(async (allow) => {
       // Begun before deciding: a file that finished while the prompt was open lands at once.
@@ -150,7 +152,7 @@ function onNativeEvent(event: NativeEvent): void {
     return;
   }
   if (event.kind === "downloadCancelled") {
-    abandonDownload(downloadKey(event.tabId, event.url));
+    abandonDownload(downloadKey(event.promptId));
     return;
   }
   // A download outlives its page: it often lands after the tab closed or moved on, and still belongs in history.
@@ -219,7 +221,8 @@ function onNativeEvent(event: NativeEvent): void {
 
 /** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
 function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
-  const key = downloadKey(event.tabId, event.url);
+  // Refused before asking, it never ran: there's nothing to end, only a result to show.
+  const key = event.promptId ? downloadKey(event.promptId) : `native:${event.tabId}:${event.url}`;
   if (!event.done) return;
   const historyId = event.success
     ? useBrowserHistoryStore.getState().recordDownload({
