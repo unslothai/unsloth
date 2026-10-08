@@ -41,3 +41,20 @@ def test_fastmodel_keeps_added_token_rows_across_reload(tmp_path):
     torch.testing.assert_close(
         model2.get_output_embeddings().weight[rows].detach().float().cpu(), saved_out
     )
+
+
+def test_fastmodel_leaves_trainable_token_indices_alone():
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    from unsloth import FastModel, add_new_tokens
+
+    model, tokenizer = FastModel.from_pretrained(TINY, max_seq_length = 128, load_in_4bit = False)
+    tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    old_len = len(tokenizer)
+    add_new_tokens(model, tokenizer, NEW_TOKENS)
+    indices = list(range(old_len, old_len + len(NEW_TOKENS)))
+    model = FastModel.get_peft_model(model, r = 8, lora_alpha = 8, trainable_token_indices = indices)
+
+    assert not model.peft_config["default"].modules_to_save
+    assert not any(type(m).__name__ == "ModulesToSaveWrapper" for m in model.modules())
