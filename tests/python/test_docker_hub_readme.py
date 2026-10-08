@@ -42,8 +42,7 @@ def test_the_hub_readme_describes_the_shipped_images():
         "UNSLOTH_STUDIO_PASSWORD",
     ):
         assert needle in text, f"the Hub README no longer mentions {needle!r}"
-    # the previous image's conventions, none of which exist in this one
-    # Studio writes the generated password to a file and does not print it itself
+    # old-image conventions are invalid; Studio writes generated passwords to a file
     for stale in (
         "USER_PASSWORD",
         "/workspace/work",
@@ -54,11 +53,17 @@ def test_the_hub_readme_describes_the_shipped_images():
         assert stale not in text, f"the Hub README still carries {stale!r} from the old image"
 
 
+def test_the_hub_readme_runs_a_script_in_the_mounted_dir():
+    text = HUB_README.read_text(encoding = "utf-8")
+    section = text[text.index("### Scripts") :]
+    start = section.index("```")
+    command = section[start : section.index("```", start + 3)]
+    assert "python /workspace/host/train.py" in command
+    assert "-w /workspace/host" in command
+
+
 def test_the_hub_readme_explains_the_studio_volume():
-    """The volume keeps Studio's data and never pins its code; a volume from an image
-    before the code/data split is migrated with its old code kept aside. Both facts,
-    the way back to an older image, and what `docker rm` still discards have to be on
-    the page, since the quick start above them mounts the volume by default."""
+    """the Studio volume keeps data, not code, with migration, rollback, and `docker rm` limits."""
     text = HUB_README.read_text(encoding = "utf-8")
     for needle in (
         "-v unsloth-studio:/opt/unsloth-studio",

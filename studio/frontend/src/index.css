@@ -413,6 +413,8 @@
 	/* Mirrors the size-3.5 rule applied inside popovers (see the icon block
 	   below), so widths that reserve room for those icons track them. */
 	--ui-icon-size-sm: calc(0.875rem * var(--ui-font-scale, 1));
+	/* Info "i" beside a settings label, a notch under the label text. */
+	--ui-icon-size-hint: calc(0.75rem * var(--ui-font-scale, 1));
 	/* Model picker header controls. Padding and gaps follow --ui-space-scale,
 	   icons and label follow --ui-font-scale, so reserve each separately. The
 	   trigger is 2.25rem of padding and gaps, two icons, then the label, plus
@@ -2190,6 +2192,11 @@ html[data-chat-font] .aui-root {
 	body[data-scroll-locked] {
 		margin-right: 0 !important;
 	}
+	/* The 0px react-remove-scroll sets on modal open. Preset so the lock
+	   does not restyle the whole page. */
+	body {
+		--removed-body-scroll-bar-size: 0px;
+	}
 
 	/* Firefox makes scrollable containers keyboard focusable; swap the 3px
 	   UA outline for the app's soft 1px indicator. :where keeps specificity
@@ -3101,8 +3108,8 @@ html[data-chat-font] .aui-root {
 	[data-slot="popover-content"] {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 	}
-	/* Dark: glow in the darkest surface the menu touches, set per menu by
-	   lib/dropdown-surround.ts. .dropdown-surface marks bespoke dropdowns. */
+	/* Dark: glow in the page colour unless a context below sets --dropdown-glow.
+	   .dropdown-surface marks bespoke dropdowns. */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
 	.dark [data-slot="context-menu-content"],
@@ -3111,7 +3118,7 @@ html[data-chat-font] .aui-root {
 	.dark [data-slot="combobox-content"],
 	.dark [data-slot="popover-content"],
 	.dark .dropdown-surface {
-		box-shadow: 0 0 16px 0 var(--dropdown-surround-bg, var(--background)) !important;
+		box-shadow: 0 0 16px 0 var(--dropdown-glow, var(--background)) !important;
 	}
 	/* Sidebar and account menus stay flat in dark. */
 	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot],
@@ -3127,13 +3134,82 @@ html[data-chat-font] .aui-root {
 		background-color: var(--sidebar) !important;
 	}
 
-	/* Menus that would blend into their surface get the Hub menu tone.
+	/* Menus portal after the dialog or picker they open from. There they glow
+	   in its surface, and stock menus lift to the Hub tone. Sibling selectors,
+	   as body:has() restyles the whole page on every <body> insert.
 	   Defined on <html> so --accent can be reassigned without a cycle. */
 	.dark {
 		--dropdown-lift-surface: color-mix(in srgb, var(--accent) 60%, var(--popover));
 		--dropdown-lift-accent: color-mix(in srgb, var(--foreground) 6%, var(--accent));
 	}
-	.dark [data-surround-blend] {
+	.dark
+		body
+		> :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[data-state="open"]:is(
+			.dialog-soft-surface,
+			.settings-surface,
+			[class*="dark:bg-card"]
+		)
+		~ *
+		:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="select-content"],
+			[data-slot="combobox-content"],
+			[data-slot="popover-content"],
+			.dropdown-surface
+		) {
+		--dropdown-glow: var(--card);
+	}
+	/* After the dialog rule, so a picker in a dialog wins. */
+	.dark
+		body
+		> [data-radix-popper-content-wrapper]:has(> .unsloth-model-selector-menu[data-state="open"])
+		~ *
+		:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="select-content"],
+			[data-slot="combobox-content"],
+			[data-slot="popover-content"],
+			.dropdown-surface
+		) {
+		--dropdown-glow: var(--sidebar);
+	}
+	.dark
+		:is(
+			body
+			> :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[data-state="open"]:is(
+				.dialog-soft-surface,
+				.settings-surface,
+				[class*="dark:bg-card"]
+			)
+			~ *,
+			body
+			> [data-radix-popper-content-wrapper]:has(> .unsloth-model-selector-menu[data-state="open"])
+			~ *
+		)
+		:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="select-content"],
+			[data-slot="combobox-content"],
+			[data-slot="popover-content"],
+			.dropdown-surface
+		):not(
+			.unsloth-model-selector-menu,
+			.sidebar-menu,
+			.sidebar-more-menu,
+			.library-menu,
+			.library-actions-menu,
+			.browser-menu,
+			.hub-menu-instant
+		) {
 		--accent: var(--dropdown-lift-accent);
 		background-color: var(--dropdown-lift-surface) !important;
 	}
@@ -4386,8 +4462,9 @@ html[data-chat-font] .aui-root {
 	   streamdown puts between two paragraphs. The parts themselves own no outer margin or
 	   padding, so a header next to a paragraph reads the same as a paragraph next to a
 	   paragraph. `:where()` keeps this at zero specificity so a part that does set its own
-	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none. */
-	:where(.aui-assistant-message-content > * + *) {
+	   `mt-*` still wins. The first real child follows a zero-height badge anchor and gets none.
+	   Not `* + *`: that restyles the whole page when Radix inserts its focus guard. */
+	:where(.aui-assistant-message-content > :not(:first-child)) {
 		margin-top: calc(1rem * var(--ui-space-scale, 1));
 	}
 	:where(.aui-assistant-message-content > .h-0 + *) {
@@ -4968,6 +5045,68 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 .aui-composer-attachment-cards[data-layout="strip"]::-webkit-scrollbar {
 	display: none;
+}
+
+/* Video tabs: the clip sits on a soft brand-tinted band. */
+.browser-video-band {
+	background:
+		radial-gradient(55% 90% at 18% 30%, color-mix(in oklab, var(--primary) 30%, transparent), transparent 70%),
+		radial-gradient(50% 80% at 85% 75%, color-mix(in oklab, var(--primary) 24%, transparent), transparent 70%),
+		color-mix(in oklab, var(--primary) 9%, var(--background));
+}
+
+/* Thin track filled up to --range-fill, with a round thumb. */
+.browser-video-range {
+	appearance: none;
+	height: 1.25rem;
+	background: transparent;
+	cursor: pointer;
+}
+
+.browser-video-range:disabled {
+	cursor: default;
+}
+
+.browser-video-range::-webkit-slider-runnable-track {
+	height: 4px;
+	border-radius: 9999px;
+	background: linear-gradient(
+		to right,
+		var(--foreground) var(--range-fill, 0%),
+		color-mix(in oklab, var(--foreground) 16%, transparent) var(--range-fill, 0%)
+	);
+}
+
+.browser-video-range::-moz-range-track {
+	height: 4px;
+	border-radius: 9999px;
+	background: color-mix(in oklab, var(--foreground) 16%, transparent);
+}
+
+.browser-video-range::-moz-range-progress {
+	height: 4px;
+	border-radius: 9999px;
+	background: var(--foreground);
+}
+
+.browser-video-range::-webkit-slider-thumb {
+	appearance: none;
+	width: 14px;
+	height: 14px;
+	margin-top: -5px;
+	border-radius: 9999px;
+	background: var(--background);
+	border: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
+}
+
+.browser-video-range::-moz-range-thumb {
+	width: 14px;
+	height: 14px;
+	border-radius: 9999px;
+	background: var(--background);
+	border: 1px solid color-mix(in oklab, var(--foreground) 22%, transparent);
+	box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
 }
 
 /* The browser's tabs scroll sideways once they're at their narrowest, with no bar. */

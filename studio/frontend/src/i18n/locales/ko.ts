@@ -181,6 +181,7 @@ export const ko = {
     downloadPrompt: {
       title: "이 파일을 다운로드할까요?",
       description: "{host}에서 {name}을(를) 컴퓨터에 저장하려고 합니다.",
+      dangerous: "이런 파일은 컴퓨터에서 프로그램을 실행할 수 있습니다. {host}을(를) 신뢰하는 경우에만 다운로드하세요.",
       remember: "다음에도 기억",
       cancel: "취소",
       download: "다운로드",
@@ -368,6 +369,7 @@ export const ko = {
       downloading: "{name} 다운로드 중",
       downloaded: "{name}을(를) 다운로드 폴더에 저장했습니다",
       downloadFailed: "{name}을(를) 다운로드할 수 없습니다",
+      notMarked: "{name}이(가) 저장되었지만 인터넷에서 다운로드한 파일로 표시하지 못해 열기 전에 시스템이 경고하지 않습니다.",
       blocked: "이 주소는 브라우저 패널에서 열 수 없습니다. 공개 웹사이트만 열 수 있습니다.",
       clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제합니다. 사이트에서 로그아웃됩니다.",
       clearDataDescription: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",

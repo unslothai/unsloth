@@ -110,7 +110,7 @@ def test_scrape_parses_labelled_and_bare_metrics(monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr(ls.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(ls.urllib.request.OpenerDirector, "open", lambda *a, **k: _Resp())
     m = ls.LlamaServerStatsLogger("http://127.0.0.1:0", _Capture())._scrape()
     assert m["tokens_predicted_total"] == 20.0
     assert m["prompt_tokens_total"] == 5.0

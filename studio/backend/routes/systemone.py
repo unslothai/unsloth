@@ -381,7 +381,11 @@ def decision_model_objects() -> list[dict[str, Any]]:
         return []
     names = (
         "default",
-        *(() if systemone_settings.runtime_unavailable_reason() else catalog.CHECKPOINTS),
+        *(
+            (n for n in catalog.CHECKPOINTS if systemone_settings.llama_cpp_only(n))
+            if systemone_settings.runtime_unavailable_reason()
+            else catalog.CHECKPOINTS
+        ),
     )
     return [
         {
