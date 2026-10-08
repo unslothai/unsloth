@@ -16885,9 +16885,8 @@ def _class_token(name: str) -> str:
     return f"contains(concat(' ', normalize-space(@class), ' '), ' {name} ')"
 
 
-# Yahoo's newer result markup. Each result leaves a div unclosed, so lxml drops its </section> and
-# every later result nests inside it: a title counts only when its nearest section is a result, and
-# its snippet is the next s-desc before the next title, since a descendant search would take them all.
+# Each section.algo leaves a div unclosed, so lxml nests every later result inside it: match the
+# nearest section, and take the next s-desc before the next title (a descendant search takes them all).
 _YAHOO_SECTION_TITLES = (
     f"//a[{_class_token('s-title')}][ancestor::section[1][{_class_token('algo')}]]"
 )
@@ -16895,14 +16894,8 @@ _YAHOO_SECTION_SNIPPET = f"following::*[self::p[{_class_token('s-desc')}] or sel
 
 
 def _install_yahoo_layout_parser(text_engines) -> None:
-    """Teach ddgs's Yahoo engine the result layout it cannot parse.
-
-    Yahoo often answers with ``section.algo`` results instead of the ``div.relsrch`` ones ddgs 9.8.0
-    through 9.16.0 select, so a full page parses to nothing and the sweep ends in "No results
-    found." or the Wikipedia fallback wherever every other engine is bot-blocked. ddgs builds
-    engines from its registry by name, so the subclass replaces Yahoo there for the whole process;
-    a page in the older layout still goes through ddgs's own parser.
-    """
+    """Parse Yahoo's ``section.algo`` pages, which ddgs 9.8.0-9.16.0 (``div.relsrch`` only) read as
+    empty. ddgs builds engines from this registry by name; ``relsrch`` pages keep ddgs's parser."""
     yahoo = (text_engines or {}).get("yahoo")
     if not isinstance(yahoo, type) or getattr(yahoo, "_parses_section_layout", False):
         return
