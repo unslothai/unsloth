@@ -4602,6 +4602,12 @@ class ExternalProviderClient:
                 gen_config["thinkingConfig"] = {
                     "thinkingBudget": thinking_budget,
                 }
+        if (
+            "thinkingConfig" in gen_config
+            and effort_lc not in ("none", "off")
+            and enable_thinking is not False
+        ):
+            gen_config["thinkingConfig"]["includeThoughts"] = True
 
         if gen_config:
             body["generationConfig"] = gen_config
@@ -4877,8 +4883,12 @@ class ExternalProviderClient:
             }
             return f"data: {_json.dumps(chunk)}"
 
-        def _text_chunk(text: str, extra_content: Optional[dict[str, Any]] = None) -> str:
-            delta: dict[str, Any] = {"content": text}
+        def _text_chunk(
+            text: str,
+            extra_content: Optional[dict[str, Any]] = None,
+            field: str = "content",
+        ) -> str:
+            delta: dict[str, Any] = {field: text}
             if extra_content:
                 delta["extra_content"] = extra_content
             chunk = {
@@ -5108,6 +5118,11 @@ class ExternalProviderClient:
                                         yield _text_chunk(
                                             text,
                                             extra_content = _part_extra,
+                                            field = (
+                                                "reasoning_content"
+                                                if part.get("thought")
+                                                else "content"
+                                            ),
                                         )
                                     elif _part_extra is not None and not any(
                                         k in part

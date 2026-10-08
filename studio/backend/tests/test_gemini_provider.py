@@ -410,7 +410,7 @@ def test_gemini25_flash_effort_levels_map_to_budgets(monkeypatch):
             reasoning_effort = effort,
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
-        assert tc == {"thinkingBudget": expected}, (effort, tc)
+        assert tc == {"thinkingBudget": expected, "includeThoughts": True}, (effort, tc)
 
 
 def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
@@ -429,7 +429,7 @@ def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
             reasoning_effort = effort,
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
-        assert tc == {"thinkingLevel": expected}, (effort, tc)
+        assert tc == {"thinkingLevel": expected, "includeThoughts": True}, (effort, tc)
 
 
 def test_gemini3_pro_passes_medium_through(monkeypatch):
@@ -446,7 +446,7 @@ def test_gemini3_pro_passes_medium_through(monkeypatch):
             reasoning_effort = "medium",
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
-        assert tc == {"thinkingLevel": "medium"}, (model, tc)
+        assert tc == {"thinkingLevel": "medium", "includeThoughts": True}, (model, tc)
 
 
 def test_gemini3_pro_minimal_effort_coerces_to_low(monkeypatch):
@@ -457,7 +457,7 @@ def test_gemini3_pro_minimal_effort_coerces_to_low(monkeypatch):
         reasoning_effort = "minimal",
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
-    assert tc == {"thinkingLevel": "low"}, tc
+    assert tc == {"thinkingLevel": "low", "includeThoughts": True}, tc
 
 
 def test_gemini3_flash_effort_none_maps_to_minimal(monkeypatch):
@@ -477,6 +477,54 @@ def test_thinking_default_omits_thinking_config(monkeypatch):
     captured = _capture_body(monkeypatch, model = "gemini-3.5-flash")
     gc = captured["body"]["generationConfig"]
     assert "thinkingConfig" not in gc, gc
+
+
+@pytest.mark.parametrize(
+    ("model", "kwargs"),
+    (
+        ("gemini-3.6-flash", {"reasoning_effort": "high"}),
+        ("gemini-3.1-pro-preview", {"reasoning_effort": "low"}),
+        ("gemini-2.5-flash", {"reasoning_effort": "medium"}),
+        ("gemma-4-31b-it", {"enable_thinking": True}),
+    ),
+)
+def test_thinking_on_asks_gemini_for_its_thoughts(monkeypatch, model, kwargs):
+    tc = _capture_body(monkeypatch, model = model, **kwargs)["body"]["generationConfig"][
+        "thinkingConfig"
+    ]
+    assert tc.get("includeThoughts") is True, (model, tc)
+
+
+@pytest.mark.parametrize(
+    ("model", "kwargs"),
+    (
+        ("gemini-3.6-flash", {"reasoning_effort": "none"}),
+        ("gemini-2.5-flash", {"enable_thinking": False}),
+        ("gemini-2.5-pro", {"enable_thinking": False}),
+        ("gemma-4-31b-it", {"enable_thinking": False}),
+    ),
+)
+def test_thinking_off_does_not_ask_for_thoughts(monkeypatch, model, kwargs):
+    tc = _capture_body(monkeypatch, model = model, **kwargs)["body"]["generationConfig"][
+        "thinkingConfig"
+    ]
+    assert "includeThoughts" not in tc, (model, tc)
+
+
+def test_thought_parts_stream_as_reasoning_not_answer(monkeypatch):
+    sse = [
+        _event([{"text": "**Reading the riddle**", "thought": True}], finish_reason = None),
+        _event([{"text": "The man is your son."}], finish_reason = None),
+        _event([{"text": "", "thoughtSignature": "SIG"}]),
+    ]
+    chunks = _parse_chunks(
+        _collect(monkeypatch, sse, model = "gemini-3.6-flash", reasoning_effort = "high")
+    )
+    deltas = [c["choices"][0]["delta"] for c in chunks if c.get("choices")]
+    reasoning = "".join(d.get("reasoning_content", "") for d in deltas)
+    answer = "".join(d.get("content") or "" for d in deltas)
+    assert reasoning == "**Reading the riddle**", deltas
+    assert answer == "The man is your son.", deltas
 
 
 def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
@@ -2885,7 +2933,10 @@ def test_legacy_gemini3_pro_medium_coerced_to_high(monkeypatch):
         model = "gemini-3-pro-preview",
         reasoning_effort = "medium",
     )
-    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "high"}
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "high",
+        "includeThoughts": True,
+    }
 
 
 def test_gemini_3_1_pro_medium_passes_through(monkeypatch):
@@ -2896,7 +2947,10 @@ def test_gemini_3_1_pro_medium_passes_through(monkeypatch):
         model = "gemini-3.1-pro-preview",
         reasoning_effort = "medium",
     )
-    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "medium",
+        "includeThoughts": True,
+    }
 
 
 def test_tool_calls_extra_content_stripped_for_non_native_gemini():
