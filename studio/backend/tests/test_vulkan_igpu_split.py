@@ -188,3 +188,10 @@ def test_igpu_room_keeps_its_own_buffers():
         pipeline_mib = 200.0,
     )
     assert shares == [3900.0, 2325.0, 775.0]
+
+
+def test_a_gpu_resident_drafter_keeps_llama_cpp_split_and_status_reports_ours():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    arm = src[src.index("_mixed_split = (") : src.index("# Expose Prometheus /metrics")]
+    assert 'not _spill_inputs["separate_draft_on_gpu"]' in arm
+    assert "self._auto_tensor_split_emitted = self._auto_split_fingerprint(" in arm

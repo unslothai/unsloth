@@ -27915,12 +27915,19 @@ class LlamaCppBackend:
                         )
                         if _shared_gpu_ids
                         and _spill_inputs is not None
+                        # A GPU-resident separate drafter spreads over every device;
+                        # the split cannot price its per-card share, so leave it off.
+                        and not _spill_inputs["separate_draft_on_gpu"]
                         and not tensor_parallel
                         and not _extra_args_have_tensor_split(extra_args, env)
                         else None
                     )
                     if _mixed_split is not None:
                         cmd.extend(["--tensor-split", self._format_tensor_split(_mixed_split)])
+                        if gpu_memory_mode != "manual":
+                            self._auto_tensor_split_emitted = self._auto_split_fingerprint(
+                                _mixed_split
+                            )
                         logger.info(
                             "Filling discrete GPU(s) before the shared-memory iGPU: "
                             "--tensor-split %s over %s",
