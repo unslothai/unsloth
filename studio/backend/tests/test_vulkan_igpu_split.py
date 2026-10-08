@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A Vulkan pin that mixes a discrete card with a shared-memory iGPU.
-
-The iGPU reports its whole shared pool as free, so it outranked the discrete card in
-``_select_gpus`` and, with no ``--tensor-split``, took the larger share of llama.cpp's
-free-memory layer split. Reported on an RX 7700 XT (12 GB) + Ryzen iGPU, Windows:
-Qwen3.8-27B UD-IQ4_XS loaded 4.8 GB on the card and 8.3 GB on the iGPU, 1.05 t/s,
-against 4.4 t/s with the iGPU deselected.
-"""
+"""A Vulkan pin mixing a discrete card with a shared-memory iGPU: the card fills first.
+Reported on an RX 7700 XT + Ryzen iGPU (27B: 8.3 GB on the iGPU, 1.05 t/s)."""
 
 from __future__ import annotations
 
@@ -58,7 +52,7 @@ def test_a_model_either_device_holds_lands_on_the_discrete_card():
 
 
 def test_without_shared_ids_the_larger_shared_pool_still_wins():
-    # The old ranking, kept for every caller that has no shared set (CUDA, ROCm).
+    # CUDA / ROCm callers pass no shared set and keep the old ranking.
     picked, _ = LlamaCppBackend._select_gpus(6000 * MIB, GPUS, usable_fraction = 0.9)
     assert picked == [IGPU]
 
@@ -82,7 +76,6 @@ def test_split_aware_passes_the_shared_set_through():
 
 
 def test_the_split_fills_the_discrete_card_first():
-    # 13.26 GiB of weights + ~0.6 GiB of KV at 32K on iq4_nl.
     shares = LlamaCppBackend._discrete_first_split(
         [DGPU, IGPU],
         {DGPU: 10180.0, IGPU: 12917.0},
@@ -131,8 +124,6 @@ def test_the_launch_emits_it_only_where_nothing_else_owns_the_split():
 
 
 def test_non_layer_bytes_stay_off_the_discrete_share():
-    # The flat compute buffer, context and projector are not divided by the split,
-    # so a card filled to its whole budget would run past it under --fit off.
     shares = LlamaCppBackend._discrete_first_split(
         [DGPU, IGPU],
         {DGPU: 10180.0, IGPU: 12917.0},

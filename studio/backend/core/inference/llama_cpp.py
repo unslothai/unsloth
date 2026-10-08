@@ -9121,19 +9121,11 @@ class LlamaCppBackend:
         per_device_mib: float = 0.0,
         reserve_mib: float = 0.0,
     ) -> Optional[List[float]]:
-        """``--tensor-split`` shares, positional over ``gpu_indices``, that fill the
-        discrete cards before any shared-memory iGPU.
-
-        Without a split llama.cpp divides layers by free memory, and an iGPU reports
-        its whole shared pool, so it took the larger share of a pin it was only meant
-        to top up (a 27B on a 12 GB card plus a Ryzen iGPU: 4.8 GB on the card,
-        8.3 GB on the iGPU, 1 t/s). ``layered_mib`` is what the split divides
-        (weights + KV); ``per_device_mib`` is held back on each card for its own
-        compute buffer, ``reserve_mib`` once across the cards (largest first) for the
-        non-layer bytes the fit charged (flat compute buffer, context, projector):
-        --fit off leaves nothing to catch a card filled past them. None unless the
-        pin mixes both kinds.
-        """
+        """``--tensor-split`` shares, positional over ``gpu_indices``, filling discrete
+        cards before shared-memory iGPUs, whose free "VRAM" is the host pool and would
+        otherwise win llama.cpp's free-memory split. ``per_device_mib`` is held back on
+        each card, ``reserve_mib`` once across them (non-layer bytes; --fit off cannot
+        catch an overfilled card). None unless the pin mixes both kinds."""
         shared = set(shared_gpu_ids)
         discrete = [i for i in gpu_indices if i not in shared]
         igpus = [i for i in gpu_indices if i in shared]
@@ -16281,8 +16273,7 @@ class LlamaCppBackend:
         ``per_device_overhead_bytes`` is the fixed layer-split cost per GPU beyond
         the first; a k-GPU pin must hold ``model + (k-1) * overhead`` or it can OOM
         a device after -ngl -1 (no --fit fallback). Single-GPU adds none.
-        ``shared_gpu_ids`` (iGPUs whose "VRAM" is host RAM) rank after every
-        discrete card, so their larger shared pool never outranks real VRAM.
+        ``shared_gpu_ids`` (iGPUs whose "VRAM" is host RAM) rank after every discrete card.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       fits on 1 GPU at the headroom threshold
