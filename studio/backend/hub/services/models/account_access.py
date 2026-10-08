@@ -268,8 +268,7 @@ def join_resident(modality: str) -> None:
     if not policy.installation_has_managed_accounts():
         return
     require_live_account()
-    # No record at all (loaded pre-accounts): seed the loader so the joiner's unload keeps it.
-    # An empty record means retirement removed the loader, which must stay out.
+    # Seed the loader only with no record (pre-accounts); an empty one means it was retired.
     loader = _resident_loader(modality)
     with _sharers_lock:
         if modality not in _resident_sharers and loader is not None:
