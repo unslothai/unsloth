@@ -10,6 +10,7 @@ import { listEngines, vllmHostSupported } from "../api/engines";
 let available = false;
 let started = false;
 let retries = 0;
+let latest = 0;
 const listeners = new Set<() => void>();
 
 function publish(next: boolean) {
@@ -25,19 +26,23 @@ function retry() {
 }
 
 async function refresh() {
+  const request = ++latest;
   try {
     const engines = await listEngines();
+    // An older read finishing late must not overwrite a newer answer.
+    if (request !== latest) return;
     publish(vllmHostSupported(engines));
     const vllm = engines.find((engine) => engine.engine === "vllm");
     if (vllm?.unsupported_reason?.startsWith("Checking")) retry();
   } catch {
     // An older backend without /api/engines stays false (today's labels); a passing failure
     // keeps the last answer.
-    retry();
+    if (request === latest) retry();
   }
 }
 
 function subscribe(listener: () => void) {
+  const first = listeners.size === 0;
   listeners.add(listener);
   if (!started) {
     started = true;
@@ -45,6 +50,10 @@ function subscribe(listener: () => void) {
       retries = 0;
       void refresh();
     });
+  }
+  // Re-read each time the hub opens again, since the host or the backend may have changed.
+  if (first) {
+    retries = 0;
     void refresh();
   }
   return () => {
