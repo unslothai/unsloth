@@ -109,6 +109,15 @@ def test_help_probe_detects_the_flag_and_caches(tmp_path):
     assert (tmp_path / "new-server.runs").read_text().count("run") == 1
 
 
+def test_managed_install_skips_the_help_probe(tmp_path, monkeypatch):
+    old = _script(tmp_path, "managed-server", "  --port N, Port number")
+    monkeypatch.setattr(
+        ggml_module, "_whisper_install_marker", lambda binary: {"component": "whisper.cpp"}
+    )
+    assert ggml_module._supports_request_path(old) is True
+    assert not (tmp_path / "managed-server.runs").exists()
+
+
 class _RoutedHandler(http.server.BaseHTTPRequestHandler):
     """Serves whisper-server's index and /inference only under ROUTE, 404 elsewhere, like --request-path."""
 
