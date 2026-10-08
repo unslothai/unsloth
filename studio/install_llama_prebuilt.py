@@ -4247,6 +4247,12 @@ def resolve_release_asset_choice(
                     "published Windows CUDA assets ignored for install planning: "
                     f"{release.repo}@{release.release_tag} ({exc})"
                 )
+        if release.repo == DEFAULT_PUBLISHED_REPO:
+            # Prebuilts come only from the fork's own release, never upstream ggml-org's.
+            raise PrebuiltFallback(
+                f"no published Windows CUDA bundle in {release.repo}@{release.release_tag} "
+                "covers this host"
+            )
         upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
         upstream_attempts = _drop_blackwell_incapable_windows_cuda(
             selection_host,
@@ -4284,8 +4290,8 @@ def resolve_release_asset_choice(
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:
-        # Prefer a CUDA bundle, as x64 does: the published windows-arm64-cuda artifact first, then
-        # upstream's -arm64 zip, both hash-gated. The opt-out gates the WHOLE branch.
+        # A host the fork's windows-arm64-cuda bundle does not cover takes its ARM64 CPU bundle.
+        # The opt-out gates the WHOLE branch.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             published_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
@@ -4306,50 +4312,10 @@ def resolve_release_asset_choice(
                         "published Windows ARM64 CUDA assets ignored for install planning: "
                         f"{release.repo}@{release.release_tag} ({exc})"
                     )
-            # Same rule as the digest fetch below: a rate limit, an outage or a malformed payload from the
-            # release API costs the CUDA bundle, never the install; the ARM64 CPU bundle is still there.
-            try:
-                upstream_arm64_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
-            except Exception as exc:
-                log(
-                    f"could not list the upstream {UPSTREAM_REPO}@{llama_tag} release assets "
-                    f"({exc}); falling through to the ARM64 CPU bundle."
-                )
-                upstream_arm64_assets = {}
-            upstream_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
-                host,
-                resolve_windows_cuda_choices(
-                    host,
-                    llama_tag,
-                    upstream_arm64_assets,
-                    arch = "arm64",
-                ),
+            log(
+                f"no published Windows ARM64 CUDA bundle in {release.repo}@{release.release_tag} "
+                "covers this GPU; falling through to the ARM64 CPU bundle."
             )
-            if upstream_arm64_cuda:
-                try:
-                    return apply_approved_hashes(upstream_arm64_cuda, checksums)
-                except PrebuiltFallback as exc:
-                    # The fork publishes no windows-arm64-cuda bundle yet, so take upstream ggml-org's, the same release this fork
-                    # repackages. Verified against GitHub's per-asset digest; an asset it states no digest for is refused, not installed.
-                    verified = _apply_release_digests(
-                        upstream_arm64_cuda,
-                        github_release_asset_digests(UPSTREAM_REPO, llama_tag),
-                    )
-                    if verified:
-                        log(
-                            "no approved checksum covers a Windows ARM64 CUDA bundle "
-                            f"({exc}); installing the upstream {UPSTREAM_REPO} bundle "
-                            f"{verified[0].name}, verified against the release asset digest "
-                            "GitHub reports. Set UNSLOTH_LLAMA_ARM64_CUDA=0 to use the CPU "
-                            "bundle instead."
-                        )
-                        return verified
-                    log(
-                        "no approved checksum covers a Windows ARM64 CUDA bundle "
-                        f"({exc}), and GitHub reports no asset digest for the upstream "
-                        f"{UPSTREAM_REPO} bundle either; refusing to install it unverified "
-                        "and falling through to the ARM64 CPU bundle."
-                    )
         published_choice = published_asset_choice_for_kind(release, "windows-arm64")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
@@ -4365,6 +4331,12 @@ def resolve_release_asset_choice(
                 f"{release.repo}@{release.release_tag} {published_choice.name} ({exc})"
             )
 
+    if release.repo == DEFAULT_PUBLISHED_REPO:
+        # The upstream filename resolver below lists ggml-org's release; the fork never uses it.
+        raise PrebuiltFallback(
+            f"no compatible published prebuilt in {release.repo}@{release.release_tag} "
+            f"for {host.system} {host.machine}"
+        )
     return apply_approved_hashes(
         [resolve_asset_choice(host, llama_tag)],
         checksums,
@@ -4408,12 +4380,21 @@ def copy_globs(
         shutil.copy2(path, destination / name)
 
 
-def ensure_converter_scripts(install_dir: Path, llama_tag: str) -> None:
+def ensure_converter_scripts(
+    install_dir: Path,
+    llama_tag: str,
+    *,
+    repo: str | None = None,
+    release_tag: str | None = None,
+) -> None:
     canonical = install_dir / "convert_hf_to_gguf.py"
     if not canonical.exists():
-        # Hydrated source tree should have placed this file already.
-        # Fall back to a network fetch so the install is not blocked.
-        raw_base = f"https://raw.githubusercontent.com/ggml-org/llama.cpp/{llama_tag}"
+        # Hydration normally placed it; else the fork at the installed mix tag (bare bNNNN tags are not pushed).
+        source_repo = repo or DEFAULT_PUBLISHED_REPO
+        ref = release_tag or llama_tag
+        raw_base = (
+            f"https://raw.githubusercontent.com/{source_repo}/{urllib.parse.quote(ref, safe = '')}"
+        )
         source_url = f"{raw_base}/convert_hf_to_gguf.py"
         data = download_bytes(
             source_url,
@@ -10754,20 +10735,7 @@ def _route_to_vulkan_prebuilt(
     else:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
-    # The fork manifest's Vulkan app bundles are x64 only, and the architecture
-    # filter in published_asset_choice_for_kind rejects them for an ARM64 host, so
-    # the fork planner returns no Vulkan attempt at all there. Strict Vulkan
-    # filtering then drops the ARM64 CPU attempt too and the install resolves to
-    # nothing. Upstream does publish llama-<tag>-bin-ubuntu-vulkan-arm64.tar.gz, so
-    # keep routing Linux ARM64 there (Windows arm64 exits above via
-    # _has_no_vulkan_prebuilt, macOS via the Metal branch).
-    if (published_repo or DEFAULT_PUBLISHED_REPO) == DEFAULT_PUBLISHED_REPO and (
-        host.is_linux and host.is_arm64
-    ):
-        # Fork and upstream use different tag namespaces (fork b9596-mix-<sha> vs
-        # upstream b9596), so carrying a fork pin over would make the upstream
-        # resolver query a release that does not exist.
-        return host, UPSTREAM_REPO, "", persist_backend
+    # A fork release without a linux-vulkan-arm64 bundle source-builds; no upstream prebuilt.
     return host, published_repo, published_release_tag, persist_backend
 
 
@@ -11508,7 +11476,12 @@ def install_prebuilt(
 
                     activate_install_tree(selected_staging_dir, install_dir, host)
                     try:
-                        ensure_converter_scripts(install_dir, plan.llama_tag)
+                        ensure_converter_scripts(
+                            install_dir,
+                            plan.llama_tag,
+                            repo = published_repo or DEFAULT_PUBLISHED_REPO,
+                            release_tag = plan.release_tag,
+                        )
                     except Exception as exc:
                         log(
                             "converter script fetch failed after activation; install remains valid "
