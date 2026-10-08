@@ -89,3 +89,36 @@ def test_get_batch_samples_dispatch():
             assert dispatch(trainer, iter([]), 1) == want
     finally:
         _utils._unsloth_get_batch_samples = original
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("T5Config", "right"),
+        ("BartConfig", "right"),
+        ("WhisperConfig", "right"),
+        ("SeamlessM4Tv2Config", "right"),
+        ("T5Gemma2Config", "right"),
+        ("LlamaConfig", "left"),
+        ("Qwen3Config", "left"),
+        ("Gemma3Config", "left"),
+        ("VoxtralConfig", "left"),
+        ("Qwen2AudioConfig", "left"),
+    ],
+)
+def test_encoder_decoders_pad_right(name, expected):
+    from unsloth.models.vision import _generation_padding_side
+    assert _generation_padding_side(_config(name)) == expected
+
+
+@pytest.mark.parametrize("name", ["SeamlessM4TConfig", "SeamlessM4Tv2Config"])
+def test_seamless_has_a_seq2seq_class_and_no_causal_class(name):
+    from unsloth.models._utils import _is_seq2seq_lm_config, resolve_model_class
+
+    config = _config(name)
+    assert not _is_text_seq2seq_config(config)
+    assert _is_seq2seq_lm_config(config)
+    assert resolve_model_class(transformers.AutoModelForCausalLM, config) is None
+    assert resolve_model_class(transformers.AutoModelForSeq2SeqLM, config).__name__.endswith(
+        "ForTextToText"
+    )

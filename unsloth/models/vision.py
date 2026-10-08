@@ -89,6 +89,9 @@ def _is_text_seq2seq_config(config):
 
 def _generation_padding_side(config):
     # BART / Marian encoder positions are absolute, so left padding would shift every real token.
+    # Any encoder-decoder (Whisper, SeamlessM4T): left-padded labels put pads before the decoder's target.
+    if getattr(config, "is_encoder_decoder", False):
+        return "right"
     return "right" if _is_text_seq2seq_config(config) else "left"
 
 
@@ -4708,15 +4711,16 @@ class FastBaseModel:
             raise RuntimeError("Unsloth: Unsuccessfully patched inner_training_loop")
         patch_saving_functions(model, vision = True)
 
+        _padding_side = _generation_padding_side(getattr(model, "config", None))
         m = model
         while hasattr(m, "model"):
             if hasattr(m, "_saved_temp_tokenizer"):
                 if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                    m._saved_temp_tokenizer.tokenizer.padding_side = "left"
+                    m._saved_temp_tokenizer.tokenizer.padding_side = _padding_side
             m = m.model
         if hasattr(m, "_saved_temp_tokenizer"):
             if hasattr(m._saved_temp_tokenizer, "tokenizer"):
-                m._saved_temp_tokenizer.tokenizer.padding_side = "left"
+                m._saved_temp_tokenizer.tokenizer.padding_side = _padding_side
         # Prevent Transformers Trainer from auto-wrapping Unsloth LoRA models in DP.
         _mark_unsloth_disable_data_parallel(model, disable = not full_finetuning)
 
