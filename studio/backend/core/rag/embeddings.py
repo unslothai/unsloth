@@ -858,28 +858,20 @@ def _model_names_gguf_repo(model: str | None) -> bool:
     return config._names_gguf(model.strip().rstrip("/").rsplit("/", 1)[-1])
 
 
-# With a GPU present, auto picks sentence-transformers and _device keeps it on the CPU in float32, where
-# EmbeddingGemma indexes many times slower than llama-server offloaded to the GPU. Exact repo ids, not a name
-# match: each publishes a -GGUF companion, which a fine-tune or a local folder need not have.
+# ST under auto stays on the CPU in float32 (_device); llama-server offloads. Exact ids: a fine-tune may lack the -GGUF.
 _LLAMA_SERVER_PREFERRED_MODELS = frozenset(
     {"unsloth/embeddinggemma-300m", "unsloth/embeddinggemma-2"}
 )
 
 
 def _plan_prefers_llama_server(model: str) -> bool:
-    """Whether the picker should plan ``model`` on llama-server under auto.
-
-    The plan only: the save records the backend and the runtime follows that record, so a model configured
-    any other way (``RAG_EMBEDDING_MODEL``, a saved sentence-transformers plan) keeps its embedding space.
-    """
+    """Picker plan only: the runtime follows the saved record, so an env-configured model keeps its embedding space."""
     if model.strip().rstrip("/").lower() not in _LLAMA_SERVER_PREFERRED_MODELS:
         return False
-    # Settings resolves the model in effect for its status, and the runtime serves an unrecorded one on the
-    # hardware default, so planning it elsewhere would offer a download the runtime never opens.
+    # The runtime serves the unrecorded model in effect on the hardware default; another plan would be a dead download.
     if model == config.effective_embedding_model():
         return False
-    # A pinned GGUF repo would serve other weights under this name, and an explicit device setting already
-    # chose where torch runs.
+    # A pinned GGUF repo serves other weights; an explicit device already chose where torch runs.
     if config.gguf_repo_is_explicit() or config.embed_device_preference() != "auto":
         return False
     try:
