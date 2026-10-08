@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
-import { diskCleanupAgentPrompt } from "@/components/tauri/disk-space-prompt";
 import { LogDetails } from "@/components/tauri/log-details";
 import {
   installProgressMessage,
@@ -13,7 +12,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackendStatus } from "@/hooks/use-tauri-backend";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import type { CopySupportDiagnosticsResult } from "@/lib/tauri-diagnostics";
 
 import { AnimatePresence, motion } from "motion/react";
@@ -235,16 +233,6 @@ function DiskFullInstallDialog({
   onRetryInstall: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
-  const [copied, setCopied] = useState(false);
-  const [manualPrompt, setManualPrompt] = useState<string | null>(null);
-  const prompt = diskCleanupAgentPrompt(error);
-
-  async function copyPrompt() {
-    const ok = await copyToClipboard(prompt);
-    setCopied(ok);
-    setManualPrompt(ok ? null : prompt);
-  }
-
   return (
     <>
       <Logo />
@@ -259,23 +247,8 @@ function DiskFullInstallDialog({
         </p>
         <p className="mt-2 break-words text-xs text-muted-foreground">{error}</p>
         <p id="disk-full-body" className="mt-3 text-xs text-muted-foreground">
-          Free space, then try the install again. Or copy a prompt into Cursor
-          or another agent. It asks for the biggest files and safe caches, and
-          waits for you to choose before deleting anything.
+          Free some space, then try the install again.
         </p>
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Button variant="muted" size="hero" onClick={() => void copyPrompt()}>
-            {copied ? "Prompt copied" : "Copy cleanup prompt"}
-          </Button>
-        </div>
-        {manualPrompt && (
-          <textarea
-            readOnly
-            value={manualPrompt}
-            onFocus={(event) => event.currentTarget.select()}
-            className="mt-3 h-32 w-full resize-none rounded-lg border border-border/50 bg-muted/30 p-2 text-left font-mono text-ui-10 text-muted-foreground"
-          />
-        )}
       </div>
       <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
         <Button size="hero" onClick={onRetryInstall}>Try Again</Button>
