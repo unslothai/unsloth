@@ -545,8 +545,9 @@ function markNumber<Item extends { id: number }>(items: Item[], id: number | nul
   return index === -1 ? items.length + 1 : index + 1;
 }
 
+// Deep shadow and faint rim so it stands out on dark pages.
 const SURFACE =
-  "border border-border bg-background text-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.18)] dark:border-transparent dark:bg-neutral-800 dark:text-white dark:shadow-xl";
+  "border border-border bg-background text-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.18)] dark:border-white/10 dark:bg-neutral-800 dark:text-white dark:shadow-[0_12px_40px_-4px_rgba(0,0,0,0.85),0_4px_12px_-2px_rgba(0,0,0,0.6)]";
 
 /** Voice typing into a comment, as the composer's microphone does. */
 function useCommentDictation(draft: string, onDraft: (value: string) => void) {
