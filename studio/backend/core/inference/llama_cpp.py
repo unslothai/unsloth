@@ -27085,10 +27085,12 @@ class LlamaCppBackend:
                     # the GPU, and llama.cpp's fitter measures a --fit on launch at the emitted
                     # value. Manual pinned layers (--fit off) are the user's placement, where an
                     # unpriced larger buffer could OOM, so they are left alone. A GPU-only -ot
-                    # does not count for the same reason.
+                    # does not count for the same reason. A user --device none / cpu runs on
+                    # the CPU with nothing to stream, like the CPU fallback.
                     _moe_experts_on_host = bool(
                         not (gpu_memory_mode == "manual" and gpu_layers >= 0)
                         and not intent.cpu_fallback
+                        and not _device_selection_is_cpu(extra_args, os.environ)
                         and (use_fit or _expert_spill_places_tensors_on_cpu(extra_args, os.environ))
                     )
                     _spill_n_batch, _spill_n_ubatch = _moe_spill_batch_ubatch(

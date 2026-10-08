@@ -4067,6 +4067,33 @@ def test_an_override_raises_the_micro_batch_only_when_it_targets_the_host(
 
 
 @pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        (["--device", "none"], {}, []),
+        (["-dev", "none"], {}, []),
+        (["--device", "cpu"], {}, []),
+        (["--device=none"], {}, []),
+        ([], {"LLAMA_ARG_DEVICE": "none"}, []),
+        ([], {"LLAMA_ARG_DEVICE": "cpu"}, []),
+        # argv beats the env twin, so this one still runs on the GPU.
+        (["--device", "CUDA0"], {"LLAMA_ARG_DEVICE": "none"}, ["2048"]),
+    ],
+    ids = ["dev_none", "dev_short", "dev_cpu", "dev_inline", "env_none", "env_cpu", "argv_wins"],
+)
+def test_a_user_cpu_device_keeps_the_default_micro_batch(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    # Spilled, so the raise would otherwise fire: on the CPU there is nothing to stream.
+    monkeypatch.delenv("LLAMA_ARG_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize(
     "load_kwargs, env, expect_ub, expect_b",
     [
         (dict(extra_args = ["-ub", "1024"]), {}, ["1024"], []),
