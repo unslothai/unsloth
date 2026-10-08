@@ -15,6 +15,7 @@ import { isExternalModelId } from "../external-providers";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
 import { listStoredChatMessages } from "./chat-history-storage";
+import { restorableContextUsage } from "./context-usage-restore";
 import { orderBySelectedBranch } from "./message-order";
 
 // Per thread, not per module: in compare mode a hidden pane's history load would otherwise
@@ -68,7 +69,10 @@ function storedMessageToRunMessage(record: MessageRecord): ThreadMessage {
     id: record.id,
     createdAt: new Date(record.createdAt),
     role: "assistant",
-    content: content as Extract<ThreadMessage, { role: "assistant" }>["content"],
+    content: content as Extract<
+      ThreadMessage,
+      { role: "assistant" }
+    >["content"],
     status: { type: "complete", reason: "unknown" },
     metadata: {
       custom,
@@ -149,12 +153,13 @@ export async function refreshContextUsage(
   const store = useChatRuntimeStore.getState();
   const threadId = options?.threadId ?? store.activeThreadId;
   const checkpoint = store.params.checkpoint;
+  const contextLength = store.loadedContextLength;
 
   if (
     !checkpoint ||
     isExternalModelId(checkpoint) ||
     (!options?.afterModelLoad && store.modelLoading) ||
-    store.loadedContextLength == null
+    contextLength == null
   ) {
     return;
   }
@@ -176,6 +181,7 @@ export async function refreshContextUsage(
 
   const capturedThreadId = threadId ?? null;
   const capturedCheckpoint = checkpoint;
+  const capturedContextLength = contextLength;
 
   if (countsInFlight.has(capturedThreadId)) {
     retryAfterInFlight.set(capturedThreadId, options);
@@ -189,7 +195,9 @@ export async function refreshContextUsage(
   // supersedes this one; publishing after either puts another model's number on the bar.
   const stale = (): boolean =>
     superseded(capturedThreadId, generation) ||
-    useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint;
+    useChatRuntimeStore.getState().params.checkpoint !== capturedCheckpoint ||
+    useChatRuntimeStore.getState().loadedContextLength !==
+      capturedContextLength;
 
   countsInFlight.add(capturedThreadId);
   let published = false;
@@ -222,9 +230,41 @@ export async function refreshContextUsage(
       );
     }
 
-    // /chat/count_tokens always 503s on images and /apply-template swaps each for a marker.
-    // Declining before the hash keeps the base64 out of it and out of a request body that can
-    // reach megabytes, both synchronous on the UI thread.
+    // A local model id is intentionally not persisted in the frontend store, so after an app
+    // restart history can arrive while checkpoint is still empty. The history loader correctly
+    // declines to attribute model-scoped usage then; once status hydration calls this function,
+    // retry the exact snapshot before estimating the whole visible transcript. The same path
+    // protects a same-model reload from replacing exact post-compaction usage with that estimate.
+    const lastRunMessage = runMessages.at(-1);
+    const lastCustom = (
+      lastRunMessage?.metadata as { custom?: unknown } | undefined
+    )?.custom;
+    const restoredUsage =
+      !options?.invalidate && lastRunMessage?.role === "assistant"
+        ? restorableContextUsage(
+            lastCustom,
+            capturedCheckpoint,
+            capturedContextLength,
+          )
+        : null;
+    if (restoredUsage) {
+      if (stale()) {
+        return;
+      }
+      const current = useChatRuntimeStore.getState();
+      if (threadId) {
+        current.setThreadContextUsage(threadId, restoredUsage);
+      }
+      if (current.activeThreadId === capturedThreadId) {
+        current.setContextUsage(restoredUsage);
+      }
+      published = true;
+      return;
+    }
+
+    // /chat/count_tokens always 503s on images: /apply-template swaps each for a marker. Declining
+    // before the hash below keeps the base64 out of it and out of a request body that can reach
+    // megabytes, both synchronous on the UI thread.
     if (messagesContainImage(runMessages)) return;
 
     // The real request replays the newest user audio as audio_base64 but toOpenAIMessages has no
@@ -270,7 +310,8 @@ export async function refreshContextUsage(
     if (stale()) return;
     // The response type is a compile-time assertion only: anything else answering 200 would put
     // undefined on the bar and throw from toLocaleString.
-    if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens)) return;
+    if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens))
+      return;
     // The endpoint counts with whatever is resident, never the model asked for: a load from
     // another tab returns another tokenizer's total, which the checkpoint guards cannot see.
     if (countedModel != null && countedModel !== capturedCheckpoint) {
@@ -285,7 +326,11 @@ export async function refreshContextUsage(
     }
     // A run writes its own usage when it lands, so declining while one is live never loses a
     // number. A first turn has no thread id yet and files under "__default".
-    if (useChatRuntimeStore.getState().runningByThreadId[capturedThreadId ?? "__default"]) {
+    if (
+      useChatRuntimeStore.getState().runningByThreadId[
+        capturedThreadId ?? "__default"
+      ]
+    ) {
       return;
     }
     // The usage snapshot only sees a completion that WROTE usage, so a run stopped before
