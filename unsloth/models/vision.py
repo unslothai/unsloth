@@ -2784,6 +2784,7 @@ class FastBaseModel:
             auto_config = user_config
         _offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
         _offload_layers_requested = _offload_layers
+        _quantization_config_requested = kwargs.get("quantization_config")
         if _offload_layers and load_layers_to_host is None:
             _offload_layers = refuse_block_swap_load(
                 _offload_layers,
@@ -3745,6 +3746,8 @@ class FastBaseModel:
                 _offload_layers_requested,
                 device_map = device_map,
                 load_in_8bit = load_in_8bit,
+                quantization_config = _quantization_config_requested,
+                max_memory = kwargs.get("max_memory"),
             )
             raise
         finally:

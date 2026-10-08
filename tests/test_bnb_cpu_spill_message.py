@@ -74,6 +74,21 @@ def test_eight_bit_is_not_pointed_at_offload_layers():
     assert "load_in_4bit = True" in str(info.value)
 
 
+def test_a_callers_quantization_config_gets_a_hint_that_works():
+    from types import SimpleNamespace
+
+    with pytest.raises(ValueError) as info:
+        raise_if_bnb_cpu_spill(
+            _spill_error(), "m", quantization_config = SimpleNamespace(load_in_8bit = True)
+        )
+    assert "offload_layers" not in str(info.value)
+    with pytest.raises(ValueError) as info:
+        raise_if_bnb_cpu_spill(
+            _spill_error(), "m", quantization_config = SimpleNamespace(load_in_8bit = False)
+        )
+    assert "instead of a quantization_config" in str(info.value)
+
+
 def test_a_callers_own_dict_map_keeps_the_transformers_error():
     original = _spill_error()
     assert raise_if_bnb_cpu_spill(original, "m", device_map = {"model": 0, "lm_head": "cpu"}) is None

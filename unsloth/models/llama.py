@@ -2739,6 +2739,7 @@ class FastLlamaModel:
         user_config = kwargs.pop("config", None)
         offload_layers = legacy_offload_layers(kwargs, kwargs.pop("offload_layers", None))
         _offload_layers_requested = offload_layers
+        _quantization_config_requested = kwargs.get("quantization_config")
         offload_embedding = kwargs.pop("offload_embedding", False)
         if offload_embedding and fast_inference:
             if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
@@ -3368,6 +3369,8 @@ class FastLlamaModel:
                 _offload_layers_requested,
                 device_map = device_map,
                 load_in_8bit = load_in_8bit,
+                quantization_config = _quantization_config_requested,
+                max_memory = kwargs.get("max_memory"),
             )
             raise
         finally:

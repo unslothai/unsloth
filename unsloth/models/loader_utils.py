@@ -233,8 +233,10 @@ def raise_if_bnb_cpu_spill(
     offload_layers = None,
     device_map = None,
     load_in_8bit = False,
+    quantization_config = None,
+    max_memory = None,
 ):
-    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error, and for a caller's own dict map (its CPU entries are a choice, and transformers' advice is the relevant one), so the caller re-raises it unchanged. `offload_layers` is what the caller asked for, before any planner declined it."""
+    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error, and for a caller's own dict map (its CPU entries are a choice, and transformers' advice is the relevant one), so the caller re-raises it unchanged. `offload_layers`, `quantization_config` and `max_memory` are what the caller passed, before the loader added its own."""
     if not isinstance(error, ValueError) or not str(error).startswith(_BNB_CPU_SPILL_PREFIX):
         return
     if isinstance(device_map, dict):
@@ -242,16 +244,24 @@ def raise_if_bnb_cpu_spill(
     free = ""
     try:
         # The current card only: probing others would open a CUDA context on cards the caller may have withheld.
-        if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.is_available():
+        # A caller's max_memory may withhold this card; then the figure would be about the wrong one.
+        if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.is_available() and not max_memory:
             device = torch.cuda.current_device()
             free = (
                 f" (cuda:{device} has {torch.cuda.mem_get_info(device)[0] / 1024**3:.2f} GB free)"
             )
     except Exception:
         free = ""
-    if load_in_8bit:
+    if load_in_8bit or getattr(quantization_config, "load_in_8bit", False):
         # offload_layers supports 16-bit and 4-bit loads only.
         hint = "Load in 4-bit (load_in_4bit = True) to halve the weights, or load a smaller model."
+    elif quantization_config is not None:
+        # offload_layers refuses a quantization_config.
+        hint = (
+            'Pass load_in_4bit = True with `offload_layers = "auto"` instead of a '
+            "quantization_config to stream the layers the GPU cannot hold from host RAM, "
+            "or load a smaller model."
+        )
     elif offload_layers:
         hint = "Lower max_seq_length or the batch size, load a smaller model, or add a GPU."
     else:
