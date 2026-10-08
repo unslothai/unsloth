@@ -151,7 +151,10 @@ def test_float16_dense_head_after_float32_pooling():
     from sentence_transformers.models import Dense, Normalize, Pooling
 
     pooling = Pooling(word_embedding_dimension = 8, pooling_mode = "mean")
-    dense = Dense(in_features = 8, out_features = 4, bias = False).half()
+    torch.manual_seed(0)
+    dense = Dense(
+        in_features = 8, out_features = 4, bias = False, activation_function = torch.nn.Identity()
+    ).half()
     tokens = torch.randn(2, 5, 8, dtype = torch.float16)
     features = {"token_embeddings": tokens, "attention_mask": torch.ones(2, 5, dtype = torch.long)}
     out = Normalize()(dense(pooling(features)))

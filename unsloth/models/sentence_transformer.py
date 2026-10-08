@@ -3029,6 +3029,10 @@ class FastSentenceTransformer(FastModel):
                 )
 
                 peft_model = peft_get_peft_model(inner_model, lora_config)
+                # One GPU under the trainer, as FastModel.get_peft_model marks its models.
+                from ._utils import _mark_unsloth_disable_data_parallel
+
+                _mark_unsloth_disable_data_parallel(peft_model)
 
                 qat_scheme = kwargs.get("qat_scheme", None)
                 if qat_scheme is not None:
