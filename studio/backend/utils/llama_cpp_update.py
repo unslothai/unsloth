@@ -144,7 +144,8 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
 
 def _checkout_tag_build(binary: str, reported_commit: str) -> Optional[int]:
     """Build number of a source checkout from the ``bNNNN`` tag naming its HEAD, read from the git files (no git subprocess, no network): packed-refs (peeled entries included), loose refs/tags, and FETCH_HEAD, which is the only record setup.ps1's ``fetch --depth 1 origin bNNNN`` + ``checkout -B`` leaves. The commit the binary reports must be a prefix of HEAD, so a checkout moved after the build is not read as the binary's version. None on any mismatch or unreadable metadata."""
-    tags: list[tuple[str, str]] = []
+    # tag name -> commits it names; a loose ref replaces its packed entry, as in git.
+    tags: dict[str, set[str]] = {}
     packed: dict[str, str] = {}
     try:
         git_dir = next(
@@ -159,7 +160,7 @@ def _checkout_tag_build(binary: str, reported_commit: str) -> Optional[int]:
             for line in packed_refs.read_text(encoding = "utf-8").splitlines():
                 if line.startswith("^"):
                     if last_tag:
-                        tags.append((line[1:].strip(), last_tag))
+                        tags[last_tag].add(line[1:].strip())
                     continue
                 parts = line.split()
                 last_tag = None
@@ -167,7 +168,7 @@ def _checkout_tag_build(binary: str, reported_commit: str) -> Optional[int]:
                     packed[parts[1]] = parts[0]
                     if parts[1].startswith("refs/tags/"):
                         last_tag = parts[1][len("refs/tags/") :]
-                        tags.append((parts[0], last_tag))
+                        tags[last_tag] = {parts[0]}
         if head.startswith("ref:"):
             ref = head[4:].strip()
             loose = git_dir / ref
@@ -178,17 +179,15 @@ def _checkout_tag_build(binary: str, reported_commit: str) -> Optional[int]:
             )
         tags_dir = git_dir / "refs" / "tags"
         if tags_dir.is_dir():
-            tags.extend(
-                (f.read_text(encoding = "utf-8").strip(), f.name)
-                for f in tags_dir.iterdir()
-                if f.is_file()
-            )
+            for f in tags_dir.iterdir():
+                if f.is_file():
+                    tags[f.name] = {f.read_text(encoding = "utf-8").strip()}
         fetch_head = git_dir / "FETCH_HEAD"
         if fetch_head.is_file():
             for line in fetch_head.read_text(encoding = "utf-8").splitlines():
                 fm = re.match(r"([0-9a-fA-F]{40,64})\t[^\t]*\ttag '([^']+)'", line)
                 if fm:
-                    tags.append((fm.group(1), fm.group(2)))
+                    tags.setdefault(fm.group(2), set()).add(fm.group(1))
     except (OSError, UnicodeDecodeError, ValueError):
         return None
     head = head.lower()
@@ -198,8 +197,8 @@ def _checkout_tag_build(binary: str, reported_commit: str) -> Optional[int]:
         return None
     builds = [
         int(tm.group(1))
-        for sha, name in tags
-        if sha.lower() == head and (tm := re.fullmatch(r"b(\d+)", name))
+        for name, shas in tags.items()
+        if head in {sha.lower() for sha in shas} and (tm := re.fullmatch(r"b([0-9]{1,9})", name))
     ]
     builds = [n for n in builds if n > 1]
     return max(builds) if builds else None

@@ -131,6 +131,15 @@ def test_non_build_tag_is_unknown(tmp_path):
     assert upd._installed_build_number(exe) is None
 
 
+def test_loose_tag_overrides_stale_packed_tag(tmp_path):
+    # A full clone packs b11408 at HEAD; moving the tag writes a loose ref git reads instead.
+    dest = tmp_path / "llama.cpp"
+    _git("clone", "-q", _upstream(tmp_path, "b11408").as_uri(), str(dest))
+    _git("-C", str(dest), "tag", "-f", "b11408", "HEAD~1")
+    exe = _stub_server(dest, f"version: 1 ({_short(dest)})")
+    assert upd._installed_build_number(exe) is None
+
+
 def test_real_build_number_does_not_read_git(tmp_path, monkeypatch):
     exe = _stub_server(tmp_path / "llama.cpp", "version: 0.6.0 (build 11420, commit abc1234)")
     monkeypatch.setattr(upd, "_checkout_tag_build", lambda *a: pytest.fail("git metadata read"))
