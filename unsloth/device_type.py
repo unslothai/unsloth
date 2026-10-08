@@ -182,6 +182,47 @@ if DEVICE_TYPE == "hip":
             "Unsloth: gfx906 (MI50 / Radeon VII) detected - torch.compile disabled "
             "(community-maintained legacy GCN path)."
         )
+
+
+# Pre-Volta NVIDIA (Maxwell / Pascal, sm < 7.0): Inductor refuses to emit Triton for these
+# (GPUTooOldForTriton mid-training), while Unsloth's own Triton kernels still run, so train eagerly.
+def apply_pre_volta_compile_workaround(
+    major,
+    environ = None,
+    dynamo_config = None,
+) -> bool:
+    """Turn torch.compile off for compute capability < 7. An explicit TORCHDYNAMO_DISABLE wins.
+
+    The env vars alone miss regions torch.compile already wrapped while unsloth_zoo imported:
+    those read the Dynamo config per call, the env var only at wrap time (MoE hit this).
+    """
+    if major is None or major >= 7:
+        return False
+    if environ is None:
+        environ = os.environ
+    if environ.get("TORCHDYNAMO_DISABLE", "1") != "1":
+        return False
+    environ["TORCHDYNAMO_DISABLE"] = "1"
+    environ.setdefault("TORCH_COMPILE_DISABLE", "1")
+    environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
+    if dynamo_config is None:
+        import torch._dynamo
+        dynamo_config = torch._dynamo.config
+    dynamo_config.disable = True
+    return True
+
+
+if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
+    try:
+        _cuda_major = torch.cuda.get_device_capability()[0]
+    except Exception:
+        _cuda_major = None
+    if apply_pre_volta_compile_workaround(_cuda_major):
+        print(
+            "Unsloth: GPUs older than Volta (compute capability < 7.0) cannot run "
+            "torch.compile - training without it."
+        )
+    del _cuda_major
 if DEVICE_TYPE == "hip":
     try:
         import bitsandbytes
