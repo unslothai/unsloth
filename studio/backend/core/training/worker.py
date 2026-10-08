@@ -3428,10 +3428,16 @@ def run_mlx_training_process(
     try:
         try:
             if config.get("is_decision"):
-                # Its own pipeline, as on the torch path; unsloth picks the MLX backend.
-                _download_decision_checkpoint(event_queue, config)
-                from core.training.decision_trainer import run_decision_training
-                run_decision_training(event_queue, stop_queue, config)
+                # Its own pipeline, as on the torch path, behind the same security gate.
+                security_error = _model_load_security_error(
+                    config, model_load_target, _worker_hf_token(config)
+                )
+                if security_error:
+                    event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                else:
+                    _download_decision_checkpoint(event_queue, config)
+                    from core.training.decision_trainer import run_decision_training
+                    run_decision_training(event_queue, stop_queue, config)
             else:
                 _run_mlx_training(event_queue, stop_queue, config)
         finally:

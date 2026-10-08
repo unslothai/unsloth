@@ -1863,6 +1863,26 @@ def test_run_mlx_training_process_applies_side_effects_before_hardware_detection
     assert "MLX training requires Apple Silicon" in event["error"]
 
 
+def test_run_mlx_training_process_gates_a_decision_model_before_its_download(monkeypatch):
+    _load_trainer_module(monkeypatch, "mlx")
+    from core.training import worker
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(worker, "_validate_training_worker_config", lambda *args: True)
+    monkeypatch.setattr(worker, "_activate_transformers_version_or_warn", lambda *args: None)
+    monkeypatch.setattr(hw, "detect_hardware", lambda: None)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.MLX)
+    blocked = lambda config, target, token: {"error": f"blocked {target}"}
+    monkeypatch.setattr(worker, "_model_load_security_error", blocked)
+    monkeypatch.setattr(
+        worker, "_download_decision_checkpoint", lambda *args: pytest.fail("downloaded")
+    )
+    events = queue.Queue()
+    config = {"model_name": "org/clef", "is_decision": True}
+    worker.run_mlx_training_process(event_queue = events, stop_queue = queue.Queue(), config = config)
+    assert events.get_nowait()["error"] == "blocked org/clef"
+
+
 def test_run_mlx_training_process_rejects_untrainable_format_before_side_effects(monkeypatch):
     _load_trainer_module(monkeypatch, "mlx")
     from core.training import worker
