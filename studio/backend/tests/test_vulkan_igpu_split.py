@@ -191,6 +191,7 @@ def test_the_launch_hands_placement_back_wherever_it_cannot_price_it():
         "_sidecar_adapter_paths(extra_args)",
         '"kv_layer_weights"',
         '"compute_buffer_flat"',
+        'spill_inputs["ctx_compute_per_device"] + spill_inputs["soft_overhead"]',
         '"extra_gpu_bytes"',
         '"env_mmproj_bytes"',
     ):

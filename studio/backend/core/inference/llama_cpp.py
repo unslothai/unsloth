@@ -9257,13 +9257,13 @@ class LlamaCppBackend:
         layer_bytes.append(layout.lm_head_bytes + layout.other_resident_bytes)
         reserve = (
             spill_inputs["compute_buffer_flat"]
-            + spill_inputs["soft_overhead"]
             + spill_inputs["extra_gpu_bytes"]
             + int(spill_inputs.get("env_mmproj_bytes") or 0)
         )
         # Hybrid caches with no per-layer vector sit on 1 layer in N: a run can hold
         # one attention layer more than its uniform share.
-        per_device = spill_inputs["ctx_compute_per_device"]
+        # Every device holds its own context reserve, as in _planned_tensor_spill.
+        per_device = spill_inputs["ctx_compute_per_device"] + spill_inputs["soft_overhead"]
         if 0 < layout.n_attention_layers < n_blocks and len(kv_weights) == n_blocks:
             per_device += kv_total / layout.n_attention_layers
         mib = 1024 * 1024
