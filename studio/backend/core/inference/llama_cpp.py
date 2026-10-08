@@ -23990,6 +23990,30 @@ class LlamaCppBackend:
             # The canonical mode drives which drafter is downloaded, sized and
             # launched, so resolve it once before either branch can use it.
             _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
+            # #11308: DFlash2's candidate selector runs top_k over a vocab-split
+            # lm_head under --split-mode tensor, which aborts at startup on every
+            # shipped llama.cpp (ggml-org/llama.cpp#27819). Promoting a sidecar
+            # there crashes the load and the route retries on layer split, which
+            # loses to MTP on tensor split (57 vs 40 tok/s on 2x R9700). So when
+            # Auto has an MTP drafter to run instead, it neither fetches nor
+            # promotes DFlash under tensor. Without one, DFlash on layer split
+            # still beats tensor with no drafter, so that path is unchanged, as is
+            # an explicit "dflash" request.
+            _auto_tensor_split = _spec_canon == "auto" and _effective_tensor_parallel(
+                extra_args, tensor_parallel
+            )
+
+            def _auto_dflash_blocked_by_tensor() -> bool:
+                if not _auto_tensor_split:
+                    return False
+                if mtp_draft_path:
+                    return True
+                try:
+                    from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+                    return (read_gguf_nextn_predict_layers(model_path) or 0) > 0
+                except Exception:
+                    return False
+
             _unloadable_mtp_draft_path: Optional[str] = None
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
@@ -24101,6 +24125,7 @@ class LlamaCppBackend:
                     if (
                         not dflash_draft_path
                         and _spec_canon in ("auto", "dflash")
+                        and not _auto_dflash_blocked_by_tensor()
                         and not self._dspark_wins_auto(
                             binary = binary,
                             dspark_draft_path = dspark_draft_path,
@@ -24152,7 +24177,15 @@ class LlamaCppBackend:
                 and not _extra_args_set_spec_type(extra_args)
             ):
                 try:
-                    if _launch_caps(binary).get("supports_dflash"):
+                    if not _launch_caps(binary).get("supports_dflash"):
+                        pass
+                    elif _auto_dflash_blocked_by_tensor():
+                        logger.info(
+                            "Auto: DFlash sidecar available but tensor split is on; "
+                            "keeping tensor split with the MTP drafter "
+                            "(llama.cpp cannot run DFlash2 with --split-mode tensor yet)."
+                        )
+                    else:
                         _spec_canon = "dflash"
                         logger.info("Auto: DFlash sidecar available, using draft-dflash.")
                 except Exception as exc:
