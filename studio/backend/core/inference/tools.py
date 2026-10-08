@@ -15080,9 +15080,8 @@ _UNMEASURED_ROOM_MARGIN = 0.5
 _MIN_PAGE_CHARS = 2000
 # A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
-# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections stripped during conversion; 512 KB
-# still reaches article content.
-_MAX_FETCH_BYTES = 512 * 1024
+# Far above _MAX_PAGE_CHARS: news pages inline up to ~2.5 MB of styles and scripts before <body>.
+_MAX_FETCH_BYTES = 8 * 1024 * 1024
 # "%" is safe so an already-encoded URL is not re-encoded into %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"

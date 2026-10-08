@@ -404,6 +404,19 @@ def test_html_page_unaffected(monkeypatch):
     assert "non-text content" not in out and "binary content" not in out
 
 
+def test_article_after_a_large_inline_head_is_read(monkeypatch):
+    style = b".c{color:red}\n" * (2 * 1024 * 1024 // 14)
+    html = (
+        b"<html><head><style>"
+        + style
+        + b"</style></head><body><article><h1>Brightline files for bankruptcy</h1>"
+        + b"<p>The rail operator filed for Chapter 11 protection on Friday.</p></article></body></html>"
+    )
+    out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
+    assert "Brightline files for bankruptcy" in out
+    assert "Chapter 11 protection" in out
+
+
 def test_content_type_sanitized_in_message(monkeypatch):
     # Do not echo obs-folded header content into the model response.
     out = _fetch_with(monkeypatch, b"PK\x03\x04" * 500, "application/zip\r\n data: injected")
