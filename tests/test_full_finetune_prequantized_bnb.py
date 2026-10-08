@@ -21,20 +21,34 @@ class _Deserialize:
 
 
 class _FakeModel(torch.nn.Module):
-    def __init__(self, quant_method, conversions):
+    """Dequantizes like transformers 4.x: unguarded deletes of the quantization metadata."""
+
+    def __init__(
+        self,
+        quant_method,
+        conversions,
+        pre_quantized = True,
+    ):
         super().__init__()
         self.hf_quantizer = SimpleNamespace(
-            quantization_config = SimpleNamespace(quant_method = quant_method)
+            quantization_config = SimpleNamespace(quant_method = quant_method),
+            pre_quantized = pre_quantized,
         )
+        self.config = SimpleNamespace()  # an extracted text core's config carries none of it
+        self.is_loaded_in_4bit = True
         self._weight_conversions = conversions(self.hf_quantizer)
         self.dequantized_with = None
 
     def dequantize(self, dtype = None):
         self.dequantized_with = dtype
+        del self.hf_quantizer
+        del self.config.quantization_config
+        del self.config._pre_quantization_dtype
+        del self.quantization_method
         return self
 
 
-def test_bitsandbytes_is_dequantized_and_its_load_converter_dropped(capsys):
+def test_bitsandbytes_is_dequantized_and_its_load_state_cleared(capsys):
     kept = SimpleNamespace(operations = [object()])
     model = _FakeModel(
         "bitsandbytes",
@@ -43,13 +57,17 @@ def test_bitsandbytes_is_dequantized_and_its_load_converter_dropped(capsys):
     assert _dequantize_bitsandbytes_for_full_finetuning(model, torch.bfloat16, "local/dir") is True
     assert model.dequantized_with is torch.bfloat16
     assert model._weight_conversions == [kept]
+    assert model.is_loaded_in_4bit is False
     assert "local/dir" in capsys.readouterr().out
 
 
-def test_other_quant_methods_are_left_alone():
-    model = _FakeModel("fp8", lambda q: [SimpleNamespace(operations = [_Deserialize(q)])])
-    assert _dequantize_bitsandbytes_for_full_finetuning(model, torch.bfloat16) is False
-    assert model.dequantized_with is None and len(model._weight_conversions) == 1
+def test_other_quant_methods_and_on_the_fly_configs_are_left_alone():
+    for model in (
+        _FakeModel("fp8", lambda q: [SimpleNamespace(operations = [_Deserialize(q)])]),
+        _FakeModel("bitsandbytes", lambda q: [], pre_quantized = False),
+    ):
+        assert _dequantize_bitsandbytes_for_full_finetuning(model, torch.bfloat16) is False
+        assert model.dequantized_with is None and model.is_loaded_in_4bit is True
     assert _dequantize_bitsandbytes_for_full_finetuning(torch.nn.Linear(2, 2)) is False
 
 

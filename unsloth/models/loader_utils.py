@@ -2732,17 +2732,32 @@ def _dequantize_bitsandbytes_for_full_finetuning(
     """Full finetuning marks every weight trainable, which the uint8 / int8 weights of a pre-quantized bitsandbytes checkpoint (a local `-bnb-4bit` folder, which the name mapper cannot redirect) reject (#2613)."""
     quantizer = getattr(model, "hf_quantizer", None)
     method = getattr(getattr(quantizer, "quantization_config", None), "quant_method", None)
-    if str(getattr(method, "value", method)).lower() != "bitsandbytes":
+    # pre_quantized False = an explicit on-the-fly config; rounding then restoring would train a lossy copy.
+    if str(getattr(method, "value", method)).lower() != "bitsandbytes" or not getattr(
+        quantizer, "pre_quantized", True
+    ):
         return False
     print(
         f"Unsloth: `{model_name}` is a pre-quantized bitsandbytes checkpoint, so full finetuning "
         "dequantizes it to 16bit. For the best accuracy, full finetune the original 16bit model instead."
     )
+    # transformers < 5 deletes these unguarded, and a composite's extracted text core lacks some of them.
+    for owner, attribute in (
+        (model, "quantization_method"),
+        (model.config, "quantization_config"),
+        (model.config, "_pre_quantization_dtype"),
+    ):
+        if not hasattr(owner, attribute):
+            setattr(owner, attribute, None)
     # transformers < 5 has no dtype argument; prepare_model_for_training casts the weights anyway.
     if "dtype" in inspect.signature(model.dequantize).parameters:
         model.dequantize(dtype = dtype)
     else:
         model.dequantize()
+    # Left True by dequantize; the trainer's DataParallel gate and PEFT still read them.
+    for attribute in ("is_loaded_in_4bit", "is_loaded_in_8bit"):
+        if getattr(model, attribute, False):
+            setattr(model, attribute, False)
     # transformers 5 keeps the load's bnb deserialize converter, whose missing reverse op makes save_pretrained raise NotImplementedError.
     conversions = getattr(model, "_weight_conversions", None)
     if isinstance(conversions, list):
