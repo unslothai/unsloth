@@ -68,7 +68,16 @@ def fake_windows(monkeypatch):
     monkeypatch.setattr(os, "cpu_count", lambda: 32)
     monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising = False)
     monkeypatch.setattr(ctypes, "CDLL", fake_cdll)
-    monkeypatch.setattr(sys, "meta_path", list(sys.meta_path))
+    # On a real Windows host importing a worker module has already installed the hook; start from none.
+    monkeypatch.setattr(
+        sys,
+        "meta_path",
+        [
+            finder
+            for finder in sys.meta_path
+            if not getattr(finder, cpu_threads._OPENBLAS_CAP_SENTINEL, False)
+        ],
+    )
     calls.loaded = loaded
     return calls
 
