@@ -601,6 +601,7 @@ export const sv = {
     },
   },
   common: {
+    duplicate: "Duplicera",
     cancel: "Avbryt",
     close: "Stäng",
     delete: "Ta bort",
@@ -1272,6 +1273,8 @@ export const sv = {
       title: "Sandlåda",
       description:
         "Om verktygsanrop för Python och Terminal körs i en OS-sandlåda på den här datorn.",
+      docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen för sandlådan",
       toolsSection: "Den här datorn",
       refresh: "Uppdatera",
       python: "Python",
@@ -2436,6 +2439,7 @@ export const sv = {
         "Det gick inte att läsa in alla kvantiseringar. Kommandot använder det tillgängliga modellvärdet.",
       generatedCommand: "Genererat kommando",
       docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen för unsloth start",
       agentDocs: "Öppna installationsdokumentation för {agent}",
       copyGeneratedCommand: "Kopiera genererat kommando",
       automaticSettingsNote:
@@ -2997,6 +3001,8 @@ export const sv = {
       revoking: "Återkallar ...",
       decisionApi: {
         title: "Decision API",
+        docs: "Dokumentation",
+        docsLabel: "Öppna dokumentationen för Decision API",
         description:
           "Besvara ja/nej-frågor, flervalsfrågor och poängfrågor om text med en modell på denna dator eller en beslutsmodell från Anslutningar. Fungerar med TypeSafe SDK.",
         enable: "Hantera begäranden",
@@ -3617,6 +3623,11 @@ export const sv = {
       readMore: "Läs mer",
     },
     training: {
+      duplicateFailed: "Det gick inte att duplicera körningen",
+      duplicateDraftChanged:
+        "Träningsinställningarna ändrades under inläsningen. Försök duplicera igen.",
+      duplicateNoModel:
+        "Den här körningen har ingen sparad modellkonfiguration.",
       startTraining: "Starta träning",
       starting: "Startar ...",
       loadingModel: "Läser in modell ...",

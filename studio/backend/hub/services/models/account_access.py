@@ -268,8 +268,22 @@ def join_resident(modality: str) -> None:
     if not policy.installation_has_managed_accounts():
         return
     require_live_account()
+    # Seed the loader only with no record (pre-accounts); an empty one means it was retired.
+    loader = _resident_loader(modality)
     with _sharers_lock:
+        if modality not in _resident_sharers and loader is not None:
+            _resident_sharers[modality] = {loader}
         _resident_sharers.setdefault(modality, set()).add(current_account_id())
+
+
+def _resident_loader(modality: str) -> str | None:
+    """The publish record (zero-VRAM residents drop the GPU claim), else the GPU claim."""
+    recorded = _resident_accounts.get(modality)
+    if recorded is not None:
+        return recorded[0]
+    from core.inference import gpu_arbiter
+
+    return gpu_arbiter.owner_account() if gpu_arbiter.current_owner() == modality else None
 
 
 def release_shared_resident(modality: str) -> bool:
@@ -366,6 +380,15 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
                 account, references = prior
         return account != current_account_id() or reference not in references
     return False
+
+
+def joins_resident_runtime(modality: str, reference: str | None = None) -> bool:
+    """A managed caller that did not load the resident: an ordinary load joins it (#12365)."""
+    if resident_hidden(modality, reference):
+        return True
+    if not managed_account() or not resident_shared_with(modality, current_account_id()):
+        return False
+    return _resident_loader(modality) != current_account_id()
 
 
 def hidden_resident_response():

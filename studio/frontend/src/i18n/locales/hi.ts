@@ -511,6 +511,7 @@ export const hi = {
     },
   },
   common: {
+    duplicate: "डुप्लिकेट करें",
     cancel: "रद्द करें",
     close: "बंद करें",
     delete: "हटाएँ",
@@ -1165,6 +1166,8 @@ export const hi = {
     sandbox: {
       title: "सैंडबॉक्स",
       description: "क्या इस कंप्यूटर पर Python और टर्मिनल टूल कॉल OS सैंडबॉक्स के अंदर चलती हैं।",
+      docs: "दस्तावेज़",
+      docsLabel: "सैंडबॉक्स दस्तावेज़ खोलें",
       toolsSection: "यह कंप्यूटर",
       refresh: "रीफ़्रेश करें",
       python: "Python",
@@ -2263,6 +2266,7 @@ export const hi = {
         "सभी क्वांटाइज़ेशन लोड नहीं हो सके। कमांड उपलब्ध मॉडल मान का उपयोग करेगा।",
       generatedCommand: "बनाया गया कमांड",
       docs: "दस्तावेज़",
+      docsLabel: "unsloth start दस्तावेज़ खोलें",
       agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
       copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2795,6 +2799,8 @@ export const hi = {
       revoking: "रद्द किया जा रहा है...",
       decisionApi: {
         title: "निर्णय API",
+        docs: "दस्तावेज़",
+        docsLabel: "निर्णय API दस्तावेज़ खोलें",
         description: "इस मशीन के मॉडल या कनेक्शन के किसी निर्णय मॉडल से टेक्स्ट पर हाँ/नहीं, बहुविकल्पी और स्कोर वाले सवालों के जवाब दें। TypeSafe SDK के साथ काम करता है।",
         enable: "अनुरोधों का जवाब दें",
         enableDescription: "/v1/systemone चलाता है। चालू करने पर मॉडल डाउनलोड होता है।",
@@ -3405,6 +3411,10 @@ export const hi = {
       readMore: "और पढ़ें",
     },
     training: {
+      duplicateFailed: "रन डुप्लिकेट करने में विफल",
+      duplicateDraftChanged:
+        "लोड करते समय ट्रेनिंग सेटिंग्स बदल गईं। फिर से डुप्लिकेट करने का प्रयास करें।",
+      duplicateNoModel: "इस रन में कोई सहेजा गया मॉडल कॉन्फ़िगरेशन नहीं है।",
       startTraining: "ट्रेनिंग शुरू करें",
       starting: "शुरू हो रहा है...",
       loadingModel: "मॉडल लोड हो रहा है...",

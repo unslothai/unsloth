@@ -584,6 +584,7 @@ export const he = {
     },
   },
   common: {
+    duplicate: "שכפול",
     cancel: "ביטול",
     close: "סגירה",
     delete: "מחיקה",
@@ -1244,6 +1245,8 @@ export const he = {
       title: "ארגז חול",
       description:
         "האם קריאות לכלי Python ו-Terminal רצות בתוך ארגז חול של מערכת ההפעלה במחשב זה.",
+      docs: "תיעוד",
+      docsLabel: "פתח את תיעוד ארגז החול",
       toolsSection: "מחשב זה",
       refresh: "רענון",
       python: "Python",
@@ -2358,6 +2361,7 @@ export const he = {
         "לא ניתן לטעון את כל הקוונטיזציות. הפקודה תשתמש בערך המודל הזמין.",
       generatedCommand: "פקודה שנוצרה",
       docs: "תיעוד",
+      docsLabel: "פתח את התיעוד של unsloth start",
       agentDocs: "פתח תיעוד הגדרה של {agent}",
       copyGeneratedCommand: "העתק פקודה שנוצרה",
       automaticSettingsNote:
@@ -2898,6 +2902,8 @@ export const he = {
       revoking: "מבטל...",
       decisionApi: {
         title: "ממשק API להחלטות",
+        docs: "תיעוד",
+        docsLabel: "פתח את התיעוד של ממשק ה-API להחלטות",
         description:
           "ענה על שאלות כן/לא, רב-ברירה ודירוג לגבי טקסט באמצעות מודל במחשב זה או מודל החלטות מ'חיבורים'. עובד עם TypeSafe SDK.",
         enable: "הגש בקשות",
@@ -3496,6 +3502,9 @@ export const he = {
       readMore: "קרא עוד",
     },
     training: {
+      duplicateFailed: "שכפול ההרצה נכשל",
+      duplicateDraftChanged: "הגדרות האימון השתנו במהלך הטעינה. נסה לשכפל שוב.",
+      duplicateNoModel: "להרצה זו אין תצורת מודל שמורה.",
       startTraining: "התחל אימון",
       starting: "מתחיל...",
       loadingModel: "טוען מודל...",

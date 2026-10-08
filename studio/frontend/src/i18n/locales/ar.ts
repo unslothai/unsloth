@@ -508,6 +508,7 @@ export const ar = {
     },
   },
   common: {
+    duplicate: "تكرار",
     cancel: "إلغاء",
     close: "إغلاق",
     delete: "حذف",
@@ -1162,6 +1163,8 @@ export const ar = {
     sandbox: {
       title: "وضع الحماية",
       description: "ما إذا كانت استدعاءات أدوات Python والطرفية تعمل داخل وضع حماية نظام التشغيل على هذا الكمبيوتر.",
+      docs: "التوثيق",
+      docsLabel: "فتح توثيق وضع الحماية",
       toolsSection: "هذا الكمبيوتر",
       refresh: "تحديث",
       python: "Python",
@@ -2260,6 +2263,7 @@ export const ar = {
         "تعذّر تحميل جميع أنواع التكميم. سيستخدم الأمر قيمة النموذج المتاحة.",
       generatedCommand: "الأمر المُنشأ",
       docs: "التوثيق",
+      docsLabel: "فتح توثيق unsloth start",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2789,6 +2793,8 @@ export const ar = {
       revoking: "جارٍ الإلغاء...",
       decisionApi: {
         title: "واجهة القرارات البرمجية",
+        docs: "التوثيق",
+        docsLabel: "فتح توثيق واجهة القرارات البرمجية",
         description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج على هذا الجهاز أو نموذج قرارات من الاتصالات. يعمل مع حزمة TypeSafe.",
         enable: "خدمة الطلبات",
         enableDescription: "يقدّم /v1/systemone. عند التشغيل يُنزَّل النموذج.",
@@ -3398,6 +3404,10 @@ export const ar = {
       readMore: "اقرأ المزيد",
     },
     training: {
+      duplicateFailed: "تعذّر تكرار العملية",
+      duplicateDraftChanged:
+        "تغيّرت إعدادات التدريب أثناء التحميل. حاول التكرار مرة أخرى.",
+      duplicateNoModel: "لا تحتوي هذه العملية على إعدادات نموذج محفوظة.",
       startTraining: "بدء التدريب",
       starting: "جارٍ البدء...",
       loadingModel: "جارٍ تحميل النموذج...",

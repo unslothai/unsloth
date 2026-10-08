@@ -13222,6 +13222,25 @@ def _estimate_gguf_required_gb(
             and not _extras_own_drafter
             and not _draft_pinned_to_cpu
         )
+        # Mirrors load_model's #11308 rule: Auto on tensor split runs a loadable MTP sidecar, not DFlash.
+        if _auto_dflash:
+            from core.inference.llama_server_args import _effective_tensor_parallel
+            from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+
+            _tp_mtp = getattr(config, "gguf_mtp_file", None)
+            _tp_main = getattr(config, "gguf_file", None)
+            if (
+                _tp_mtp
+                and _effective_tensor_parallel(llama_extra_args, tensor_parallel)
+                and Path(_tp_mtp).is_file()
+                and not (_tp_main and (read_gguf_nextn_predict_layers(str(_tp_main)) or 0) > 0)
+                and _mtp_drafter_loads_standalone(str(_tp_mtp))
+            ):
+                try:
+                    if LlamaCppBackend.probe_server_capabilities().get("mtp_token"):
+                        _auto_dflash = False
+                except Exception:
+                    pass
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:
@@ -13886,6 +13905,7 @@ def _gguf_resident_file_gb(
     speculative_type: Optional[str] = None,
     disable_vision: bool = False,
     local_only: bool = False,
+    tensor_parallel: bool = False,
 ) -> Optional[float]:
     """GB of files a launch would make resident: weights, projector, drafter.
 
@@ -13911,7 +13931,7 @@ def _gguf_resident_file_gb(
     )
     # In the key: a local-only answer served to the admission guard would drop a
     # remote drafter it must charge for.
-    key = (*key, local_only)
+    key = (*key, local_only, bool(tensor_parallel))
     now = time.monotonic()
     hit = _estimate_files_cache.get(key)
     if hit is not None and now - hit[0] < _ESTIMATE_FILES_TTL_SECONDS:
@@ -13923,6 +13943,7 @@ def _gguf_resident_file_gb(
         disable_vision = disable_vision,
         hf_token = hf_token,
         local_only = local_only,
+        tensor_parallel = tensor_parallel,
     )
     required_gb = _estimate_gguf_required_gb(config, max_seq_length = 0, **priced)
     if required_gb is None:
@@ -14510,6 +14531,7 @@ def _gguf_memory_breakdown(
         # No Hub listing behind a slider: a --spec-draft-hf repo is left uncharged here
         # and marked below, rather than costing a model_info per settings change.
         local_only = True,
+        tensor_parallel = tensor_parallel,
     )
     if files_gb is None:
         return None
@@ -14546,6 +14568,7 @@ def _gguf_memory_breakdown(
         speculative_type = speculative_type,
         disable_vision = disable_vision,
         local_only = True,
+        tensor_parallel = tensor_parallel,
     )
 
     def _files_bytes_with(extra: tuple[str, ...]) -> Optional[int]:
@@ -18275,7 +18298,17 @@ async def _load_model_impl(
                 == tuple(request._gguf_companion_roots)
                 and getattr(llama_backend, "_openai_gguf_companion_state", ())
                 == gguf_companion_state
-                and llama_backend.adopt_load_intent_if_matched(intent)
+                and (
+                    llama_backend.adopt_load_intent_if_matched(intent)
+                    # Another account's capacity mismatch is its defaults, not a reconfig (#12365).
+                    or (
+                        replacing
+                        and account_access.joins_resident_runtime(
+                            "chat", llama_backend.model_identifier
+                        )
+                        and llama_backend.components_match_intent(intent)
+                    )
+                )
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 return None
@@ -36428,7 +36461,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             _direct_llama_request_started()
             try:
                 req = client.build_request(
-                    "POST", target_url, json = upstream_body, headers = {"Connection": "close"}
+                    "POST",
+                    target_url,
+                    json = upstream_body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 )
                 first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 # Same event the relay loop polls, so a forced swap ends the request during prefill
@@ -36575,6 +36611,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 resp = await _client.post(
                     target_url,
                     json = body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                     timeout = _llama_non_streaming_generation_timeout(),
                 )
             except httpx.RequestError:
@@ -37201,6 +37238,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             resp = await _client.post(
                 target_url,
                 json = body,
+                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
             )
         except httpx.RequestError:
@@ -38844,7 +38882,10 @@ async def _responses_stream(
         disconnect_event = cancel_event
         try:
             req = client.build_request(
-                "POST", target_url, json = body, headers = {"Connection": "close"}
+                "POST",
+                target_url,
+                json = body,
+                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
             )
             first_token_deadline = time.monotonic() + _first_token_timeout_s()
             try:
@@ -43146,7 +43187,12 @@ async def _anthropic_passthrough_stream(
         try:
             url = target_url
             try:
-                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
+                req = client.build_request(
+                    "POST",
+                    url,
+                    json = body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+                )
                 first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
@@ -43157,7 +43203,12 @@ async def _anthropic_passthrough_stream(
                 url = await _passthrough_retry_url(llama_backend, exc)
                 if url is None:
                     raise
-                req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
+                req = client.build_request(
+                    "POST",
+                    url,
+                    json = body,
+                    headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+                )
                 first_token_deadline = time.monotonic() + _first_token_timeout_s()
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
@@ -43377,6 +43428,7 @@ async def _anthropic_passthrough_non_streaming(
             response = await _client.post(
                 target_url,
                 json = payload_body,
+                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 timeout = _llama_non_streaming_generation_timeout(),
             )
         except httpx.RequestError:

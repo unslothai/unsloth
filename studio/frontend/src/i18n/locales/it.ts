@@ -467,6 +467,7 @@ export const it = {
     queueingHintShared: "La coda viene mantenuta.",
   },
   common: {
+    duplicate: "Duplica",
     cancel: "Annulla",
     close: "Chiudi",
     delete: "Elimina",
@@ -1122,6 +1123,8 @@ export const it = {
     sandbox: {
       title: "Sandbox",
       description: "Indica se le chiamate agli strumenti Python e Terminale vengono eseguite in una sandbox del sistema su questo computer.",
+      docs: "Documentazione",
+      docsLabel: "Apri la documentazione della sandbox",
       toolsSection: "Questo computer",
       refresh: "Aggiorna",
       python: "Python",
@@ -2250,6 +2253,7 @@ export const it = {
         "Impossibile caricare tutte le quantizzazioni. Il comando userà il valore del modello disponibile.",
       generatedCommand: "Comando generato",
       docs: "Documentazione",
+      docsLabel: "Apri la documentazione di unsloth start",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2792,6 +2796,8 @@ export const it = {
       revoking: "Revoca in corso...",
       decisionApi: {
         title: "API decisionale",
+        docs: "Documentazione",
+        docsLabel: "Apri la documentazione dell'API decisionale",
         description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello su questo computer o un modello decisionale dalle Connessioni. Funziona con l'SDK di TypeSafe.",
         enable: "Rispondi alle richieste",
         enableDescription: "Gestisce /v1/systemone. Attivandolo si scarica il modello.",
@@ -3513,6 +3519,11 @@ export const it = {
       configTooLarge:
         "La configurazione dell'addestramento è troppo grande (massimo 1 MiB).",
       failedToSaveConfig: "Salvataggio della configurazione non riuscito",
+      duplicateFailed: "Impossibile duplicare il run",
+      duplicateDraftChanged:
+        "Le impostazioni dell'addestramento sono cambiate durante il caricamento. Riprova a duplicare il run.",
+      duplicateNoModel:
+        "Questo run non ha una configurazione del modello salvata.",
       startTraining: "Avvia l'addestramento",
       starting: "Avvio...",
       loadingModel: "Caricamento del modello...",

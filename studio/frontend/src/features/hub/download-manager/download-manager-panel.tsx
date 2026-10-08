@@ -33,6 +33,7 @@ import {
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
+import { assetLabel } from "./required-assets";
 
 function createOrderedJobKeysSelector(): (state: {
   jobs: Record<string, ManagedDownload>;
@@ -94,7 +95,14 @@ function variantSuffix(job: ManagedDownload): string {
     const isModelFile =
       job.checkpoint ??
       job.scopedFiles?.some((file) => file.toLowerCase().endsWith(".gguf"));
-    return ` · ${isModelFile ? "Model file" : "Required assets"}`;
+    return ` · ${
+      isModelFile
+        ? "Model file"
+        : assetLabel(
+            { repoId: job.repoId, files: job.scopedFiles, bytes: 0 },
+            "Required assets",
+          )
+    }`;
   }
   return job.variant ? ` · ${job.variant}` : "";
 }
@@ -297,7 +305,7 @@ export function DownloadManagerPanel({
               <DownloadRow key={jobKey} jobKey={jobKey} />
             ))}
             {queued.map((entry, i) => <li key={`${entry.planId}:${i}`} className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
-              <span className="truncate text-ui-12p5 font-medium">{entry.repoId}<span className="text-muted-foreground"> · {entry.checkpoint !== false ? "Model file" : "Required assets"}</span></span>
+              <span className="truncate text-ui-12p5 font-medium">{entry.repoId}<span className="text-muted-foreground"> · {entry.checkpoint !== false ? "Model file" : assetLabel(entry, "Required assets")}</span></span>
               <span className="text-ui-11 text-muted-foreground">Queued</span>
             </li>)}
           </ul>

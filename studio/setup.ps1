@@ -2318,7 +2318,8 @@ function Invoke-BoundedPythonProbe {
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $PythonExe
-        $psi.Arguments = "-c `"$Code`""
+        # -I: the stale-venv probe runs before Enter-StudioVenv drops PYTHONPATH (#11980).
+        $psi.Arguments = "-I -c `"$Code`""
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false
@@ -7725,9 +7726,11 @@ function Enter-StudioVenv {
         $env:VIRTUAL_ENV = $VenvDir
         $env:PATH = (Join-Path $VenvDir "Scripts") + ";" + $env:PATH
         Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
         return
     }
     . $ActivateScript
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 }
 Enter-StudioVenv
 Assert-VenvActivated -VenvDir $VenvDir
