@@ -172,7 +172,10 @@ test("compile errors become error events with the original line and column", () 
     "App.tsx",
   );
   const errors: string[] = [];
-  const script = /<script\b[^>]*>([\s\S]*?)<\/script\s*>/i.exec(html)?.[1] ?? "";
+  // Plain slicing: the page holds exactly one script, and its message JSON escapes every `<`.
+  const lower = html.toLowerCase();
+  const scriptStart = lower.indexOf(">", lower.indexOf("<script")) + 1;
+  const script = html.slice(scriptStart, lower.indexOf("</script", scriptStart));
   vm.runInNewContext(script, {
     ErrorEvent: FakeErrorEvent,
     window: { dispatchEvent: (event: { init: { message: string } }) => errors.push(event.init.message) },
@@ -181,5 +184,5 @@ test("compile errors become error events with the original line and column", () 
     "Compile error at line 3, column 7: Expected `;` but found `</script>`",
     "Compile error: Unexpected token",
   ]);
-  assert.equal(html.match(/<\/script\s*>/gi)?.length, 1);
+  assert.equal(lower.split("</script").length - 1, 1);
 });
