@@ -1425,6 +1425,77 @@ def _dynamic_cache_choice(kwargs):
     return requested
 
 
+def _static_cache_bytes(model, input_ids, kwargs):
+    """Bytes the static KV cache transformers preallocates for this call, or None when it cannot
+    be sized. Worst case length (prompt + max_new_tokens), whatever length the reply turns out."""
+    config = model.config
+    if getattr(config, "is_encoder_decoder", False) or kwargs.get("past_key_values") is not None:
+        return None
+    text_config = config.get_text_config(decoder = True)
+    generation_config = kwargs.get("generation_config") or model.generation_config
+    max_new_tokens = kwargs.get(
+        "max_new_tokens", getattr(generation_config, "max_new_tokens", None)
+    )
+    if max_new_tokens is not None:
+        length = input_ids.shape[1] + max_new_tokens
+    else:
+        length = kwargs.get("max_length", getattr(generation_config, "max_length", None))
+    if type(length) is not int:
+        return None
+    length = max(length, getattr(model, "_previous_max_cache_length", -1))
+    copies = max(
+        kwargs.get("num_beams", getattr(generation_config, "num_beams", 1)) or 1,
+        kwargs.get("num_return_sequences", getattr(generation_config, "num_return_sequences", 1))
+        or 1,
+    )
+    n_heads = text_config.num_attention_heads
+    kv_heads = getattr(text_config, "num_key_value_heads", None) or n_heads
+    head_dim = getattr(text_config, "head_dim", None) or text_config.hidden_size // n_heads
+    window = getattr(text_config, "sliding_window", None)
+    layer_types = getattr(text_config, "layer_types", None) or (
+        ["full_attention"] * text_config.num_hidden_layers
+    )
+    tokens = 0
+    for layer_type in layer_types:
+        if layer_type in ("sliding_attention", "chunked_attention") and type(window) is int:
+            tokens += min(length, window)
+        elif layer_type == "full_attention":
+            tokens += length
+    itemsize = torch.empty((), dtype = model.dtype).element_size()
+    return 2 * input_ids.shape[0] * copies * kv_heads * head_dim * itemsize * tokens
+
+
+def _static_cache_does_not_fit(model, input_ids, kwargs):
+    """True when the preallocated static cache would take over half the memory this device has
+    left; the rest is for prefill activations and logits. Fails open: unknown keeps static."""
+    try:
+        device = model.device
+        if device.type != "cuda":
+            return False
+        device_map = getattr(model, "hf_device_map", None)
+        if isinstance(device_map, dict) and len(set(map(str, device_map.values()))) > 1:
+            return False
+        need = _static_cache_bytes(model, input_ids, kwargs)
+        if need is None:
+            return False
+        free = torch.cuda.mem_get_info(device)[0]
+        if need <= free // 2:
+            return False
+        # memory_stats costs ~70 us a call, so blocks the allocator holds unused are only
+        # counted when the driver's free memory alone is not enough.
+        free += torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+    except Exception:
+        return False
+    if need <= free // 2:
+        return False
+    logger.warning_once(
+        f"Unsloth: A static KV cache for this generate call needs {need / 1024**3:.1f} GB, "
+        f"but only {free / 1024**3:.1f} GB is free. Using a dynamic cache instead; "
+        "lower max_new_tokens to keep the static cache."
+    )
+    return True
+
+
 def _uses_flash_attention_for_generation(config):
     language_config_names = (
         "text_config",
@@ -1701,6 +1772,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     force_dynamic_cache = kwargs.get(
         "past_key_values"
     ) is None and _needs_bidirectional_multimodal_mask(self, kwargs)
+    # A static cache is sized for the longest reply up front, so on a tight or unified memory
+    # device it can OOM where a growing cache would not (#2590).
+    if not force_dynamic_cache and cache_implementation is not None:
+        force_dynamic_cache = _static_cache_does_not_fit(self, input_ids, kwargs)
     if force_dynamic_cache:
         cache_implementation = None
         dynamic_implementation = _dynamic_cache_choice(kwargs)
