@@ -9,6 +9,7 @@ over route -> orchestrator cmd -> worker gen_kwargs.
 """
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -472,3 +473,54 @@ def test_both_orchestrator_entry_points_forward_the_clip_into_the_command():
     with pytest.raises(_Built):
         list(o.generate_with_adapter_control(use_adapter = True, messages = turn, video = "AAAA"))
     assert [kw["video_b64"] for kw in built] == ["AAAA", "AAAA"]
+
+
+def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serves_it():
+    from core.inference.orchestrator import InferenceOrchestrator
+    from core.inference.worker import _handle_generate, _handle_resolve_prompt, _ResidentBatch
+
+    class _Queue(list):
+        put = list.append
+
+    class _Built(Exception):
+        pass
+
+    o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._gen_lock, o._unload_pending, o.active_model_name = threading.Lock(), False, "m"
+    o._ensure_subprocess_alive = lambda: True
+    o._stop_ledger, o.models = SimpleNamespace(read_by_worker = lambda: True), {}
+    built = []
+    real_build = o._build_generate_cmd
+    o._build_generate_cmd = lambda *a, **kw: built.append(real_build(*a, **kw)) or (
+        _ for _ in ()
+    ).throw(_Built())
+    with pytest.raises(_Built):
+        list(o.generate_completion([5, 6], max_new_tokens = 3, penalty_window = 0))
+    cmd = built[0]
+    assert (cmd["messages"], cmd["prompt_ids"], cmd["penalty_window"]) == ([], [5, 6], 0)
+    # A chat batch would render it as messages.
+    assert _ResidentBatch.unavailable_reason(SimpleNamespace(_refused = ()), cmd)
+
+    class _MLX:
+        last_generation_stats = None
+
+        def generate_completion(self, prompt_ids, **kwargs):
+            self.received = (prompt_ids, kwargs)
+            return iter(["x"])
+
+        def resolve_completion_prompt(self, prompt):
+            raise ValueError("Prompt contains invalid tokens.")
+
+    chat = SimpleNamespace(last_generation_stats = None)  # no raw-prompt capability
+    mlx, queue = _MLX(), _Queue()
+    _handle_generate(mlx, cmd, queue, threading.Event())
+    assert mlx.received[0] == [5, 6] and mlx.received[1]["penalty_window"] == 0
+    assert [item["type"] for item in queue] == ["token", "gen_done"]
+    queue.clear()
+    _handle_generate(chat, cmd, queue, threading.Event())
+    assert [item["type"] for item in queue] == ["gen_error"]
+    assert "raw-prompt completions" in queue[0]["error"]
+    for backend, invalid in ((mlx, True), (chat, None)):
+        queue.clear()
+        _handle_resolve_prompt(backend, {"request_id": "r", "prompt": [10**9]}, queue)
+        assert queue[0]["error"] and queue[0].get("invalid") is invalid

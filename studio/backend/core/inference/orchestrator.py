@@ -1429,6 +1429,8 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        prompt_ids: Optional[list] = None,
+        penalty_window: Optional[int] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1477,6 +1479,10 @@ class InferenceOrchestrator:
             cmd["tool_protocol_active"] = tool_protocol_active
         if diffusion_frames and not rows:
             cmd["diffusion_frames"] = True
+        if prompt_ids is not None:
+            cmd["prompt_ids"] = list(prompt_ids)
+        if penalty_window is not None:
+            cmd["penalty_window"] = penalty_window
         return cmd
 
     def _consume_token_stream(
@@ -1725,6 +1731,8 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        prompt_ids: Optional[list] = None,
+        penalty_window: Optional[int] = None,
     ) -> Generator[Any, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -1782,6 +1790,8 @@ class InferenceOrchestrator:
             rows = rows,
             video_b64 = video,
             diffusion_frames = diffusion_frames,
+            prompt_ids = prompt_ids,
+            penalty_window = penalty_window,
         )
 
         mailbox = _WorkerMailbox(self._proc)
@@ -2750,26 +2760,9 @@ class InferenceOrchestrator:
                     "preserve_thinking": preserve_thinking,
                 }
             )
-            deadline = time.monotonic() + timeout
-            resp = None
-            while time.monotonic() < deadline:
-                candidate = read_one(timeout = min(1.0, deadline - time.monotonic()))
-                if candidate is None:
-                    if not self._ensure_subprocess_alive():
-                        # A count takes no part in the claim bookkeeping.
-                        raise RuntimeError(
-                            self._subprocess_crash_message(
-                                "count", with_worker_output = self._owns_worker(None)
-                            )
-                        )
-                    continue
-                # _direct_reader already drops a reply whose mailbox is gone; this is the backstop.
-                if (
-                    candidate.get("type") == "count_tokens_response"
-                    and candidate.get("request_id") == request_id
-                ):
-                    resp = candidate
-                    break
+            resp = self._await_reply(
+                read_one, request_id, "count_tokens_response", "count", timeout
+            )
             if resp is None:
                 raise RuntimeError("Timed out counting tokens")
         finally:
@@ -2967,6 +2960,79 @@ class InferenceOrchestrator:
         except Exception as exc:
             logger.warning("Could not preflight the context window: %s", exc)
             return unchanged
+
+    def _await_reply(self, read_one, request_id, reply_type, crash_context, timeout):
+        """The worker's *reply_type* answer to *request_id*, or None once *timeout* passes."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            candidate = read_one(timeout = min(1.0, deadline - time.monotonic()))
+            if candidate is None:
+                if not self._ensure_subprocess_alive():
+                    # A query takes no part in the claim bookkeeping.
+                    raise RuntimeError(
+                        self._subprocess_crash_message(
+                            crash_context, with_worker_output = self._owns_worker(None)
+                        )
+                    )
+                continue
+            # _direct_reader already drops a reply whose mailbox is gone; this is the backstop.
+            if candidate.get("type") == reply_type and candidate.get("request_id") == request_id:
+                return candidate
+        return None
+
+    def resolve_completion_prompt(
+        self,
+        prompt,
+        timeout: float = 30.0,
+    ) -> dict:
+        """Token ids (``ids``) and echo text (``text``) for one raw completion prompt, from the
+        loaded model's tokenizer. Waits behind a running generation, as a generation would.
+        Raises ValueError for a prompt the model cannot take."""
+        with self._gen_lock:
+            if self._unload_pending or not self.active_model_name:
+                raise RuntimeError("No active model")
+            request_id = str(uuid.uuid4())
+            read_one, _drain, release_mailbox = self._direct_reader(request_id)
+            try:
+                self._send_cmd(
+                    {"type": "resolve_prompt", "request_id": request_id, "prompt": prompt}
+                )
+                resp = None
+                while resp is None:
+                    resp = self._await_reply(
+                        read_one,
+                        request_id,
+                        "resolve_prompt_response",
+                        "prompt resolution",
+                        timeout,
+                    )
+                    # A dispatched generation the worker runs alone answers first, however long.
+                    if self._replies_in_flight() <= 1:
+                        break
+            finally:
+                release_mailbox()
+        if resp is None:
+            raise RuntimeError("Timed out resolving the prompt")
+        if resp.get("error"):
+            raise (ValueError if resp.get("invalid") else RuntimeError)(resp["error"])
+        return {"ids": list(resp["ids"]), "text": resp["text"]}
+
+    def generate_completion(
+        self,
+        prompt_ids: list,
+        cancel_event = None,
+        stats_holder: Optional[dict] = None,
+        **sampling,
+    ) -> Generator[str, None, None]:
+        """Cumulative text sampled after ``prompt_ids`` (from :meth:`resolve_completion_prompt`)
+        with no chat template, streamed like :meth:`generate_chat_response`. ``sampling`` takes
+        its knobs plus ``penalty_window`` (llama-server's ``repeat_last_n``)."""
+        yield from self._generate_inner(
+            prompt_ids = prompt_ids,
+            cancel_event = cancel_event,
+            stats_holder = stats_holder,
+            **sampling,
+        )
 
     def generate_chat_response(
         self,
@@ -3413,6 +3479,8 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        prompt_ids: Optional[list] = None,
+        penalty_window: Optional[int] = None,
     ) -> Generator[Any, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -3476,6 +3544,8 @@ class InferenceOrchestrator:
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
                 diffusion_frames = diffusion_frames,
+                prompt_ids = prompt_ids,
+                penalty_window = penalty_window,
             )
             return
 
@@ -3518,6 +3588,8 @@ class InferenceOrchestrator:
                 rows = rows,
                 video_b64 = video,
                 diffusion_frames = diffusion_frames,
+                prompt_ids = prompt_ids,
+                penalty_window = penalty_window,
             )
 
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)
