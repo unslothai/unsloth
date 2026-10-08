@@ -21,7 +21,7 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-__all__ = ["html_to_markdown"]
+__all__ = ["SiteLinks", "html_to_markdown"]
 
 _SKIP_TAGS = frozenset(
     {
@@ -276,6 +276,27 @@ class _HeaderFrame:
         return "".join(self.parts)
 
 
+class SiteLinks:
+    """Same-site links as rendered, so a page too long for its budget can drop their URLs."""
+
+    def __init__(self, page_url: str):
+        self._host = urlsplit(page_url).hostname
+        self._found: dict[str, str] = {}
+
+    def note(self, link: str, text: str, href: str) -> None:
+        try:
+            parts = urlsplit(href)
+        except ValueError:
+            return
+        if parts.scheme in ("", "http", "https") and parts.hostname in (None, self._host):
+            self._found[link] = text
+
+    def strip(self, markdown: str) -> str:
+        for link in sorted(self._found, key = len, reverse = True):
+            markdown = markdown.replace(link, self._found[link])
+        return markdown
+
+
 class _MarkdownRenderer(HTMLParser):
     """HTMLParser subclass that emits Markdown tokens into a list.
 
@@ -288,10 +309,10 @@ class _MarkdownRenderer(HTMLParser):
         self,
         scope_tags: frozenset[str] | None = None,
         strip_header: bool = False,
-        page_url: str | None = None,
+        site_links: SiteLinks | None = None,
     ):
         super().__init__(convert_charrefs = False)
-        self._site_host = urlsplit(page_url).hostname if page_url else None
+        self._site_links = site_links
         self._out: list[str] = []
         self._skip_depth: int = 0
 
@@ -492,8 +513,11 @@ class _MarkdownRenderer(HTMLParser):
         self._emit_as_heading = self._link_had_heading and not partial
         self._link_had_heading = False
         self._link_header_chars = 0
-        if href and text and not self._links_into_site(href):
-            self._emit(f"[{text}]({href})")
+        if href and text:
+            link = f"[{text}]({href})"
+            if self._site_links is not None:
+                self._site_links.note(link, text, href)
+            self._emit(link)
         elif text:
             self._emit(text)
         self._emit_as_heading = False
@@ -503,15 +527,6 @@ class _MarkdownRenderer(HTMLParser):
             frame.heading_chars += len(heading_text)
             # Preserved by hand, so tell the gate too or a title-only card reads as body prose.
             self._seg_heading_texts.append(heading_text)
-
-    def _links_into_site(self, href: str) -> bool:
-        if self._site_host is None:
-            return False
-        try:
-            parts = urlsplit(href)
-        except ValueError:
-            return False
-        return parts.scheme in ("", "http", "https") and parts.hostname in (None, self._site_host)
 
     # Tag handlers. Structural bookkeeping shared by every start tag (skip/hidden/scope).
     def _truncate_open_tags(self, index: int) -> None:
@@ -1064,10 +1079,13 @@ def _strip_boilerplate_lines(text: str) -> str:
 
 
 def _new_renderer(
-    source_html: str, scope_tags: frozenset[str] | None, strip_header: bool, page_url: str | None
+    source_html: str,
+    scope_tags: frozenset[str] | None,
+    strip_header: bool,
+    site_links: SiteLinks | None,
 ) -> _MarkdownRenderer:
     renderer = _MarkdownRenderer(
-        scope_tags = scope_tags, strip_header = strip_header, page_url = page_url
+        scope_tags = scope_tags, strip_header = strip_header, site_links = site_links
     )
     renderer.feed(source_html)
     renderer.close()
@@ -1079,12 +1097,14 @@ def _render(
     source_html: str,
     scope_tags: frozenset[str] | None,
     strip_header: bool = False,
-    page_url: str | None = None,
+    site_links: SiteLinks | None = None,
 ) -> str:
-    return _cleanup("".join(_new_renderer(source_html, scope_tags, strip_header, page_url)._out))
+    return _cleanup("".join(_new_renderer(source_html, scope_tags, strip_header, site_links)._out))
 
 
-def _select_main_scope_render(source_html: str, tag: str, page_url: str | None) -> tuple[int, str]:
+def _select_main_scope_render(
+    source_html: str, tag: str, site_links: SiteLinks | None
+) -> tuple[int, str]:
     """Length and boilerplate-stripped render of the largest single ``<tag>``
     subtree. Sizing candidates one at a time stops many tiny sibling cards from
     clearing the threshold together, and returning that one subtree keeps
@@ -1098,7 +1118,9 @@ def _select_main_scope_render(source_html: str, tag: str, page_url: str | None) 
     Nor may it dominate: the credit is capped at the retained render, so removed
     furniture can never be the majority of a score. Uncapped, a teaser with a
     1000 link header outranked a sibling holding five times its real text."""
-    renderer = _new_renderer(source_html, frozenset({tag}), True, page_url)
+    renderer = _new_renderer(
+        source_html, frozenset({tag}), strip_header = True, site_links = site_links
+    )
     dropped = renderer.scope_dropped
     heading_prose = renderer.scope_heading_prose
     best_len = 0
@@ -1180,7 +1202,7 @@ def html_to_markdown(
     source_html: str,
     *,
     main_content: bool = False,
-    page_url: str | None = None,
+    site_links: SiteLinks | None = None,
 ) -> str:
     """Convert HTML to Markdown (headings, links, emphasis, lists, tables, blockquotes, code, entities).
 
@@ -1193,16 +1215,16 @@ def html_to_markdown(
     ``<header>`` to the heading it carries, and strip known boilerplate
     fragments from the result.
 
-    ``page_url`` renders links back into that page's site as plain text.
+    ``site_links`` records the links back into the page's own site; the output is unchanged.
     """
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     if main_content:
         for scope_tag in ("article", "main"):
             # Render only the chosen subtree so sibling <article>/<main> elements do not leak in.
-            length, rendered = _select_main_scope_render(source_html, scope_tag, page_url)
+            length, rendered = _select_main_scope_render(source_html, scope_tag, site_links)
             if length >= _MIN_MAIN_CONTENT_CHARS:
                 return rendered
         return _strip_boilerplate_lines(
-            _render(source_html, None, strip_header = True, page_url = page_url)
+            _render(source_html, None, strip_header = True, site_links = site_links)
         )
-    return _render(source_html, None, page_url = page_url)
+    return _render(source_html, None, site_links = site_links)

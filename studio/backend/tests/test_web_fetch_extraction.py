@@ -727,6 +727,53 @@ def test_page_that_fits_keeps_its_links(monkeypatch):
     assert "[[1]](#cite_note-1)" in out
 
 
+def test_page_cut_by_the_room_left_drops_its_site_link_urls(monkeypatch):
+    from core.inference import tools
+
+    context = tools._REQUEST_CONTEXT_TOKENS.set(32768)
+    room = tools._REQUEST_RESULT_BUDGET.set(1200)
+    try:
+        out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(60), "text/html")
+    finally:
+        tools._REQUEST_RESULT_BUDGET.reset(room)
+        tools._REQUEST_CONTEXT_TOKENS.reset(context)
+    assert "(truncated," in out
+    assert "wikipedia.org" not in out
+
+
+def test_dropping_site_link_urls_keeps_the_same_article(monkeypatch):
+    linked = "".join(
+        f'<p>Story one fact {i} see <a href="/topics/a-very-long-topic-slug-number-{i}">topic {i}</a>.</p>'
+        for i in range(300)
+    )
+    plain = "".join(
+        f"<p>Story two paragraph {i} with plain prose and no links.</p>" for i in range(300)
+    )
+    page = f"<html><body><article><h1>STORY ONE</h1>{linked}</article><article><h1>STORY TWO</h1>{plain}</article></body></html>"
+    out = _page_text(monkeypatch, "https://news.example.com/story-one", page, "text/html")
+    assert out.startswith("# STORY ONE\n\nStory one fact 0 see topic 0.")
+    assert "STORY TWO" not in out
+
+
+def test_dropping_site_link_urls_keeps_a_link_header_as_furniture(monkeypatch):
+    labels = "machine learning,deep learning,pytorch,cuda,transformers,lora,gguf,llama,quantization,finetuning,inference,qlora"
+    tags = "".join(
+        f'<a href="/category/topics/{t}/archive/page/1/?ref=card-header">{t}</a> '
+        for t in labels.split(",")
+    )
+    prose = "".join(
+        f"<p>Main page prose the user asked about, paragraph {i}, with enough words.</p>"
+        for i in range(250)
+    )
+    page = (
+        f"<html><body><main><h1>Main Post</h1>{prose}<aside><article><header>{tags}</header>"
+        "<p>A short teaser for a related post that is just long enough to read like a real sentence or two here.</p>"
+        "</article></aside></main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://blog.example.com/main-post", page, "text/html")
+    assert out.startswith("# Main Post\n\nMain page prose the user asked about, paragraph 0")
+
+
 def test_looks_like_html():
     assert _looks_like_html("<!DOCTYPE html><html></html>")
     assert _looks_like_html("\n  <HTML lang='en'>")

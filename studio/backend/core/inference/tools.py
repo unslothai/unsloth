@@ -16914,13 +16914,14 @@ def _fetch_page_text(
         return _truncate_page_text(body.strip(), max_chars)
 
     # Convert HTML to Markdown with the builtin converter (no external deps).
-    from ._html_to_md import html_to_markdown
+    from ._html_to_md import SiteLinks, html_to_markdown
 
-    text = html_to_markdown(body, main_content = True)
+    site_links = SiteLinks(url)
+    text = html_to_markdown(body, main_content = True, site_links = site_links)
     # A page that fits keeps its same-site links for the model to follow.
-    if len(text) > max_chars:
-        text = html_to_markdown(body, main_content = True, page_url = url)
-    return _truncate_page_text(text, max_chars)
+    if text and len(text) <= max_chars and len(text) <= _dense_char_limit(text, max_chars):
+        return text
+    return _truncate_page_text(site_links.strip(text), max_chars)
 
 
 def _search_failure_message(exc: BaseException, timeout: int) -> str:
