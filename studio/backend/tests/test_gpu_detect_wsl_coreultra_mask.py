@@ -92,12 +92,12 @@ def test_no_nvidia_smi_anywhere_still_reports_unavailable(monkeypatch, system):
         ("0x7d51", True),  # Core Ultra 200H (Arrow Lake-H) Arc Graphics
         ("0x64a0", True),  # Core Ultra 200V (Lunar Lake) Arc 140V
         ("0xb080", True),  # Core Ultra Series 3 (Panther Lake) Arc B390
-        ("0x56a0", True),  # Arc A770: unchanged
-        ("0xe20b", True),  # Arc B580: unchanged
-        ("0x7d45", False),  # Meteor Lake-U Intel Graphics: not on the PyTorch XPU list
-        ("0x7d67", False),  # Arrow Lake-S desktop iGPU
-        ("0x9a49", False),  # Tiger Lake Iris Xe
-        ("0x46a6", False),  # Alder Lake iGPU
+        ("0x56a0", True),
+        ("0xe20b", True),
+        ("0x7d45", False),
+        ("0x7d67", False),
+        ("0x9a49", False),
+        ("0x46a6", False),
         ("0x7d60", False),  # Meteor Lake-M, absent from Intel compute-runtime
         ("0x7dd5", False),  # Meteor Lake "Intel Graphics", not Arc
         ("0x7dd1", False),  # Arrow Lake-H "Intel Graphics", not Arc
@@ -136,11 +136,10 @@ def test_a_core_ultra_record_establishes_a_mismatch(monkeypatch, tmp_path):
         ("0,1gpu2,2", [0, 1, 2]),  # strtoul prefix, as torch parses it
         ("1,0,1", []),  # a repeated ordinal empties the set
         ("0,,1", [0]),  # an empty index ends the list
-        ("1,,1", [1]),  # ...before a later repeat is seen
+        ("1,,1", [1]),
         ("0,1,", [0, 1]),
         (",0", []),  # a leading empty index exposes nothing
         (",", []),
-        # Unchanged:
         ("-1", []),
         ("", []),
         ("1,0", [1, 0]),
