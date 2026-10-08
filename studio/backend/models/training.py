@@ -122,6 +122,21 @@ class RewardSelection(BaseModel):
     weight: float = Field(1.0, ge = -10, le = 10, allow_inf_nan = False)
 
 
+# (key in the stored run config's rl_settings, TrainingStartRequest field)
+_STORED_RL_SETTINGS = (
+    ("beta", "rl_beta"),
+    ("max_prompt_length", "rl_max_prompt_length"),
+    ("num_generations", "grpo_num_generations"),
+    ("max_completion_length", "grpo_max_completion_length"),
+    ("temperature", "grpo_temperature"),
+    ("variant", "grpo_variant"),
+    ("enable_thinking", "grpo_enable_thinking"),
+    ("system_prompt", "rl_system_prompt"),
+    ("mask_truncated_completions", "grpo_mask_truncated_completions"),
+    ("epsilon_high", "grpo_epsilon_high"),
+)
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
@@ -222,6 +237,32 @@ class TrainingStartRequest(BaseModel):
         le = _MAX_DATASET_SLICE_INDEX,
         description = "Inclusive end row index for dataset slicing",
     )
+
+    @model_validator(mode = "before")
+    @classmethod
+    def _compat_stored_rl_config(cls, values: Any) -> Any:
+        """A resume posts the stored run config back, which nests the RL fields under rl_settings
+        and reward_specs; lift them into the request fields an explicit value has not set."""
+        if not isinstance(values, dict):
+            return values
+        settings = values.get("rl_settings")
+        specs = values.get("reward_specs")
+        if not isinstance(settings, dict) and not isinstance(specs, list):
+            return values
+        values = dict(values)
+        for stored, field in _STORED_RL_SETTINGS:
+            if isinstance(settings, dict) and stored in settings:
+                values.setdefault(field, settings[stored])
+        if isinstance(specs, list):
+            values.setdefault(
+                "grpo_rewards",
+                [
+                    {"name": s.get("name"), "weight": s.get("weight", 1.0)}
+                    for s in specs
+                    if isinstance(s, dict)
+                ],
+            )
+        return values
 
     @model_validator(mode = "before")
     @classmethod

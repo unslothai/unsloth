@@ -101,6 +101,9 @@ def rl_log_metrics(logs: dict) -> Optional[dict]:
     return out or None
 
 
+_RL_OUTPUT_COLUMNS = frozenset({"prompt", "answer", "chosen", "rejected"})
+
+
 def normalize_objective(value: Any) -> str:
     objective = str(value or "sft").strip().lower()
     return objective if objective in OBJECTIVES else "sft"
@@ -161,7 +164,17 @@ def format_rl_dataset(
     if not columns:
         raise ValueError(f"{objective.upper()} training needs a dataset with known columns.")
     roles = resolve_role_columns(columns, objective, mapping)
-    extra = [c for c in keep_columns if c in columns and c not in roles.values()]
+    # Rewards read their compare_to column by name, so keep it even when it also fills a role.
+    extra = [c for c in keep_columns if c in columns and c not in _RL_OUTPUT_COLUMNS]
+    if objective == "grpo":
+        present = set(extra) | {"prompt"} | ({"answer"} if "answer" in roles else set())
+        absent = sorted({c for c in keep_columns if c not in present})
+        if absent:
+            raise ValueError(
+                f"A selected reward compares against {', '.join(absent)}, which this dataset does "
+                f"not have (found columns: {', '.join(columns)}). Map the answer column under "
+                "Column roles."
+            )
 
     def convert(row: dict) -> dict:
         prompt = _as_messages(row[roles["prompt"]], "user")
@@ -264,13 +277,23 @@ def build_rl_trainer(
             PatchDPOTrainer()
         except ImportError:
             pass
-        config_cls = trl.DPOConfig if objective == "dpo" else trl.ORPOConfig
-        trainer_cls = trl.DPOTrainer if objective == "dpo" else trl.ORPOTrainer
+        if objective == "dpo":
+            config_cls, trainer_cls = trl.DPOConfig, trl.DPOTrainer
+        elif hasattr(trl, "ORPOConfig"):
+            config_cls, trainer_cls = trl.ORPOConfig, trl.ORPOTrainer
+        else:  # TRL 1.x moved ORPO to trl.experimental
+            from trl.experimental.orpo import ORPOConfig as config_cls, ORPOTrainer as trainer_cls
+        # TRL 1.x dropped max_prompt_length; _config_kwargs keeps only fields the config has.
         args = config_cls(
-            **_config_kwargs(config_cls, base),
-            beta = beta,
-            max_length = max_seq_length,
-            max_prompt_length = max_prompt_length,
+            **_config_kwargs(
+                config_cls,
+                {
+                    **base,
+                    "beta": beta,
+                    "max_length": max_seq_length,
+                    "max_prompt_length": max_prompt_length,
+                },
+            ),
         )
         kwargs = {
             "model": model,
@@ -306,13 +329,12 @@ def build_rl_trainer(
             },
         )
         args = trl.GRPOConfig(
-            **_config_kwargs(trl.GRPOConfig, base),
+            **_config_kwargs(trl.GRPOConfig, {**base, "max_prompt_length": max_prompt_length}),
             **variant_args,
             use_vllm = False,
             beta = beta,
             temperature = float(settings.get("temperature") or 1.0),
             num_generations = int(settings.get("num_generations") or 4),
-            max_prompt_length = max_prompt_length,
             max_completion_length = max_completion_length,
             reward_weights = [float(s.get("weight", 1.0)) for s in reward_specs],
             log_completions = False,

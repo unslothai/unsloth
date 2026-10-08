@@ -4239,7 +4239,8 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": _build_report_targets(training_args),
                 "disable_tqdm": _hf_stdout_progress_disabled(),
-                "include_num_input_tokens_seen": True,
+                # DPO/ORPO/GRPO batches have no input_ids, so token tracking only warns every step.
+                "include_num_input_tokens_seen": training_args.get("objective", "sft") == "sft",
                 # serial_as_none = False: this is a config boundary, not a map() call site. The audio paths ask for 1
                 # to keep dataset workers off a process holding audio/CUDA state; pass None otherwise, so the shared
                 # policy sizes it from CPU affinity and cgroup quota rather than host os.cpu_count().
@@ -4406,6 +4407,14 @@ class UnslothTrainer:
                 rl_tokenizer = self.tokenizer
                 if isinstance(rl_tokenizer, ProcessorMixin) and hasattr(rl_tokenizer, "tokenizer"):
                     rl_tokenizer = rl_tokenizer.tokenizer
+                # RL rows are conversations and TRL applies the chat template: base models need one.
+                templated = get_training_chat_template(
+                    rl_tokenizer, self.model_name, "chatml_messages"
+                )
+                if templated is not rl_tokenizer:
+                    if rl_tokenizer is self.tokenizer:
+                        self.tokenizer = templated
+                    rl_tokenizer = templated
                 logger.info(f"Configuring {objective.upper()} trainer\n")
                 self.trainer = build_rl_trainer(
                     objective,

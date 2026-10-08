@@ -227,3 +227,72 @@ def test_thinking_switch_renders_prompts_only_for_templates_that_have_one():
 
     same, rendered = render_prompts_without_thinking(ds, Plain(), False)
     assert not rendered and same[0]["prompt"] == [{"role": "user", "content": "2+2?"}]
+
+
+def test_resume_payload_from_stored_config_keeps_rl_settings():
+    # A resume posts the stored worker config back: RL fields sit under rl_settings / reward_specs.
+    stored = {
+        **BASE,
+        "objective": "grpo",
+        "rl_settings": {
+            "beta": 0.04,
+            "max_prompt_length": 256,
+            "num_generations": 8,
+            "max_completion_length": 128,
+            "temperature": 0.7,
+            "variant": "gspo",
+            "enable_thinking": None,
+            "system_prompt": "Answer briefly.",
+            "mask_truncated_completions": True,
+            "epsilon_high": 0.28,
+        },
+        "reward_specs": [{"name": "exact-answer", "weight": 2.0, "rule": {"type": "exact_match"}}],
+    }
+    req = TrainingStartRequest.model_validate(stored)
+    assert req.objective == "grpo" and req.rl_beta == 0.04 and req.rl_max_prompt_length == 256
+    assert (req.grpo_num_generations, req.grpo_max_completion_length) == (8, 128)
+    assert (req.grpo_temperature, req.grpo_variant, req.grpo_enable_thinking) == (0.7, "gspo", None)
+    assert req.rl_system_prompt == "Answer briefly." and req.grpo_mask_truncated_completions
+    assert req.grpo_epsilon_high == 0.28
+    assert [(r.name, r.weight) for r in req.grpo_rewards] == [("exact-answer", 2.0)]
+    # An explicit request field still wins over the stored copy.
+    assert TrainingStartRequest.model_validate({**stored, "rl_beta": 0.5}).rl_beta == 0.5
+
+
+def test_grpo_reward_column_kept_when_it_also_fills_a_role():
+    ds = Dataset.from_list([{"question": "2+2?", "solution": "4"}])
+    out, roles = format_rl_dataset(
+        ds, "grpo", {"solution": "answer"}, keep_columns = ("solution", "answer")
+    )
+    assert roles["answer"] == "solution"
+    assert out[0]["answer"] == "4" and out[0]["solution"] == "4"
+
+
+def test_grpo_reward_column_missing_from_dataset_is_refused():
+    ds = Dataset.from_list([{"question": "2+2?", "response": "4"}])
+    with pytest.raises(ValueError, match = "compares against answer"):
+        format_rl_dataset(ds, "grpo", keep_columns = ("answer",))
+
+
+def test_trl_config_without_max_prompt_length_still_builds(monkeypatch):
+    # TRL 1.x dropped max_prompt_length from DPOConfig / GRPOConfig.
+    @dataclasses.dataclass
+    class _NoPromptLenDPOConfig:
+        output_dir: str = None
+        beta: float = 0.1
+        max_length: int = None
+
+    fake = types.SimpleNamespace(DPOConfig = _NoPromptLenDPOConfig, DPOTrainer = lambda **kw: kw)
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    monkeypatch.setitem(sys.modules, "unsloth", types.SimpleNamespace(PatchDPOTrainer = lambda: None))
+    kw = build_rl_trainer(
+        "dpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {"output_dir": "o", "max_seq_length": 1024},
+        settings = {"beta": 0.2},
+        reward_specs = [],
+    )
+    assert (kw["args"].beta, kw["args"].max_length) == (0.2, 1024)
