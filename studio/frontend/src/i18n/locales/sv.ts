@@ -292,6 +292,8 @@ export const sv = {
       copied: "Kopierat",
       copyFailed: "Det gick inte att kopiera filen.",
       wrap: "Radbryt",
+      reactNeedsNode: "React-förhandsvisningar kräver Node.js 20.19 eller senare. Installera det om det saknas och kör sedan Unsloths installation igen.",
+      reactFailed: "Det gick inte att förbereda förhandsvisningen. Kör den igen för att försöka på nytt.",
     },
     pages: {
       searchDownloads: "Sök i hämtningshistoriken",
@@ -2677,6 +2679,8 @@ export const sv = {
         errorConsoleHideAction: "Dölj konsolen",
         errorLocation: "rad {line}, kolumn {column}",
         errorLine: "rad {line}",
+        errorLocationCompiled: "rad {line}, kolumn {column} i den kompilerade koden",
+        errorLineCompiled: "rad {line} i den kompilerade koden",
         consoleTitle: "Konsol",
         reloadCanvas: "Kör igen",
         consoleMessageCount: "{count} meddelande",

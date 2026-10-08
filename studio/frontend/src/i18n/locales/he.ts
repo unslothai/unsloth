@@ -290,6 +290,8 @@ export const he = {
       copied: "הועתק",
       copyFailed: "העתקת הקובץ נכשלה.",
       wrap: "גלישת שורות",
+      reactNeedsNode: "תצוגות מקדימות של React דורשות Node.js 20.19 ומעלה. התקן אותו אם הוא חסר, ואז הרץ שוב את ההתקנה של Unsloth.",
+      reactFailed: "לא ניתן היה להכין את התצוגה המקדימה. הרץ אותה שוב כדי לנסות שוב.",
     },
     pages: {
       searchDownloads: "חיפוש בהיסטוריית ההורדות",
@@ -2592,6 +2594,8 @@ export const he = {
         errorConsoleHideAction: "הסתר קונסולה",
         errorLocation: "שורה {line}, עמודה {column}",
         errorLine: "שורה {line}",
+        errorLocationCompiled: "שורה {line}, עמודה {column} בקוד המהודר",
+        errorLineCompiled: "שורה {line} בקוד המהודר",
         consoleTitle: "קונסולה",
         reloadCanvas: "הרץ שוב",
         consoleMessageCount: "הודעה {count}",

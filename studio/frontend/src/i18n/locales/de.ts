@@ -280,6 +280,8 @@ export const de = {
       copied: "Kopiert",
       copyFailed: "Die Datei konnte nicht kopiert werden.",
       wrap: "Zeilen umbrechen",
+      reactNeedsNode: "React-Vorschauen benötigen Node.js 20.19 oder neuer. Installiere es, falls es fehlt, und führe dann das Unsloth-Setup erneut aus.",
+      reactFailed: "Diese Vorschau konnte nicht vorbereitet werden. Führe sie erneut aus, um es noch einmal zu versuchen.",
     },
     pages: {
       searchDownloads: "Downloadverlauf durchsuchen",
@@ -2521,6 +2523,8 @@ export const de = {
         errorConsoleHideAction: "Konsole ausblenden",
         errorLocation: "Zeile {line}, Spalte {column}",
         errorLine: "Zeile {line}",
+        errorLocationCompiled: "Zeile {line}, Spalte {column} des kompilierten Codes",
+        errorLineCompiled: "Zeile {line} des kompilierten Codes",
         consoleTitle: "Konsole",
         reloadCanvas: "Erneut ausfuehren",
         consoleMessageCount: "{count} Meldung",

@@ -280,6 +280,8 @@ export const zhCN = {
       copied: "已复制",
       copyFailed: "无法复制文件。",
       wrap: "自动换行",
+      reactNeedsNode: "React 预览需要 Node.js 20.19 或更高版本。如未安装，请先安装，然后重新运行 Unsloth 安装程序。",
+      reactFailed: "无法准备此预览。请再次运行以重试。",
     },
     pages: {
       searchDownloads: "搜索下载记录",
@@ -2443,6 +2445,8 @@ export const zhCN = {
         errorConsoleHideAction: "隐藏控制台",
         errorLocation: "第 {line} 行，第 {column} 列",
         errorLine: "第 {line} 行",
+        errorLocationCompiled: "编译后代码的第 {line} 行，第 {column} 列",
+        errorLineCompiled: "编译后代码的第 {line} 行",
         consoleTitle: "控制台",
         reloadCanvas: "重新运行",
         consoleMessageCount: "{count} 条消息",

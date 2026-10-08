@@ -291,6 +291,8 @@ export const en = {
       copied: "Copied",
       copyFailed: "Couldn't copy the file.",
       wrap: "Wrap lines",
+      reactNeedsNode: "React previews need Node.js 20.19 or newer. Install it if it's missing, then re-run Unsloth setup.",
+      reactFailed: "Couldn't prepare this preview. Run it again to retry.",
     },
     video: {
       play: "Play",
@@ -2559,6 +2561,8 @@ export const en = {
         errorConsoleHideAction: "Hide console",
         errorLocation: "line {line}, column {column}",
         errorLine: "line {line}",
+        errorLocationCompiled: "line {line}, column {column} of the compiled code",
+        errorLineCompiled: "line {line} of the compiled code",
         consoleTitle: "Console",
         reloadCanvas: "Run again",
         consoleMessageCount: "{count} message",

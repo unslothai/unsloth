@@ -280,6 +280,8 @@ export const hi = {
       copied: "कॉपी हो गया",
       copyFailed: "फ़ाइल कॉपी नहीं हो सकी।",
       wrap: "लाइनें रैप करें",
+      reactNeedsNode: "React प्रीव्यू के लिए Node.js 20.19 या नया संस्करण चाहिए। अगर यह नहीं है तो इसे इंस्टॉल करें, फिर Unsloth सेटअप दोबारा चलाएँ।",
+      reactFailed: "यह प्रीव्यू तैयार नहीं हो सका। फिर से कोशिश करने के लिए इसे दोबारा चलाएँ।",
     },
     pages: {
       searchDownloads: "डाउनलोड इतिहास खोजें",
@@ -2489,6 +2491,8 @@ export const hi = {
         errorConsoleHideAction: "कंसोल छिपाएँ",
         errorLocation: "पंक्ति {line}, स्तंभ {column}",
         errorLine: "पंक्ति {line}",
+        errorLocationCompiled: "संकलित कोड की पंक्ति {line}, स्तंभ {column}",
+        errorLineCompiled: "संकलित कोड की पंक्ति {line}",
         consoleTitle: "कंसोल",
         reloadCanvas: "फिर से चलाएँ",
         consoleMessageCount: "{count} संदेश",

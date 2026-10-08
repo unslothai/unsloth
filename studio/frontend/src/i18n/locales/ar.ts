@@ -280,6 +280,8 @@ export const ar = {
       copied: "تم النسخ",
       copyFailed: "تعذّر نسخ الملف.",
       wrap: "التفاف الأسطر",
+      reactNeedsNode: "تحتاج معاينات React إلى Node.js 20.19 أو أحدث. ثبّته إن لم يكن موجودًا، ثم أعد تشغيل إعداد Unsloth.",
+      reactFailed: "تعذّر تجهيز هذه المعاينة. شغّلها مرة أخرى لإعادة المحاولة.",
     },
     pages: {
       searchDownloads: "البحث في سجل التنزيلات",
@@ -2483,6 +2485,8 @@ export const ar = {
         errorConsoleHideAction: "إخفاء وحدة التحكم",
         errorLocation: "السطر {line}، العمود {column}",
         errorLine: "السطر {line}",
+        errorLocationCompiled: "السطر {line}، العمود {column} من الشيفرة المترجمة",
+        errorLineCompiled: "السطر {line} من الشيفرة المترجمة",
         consoleTitle: "وحدة التحكم",
         reloadCanvas: "تشغيل مرة أخرى",
         consoleMessageCount: "{count} رسالة",

@@ -281,6 +281,8 @@ export const ja = {
       copied: "コピーしました",
       copyFailed: "ファイルをコピーできませんでした。",
       wrap: "行を折り返す",
+      reactNeedsNode: "React プレビューには Node.js 20.19 以降が必要です。インストールされていない場合はインストールしてから、Unsloth のセットアップを再実行してください。",
+      reactFailed: "このプレビューを準備できませんでした。もう一度実行して再試行してください。",
     },
     pages: {
       searchDownloads: "ダウンロード履歴を検索",
@@ -2466,6 +2468,8 @@ export const ja = {
         errorConsoleHideAction: "コンソールを隠す",
         errorLocation: "{line} 行目、{column} 列目",
         errorLine: "{line} 行目",
+        errorLocationCompiled: "コンパイル済みコードの {line} 行目、{column} 列目",
+        errorLineCompiled: "コンパイル済みコードの {line} 行目",
         consoleTitle: "コンソール",
         reloadCanvas: "もう一度実行",
         consoleMessageCount: "メッセージ {count} 件",

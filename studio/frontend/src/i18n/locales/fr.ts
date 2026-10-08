@@ -280,6 +280,8 @@ export const fr = {
       copied: "Copié",
       copyFailed: "Impossible de copier le fichier.",
       wrap: "Retour à la ligne",
+      reactNeedsNode: "Les aperçus React nécessitent Node.js 20.19 ou plus récent. Installez-le s’il manque, puis relancez la configuration d’Unsloth.",
+      reactFailed: "Impossible de préparer cet aperçu. Relancez-le pour réessayer.",
     },
     pages: {
       searchDownloads: "Rechercher dans l'historique des téléchargements",
@@ -2518,6 +2520,8 @@ export const fr = {
         errorConsoleHideAction: "Masquer la console",
         errorLocation: "ligne {line}, colonne {column}",
         errorLine: "ligne {line}",
+        errorLocationCompiled: "ligne {line}, colonne {column} du code compilé",
+        errorLineCompiled: "ligne {line} du code compilé",
         consoleTitle: "Console",
         reloadCanvas: "Relancer",
         consoleMessageCount: "{count} message",

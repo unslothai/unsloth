@@ -166,3 +166,84 @@ export function extractHtmlFences(text: string): HtmlFence[] {
 
   return fences;
 }
+
+export type ReactFenceLang = "jsx" | "tsx";
+
+export interface ReactFence {
+  source: string;
+  lang: ReactFenceLang;
+  index: number;
+}
+
+const IMPORTS_REACT_RE = /\bfrom\s*["'](?:react|react-dom)(?:\/[^"']*)?["']/;
+const RENDERABLE_ENTRY_RE = /\bexport\s+default\b|\b(?:function|const|let|var|class)\s+App\b/;
+
+// A fence gets a React preview only when it has something to mount: without a default export or an
+// App, every TS snippet in a coding answer would get a card that can only fail.
+export function reactFenceLang(language: string | null, source: string): ReactFenceLang | null {
+  const lang = language?.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  if (!RENDERABLE_ENTRY_RE.test(source)) return null;
+  if (lang === "jsx" || lang === "tsx") return lang;
+  if (!IMPORTS_REACT_RE.test(source)) return null;
+  if (lang === "js" || lang === "javascript" || lang === "mjs") return "jsx";
+  if (lang === "ts" || lang === "typescript") return "tsx";
+  return null;
+}
+
+// Same line scanner as extractHtmlFences, for every closed fence that reactFenceLang accepts.
+export function extractReactFences(text: string): ReactFence[] {
+  const lines = text.split(/\r?\n/);
+  const fences: ReactFence[] = [];
+  let i = 0;
+  let index = 0;
+
+  while (i < lines.length) {
+    const open = lines[i].match(FENCE_OPEN_RE);
+    if (!open) {
+      i++;
+      continue;
+    }
+    const indent = open[1].length;
+    const ticks = open[2].length;
+    const closeRe = new RegExp(`^ {0,3}\`{${ticks},}\\s*$`);
+    const indentRe = indent > 0 ? new RegExp(`^ {0,${indent}}`) : null;
+    let j = i + 1;
+    const body: string[] = [];
+    let closed = false;
+    while (j < lines.length) {
+      if (closeRe.test(lines[j])) {
+        closed = true;
+        break;
+      }
+      body.push(indentRe ? lines[j].replace(indentRe, "") : lines[j]);
+      j++;
+    }
+
+    if (!closed) {
+      break;
+    }
+
+    const source = body.join("\n");
+    const lang = reactFenceLang(open[3], source);
+    if (lang) fences.push({ source, lang, index: index++ });
+
+    i = j + 1;
+  }
+
+  return fences;
+}
+
+const COMPONENT_NAME_RES = [
+  /\bexport\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/,
+  /\bexport\s+default\s+class\s+([A-Za-z_$][\w$]*)/,
+  /\bexport\s+default\s+([A-Za-z_$][\w$]*)\s*;?\s*$/m,
+];
+
+/** The component's name for the card title, or null. */
+export function reactComponentName(source: string): string | null {
+  for (const re of COMPONENT_NAME_RES) {
+    const name = re.exec(source)?.[1];
+    if (name && name !== "function" && name !== "class") return name;
+  }
+  return /\b(?:function|const|let|var|class)\s+App\b/.test(source) ? "App" : null;
+}

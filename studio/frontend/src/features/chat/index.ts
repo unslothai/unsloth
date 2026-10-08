@@ -450,6 +450,7 @@ export {
   resolveOpen,
 } from "./utils/display-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ReactPreview } from "./artifacts/react-preview/react-preview";
 export { ArtifactHtmlFrame } from "./artifacts/html-frame";
 export { ResearchMessage } from "./components/research-message";
 export {

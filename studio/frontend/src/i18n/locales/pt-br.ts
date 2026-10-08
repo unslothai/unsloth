@@ -280,6 +280,8 @@ export const ptBR = {
       copied: "Copiado",
       copyFailed: "Não foi possível copiar o arquivo.",
       wrap: "Quebrar linhas",
+      reactNeedsNode: "As prévias de React precisam do Node.js 20.19 ou mais recente. Instale-o se estiver faltando e execute a configuração do Unsloth de novo.",
+      reactFailed: "Não foi possível preparar esta prévia. Execute de novo para tentar outra vez.",
     },
     pages: {
       searchDownloads: "Pesquisar histórico de downloads",
@@ -2499,6 +2501,8 @@ export const ptBR = {
         errorConsoleHideAction: "Ocultar console",
         errorLocation: "linha {line}, coluna {column}",
         errorLine: "linha {line}",
+        errorLocationCompiled: "linha {line}, coluna {column} do código compilado",
+        errorLineCompiled: "linha {line} do código compilado",
         consoleTitle: "Console",
         reloadCanvas: "Executar de novo",
         consoleMessageCount: "{count} mensagem",

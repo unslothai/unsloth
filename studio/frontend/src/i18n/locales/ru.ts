@@ -280,6 +280,8 @@ export const ru = {
       copied: "Скопировано",
       copyFailed: "Не удалось скопировать файл.",
       wrap: "Переносить строки",
+      reactNeedsNode: "Для предпросмотра React нужен Node.js 20.19 или новее. Установите его, если его нет, и снова запустите установку Unsloth.",
+      reactFailed: "Не удалось подготовить предпросмотр. Запустите его ещё раз, чтобы повторить попытку.",
     },
     pages: {
       searchDownloads: "Поиск в истории загрузок",
@@ -2495,6 +2497,8 @@ export const ru = {
         errorConsoleHideAction: "Скрыть консоль",
         errorLocation: "строка {line}, столбец {column}",
         errorLine: "строка {line}",
+        errorLocationCompiled: "строка {line}, столбец {column} скомпилированного кода",
+        errorLineCompiled: "строка {line} скомпилированного кода",
         consoleTitle: "Консоль",
         reloadCanvas: "Запустить снова",
         consoleMessageCount: "сообщений: {count}",

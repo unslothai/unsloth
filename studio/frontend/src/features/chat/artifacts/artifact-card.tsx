@@ -13,6 +13,7 @@ import {
 import {
   type FileViewMode,
   openHtmlInBrowser,
+  openReactInBrowser,
   useBrowserStore,
   useShownHtmlView,
 } from "@/features/browser";
@@ -35,9 +36,16 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef } from "react";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
-import { hasAutoOpenedArtifact, rememberAutoOpenedArtifact } from "./store";
+import { type ReactFenceLang, reactComponentName } from "./html-fences";
+import { needsNode, prepareReactPreview } from "./react-preview/react-preview";
+import {
+  hasAutoOpenedArtifact,
+  rememberAutoOpenedArtifact,
+  useChatArtifactsStore,
+} from "./store";
 import {
   type ChatArtifact,
+  type ChatArtifactKind,
   type ChatArtifactSource,
   createChatArtifact,
   getArtifactFilename,
@@ -62,17 +70,21 @@ function MenuGlyph({ icon, className }: { icon: typeof InternetIcon; className?:
   );
 }
 
+// Its message is shown as is, in place of the generic one.
+class PageOpenError extends Error {}
+
 /** Open in the user's default browser, served sandboxed by the backend. The web tab opens first
  *  so the popup blocker allows it. */
-async function openInDefaultBrowser(code: string): Promise<void> {
+async function openInDefaultBrowser(page: string | (() => Promise<string>)): Promise<void> {
   const tab = isTauri ? null : window.open("", "_blank");
   if (tab) tab.opener = null;
   try {
+    const html = typeof page === "string" ? page : await page();
     const response = await authFetch(apiUrl("/api/inference/artifact-preview-page"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        html: code,
+        html,
         allow_network: useChatRuntimeStore.getState().allowArtifactNetworkAccess,
       }),
     });
@@ -81,10 +93,26 @@ async function openInDefaultBrowser(code: string): Promise<void> {
     const url = new URL(apiUrl(path), window.location.href).href;
     if (tab) tab.location.href = url;
     else openExternalLink(url);
-  } catch {
+  } catch (error) {
     tab?.close();
-    toast.error("Couldn't open the page in your browser.");
+    toast.error(error instanceof PageOpenError ? error.message : "Couldn't open the page in your browser.");
   }
+}
+
+/** The compiled page for a React component; the same page the Unsloth Browser runs. */
+function reactPage(code: string, lang: ReactFenceLang, title: string): () => Promise<string> {
+  return async () => {
+    const prepared = await prepareReactPreview({ source: code, lang, title });
+    if (prepared.status === "ready") return prepared.html;
+    if (prepared.status === "compile-error") {
+      throw new PageOpenError("This component didn't compile. Open it in the Unsloth Browser to see why.");
+    }
+    if (needsNode(prepared.reason)) {
+      useChatArtifactsStore.getState().markReactPreviewUnavailable();
+      throw new PageOpenError("React previews need Node.js. Install it, then re-run Unsloth setup.");
+    }
+    throw new PageOpenError("Couldn't prepare this preview.");
+  };
 }
 
 // The subtitle says "HTML preview", so untitled pages get a different title.
@@ -92,6 +120,12 @@ function displayFallbackTitle(title: string): string {
   const generic = /^HTML preview(?: (\d+))?$/.exec(title);
   if (!generic) return title;
   return generic[1] ? `Untitled page ${generic[1]}` : "Untitled page";
+}
+
+function displayReactFallbackTitle(title: string): string {
+  const generic = /^React preview(?: (\d+))?$/.exec(title);
+  if (!generic) return title;
+  return generic[1] ? `Untitled component ${generic[1]}` : "Untitled component";
 }
 
 export function ArtifactCard({
@@ -103,6 +137,8 @@ export function ArtifactCard({
   className,
   autoOpen = false,
   isStreaming = false,
+  kind = "html",
+  lang = "tsx",
 }: {
   code: string;
   title?: string | null;
@@ -112,6 +148,9 @@ export function ArtifactCard({
   className?: string;
   autoOpen?: boolean;
   isStreaming?: boolean;
+  // A React card never opens on its own: opening it compiles and runs the component.
+  kind?: ChatArtifactKind;
+  lang?: ReactFenceLang;
 }) {
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const messageIdFromContext = useAuiState(({ message }) => message.id);
@@ -141,22 +180,38 @@ export function ArtifactCard({
       title,
     ],
   );
-  const shownView = useShownHtmlView(artifact.id);
-  const open = (view: FileViewMode) => openArtifactInBrowser(artifact, view);
+  const isReact = kind === "react";
+  const reactUnavailable = useChatArtifactsStore((state) => state.reactPreviewUnavailable);
+  const shownView = useShownHtmlView(isReact ? `react:${artifact.id}` : artifact.id);
+  const reactTitle = reactComponentName(artifact.code) ?? displayReactFallbackTitle(artifact.title);
+  const open = (view: FileViewMode) =>
+    isReact
+      ? openReactInBrowser({
+          key: artifact.id,
+          name: getArtifactFilename({ title: reactTitle }, lang),
+          code: artifact.code,
+          view,
+        })
+      : openArtifactInBrowser(artifact, view);
   // Once per mount, and only when the page is complete.
   const autoOpenAttemptedRef = useRef(false);
 
   useEffect(() => {
+    if (isReact) return;
     if (!autoOpen || isStreaming || autoOpenAttemptedRef.current) return;
     if (artifact.code.trim().length === 0) return;
     autoOpenAttemptedRef.current = true;
     if (hasAutoOpenedArtifact(artifact.id)) return;
     rememberAutoOpenedArtifact(artifact.id);
     openArtifactInBrowser(artifact, "preview");
-  }, [artifact, autoOpen, isStreaming]);
+  }, [artifact, autoOpen, isReact, isStreaming]);
 
-  const pageTitle = htmlDocumentTitle(artifact.code) ?? displayFallbackTitle(artifact.title);
-  const filename = getArtifactFilename({ title: pageTitle });
+  const pageTitle = isReact
+    ? reactTitle
+    : (htmlDocumentTitle(artifact.code) ?? displayFallbackTitle(artifact.title));
+  const filename = isReact
+    ? getArtifactFilename({ title: pageTitle }, lang)
+    : getArtifactFilename({ title: pageTitle });
   const showing = shownView !== null;
   const toggle = (view: FileViewMode) => {
     if (shownView === view) {
@@ -166,15 +221,21 @@ export function ArtifactCard({
     open(view);
   };
   const download = () =>
-    void downloadFile(artifact.code, filename, "text/html;charset=utf-8").catch(
-      (error) => {
-        if (!isDownloadCancelled(error)) toast.error("Couldn't save the HTML.");
-      },
-    );
+    void downloadFile(
+      artifact.code,
+      filename,
+      isReact ? "text/plain;charset=utf-8" : "text/html;charset=utf-8",
+    ).catch((error) => {
+      if (!isDownloadCancelled(error)) {
+        toast.error(isReact ? "Couldn't save the code." : "Couldn't save the HTML.");
+      }
+    });
   const copy = () =>
     void copyToClipboard(artifact.code).then(
-      (ok) => ok && toast.success("HTML copied"),
+      (ok) => ok && toast.success(isReact ? "Code copied" : "HTML copied"),
     );
+  const openDefault = () =>
+    void openInDefaultBrowser(isReact ? reactPage(artifact.code, lang, pageTitle) : artifact.code);
 
   return (
     <div className={cn("my-2 w-full max-w-xl", className)}>
@@ -205,7 +266,7 @@ export function ArtifactCard({
           className="pointer-events-none relative flex size-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(11%*var(--contrast-wash-gain,1)),transparent)]"
         >
           <HugeiconsIcon
-            icon={InternetIcon}
+            icon={isReact ? SourceCodeIcon : InternetIcon}
             strokeWidth={1.75}
             className="size-6 text-control-accent"
           />
@@ -217,6 +278,8 @@ export function ArtifactCard({
           <span className="truncate text-sm leading-tight text-muted-foreground">
             {isStreaming ? (
               <span className="shimmer motion-reduce:animate-none">Generating…</span>
+            ) : isReact ? (
+              reactUnavailable ? "React preview · Needs Node.js" : "React preview"
             ) : (
               "HTML preview"
             )}
@@ -261,7 +324,7 @@ export function ArtifactCard({
                 <MenuGlyph icon={InternetIcon} />
                 Unsloth Browser
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => void openInDefaultBrowser(artifact.code)}>
+              <DropdownMenuItem onSelect={openDefault}>
                 <MenuGlyph icon={LinkSquare02Icon} />
                 Default browser
               </DropdownMenuItem>
@@ -273,11 +336,11 @@ export function ArtifactCard({
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={copy}>
                 <MenuGlyph icon={Copy01Icon} />
-                Copy HTML
+                {isReact ? "Copy code" : "Copy HTML"}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={download}>
                 <MenuGlyph icon={Download01Icon} />
-                Download HTML
+                {isReact ? "Download code" : "Download HTML"}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
