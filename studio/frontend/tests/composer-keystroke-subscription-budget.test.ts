@@ -64,7 +64,7 @@ test("the render_html scan happens once per message part, above the blocks", () 
   );
   assert.match(
     impl,
-    /useAuiState\(\(\{ message \}\) =>\s*message\.parts\.some\(isRenderableRenderHtmlToolPart\),?\s*\)/,
+    /useAuiState\(\(\{ message \}\) =>\s*partsHaveRenderableRenderHtmlTool\(message\.parts\),?\s*\)/,
   );
   // The value has to reach the blocks, or the context read above answers with its default.
   assert.match(

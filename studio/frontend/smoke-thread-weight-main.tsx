@@ -129,7 +129,7 @@ function agentContent(index: number, rounds: number) {
   for (let round = 0; round < rounds; round++) {
     const tag = `${index}_${round}`;
     const toolName = AGENT_TOOLS[(index + round) % AGENT_TOOLS.length];
-    const args =
+    const args: Record<string, string> =
       toolName === "web_search"
         ? { query: `step ${tag} reference for the scheduler buffer` }
         : { code: `print("step ${tag}")` };

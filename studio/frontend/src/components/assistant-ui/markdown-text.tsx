@@ -15,7 +15,6 @@ import {
   getCodeFence,
   isFullHtmlDocument,
   isHtmlFence,
-  isRenderableRenderHtmlToolPart,
   isSvgFence,
 } from "@/features/chat/artifacts/html-fences";
 // Leaf module, not the feature barrel: SEARCH_IMAGE_TAG is read at module scope
@@ -25,11 +24,15 @@ import {
   holdBackPartialSearchImageToken,
   parseSearchImagesSignature,
   placeSubjectImages,
-  precedingTextForMessagePart,
   rewriteSearchImageTokens,
   SEARCH_IMAGE_TAG,
-  searchImagesSignature,
 } from "@/features/chat/search-images/search-images";
+import {
+  partsHaveRenderableRenderHtmlTool,
+  partsPrecedingText,
+  partsSearchImagesSignature,
+  partsTextKey,
+} from "@/components/assistant-ui/message-derived";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
@@ -1295,27 +1298,21 @@ const MarkdownTextImpl = () => {
   // cannot express, an edit that drops retained blocks without changing the tail.
   const messageId = useAuiState(({ message }) => message.id);
   // Read once here for every block below: see RenderHtmlToolPresenceContext.
+  // These four run on every store write for every text part, so each is computed once per
+  // parts array rather than per part per write (#12552, message-derived.ts).
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
+    partsHaveRenderableRenderHtmlTool(message.parts),
   );
   // A string, not the Map: selector results are compared by identity.
   const searchImagesKey = useAuiState(({ message }) =>
-    allowSearchImages ? searchImagesSignature(message.parts) : "",
+    allowSearchImages ? partsSearchImagesSignature(message.parts) : "",
   );
   // What earlier text parts said, so a subject named in two of them gets one card.
   const precedingText = useAuiState(({ message }) =>
-    allowSearchImages
-      ? precedingTextForMessagePart(message.parts, partIndex)
-      : "",
+    allowSearchImages ? partsPrecedingText(message.parts, partIndex) : "",
   );
   const messageTextKey = useAuiState(({ message }) =>
-    allowSearchImages
-      ? JSON.stringify(
-          message.parts
-            .filter((part) => part.type === "text")
-            .map((part) => part.text),
-        )
-      : "[]",
+    allowSearchImages ? partsTextKey(message.parts) : "[]",
   );
 
   return (
