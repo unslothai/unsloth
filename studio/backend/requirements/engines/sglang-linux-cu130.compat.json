@@ -1,5 +1,5 @@
 {
- "lock_sha256": "3edd752960464647b2c676a54c14b4ac11e988b437dc1bbbf04c81c15eed7ec1",
+ "lock_sha256": "4776befb11c7f7e44467524b56dacd833c0ed44df7c936c036e05dcc96d35c51",
  "requires": {
   "aiohappyeyeballs": [
    ">=2.5.0"
@@ -704,7 +704,7 @@
   "parso": 107025,
   "partial-json-parser": 10877,
   "pexpect": 63772,
-  "pillow": 7082423,
+  "pillow": 6937129,
   "prometheus-client": 64494,
   "prompt-toolkit": 392288,
   "propcache": 61534,
@@ -778,7 +778,7 @@
   "typing-extensions": 44614,
   "typing-inspection": 14693,
   "tzdata": 348168,
-  "urllib3": 131087,
+  "urllib3": 135717,
   "uvicorn": 79859,
   "uvloop": 4366890,
   "watchfiles": 454782,

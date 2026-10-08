@@ -44,6 +44,10 @@ MAX_IMAGE_EDGE = 1024
 MAX_IMAGE_PIXELS = 40_000_000
 
 
+def is_image_tool(name: str) -> bool:
+    return name == "view_image" or name.startswith(MCP_TOOL_PREFIX)
+
+
 def split_images(result: str) -> tuple[str, list[dict]]:
     """Validated, so tool text that merely mentions the marker is not truncated."""
     head, sep, payload = result.rpartition("\n" + SENTINEL)
@@ -251,7 +255,7 @@ def eligible_replay_images(
         if not isinstance(content, str):
             return None
         name = messages[position].get("name") or call_names.get(position)
-        if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+        if isinstance(name, str) and name and not is_image_tool(name):
             return None
         _text, images = split_images(content)
         return images or None
@@ -319,7 +323,7 @@ def png_payloads_per_result(
     return []
 
 
-def flattened_rgb(image):
+def flattened_rgb(image, background = None):
     """RGB with any transparency composited onto white (black for light ink), not dropped.
 
     ``convert("RGB")`` keeps whatever colour sits UNDER the alpha, and a tool that
@@ -344,10 +348,15 @@ def flattened_rgb(image):
         return image.convert("RGB")
     rgba = image if image.mode == "RGBA" else image.convert("RGBA")
     alpha = rgba.getchannel("A")
-    # Alpha-weighted: light ink (dark-mode logos, white text) goes onto black, not white.
-    ink = ImageStat.Stat(ImageChops.multiply(rgba.convert("L"), alpha)).sum[0]
-    light = 255 * ink > 128 * ImageStat.Stat(alpha).sum[0] > 0
-    canvas = Image.new("RGB", rgba.size, (0, 0, 0) if light else (255, 255, 255))
+    # Browser canvas exports are RGBA even when opaque; skip the composite (same pixels).
+    if alpha.getextrema()[0] == 255:
+        return rgba.convert("RGB")
+    if background is None:
+        # Alpha-weighted: light ink (dark-mode logos, white text) goes onto black, not white.
+        ink = ImageStat.Stat(ImageChops.multiply(rgba.convert("L"), alpha)).sum[0]
+        light = 255 * ink > 128 * ImageStat.Stat(alpha).sum[0] > 0
+        background = (0, 0, 0) if light else (255, 255, 255)
+    canvas = Image.new("RGB", rgba.size, background)
     canvas.paste(rgba, mask = alpha)
     return canvas
 
@@ -1170,7 +1179,7 @@ def _promote(
             # IMAGE input: a named non-MCP tool that happens to end in a valid
             # envelope is not one an MCP server served.
             name = message.get("name") or call_names.get(position)
-            if isinstance(name, str) and name and not name.startswith(MCP_TOOL_PREFIX):
+            if isinstance(name, str) and name and not is_image_tool(name):
                 # A non-MCP result sitting between the images and their turn makes
                 # "the tool call above" name web_search or read_file.
                 if pending:

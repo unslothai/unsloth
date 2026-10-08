@@ -192,6 +192,7 @@ export interface TrainingViewData {
   modelName: string;
   projectName: string | null;
   trainingMethod: string;
+  isDecision?: boolean;
 
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];

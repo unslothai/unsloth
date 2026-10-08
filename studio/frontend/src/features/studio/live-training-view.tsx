@@ -81,6 +81,7 @@ export function LiveTrainingView(): ReactElement {
       selectedModel: state.selectedModel,
       projectName: state.projectName,
       trainingMethod: state.trainingMethod,
+      modelType: state.modelType,
     })),
   );
 
@@ -164,6 +165,8 @@ export function LiveTrainingView(): ReactElement {
     // run started, which would relabel the run and hide its saved LoRA rows in the popover.
     trainingMethod:
       runConfigOverride?.trainingMethod ?? config.trainingMethod ?? "",
+    isDecision:
+      runConfigOverride?.isDecision ?? config.modelType === "decision",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,
     gradNormHistory: runtime.gradNormHistory,

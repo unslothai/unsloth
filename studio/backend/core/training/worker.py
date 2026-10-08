@@ -43,10 +43,12 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 logger = get_logger(__name__)
 from utils.child_stdio import utf8_child_env
 
-# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
@@ -62,6 +64,20 @@ from core.training.dataset_bounds import (
 )
 from core.training.resume import _checkpoint_state, session_eta_seconds
 from utils.training_runs import build_default_output_dir_name
+from utils.kernel_install import (
+    CAUSAL_CONV1D,
+    MAMBA_SSM,
+    PinnedKernel,
+    hipcc_gcc_install_dir,
+    install_prebuilt,
+    source_build_command,
+    source_build_run_kwargs,
+    uninstall_command,
+)
+from utils.ssm_runtime import (
+    CAUSAL_CONV1D_MODEL_SUBSTRINGS as _CAUSAL_CONV1D_MODEL_SUBSTRINGS,
+    SSM_MODEL_SUBSTRINGS as _SSM_MODEL_SUBSTRINGS,
+)
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
@@ -1043,30 +1059,6 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
     }
 
 
-_CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
-_CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
-_CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
-    "qwen3.5",
-    "qwen3_5",
-    "qwen3.6",
-    "qwen3_6",
-    "qwen3-next",
-    "qwen3_next",
-    "nemotron_h",
-    "nemotron-h",
-    "nemotron-3-nano",
-    "falcon_h1",
-    "falcon-h1",
-    "granite-4.0-h",
-    "granitemoehybrid",
-    "lfm2",
-    "mamba",
-    "jamba",
-    "zamba",
-    "bamba",
-)
-_MAMBA_SSM_RELEASE_TAG = "v2.3.1"
-_MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 _FLASH_ATTN_RUNTIME_MIN_SEQ_LEN = 32768
 _FLASH_ATTN_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL"
 _FAST_PATH_HOOKS_SKIP_ENV = "UNSLOTH_STUDIO_SKIP_FAST_PATH_HOOKS"
@@ -1188,29 +1180,26 @@ if sys.platform == "win32":
     del _add_rocm_dll_dirs_worker
 
 
+def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> bool:
+    # Clef ships joint_head_config.json next to its Qwen3.5 backbone; Laya never does.
+    marker = "joint_head_config.json"
+    try:
+        if (Path(model_load_target) / marker).is_file():
+            return True
+        from huggingface_hub import HfApi
+
+        siblings = HfApi(token = hf_token).model_info(model_load_target).siblings or ()
+        return any(getattr(s, "rfilename", None) == marker for s in siblings)
+    except Exception:
+        return False
+
+
 def _model_wants_causal_conv1d(model_name: str) -> bool:
     name = model_name.lower()
     return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
 
 
-def _hipcc_gcc_install_dir() -> str | None:
-    """Highest-numbered ``/usr/lib/gcc/x86_64-linux-gnu/<N>`` that has BOTH the gcc runtime dir AND
-    ``/usr/include/c++/<N>`` headers, or None. Ubuntu 24.04 ships gcc-14 runtime but not
-    ``/usr/include/c++/14``; ROCm clang-20 picks the highest runtime dir, finds no ``<cstdlib>``,
-    and the HIP build fails. The returned path is passed to clang via ``--gcc-install-dir``.
-    Mirrors bbf004c in studio/setup.sh (PR #5301)."""
-    if not sys.platform.startswith("linux"):
-        return None
-    import platform as _platform
-
-    if _platform.machine().lower() != "x86_64":
-        return None
-    for _ver in (14, 13, 12, 11):
-        _runtime = f"/usr/lib/gcc/x86_64-linux-gnu/{_ver}/include"
-        _headers = f"/usr/include/c++/{_ver}"
-        if os.path.isdir(_runtime) and os.path.isdir(_headers):
-            return f"/usr/lib/gcc/x86_64-linux-gnu/{_ver}"
-    return None
+_hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
 def _is_importable(import_name: str) -> bool:
@@ -1257,12 +1246,8 @@ def _is_importable_isolated(import_name: str) -> bool:
 
 def _uninstall_package(pypi_name: str, display_name: str) -> bool:
     """Remove a distribution. True iff it is gone afterwards."""
-    if shutil.which("uv"):
-        cmd = ["uv", "pip", "uninstall", "--python", sys.executable, pypi_name]
-    else:
-        cmd = [sys.executable, "-m", "pip", "uninstall", "-y", pypi_name]
     result = _sp.run(
-        cmd,
+        uninstall_command(pypi_name, use_uv = bool(shutil.which("uv"))),
         stdout = _sp.PIPE,
         stderr = _sp.STDOUT,
         text = True,
@@ -1375,30 +1360,29 @@ def _attempt_package_install(
         logger.info("No compatible %s wheel candidate", display_name)
     elif wheel_available:
         _send_status(event_queue, f"Installing {display_name} for faster training...")
-        for installer, result in install_wheel(
+        outcome = install_prebuilt(
             wheel_url,
-            python_executable = sys.executable,
-            use_uv = bool(shutil.which("uv")),
-            run = _sp.run,
-        ):
-            if result.returncode == 0:
-                # A wheel can install yet fail to import (CUDA/ABI or arch mismatch), so verify rather than trust the
-                # exit code, and do it out of process: a bad one can take the worker down with it.
-                if _is_importable_isolated(import_name):
-                    logger.info("Installed prebuilt %s wheel successfully", display_name)
-                    return True
-                logger.warning(
-                    "%s wheel installed but is not importable; falling back to PyPI",
-                    display_name,
-                )
-                wheel_rejected = True
-                break
-            logger.warning(
+            install = install_wheel,
+            # Out of process: a bad wheel can take the worker down with it.
+            verify = lambda: _is_importable_isolated(import_name),
+            on_failed = lambda installer, result: logger.warning(
                 "%s failed to install %s wheel:\n%s",
                 installer,
                 display_name,
                 result.stdout,
+            ),
+            use_uv = bool(shutil.which("uv")),
+            run = _sp.run,
+        )
+        if outcome == "installed":
+            logger.info("Installed prebuilt %s wheel successfully", display_name)
+            return True
+        if outcome == "rejected":
+            logger.warning(
+                "%s wheel installed but is not importable; falling back to PyPI",
+                display_name,
             )
+            wheel_rejected = True
     elif wheel_available is None:
         _send_status(
             event_queue,
@@ -1454,63 +1438,19 @@ def _attempt_package_install(
         else:
             pypi_cmd = [sys.executable, "-m", "pip", "install", pypi_spec]
     else:
-        if shutil.which("uv"):
-            pypi_cmd = [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--no-build-isolation",
-                "--no-deps",
-            ]
-            # Avoid stale cache artifacts from partial HIP source builds
-            if is_hip:
-                pypi_cmd.append("--no-cache")
-            pypi_cmd.append(pypi_spec)
-        else:
-            pypi_cmd = [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--no-build-isolation",
-                "--no-deps",
-                "--no-cache-dir",
-                pypi_spec,
-            ]
+        pypi_cmd = source_build_command(
+            pypi_spec, use_uv = bool(shutil.which("uv")), is_hip = bool(is_hip), reinstall = False
+        )
 
-    # ROCm source compilation can take 10-30 min; use a generous timeout. Non-HIP installs keep the pre-existing "no
-    # timeout" behaviour so unrelated slow builds (causal-conv1d on aarch64, unsupported torch/CUDA combos) aren't
-    # aborted at 5 minutes.
-    _run_kwargs: dict[str, Any] = {
-        "stdout": _sp.PIPE,
-        "stderr": _sp.STDOUT,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        # Make the Python child emit the UTF-8 we decode above.
-        "env": utf8_child_env(),
-    }
-    if is_hip:
-        _run_kwargs["timeout"] = 1800
-        # On Ubuntu 24.04 + ROCm clang-20 the HIP source build dies on a missing <cstdlib> (gcc-14 runtime dir lacks
-        # C++ headers). Inject --gcc-install-dir for a gcc whose headers exist, respecting any pre-existing one.
-        # Mirrors bbf004c in setup.sh (PR #5301).
-        _existing_flags = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
-        if "--gcc-install-dir" not in _existing_flags:
-            _gcc_dir = _hipcc_gcc_install_dir()
-            if _gcc_dir is not None:
-                _appended = (f"{_existing_flags} --gcc-install-dir={_gcc_dir}").strip()
-                _env = _run_kwargs.get("env", os.environ).copy()
-                _env["HIPCC_COMPILE_FLAGS_APPEND"] = _appended
-                _run_kwargs["env"] = _env
-                logger.info(
-                    "HIP source build for %s: appended "
-                    "--gcc-install-dir=%s to HIPCC_COMPILE_FLAGS_APPEND",
-                    display_name,
-                    _gcc_dir,
-                )
+    _run_kwargs, _gcc_dir = source_build_run_kwargs(
+        is_hip = bool(is_hip), gcc_install_dir = _hipcc_gcc_install_dir
+    )
+    if _gcc_dir is not None:
+        logger.info(
+            "HIP source build for %s: appended --gcc-install-dir=%s to HIPCC_COMPILE_FLAGS_APPEND",
+            display_name,
+            _gcc_dir,
+        )
 
     try:
         result = _sp.run(pypi_cmd, **_run_kwargs)
@@ -1571,6 +1511,19 @@ def _attempt_package_install(
     return True
 
 
+def _pinned_kernel_kwargs(kernel: PinnedKernel) -> dict[str, str]:
+    """_install_package_wheel_first arguments for a pinned kernel release."""
+    return {
+        "import_name": kernel.import_name,
+        "display_name": kernel.display_name,
+        "pypi_name": kernel.pypi_name,
+        "pypi_version": kernel.package_version,
+        "filename_prefix": kernel.import_name,
+        "release_tag": kernel.release_tag,
+        "release_base_url": kernel.release_base_url,
+    }
+
+
 def _ensure_causal_conv1d_fast_path(
     event_queue: Any,
     model_name: str,
@@ -1585,16 +1538,7 @@ def _ensure_causal_conv1d_fast_path(
         logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
         return
 
-    _install_package_wheel_first(
-        event_queue = event_queue,
-        import_name = "causal_conv1d",
-        display_name = "causal-conv1d",
-        pypi_name = "causal-conv1d",
-        pypi_version = _CAUSAL_CONV1D_PACKAGE_VERSION,
-        filename_prefix = "causal_conv1d",
-        release_tag = _CAUSAL_CONV1D_RELEASE_TAG,
-        release_base_url = "https://github.com/Dao-AILab/causal-conv1d/releases/download",
-    )
+    _install_package_wheel_first(event_queue = event_queue, **_pinned_kernel_kwargs(CAUSAL_CONV1D))
 
 
 def _flash_linear_attention_importable() -> bool:
@@ -1611,32 +1555,12 @@ def _flash_linear_attention_importable() -> bool:
         return False
 
 
-_SSM_MODEL_SUBSTRINGS = (
-    "nemotron_h",
-    "nemotron-h",
-    "nemotron-3-nano",
-    "falcon_h1",
-    "falcon-h1",
-    "granite-4.0-h",
-    "granitemoehybrid",
-)
-
-
 def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
     if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
         return
 
     logger.info("SSM model detected; setting up mamba-ssm after causal-conv1d")
-    _install_package_wheel_first(
-        event_queue = event_queue,
-        import_name = "mamba_ssm",
-        display_name = "mamba-ssm",
-        pypi_name = "mamba-ssm",
-        pypi_version = _MAMBA_SSM_PACKAGE_VERSION,
-        filename_prefix = "mamba_ssm",
-        release_tag = _MAMBA_SSM_RELEASE_TAG,
-        release_base_url = "https://github.com/state-spaces/mamba/releases/download",
-    )
+    _install_package_wheel_first(event_queue = event_queue, **_pinned_kernel_kwargs(MAMBA_SSM))
 
 
 def _rocm_classify_unified_memory(props: Any) -> tuple[str, bool]:
@@ -1952,16 +1876,7 @@ def _install_fast_path_hooks(
         if sys.platform == "win32":
             logger.info("causal-conv1d: no prebuilt wheel for Windows; skipping")
             return False
-        ok = _install_package_wheel_first(
-            event_queue = eq,
-            import_name = "causal_conv1d",
-            display_name = "causal-conv1d",
-            pypi_name = "causal-conv1d",
-            pypi_version = _CAUSAL_CONV1D_PACKAGE_VERSION,
-            filename_prefix = "causal_conv1d",
-            release_tag = _CAUSAL_CONV1D_RELEASE_TAG,
-            release_base_url = ("https://github.com/Dao-AILab/causal-conv1d/releases/download"),
-        )
+        ok = _install_package_wheel_first(event_queue = eq, **_pinned_kernel_kwargs(CAUSAL_CONV1D))
         return bool(ok)
 
     hooks: list[tuple[str, Callable[[Any], bool]]] = []
@@ -2716,6 +2631,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
         message = "Embedding model training is not supported for MLX training yet."
         _send("error", error = message)
         raise NotImplementedError(message)
+    if config.get("is_decision"):
+        message = "Decision model training is not supported for MLX training yet."
+        _send("error", error = message)
+        raise NotImplementedError(message)
     if config.get("training_type") == "Continued Pretraining":
         message = "Continued Pretraining is not supported for MLX training yet."
         _send("error", error = message)
@@ -3087,6 +3006,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 raise ValueError(f"Dataset format conversion failed: {'; '.join(errors)}")
             if info.get("dropped_rows_warning"):
                 _send("warning", message = info["dropped_rows_warning"])
+            for message in info.get("run_warnings", []):
+                _send("warning", message = message)
             dataset_final_format = str(info.get("final_format", "") or "").lower()
             if eval_dataset is not None:
                 ev = format_and_template_dataset(
@@ -3098,6 +3019,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     dataset_name = hf_dataset or "local",
                     custom_format_mapping = custom_format_mapping,
                     split_name = "eval",
+                    raw_text_column = info.get("raw_text_column"),
                 )
                 if ev.get("success", True):
                     eval_dataset = ev.get("dataset", eval_dataset)
@@ -3116,6 +3038,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     )
                 if ev.get("dropped_rows_warning"):
                     _send("warning", message = f"Eval dataset: {ev['dropped_rows_warning']}")
+                for message in ev.get("run_warnings", []):
+                    _send("warning", message = message)
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
@@ -3559,6 +3483,45 @@ def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
         return None, True
 
 
+def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
+    from core.systemone import laya_runtime
+    from core.systemone.catalog import Checkpoint
+    from utils.hf_xet_fallback import start_watchdog
+    from utils.paths import is_local_path
+
+    model_name = config["model_name"]
+    # An LLM that gets a new decision head downloads through FastModel's own loader in the trainer.
+    if is_local_path(model_name) or config.get("decision_layout") == "llm":
+        return
+    hf_token = _worker_hf_token(config)
+    if hf_token:
+        os.environ["HF_TOKEN"] = hf_token
+    _send_status(event_queue, "Loading decision model...")
+    # Under the stall watchdog, so the parent can retry a stalled Xet download over HTTP.
+    event_queue.put({"type": "model_load_started", "ts": time.time()})
+    watchdog_stop = start_watchdog(
+        repo_ids = [model_name],
+        on_stall = lambda msg: event_queue.put({"type": "stall", "message": msg, "ts": time.time()}),
+        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
+    )
+    try:
+        laya_runtime._checkpoint_dir(
+            Checkpoint(
+                "base",
+                model_name,
+                config.get("model_subfolder") or None,
+                "",
+                layout = config.get("decision_layout") or "laya",
+            )
+        )
+    except Exception as exc:
+        # The trainer's own load reports it.
+        logger.info("Could not download %s ahead of the trainer: %s", model_name, exc)
+    finally:
+        watchdog_stop.set()
+        event_queue.put({"type": "model_load_completed", "ts": time.time()})
+
+
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     """Subprocess entrypoint. Fresh Python, no stale module state. ``event_queue`` carries
     progress/status/error events to the parent, ``stop_queue`` carries stop commands from it, and
@@ -3643,8 +3606,22 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         service_name = "unsloth-studio-training-worker",
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
+    # As the inference worker: a recovered traceback reaching fd 2 must not read as the crash.
+    from utils.worker_stderr import mark_log_record_continuations
 
-    apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
+    mark_log_record_continuations()
+
+    gpu_ids = config.get("resolved_gpu_ids")
+    if config.get("is_decision") and gpu_ids and len(gpu_ids) > 1:
+        gpu_ids = gpu_ids[:1]
+        event_queue.put(
+            {
+                "type": "warning",
+                "message": f"Decision models train on one GPU; using GPU {gpu_ids[0]}.",
+                "ts": time.time(),
+            }
+        )
+    apply_gpu_ids(gpu_ids, backend = config.get("device_backend"))
 
     if not _validate_training_worker_config(config, event_queue):
         return
@@ -3733,44 +3710,51 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     #    lazy_load it without calling is_causal_conv1d_available.
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
-    try:
-        from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+    # Laya decision models are ModernBERT encoders: none of these apply.
+    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
+    if (
+        not config.get("is_decision")
+        or config.get("decision_layout") in ("clef", "llm")
+        or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
+    ):
+        try:
+            from utils.ssm_runtime import resolved_model_wants_causal_conv1d
 
-        wants_causal_conv1d = resolved_model_wants_causal_conv1d(
-            model_name,
-            model_load_target,
-            _worker_hf_token(config),
-        )
-        _ensure_causal_conv1d_fast_path(
-            event_queue,
-            model_name,
-            required = wants_causal_conv1d,
-        )
-        _install_fast_path_hooks(
-            event_queue,
-            model_name,
-            install_causal_conv1d = wants_causal_conv1d,
-        )
-        _ensure_mamba_ssm(event_queue, model_name)
-        _ensure_flash_attn_for_long_context(
-            event_queue,
-            int(config.get("max_seq_length", 2048)),
-        )
-    except Exception as exc:
-        event_queue.put(
-            {
-                "type": "error",
-                "error": (
-                    f"Please choose another model to train, since "
-                    f"a fast-path kernel library "
-                    f"(causal-conv1d / mamba-ssm) failed to install "
-                    f"with error: {exc}"
-                ),
-                "stack": traceback.format_exc(limit = 20),
-                "ts": time.time(),
-            }
-        )
-        return
+            wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+                model_name,
+                model_load_target,
+                _worker_hf_token(config),
+            )
+            _ensure_causal_conv1d_fast_path(
+                event_queue,
+                model_name,
+                required = wants_causal_conv1d,
+            )
+            _install_fast_path_hooks(
+                event_queue,
+                model_name,
+                install_causal_conv1d = wants_causal_conv1d,
+            )
+            _ensure_mamba_ssm(event_queue, model_name)
+            _ensure_flash_attn_for_long_context(
+                event_queue,
+                int(config.get("max_seq_length", 2048)),
+            )
+        except Exception as exc:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": (
+                        f"Please choose another model to train, since "
+                        f"a fast-path kernel library "
+                        f"(causal-conv1d / mamba-ssm) failed to install "
+                        f"with error: {exc}"
+                    ),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
+            return
 
     # No start-method override: Dataset.map() imports Pool from `multiprocess`, so forcing stdlib multiprocessing onto
     # "fork" never reached it; the guard now asks multiprocess.
@@ -4204,6 +4188,22 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 "ts": time.time(),
             }
         )
+        return
+
+    if config.get("is_decision", False):
+        try:
+            _download_decision_checkpoint(event_queue, config)
+            from core.training.decision_trainer import run_decision_training
+            run_decision_training(event_queue, stop_queue, config)
+        except Exception as exc:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": str(exc),
+                    "stack": traceback.format_exc(limit = 20),
+                    "ts": time.time(),
+                }
+            )
         return
 
     # Embedding models use a different pipeline (FastSentenceTransformer + SentenceTransformerTrainer +

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.1 T5 sequence length follows ComfyUI: the prompt's real T5 length (EOS included), floored
-at 256 and capped at the pipeline's 512, instead of diffusers' fixed 512."""
+"""FLUX.1 T5 sequence length follows ComfyUI (floor 256, cap 512) instead of diffusers' fixed 512."""
 
 from __future__ import annotations
 
@@ -57,7 +56,6 @@ def test_only_flux1_families_and_only_when_accepted():
     assert flux_t5_kwarg("flux.1-kontext", pipe, params, {"prompt": "a"}) == 256
     assert flux_t5_kwarg("flux.2-klein", pipe, params, {"prompt": "a"}) is None
     assert flux_t5_kwarg("flux.1", pipe, {}, {"prompt": "a"}) is None
-    # An explicit value is never overridden.
     assert flux_t5_kwarg("flux.1", pipe, params, {"prompt": "a", "max_sequence_length": 77}) is None
 
 

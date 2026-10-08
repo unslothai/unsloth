@@ -6,10 +6,12 @@ import test from "node:test";
 import ts from "typescript";
 import { explicitFamily } from "../src/features/model-picker/components/model-selector/family-override.ts";
 import {
+  componentFilesMatch,
   matchesRememberedModel,
   readImageModel,
   rememberImageModel,
 } from "../src/features/images/image-model-recall.ts";
+import { splitComponentFileList } from "../src/features/images/component-files.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 
 const { storage } = installLocalStorageFake();
@@ -59,6 +61,9 @@ test("recalling a quantized model carries the selected adapters into its load", 
       transformerCache: "auto",
       selectedGpu: "auto",
       gpuChoices: [],
+      textEncoderFiles: "",
+      vaeFile: "",
+      splitComponentFileList,
       busy: null,
       imagePresets: { hydrated: true },
       prompt: "a teapot",
@@ -131,6 +136,88 @@ test("recalling a quantized model carries the selected adapters into its load", 
   });
   await callbacks.handleGenerateWithRecall();
   assert.equal((loads[0][2] as { family_override?: string }).family_override, "flux.1");
+
+  // A recalled build loads with its own encoder / VAE files, never the live fields.
+  type Files = { text_encoder_file?: string[]; vae_file?: string };
+  const supplied = {
+    repoId: "/comfy/models/diffusion_models",
+    kind: "gguf",
+    filename: "z.gguf",
+    textEncoderFiles: ["../text_encoders/qwen_3_4b.safetensors"],
+    vaeFile: "../vae/ae.safetensors",
+  };
+  const withFiles = recall({ rememberedModel: supplied, textEncoderFiles: "live.safetensors", vaeFile: "live_vae.safetensors" });
+  await withFiles.callbacks.handleGenerateWithRecall();
+  assert.deepEqual((withFiles.loads[0][2] as Files).text_encoder_file, supplied.textEncoderFiles);
+  assert.equal((withFiles.loads[0][2] as Files).vae_file, supplied.vaeFile);
+  // After a refresh with the model still resident, the stored paths survive (status names only basenames).
+  const resident = recall({
+    rememberedModel: supplied,
+    status: {
+      loaded: true,
+      repo_id: supplied.repoId,
+      model_kind: "gguf",
+      gguf_filename: "z.gguf",
+      component_files: { text_encoder: "qwen_3_4b.safetensors", vae: "ae.safetensors" },
+    },
+    matchesRememberedModel,
+    componentFilesMatch,
+    withEngagedFamily: (m: Record<string, unknown>) => m,
+    rememberImageModel: (m: unknown) => storage.setItem("unsloth:images:last-model", JSON.stringify(m)),
+    setRememberedModel: () => {},
+    handleGenerate: async () => {},
+  });
+  await resident.callbacks.handleGenerateWithRecall();
+  assert.deepEqual(readImageModel()?.textEncoderFiles, supplied.textEncoderFiles);
+  assert.equal(readImageModel()?.vaeFile, supplied.vaeFile);
+  // Another client reloaded the same checkpoint without the files: the stale paths are dropped.
+  const reloaded = recall({
+    rememberedModel: supplied,
+    status: { loaded: true, repo_id: supplied.repoId, model_kind: "gguf", gguf_filename: "z.gguf", component_files: null },
+    matchesRememberedModel,
+    componentFilesMatch,
+    withEngagedFamily: (m: Record<string, unknown>) => m,
+    rememberImageModel: (m: unknown) => storage.setItem("unsloth:images:last-model", JSON.stringify(m)),
+    setRememberedModel: () => {},
+    handleGenerate: async () => {},
+  });
+  await reloaded.callbacks.handleGenerateWithRecall();
+  assert.equal(readImageModel()?.textEncoderFiles, undefined);
+  assert.equal(readImageModel()?.vaeFile, undefined);
+  // Same for this tab's own last load once the resident build no longer uses its files.
+  const ownStale = recall({
+    rememberedModel: null,
+    lastLoad: { current: supplied },
+    status: { loaded: true, repo_id: supplied.repoId, model_kind: "gguf", gguf_filename: "z.gguf", component_files: null },
+    matchesRememberedModel,
+    componentFilesMatch,
+    withEngagedFamily: (m: Record<string, unknown>) => m,
+    rememberImageModel: (m: unknown) => storage.setItem("unsloth:images:last-model", JSON.stringify(m)),
+    setRememberedModel: () => {},
+    handleGenerate: async () => {},
+  });
+  await ownStale.callbacks.handleGenerateWithRecall();
+  assert.equal(readImageModel()?.textEncoderFiles, undefined);
+  const without = recall({ rememberedModel: { ...supplied, textEncoderFiles: undefined, vaeFile: undefined }, textEncoderFiles: "live.safetensors" });
+  await without.callbacks.handleGenerateWithRecall();
+  assert.equal((without.loads[0][2] as Files).text_encoder_file, undefined);
+  assert.equal((without.loads[0][2] as Files).vae_file, undefined);
+});
+
+test("recall keeps supplied encoder / VAE file paths", () => {
+  const model = {
+    repoId: "/comfy/models/diffusion_models",
+    kind: "gguf" as const,
+    filename: "z.gguf",
+    textEncoderFiles: ["../text_encoders/clip_l.safetensors", "../text_encoders/t5xxl.safetensors"],
+    vaeFile: "../vae/ae.safetensors",
+  };
+  rememberImageModel(model);
+  assert.deepEqual(readImageModel(), model);
+  storage.setItem("unsloth:images:last-model", JSON.stringify({ ...model, textEncoderFiles: [1, ""], vaeFile: 2 }));
+  const read = readImageModel();
+  assert.equal(read?.textEncoderFiles, undefined);
+  assert.equal(read?.vaeFile, undefined);
 });
 
 test("recall keeps an explicit family and drops Auto", () => {

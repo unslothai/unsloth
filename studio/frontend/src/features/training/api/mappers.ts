@@ -54,8 +54,20 @@ export function buildTrainingStartPayload(
   config: TrainingConfigState,
   hfToken: string | null,
 ): TrainingStartRequest {
-  const isCpt = config.trainingMethod === "cpt";
-  const adapterMethod = config.trainingMethod !== "full";
+  const isDecision = config.modelType === "decision";
+  // Laya trains in 16-bit (LoRA or full); Clef and an LLM decision model also take QLoRA.
+  const hasLlmBackbone =
+    isDecision &&
+    (config.decisionLayout === "clef" || config.decisionLayout === "llm");
+  const trainingMethod =
+    isDecision &&
+    config.trainingMethod !== "full" &&
+    !(hasLlmBackbone && config.trainingMethod === "qlora")
+      ? "lora"
+      : config.trainingMethod;
+  const isCpt = trainingMethod === "cpt";
+  const adapterMethod = trainingMethod !== "full";
+  const loraVariants = adapterMethod && !isDecision;
   const _selectedModelLower = (config.selectedModel ?? "").toLowerCase();
   // DeepSeek OCR ignores user-selected image size; do not send it.
   const isDeepseekOcr =
@@ -71,12 +83,15 @@ export function buildTrainingStartPayload(
       ? [config.uploadedFile]
       : [];
   const s3Config = buildS3PayloadConfig(config);
-  const objective = isCpt ? "sft" : config.trainingObjective;
+  // Decision models train their own head; RL objectives do not apply.
+  const objective = isCpt || isDecision ? "sft" : config.trainingObjective;
   const isRl = objective !== "sft";
   // RL rows carry their own roles (prompt, answer, chosen, ...), not the chat-role mapping.
   const roleMapping = isRl ? config.rlRoleMapping : config.datasetManualMapping;
   const customFormatMapping: Record<string, unknown> | undefined =
-    Object.keys(roleMapping).length > 0 ? { ...roleMapping } : undefined;
+    !isDecision && Object.keys(roleMapping).length > 0
+      ? { ...roleMapping }
+      : undefined;
 
   // Inject conversion advisor metadata into the mapping (__ prefix keys)
   const hasAdvisorMeta =
@@ -94,13 +109,14 @@ export function buildTrainingStartPayload(
   return {
     model_name: config.selectedModel ?? "",
     project_name: (config.projectName || "").trim() || null,
-    training_type: toBackendTrainingType(config.trainingMethod),
+    training_type: toBackendTrainingType(trainingMethod),
     hf_token: hfToken,
     model_known_cached: config.modelKnownCached,
     model_local_path: config.modelKnownCached ? config.modelLocalPath : null,
     model_format: config.modelFormat,
-    load_in_4bit: trainingLoadsIn4Bit(config),
-    max_seq_length: config.contextLength,
+    load_in_4bit: trainingLoadsIn4Bit({ ...config, trainingMethod }),
+    // Hidden for decision runs: Laya always trains at 1024 tokens, Clef and LLMs at the recipe's length.
+    max_seq_length: isDecision && !hasLlmBackbone ? 1024 : config.contextLength,
     vision_image_size:
       config.isVisionModel && config.isDatasetImage === true && !isDeepseekOcr
         ? config.visionImageSize
@@ -116,7 +132,8 @@ export function buildTrainingStartPayload(
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
-    dataset_streaming: hfDataset ? config.datasetStreaming : false,
+    dataset_streaming:
+      hfDataset && !isDecision ? config.datasetStreaming : false,
     dataset_slice_start: parseSliceValue(config.datasetSliceStart),
     dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: localDatasets,
@@ -146,8 +163,12 @@ export function buildTrainingStartPayload(
     // that. Guarded by tests/training-start-payload-grad-norm.test.ts.
     max_grad_value: null,
     random_seed: config.randomSeed,
-    packing: isEmbedding ? false : config.packing,
-    optim: config.optimizerType,
+    packing: isEmbedding || isDecision ? false : config.packing,
+    // Laya's recipe needs torch AdamW; Clef keeps its recipe's (8-bit) optimizer.
+    optim:
+      isDecision && config.decisionLayout !== "clef"
+        ? "adamw_torch"
+        : config.optimizerType,
     lr_scheduler_type: config.lrSchedulerType,
     use_lora: adapterMethod,
     lora_r: config.loraRank,
@@ -155,12 +176,12 @@ export function buildTrainingStartPayload(
     lora_dropout: config.loraDropout,
     target_modules: adapterMethod ? config.targetModules : [],
     gradient_checkpointing: config.gradientCheckpointing,
-    use_rslora: adapterMethod && config.loraVariant === "rslora",
-    use_loftq: adapterMethod && config.loraVariant === "loftq",
-    use_dora: adapterMethod && config.loraVariant === "dora",
+    use_rslora: loraVariants && config.loraVariant === "rslora",
+    use_loftq: loraVariants && config.loraVariant === "loftq",
+    use_dora: loraVariants && config.loraVariant === "dora",
     // CPT always trains on full sequences (no chat format masking)
     train_on_completions:
-      isEmbedding || isCpt || isRawText || isRl
+      isEmbedding || isDecision || isCpt || isRawText || isRl
         ? false
         : config.trainOnCompletions,
     objective,
@@ -184,7 +205,9 @@ export function buildTrainingStartPayload(
     finetune_mlp_modules: config.finetuneMLPModules,
     is_dataset_image: isEmbedding ? false : !!config.isDatasetImage,
     is_dataset_audio: isEmbedding ? false : config.isDatasetAudio,
-    is_embedding: isEmbedding,
+    is_embedding: isEmbedding && !isDecision,
+    is_decision: isDecision,
+    model_subfolder: isDecision ? config.modelSubfolder : null,
     enable_wandb: config.enableWandb,
     wandb_token: config.enableWandb ? config.wandbToken.trim() || null : null,
     wandb_project: config.enableWandb

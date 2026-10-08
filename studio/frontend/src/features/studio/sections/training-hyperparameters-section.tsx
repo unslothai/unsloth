@@ -86,6 +86,7 @@ export function TrainingHyperparametersSection({
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       epochs: state.epochs,
+      isDecision: state.modelType === "decision",
       optimizerType: state.optimizerType,
       lrSchedulerType: state.lrSchedulerType,
       batchSize: state.batchSize,
@@ -117,7 +118,10 @@ export function TrainingHyperparametersSection({
   );
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
-  const objective = useTrainingConfigStore((s) => s.trainingObjective);
+  const objective = useTrainingConfigStore((s) =>
+    // Decision models train their own head; RL objectives do not apply.
+    s.modelType === "decision" ? "sft" : s.trainingObjective,
+  );
   // Picking an RL objective opens its settings; going back to SFT leaves a tab that no longer exists.
   useEffect(() => {
     setTab((current) =>
@@ -173,42 +177,44 @@ export function TrainingHyperparametersSection({
             value="optimization"
             className="mt-3 flex flex-col gap-3"
           >
-            <ParamsRow
-              label={t("studio.params.optimizer")}
-              tooltip={
-                <>
-                  {t(
-                    isMac
-                      ? "studio.params.optimizerTooltipMlx"
-                      : "studio.params.optimizerTooltip",
-                  )}{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline"
-                  >
-                    {t("studio.params.readMore")}
-                  </a>
-                </>
-              }
-            >
-              <Select
-                value={selectedOptimizer}
-                onValueChange={store.setOptimizerType}
+            {!store.isDecision && (
+              <ParamsRow
+                label={t("studio.params.optimizer")}
+                tooltip={
+                  <>
+                    {t(
+                      isMac
+                        ? "studio.params.optimizerTooltipMlx"
+                        : "studio.params.optimizerTooltip",
+                    )}{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      {t("studio.params.readMore")}
+                    </a>
+                  </>
+                }
               >
-                <SelectTrigger className="w-48">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {optimizerOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {formatOptimizerLabel(option.value, option.label, t)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </ParamsRow>
+                <Select
+                  value={selectedOptimizer}
+                  onValueChange={store.setOptimizerType}
+                >
+                  <SelectTrigger className="w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {optimizerOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {formatOptimizerLabel(option.value, option.label, t)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </ParamsRow>
+            )}
             <ParamsRow
               label={t("studio.params.lrScheduler")}
               tooltip={
@@ -356,31 +362,33 @@ export function TrainingHyperparametersSection({
                 step={1}
               />
             )}
-            <ParamsRow
-              label={t("studio.params.saveSteps")}
-              tooltip={
-                <>
-                  {t("studio.params.saveStepsTooltip")}{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline"
-                  >
-                    {t("studio.params.readMore")}
-                  </a>
-                </>
-              }
-            >
-              <Input
-                type="number"
-                value={store.saveSteps}
-                onChange={(event) =>
-                  store.setSaveSteps(Number(event.target.value))
+            {!store.isDecision && (
+              <ParamsRow
+                label={t("studio.params.saveSteps")}
+                tooltip={
+                  <>
+                    {t("studio.params.saveStepsTooltip")}{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      {t("studio.params.readMore")}
+                    </a>
+                  </>
                 }
-                className="w-28 font-mono"
-              />
-            </ParamsRow>
+              >
+                <Input
+                  type="number"
+                  value={store.saveSteps}
+                  onChange={(event) =>
+                    store.setSaveSteps(Number(event.target.value))
+                  }
+                  className="w-28 font-mono"
+                />
+              </ParamsRow>
+            )}
             <ParamsRow
               label={t("studio.params.evalSteps")}
               tooltip={t("studio.params.evalStepsTooltip")}
