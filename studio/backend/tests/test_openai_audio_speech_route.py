@@ -2004,7 +2004,11 @@ def test_a_rejected_voice_load_leaves_no_chat_claim_behind(monkeypatch, outcome)
         _unload_epoch = 0
         is_active = property(lambda self: self._process is not None)
 
-        def load_model(self, intent, load_cancel_event = None):
+        def load_model(
+            self,
+            intent,
+            load_cancel_event = None,
+        ):
             if outcome == "raises":
                 raise RuntimeError("spawn failed")
             self._process = SimpleNamespace(poll = lambda: None)
