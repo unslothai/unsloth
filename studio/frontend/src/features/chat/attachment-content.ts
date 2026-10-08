@@ -971,6 +971,73 @@ export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
   return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
 }
 
+const DOCX_TABLE_RE = /<(?:[\w.-]+:)?tbl[\s>]/;
+
+export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!DOCX_TABLE_RE.test(xml)) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const tag = (local: string) => (root.prefix ? `${root.prefix}:${local}` : local);
+    const run = (child: Element) => {
+      const r = doc.createElementNS(w, tag("r"));
+      r.appendChild(child);
+      return r;
+    };
+    const space = () => {
+      const t = doc.createElementNS(w, tag("t"));
+      t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+      t.appendChild(doc.createTextNode(" "));
+      return run(t);
+    };
+    const tab = () => run(doc.createElementNS(w, tag("tab")));
+    const outermost = (p: Element, cell: Element) => {
+      for (let node = p.parentNode; node && node !== cell; node = node.parentNode) {
+        if ((node as Element).localName === "p") return false;
+      }
+      return true;
+    };
+    // Innermost first, so a nested table is already plain paragraphs when its cell is joined.
+    for (const table of Array.from(doc.getElementsByTagNameNS(w, "tbl")).reverse()) {
+      for (const row of Array.from(table.getElementsByTagNameNS(w, "tr"))) {
+        const cells = Array.from(row.getElementsByTagNameNS(w, "tc"));
+        if (cells.length < 2) {
+          for (const cell of cells) {
+            for (const child of Array.from(cell.childNodes)) {
+              if ((child as Element).localName !== "tcPr") table.parentNode?.insertBefore(child, table);
+            }
+          }
+          continue;
+        }
+        const line = doc.createElementNS(w, tag("p"));
+        cells.forEach((cell, index) => {
+          if (index) line.appendChild(tab());
+          Array.from(cell.getElementsByTagNameNS(w, "p"))
+            .filter((p) => outermost(p, cell))
+            .forEach((p, i) => {
+              if (i) line.appendChild(space());
+              for (const child of Array.from(p.childNodes)) {
+                if ((child as Element).localName !== "pPr") line.appendChild(child);
+              }
+            });
+          const span = childElements(cell, w, "tcPr").flatMap((pr) => childElements(pr, w, "gridSpan"))[0];
+          for (let i = 1; i < Math.min(Number(span?.getAttributeNS(w, "val")) || 1, 1000); i++) line.appendChild(tab());
+        });
+        table.parentNode?.insertBefore(line, table);
+      }
+      table.parentNode?.removeChild(table);
+    }
+    rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  if (!Object.keys(rewritten).length) return archive;
+  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+}
+
 const DOCX_NOTE_REFERENCE_RE =
   /<(?:([\w.-]+):)?(footnote|endnote)Reference\b([^>]*?)(\/?)>(\s*<\/(?:[\w.-]+:)?\2Reference\s*>)?/g;
 const DOCX_NOTE_ID_RE = /(?:^|\s)(?:[\w.-]+:)?id\s*=\s*["']([^"']*)["']/;
@@ -1498,7 +1565,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   );
   const marked = markDocxNotes(linearizeDocxMath(repacked));
   const { value } = await mammoth.extractRawText({
-    arrayBuffer: toArrayBuffer(writeDocxBreaksAndCheckboxes(marked.archive)),
+    arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(marked.archive))),
   });
   return marked.label(value);
 }
@@ -1651,6 +1718,27 @@ function collectHtmlBlockText(
     }
     preformatted.push(code);
     return "\n\u0000\n";
+  }
+
+  if (tag === "tr" && preformatted) {
+    const cells = Array.from(element.childNodes).filter(
+      (child): child is Element =>
+        child.nodeType === ELEMENT_NODE &&
+        ["td", "th"].includes((child as Element).tagName.toLowerCase()),
+    );
+    if (cells.length > 1) {
+      const row = cells
+        .map((cell) => {
+          const span = Math.min(Math.max(Number(cell.getAttribute("colspan")) || 1, 1), 1000);
+          return collectHtmlBlockText(cell).replace(/\s+/g, " ").trim() + "\t".repeat(span - 1);
+        })
+        .join("\t");
+      if (!row.trim()) {
+        return "\n";
+      }
+      preformatted.push(row);
+      return "\n\u0000\n";
+    }
   }
 
   const text = Array.from(element.childNodes)

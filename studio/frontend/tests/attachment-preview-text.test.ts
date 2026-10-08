@@ -37,6 +37,7 @@ const {
   repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
   writeDocxBreaksAndCheckboxes,
+  writeDocxTableRows,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
 const { readRtfAttachmentContent } =
@@ -1477,6 +1478,84 @@ test("a Word file keeps its line breaks and which boxes are ticked", async () =>
   } finally {
     Object.assign(globals, original);
   }
+});
+
+test("a Word table keeps its columns when a cell is empty", async () => {
+  const ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const cell = (...paragraphs: string[]) =>
+    `<w:tc>${paragraphs.map((text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join("") || "<w:p/>"}</w:tc>`;
+  const row = (...cells: string[]) => `<w:tr>${cells.join("")}</w:tr>`;
+  const bytes = docxBytes(
+    `<w:document ${ns}><w:body><w:p><w:r><w:t>Timetable</w:t></w:r></w:p><w:tbl>` +
+      row('<w:tc><w:tcPr><w:gridSpan w:val="6"/></w:tcPr><w:p><w:r><w:t>Week 1</w:t></w:r></w:p></w:tc>') +
+      row(cell("Time"), cell("Mon"), cell("Tue"), cell("Wed"), cell("Thu"), cell("Fri")) +
+      row(cell("10:00"), cell("History"), cell(), cell("Maths"), cell("Art"), cell()) +
+      row(
+        cell("11:00"),
+        '<w:tc><w:tcPr><w:gridSpan w:val="2"/></w:tcPr><w:p><w:r><w:t>Trip</w:t></w:r></w:p></w:tc>',
+        cell("Music", "Room 4"),
+        cell(),
+        cell("PE"),
+      ) +
+      "</w:tbl></w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxTableRows(writeDocxBreaksAndCheckboxes(bytes))),
+    });
+    assert.equal(
+      value,
+      "Timetable\n\nWeek 1\n\n" +
+        "Time\tMon\tTue\tWed\tThu\tFri\n\n" +
+        "10:00\tHistory\t\tMaths\tArt\t\n\n" +
+        "11:00\tTrip\t\tMusic Room 4\t\tPE\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("an html table keeps its columns when a cell is empty", async () => {
+  const cell = (tag: string, text = "", colspan?: string) =>
+    Object.assign(element(tag, ...(text ? [textNode(text)] : [])), {
+      getAttribute: (name: string) => (name === "colspan" ? (colspan ?? null) : null),
+    });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("h2", textNode("Timetable")),
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("th", "Time"), cell("th", "Mon"), cell("th", "Tue"), cell("th", "Wed")),
+            textNode("\n    "),
+            element("tr", cell("td", "10:00"), cell("td", "History"), cell("td"), cell("td", "Maths")),
+            element(
+              "tr",
+              cell("td", "11:00"),
+              cell("td", "Trip", "2"),
+              Object.assign(element("td", element("p", textNode("Art")), element("p", textNode("Room  4"))), {
+                getAttribute: () => null,
+              }),
+            ),
+          ),
+        ),
+        element("p", textNode("Bring a  pencil")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Timetable\n\nTime\tMon\tTue\tWed\n\n10:00\tHistory\t\tMaths\n\n11:00\tTrip\t\tArt Room 4\n\nBring a pencil",
+  );
 });
 
 /** A preview only colours what the filename says is source; extracted document text is prose whatever the file was called. */
