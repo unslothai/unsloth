@@ -869,14 +869,14 @@ def _patch_from_pretrained_rope_fix():
         return
 
     @functools.wraps(original)
-    def from_pretrained(cls, *args, **kwargs):
+    def wrapped(cls, *args, **kwargs):
         output = original(cls, *args, **kwargs)
         # output_loading_info = True returns (model, info).
         _fix_rope_inv_freq(output[0] if isinstance(output, tuple) else output)
         return output
 
-    from_pretrained._unsloth_rope_fix = True
-    PreTrainedModel.from_pretrained = classmethod(from_pretrained)
+    wrapped._unsloth_rope_fix = True
+    PreTrainedModel.from_pretrained = classmethod(wrapped)
 
 
 _patch_from_pretrained_rope_fix()

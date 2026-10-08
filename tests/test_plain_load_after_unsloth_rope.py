@@ -4,6 +4,8 @@
 """A plain transformers from_pretrained after Unsloth patched Llama (TRL loading a reward model by name, #1494) must get a valid RoPE."""
 
 import inspect
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -30,62 +32,46 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope = "module")
-def tiny_reward_model(tmp_path_factory):
-    import unsloth  # noqa: F401
-    from transformers import LlamaConfig, LlamaForSequenceClassification
+# Subprocess: pre_patch swaps Llama classes process-wide, which would leak into later tests.
+_CHECK = """
+import sys, torch
+import unsloth
+from transformers import AutoModelForSequenceClassification, LlamaConfig, LlamaForSequenceClassification
+from unsloth.models.llama import FastLlamaModel, LlamaRotaryEmbedding
 
-    from unsloth.models.llama import FastLlamaModel
-
-    FastLlamaModel.pre_patch()
-    config = LlamaConfig(
-        vocab_size = 128,
-        hidden_size = 64,
-        intermediate_size = 128,
-        num_hidden_layers = 2,
-        num_attention_heads = 4,
-        num_key_value_heads = 2,
-        max_position_embeddings = 256,
-        rope_theta = 500000.0,
-        num_labels = 1,
-        pad_token_id = 0,
-    )
-    path = tmp_path_factory.mktemp("tiny_rm")
-    torch.manual_seed(0)
-    LlamaForSequenceClassification(config).save_pretrained(path)
-    return path
-
-
-def _assert_rope_valid(model):
-    from unsloth.models.llama import LlamaRotaryEmbedding
-
-    rotary = model.model.rotary_emb
-    assert isinstance(rotary, LlamaRotaryEmbedding), type(rotary)
-    expected = rotary._unsloth_recompute_inv_freq()
-    torch.testing.assert_close(rotary.inv_freq.detach().cpu().float(), expected.float())
-    cos = rotary.multi_gpu_cos_cached[torch.cuda.current_device()]
-    t = torch.arange(cos.shape[0], dtype = torch.float32)
-    freqs = torch.outer(t, expected.float())
-    torch.testing.assert_close(
-        cos.float().cpu(), torch.cat((freqs, freqs), -1).cos(), atol = 1e-3, rtol = 0
-    )
-
-
-def test_auto_model_from_pretrained_gets_valid_rope(tiny_reward_model):
-    from transformers import AutoModelForSequenceClassification
-    _assert_rope_valid(
-        AutoModelForSequenceClassification.from_pretrained(tiny_reward_model, num_labels = 1)
-    )
-
-
-def test_output_loading_info_tuple_is_repaired(tiny_reward_model):
-    from transformers import AutoModelForSequenceClassification
-
-    model, info = AutoModelForSequenceClassification.from_pretrained(
-        tiny_reward_model, num_labels = 1, output_loading_info = True
-    )
+FastLlamaModel.pre_patch()
+config = LlamaConfig(
+    vocab_size = 128, hidden_size = 64, intermediate_size = 128, num_hidden_layers = 2,
+    num_attention_heads = 4, num_key_value_heads = 2, max_position_embeddings = 256,
+    rope_theta = 500000.0, num_labels = 1, pad_token_id = 0,
+)
+torch.manual_seed(0)
+LlamaForSequenceClassification(config).save_pretrained(sys.argv[1])
+model = AutoModelForSequenceClassification.from_pretrained(
+    sys.argv[1], num_labels = 1, output_loading_info = sys.argv[2] == "1"
+)
+if sys.argv[2] == "1":
+    model, info = model
     assert isinstance(info, dict)
-    _assert_rope_valid(model)
+rotary = model.model.rotary_emb
+assert isinstance(rotary, LlamaRotaryEmbedding), type(rotary)
+expected = rotary._unsloth_recompute_inv_freq().float()
+torch.testing.assert_close(rotary.inv_freq.detach().cpu().float(), expected)
+cos = rotary.multi_gpu_cos_cached[torch.cuda.current_device()].float().cpu()
+freqs = torch.outer(torch.arange(cos.shape[0], dtype = torch.float32), expected)
+torch.testing.assert_close(cos, torch.cat((freqs, freqs), -1).cos(), atol = 1e-3, rtol = 0)
+"""
+
+
+@pytest.mark.parametrize("output_loading_info", ["0", "1"])
+def test_plain_from_pretrained_after_pre_patch_gets_valid_rope(tmp_path, output_loading_info):
+    result = subprocess.run(
+        [sys.executable, "-c", _CHECK, str(tmp_path / "tiny_rm"), output_loading_info],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
+    assert result.returncode == 0, result.stderr[-4000:]
 
 
 def test_wrap_is_idempotent_and_keeps_transformers_source():
