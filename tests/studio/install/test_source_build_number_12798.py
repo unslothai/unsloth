@@ -77,12 +77,10 @@ def test_setup_ps1_sets_number_only_after_concrete_checkout():
     assert "$LlamaBuildNumber = $null" in text
     sets = [m.start() for m in re.finditer(r"\$LlamaBuildNumber = \$TagBuildNumber", text)]
     assert len(sets) == 2
-    # Reuse path: only in the successful checkout arm, after `git clean -fdx`.
     reuse = text.index("} elseif ($UseConcreteRef) {")
     fetch_failed = text.index('substep "git fetch failed -- using existing source"', reuse)
     clean = text.index("git -C $LlamaCppDir clean -fdx", fetch_failed)
     assert fetch_failed < clean < sets[0] < text.index("} else {", sets[0])
-    # Fresh clone: only once `git clone --branch <ref>` succeeded.
     fresh = text.index('$cloneArgs += @("--branch", $ResolvedSourceRef)')
     assert fresh < sets[1]
     assert re.search(
