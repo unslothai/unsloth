@@ -1930,3 +1930,114 @@ def test_a_cancel_wakes_a_stream_read_blocked_in_prefill(monkeypatch):
     out = list(backend.generate_audio_response_stream("hi", "snac", cancel_event = cancel))
     assert out == []
     assert time.monotonic() - start < 2
+
+
+def _dead_foreign_voice(monkeypatch):
+    """Account A's voice child exited on its own; account B is the caller and CHAT is A's."""
+    import core.inference.gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", arb.CHAT)
+    monkeypatch.setattr(arb, "_owner_account", "account-a")
+    class Voice:
+        _process = SimpleNamespace(poll = lambda: 1)
+        is_loaded = True
+        model_identifier = "C:/voices/a.gguf"
+        is_active = property(lambda self: self._process is not None)
+
+        def unload_model(self):
+            self._process = None
+            return True
+
+    voice = Voice()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    aa = routes_module.account_access
+    monkeypatch.setattr(aa, "managed_account", lambda: True)
+    monkeypatch.setattr(aa, "current_account_id", lambda: "account-b")
+    monkeypatch.setattr(aa, "resident_shared_with", lambda *a, **k: False)
+    return arb, voice
+
+
+def test_a_dead_voice_slot_does_not_hide_the_gpu_from_other_accounts(monkeypatch):
+    """A voice child that exited on its own still read is_active, so /voice/status and /voice/load
+    treated it as account A's resident and the CHAT claim stayed until A unloaded by hand."""
+    arb, voice = _dead_foreign_voice(monkeypatch)
+    status = asyncio.run(routes_module.voice_slot_status("s"))
+    assert status == {"loaded": False, "loading": False, "model": None, "audio_type": None}
+    assert voice._process is None
+    assert arb.current_owner() is None
+
+
+def test_voice_load_reaps_a_dead_voice_slot_before_the_ownership_check(monkeypatch):
+    arb, voice = _dead_foreign_voice(monkeypatch)
+    aa = routes_module.account_access
+    monkeypatch.setattr(aa, "account_hf_token", lambda token: token)
+    monkeypatch.setattr(aa, "require_model_access", lambda *a, **k: None)
+    monkeypatch.setattr(aa, "require_idle_other_accounts", lambda *a, **k: None)
+
+    def _unresolvable(**kwargs):
+        raise RuntimeError("not on the Hub")
+
+    monkeypatch.setattr("utils.models.ModelConfig.from_identifier", _unresolvable)
+    request = routes_module._VoiceLoadRequest(model_path = "b.gguf")
+    with pytest.raises(HTTPException) as failed:
+        asyncio.run(routes_module.voice_load_model(request, "s"))
+    # Past the foreign-resident 404: the dead slot was reaped and its claim dropped.
+    assert failed.value.status_code == 400
+    assert voice._process is None
+    assert arb.current_owner() is None
+
+
+@pytest.mark.parametrize("outcome", ["csm", "not_ok", "raises"])
+def test_a_rejected_voice_load_leaves_no_chat_claim_behind(monkeypatch, outcome):
+    """Driven through the handler: a GGUF that started with an unsupported codec, or failed to
+    start, is torn down and the CHAT claim it took goes with it."""
+    import core.inference.gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+
+    class Voice:
+        _process = None
+        is_loaded = False
+        model_identifier = None
+        _unload_epoch = 0
+        is_active = property(lambda self: self._process is not None)
+
+        def load_model(self, intent, load_cancel_event = None):
+            if outcome == "raises":
+                raise RuntimeError("spawn failed")
+            self._process = SimpleNamespace(poll = lambda: None)
+            self._is_audio, self._audio_type = True, "csm"
+            return outcome != "not_ok"
+
+        def unload_model(self):
+            self._process = None
+            return True
+
+    voice = Voice()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    aa = routes_module.account_access
+    monkeypatch.setattr(aa, "managed_account", lambda: False)
+    monkeypatch.setattr(aa, "require_idle_other_accounts", lambda *a, **k: None)
+    monkeypatch.setattr(aa, "resident_hidden", lambda *a, **k: False)
+    config = SimpleNamespace(
+        is_gguf = True,
+        identifier = "voices/csm-GGUF",
+        gguf_variant = "Q4_K_M",
+        gguf_hf_repo = "voices/csm-GGUF",
+        gguf_file = None,
+        base_model = None,
+    )
+    monkeypatch.setattr("utils.models.ModelConfig.from_identifier", lambda **k: config)
+
+    async def _placement(*a, **k):
+        return None
+
+    monkeypatch.setattr(routes_module, "_prepare_load_placement", _placement)
+    monkeypatch.setattr(routes_module, "_offline_guarded", lambda *a, **k: None)
+    request = routes_module._VoiceLoadRequest(model_path = "voices/csm-GGUF")
+    with pytest.raises(HTTPException) as rejected:
+        asyncio.run(routes_module.voice_load_model(request, "s"))
+    assert rejected.value.status_code == (400 if outcome == "csm" else 500)
+    assert voice._process is None
+    assert arb.current_owner() is None

@@ -8921,6 +8921,20 @@ def _voice_server_alive(voice) -> bool:
     return process is not None and process.poll() is None
 
 
+async def _reap_dead_voice_slot(voice) -> None:
+    """A voice child that exited on its own still reads is_active and keeps the CHAT claim, so
+    every other account saw a hidden foreign resident on an empty GPU."""
+    from core.inference.llama_cpp import voice_load_active
+
+    if not voice.is_active or _voice_server_alive(voice) or voice_load_active():
+        return
+    try:
+        await asyncio.to_thread(voice.unload_model)
+    except Exception as e:
+        logger.warning("Could not reap the exited voice server: %s", e)
+    await asyncio.to_thread(release_chat_gpu_claim)
+
+
 def _voice_load_lock() -> asyncio.Lock:
     loop = asyncio.get_running_loop()
     lock = _voice_load_locks.get(loop)
@@ -21303,6 +21317,7 @@ async def voice_load_model(
     # the other's server, and the first caller would be told its voice loaded.
     async with _voice_load_lock():
         voice_backend = get_voice_llama_backend()
+        await _reap_dead_voice_slot(voice_backend)
         # The voice joins the CHAT claim alongside its owner, so a foreign owner (a chat model or an
         # earlier voice) would keep it: hidden from the caller, usable by the other account.
         account_access.require_idle_other_accounts()
@@ -21587,6 +21602,9 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
 async def voice_slot_status(current_subject: str = Depends(get_current_subject)):
     """Return the current state of the voice slot."""
     voice_backend = get_voice_llama_backend()
+    # Not under the load lock: a load holding it owns the slot's lifecycle.
+    if not _voice_load_lock().locked():
+        await _reap_dead_voice_slot(voice_backend)
     # The slot is chat-owned GPU use: another account's resident is not described, as the
     # chat status does (a local voice's identifier is its absolute path).
     if voice_backend.is_active and account_access.resident_hidden("chat"):
