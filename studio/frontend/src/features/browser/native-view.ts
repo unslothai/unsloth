@@ -10,7 +10,7 @@ import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
-import { approveDownload, downloadSiteOf } from "./download-approval-queue";
+import { approveChosenDownload, approveDownload, downloadSiteOf } from "./download-approval-queue";
 import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
@@ -56,7 +56,7 @@ type NativeEvent =
       /** The downloadPrompt `id` it was asked under; null when refused before asking. */
       promptId?: string | null;
     }
-  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string }
+  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string; saveAs: boolean }
   | { kind: "downloadCancelled"; tabId: string; url: string; promptId: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
@@ -127,17 +127,23 @@ const downloadKey = (promptId: string) => `native:${promptId}`;
 
 /** Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
-  const { id, url, site, name } = event;
+  const { id, url, site, name, saveAs } = event;
   const entry = tab ? currentEntry(tab) : null;
   // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
   const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
-  const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
+  // Picked from the context menu: the save dialog is the prompt, whatever the site's remembered answer.
+  const decided =
+    entry?.kind !== "web"
+      ? Promise.resolve(false)
+      : saveAs
+        ? approveChosenDownload(url, name)
+        : approveDownload(url, name, asking);
   const key = downloadKey(id);
   void decided
     .then(async (allow) => {
       // Begun before deciding: a file that finished while the prompt was open lands at once.
       if (allow) beginDownload(key, name);
-      await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
+      await decideNativeDownload(id, allow, saveAs || useBrowserPrefsStore.getState().askWhereToSave);
       // Still running: one that landed during the decide call has already said so.
       const { active, buttons } = useDownloadActivity.getState();
       if (allow && buttons === 0 && key in active) toast(t("browser.native.downloading", { name }));

@@ -40,7 +40,9 @@ const STUBS = {
     "export const decideNativeDownload = async (...args) => { globalThis.nativeViewDecide?.(...args); };",
   ),
   "./download-approval-queue": stub(
-    "export const approveDownload = async () => Boolean(globalThis.nativeViewApprove); export const downloadSiteOf = () => '';",
+    "export const approveDownload = async () => Boolean(globalThis.nativeViewApprove);" +
+      " export const approveChosenDownload = async () => Boolean(globalThis.nativeViewApprove);" +
+      " export const downloadSiteOf = () => '';",
   ),
   "./history-store": stub(
     "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {}," +
