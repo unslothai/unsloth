@@ -19,7 +19,13 @@ test("the inline wav the chat adapter writes still becomes a player", () => {
 });
 
 test("a reply cannot make the player fetch a remote or same-origin url", () => {
-  for (const src of ["https://attacker.example/x.wav", "//attacker.example/x.wav", "/api/health", "blob:x"]) {
+  for (const src of [
+    "https://attacker.example/x.wav",
+    "//attacker.example/x.wav",
+    "/api/health",
+    "blob:x",
+    "data:audio/mpegurl,%23EXTM3U%0Ahttps://attacker.example/x.mp3",
+  ]) {
     assert.equal(`<audio-player src="${src}" />`.match(audioPlayerRe()), null, src);
   }
 });

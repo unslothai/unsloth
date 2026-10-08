@@ -37,8 +37,10 @@ const BLOCK_BREAK_RE =
 // non-ASCII letters and CJK punctuation are prose (KaTeX rejects them in math mode).
 const VARIABLE_PROSE_RE =
   /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=*\-\p{L}\p{M}\u3000-\u303f\uff00-\uff65]*(?:[\s/:,.;|<>=\-\u3000-\u303f\uff00-\uff65]|[^\P{L}\p{ASCII}]|[\s(]["'(`])$/u;
-// VARIABLE_PROSE_RE backtracks polynomially, so a longer span is left to the math path.
-const MAX_VARIABLE_PROSE_SPAN = 256;
+// VARIABLE_PROSE_RE backtracks polynomially (about cubic), so a longer span, or any span past a
+// per-message budget, is left to the math path: worst case stays near 75 ms per message.
+const MAX_VARIABLE_PROSE_SPAN = 128;
+const VARIABLE_PROSE_BUDGET = 8192;
 const NEW_TOKEN_RE = /[\w{\\]/;
 const isAsciiLetter = (c: number) => (c | 32) >= 97 && (c | 32) <= 122;
 const isWordChar = (c: number) =>
@@ -700,6 +702,7 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
 
   if (!text.includes("$")) return text;
 
+  let proseBudget = VARIABLE_PROSE_BUDGET;
   const codeRegions = findCodeBlockRegions(text);
   const linkRegions = mergeRegions(
     findLinkDestinationRegions(text),
@@ -763,6 +766,7 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
         ? isStreaming
         : NEW_TOKEN_RE.test(text[next + 1])) &&
       next - offset - 1 <= MAX_VARIABLE_PROSE_SPAN &&
+      (proseBudget -= next - offset - 1) >= 0 &&
       VARIABLE_PROSE_RE.test(text.slice(offset + 1, next)) &&
       !inRawText(offset)
     ) {

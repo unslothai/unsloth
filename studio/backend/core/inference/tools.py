@@ -6135,6 +6135,10 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     return False
 
 
+def _is_literal_false(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is False
+
+
 def _python_is_potentially_unsafe(code: str) -> bool:
     """Classify python-tool code for auto mode (fail closed)."""
     if not code or not code.strip():
@@ -6664,11 +6668,19 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     func = func.value
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
-                # numpy.load(..., allow_pickle=True) unpickles object arrays like torch.load; only a literal False is safe.
+                # numpy.load(..., allow_pickle=True) unpickles object arrays like torch.load; only a literal False is
+                # safe. numpy also takes it as the third positional argument or through a ** splat.
                 if any(
-                    kw.arg == "allow_pickle"
-                    and not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
+                    kw.arg == "allow_pickle" and not _is_literal_false(kw.value)
                     for kw in node.keywords
+                ) or (
+                    (func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None))
+                    == "load"
+                    and (
+                        (len(node.args) >= 3 and not _is_literal_false(node.args[2]))
+                        or any(isinstance(arg, ast.Starred) for arg in node.args)
+                        or any(kw.arg is None for kw in node.keywords)
+                    )
                 ):
                     return True
                 # A concrete write callable handed as an argument to any call escapes into a helper that can invoke it
