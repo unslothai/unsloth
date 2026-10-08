@@ -17087,7 +17087,6 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
             config = getattr(self, "_unsloth_http1_config", None)
             if config is None or not _is_connection_reset(exc):
                 raise
-            # The replay shares the original request's budget instead of starting a new one.
             timeout = config.get("timeout")
             if timeout:
                 timeout -= time.monotonic() - start
