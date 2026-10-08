@@ -959,7 +959,7 @@ export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
       if (!inRun) node.appendChild(glyph);
       anchor.parentNode?.insertBefore(node, anchor);
     }
-    // Page and column breaks too: mammoth's raw text drops every break, gluing the words either side.
+    // mammoth drops page and column breaks, which would join surrounding words.
     const breaks = [
       ...Array.from(doc.getElementsByTagNameNS(w, "br")),
       ...Array.from(doc.getElementsByTagNameNS(w, "cr")),
@@ -1004,7 +1004,7 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
       }
       return true;
     };
-    // Innermost first, so a nested table is already plain paragraphs when its cell is joined.
+    // flatten nested tables before joining their paragraphs into the cell.
     for (const table of Array.from(doc.getElementsByTagNameNS(w, "tbl")).reverse()) {
       for (const row of Array.from(table.getElementsByTagNameNS(w, "tr"))) {
         const cells = Array.from(row.getElementsByTagNameNS(w, "tc"));
@@ -1022,7 +1022,7 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
         for (let i = 0; i < before; i++) line.appendChild(tab());
         cells.forEach((cell, index) => {
           if (index) line.appendChild(tab());
-          // A tab or line break inside a cell, a nested table's included, would read as the next column or row.
+          // cell tabs and line breaks, including those in nested tables, would look like column or row separators.
           for (const local of ["tab", "br", "cr"]) {
             for (const mark of Array.from(cell.getElementsByTagNameNS(w, local))) {
               if ((mark.parentNode as Element | null)?.localName === "r") mark.parentNode?.replaceChild(space(), mark);
@@ -1701,8 +1701,7 @@ export function extractHtmlAttachmentText(html: string): string {
     .join("");
 }
 
-/** Text with the line structure the source had. `textContent` runs a whole page together, so
- *  every block-level element and every `<br>` contributes a break of its own. */
+/** preserves breaks because `textContent` omits block and `<br>` boundaries. */
 function collectHtmlBlockText(
   node: Node | null,
   preformatted?: string[],
@@ -1768,7 +1767,7 @@ function collectHtmlBlockText(
     for (let i = slots.length; i < covered.length; i++) {
       if (covered[i] > 0) covered[i]--;
     }
-    // Code keeps its own lines on the old path.
+    // preformatted code keeps its line breaks on the fallback path.
     if (slots.length > 1 && !cells.some(containsPre)) {
       const row = slots
         .map((cell) => (cell ? collectHtmlBlockText(cell).replace(/\s+/g, " ").trim() : ""))
@@ -1798,7 +1797,7 @@ function containsPre(node: Node): boolean {
   );
 }
 
-/** Collapses the spaces an extractor leaves between positioned runs while keeping the line breaks the source marked. */
+/** collapses extractor spacing while keeping source line breaks. */
 function normalizeExtractedText(text: string): string {
   return text
     .replace(/[^\S\n]+/g, " ")
