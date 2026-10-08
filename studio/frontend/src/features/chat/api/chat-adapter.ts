@@ -6149,7 +6149,11 @@ export function createOpenAIStreamAdapter(
       // A carried thought is reasoning whatever this request's thinking setting says.
       setParseThink(
         isExternalRequest
-          ? requestParsesThinkTags(externalReasoningFields)
+          ? requestParsesThinkTags({
+              ...externalReasoningFields,
+              provider_type: externalProvider?.providerType,
+              external_model: externalSelection?.modelId,
+            })
           : reasoningAlwaysOn ||
               Boolean(resumedThought) ||
               requestParsesThinkTags(localReasoningFields),
