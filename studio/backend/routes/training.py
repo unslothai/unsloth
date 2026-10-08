@@ -3956,7 +3956,6 @@ async def upload_diffusion_dataset(
 
     _require_diffusion_dataset_mutable()
     cleaned = _clean_diffusion_dataset_name(name)
-    # reject symlinks and paths outside the dataset root before writing
     folder = _resolve_dataset_folder(name, must_exist = False)
     # serialize same-folder imports because the training interlock permits mutations; duplicate checks run here
     _lock = _dataset_import_lock(folder)
