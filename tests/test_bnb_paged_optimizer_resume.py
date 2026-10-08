@@ -27,7 +27,7 @@ import pytest
 pytest.importorskip("bitsandbytes")
 torch = pytest.importorskip("torch")
 if not torch.cuda.is_available():
-    pytest.skip("paged bitsandbytes optimizers need a CUDA device", allow_module_level = True)
+    pytest.skip(reason = "paged bitsandbytes optimizers need a CUDA device", allow_module_level = True)
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
