@@ -9,9 +9,7 @@ import { registerStoreStubResolver } from "./helpers/kit.ts";
 registerStoreStubResolver();
 const { vllmHostSupported } = await import("../src/features/model-picker/api/engines.ts");
 
-// #11728: unsloth/Qwen3.8-27B-NVFP4 was labelled "May not be supported" on a host whose optional
-// vLLM engine loads it. Status stays "unsupported" (the Default engine and training still cannot
-// load it); supportedIn tells the hub to stop calling it unsupported.
+// #11728: status stays "unsupported" (Default engine, training); supportedIn "vllm" only relabels the hub.
 const NVFP4 = {
   modelId: "unsloth/Qwen3.8-27B-NVFP4",
   tags: ["safetensors", "qwen3_5", "unsloth", "compressed-tensors"],
@@ -43,7 +41,6 @@ test("with vLLM, compressed-tensors, AWQ and GPTQ are marked as vLLM-runnable", 
     assert.equal(support.status, "unsupported");
     assert.equal(support.supportedIn, "vllm", quantMethod);
   }
-  // Format found only by tag or by name, with no quantization_config to read.
   for (const input of [
     { modelId: "owner/model", tags: ["gptq"] },
     { modelId: "owner/model", tags: ["auto-gptq"] },
@@ -61,7 +58,6 @@ test("vLLM does not excuse any other reason a model cannot run in chat", () => {
       quantMethod,
     );
   }
-  // Anything else that rejects the repo (a task, a library, another format) keeps today's answer.
   for (const extra of [
     { pipelineTag: "text-to-image" },
     { tags: ["onnx"] },
@@ -74,7 +70,6 @@ test("vLLM does not excuse any other reason a model cannot run in chat", () => {
       JSON.stringify(extra),
     );
   }
-  // GGUF and plain checkpoints are untouched.
   assert.deepEqual(
     classifyUnslothSupport({ modelId: "unsloth/Qwen3.8-27B-GGUF", tags: ["gguf"], quantMethod: "compressed-tensors", deviceType: "cuda", vllmAvailable: true }),
     { status: "supported", reason: null },

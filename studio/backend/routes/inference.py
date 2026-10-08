@@ -16712,11 +16712,7 @@ _COMPRESSED_TENSORS_VLLM_HINT = (
 
 
 def _vllm_engine_hint(engine: Optional[str]) -> str:
-    """The vLLM pointer for a Default-engine refusal, or "" when this host cannot run vLLM.
-
-    ``wait = False`` never probes the GPU inline; a pending probe, or any failure, means no hint
-    and the refusal reads exactly as before.
-    """
+    """Empty unless this host can run vLLM; ``wait = False`` keeps the GPU probe off this path."""
     if engine not in (None, "auto"):
         return ""
     try:

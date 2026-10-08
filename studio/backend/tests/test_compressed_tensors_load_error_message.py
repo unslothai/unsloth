@@ -60,10 +60,7 @@ VLLM_HINT = " Or run it with vLLM: open this model's run settings and set Infere
 
 @pytest.fixture(autouse = True)
 def _host_without_vllm():
-    """Every test reads as on a host that cannot run vLLM unless it says otherwise.
-
-    The hint depends on the GPU, so without this the suite would pass or fail by machine.
-    """
+    """The hint depends on the GPU; pin "no vLLM" so results do not depend on the machine."""
     with patch(
         "core.inference.engine_install.support_reason",
         return_value = "Requires an NVIDIA GPU with compute capability 8.0 or newer.",
@@ -339,7 +336,6 @@ def test_the_refusal_names_no_quantization_scheme():
 @pytest.mark.parametrize("message", REFUSALS.values(), ids = list(REFUSALS))
 @pytest.mark.parametrize("native", [False, True])
 def test_a_host_that_can_run_vllm_is_pointed_at_it(message, native):
-    """#11728: the optional vLLM engine loads these checkpoints, so where it can run, say so."""
     with patch("core.inference.engine_install.support_reason", return_value = None):
         load_error = _load_failure(message, native = native)
         validate_error = _validation_failure(message, native = native)
@@ -361,7 +357,6 @@ def test_a_host_that_can_run_vllm_is_pointed_at_it(message, native):
     ids = ["probe-pending", "unsupported-host", "probe-raises"],
 )
 def test_no_hint_unless_this_host_can_run_vllm(reason):
-    """A pending probe, an unsupported host or a failing check all leave today's message."""
     inference_route = _load_route_module()
     kwargs = {"side_effect": reason} if isinstance(reason, Exception) else {"return_value": reason}
     with patch("core.inference.engine_install.support_reason", **kwargs):
@@ -383,7 +378,6 @@ def test_no_hint_when_the_request_already_chose_an_optional_engine(engine):
 
 
 def test_the_vllm_hint_never_touches_other_refusals():
-    """MLX's NVFP4 refusal and unrelated errors are unchanged on a vLLM-capable host."""
     inference_route = _load_route_module()
     with patch("core.inference.engine_install.support_reason", return_value = None):
         assert (

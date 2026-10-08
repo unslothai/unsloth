@@ -294,7 +294,6 @@ function ModelStatusChips({
   // supported-format model a chat-only host still can't run.
   const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported;
   const showVram = !isDataset && vramInfo && !isGguf;
-  // The Default engine cannot load this format; the optional vLLM engine this host supports can.
   const showVllm = !isDataset && unslothSupport.supportedIn === "vllm";
   if (!showUnsupported && !showChatOnly && !showVram && !showVllm) return null;
 

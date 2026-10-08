@@ -4,9 +4,7 @@
 import { useSyncExternalStore } from "react";
 import { listEngines, vllmHostSupported } from "../api/engines";
 
-// One request shared by every catalog row, not a poller per row. The backend answers "Checking
-// for a supported NVIDIA GPU." while its first driver probe runs (up to a minute on a loaded
-// host), and a read can fail while it restarts, so both are re-asked for about two minutes.
+// One read shared by every hub row; "Checking..." (GPU probe, up to a minute) and failed reads are retried.
 let available = false;
 let started = false;
 let retries = 0;
@@ -29,14 +27,11 @@ async function refresh() {
   const request = ++latest;
   try {
     const engines = await listEngines();
-    // An older read finishing late must not overwrite a newer answer.
     if (request !== latest) return;
     publish(vllmHostSupported(engines));
     const vllm = engines.find((engine) => engine.engine === "vllm");
     if (vllm?.unsupported_reason?.startsWith("Checking")) retry();
   } catch {
-    // An older backend without /api/engines stays false (today's labels); a passing failure
-    // keeps the last answer.
     if (request === latest) retry();
   }
 }
@@ -51,7 +46,7 @@ function subscribe(listener: () => void) {
       void refresh();
     });
   }
-  // Re-read each time the hub opens again, since the host or the backend may have changed.
+  // Re-read whenever the hub opens again.
   if (first) {
     retries = 0;
     void refresh();

@@ -125,11 +125,10 @@ export type UnslothSupportStatus = "supported" | "unsupported";
 export interface UnslothSupport {
   status: UnslothSupportStatus;
   reason: string | null;
-  /** Set when Unsloth runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. "vllm": the Default engine cannot load it, but the optional vLLM engine this host supports can (#11728). */
+  /** Set when Unsloth runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. "vllm": only the optional vLLM engine can (#11728). */
   supportedIn?: "images" | "video" | "vllm";
 }
 
-// Quantization formats the optional vLLM engine loads and the Default engine does not.
 const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "compressed-tensors",
   "awq",
@@ -232,7 +231,6 @@ export function classifyUnslothSupport({
   libraryName?: string | null;
   deviceType?: string | null;
   quantMethod?: string | null;
-  /** This host can run the optional vLLM engine (installed or not). */
   vllmAvailable?: boolean;
 }): UnslothSupport {
   const pipeline = pipelineTag?.toLowerCase().trim() || null;
@@ -253,7 +251,7 @@ export function classifyUnslothSupport({
   if (normalizedQuant && !isGguf) {
     if (Object.hasOwn(UNSUPPORTED_QUANT_METHODS, normalizedQuant)) {
       const reason = `Detected ${UNSUPPORTED_QUANT_METHODS[normalizedQuant]}.`;
-      // vLLM excuses the quantization only; any other rejection keeps today's answer.
+      // vLLM excuses only the quantization; any other rejection keeps the old answer.
       if (vllmAvailable && VLLM_QUANT_METHODS.has(normalizedQuant)) {
         const rest = classifyUnslothSupport({ modelId, pipelineTag, tags, libraryName, deviceType, vllmAvailable });
         if (rest.status === "supported" || rest.supportedIn === "vllm") {
@@ -290,7 +288,7 @@ export function classifyUnslothSupport({
   if (formatKey) {
     const label = FORMAT_TAG_LABEL[formatKey] ?? `${formatKey.toUpperCase()} weights`;
     const reason = `Detected ${label}.`;
-    // Only when AWQ / GPTQ is the sole format objection: tag order must not decide it.
+    // AWQ / GPTQ must be the only format objection, else tag order would decide.
     if (
       vllmAvailable &&
       !isGguf &&

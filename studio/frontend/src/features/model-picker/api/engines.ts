@@ -39,7 +39,7 @@ export function isEngineReady(engine: EngineStatus | undefined): boolean {
   );
 }
 
-/** This host can run the optional vLLM engine, installed or not: the backend's own check. */
+/** The backend says this host can run vLLM, installed or not. */
 export function vllmHostSupported(engines: readonly EngineStatus[]): boolean {
   const vllm = engines.find((engine) => engine.engine === "vllm");
   return vllm !== undefined && vllm.unsupported_reason === null;
