@@ -554,19 +554,45 @@ test("the download prompt offers Remember only for files a remembered answer can
 });
 
 test("a finished download links to its history row, and an unrecorded one drops its forgotten native id", async () => {
-  const { finishDownload, keptDownloadFile, useDownloadActivity } = await import(
+  const { finishDownload, keptDownloadFile, mountDownloadsButton, useDownloadActivity } = await import(
     "../src/features/browser/download-activity.ts"
   );
   const file = { blob: new Blob(["x"]), name: "x".repeat(300), contentType: "text/plain" };
   const result = { name: file.name, size: 1, contentType: "text/plain", url: null, failed: false };
-  // A name past the history row's limit still links: the row's id comes from recordDownload.
-  finishDownload("save:1", { ...result, nativeId: "n1", historyId: "row1" }, file);
-  assert.equal(useDownloadActivity.getState().finished?.historyId, "row1");
-  assert.equal(useDownloadActivity.getState().finished?.nativeId, "n1");
-  assert.equal(keptDownloadFile("row1"), file);
-  // History off: the app forgot the native id, so Open and Show in folder can't use it.
-  finishDownload("save:2", { ...result, nativeId: "n2" });
-  assert.equal(useDownloadActivity.getState().finished?.nativeId, undefined);
+  const unmount = mountDownloadsButton();
+  try {
+    // A name past the history row's limit still links: the row's id comes from recordDownload.
+    finishDownload("save:1", { ...result, nativeId: "n1", historyId: "row1" }, file);
+    assert.equal(useDownloadActivity.getState().finished?.historyId, "row1");
+    assert.equal(useDownloadActivity.getState().finished?.nativeId, "n1");
+    assert.equal(keptDownloadFile("row1"), file);
+    // History off: the app forgot the native id, so Open and Show in folder can't use it.
+    finishDownload("save:2", { ...result, nativeId: "n2" });
+    assert.equal(useDownloadActivity.getState().finished?.nativeId, undefined);
+  } finally {
+    useDownloadActivity.getState().dismissFinished();
+    unmount();
+  }
+  // No button on screen: the caller toasts it, so nothing holds the result.
+  finishDownload("save:3", result);
+  assert.equal(useDownloadActivity.getState().finished, null);
+});
+
+test("a long download name keeps its extension, and a kept copy goes with its history row", async () => {
+  const { finishDownload, keptDownloadFile } = await import("../src/features/browser/download-activity.ts");
+  const { isDangerousDownload } = await import("../src/features/browser/download-safety.ts");
+  const history = useBrowserHistoryStore.getState();
+  history.clearDownloads();
+  const id = history.recordDownload({ ...download, name: `${"a".repeat(210)}.exe` });
+  const row = useBrowserHistoryStore.getState().downloads[0];
+  assert.equal(row.name.length, 200);
+  assert.ok(row.name.endsWith(".exe"));
+  assert.ok(isDangerousDownload(row.name));
+  const file = { blob: new Blob(["x"]), name: row.name, contentType: "" };
+  finishDownload("save:row", { name: row.name, size: 1, contentType: "", url: null, historyId: id, failed: false }, file);
+  assert.equal(keptDownloadFile(id), file);
+  useBrowserHistoryStore.getState().removeDownload(id as string);
+  assert.equal(keptDownloadFile(id), null);
 });
 
 test("an unrecorded result's bytes go with its notice, and one replaced on screen is toasted", async () => {

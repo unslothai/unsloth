@@ -104,7 +104,7 @@ import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
 import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
-import { DownloadsButton } from "./downloads-button";
+import { BusyDownloadsButton, DownloadsButton } from "./downloads-button";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
@@ -1476,7 +1476,8 @@ function isVideoEntry(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
 function BrowserFileToolbar({
   tab,
   entry,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
+  visible,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
   const navigate = useNavigate();
   const requestEdits = useBrowserStore((state) => state.requestEdits);
@@ -1674,6 +1675,7 @@ function BrowserFileToolbar({
         >
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
         </IconButton>
+        <BusyDownloadsButton className={NAV_BUTTON} visible={visible} />
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
@@ -1738,7 +1740,8 @@ function BrowserFileToolbar({
 function FloatingFileToolbar({
   tab,
   entry,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
+  visible,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
   const navigate = useNavigate();
   const requestEdits = useBrowserStore((state) => state.requestEdits);
@@ -2059,6 +2062,7 @@ function FloatingFileToolbar({
         onClick={() => download && void saveBrowserDownload(download)}
         className="size-9"
       />
+      <BusyDownloadsButton className={cn(PILL, "size-9")} visible={visible} />
     </>
   );
 }
@@ -2081,7 +2085,8 @@ function SplitChevron() {
 function VideoFileToolbar({
   tab,
   entry,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
+  visible,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
   const navigate = useNavigate();
   const download = tabDownload(tab);
@@ -2228,6 +2233,7 @@ function VideoFileToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      <BusyDownloadsButton className={NAV_BUTTON} visible={visible} />
       <PanelMenu tab={tab} />
     </>
   );
@@ -2388,11 +2394,11 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         >
           {activeTab && activeEntry?.kind === "file" ? (
             floatingFileControls ? (
-              <FloatingFileToolbar tab={activeTab} entry={activeEntry} />
+              <FloatingFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             ) : isVideoEntry(activeEntry) ? (
-              <VideoFileToolbar tab={activeTab} entry={activeEntry} />
+              <VideoFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             ) : (
-              <BrowserFileToolbar tab={activeTab} entry={activeEntry} />
+              <BrowserFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             )
           ) : (
             <WebToolbar tab={activeTab} visible={active} />

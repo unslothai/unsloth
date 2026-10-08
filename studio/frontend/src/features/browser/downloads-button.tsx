@@ -27,16 +27,11 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
-import {
-  type FinishedDownload,
-  keptDownloadFile,
-  mountDownloadsButton,
-  useDownloadActivity,
-} from "./download-activity";
+import { type FinishedDownload, mountDownloadsButton, useDownloadActivity } from "./download-activity";
 import { formatSize, revealLabelKey } from "./download-format";
-import { isDangerousDownload } from "./download-safety";
+import { type Target, openTarget, revealTarget } from "./download-open";
 import { type DownloadItem, useBrowserHistoryStore } from "./history-store";
-import { nativeDownloadsExist, openNativeDownload, revealNativeDownload } from "./native-downloads";
+import { nativeDownloadsExist } from "./native-downloads";
 import { useBrowserStore } from "./store";
 
 const RECENT_COUNT = 8;
@@ -45,31 +40,6 @@ const COMPLETE_SHOWN_MS = 6000;
 
 const ROUND_ACTION =
   "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_7%,transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40 data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)]";
-
-type Target = Pick<DownloadItem, "name" | "contentType" | "url" | "nativeId"> & { keptId?: string };
-
-/** Open a download: the saved file on the desktop, this session's copy in a tab, else its page. */
-function openTarget(target: Target, onFailed: (name: string) => void): (() => void) | undefined {
-  if (isTauri && target.nativeId) {
-    // The app refuses to open programs and scripts (browser_download_open); Show in folder still works.
-    if (isDangerousDownload(target.name)) return undefined;
-    const id = target.nativeId;
-    return () => void openNativeDownload(id).catch(() => onFailed(target.name));
-  }
-  const kept = keptDownloadFile(target.keptId);
-  if (kept) {
-    return () =>
-      useBrowserStore.getState().openFile({ ...kept, key: `download:${target.keptId}` });
-  }
-  const url = target.url;
-  return url ? () => useBrowserStore.getState().openUrl(url, { newTab: true }) : undefined;
-}
-
-function revealTarget(target: Target, onFailed: (name: string) => void): (() => void) | undefined {
-  if (!isTauri || !target.nativeId) return undefined;
-  const id = target.nativeId;
-  return () => void revealNativeDownload(id).catch(() => onFailed(target.name));
-}
 
 /** Desktop downloads missing from disk, by native id. Checked as the list opens, on window focus, and
  *  after an action fails, as the Downloads page does. */
@@ -342,7 +312,10 @@ export function DownloadsButton({ className, visible = true }: { className?: str
   const active = useDownloadActivity((state) => Object.keys(state.active).length > 0);
   const finished = useDownloadActivity((state) => state.finished);
   const finishedSequence = useDownloadActivity((state) => state.finishedSequence);
-  const [mode, setMode] = useState<"closed" | "list" | "finished">("closed");
+  // A notice another toolbar's button was showing (the tab changed) carries on here.
+  const [mode, setMode] = useState<"closed" | "list" | "finished">(() =>
+    visible && finished ? "finished" : "closed",
+  );
   const [hovered, setHovered] = useState(false);
   // Only finishes after mount pop the notice. An open list shows recorded ones itself; the rest still need it.
   const [seen, setSeen] = useState(finishedSequence);
@@ -419,4 +392,10 @@ export function DownloadsButton({ className, visible = true }: { className?: str
       </PopoverContent>
     </Popover>
   );
+}
+
+/** File tabs keep their own save button, so this shows only while a download runs or its result is up. */
+export function BusyDownloadsButton(props: { className?: string; visible?: boolean }) {
+  const busy = useDownloadActivity((state) => state.finished !== null || Object.keys(state.active).length > 0);
+  return busy ? <DownloadsButton {...props} /> : null;
 }

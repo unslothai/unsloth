@@ -7,6 +7,7 @@
 import { getLocale, translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import { useBrowserHistoryStore } from "./history-store";
 
 export type FinishedDownload = {
   key: string;
@@ -23,6 +24,7 @@ export type FinishedDownload = {
 
 type DownloadActivity = {
   active: Record<string, string>;
+  /** The result a Downloads button is showing; null once dismissed or when none was on screen. */
   finished: FinishedDownload | null;
   /** Bumped per finish, so the same file downloaded twice shows again. */
   finishedSequence: number;
@@ -34,9 +36,6 @@ type DownloadActivity = {
 // Saved from the panel this session, so Open can show the file again without the disk.
 const MAX_KEPT_FILES = 8;
 const keptFiles = new Map<string, { blob: Blob; name: string; contentType: string }>();
-
-/** Whether the current result went to a button rather than its caller's toast. */
-let finishedOnButton = false;
 
 /** A result with no history row can only be reached from its notice: drop its bytes as that goes. */
 function release(finished: FinishedDownload | null): void {
@@ -58,11 +57,35 @@ export function keptDownloadFile(id: string | undefined) {
   return id ? (keptFiles.get(id) ?? null) : null;
 }
 
-function keepFile(id: string, file: { blob: Blob; name: string; contentType: string }): void {
+// Kept under a history row's id: they go when the row does (removed, cleared or pushed out).
+const keptRows = new Set<string>();
+let watchingRows = false;
+
+/** Subscribed on first use, not at load: the history store sits in the chat import cycle. */
+function watchRows(): void {
+  if (watchingRows) return;
+  watchingRows = true;
+  useBrowserHistoryStore.subscribe((state, previous) => {
+    if (state.downloads === previous.downloads || keptRows.size === 0) return;
+    const rows = new Set(state.downloads.map((item) => item.id));
+    for (const id of keptRows) {
+      if (rows.has(id)) continue;
+      keptRows.delete(id);
+      keptFiles.delete(id);
+    }
+  });
+}
+
+function keepFile(id: string, file: { blob: Blob; name: string; contentType: string }, row: boolean): void {
   keptFiles.delete(id);
   keptFiles.set(id, file);
+  if (row) {
+    watchRows();
+    keptRows.add(id);
+  }
   for (const old of [...keptFiles.keys()].slice(0, Math.max(0, keptFiles.size - MAX_KEPT_FILES))) {
     keptFiles.delete(old);
+    keptRows.delete(old);
   }
 }
 
@@ -95,7 +118,7 @@ export function finishDownload(
 ): boolean {
   const { finished: replaced, buttons } = useDownloadActivity.getState();
   // A replaced result the list can't show (failed or unrecorded) would vanish: toast it instead.
-  if (replaced && !replaced.historyId && finishedOnButton) {
+  if (replaced && !replaced.historyId) {
     const title = replaced.failed ? "browser.downloads.failed" : "browser.downloads.complete";
     toast[replaced.failed ? "error" : "success"](translate(title, {}, getLocale()), { description: replaced.name });
   }
@@ -103,14 +126,14 @@ export function finishDownload(
   // Unrecorded, its native id was forgotten (history-store.ts), so it can't open or reveal.
   const nativeId = result.historyId ? result.nativeId : undefined;
   // Only a history row or a notice on screen can reach the copy; with neither it would only sit in memory.
-  if (file && (result.historyId || buttons > 0)) keepFile(result.historyId ?? key, file);
+  if (file && (result.historyId || buttons > 0)) keepFile(result.historyId ?? key, file, Boolean(result.historyId));
   const active = { ...useDownloadActivity.getState().active };
   delete active[key];
-  finishedOnButton = buttons > 0;
+  // With no button on screen the caller toasts it, so nothing holds it here.
   useDownloadActivity.setState((state) => ({
     active,
-    finished: { ...result, nativeId, key },
+    finished: buttons > 0 ? { ...result, nativeId, key } : null,
     finishedSequence: state.finishedSequence + 1,
   }));
-  return finishedOnButton;
+  return buttons > 0;
 }

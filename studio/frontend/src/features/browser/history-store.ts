@@ -25,6 +25,14 @@ const MAX_DOWNLOADS = 200;
 // Pages pick their URLs and titles; cap them so history can't fill Studio's storage.
 export const MAX_URL_CHARS = 2048;
 export const MAX_TITLE_CHARS = 200;
+
+/** Bounded like a title, but keeping a short extension: it says what the file is, and whether it runs code. */
+function boundedName(name: string): string {
+  if (name.length <= MAX_TITLE_CHARS) return name;
+  const dot = name.lastIndexOf(".");
+  const extension = dot > 0 && name.length - dot <= 32 ? name.slice(dot) : "";
+  return name.slice(0, MAX_TITLE_CHARS - extension.length) + extension;
+}
 // The icons sites declare, by host: most sites name theirs in the page, not at /favicon.ico.
 const MAX_ICONS = 300;
 const PERSIST_DELAY_MS = 1000;
@@ -134,7 +142,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           // A page picks these: bounded like a visit, keeping the download without an overlong address.
           const entry = {
             ...item,
-            name: item.name.slice(0, MAX_TITLE_CHARS),
+            name: boundedName(item.name),
             url: item.url !== null && item.url.length <= MAX_URL_CHARS ? item.url : null,
             contentType: item.contentType.slice(0, MAX_TITLE_CHARS),
             id,
