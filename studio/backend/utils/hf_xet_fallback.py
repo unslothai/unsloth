@@ -209,6 +209,10 @@ def _load_optional(module_name: str) -> Any:
             # A zoo __init__ that fails late has already run `from .hf_xet_tuning import ...`; that submodule finished
             # executing and stays in sys.modules, so keep its RAM caps instead of dropping them with the package.
             module = _sys.modules.get(module_name)
+            if getattr(getattr(module, "__spec__", None), "_initializing", False):
+                module = (
+                    None  # another thread is still executing it; never memoise a half-built module
+                )
             if module is None:
                 import logging as _logging
                 _logging.getLogger(__name__).warning(

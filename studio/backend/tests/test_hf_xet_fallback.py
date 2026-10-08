@@ -456,6 +456,11 @@ def test_optional_loader_keeps_a_submodule_a_late_zoo_init_failure_left_loaded(m
             ("unsloth_zoo.hf_xet_health", None),
         ], attempts
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
+        # A survivor another thread is still executing is not memoised.
+        shim._reset_optional_module_cache()
+        survivor.__spec__ = importlib.machinery.ModuleSpec("unsloth_zoo.hf_xet_tuning", None)
+        survivor.__spec__._initializing = True
+        assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is None
     finally:
         shim._reset_optional_module_cache()
 
