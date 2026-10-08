@@ -431,6 +431,8 @@ def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
             "--data",
             "/workspace/host/data.json",
         ),
+        ("accelerate", "launch", "-m", "package.train", "--data", "/workspace/host/data.json"),
+        ("accelerate", "launch", "train", "--data", "/workspace/host/data.json"),
         ("accelerate", "config", "update", "--config_file", "/workspace/host/config.json"),
         ("bash", "-c", "printf ok", "/workspace/host/input.sh"),
         ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb"),
