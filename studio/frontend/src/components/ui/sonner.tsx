@@ -83,14 +83,15 @@ const Toaster = ({ ...props }: ToasterProps) => {
           {
             "--normal-bg": "var(--popover)",
             "--normal-text": "var(--popover-foreground)",
-            // No border line; elevation comes from the composer's drop shadow.
+            // No border line; elevation comes from the shadow in index.css.
             "--normal-border": "transparent",
-            "--border-radius": "var(--radius)",
+            // Rounder than cards, a step below the composer's 28px.
+            "--border-radius": "calc(var(--radius) + 8px)",
             // Pin the close button inside the toast's top-right corner.
             // Sonner defaults to the left/outside edge, so keep the horizontal
             // override here and the top offset in index.css.
             "--toast-close-button-start": "auto",
-            "--toast-close-button-end": "8px",
+            "--toast-close-button-end": "12px",
             "--toast-close-button-transform": "none",
           } as React.CSSProperties
         }

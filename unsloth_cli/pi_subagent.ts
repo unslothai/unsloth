@@ -30,6 +30,7 @@ const apiKey = typeof config.apiKey === "string" ? config.apiKey : "";
 const approve = config.approve === true;
 const contextWindow = positiveInt(config.contextWindow, 32768);
 const maxTokens = positiveInt(config.maxTokens, Math.min(Math.floor(contextWindow / 4), 8192));
+const samplingParams = (config.samplingParams ?? {}) as Record<string, unknown>;
 let activeAgents = 0;
 const waitingAgents: Array<() => boolean> = [];
 
@@ -302,6 +303,7 @@ export default function unslothSubagent(pi: ExtensionAPI): void {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow,
 				maxTokens,
+				...(Object.keys(samplingParams).length > 0 ? { samplingParams } : {}),
 			},
 		],
 	});

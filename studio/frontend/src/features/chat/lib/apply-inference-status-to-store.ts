@@ -158,18 +158,26 @@ export function applyActiveModelStatusToStore(
 
   // Only reached with a model active, so this is the one place both the status poll and the
   // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
-  useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
+  useChatRuntimeStore.setState({
+    residentCheckpoint: checkpointId,
+    loadedEngine: status.engine ?? "auto",
+    loadedEnginePrecision: status.engine_precision ?? "auto",
+    loadedEngineParallelism: status.engine_parallelism ?? "tensor",
+  });
   // Before the settings panel can open on it, which reads only the repo id.
   adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
+  if ((store.params.engine ?? "auto") !== (status.engine ?? "auto") || (store.params.enginePrecision ?? "auto") !== (status.engine_precision ?? "auto") || (store.params.engineParallelism ?? "tensor") !== (status.engine_parallelism ?? "tensor")) {
+    store.setParams({ ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" });
+  }
   const previousCheckpoint =
     options.previousCheckpoint ?? store.params.checkpoint;
 
   if (status.inference) {
     store.setParams(
       mergeBackendRecommendedInference({
-        current: store.params,
+        current: { ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" },
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,
@@ -544,6 +552,9 @@ export function applyActiveModelStatusToStore(
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+            mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
+            loadedMlxInt8PrefillRequested:
+              status.mlx_int8_prefill_requested === true,
           }
         : {
             // The verdict retires; the editable width is dormant, not wrong.
@@ -551,6 +562,7 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantReason: null,
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
+            loadedMlxInt8PrefillRequested: false,
           })),
     // Recovery for a hydration this tab never saw, and only when nothing is staged: re-seeding
     // over an earlier edit would discard it.
@@ -561,12 +573,16 @@ export function applyActiveModelStatusToStore(
       prevState.mlxKvQuant === null &&
       prevState.loadedMlxKvQuantRequested === null &&
       prevState.mlxKvQuantReason === null &&
-      prevState.chatTemplateOverrideReason === null && {
+      prevState.chatTemplateOverrideReason === null &&
+      !prevState.mlxInt8Prefill && {
         mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
         loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
         mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
         chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+        mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
+        loadedMlxInt8PrefillRequested:
+          status.mlx_int8_prefill_requested === true,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&

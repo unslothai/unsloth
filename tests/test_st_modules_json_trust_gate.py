@@ -1256,8 +1256,11 @@ def test_a_404_without_a_commit_header_is_tolerated_where_upstream_gates_it(tmp_
     x-repo-commit, or an older hub whose error carries no response at all, leaves nothing
     to pin to, and on a version where nothing else checks the type that has to refuse.
     """
+    import sentence_transformers
     from huggingface_hub.errors import EntryNotFoundError
 
+    # The version is the condition under test; the floor lane installs sentence-transformers 5.x.
+    monkeypatch.setattr(sentence_transformers, "__version__", "6.1.0", raising = False)
     monkeypatch.setattr(FastSentenceTransformer, "_module_path", staticmethod(lambda *a, **k: None))
     _patch_download(
         monkeypatch,

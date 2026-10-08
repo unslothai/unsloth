@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ActiveModelConfigState } from "../src/features/model-picker/hooks/use-active-model-config.ts";
 import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
+import * as gpuTensorSplit from "../src/hooks/gpu-tensor-split.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 function useActiveConfigFor(patch: Record<string, unknown>, gguf = true) {
@@ -27,6 +28,10 @@ function useActiveConfigFor(patch: Record<string, unknown>, gguf = true) {
           select(state),
       },
       "@/config/env": { usePlatformStore: () => ({ deviceType: "cuda" }) },
+      "@/features/npu": {
+        isNpuModelId: (value: string | null | undefined) =>
+          Boolean(value?.startsWith("lemonade:")),
+      },
       react: { useMemo: (factory: () => unknown) => factory() },
       "../model-config/per-model-config": {
         isServedByLlamaCpp: () => gguf,
@@ -56,6 +61,7 @@ function configsEqual(persistedMode: string) {
         readPersistedSpeculativeType: () => persistedMode,
       },
       "@/features/chat/presets/preset-policy": {},
+      "@/hooks/gpu-tensor-split": gpuTensorSplit,
       "./config-signature": { gpuFieldsSignature: () => "" },
       "./per-model-config": {
         normalizeMaxSeqLength: (value: number | null | undefined) =>
@@ -87,6 +93,16 @@ test("the active GGUF baseline carries the arguments the server runs with", () =
   assert.deepEqual(
     useActiveConfigFor({ loadedLlamaExtraArgs: [] }).llamaExtraArgs,
     [],
+  );
+});
+
+test("a loaded NPU model's runtime length is not read back as a context pin", () => {
+  const params = { checkpoint: "lemonade:qwen3-0.6b-FLM", maxSeqLength: 4096 };
+  assert.equal(useActiveConfigFor({ params }, false).maxSeqLength, null);
+  assert.equal(
+    useActiveConfigFor({ params: { ...params, checkpoint: "unsloth/Qwen3-0.6B" } }, false)
+      .maxSeqLength,
+    4096,
   );
 });
 

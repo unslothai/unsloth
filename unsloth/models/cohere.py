@@ -445,7 +445,10 @@ def CohereModel_fast_forward_inference(
         attention_mask = None
 
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
         residual = hidden_states
@@ -465,6 +468,8 @@ def CohereModel_fast_forward_inference(
         residual += hidden_states_attention
         residual += hidden_states_mlp
         hidden_states = residual
+        if block_swap is not None:
+            block_swap.leave(idx)
 
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_layernorm_inference(

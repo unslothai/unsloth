@@ -1,14 +1,19 @@
 # Keep mlx-vlm / mlx-lm on the same Transformers version as the main Unsloth
 # environment when uv applies their dependency metadata.
 #
-# A window, not a floor. An override replaces EVERY requirement on the package,
-# including unsloth's own transformers<=5.5.0 cap in pyproject, and install.sh's
-# core install is the one uv command that does not also pass constraints.txt. A
-# bare floor therefore let that resolve pick transformers 5.16.1 (the first
-# release wanting tokenizers>=0.23.1) with tokenizers 0.23.2 on macOS arm64;
-# extras-no-deps.txt then pinned transformers back to 5.5.0 --no-deps and left
-# tokenizers stranded, so every `import transformers`, and so every
-# `import mlx_lm`, raised and Apple Silicon came up chat-only.
+# A window, not a floor. An override replaces EVERY requirement on the package, including
+# pyproject's cap, and install.sh's core install is the one uv command that does not also
+# pass constraints.txt. A bare floor let it pick transformers 5.16.1 (first to want
+# tokenizers>=0.23.1) with tokenizers 0.23.2; extras-no-deps.txt then pinned transformers
+# back to 5.5.0 --no-deps, stranding tokenizers, so every `import transformers` and thus
+# `import mlx_lm` raised and Apple Silicon came up chat-only.
+#
+# This window does NOT track pyproject's published cap and must not be widened with it:
+# the cap says what a `pip install unsloth` may resolve, these lines say what the pinned
+# Studio single-env installs, which is constraints.txt's `transformers==5.5.0` plus the
+# tokenizers window it declares. Widening only this file reproduces the failure above.
+# Moving the Studio pin means changing constraints.txt, extras-no-deps.txt,
+# no-torch-runtime.txt and this file together.
 #
 # Unlike the huggingface_hub case below, this cannot go unsatisfiable: that one
 # replaced other packages' requirements ON hub while a direct requirement still

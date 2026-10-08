@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { DOMParser as XmlDomParser } from "@xmldom/xmldom";
+import { DOMParser as XmlDomParser, XMLSerializer as XmlSerializer } from "@xmldom/xmldom";
 import {
   Unzip,
   UnzipInflate,
@@ -29,12 +29,14 @@ const {
   getPdfAttachmentTextError,
   isAudioAttachment,
   isTextAttachment,
+  linearizeDocxMath,
   markDocxNotes,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
   repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
+  writeDocxBreaksAndCheckboxes,
 } = await import("../src/features/chat/attachment-content.ts");
 const { definePDFJSModule } = await import("unpdf");
 const { readRtfAttachmentContent } =
@@ -1231,6 +1233,139 @@ test("markDocxNotes numbers the references extractRawText keeps and marks the bo
   }
 });
 
+test("linearizeDocxMath keeps equations in the body, tables and notes", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const m = (text: string) => `<m:r><m:t>${text}</m:t></m:r>`;
+  const half = `<m:f><m:num>${m("1")}</m:num><m:den>${m("2")}</m:den></m:f>`;
+  const squared = `<m:sSup><m:e>${m("v")}</m:e><m:sup>${m("2")}</m:sup></m:sSup>`;
+  const mean = `<m:bar><m:barPr><m:pos m:val="top"/></m:barPr><m:e>${m("x")}</m:e></m:bar>`;
+  const root = `<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/><m:e>${m("n")}</m:e></m:rad>`;
+  const archive = repackDocxAttachmentArchive(
+    "physics.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${ns}><w:body>` +
+          `<w:p>${run("The kinetic energy is ")}<m:oMath>${m("E=")}${half}${m("m")}${squared}</m:oMath>${run(" joules.")}` +
+          `<w:r><w:footnoteReference w:id="1"/></w:r></w:p>` +
+          `<w:p><m:oMathPara><m:oMath>${m("F=ma")}</m:oMath><m:oMath>${m("p=mv")}</m:oMath></m:oMathPara></w:p>` +
+          `<w:tbl><w:tr><w:tc><w:p>${run("Error")}</w:p></w:tc><w:tc><w:p><m:oMath>` +
+          `<m:d><m:e>${m("a+b")}</m:e></m:d><w:del w:id="2" w:author="a">${m("+c")}</w:del>${root}` +
+          `</m:oMath></w:p></w:tc></w:tr></w:tbl>` +
+          `<w:p><w:del w:id="3" w:author="a"><m:oMath>${m("gone")}</m:oMath></w:del></w:p>` +
+          `</w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${ns}><w:footnote w:id="1"><w:p>${run("Where ")}<m:oMath>${mean}</m:oMath>${run(" is the mean.")}</w:p></w:footnote></w:footnotes>`,
+      ),
+    }),
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const marked = markDocxNotes(linearizeDocxMath(archive));
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(marked.archive) });
+    assert.equal(
+      marked.label(value),
+      "The kinetic energy is E=\\frac{1}{2}mv^{2} joules.[1]\n\nF=ma\np=mv\n\nError\n\n(a+b)\\sqrt{n}\n\n\n\n" +
+        "Footnotes\n[1] Where \\overline{x} is the mean.",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+// Same cases and expected text as the backend reader's test_docx_equation_structures.
+const OMML_CASES: [string, string][] = [
+  [
+    '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub>{i=1}</m:sub><m:sup>{n}</m:sup><m:e>{i}</m:e></m:nary>',
+    "∑_{i=1}^{n}i",
+  ],
+  ["<m:nary><m:sub>{0}</m:sub><m:sup>{1}</m:sup><m:e>{x}</m:e></m:nary>", "∫_{0}^{1}x"],
+  [
+    "<m:sSubSup><m:e>{x}</m:e><m:sub>{i}</m:sub><m:sup>{2}</m:sup></m:sSubSup><m:sSub><m:e>{a}</m:e><m:sub>{0}</m:sub></m:sSub>",
+    "x_{i}^{2}a_{0}",
+  ],
+  ["<m:sPre><m:sub>{6}</m:sub><m:sup>{14}</m:sup><m:e>{C}</m:e></m:sPre>", "{}_{6}^{14}C"],
+  ["<m:limUpp><m:e>{x}</m:e><m:lim>{def}</m:lim></m:limUpp>", "x^{def}"],
+  ["<m:limLow><m:e>{lim}</m:e><m:lim>{n→∞}</m:lim></m:limLow>", "lim_{n→∞}"],
+  [
+    '<m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{n}</m:num><m:den>{k}</m:den></m:f>' +
+      '<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{xyz}</m:e></m:phant>',
+    "{n \\atop k}",
+  ],
+  ["<m:acc><m:e>{θ}</m:e></m:acc><m:rad><m:deg>{3}</m:deg><m:e>{y}</m:e></m:rad>", "θ̂\\sqrt[3]{y}"],
+  [
+    '<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg>{3}</m:deg><m:e>{x}</m:e></m:rad>' +
+      '<m:nary><m:naryPr><m:chr m:val="∑"/><m:subHide m:val="0"/><m:supHide/></m:naryPr><m:sub>{k}</m:sub><m:sup>{n}</m:sup><m:e>{a}</m:e></m:nary>',
+    "\\sqrt{x}∑_{k}a",
+  ],
+  ["<m:func><m:fName>{sin}</m:fName><m:e>{x}</m:e></m:func>", "sin x"],
+  [
+    "<m:m><m:mr><m:e>{a}</m:e><m:e>{b}</m:e></m:mr><m:mr><m:e>{c}</m:e><m:e>{d}</m:e></m:mr></m:m>",
+    "a & b \\\\ c & d",
+  ],
+  ["<m:eqArr><m:e>{x=1}</m:e><m:e>{y=2}</m:e></m:eqArr>", "x=1\ny=2"],
+  [
+    '<m:d><m:e>{a}</m:e><m:e>{b}</m:e></m:d><m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val=""/></m:dPr><m:e>{c}</m:e></m:d>',
+    "(a|b)[c",
+  ],
+  [
+    '<m:bar><m:e>{x}</m:e></m:bar><m:groupChr><m:groupChrPr><m:chr m:val="⏞"/><m:pos m:val="top"/></m:groupChrPr><m:e>{y}</m:e></m:groupChr>' +
+      '<m:groupChr><m:groupChrPr><m:chr m:val="←"/></m:groupChrPr><m:e>{z}</m:e></m:groupChr>',
+    "\\underline{x}\\overbrace{y}\\underset{←}{z}",
+  ],
+  [
+    '{a}<w:r><w:t xml:space="preserve"> if </w:t></w:r>' +
+      "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>{prompt}</w:sdtContent></w:sdt>{b}",
+    "a if b",
+  ],
+];
+
+test("linearizeDocxMath writes equations as the backend does and leaves other parts untouched", () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const archive = (body: string) =>
+    zipSync({ "word/document.xml": strToU8(`<w:document ${ns}><w:body>${body}</w:body></w:document>`) });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const plain = archive('<w:p><w:r><w:t>oMath is only a word here</w:t></w:r></w:p>');
+    assert.equal(linearizeDocxMath(plain), plain);
+    // How Chromium's DOMParser returns a part cut short at an XML error.
+    const truncated = archive(
+      '<parsererror xmlns="http://www.w3.org/1999/xhtml"/><w:p><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></w:p>',
+    );
+    assert.equal(linearizeDocxMath(truncated), truncated);
+    const strict = zipSync({
+      "word/document.xml": strToU8(
+        '<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main" xmlns:m="http://purl.oclc.org/ooxml/officeDocument/math">' +
+          "<w:body><w:p><m:oMath><m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath></w:p></w:body></w:document>",
+      ),
+    });
+    assert.ok(strFromU8(unzipSync(linearizeDocxMath(strict))["word/document.xml"]).includes(">x^{2}<"));
+    for (const [omml, expected] of OMML_CASES) {
+      const filled = omml.replace(/\{([^{}]*)\}/g, (_, text: string) => `<m:r><m:t>${text}</m:t></m:r>`);
+      const xml = strFromU8(unzipSync(linearizeDocxMath(archive(`<w:p><m:oMath>${filled}</m:oMath></w:p>`)))["word/document.xml"]);
+      const doc = new XmlDomParser().parseFromString(xml, "application/xml");
+      assert.equal(doc.getElementsByTagNameNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "t")[0]?.textContent, expected);
+    }
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
 test("markDocxNotes reads Strict OOXML notes and skips unfilled content controls", () => {
   const w = 'xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"';
   const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
@@ -1292,6 +1427,55 @@ test("markDocxNotes skips move sources, deletions and text box fallbacks", () =>
     );
   } finally {
     (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("a Word file keeps its line breaks and which boxes are ticked", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const box = (checked: string, glyph: string, label: string) =>
+    `<w:p><w:sdt><w:sdtPr><w14:checkbox><w14:checked w14:val="${checked}"/>` +
+    '<w14:checkedState w14:val="2612" w14:font="MS Gothic"/><w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/>' +
+    `</w14:checkbox></w:sdtPr><w:sdtContent>${run(glyph)}</w:sdtContent></w:sdt>${run(label)}</w:p>`;
+  const field = (state: string, label: string) =>
+    `<w:p><w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:sizeAuto/>${state}</w:checkBox></w:ffData></w:fldChar></w:r>` +
+    '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>' +
+    `<w:r><w:fldChar w:fldCharType="end"/></w:r>${run(label)}</w:p>`;
+  const archive = docxBytes(
+    `<w:document ${ns}><w:body>` +
+      '<w:p><w:r><w:t>Jane Doe</w:t><w:br/><w:t>42 Elm Street</w:t></w:r><w:r><w:br w:type="textWrapping"/></w:r>' +
+      `${run("Springfield, IL 62704")}</w:p>` +
+      '<w:p><w:r><w:t>Summary</w:t><w:br w:type="page"/><w:t>Details</w:t></w:r></w:p>' +
+      `<w:tbl><w:tr><w:tc><w:p>${run("Built APIs")}<w:r><w:cr/><w:t>Led team of 5</w:t></w:r></w:p></w:tc></w:tr></w:tbl>` +
+      box("1", "☒", " Smoker") +
+      box("0", "☐", " Diabetic") +
+      field('<w:default w:val="0"/><w:checked/>', " Allergies") +
+      field('<w:default w:val="0"/>', " Pregnant") +
+      '<w:p><w:r><w:t xml:space="preserve">Consent </w:t><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:checked/></w:checkBox></w:ffData></w:fldChar></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> FORMCHECKBOX </w:instrText></w:r>' +
+      `<w:r><w:fldChar w:fldCharType="end"/></w:r>${run(" given")}</w:p>` +
+      "</w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(writeDocxBreaksAndCheckboxes(archive)),
+    });
+    assert.equal(
+      value,
+      "Jane Doe\n42 Elm Street\nSpringfield, IL 62704\n\n" +
+        "Summary\nDetails\n\n" +
+        "Built APIs\nLed team of 5\n\n" +
+        "☒ Smoker\n\n☐ Diabetic\n\n☒ Allergies\n\n☐ Pregnant\n\nConsent ☒ given\n\n",
+    );
+  } finally {
+    Object.assign(globals, original);
   }
 });
 

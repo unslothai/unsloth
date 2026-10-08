@@ -468,13 +468,13 @@ test("project cards in the grid leave out the instructions", () => {
   assert.doesNotMatch(card, /instructions/);
 });
 
-test("library menus take the sidebar menu look, with a shadow, in dark mode", () => {
+test("library menus take the sidebar menu look in dark mode, under the shared dropdown glow", () => {
   const css = readSrc("index.css");
   const menu = css.slice(css.indexOf("/* Library menus in dark"), css.indexOf("/* Library header row"));
-  assert.match(menu, /--library-menu-surface: color-mix\(in srgb, var\(--card\), white 7%\)/);
+  assert.match(menu, /--library-menu-surface: color-mix\(in srgb, var\(--card\), white 6\.5%\)/);
   assert.match(menu, /--accent: color-mix\(in srgb, var\(--library-menu-surface\), white 10%\)/);
   assert.match(menu, /--destructive: #ed716a/);
-  assert.match(menu, /box-shadow: 0 4px 14px var\(--background\) !important/);
+  assert.doesNotMatch(menu, /box-shadow/);
   assert.match(menu, /\[data-slot="dropdown-menu-separator"\] \{\s*background-color: color-mix\(in srgb, var\(--card\), white 16%\)/);
   const toolbar = readSrc("features/library/components/library-toolbar.tsx");
   assert.equal(toolbar.match(/className="library-menu /g)?.length, 3);

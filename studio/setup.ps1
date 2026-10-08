@@ -31,6 +31,14 @@ $ProgressPreference = 'SilentlyContinue'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PackageDir = Split-Path -Parent $ScriptDir
 
+# The deps pass can replace this file while PowerShell keeps running the parsed copy (rerun below).
+$script:SetupSelfPath = $MyInvocation.MyCommand.Path
+$script:SetupSelfAtStart = $null
+try { $script:SetupSelfAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { }
+$script:SetupArgs = @($args)
+$script:SetupStartEnv = $null
+try { $script:SetupStartEnv = [System.Environment]::GetEnvironmentVariables() } catch { }
+
 # `unsloth studio update` spawns powershell.exe, which is Windows PowerShell 5.1,
 # and the child inherits the caller's PSModulePath. Launched from a PowerShell 7
 # prompt that path leads with PowerShell 7's module directories, which ship their
@@ -182,17 +190,36 @@ $script:CudaArch = $null
 function Exit-SetupFailure {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
-        [int]$Code = 1
+        [int]$Code = 1,
+        [switch]$NoTauriMarker
     )
     if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) { Remove-WoaMergedOverrides }
     if ($Code -eq 0) { $Code = 1 }
-    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
-        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    if (-not $NoTauriMarker -and ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE))) {
         $singleLine = ($Message -replace '[\r\n]+', ' ').Trim()
         [Console]::Out.WriteLine("[TAURI:ERROR] $singleLine")
         [Console]::Out.Flush()
     }
     exit $Code
+}
+
+function Test-SetupScriptReplaced {
+    if ($env:UNSLOTH_SETUP_RERUN -eq '1' -or -not $script:SetupSelfAtStart) { return $false }
+    try { $now = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { return $false }
+    return ($now -cne $script:SetupSelfAtStart)
+}
+
+function Restore-SetupStartEnvironment {
+    if (-not $script:SetupStartEnv) { return }
+    $keep = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($k in $script:SetupStartEnv.Keys) { [void]$keep.Add([string]$k) }
+    foreach ($k in @([System.Environment]::GetEnvironmentVariables().Keys)) {
+        if (-not $keep.Contains([string]$k)) { try { [System.Environment]::SetEnvironmentVariable([string]$k, $null) } catch { } }
+    }
+    foreach ($k in $script:SetupStartEnv.Keys) {
+        try { [System.Environment]::SetEnvironmentVariable([string]$k, [string]$script:SetupStartEnv[$k]) } catch { }
+    }
 }
 
 # The interpreter this setup was launched from, when it lives inside $VenvDir; $null otherwise.
@@ -2819,6 +2846,12 @@ function Test-VCRedistInstalled {
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     if ($StageRoot) { step "vcredist" "missing; unchanged during staging" "Yellow"; return }
+    # The first pass already tried; the installer prompts for UAC.
+    if ($env:UNSLOTH_SETUP_RERUN -eq '1') {
+        step "vcredist" "missing; already tried earlier in this update" "Yellow"
+        substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
+        return
+    }
     Write-StudioLine "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
     if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
         try {
@@ -3097,6 +3130,28 @@ function substep {
     }
 }
 
+# Matched on npm's error code line, not anywhere in the log: Windows cleanup warnings
+# carry EPERM after a network failure too. FetchError names registry.npmjs.org even
+# on a local errno, so this runs before the network check (#8725).
+$script:NpmLocalFailureRe = 'npm (error|ERR!) code (EACCES|EPERM|EBUSY|ENOSPC|ENFILE|EMFILE)|operation was rejected by your operating system'
+# Keep in sync with _suggest_npm_registry in studio/setup.sh.
+$script:NpmNetworkFailureRe = '40[13]|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ConnectionRefused|failed to resolve|registry\.npmjs\.org|getaddrinfo|tunneling socket|network|proxy|self.?signed|unable to (get|verify)'
+
+function Show-NpmLocalFailureHint {
+    # -Socket: FetchError with no "npm error path" line, i.e. the OS refused node.exe's
+    # socket (per-program firewall / antivirus rule). A cache write failure has a path.
+    param([switch]$Socket)
+    Write-StudioLine ""
+    if ($Socket) {
+        $nodePath = try { (Get-Command node -ErrorAction Stop).Source } catch { "node.exe" }
+        step "frontend" "the OS refused node's connection to the npm registry" "Yellow"
+        substep "Allow $nodePath in your firewall/antivirus, or use another Node install."
+        return
+    }
+    step "frontend" "npm hit a local file error (permission, lock or disk full)" "Yellow"
+    substep "Try: npm cache clean --force, or exclude the npm cache from your antivirus."
+}
+
 function Invoke-NpmMirrorRetry {
     if (-not $env:_UNSLOTH_MIRROR_SPARE) { return $false }
     if ((Get-MirrorFailedHost -Output $script:SetupCommandOutput -Ran npm) -ne 'npm') { return $false }
@@ -3111,6 +3166,13 @@ function Invoke-NpmMirrorRetry {
 }
 
 function Show-NpmRegistryHint {
+    # Empty output (verbose runs stream npm) keeps the unconditional registry hint.
+    param([string]$FailureOutput = "")
+    if ($FailureOutput) {
+        $FailureOutput = $FailureOutput -replace "$([char]27)\[[0-9;]*m", ''
+        if ($FailureOutput -cmatch $script:NpmLocalFailureRe) { Show-NpmLocalFailureHint -Socket:($FailureOutput -cmatch 'FetchError' -and $FailureOutput -cnotmatch 'npm (error|ERR!) path '); return }
+        if ($FailureOutput -inotmatch $script:NpmNetworkFailureRe) { return }
+    }
     if ($env:UNSLOTH_NPM_REGISTRY) { return }
     $mirror = $env:NPM_CONFIG_REGISTRY
     if (-not $mirror) {
@@ -3193,8 +3255,8 @@ if ($env:SKIP_STUDIO_BASE -ne "1") {
         $ElevationState = if ($_principal.IsInRole(
                 [System.Security.Principal.WindowsBuiltInRole]::Administrator)) { "true" } else { "false" }
     } catch { }
-    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
-        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) {
+    if ($env:UNSLOTH_SETUP_RERUN -ne '1' -and ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or
+        (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE))) {
         [Console]::Out.WriteLine("[TAURI:DIAG] elevated=$ElevationState")
         [Console]::Out.Flush()
     }
@@ -4198,7 +4260,8 @@ $multiArchGfx = @(
     "gfx1200", "gfx1201"                                                    # RDNA 4
 )
 $MultiArchIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl-multi-arch" }
-$MultiArchTag = "rocm7.14.1"
+# Not rocm7.14.1: its Windows wheels ship a mismatched AOTriton runtime, so fused SDPA fails (ROCm/TheRock#7992).
+$MultiArchTag = "rocm7.14.0"
 $MultiArchTorchVersion = "2.11.0"
 $MultiArchTorchvisionVersion = "0.26.0"
 $MultiArchTorchaudioVersion = "2.11.0"
@@ -4909,6 +4972,8 @@ if ($LongPathsEnabled) {
     step "long paths" "enabled"
 } elseif ($StageRoot) {
     step "long paths" "disabled; unchanged during staging" "Yellow"
+} elseif ($env:UNSLOTH_SETUP_RERUN -eq '1') {
+    step "long paths" "disabled; already asked earlier in this update" "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
@@ -4974,7 +5039,10 @@ if (-not $HasGit) {
     if ($gitNeeded -and $StageRoot) {
         Exit-SetupFailure "Background staging cannot install Git; retry with the foreground updater."
     }
-    if ($gitNeeded -or -not $StageRoot) {
+    # Optional here; the first pass already tried and the installer prompts for UAC.
+    if ($env:UNSLOTH_SETUP_RERUN -eq '1' -and -not $gitNeeded) {
+        step "git" "not found; already tried earlier in this update" "Yellow"
+    } elseif ($gitNeeded -or -not $StageRoot) {
         Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
@@ -5721,6 +5789,12 @@ if ($NeedNodeForSetup) {
             Write-StudioLine "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red
             Write-StudioLine "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
             Exit-SetupFailure "Could not install an isolated Node runtime"
+        } elseif ($nodeOut -match "keeping existing isolated Node") {
+            # Exit 0 also covers a failed update that kept a working Node; relay any repair lines.
+            if ($nodeOut -match 'takeown /F') {
+                Write-StudioLine $nodeOut -ForegroundColor DarkGray
+            }
+            step "node" "update not applied, existing isolated Node kept" "Yellow"
         }
         # Same condition as the guard above, or the tree this run just created under a master
         # root stays unmarked and the uninstaller declines to remove it as somebody else's.
@@ -5827,7 +5901,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
             foreach ($gi in $HiddenGitignores) { Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue }
             Write-StudioLine "[ERROR] npm $NpmInstallVerb failed (exit code $npmExit)" -ForegroundColor Red
             Write-StudioLine "   Try running 'npm $NpmInstallVerb' manually in frontend/ to see errors" -ForegroundColor Yellow
-            Show-NpmRegistryHint
+            Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
             Exit-SetupFailure "Frontend dependency installation failed (exit code $npmExit)"
         }
     }
@@ -5870,7 +5944,7 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
         Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        Show-NpmRegistryHint
+        Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
         Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
     }
     Pop-Location
@@ -9204,6 +9278,35 @@ if ($stackExit -ne 0) {
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
 
+# ── Finish with the setup script this update installed ──
+# Phases a release adds below would be skipped by the update installing it. A module scope keeps this
+# run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
+if (Test-SetupScriptReplaced) {
+    step "setup" "the update replaced this setup script; finishing with the new version"
+    $_setupRerunArgs = $script:SetupArgs
+    Restore-SetupStartEnvironment
+    Remove-Item Env:UNSLOTH_STUDIO_FULL_DEPS -ErrorAction SilentlyContinue
+    $env:UNSLOTH_SETUP_RERUN = '1'
+    $_setupRerunner = New-Module -ScriptBlock { $script:Ok = $false; $script:Code = 1 }
+    try {
+        & $_setupRerunner {
+            param($Path, [object[]]$Arguments, $Defaults)
+            $PSDefaultParameterValues = $Defaults
+            & $Path @Arguments
+            $script:Ok = $?
+            $script:Code = $global:LASTEXITCODE
+        } $script:SetupSelfPath $_setupRerunArgs $PSDefaultParameterValues
+        $_setupRerunOk = & $_setupRerunner { $script:Ok }
+        $_setupRerunCode = & $_setupRerunner { $script:Code }
+    } finally {
+        Remove-Item Env:UNSLOTH_SETUP_RERUN -ErrorAction SilentlyContinue
+        Remove-WoaMergedOverrides
+    }
+    # $? first: under -Command a run that fell off its end succeeded whatever its last native exit.
+    if ($_setupRerunOk) { return }
+    Exit-SetupFailure -Message "the updated setup script failed (exit code $_setupRerunCode)" -Code $_setupRerunCode -NoTauriMarker
+}
+
 } else {
     step "python" "dependencies up to date"
     # Restore ErrorActionPreference (was lowered for pip/python section)
@@ -9765,12 +9868,12 @@ if ($LocalLlamaCppSrc) {
             Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
             # A locked/in-use tree can silently survive removal (SilentlyContinue
             # masks it). Don't then junction/copy over a half-present dir; mirror the
-            # prebuilt path's active-process handling and stop with a clear message.
-            # Denied counts as surviving: unreadable is not gone.
+            # prebuilt path's blocked-install handling and stop with a clear message.
+            # Denied counts as surviving (unreadable is not gone), so name no single cause (#9928).
             if ((Get-PathState -Path $LlamaCppDir) -ne "Absent") {
-                step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
-                substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-                Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
+                step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
+                substep "Close Unsloth or other llama.cpp users, or repair the ACLs on $LlamaCppDir, then retry" "Yellow"
+                Exit-SetupFailure "llama.cpp install is blocked; the existing install could not be replaced" 3
             }
         }
         cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
@@ -9939,13 +10042,18 @@ if ($LocalLlamaCppLinked) {
                 substep $installedRelease
             }
         } elseif ($prebuiltExit -eq 3) {
-            step "llama.cpp" "install blocked by active llama.cpp process" "Yellow"
+            # WinError 5 is both an in-use file and an unreadable ACL: name ACLs only if repair lines were printed.
+            step "llama.cpp" "install blocked; existing install could not be replaced" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
             if (Test-Path -LiteralPath $LlamaCppDir) {
                 substep "Existing install was restored" "Yellow"
             }
-            substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
-            Exit-SetupFailure "llama.cpp install is blocked by an active llama.cpp process" 3
+            if ($prebuiltOutput -match 'takeown /F') {
+                substep "Close Unsloth or other llama.cpp users, or repair the ACLs named above, then retry" "Yellow"
+            } else {
+                substep "Close Unsloth or other llama.cpp users and retry" "Yellow"
+            }
+            Exit-SetupFailure "llama.cpp install is blocked; the existing install could not be replaced" 3
         } elseif ($prebuiltExit -eq 4) {
             step "llama.cpp" "not enough disk space to install llama.cpp" "Yellow"
             Write-LlamaFailureLog -Output $prebuiltOutput
@@ -10089,6 +10197,67 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         step "whisper.cpp" "no compatible prebuilt (installed llama.cpp $installedWhisperLlamaTag; whisper requires $requiredWhisperLlamaTag); curated whisper.cpp dictation is unavailable; publish paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "Yellow"
     } else {
         step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "Yellow"
+    }
+}
+
+# ==========================================================================
+#  PHASE 3.4b: Install the audio.cpp prebuilt (speech, music and dictation runtime)
+# ==========================================================================
+# audio.cpp vendors its own patched ggml, so its bundles are self-contained and do not
+# pair with the llama install. Failure is never fatal: every other audio engine keeps working.
+$AudioCppDir = Join-Path $UnslothHome "audio.cpp"
+$AudioCppInstaller = Join-Path $PSScriptRoot "install_audio_cpp_prebuilt.py"
+if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
+    substep "audio.cpp: using a user-configured binary/dir; skipping managed install"
+} elseif ($env:UNSLOTH_SKIP_AUDIO_CPP_INSTALL -eq "1") {
+    substep "audio.cpp: install skipped (UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1)"
+} elseif ($RuntimeRootIsCustom -and (Test-Path -LiteralPath $AudioCppInstaller) -and
+        (Assert-StudioOwnedOrAbsent -Path $AudioCppDir -Label "audio.cpp install" -NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied") {
+    step "audio.cpp" "install directory cannot be read: access is denied; audio.cpp models are unavailable; restore access to $AudioCppDir or move it aside, then re-run setup" "Yellow"
+} elseif (Test-Path -LiteralPath $AudioCppInstaller) {
+    if ($RuntimeRootIsCustom) {
+        Assert-StudioOwnedOrAbsent -Path $AudioCppDir -Label "audio.cpp install" -IsCustom $RuntimeRootIsCustom
+    }
+    $audioCppArgs = @($AudioCppInstaller, "--install-dir", $AudioCppDir)
+    # A host whose GPU is invisible at install time names its bundle here.
+    if ($env:UNSLOTH_AUDIO_CPP_ACCELERATOR) {
+        $audioCppArgs += @("--accelerator", $env:UNSLOTH_AUDIO_CPP_ACCELERATOR)
+    }
+    $prevEAPAudioCpp = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $previousNativeErrorPreferenceA = $null
+    $restoreNativeErrorPreferenceA = $false
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $previousNativeErrorPreferenceA = $PSNativeCommandUseErrorActionPreference
+        $PSNativeCommandUseErrorActionPreference = $false
+        $restoreNativeErrorPreferenceA = $true
+    }
+    try {
+        $audioCppOutput = & python @audioCppArgs 2>&1 | Show-DownloadProgress | Out-String
+        $audioCppExit = $LASTEXITCODE
+    } finally {
+        if ($restoreNativeErrorPreferenceA) {
+            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreferenceA
+        }
+    }
+    $ErrorActionPreference = $prevEAPAudioCpp
+    if ($audioCppExit -eq 0) {
+        if ($audioCppOutput -match "already matches") {
+            step "audio.cpp" "prebuilt up to date"
+        } elseif ($audioCppOutput -match "keeping the existing complete install") {
+            # The release lookup could not answer and the install on disk is complete; "prebuilt
+            # installed" would name a release nothing fetched. whisper.cpp's wording.
+            step "audio.cpp" "update unavailable, existing prebuilt kept" "Yellow"
+        } else {
+            step "audio.cpp" "prebuilt installed"
+        }
+        if ($RuntimeRootIsCustom -and (Test-PathQuiet $AudioCppDir "Container")) {
+            Mark-StudioOwned -Path $AudioCppDir
+        }
+    } elseif ($audioCppExit -eq 3) {
+        step "audio.cpp" "install busy; keeping existing runtime" "Yellow"
+    } else {
+        step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "Yellow"
     }
 }
 

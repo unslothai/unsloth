@@ -213,6 +213,27 @@ def test_merged_export_push_to_a_reused_folder_does_not_upload_its_leftovers(tmp
     assert seen["uploaded"] == ["model.safetensors"]
 
 
+def test_whisper_merged_export_is_a_16bit_merge(tmp_path, monkeypatch):
+    calls: list[str] = []
+    seen: dict = {}
+    backend = _non_mlx_backend(monkeypatch, "test_export_hub_push_merged_backend", calls, seen)
+    backend._audio_type = "whisper"
+    export_dir = tmp_path / "export"
+    export_dir.mkdir()
+    (export_dir / "adapter_config.json").write_text("{}")
+
+    success, message, _ = backend.export_merged_model(
+        str(export_dir),
+        push_to_hub = True,
+        repo_id = "model",
+        hf_token = "hf_fake",
+    )
+
+    assert success is True, message
+    assert backend.current_model.merges == ["merged_16bit", "merged_16bit"]
+    assert seen["uploaded"] == ["model.safetensors"]
+
+
 @pytest.mark.parametrize("roomier", ["temp", "export", "export_but_unwritable"])
 def test_merged_export_push_stages_the_clean_save_where_there_is_room(
     tmp_path, monkeypatch, roomier

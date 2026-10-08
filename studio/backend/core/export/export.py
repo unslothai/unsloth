@@ -32,7 +32,7 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_identity import restore_hf_cache_repo_identity
-from utils.models.model_config import detect_audio_type
+from utils.models.model_config import detect_audio_type, load_mlx_adapter_tokenizer
 from utils.paths import (
     ensure_dir,
     outputs_root,
@@ -40,6 +40,7 @@ from utils.paths import (
     resolve_output_dir,
 )
 from core.inference import get_inference_backend
+from core.export import q4nx
 from utils.paths.path_utils import any_not_appledouble_metadata, drop_appledouble_metadata
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
@@ -688,6 +689,9 @@ def _publish_unsloth_model_card(hf_api, repo_id, model, hf_token):
 
 
 class ExportBackend:
+    # {"layout", "adapter_only"} for a decision checkpoint (GGUF only), else None.
+    decision: Optional[dict] = None
+
     def __init__(self):
         self.inference_backend = get_inference_backend()
         self.current_checkpoint = None
@@ -696,6 +700,7 @@ class ExportBackend:
         self.is_vision = False
         self.is_peft = False
         self._audio_type = None
+        self.decision = None
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
@@ -710,6 +715,7 @@ class ExportBackend:
             self.current_tokenizer = None
             self.current_checkpoint = None
             self._audio_type = None
+            self.decision = None
 
             clear_gpu_cache()
 
@@ -764,6 +770,18 @@ class ExportBackend:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
             self.cleanup_memory()
+
+            # Before the base / audio / vision probes: a decision run never reaches the chat loaders.
+            from core.export.decision import decision_kind
+
+            decision = decision_kind(checkpoint_path)
+            if decision is not None:
+                return self._load_decision_checkpoint(
+                    str(Path(checkpoint_path).expanduser()),
+                    *decision,
+                    token = token,
+                    base_model = base_model,
+                )
 
             checkpoint_path_obj = Path(checkpoint_path)
 
@@ -825,6 +843,8 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = False,
                     auto_model = WhisperForConditionalGeneration,
+                    whisper_language = "English",
+                    whisper_task = "transcribe",
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -897,6 +917,8 @@ class ExportBackend:
                     local_files_only = local_files_only,
                     **_device_map_kw,
                 )
+                if _IS_MLX and adapter_config.exists():
+                    tokenizer = load_mlx_adapter_tokenizer(tokenizer, checkpoint_path)
 
             # Only for the multi-GPU map: a single-GPU host has no second placement to retry on.
             _offloaded = _cpu_offloaded_modules(model) if _device_map_kw else 0
@@ -972,6 +994,83 @@ class ExportBackend:
             _device_map_override = {"device_map": "sequential"},
         )
 
+    def _load_decision_checkpoint(
+        self,
+        checkpoint_path: str,
+        layout: str,
+        adapter_only: bool,
+        token: HfTokenArg = None,
+        base_model: Optional[str] = None,
+    ) -> Tuple[bool, str]:
+        """Records a decision checkpoint; its weights load (adapters) or convert (merged) at export."""
+        from core.export.decision import (
+            DecisionExportError,
+            adapter_base,
+            check_decision_eligibility,
+        )
+
+        if not _export_runtime_available():
+            return False, _export_runtime_message()
+        if adapter_only:
+            # The base FastDecisionModel will load must be the one the route authorized and scanned.
+            try:
+                resolved = adapter_base(checkpoint_path)
+            except DecisionExportError as exc:
+                return False, str(exc)
+            if base_model and resolved != base_model:
+                return False, (
+                    f"This adapter loads {resolved}, not the authorized base model {base_model}."
+                )
+        try:
+            check_decision_eligibility(checkpoint_path, token)
+        except DecisionExportError as exc:
+            return False, str(exc)
+        self.decision = {"layout": layout, "adapter_only": adapter_only}
+        # An adapter folder loads its base at export time, under the credential of this load.
+        self._decision_token = token
+        self.is_vision = False
+        self.is_peft = adapter_only
+        self.current_checkpoint = checkpoint_path
+        name = "Clef" if layout == "clef" else "Laya"
+        kind = "LoRA adapters" if adapter_only else "merged"
+        logger.info(f"Decision checkpoint ({name}, {kind}) ready for GGUF export")
+        return True, f"Loaded {name} decision model ({kind}); it exports to GGUF only"
+
+    def _export_decision_gguf(
+        self, quantization_method, push_to_hub: bool, imatrix_file, npu_q4nx: bool
+    ) -> Tuple[bool, str, Optional[str]]:
+        if push_to_hub:
+            return (
+                False,
+                "Decision model GGUF export saves to the run folder only; Hub upload is not supported.",
+                None,
+            )
+        if imatrix_file or npu_q4nx:
+            return (
+                False,
+                "Decision model GGUF export does not support imatrix or Q4NX conversion.",
+                None,
+            )
+        from core.export.decision import DecisionExportError, run_decision_gguf_export
+
+        try:
+            data = run_decision_gguf_export(
+                self.current_checkpoint,
+                quantization_method,
+                local_files_only = _hf_offline(),
+                print_output = True,
+                token = getattr(self, "_decision_token", None),
+            )
+        except (DecisionExportError, ValueError, RuntimeError) as exc:
+            logger.error(f"Decision GGUF export failed: {exc}")
+            return False, str(exc), None
+        output_dir = str(Path(self.current_checkpoint).resolve() / "gguf")
+        quants = ", ".join((data or {}).get("quantizations") or [])
+        return True, f"Decision model exported to GGUF ({quants}) in {output_dir}", output_dir
+
+    def _decision_only_gguf(self) -> Tuple[bool, str, Optional[str]]:
+        return False, "Decision models export to GGUF only.", None
+
     def _write_export_metadata(self, save_directory: str):
         """Write export_metadata.json with base model info for Chat page discovery."""
         try:
@@ -1003,6 +1102,7 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
+        install_missing_dependencies: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export a merged model (a no-op merge for non-PEFT base models).
 
@@ -1011,6 +1111,8 @@ class ExportBackend:
         w4a16, mxfp4, mxfp8, nvfp4); it overrides ``format_type`` and is resolved against
         unsloth.save COMPRESSED_EXPORT_SCHEMES.
         """
+        if self.decision is not None:
+            return self._decision_only_gguf()
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
@@ -1083,14 +1185,27 @@ class ExportBackend:
                 # Prefer the llm-compressor-main shadow (transformers 5.x): the shipped 0.10.x cannot quantize newer
                 # models.
                 _shadow_pp = None
+                _shadow_offered = False
                 try:
-                    from utils.transformers_version import llmcompressor_shadow_pythonpath
-                    _shadow_pp = llmcompressor_shadow_pythonpath()
+                    from utils.transformers_version import (
+                        _env_offline,
+                        _llmcompressor_main_disabled,
+                        llmcompressor_shadow_pythonpath,
+                    )
+
+                    # Same rule as the consent probe: the dialog names the shadow whenever it can be provisioned.
+                    _shadow_offered = not _llmcompressor_main_disabled() and not _env_offline()
+                    _shadow_pp = llmcompressor_shadow_pythonpath(
+                        allow_provision = install_missing_dependencies,
+                    )
                 except Exception as e:
                     logger.warning(f"llm-compressor-main shadow unavailable: {e}")
                 if _shadow_pp:
                     os.environ[_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV] = _shadow_pp
                 else:
+                    # Consent for the shadow does not cover installing into this interpreter instead.
+                    if _shadow_offered:
+                        install_missing_dependencies = False
                     # The workspace 0.10.x cannot exceed its transformers ceiling, so fail fast for sidecar models.
                     os.environ.pop(_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV, None)
                     _exceeds, _tf_ver = _us._transformers_exceeds_llm_compressor_ceiling()
@@ -1100,8 +1215,9 @@ class ExportBackend:
                             "FP8/FP4 compressed-tensors export is not available for this model: it "
                             f"runs under transformers {_tf_ver}, but the installed llm-compressor "
                             f"supports transformers <= {_us._LLM_COMPRESSOR_MAX_TRANSFORMERS} and the "
-                            "llm-compressor-main runtime could not be provisioned (offline or "
-                            "UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN). Export to GGUF or 16-bit instead.",
+                            "llm-compressor-main runtime is not set up (install not approved, "
+                            "offline, UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN, or provisioning failed). "
+                            "Approve the install, or export to GGUF or 16-bit instead.",
                             None,
                         )
 
@@ -1123,8 +1239,6 @@ class ExportBackend:
                 save_method = compressed_alias
             elif format_type == "4-bit (FP4)":
                 save_method = "merged_4bit_forced"
-            elif self._audio_type == "whisper":
-                save_method = None
             else:
                 save_method = "merged_16bit"
 
@@ -1144,6 +1258,14 @@ class ExportBackend:
                     and _supports_kwarg(self.current_model.save_pretrained_merged, "token")
                     else {}
                 )
+                # Always explicit: the library defaults to auto-installing, so an unconsented export must say False.
+                consent_kw = (
+                    {"install_missing_dependencies": bool(install_missing_dependencies)}
+                    if _supports_kwarg(
+                        self.current_model.save_pretrained_merged, "install_missing_dependencies"
+                    )
+                    else {}
+                )
                 if _IS_MLX:
                     self.current_model.save_pretrained_merged(
                         save_directory,
@@ -1156,6 +1278,7 @@ class ExportBackend:
                         save_directory,
                         self.current_tokenizer,
                         save_method = save_method,
+                        **consent_kw,
                         **merged_token_kw,
                     )
 
@@ -1249,13 +1372,20 @@ class ExportBackend:
                         except Exception as exception:
                             logger.warning(f"Could not publish the model card: {exception}")
                     else:
-                        hub_save_method = save_method if save_method is not None else "merged_16bit"
                         self.current_model.push_to_hub_merged(
                             repo_id,
                             self.current_tokenizer,
-                            save_method = hub_save_method,
+                            save_method = save_method,
                             token = hf_token,
                             private = private,
+                            **(
+                                {"install_missing_dependencies": bool(install_missing_dependencies)}
+                                if _supports_kwarg(
+                                    self.current_model.push_to_hub_merged,
+                                    "install_missing_dependencies",
+                                )
+                                else {}
+                            ),
                         )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
@@ -1277,6 +1407,8 @@ class ExportBackend:
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
+        if self.decision is not None:
+            return self._decision_only_gguf()
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
@@ -1401,15 +1533,21 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
+        npu_q4nx: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export the model in GGUF format.
 
         ``quantization_method`` is a single GGUF quant method ("Q4_K_M") or a list of them; a list
         produces one GGUF per quant from a single model load, since unsloth save_to_gguf loops
-        internally. ``imatrix_file`` is an importance matrix path or boolean.
+        internally. ``imatrix_file`` is an importance matrix path or boolean. ``npu_q4nx`` also
+        converts one Q4_0 / Q4_1 / Q4_K_M GGUF to FastFlowLM's Q4NX for the AMD Ryzen AI NPU.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
+        if self.decision is not None:
+            return self._export_decision_gguf(
+                quantization_method, push_to_hub, imatrix_file, npu_q4nx
+            )
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
@@ -1448,6 +1586,14 @@ class ExportBackend:
             if not quant_methods:
                 quant_methods = ["q4_k_m"]
             quant_method = quant_methods if len(quant_methods) > 1 else quant_methods[0]
+            if npu_q4nx and not save_directory:
+                return False, "The AMD NPU (Q4NX) export needs a local save directory.", None
+            if npu_q4nx and not any(q in q4nx.SOURCE_QUANTS for q in quant_methods):
+                return (
+                    False,
+                    "The AMD NPU (Q4NX) export needs a Q4_0, Q4_1 or Q4_K_M GGUF in the selection.",
+                    None,
+                )
 
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
@@ -1595,6 +1741,23 @@ class ExportBackend:
                 self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
 
+                if npu_q4nx:
+                    source = q4nx.source_gguf(exported_ggufs, quant_methods)
+                    try:
+                        if source is None:
+                            raise RuntimeError("no Q4_0, Q4_1 or Q4_K_M GGUF was written")
+                        with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
+                            q4nx.convert_gguf_to_q4nx(source, staging)
+                            self._write_q4nx_companions(staging, exported_config)
+                    except Exception as exception:
+                        logger.error(f"Q4NX conversion failed: {exception}")
+                        return (
+                            False,
+                            f"GGUF files were saved to {output_path}, but the AMD NPU (Q4NX) "
+                            f"conversion failed: {exception}",
+                            output_path,
+                        )
+
             if push_to_hub:
                 if not repo_id or not hf_token:
                     return (
@@ -1684,6 +1847,22 @@ class ExportBackend:
                     output_path,
                 )
             return False, f"GGUF export failed: {str(e)}", None
+
+    def _write_q4nx_companions(self, q4nx_dir: Path, config: Optional[bytes]) -> None:
+        """The tokenizer files FastFlowLM loads next to model.q4nx (see q4nx.CONFIG_FILES)."""
+        with tempfile.TemporaryDirectory(prefix = "_tmp_tokenizer_", dir = q4nx_dir) as scratch:
+            self.current_tokenizer.save_pretrained(scratch)
+            for name in q4nx.TOKENIZER_FILES:
+                # The converter rebuilds tokenizer.json from the GGUF; the HF one is what FLM ships.
+                if (Path(scratch) / name).is_file():
+                    shutil.copyfile(Path(scratch) / name, q4nx_dir / name)
+        # generation_config holds stop ids config.json lacks (Phi-4-mini's <|end|>, 200020).
+        generation = getattr(self.current_model, "generation_config", None)
+        q4nx.write_flm_tokenizer_config(
+            q4nx_dir,
+            json.loads(config) if config else None,
+            {"eos_token_id": getattr(generation, "eos_token_id", None)},
+        )
 
     def _save_mlx_adapter(
         self,
@@ -1900,6 +2079,8 @@ class ExportBackend:
         q8_0/f16/bf16/f32. ``adapter_format`` is 'mlx' or 'peft' (MLX servers only offer both);
         omitted resolves to the platform's native format.
         """
+        if self.decision is not None:
+            return self._decision_only_gguf()
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:

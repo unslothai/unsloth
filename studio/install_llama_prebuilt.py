@@ -4798,15 +4798,69 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
+def blocked_replace_hint(winerror: object) -> str:
+    # 5 is also what a scanner holding a handle returns (is_busy_lock_error: busy).
+    if winerror == 5:
+        return (
+            "access is denied -- a scanner or running process may still hold a handle, "
+            "or the ACLs are broken"
+        )
+    if winerror == 145:
+        return "the directory is not empty yet -- an earlier copy is still being removed"
+    return "a scanner is likely still holding the install open"
+
+
+def _tree_link_state(root: Path) -> str:
+    """Return "link", "unreadable" (root or a directory not readable) or "clean"."""
+    try:
+        root.lstat()
+    except OSError:
+        return "unreadable"
+    if _is_link_or_junction(root):
+        return "link"
+    unreadable: list[OSError] = []
+    for current_dir, dirnames, filenames in os.walk(
+        root, followlinks = False, onerror = unreadable.append
+    ):
+        current_path = type(root)(current_dir)
+        if any(_is_link_or_junction(current_path / name) for name in (*dirnames, *filenames)):
+            return "link"
+    return "unreadable" if unreadable else "clean"
+
+
+def log_acl_repair(path: Path) -> None:
+    # Printed, never run: repairing permissions is the user's call (#9928).
+    # takeown /R and icacls /T follow links, so recursion is offered only for a tree
+    # fully listed and link-free; otherwise just the root, which is not a link.
+    state = _tree_link_state(path)
+    if state == "link":
+        log(f"rename still denied after retrying; {path} contains a link, check its permissions")
+    else:
+        log(
+            "rename still denied after retrying; if the permissions on this tree are broken, run in an elevated PowerShell:"
+        )
+        recursive = state == "clean"
+        log(f'takeown /F "{path}"' + (" /R /D Y" if recursive else ""))
+        # /L: if an unreadable root is a link after all, reset the link, not its target.
+        log(f'icacls "{path}" /reset' + (" /T" if recursive else " /L"))
+        if not recursive:
+            log("then run the install again")
+    log(
+        "if access stays denied, Controlled folder access or antivirus may be blocking "
+        "the path: allow or exclude it there"
+    )
+
+
 def replace_with_busy_retry(
     src: Path,
     dst: Path,
     *,
     attempts: int = 8,
+    acl_repair: bool = True,
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
-    WinError 5/32/145 means a scanner still holds a handle inside the tree,
+    WinError 5/32/145 usually means a scanner holds a handle inside the tree,
     which clears in a second or two; without a backoff that turns an update
     into a failure, and on the aside-move of the *existing* install that is the
     failure this installer most needs to avoid. Mirrors the Node installer's
@@ -4822,12 +4876,16 @@ def replace_with_busy_retry(
             os.replace(src, dst)
             return
         except OSError as exc:
-            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            winerror = getattr(exc, "winerror", None)
+            transient = os.name == "nt" and winerror in (5, 32, 145)
             if not transient or attempt == attempts - 1:
+                if acl_repair and transient and winerror == 5:
+                    # src, not dst: the aside-move's dst does not exist yet.
+                    log_acl_repair(src)
                 raise
             log(
-                f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
-                f"{delay:.2f}s -- a scanner is likely still holding the install open"
+                f"rename {src.name} -> {dst.name} blocked ({winerror}), retrying in "
+                f"{delay:.2f}s -- {blocked_replace_hint(winerror)}"
             )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
@@ -5221,7 +5279,8 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
                 restore_attempted = True
                 try:
-                    replace_with_busy_retry(rollback_dir, install_dir)
+                    # A copy fallback follows, so ACL advice here could name a tree it then removes.
+                    replace_with_busy_retry(rollback_dir, install_dir, acl_repair = False)
                 except OSError as restore_exc:
                     # The rename is the one-step restore; when it cannot run,
                     # the rollback tree is the sole remaining llama.cpp, so a
@@ -5382,6 +5441,17 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         prune_install_staging_root(install_dir)
 
 
+def ensure_fit_params_executable(install_dir: Path) -> None:
+    """The guarded extractor leaves the optional Metal probe 0644 (#12901); reuse paths repair old installs."""
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    try:
+        if helper.is_file() and not helper.is_symlink():
+            if stat.S_IMODE(helper.stat().st_mode) & 0o111 != 0o111:
+                os.chmod(helper, 0o755)
+    except OSError:
+        pass
+
+
 def install_from_archives(
     choice: AssetChoice, host: HostInfo, install_dir: Path, work_dir: Path
 ) -> tuple[Path, Path]:
@@ -5468,6 +5538,7 @@ def install_from_archives(
         raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
+    ensure_fit_params_executable(install_dir)
 
     root_server = install_dir / "llama-server"
     root_quantize = install_dir / "llama-quantize"
@@ -11250,6 +11321,7 @@ def install_prebuilt(
                 # honour; a request read back off the marker retries when something moves.
                 backend_request_mandatory = backend_mandatory,
             ):
+                ensure_fit_params_executable(install_dir)
                 return
             # A request detection had to replace; kept so the marker records the CHOICE.
             unhonoured_request: str | None = None
@@ -11286,6 +11358,7 @@ def install_prebuilt(
                 plan: InstallReleasePlan, reused: AssetChoice, used_fallback: bool
             ) -> None:
                 """Update selection fields when the existing bundle is reused."""
+                ensure_fit_params_executable(install_dir)
                 sync_marker_selection(
                     install_dir,
                     choice = reused,
@@ -11452,6 +11525,7 @@ def install_prebuilt(
         ):
             log("prebuilt update unavailable; keeping the existing complete install")
             log(f"prebuilt update reason: {exc}")
+            ensure_fit_params_executable(install_dir)
             return
         log(
             "prebuilt install failed; preserving the selected backend"
