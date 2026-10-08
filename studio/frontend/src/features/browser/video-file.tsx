@@ -24,7 +24,7 @@ import {
   VolumeXIcon,
 } from "lucide-react";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { copyVideoFrame, registerTabVideo } from "./video-registry";
+import { canCopyVideoFrame, copyVideoFrame, registerTabVideo } from "./video-registry";
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 const SEEK_SECONDS = 5;
@@ -54,6 +54,7 @@ export function VideoFile({
   onError: () => void;
 }) {
   const t = useT();
+  const rootRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
@@ -88,7 +89,13 @@ export function VideoFile({
     el.muted = !el.muted;
     if (!el.muted && el.volume === 0) el.volume = 1;
   };
-  const fullscreen = () => void video()?.requestFullscreen?.().catch(() => undefined);
+  // The whole player, so its controls stay on screen.
+  const fullscreen = () => {
+    const root = rootRef.current;
+    if (!root) return;
+    const request = document.fullscreenElement === root ? document.exitFullscreen() : root.requestFullscreen?.();
+    void request?.catch(() => undefined);
+  };
   const pictureInPicture = () => {
     const el = video();
     if (!el) return;
@@ -105,7 +112,11 @@ export function VideoFile({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.target instanceof HTMLInputElement || event.metaKey || event.ctrlKey || event.altKey) return;
+    const target = event.target as HTMLElement;
+    // Keys from the portaled menu bubble here too; inputs and a focused button's Space are theirs.
+    if (!event.currentTarget.contains(target) || target instanceof HTMLInputElement) return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === " " && target !== event.currentTarget && target.closest("button")) return;
     const handlers: Record<string, () => void> = {
       " ": togglePlay,
       k: togglePlay,
@@ -127,6 +138,7 @@ export function VideoFile({
   return (
     // biome-ignore lint/a11y/noNoninteractiveTabindex: the player takes its keyboard shortcuts while focused
     <div
+      ref={rootRef}
       tabIndex={0}
       role="group"
       aria-label={name}
@@ -269,7 +281,9 @@ export function VideoFile({
             {pipSupported ? (
               <DropdownMenuItem onSelect={pictureInPicture}>{t("browser.video.pictureInPicture")}</DropdownMenuItem>
             ) : null}
-            <DropdownMenuItem onSelect={copyFrame}>{t("browser.video.copyFrame")}</DropdownMenuItem>
+            {canCopyVideoFrame() ? (
+              <DropdownMenuItem onSelect={copyFrame}>{t("browser.video.copyFrame")}</DropdownMenuItem>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
         <button type="button" aria-label={t("browser.video.fullscreen")} onClick={fullscreen} className={CONTROL}>

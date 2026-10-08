@@ -111,7 +111,7 @@ import { AnnotateLayer, WebAnnotateLayer } from "./annotate-layer";
 import { BookmarkStar, BookmarksBar } from "./bookmarks";
 import { useBookmarkFor } from "./bookmarks-store";
 import { browserTabType, mediaKind, textFileKind } from "./file-kind";
-import { copyVideoFrame, tabVideo } from "./video-registry";
+import { canCopyVideoFrame, copyVideoFrame, tabVideo } from "./video-registry";
 import { CONTEXT_MENU } from "./link-context-menu";
 import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
 import {
@@ -2087,10 +2087,12 @@ function VideoFileToolbar({
   const blob = download?.blob;
   const { goBack, goForward } = useBrowserStore.getState();
   // A blob URL can't be handed to another app from the desktop app.
-  const canOpenTab = !isTauri && browserTabType(entry.name, entry.contentType || blob?.type || "") !== null;
+  const tabType = isTauri ? null : browserTabType(entry.name, entry.contentType || blob?.type || "");
+  const canOpenTab = tabType !== null;
+  const frameCopies = canCopyVideoFrame();
   const openInBrowser = () => {
-    if (!blob || !canOpenTab) return;
-    const url = URL.createObjectURL(blob);
+    if (!blob || !tabType) return;
+    const url = URL.createObjectURL(new Blob([blob], { type: tabType }));
     window.open(url, "_blank", "noopener,noreferrer");
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
@@ -2143,39 +2145,42 @@ function VideoFileToolbar({
           <span className="hidden shrink-0 text-ui-12 text-muted-foreground @[30rem]:inline">{meta}</span>
         ) : null}
       </div>
+      {/* Without Copy frame (desktop app) the name is all there is to copy. */}
       <div className={cn(SPLIT_PILL, "hidden @[26rem]:flex")}>
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <button
               type="button"
-              aria-label={t("browser.video.copyFrame")}
-              onClick={copyFrame}
-              className={cn(SPLIT_PART, "pl-2.5 pr-1")}
+              aria-label={frameCopies ? t("browser.video.copyFrame") : t("browser.video.copyName")}
+              onClick={frameCopies ? copyFrame : copyName}
+              className={cn(SPLIT_PART, frameCopies ? "pl-2.5 pr-1" : "px-2.5")}
             >
               <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4.5" />
             </button>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="tooltip-compact">
-            {t("browser.video.copyFrame")}
+            {frameCopies ? t("browser.video.copyFrame") : t("browser.video.copyName")}
           </TooltipContent>
         </Tooltip>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild={true}>
-            <button type="button" aria-label={t("browser.video.copyOptions")} className={cn(SPLIT_PART, "pr-2 pl-1")}>
-              <SplitChevron />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-52 rounded-[20px] p-1.5">
-            <DropdownMenuItem onSelect={copyFrame}>
-              <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4" />
-              {t("browser.video.copyFrame")}
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={copyName}>
-              <HugeiconsIcon icon={TextWrapIcon} strokeWidth={1.75} className="size-4" />
-              {t("browser.video.copyName")}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {frameCopies ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild={true}>
+              <button type="button" aria-label={t("browser.video.copyOptions")} className={cn(SPLIT_PART, "pr-2 pl-1")}>
+                <SplitChevron />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" sideOffset={6} className="browser-menu min-w-52 rounded-[20px] p-1.5">
+              <DropdownMenuItem onSelect={copyFrame}>
+                <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4" />
+                {t("browser.video.copyFrame")}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={copyName}>
+                <HugeiconsIcon icon={TextWrapIcon} strokeWidth={1.75} className="size-4" />
+                {t("browser.video.copyName")}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </div>
       <div className={SPLIT_PILL}>
         <button
@@ -2185,8 +2190,12 @@ function VideoFileToolbar({
           title={canOpenTab ? t("browser.file.newBrowserTab") : t("browser.video.saveAs")}
           className={cn(SPLIT_PART, "gap-1.5 pr-1.5 pl-3")}
         >
-          <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4.5" />
-          {t("browser.video.open")}
+          <HugeiconsIcon
+            icon={canOpenTab ? ArrowUpRight01Icon : Download01Icon}
+            strokeWidth={1.75}
+            className="size-4.5"
+          />
+          {canOpenTab ? t("browser.video.open") : t("browser.video.saveAs")}
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild={true}>

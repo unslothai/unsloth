@@ -17,9 +17,13 @@ export function tabVideo(tabId: string): HTMLVideoElement | null {
   return videos.get(tabId) ?? null;
 }
 
+/** The desktop app can't write images to the clipboard. */
+export const canCopyVideoFrame = (): boolean =>
+  !isTauri && typeof ClipboardItem !== "undefined" && typeof navigator.clipboard?.write === "function";
+
 /** Copies the frame on screen as a PNG; false where the clipboard takes no images. */
 export async function copyVideoFrame(video: HTMLVideoElement): Promise<boolean> {
-  if (isTauri || typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) return false;
+  if (!canCopyVideoFrame()) return false;
   if (!video.videoWidth || !video.videoHeight) return false;
   const canvas = document.createElement("canvas");
   canvas.width = video.videoWidth;
