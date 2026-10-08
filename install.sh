@@ -4117,8 +4117,9 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
             :
         else
             # Unpinned hosts keep the path they have always had: a wrong triple breaks the install outright, which costs more than the fallback's score.
+            # The versioned installer installs the same pinned release (and checks its per-asset sha256), not whatever is latest.
             _uv_tmp=$(mktemp)
-            if download "https://astral.sh/uv/install.sh" "$_uv_tmp"; then
+            if download "https://astral.sh/uv/$UV_PINNED_VERSION/install.sh" "$_uv_tmp"; then
                 run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
             else
                 _uv_refreshed=false
@@ -6960,6 +6961,9 @@ case "$_torch_index_leaf" in
                 echo "  [WARN] Set UNSLOTH_ROCM_GFX_ARCH to name the target explicitly." >&2
                 echo "" >&2
                 _runtime_gfx=""
+            elif [ "$_gfx_space" = hip ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && [ -n "$_runtime_gfx" ]; then
+                # Unmasked iGPU listed first: install for the discrete card (#7776), as setup.sh does.
+                _runtime_gfx=$(_amd_prefer_discrete_gfx "$_gfx_all" "$_runtime_gfx")
             fi
         fi
         # An explicit UNSLOTH_ROCM_GFX_ARCH=gfx906 pins the runtime target to the MI50 / Radeon VII path and must win over Strix probe-order detection on a mixed Strix + MI50 host, so the Strix reroute is suppressed when it is set. Normalize a copied HIP gcnArchName (gfx906:sramecc-:xnack- to gfx906) and trim whitespace so the suffix or a stray newline does not defeat the exact gfx906 comparisons below.
@@ -7207,10 +7211,29 @@ elif _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
         _gpu_disp_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
         [ -z "$_gpu_disp_gfx_all" ] && \
             _gpu_disp_gfx_all=$(printf '%s\n' "$_gpu_disp_smi_records" | awk -F'|' '$1 != "" { print $1 }')
+        # amd-smi is not ROCr-filtered: keep ROCr's survivors first, as the routing block does.
+        if [ -n "${ROCR_VISIBLE_DEVICES:-}" ] && [ "$ROCR_VISIBLE_DEVICES" != "-1" ]; then
+            for _gpu_disp_v in _gpu_disp_smi_records _gpu_disp_gfx_all; do
+                eval "_gpu_disp_in=\$$_gpu_disp_v"
+                [ -n "$_gpu_disp_in" ] || continue
+                _gpu_disp_kept=$(printf '%s\n' "$_gpu_disp_in" | awk -v m="$ROCR_VISIBLE_DEVICES" '
+                    NF { v[n++] = $0 }
+                    END { k = split(m, t, ","); for (i = 1; i <= k; i++) { gsub(/[[:space:]]/, "", t[i]); if (t[i] !~ /^[0-9]+$/) continue; x = t[i] + 0; if (x >= n || (x in s)) break; s[x] = 1; print v[x] } }')
+                [ -n "$_gpu_disp_kept" ] && eval "$_gpu_disp_v=\$_gpu_disp_kept"
+            done
+        fi
         # A silent amd-smi does not own the device list: keep rocminfo's APU fallback.
         [ -n "$_gpu_disp_smi_records" ] && _gpu_disp_records="$_gpu_disp_smi_records"
     fi
-    _gpu_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
+    # Same masks as the routing block: rocminfo is already ROCr-filtered, CUDA is HIP's alias.
+    _gpu_vis=""
+    for _gpu_vis_m in HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES; do
+        eval "_gpu_vis_set=\${$_gpu_vis_m+x}"
+        if [ -n "$_gpu_vis_set" ]; then
+            eval "_gpu_vis=\$$_gpu_vis_m"
+            break
+        fi
+    done
     _gpu_vis_idx=0
     if [ -n "$_gpu_vis" ] && [ "$_gpu_vis" != "-1" ]; then
         _gpu_first="${_gpu_vis%%,*}"
@@ -7222,6 +7245,18 @@ elif _torch_index_url_is_rocm "$TORCH_INDEX_URL"; then
             'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx+0] }')
         _gpu_disp_gfx=${_gpu_disp_record%%|*}
         _gpu_disp_mkt=${_gpu_disp_record#*|}
+        # Only when the routing block ran: a pinned index installs what it names, not the dGPU.
+        if [ "$_torch_index_pinned" = false ] && [ -z "${UNSLOTH_ROCM_GFX_ARCH:-}" ] && [ -n "$_gpu_disp_gfx" ]; then
+            _gpu_disp_pref=$(_amd_prefer_discrete_gfx \
+                "$(printf '%s\n' "$_gpu_disp_records" | awk -F'|' '$1 != "" { print $1 }')" "$_gpu_disp_gfx")
+            if [ -n "$_gpu_disp_pref" ] && [ "$_gpu_disp_pref" != "$_gpu_disp_gfx" ]; then
+                substep "Integrated $_gpu_disp_gfx enumerated first; installing for discrete $_gpu_disp_pref"
+                substep "Set UNSLOTH_ROCM_GFX_ARCH=$_gpu_disp_gfx to target the integrated GPU instead."
+                _gpu_disp_gfx="$_gpu_disp_pref"
+                _gpu_disp_mkt=$(printf '%s\n' "$_gpu_disp_records" | awk -F'|' -v gfx="$_gpu_disp_gfx" \
+                    '$1 == gfx { print $2; exit }')
+            fi
+        fi
     fi
     # Only pre-TARGET_GRAPHICS_VERSION amd-smi lands here: names but no arch in the record.
     if [ -z "$_gpu_disp_gfx" ]; then
@@ -7850,7 +7885,7 @@ _unsloth_desktop_install_spec=""
 if [ -n "${UNSLOTH_DESKTOP_BACKEND_VERSION:-}" ]; then
     _unsloth_desktop_install_spec="unsloth>=${UNSLOTH_DESKTOP_BACKEND_VERSION}"
 fi
-_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.9.14}"
+_unsloth_release_install_spec="${_unsloth_desktop_install_spec:-unsloth>=2026.10.2}"
 
 if [ "$_MIGRATED" = true ]; then
     # Migrated env: force-reinstall unsloth+unsloth-zoo, keeping torch unless the ROCm repair fires.
@@ -7863,7 +7898,7 @@ if [ "$_MIGRATED" = true ]; then
         # (tests/test_installer_zoo_floor_parity.py enforces that).
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.9"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.2"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -7878,7 +7913,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.9"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.2"
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -8098,7 +8133,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.9"
+            "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.2"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -8117,7 +8152,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.9.9"
+            --upgrade-package unsloth "$_unsloth_release_install_spec" "unsloth-zoo>=2026.10.2"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."
@@ -8148,7 +8183,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.9.9" "$_unsloth_release_install_spec" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.10.2" "$_unsloth_release_install_spec" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git ${_ZOO_REF}..."

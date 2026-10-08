@@ -31,16 +31,51 @@ export function zoomInterface(direction: ZoomDirection): void {
   useZoomPopupStore.getState().show();
 }
 
-// Guards against the macOS View menu repeating a chord the page already handled.
-const MENU_ECHO_MS = 150;
-let lastChordZoomAt = Number.NEGATIVE_INFINITY;
+/** Something with its own zoom (the browser's page): zoom keys, Ctrl+wheel and the View menu zoom it while focus or the pointer is inside. */
+export type ZoomScope = {
+  contains: (element: Element) => boolean;
+  zoom: (direction: ZoomDirection) => void;
+};
 
-export function zoomInterfaceFromChord(direction: ZoomDirection): void {
-  lastChordZoomAt = performance.now();
-  zoomInterface(direction);
+const scopes = new Set<ZoomScope>();
+
+export function registerZoomScope(scope: ZoomScope): () => void {
+  scopes.add(scope);
+  return () => {
+    scopes.delete(scope);
+  };
 }
 
+export function zoomScopeFor(target: EventTarget | null): ZoomScope | null {
+  if (!(target instanceof Element)) return null;
+  for (const scope of scopes) if (scope.contains(target)) return scope;
+  return null;
+}
+
+// Guards against the macOS View menu repeating a chord the page already handled, and a chord a
+// framed page reports after the menu took it: whichever comes second within this is the echo.
+const MENU_ECHO_MS = 150;
+let lastZoom: { source: "chord" | "menu"; at: number } | null = null;
+
+function echoed(source: "chord" | "menu"): boolean {
+  const now = performance.now();
+  if (lastZoom && lastZoom.source !== source && now - lastZoom.at < MENU_ECHO_MS) return true;
+  lastZoom = { source, at: now };
+  return false;
+}
+
+export function zoomInterfaceFromChord(direction: ZoomDirection): void {
+  if (!echoed("chord")) zoomInterface(direction);
+}
+
+export function zoomScopeFromChord(scope: ZoomScope, direction: ZoomDirection): void {
+  if (!echoed("chord")) scope.zoom(direction);
+}
+
+/** The View menu's zoom: the focused scope's, else the interface's. */
 export function zoomInterfaceFromMenu(direction: ZoomDirection): void {
-  if (performance.now() - lastChordZoomAt < MENU_ECHO_MS) return;
-  zoomInterface(direction);
+  if (echoed("menu")) return;
+  const scope = zoomScopeFor(document.activeElement);
+  if (scope) scope.zoom(direction);
+  else zoomInterface(direction);
 }

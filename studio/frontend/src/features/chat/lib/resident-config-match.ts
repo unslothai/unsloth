@@ -9,6 +9,7 @@ import {
   resolveTensorParallel,
   stripManagedOffloadFlags,
 } from "./llama-extra-args-normalize";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
 
 import type { InferenceStatusResponse } from "../types/api";
@@ -23,6 +24,7 @@ type ResidentRuntime = Pick<
   | "requested_context_length"
   | "cache_type_kv"
   | "mlx_kv_quant_requested"
+  | "mlx_int8_prefill_requested"
   | "speculative_type"
   | "spec_draft_n_max"
   | "requested_parallel_slots"
@@ -104,8 +106,7 @@ export type StandingConfigDefaults = {
    *  `_resolve_parallel_slots` stores the server-wide default as `requested_parallel_slots`, so
    *  an unset ask is never null on the status side and comparing directly reloaded every pick. */
   parallelSlots: number | null;
-  /** `splitRatio` as the store holds it now, which is what the load sends. Never a config field:
-   *  `applyPerModelConfigToRuntime` clears it, so any remembered config asks for the default. */
+  /** Current store ratio, used only when a staged config does not state its own. */
   splitRatio: number[] | null;
   /** `normalizeSpeculativeType`, passed rather than imported: it lives on the chat runtime store,
    *  which reaches React, and this module is a leaf so the node suite can drive it. A copy here
@@ -268,6 +269,12 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s) =>
       (c.mlxKvQuant ?? null) === normalizeMlxKvQuant(s.mlx_kv_quant_requested),
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      Boolean(c.mlxInt8Prefill) === (s.mlx_int8_prefill_requested === true),
   },
   {
     // Always pinned: an unset mode resolves to the standing preference and the load sends it. Reading
@@ -457,29 +464,20 @@ const SETTING_CHECKS: SettingCheck[] = [
     },
   },
   {
-    // The split is placement the config cannot carry: the applier clears splitRatio, so a remembered
-    // config asks for the default distribution while a resident manual load may run a custom one.
-    //
-    // Judged on the mode the RESIDENT server ran, not the one this pick would send. Since
-    // unslothai/unsloth#10884 an auto tensor-parallel load reports a split of its own, chosen by
-    // the planner, and the store never holds one in auto -- applyInferenceStatusToStore nulls it
-    // unless the mode is manual. Comparing the two sides there compares a field the applier
-    // cleared against a server legitimately running the planner's ratio, and declines to adopt a
-    // resident model that is exactly what was asked for. A manual load's custom ratio is still a
-    // real disagreement, and a server too old to report its mode is still compared, so nothing
-    // that used to reload stops reloading.
-    //
-    // Only when the store is holding NO ratio, though. applyInferenceStatusToStore keeps
-    // prevState.splitRatio whenever a gpu-memory edit is pending, so a ratio set under Manual
-    // survives the switch to Auto, and the load path sends store.splitRatio in either mode. Since
-    // this PR the backend honours that ratio in auto too, so adopting on the mode alone would drop
-    // a placement change the user had made and the server would have applied.
+    // A remembered split is dropped with its GPU pick; auto loads may report a planner split unasked.
     placement: true,
     ggufPlacement: true,
     pinned: () => true,
-    agrees: (_c, s, standing) =>
-      (s.gpu_memory_mode === "auto" && standing.splitRatio == null) ||
-      sameList(standing.splitRatio, s.tensor_split),
+    agrees: (c, s, standing) => {
+      const split = c.tensorSplit !== undefined
+        ? reconcileTensorSplit(
+            c.tensorSplit,
+            c.selectedGpuIds,
+            standing.reconcileGpuIds(c.selectedGpuIds ?? null, c.selectedGpuIndexKind),
+          )
+        : standing.splitRatio;
+      return (s.gpu_memory_mode === "auto" && split == null) || sameList(split, s.tensor_split);
+    },
   },
   {
     // A managed override the backend would reject outright. Folding it into "no override" here would

@@ -203,6 +203,8 @@ def _cmd_probe(
     quoted_file,
     alias_root = None,
     started_in = None,
+    spawned = None,
+    released = None,
 ):
     seen = {}
 
@@ -243,9 +245,15 @@ def _cmd_probe(
     )
     monkeypatch.setattr(mxc_probe.mxc_runtime, "wxc_path", lambda: tmp_path / "wxc-exec.exe")
     monkeypatch.setattr(mxc_probe.mxc_policy, "build_launch_request", build)
-    monkeypatch.setattr(mxc_probe.mxc_adapter, "spawn", lambda *_a, **_k: Finished())
+    events = spawned if spawned is not None else []
+    monkeypatch.setattr(
+        mxc_probe.mxc_adapter, "spawn", lambda *_a, **_k: events.append("spawned") or Finished()
+    )
     monkeypatch.setattr(mxc_probe.mxc_adapter, "abort", lambda _proc: None)
-    monkeypatch.setattr(mxc_probe.mxc_adapter, "release_runtime", lambda _proc: None)
+    ends = released if released is not None else []
+    monkeypatch.setattr(
+        mxc_probe.mxc_adapter, "release_runtime", lambda _proc: ends.append("workload released")
+    )
     monkeypatch.setattr(
         mxc_probe.mxc_adapter,
         "completion_result",
@@ -276,3 +284,30 @@ def test_cmd_probe_runs_from_the_drive_alias_like_production(monkeypatch, tmp_pa
     )
     assert available is False and "controls failed" in reason
     assert seen["lease"].released
+
+
+def test_the_probe_holds_the_read_grants_until_its_workload_is_released(monkeypatch, tmp_path):
+    from core.inference import mxc_read_grants
+
+    events = []
+    lease = SimpleNamespace(release = lambda: events.append("grants released"))
+    monkeypatch.setattr(mxc_read_grants, "hold_if_needed", lambda: events.append("held") or lease)
+    available = _cmd_probe(
+        monkeypatch, tmp_path, quoted_file = True, spawned = events, released = events
+    )[0]
+    assert available is True
+    assert events == ["held", "spawned", "workload released", "grants released"]
+
+
+def test_a_probe_that_cannot_record_its_lease_never_spawns(monkeypatch, tmp_path):
+    from core.inference import mxc_read_grants
+
+    def refuse():
+        raise mxc_read_grants.ReadGrantError("controlled lease failure")
+
+    events = []
+    monkeypatch.setattr(mxc_read_grants, "hold_if_needed", refuse)
+    available, reason = _cmd_probe(monkeypatch, tmp_path, quoted_file = True, spawned = events)
+    assert available is False
+    assert "controlled lease failure" in reason
+    assert events == []

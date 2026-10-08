@@ -50,7 +50,9 @@ test("the canvas, viewer and downloads read only the original", () => {
   const preview = between(page, "// The preview is what the user looks at", "// Drop an image from the strip.");
   assert.ok(preview.includes("await ensureSrc(selected);"));
 
-  const canvas = between(page, "{selected && selectedSrc ? (", ") : selected ? (");
+  // The live denoise preview branch comes first while a run is in flight, so the canvas proper is the
+  // `selected && selectedSrc` branch that follows it.
+  const canvas = between(page, ") : selected && selectedSrc ? (", ") : selected ? (");
   assert.ok(canvas.includes("src={selectedSrc}"));
   for (const format of ["png", "jpeg", "webp"]) {
     assert.ok(canvas.includes(`downloadImage(selectedSrc, selected, "${format}")`));
@@ -69,5 +71,18 @@ test("the thumbnail placeholder offers no action that needs the original", () =>
   assert.ok(placeholder.includes("src={selectedThumb}"));
   for (const action of ["downloadImage", "openViewer", "GalleryItemMenu", "RecipePopover"]) {
     assert.ok(!placeholder.includes(action), action);
+  }
+});
+
+test("the live denoise preview shows only the in-flight preview and offers no action on it", () => {
+  assert.ok(
+    page.includes(
+      'busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;',
+    ),
+  );
+  const live = between(page, "{livePreviewSrc ? (", ") : selected && selectedSrc ? (");
+  assert.ok(live.includes("src={livePreviewSrc}"));
+  for (const forbidden of ["selectedSrc", "thumbById", "selectedThumb", "downloadImage", "openViewer", "GalleryItemMenu"]) {
+    assert.ok(!live.includes(forbidden), forbidden);
   }
 });

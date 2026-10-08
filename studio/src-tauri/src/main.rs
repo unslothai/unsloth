@@ -2,6 +2,12 @@
 
 mod app_layout;
 mod app_menu;
+mod browser_capture;
+#[cfg(target_os = "macos")]
+mod browser_context_downloads;
+mod browser_downloads;
+mod browser_proxy;
+mod browser_webview;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -27,6 +33,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod shell_path;
 mod staged_update;
 mod update;
 mod webview_permissions;
@@ -842,6 +849,44 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+// tao reapplies the config's `resizable: false` on the first configure, wiping setResizable calls made while hidden
+#[cfg(target_os = "linux")]
+fn keep_resizable_across_first_configure(
+    app: &tauri::App,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use gtk::prelude::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let window = app.get_webview_window("main").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
+    })?;
+    let gtk_window = window.gtk_window()?;
+    let requested: Rc<Cell<Option<bool>>> = Rc::default();
+    let handlers: Rc<RefCell<Vec<glib::SignalHandlerId>>> = Rc::default();
+
+    let seen = requested.clone();
+    // "event" fires before tao's configure-event handler; unrealized configures skip that handler, so refresh each time
+    let before = gtk_window.connect_event(move |window, event| {
+        if event.event_type() == gdk::EventType::Configure {
+            seen.set(Some(window.is_resizable()));
+        }
+        glib::Propagation::Proceed
+    });
+    let owned = handlers.clone();
+    let after = gtk_window.connect_configure_event(move |window, _| {
+        if let Some(resizable) = requested.take() {
+            window.set_resizable(resizable);
+            for id in owned.borrow_mut().drain(..) {
+                window.disconnect(id);
+            }
+        }
+        false
+    });
+    handlers.borrow_mut().extend([before, after]);
+    Ok(())
+}
+
 // WebKitGTK ships two defaults that together break voice dictation on Linux:
 // `enable-media-stream` is off, and the stock `permission-request` handler
 // denies every request it never saw a listener override, including
@@ -1328,11 +1373,13 @@ fn show_main_window(app: &tauri::AppHandle) {
     // Hidden login starts run as an accessory app (no Dock icon); restore the regular policy.
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    if let Some(window) = app.get_webview_window("main") {
+    // Not get_webview_window: that is None while browser views are children of the window.
+    if let Some(window) = app.get_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+    browser_webview::window_changed(app, None);
 }
 
 /// Coordinates the one visible quit confirmation and, on macOS, one AppKit termination request
@@ -1599,7 +1646,7 @@ where
                             // CTRL_BREAK budgets in series.
                             cfg!(target_os = "windows"),
                             || {
-                                app.get_webview_window("main")
+                                app.get_window("main")
                                     .map(|window| window.is_visible().map_err(|e| e.to_string()))
                             },
                         )
@@ -2129,7 +2176,7 @@ fn main() {
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
-    let _ = fix_path_env::fix();
+    shell_path::fix_path();
 
     setup_logging();
     log_panics();
@@ -2195,8 +2242,32 @@ fn main() {
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
+        .manage(native_file_dialogs::NativeSaveRegistry::default())
+        .manage(browser_webview::new_browser_views())
+        .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_actions,
+            browser_webview::browser_view_supported,
+            browser_webview::browser_view_show,
+            browser_webview::browser_view_navigate,
+            browser_webview::browser_view_action,
+            browser_webview::browser_view_zoom,
+            browser_webview::browser_view_find,
+            browser_webview::browser_view_annotate,
+            browser_webview::browser_view_close,
+            browser_webview::browser_view_clear_data,
+            browser_webview::browser_view_mute,
+            browser_capture::browser_capture,
+            browser_downloads::browser_download_save,
+            browser_downloads::browser_download_reveal,
+            browser_downloads::browser_download_open,
+            browser_downloads::browser_download_exists,
+            browser_downloads::browser_download_forget,
+            browser_downloads::browser_download_decide,
+            browser_downloads::browser_download_folder,
+            browser_downloads::browser_download_folder_pick,
+            browser_downloads::browser_download_folder_reset,
+            browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,
@@ -2234,6 +2305,10 @@ fn main() {
             native_clipboard::read_native_clipboard_files,
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
+            native_file_dialogs::begin_native_file_save,
+            native_file_dialogs::append_native_file_save_chunk,
+            native_file_dialogs::finish_native_file_save,
+            native_file_dialogs::cancel_native_file_save,
             native_file_dialogs::save_native_file_from_url,
             native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
@@ -2296,6 +2371,8 @@ fn main() {
             setup_custom_titlebar(app)?;
             #[cfg(target_os = "linux")]
             setup_linux_media_permissions(app)?;
+            #[cfg(target_os = "linux")]
+            keep_resizable_across_first_configure(app)?;
             #[cfg(all(windows, not(debug_assertions)))]
             setup_windows_browser_guards(app)?;
             #[cfg(target_os = "macos")]
@@ -2309,6 +2386,17 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == "main" {
+                match event {
+                    tauri::WindowEvent::Focused(focused) => {
+                        browser_webview::window_changed(window.app_handle(), Some(*focused))
+                    }
+                    tauri::WindowEvent::Resized(_) => {
+                        browser_webview::window_changed(window.app_handle(), None)
+                    }
+                    _ => {}
+                }
+            }
             // Record real drops here, in Rust, so the renderer can only register paths the
             // OS actually handed to the native intake commands.
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
@@ -2324,6 +2412,7 @@ fn main() {
                     MainWindowCloseAction::Hide => {
                         // The tray's Open action and a second app launch restore the window.
                         let _ = window.hide();
+                        browser_webview::window_changed(window.app_handle(), None);
                     }
                     MainWindowCloseAction::Quit => request_quit(window.app_handle()),
                 }

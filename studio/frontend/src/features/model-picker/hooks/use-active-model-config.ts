@@ -32,6 +32,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
+  const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
@@ -89,6 +90,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   // Off-backend this stays null, or the model compares unequal to its own defaults
   // over a field it cannot show.
   const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
+  const effectiveMlxInt8Prefill = isMlx && mlxInt8Prefill;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {
@@ -105,6 +107,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       maxSeqLength: isGguf || isMlx || isNpuModelId(checkpoint) ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvQuant: effectiveMlxKvQuant,
+      mlxInt8Prefill: effectiveMlxInt8Prefill,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
@@ -149,6 +152,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvQuant,
+    effectiveMlxInt8Prefill,
     speculativeType,
     specDraftNMax,
     nParallel,

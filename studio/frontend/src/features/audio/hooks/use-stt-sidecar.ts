@@ -12,13 +12,13 @@ import {
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import {
-  isTrackingSttDownload,
   trackSttDownload,
 } from "@/features/settings/lib/stt-download-mirror";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { toast } from "@/lib/toast";
 import type { AudioCppRuntimeStatus } from "../audio-cpp-catalog";
 import {
+  audioCppRuntimeUpdate,
   reconcileSttSelection,
   resolveSttResidency,
   type SttDownloadedArtifact,
@@ -52,6 +52,9 @@ export function useSttSidecar({
   selectedSttRepoRef.current = selectedSttRepo;
   const sttStatusRefreshGeneration = useRef(0);
   const audioCppRuntime = useRef<AudioCppRuntimeStatus | null>(null);
+  // state drives the page display; the ref only gates a pick.
+  const [runtimeUpdate, setRuntimeUpdate] =
+    useState<ReturnType<typeof audioCppRuntimeUpdate>>(null);
   const sttLoadGeneration = useRef(0);
   const sttGgufVariants = useRef(
     new Map<string, string>(
@@ -91,6 +94,13 @@ export function useSttSidecar({
       );
       if (generation !== sttStatusRefreshGeneration.current) return;
       audioCppRuntime.current = stt.audio_cpp_runtime ?? null;
+      const nextUpdate = audioCppRuntimeUpdate(audioCppRuntime.current);
+      setRuntimeUpdate((current) =>
+        current?.installed === nextUpdate?.installed &&
+        current?.expected === nextUpdate?.expected
+          ? current
+          : nextUpdate,
+      );
       const nextDownloadedArtifacts = sttDownloadedArtifacts(
         stt,
         sttRepoIdForSidecarKey,
@@ -210,19 +220,19 @@ export function useSttSidecar({
         } catch (error) {
           if (!(error instanceof SttModelNotDownloadedError)) throw error;
           if (!isCurrent()) return;
-          await startSttDownload(
+          const download = await startSttDownload(
             sidecarKey,
             hfApiToken(getHfToken()),
             engine,
             ggufVariant,
           );
-          if (!isTrackingSttDownload(sidecarKey, engine)) {
-            trackSttDownload(sidecarKey, {
-              warmSelectedVoiceModelOnComplete: false,
-              engine,
-              repoId,
-            });
-          }
+          trackSttDownload(sidecarKey, {
+            warmSelectedVoiceModelOnComplete: false,
+            engine,
+            repoId,
+            ggufVariant,
+            downloadId: download.download_id,
+          });
           toast.dismiss(toastId);
           // Re-check ownership around every await: an old pick could replace a newer sidecar.
           for (;;) {
@@ -298,6 +308,7 @@ export function useSttSidecar({
     selectedSttRepoRef,
     sttStatusRefreshGeneration,
     audioCppRuntime,
+    runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
     setLastSttRepo,

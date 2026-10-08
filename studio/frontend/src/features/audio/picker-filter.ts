@@ -6,7 +6,9 @@
 import {
   AUDIO_CPP_SEP_AUDIO_TYPE,
   audioCppModelFor,
+  isCloneAndConvertFamilyId,
   isCloneOnlyFamilyId,
+  isConvertOnlyFamilyId,
   isSpeakAndCloneFamilyId,
 } from "./audio-cpp-catalog";
 import { isMusicGenerationModel } from "./catalog";
@@ -43,7 +45,14 @@ export function audioRowMatchesWorkflow(
   if (catalogModel?.workflows) {
     return catalogModel.workflows.includes(workflow);
   }
-  // Hub search rows carry no backend workflows before download: name the clone-only families.
+  // Hub search rows carry no backend workflows before download: name the families by repo.
+  // Convert first: chatterbox and vevo2 are in the clone-only hint too.
+  if (isCloneAndConvertFamilyId(row.id)) {
+    return workflow === "clone" || workflow === "convert";
+  }
+  if (isConvertOnlyFamilyId(row.id)) {
+    return workflow === "convert";
+  }
   if (isCloneOnlyFamilyId(row.id)) {
     return workflow === "clone";
   }

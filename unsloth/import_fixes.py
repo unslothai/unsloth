@@ -2048,6 +2048,49 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_PACKED_SEQUENCE_PATCH_FLAG = "_unsloth_patched_is_packed_sequence"
+
+
+def _mrope_position_ids_read_as_packed(is_packed_sequence):
+    """Does `_is_packed_sequence` call Qwen3.5's `(3, 1, L)` mRoPE ids packed (transformers#44910)?"""
+    try:
+        import torch
+        positions = torch.arange(4, device = "cpu").view(1, 1, 4).expand(3, 1, 4)
+        return bool(is_packed_sequence(positions, batch_size = 1))
+    except Exception:
+        return False
+
+
+def fix_transformers_flash_attention_mrope_packed_sequence():
+    """Stop transformers 5.3 turning Qwen3.5's `(3, 1, L)` mRoPE ids into out-of-bounds
+    `cu_seqlens = [0, L, 2L, 3L]`: packed ids are flattened 2D `(1, total)`, never more dims.
+    """
+    try:
+        from transformers import modeling_flash_attention_utils as fa_utils
+    except Exception:
+        return
+    current = getattr(fa_utils, "_is_packed_sequence", None)
+    if current is None or getattr(current, _PACKED_SEQUENCE_PATCH_FLAG, False):
+        return
+    original = getattr(current, "__wrapped__", current)
+    if not _mrope_position_ids_read_as_packed(original):
+        return
+
+    @functools.wraps(original)
+    def _is_packed_sequence(position_ids, batch_size):
+        if position_ids is not None and position_ids.dim() > 2:
+            return False
+        return original(position_ids, batch_size)
+
+    _is_packed_sequence.__wrapped__ = original
+    setattr(_is_packed_sequence, _PACKED_SEQUENCE_PATCH_FLAG, True)
+    fa_utils._is_packed_sequence = _is_packed_sequence
+    logger.info(
+        "Unsloth: Patching transformers `_is_packed_sequence` so flash attention never "
+        "reads mRoPE position ids as packed sequences (transformers#44910)"
+    )
+
+
 _CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
 _BLOCK_SEQUENCE_IDS = "block_sequence_ids"
 
@@ -2192,6 +2235,113 @@ def fix_transformers_chunked_mask_block_sequence_ids():
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching create_chunked_causal_mask ({e})")
+
+
+_FLEX_MASK_PATCH_FLAG = "_unsloth_patched_flex_mask_graph_breaks"
+
+
+def _is_dynamo_compiling():
+    import torch
+    is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+    return bool(is_compiling()) if callable(is_compiling) else False
+
+
+def _flex_mask_reads_padding_values(masking_utils, flex_attention_mask):
+    """True if building from a meta mask fails (values read) while no mask succeeds."""
+    import torch
+
+    try:
+        if "q_length" not in inspect.signature(flex_attention_mask).parameters:
+            return False
+    except (TypeError, ValueError):
+        return False
+    builder = masking_utils.create_block_mask
+    masking_utils.create_block_mask = lambda *args, **kwargs: None
+    kwargs = dict(batch_size = 1, q_length = 2, kv_length = 2, device = "meta")
+    try:
+        try:
+            flex_attention_mask(attention_mask = None, **kwargs)
+        except Exception:
+            return False
+        try:
+            mask = torch.ones((1, 2), dtype = torch.bool, device = "meta")
+            flex_attention_mask(attention_mask = mask, **kwargs)
+        except Exception:
+            return True
+        return False
+    finally:
+        masking_utils.create_block_mask = builder
+
+
+def fix_transformers_flex_mask_graph_breaks():
+    """While dynamo traces, always apply the padding mask (all-ones gives an equal BlockMask) instead
+    of branching on `fast_all`, and drop `_compile`, whose deprecation warnings.warn breaks the graph."""
+    try:
+        from transformers import masking_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the flex mask graph break fix ({e})")
+        return
+    interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
+    builder = getattr(masking_utils, "create_block_mask", None)
+    if interface is None or builder is None:
+        return
+    try:
+        if not getattr(builder, _FLEX_MASK_PATCH_FLAG, False):
+
+            @functools.wraps(builder)
+            def create_block_mask(
+                *args,
+                _original = builder,
+                **kwargs,
+            ):
+                if _is_dynamo_compiling():
+                    kwargs.pop("_compile", None)
+                return _original(*args, **kwargs)
+
+            setattr(create_block_mask, _FLEX_MASK_PATCH_FLAG, True)
+            masking_utils.create_block_mask = create_block_mask
+
+        current = interface["flex_attention"]
+        if getattr(current, _FLEX_MASK_PATCH_FLAG, False):
+            return
+        # Before torch 2.6 the padded branch also pads the mask to the 128 block size.
+        if not getattr(masking_utils, "_is_torch_greater_or_equal_than_2_6", False):
+            return
+        if not _flex_mask_reads_padding_values(masking_utils, current):
+            return
+        original = current
+
+        @functools.wraps(original)
+        def flex_attention_mask(*args, **kwargs):
+            attention_mask = kwargs.get("attention_mask")
+            if (
+                args
+                or attention_mask is None
+                or "kv_length" not in kwargs
+                or not _is_dynamo_compiling()
+            ):
+                return original(*args, **kwargs)
+            padding_mask = masking_utils.prepare_padding_mask(
+                attention_mask, kwargs["kv_length"], kwargs.get("kv_offset", 0)
+            )
+            kwargs["mask_function"] = masking_utils.and_masks(
+                kwargs.get("mask_function", masking_utils.causal_mask_function),
+                masking_utils.padding_mask_function(padding_mask),
+            )
+            kwargs["attention_mask"] = None
+            return original(**kwargs)
+
+        flex_attention_mask.__wrapped__ = original
+        setattr(flex_attention_mask, _FLEX_MASK_PATCH_FLAG, True)
+        interface.register("flex_attention", flex_attention_mask)
+        if getattr(masking_utils, "flex_attention_mask", None) is original:
+            masking_utils.flex_attention_mask = flex_attention_mask
+        logger.info(
+            "Unsloth: Patching transformers `flex_attention_mask` so a compiled mask "
+            "builds without graph breaks"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching flex_attention_mask ({e})")
 
 
 _COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"

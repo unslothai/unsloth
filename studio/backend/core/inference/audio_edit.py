@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -23,6 +24,7 @@ EDIT_SOURCE_MAX_SECONDS = 30.0
 
 TOO_LONG = "Edit works on recordings up to 30 s. Record or upload a shorter take."
 NO_CHANGE = "Change at least one word."
+EMPTY_TARGET = "Keep at least one word."
 MISMATCH = "The changes do not match the transcript. Check ① and ② again."
 UNKNOWN_INSTRUCTION = "That change is not one FireRedAudio understands."
 NEEDS_DELIVERY_MODEL = "Delivery changes need FireRedAudio."
@@ -93,7 +95,8 @@ def check_instructions(
     label: str = "FireRedAudio",
 ) -> Optional[str]:
     """Why FireRedAudio ``instructions`` are refused; None when each is a known form whose old words
-    (or anchor) are in ``original`` and new words in ``edited``."""
+    (or anchor) are in ``original`` and new words in ``edited``, and the words they remove and add
+    turn the one transcript into the other."""
     items = list(instructions or ())
     if not items:
         return NO_CHANGE
@@ -103,21 +106,35 @@ def check_instructions(
             "Make fewer changes, or use DotTTS Edit."
         )
     before, after = _collapse(original), _collapse(edited)
+    # Runtime gets the instructions, history gets ``edited``: they must agree as bags of words
+    # (which occurrence of a repeated word is meant is the runtime's call).
+    words = Counter(before.split())
     for instruction in items:
         match = INSTRUCTION_RE.match(str(instruction))
         if match is None:
             return UNKNOWN_INSTRUCTION
         old, new, deleted, inserted, anchor = match.groups()
         if old is not None:
-            olds, news = [old], [new]
+            olds, news, removed = [old], [new], [old]
         elif deleted is not None:
-            olds, news = [deleted], []
+            olds, news, removed = [deleted], [], [deleted]
         else:
-            olds, news = [anchor], [inserted]
+            olds, news, removed = [anchor], [inserted], []
         if not all(_collapse(o) and _collapse(o) in before for o in olds):
             return MISMATCH
         if not all(_collapse(n) and _collapse(n) in after for n in news):
             return MISMATCH
+        # Running bag, not the transcript: a word an earlier instruction removed is gone.
+        if not all(words[token] > 0 for o in olds for token in o.split()):
+            return MISMATCH
+        for phrase in removed:
+            words.subtract(phrase.split())
+        if any(count < 0 for count in words.values()):
+            return MISMATCH
+        for phrase in news:
+            words.update(phrase.split())
+    if +words != Counter(after.split()):
+        return MISMATCH
     return None
 
 
@@ -159,11 +176,15 @@ def request_problem(
         if not delivery_instructions(edit.get("speed"), edit.get("pitch_steps")):
             return NO_DELIVERY
         return None
+    # Before the per-style checks: a no-op such as <sub targ="x">x</sub> passes them.
+    if style in ("markup", "instructions", "sentence"):
+        if not _collapse(text):
+            return EMPTY_TARGET
+        if _collapse(text) == _collapse(original):
+            return NO_CHANGE
     if style == "markup":
         markup = edit.get("markup")
         if not markup:
-            if _collapse(text) == _collapse(original):
-                return NO_CHANGE
             return f"{label} needs the marked-up changes."
         return check_markup(markup, original, text)
     if style == "instructions":
@@ -171,8 +192,6 @@ def request_problem(
             edit.get("instructions") or (), original, text, rules.get("max_changes"), label
         )
     if style == "sentence":
-        if original.strip() and _collapse(text) == _collapse(original):
-            return NO_CHANGE
         return None
     return "Load a model that can edit speech."
 

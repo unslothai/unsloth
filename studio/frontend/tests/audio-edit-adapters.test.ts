@@ -205,3 +205,17 @@ test("segments carry the inserted and deleted labels for screen readers", () => 
     { kind: "insert", text: "really", srLabel: "inserted " },
   ]);
 });
+
+test("DotTTS says so before its markup would outgrow the backend cap", () => {
+  const words = Array.from({ length: 400 }, (_, i) => `word${i}`);
+  const original = words.join(" ");
+  const edited = words.map((w, i) => (i % 2 ? `${w}x` : w)).join(" ");
+  assert.equal(
+    EDIT_ADAPTERS.dots_tts.validateWords(original, edited),
+    A.DOTS_MARKUP_TOO_LONG,
+  );
+  assert.equal(
+    EDIT_ADAPTERS.dots_tts.validateWords(original, original.replace("word1 ", "word1x ")),
+    null,
+  );
+});

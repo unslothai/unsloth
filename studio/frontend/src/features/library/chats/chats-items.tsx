@@ -59,6 +59,7 @@ import {
   ViewOffSlashIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { ForkIcon } from "@/lib/fork-icon";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -355,7 +356,7 @@ function ForkItem({ chat }: { chat: SidebarItem }) {
       disabled={!canForkChatRow(chat) || generating || forking}
       onSelect={() => actions.fork(chat)}
     >
-      <GitBranchIcon strokeWidth={1.75} className={ICON} />
+      <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className={ICON} />
       {t("library.chats.menu.fork")}
     </DropdownMenuItem>
   );

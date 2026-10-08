@@ -76,6 +76,7 @@ from core.inference.mcp_client import (
     is_studio_decisions,
     is_stdio,
     list_tools_async,
+    oauth_client_kwargs,
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
@@ -2808,6 +2809,9 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
 # Loaders that can execute code embedded in the data they deserialize; gated by receiver module (torch.load,
 # yaml.load) since bare `load` is too common.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
+# numpy loaders that unpickle under allow_pickle -> its positional index. The gate checks positions 1 and 2 of all of
+# them, so an alias pointing at another loader cannot shift the flag out of view.
+_NUMPY_PICKLE_FLAG_POS = {"load": 2, "read_array": 1, "NpzFile": 2}
 # The load entry points on those modules. yaml.load runs whatever its Loader= builds, and !!python/object/apply in the
 # data is a call, so it asks like the pickle-backed ones. yaml.safe_load is untouched.
 _AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset({"load", "load_all"})
@@ -2987,9 +2991,12 @@ _STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
     # Dotted names nothing else spells, so they match bare too.
     r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\";&|)(<>`]*|\.bootstrap_password|\.desktop_secret)"
     + _WORD_END
+    # The per-launch key file, bare or as a glob (find / -name 'llama_api_key_*').
+    + r"|(?:^|[/\\\s'\"=])llama_api_key_[^/\\\s'\";&|)(<>`]*"
+    + _WORD_END
     # Path form only: the bare name is an ordinary identifier. auth.db is absent for the same reason,
     # and Studio's copy is covered by the auth-directory patterns below.
-    + r"|[/\\]llama_api_key"
+    + r"|[/\\]llama_api_key(?:_\w+)?"
     + _WORD_END
     # `unsloth start` keeps the coding-agent keys here. Path form only: matching the bare name
     # refused `print('agent_api_key.json')`.
@@ -5203,8 +5210,6 @@ _MAX_PATH_SCAN_CHARS = 2048
 _MAX_TERMINAL_SCAN_CHARS = 4096
 # Each pass doubles resolved alias hops; leftover work after the cap fails closed.
 _MAX_SHELL_ASSIGN_EXPAND_PASSES = 16
-# A glob needs one of these to expand into anything but itself; used to skip the glob scans outright.
-_GLOB_META_RE = re.compile(r"[?*\[]")
 # Where the memoised node list is parked on a parsed tree (see _tree_nodes).
 _TREE_NODES_ATTR = "_unsloth_walk_nodes"
 
@@ -5948,12 +5953,32 @@ def _cmd_reading(command: str) -> str:
     return _CMD_CONTROL_RE.sub(" & ", text)
 
 
+# The request's sandbox level while a call is classified: Low runs the Terminal on the host shell,
+# so the classifier must not probe for (or assume) the isolated cmd profile.
+_classifying_sandbox_level: "ContextVar[str | None]" = ContextVar(
+    "unsloth_classifying_sandbox_level", default = None
+)
+
+
+@contextlib.contextmanager
+def classifying_under(sandbox_level: "str | None"):
+    token = _classifying_sandbox_level.set(sandbox_level)
+    try:
+        yield
+    finally:
+        _classifying_sandbox_level.reset(token)
+
+
+# Both run the command through cmd.exe: the isolated one inside MXC, the fallback on a host without Git Bash.
+_CMD_PROFILES = ("cmd_isolated", "cmd_fallback")
+
+
 def _reads_differently_under_cmd(command: str) -> bool:
-    """True when the isolated cmd Terminal will run ``command`` and cmd would split it unlike bash."""
+    """True when cmd.exe will run ``command`` and would split it unlike bash."""
     return (
         sys.platform == "win32"
         and _cmd_reading(command) != command
-        and _terminal_profile() == "cmd_isolated"
+        and _terminal_profile(_classifying_sandbox_level.get() == "low") in _CMD_PROFILES
     )
 
 
@@ -6116,6 +6141,17 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     return False
 
 
+def _is_literal_false(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is False
+
+
+def _is_inert_loader_arg(node: ast.AST, mmap_slot: bool) -> bool:
+    # False, None, or a string in load's mmap_mode slot.
+    return isinstance(node, ast.Constant) and (
+        node.value is None or node.value is False or (mmap_slot and isinstance(node.value, str))
+    )
+
+
 def _python_is_potentially_unsafe(code: str) -> bool:
     """Classify python-tool code for auto mode (fail closed)."""
     if not code or not code.strip():
@@ -6158,6 +6194,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to a pickle-backed loader (import torch as t), so t.load(...) is still gated as a
     # code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
+    # numpy module aliases, and names / attributes bound to a numpy pickle loader -> its allow_pickle position.
+    numpy_aliases = {"numpy"}
+    pickle_fn_aliases: "dict[str, int]" = {}
+    pickle_fn_attr_aliases: "dict[str, int]" = {}
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup aliased through it still fails closed.
     getattr_aliases = {"getattr"}
     # Names bound to functools.partial, so a partial that wraps open/a writer fails closed when it is called.
@@ -6176,6 +6216,29 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # direct open() site. Track aliases so an aliased invoker is still checked; the write-callable gate keeps map(len,
     # ...) safe.
     invoker_aliases = set(_HIGHER_ORDER_INVOKERS)
+
+    def _in_numpy(node) -> bool:
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in numpy_aliases
+
+    def _allow_pickle_position(node) -> "int | None":
+        # A conditional or boolean callee counts if any branch is a loader.
+        if isinstance(node, ast.NamedExpr):
+            return _allow_pickle_position(node.value)
+        if isinstance(node, (ast.IfExp, ast.BoolOp)):
+            branches = [node.body, node.orelse] if isinstance(node, ast.IfExp) else node.values
+            return next(
+                (pos for pos in map(_allow_pickle_position, branches) if pos is not None), None
+            )
+        if isinstance(node, ast.Name):
+            return pickle_fn_aliases.get(node.id)
+        if isinstance(node, ast.Attribute):
+            if node.attr in pickle_fn_attr_aliases:
+                return pickle_fn_attr_aliases[node.attr]
+            if node.attr in _NUMPY_PICKLE_FLAG_POS and _in_numpy(node.value):
+                return _NUMPY_PICKLE_FLAG_POS[node.attr]
+        return None
 
     def _is_dynamic_namespace(node) -> bool:
         # A namespace mapping whose .get/.pop/.setdefault (or subscript) can return open/eval/a mutator:
@@ -6285,11 +6348,23 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     os_aliases.add(alias.asname or alias.name)
                 elif alias.name in _AUTO_UNSAFE_PY_LOAD_MODULES:
                     load_module_aliases.add(alias.asname or alias.name)
+                elif alias.name.split(".")[0] == "numpy":
+                    numpy_aliases.add(alias.asname or "numpy")
                 elif alias.name == "operator":
                     operator_aliases.add(alias.asname or "operator")
                 elif alias.name == "fileinput":
                     fileinput_aliases.add(alias.asname or "fileinput")
         elif isinstance(node, ast.ImportFrom):
+            if node.module and node.module.split(".")[0] == "numpy":
+                for alias in node.names:
+                    if alias.name == "*":
+                        pickle_fn_aliases.update(_NUMPY_PICKLE_FLAG_POS)
+                    elif alias.name in _NUMPY_PICKLE_FLAG_POS:
+                        pickle_fn_aliases[alias.asname or alias.name] = _NUMPY_PICKLE_FLAG_POS[
+                            alias.name
+                        ]
+                    else:
+                        numpy_aliases.add(alias.asname or alias.name)
             if node.module == "operator":
                 for alias in node.names:
                     if alias.name == "methodcaller":
@@ -6341,6 +6416,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
+            if _in_numpy(value):
+                numpy_aliases.update(targets)
+            if (_pos := _allow_pickle_position(value)) is not None:
+                pickle_fn_aliases.update(dict.fromkeys(targets, _pos))
+                pickle_fn_attr_aliases.update(dict.fromkeys(attr_targets, _pos))
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
                 attr_open_aliases.update(attr_targets)  # box.f = open
@@ -6446,9 +6526,16 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         value.elts
                     ):
                         for tgt_el, val_el in zip(target.elts, value.elts):
+                            if (
+                                isinstance(tgt_el, ast.Attribute)
+                                and (_pos := _allow_pickle_position(val_el)) is not None
+                            ):
+                                pickle_fn_attr_aliases[tgt_el.attr] = _pos
                             if not isinstance(tgt_el, ast.Name):
                                 continue
                             tid = tgt_el.id
+                            if (_pos := _allow_pickle_position(val_el)) is not None:
+                                pickle_fn_aliases[tid] = _pos
                             if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
                                 open_aliases.add(tid)
                             elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:
@@ -6489,6 +6576,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 )
             ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
             for _param, _default in _defaulted:
+                if (_pos := _allow_pickle_position(_default)) is not None:
+                    pickle_fn_aliases[_param.arg] = _pos
                 if isinstance(_default, ast.Name):
                     _did = _default.id
                     if _did in open_aliases:
@@ -6603,6 +6692,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # rm("x")).
                 if node.attr in _AUTO_UNSAFE_PY_ATTRS:
                     return True
+                # z = np.load("a.npz"); z.allow_pickle = True turns pickling on for the next z["x"].
+                if node.attr == "allow_pickle" and isinstance(node.ctx, ast.Store):
+                    return True
                 # builtins.exec / eval / __import__ (and compile/breakpoint) are dynamic code execution, matching the
                 # bare-name code_exec_aliases path; __builtins__.__import__(...) is a dynamic import that dodges the
                 # static import check.
@@ -6645,11 +6737,32 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     func = func.value
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
+                # numpy allow_pickle unpickles like torch.load: only a literal False (None/False positionally) is safe.
+                if any(
+                    kw.arg == "allow_pickle" and not _is_literal_false(kw.value)
+                    for kw in node.keywords
+                ) or (
+                    (_flag_pos := _allow_pickle_position(func)) is not None
+                    and (
+                        not all(
+                            _is_inert_loader_arg(arg, mmap_slot = i == 1 and _flag_pos == 2)
+                            for i, arg in enumerate(node.args[1:3], start = 1)
+                        )
+                        or any(isinstance(arg, ast.Starred) for arg in node.args)
+                        or any(kw.arg is None for kw in node.keywords)
+                    )
+                ):
+                    return True
                 # A concrete write callable handed as an argument to any call escapes into a helper that can invoke it
                 # without a direct open()/writer site: the same bypass the map/starmap/reduce branches gate, but
                 # through a user-defined helper. A benign callable argument (run(len)) is unaffected.
                 if any(_passed_write_callable(a) for a in node.args) or any(
                     _passed_write_callable(kw.value) for kw in node.keywords
+                ):
+                    return True
+                # A numpy loader handed to a helper can be called there with allow_pickle positionally.
+                if any(_allow_pickle_position(a) is not None for a in node.args) or any(
+                    _allow_pickle_position(kw.value) is not None for kw in node.keywords
                 ):
                     return True
                 if isinstance(func, ast.Name):
@@ -7447,9 +7560,6 @@ _OPENSSL_NETWORK_RE = re.compile(
 # -c/eval it runs an unscreened payload. Paired with the var-executed-as-command test so `echo "${a[@]}"` is left
 # alone.
 _ARRAY_EXPANSION_RE = re.compile(r"\$\{\w+\[[@*]\]\}")
-# A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that precedes the real command, so it is
-# not mistaken for the command itself.
-_WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
 # Non-shell interpreters running an inline program (python -c, node -e, php -r): the terminal path never screens that
 # program the way the python tool does. sh/bash -c are omitted, the hard-block already recursing into their payloads.
 _INLINE_CODE_INTERPRETERS = frozenset(
@@ -10180,10 +10290,11 @@ def _windows_system_cmd() -> str:
 def _terminal_profile(disable_sandbox: bool = False) -> str:
     """Which shell the Terminal runs: "bash", "cmd_isolated" or "cmd_fallback".
 
-    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when the MXC probe names exactly that
-    failure and cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than
-    unsandboxed on bash. Only the MSYS verdict triggers the cmd probe, so hosts without a working MXC
-    pay nothing extra. Full access and UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
+    Git Bash cannot start inside MXC (microsoft/mxc#1061), so when bash fails the MXC probe and
+    cmd.exe qualifies instead, Auto runs the Terminal isolated on cmd rather than unsandboxed on bash.
+    Any bash failure counts, not only the MSYS verdict: on a freshly prepared host bash fails without
+    that signature while cmd passes. Only a failed bash probes cmd. Full access and
+    UNSLOTH_MXC_TERMINAL_CMD=0 keep the host shell.
     """
     if sys.platform != "win32":
         return "bash"
@@ -10192,14 +10303,12 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
     if disable_sandbox or os.environ.get("UNSLOTH_MXC_TERMINAL_CMD") == "0":
         return host_default
     try:
-        from . import mxc_probe
-
         if bash:
-            # Either MXC tier: BaseContainer hosts hit the same MSYS failure as the DACL tier.
+            # Either MXC tier: any bash failure tries cmd.
             verdict = os_sandbox.capability_snapshot(
                 execution_kind = "terminal", selected_executable = bash
             )
-            if verdict.available or verdict.reason != mxc_probe.MSYS_NAMESPACE_REASON:
+            if verdict.available:
                 return "bash"
         cmd = os_sandbox.capability_snapshot(
             execution_kind = "terminal", selected_executable = _windows_system_cmd()
@@ -10214,12 +10323,25 @@ def _terminal_profile(disable_sandbox: bool = False) -> str:
 _request_profile: list = [None, 0.0]
 _request_profile_lock = threading.Lock()
 _REQUEST_PROFILE_REFRESH_SECONDS = 240.0
+# Bumped by every reset: a refresh that started earlier must not publish the profile it computed.
+_request_profile_generation = 0
+
+
+def reset_terminal_profile_cache() -> None:
+    """Forget the advertised Terminal profile, so the next request re-checks it (isolation settings changed)."""
+    global _request_profile_generation
+    with _request_profile_lock:
+        _request_profile[:] = [None, 0.0]
+        _request_profile_generation += 1
 
 
 def _refresh_request_profile() -> str:
+    with _request_profile_lock:
+        generation = _request_profile_generation
     profile = _terminal_profile(False)
     with _request_profile_lock:
-        _request_profile[:] = [profile, time.monotonic()]
+        if generation == _request_profile_generation:
+            _request_profile[:] = [profile, time.monotonic()]
     return profile
 
 
@@ -10238,7 +10360,9 @@ def _profile_for_request() -> str:
     return profile
 
 
-def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
+def apply_terminal_profile_for_request(
+    tools: list[dict], sandbox_level: "str | None" = None
+) -> list[dict]:
     """Sandboxed requests only: advertise the shell _bash_exec will pick for this request. Only the
     first call can block on the MXC probe, so async callers run it in a worker thread; later calls
     reuse the last profile and refresh it in the background. A list without the Terminal never probes."""
@@ -10247,7 +10371,8 @@ def apply_terminal_profile_for_request(tools: list[dict]) -> list[dict]:
         for t in tools or ()
     ):
         return tools
-    return apply_terminal_profile_description(tools, _profile_for_request())
+    profile = _terminal_profile(True) if sandbox_level == "low" else _profile_for_request()
+    return apply_terminal_profile_description(tools, profile)
 
 
 def _shell_argv(command: str, workdir: str, confinement) -> "tuple[list[str], str | None]":
@@ -12127,7 +12252,9 @@ def _edit_file_write(
                     "was being prepared; nothing was written. Read it again and "
                     "redo the edit against the current contents."
                 )
-        os.replace(tmp, path)
+        from core import library
+
+        library.replace_file(tmp, path)
         tmp = ""
     except OSError as exc:
         return f"Error: cannot write '{os.path.basename(path)}': {exc}"
@@ -13698,6 +13825,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
                     headers = parse_server_headers(s),
                     timeout = probe_timeout(s["url"], bool(s.get("use_oauth"))),
                     use_oauth = bool(s.get("use_oauth")),
+                    **oauth_client_kwargs(s),
                 )
                 for s in uncached
             ),
@@ -14029,6 +14157,7 @@ def execute_tool(
             use_oauth = use_oauth,
             cancel_event = cancel_event,
             scope = mcp_scope,
+            **oauth_client_kwargs(server),
             config_check = _config_current,
             ui_resource_uri = tool_ui_resource_uri(mcp_tool_definition(server_id, tool_name)),
         )
@@ -15630,16 +15759,11 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
 
 
 def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
-    """Read up to ``max_bytes``, enforcing the overall budget between chunks. A single
-    ``resp.read(max_bytes)`` can block for the whole transfer if the server dribbles bytes just
-    inside each socket-inactivity timeout, so the body is read in chunks with the budget
-    re-checked (and the socket timeout re-tightened toward the deadline) each round. The joined
-    bytes are identical to one capped read. Returns ``(error_or_None, body_bytes)``."""
-    # Best-effort handle on the underlying socket so its timeout tightens as the deadline nears; absent on test
-    # doubles, where the between-chunk budget check still bounds the read.
-    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
-    # A buffered read(n) keeps receiving until n bytes arrive, so a drip never reaches the
-    # budget check; read1 returns after one receive.
+    """read at most ``max_bytes`` within the overall budget and return ``(error_or_None, body_bytes)``."""
+    # HTTPError wraps the socket; tighten its deadline when present, while chunk checks bound test doubles without one
+    fp = getattr(resp, "fp", None)
+    sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
+    # use read1 because buffered read(n) can keep receiving until n bytes arrive and bypass the budget check
     read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
@@ -15739,6 +15863,19 @@ def _redirect_hop(url: str, website_policy, deadline, cancel_event) -> tuple[str
     return None, host, pinned_ips
 
 
+def _is_bot_check(status: int, headers) -> bool:
+    """Whether a refusal came from a bot check (Cloudflare, DataDome, Akamai), not the site."""
+    if headers is None:
+        return False
+    if (headers.get("cf-mitigated") or "").lower() == "challenge":
+        return True
+    if headers.get("x-datadome") or headers.get("x-dd-b"):
+        return True
+    # Rate limits and outages behind these CDNs carry the same Server header.
+    server = (headers.get("Server") or "").lower()
+    return status == 403 and ("cloudflare" in server or "akamaighost" in server)
+
+
 def _fetch_url_raw(
     url: str,
     timeout: int = 30,
@@ -15747,26 +15884,16 @@ def _fetch_url_raw(
     cancel_event = None,
     website_policy: dict | None = None,
     raw_bytes_max: int | None = None,
+    post_data: bytes | None = None,
+    meta_out: dict | None = None,
+    host_headers = None,
+    error_page: bool = False,
 ) -> tuple[str | None, "str | bytes", str]:
-    """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
-
-    ``raw_bytes_max`` switches to binary mode: the body is returned as ``bytes`` untouched (no PDF
-    or text handling) and refused past that many bytes. The same scheme, host, redirect and budget
-    gates apply either way.
-
-    ``error`` is a user-facing message string when the fetch failed, else ``None``. Blocks
-    private/loopback/link-local targets and caps the download size. No input reaches the caller as
-    an exception: the URL is model-supplied, so every malformed form resolves to one of these
-    strings.
-
-    ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch (redirect hops and
-    body read included) and ``cancel_event`` aborts it when the caller goes away; both default off.
-    """
+    """fetch with SSRF protection; binary reads stay capped, HTML error pages require binary mode, per-hop headers do not cross redirects, and deadlines cover redirects and body reads."""
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
-    # Before the policy gate: it requires an http(s) scheme, so a bare host would be refused there and never reach the
-    # fetch.
+    # normalize before the policy gate because a bare host would otherwise fail its http(s) scheme check.
     url = _normalize_url_scheme(url)
     allowed, reason, canonical_host = check_url_access(url, website_policy)
     if not allowed:
@@ -15792,6 +15919,8 @@ def _fetch_url_raw(
         current_url = url
         current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
+        pending_post = post_data
+        http_error = None
 
         for _hop in range(5):
             budget_error = _fetch_budget_exceeded(deadline, cancel_event)
@@ -15837,37 +15966,52 @@ def _fetch_url_raw(
             }
             if extra_headers:
                 headers.update(extra_headers)
-            req = urllib.request.Request(request_url, headers = headers)
+            if host_headers is not None:
+                headers.update(host_headers(current_host))
+            if pending_post is not None:
+                headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+            req = urllib.request.Request(request_url, headers = headers, data = pending_post)
             try:
-                # Cap the socket timeout at the time left on the overall deadline so a single slow hop cannot outlast
-                # the whole fetch budget.
+                # cap the socket timeout at the remaining deadline so one slow hop cannot outlast the fetch budget.
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
-                location = e.headers.get("Location")
-                if not location:
-                    return "Failed to fetch URL: redirect missing Location header.", "", ""
-                current_url = urljoin(current_url, location)
-                hop_error, current_host, pinned_ips = _redirect_hop(
-                    current_url,
-                    website_policy,
-                    deadline,
-                    cancel_event,
-                )
-                if hop_error is not None:
-                    return hop_error, "", ""
-                continue
+                    if meta_out is not None:
+                        meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
+                    http_error = f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    declared = e.headers.get("Content-Type") and e.headers.get_content_type()
+                    if (
+                        not error_page
+                        or raw_bytes_max is None
+                        or declared not in (None, "", "text/html", "application/xhtml+xml")
+                    ):
+                        return http_error, "", ""
+                    resp = e
+                else:
+                    location = e.headers.get("Location")
+                    if not location:
+                        return "Failed to fetch URL: redirect missing Location header.", "", ""
+                    current_url = urljoin(current_url, location)
+                    # 307/308 preserve POST; other redirects switch to GET.
+                    if e.code not in (307, 308):
+                        pending_post = None
+                    hop_error, current_host, pinned_ips = _redirect_hop(
+                        current_url,
+                        website_policy,
+                        deadline,
+                        cancel_event,
+                    )
+                    if hop_error is not None:
+                        return hop_error, "", ""
+                    continue
 
-            # get_content_type() defaults to "text/plain" when the header is absent (RFC 2045); report "" instead so
-            # callers can tell a missing header apart from a server that really declared text/plain.
+            # get_content_type() defaults missing headers to "text/plain" per RFC 2045; use "" to distinguish them.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
             else:
                 content_type = (resp.headers.get_content_type() or "").lower()
 
-            # Success: read the capped body enforcing the budget between chunks (see _read_capped_body), so a
-            # slow-drip server can't stretch a single resp.read past the deadline.
+            # chunked reads recheck the fetch budget between chunks.
             declared_pdf = raw_bytes_max is None and content_type == "application/pdf"
             if raw_bytes_max is not None:
                 read_limit = raw_bytes_max + 1
@@ -15885,12 +16029,18 @@ def _fetch_url_raw(
             if body_error is not None:
                 return body_error, "", ""
 
-            # A missing or wrong PDF MIME type is common: once the initial text-sized read identifies PDF magic,
-            # finish the bounded download to reach the EOF xref.
+            # missing or wrong PDF MIME types require a bounded tail read to reach the EOF xref.
             if raw_bytes_max is not None:
                 if len(raw_bytes) > raw_bytes_max:
                     return f"(content exceeds the {raw_bytes_max} byte limit)", "", content_type
-                return None, raw_bytes, content_type
+                if meta_out is not None:
+                    meta_out["url"] = current_url
+                    meta_out["charset"] = resp.headers.get_content_charset()
+                    meta_out["filename"] = resp.headers.get_filename()
+                    meta_out["allow_origin"] = resp.headers.get("Access-Control-Allow-Origin")
+                    meta_out["cache_control"] = resp.headers.get("Cache-Control")
+                    meta_out["age"] = resp.headers.get("Age")
+                return http_error, raw_bytes, content_type
             if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
@@ -15908,6 +16058,8 @@ def _fetch_url_raw(
             if not refresh_url:
                 break
             current_url = refresh_url
+            # A refresh is a new GET, like a browser's.
+            pending_post = None
             hop_error, current_host, pinned_ips = _redirect_hop(
                 current_url,
                 website_policy,
@@ -16802,6 +16954,49 @@ def _resolve_engine_tiers(text_engines) -> list:
     return resolved
 
 
+def _class_token(name: str) -> str:
+    return f"contains(concat(' ', normalize-space(@class), ' '), ' {name} ')"
+
+
+# Each section.algo leaves a div unclosed, so lxml nests every later result inside it: match the
+# nearest section, and take the next s-desc before the next title (a descendant search takes them all).
+_YAHOO_SECTION_TITLES = (
+    f"//a[{_class_token('s-title')}][ancestor::section[1][{_class_token('algo')}]]"
+)
+_YAHOO_SECTION_SNIPPET = f"following::*[self::p[{_class_token('s-desc')}] or self::a[{_class_token('s-title')}]][1][self::p]"
+
+
+def _install_yahoo_layout_parser(text_engines) -> None:
+    """Parse Yahoo's ``section.algo`` pages, which ddgs 9.8.0-9.16.0 (``div.relsrch`` only) read as
+    empty. ddgs builds engines from this registry by name; ``relsrch`` pages keep ddgs's parser."""
+    yahoo = (text_engines or {}).get("yahoo")
+    if not isinstance(yahoo, type) or getattr(yahoo, "_parses_section_layout", False):
+        return
+
+    class _Yahoo(yahoo):
+        _parses_section_layout = True
+
+        def extract_results(self, html_text):
+            results = super().extract_results(html_text)
+            if results:
+                return results
+            tree = self.extract_tree(self.pre_process_html(html_text))
+            for link in tree.xpath(_YAHOO_SECTION_TITLES):
+                # TextResult strips tags and collapses whitespace on assignment.
+                result = self.result_type()
+                result.title = link.get("aria-label") or "".join(
+                    link.xpath(f".//text()[not(ancestor::span[{_class_token('title-url')}])]")
+                )
+                result.href = link.get("href") or ""
+                snippet = link.xpath(_YAHOO_SECTION_SNIPPET)
+                if snippet:
+                    result.body = snippet[0].xpath("string()")
+                results.append(result)
+            return results
+
+    text_engines["yahoo"] = _Yahoo
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -16840,6 +17035,57 @@ def _empty_result_with_requested_images(
     return empty_text + "\n\n---\n\n" + found
 
 
+def _wikipedia_search(query, max_results, timeout, deadline, cancel_event, website_policy):
+    """search English Wikipedia independently of ddgs through the guarded HTTP fetcher."""
+    # ddgs uses a one-result Wikipedia lookup, so full-text search recovers misses and failures.
+    from html import unescape
+
+    params = urllib.parse.urlencode(
+        {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "format": "json",
+            "srlimit": min(max_results, 50),
+            "srnamespace": 0,
+        }
+    )
+    error, body, _ = _fetch_url_raw(
+        "https://en.wikipedia.org/w/api.php?" + params,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
+        website_policy = website_policy,
+        raw_bytes_max = 1024 * 1024,
+        extra_headers = {"User-Agent": "UnslothStudio/1.0 (https://github.com/unslothai/unsloth)"},
+    )
+    if error:
+        raise RuntimeError(error)
+    payload = json.loads(body)
+    if "error" in payload:
+        raise RuntimeError("Wikipedia search API returned an error")
+    return [
+        {
+            "title": item["title"],
+            "href": "https://en.wikipedia.org/wiki/"
+            + urllib.parse.quote(item["title"].replace(" ", "_"), safe = ""),
+            "body": unescape(re.sub(r"<[^>]+>", "", item.get("snippet", ""))),
+        }
+        for item in payload["query"]["search"]
+        if isinstance(item, dict) and isinstance(item.get("title"), str) and item["title"].strip()
+    ]
+
+
+def _usable_search_results(results, website_policy):
+    from .web_access_policy import check_url_access
+    return [
+        r
+        for r in results
+        if isinstance(r, dict)
+        and check_url_access(str(r.get("href") or "").strip(), website_policy)[0]
+    ]
+
+
 def _web_search(
     query: str,
     max_results: int = 5,
@@ -16850,11 +17096,7 @@ def _web_search(
     include_images: bool = False,
     image_queries = None,
 ) -> str:
-    """Search the web through the approved engine tiers and return formatted results. If ``url`` is provided,
-    fetches that page directly instead of searching. ``include_images`` adds image results registered
-    server-side and offered to the model as ``[[img:<id>]]`` tokens, with a frontend-only
-    envelope appended: one picture per ``image_queries`` subject when the model named them, else
-    a handful for the query. ``image_queries`` alone (no query) is a pure image lookup."""
+    """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
@@ -16869,8 +17111,7 @@ def _web_search(
     if subjects and not (query and query.strip()):
         if not include_images:
             return IMAGE_SEARCH_DISABLED
-        # Ahead of the try below, so this one has to carry its own guard: execute_tool returns a string for every
-        # input, and a raise here would escape _web_search.
+        # guard here because execute_tool requires a string result and this is outside the try.
         found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
         if found is None:
             return "No images found for: " + ", ".join(subjects)
@@ -16878,57 +17119,90 @@ def _web_search(
 
     if not query or not query.strip():
         return "No query provided."
-    # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be interrupted mid-flight, so gate on either
-    # side: skip an already-cancelled request, and discard results that land after the client has gone.
+    # DDGS.text() is blocking, so cancellation is checked before and after the call.
     if cancel_event is not None and cancel_event.is_set():
         return "Search cancelled."
     try:
-        from ddgs import DDGS
-        from ddgs.engines import ENGINES
-
         from .web_access_policy import check_url_access, scope_search_query
 
-        engine_tiers = _resolve_engine_tiers(ENGINES.get("text", {}))
-        if not engine_tiers:
-            return "Search failed: no approved search engine is available."
-
         effective_query = scope_search_query(query, website_policy)
-        # The policy filters below, so ask for a deeper pool when one actually restricts: a page whose top hits are
-        # all disallowed otherwise yields nothing even when valid results rank just under them. Test the domain lists,
-        # not the dict: a run always stores a normalized policy, which is truthy even when unrestricted.
+        # overfetch for allowed hits below blocked ones; normalized policy remains truthy.
         restricted = any(
             (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
         )
         wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
-        # ddgs applies `timeout` per client, as both the engine HTTP timeout and its fan-out wait, so
-        # a client per tier would restart the budget and a 7s web_search could block ~14s.
+        # bound fallback even if importing or resolving ddgs fails before its normal budget starts.
         deadline = time.monotonic() + timeout if timeout else None
-        client = DDGS(timeout = timeout)
-        # ddgs signals an empty sweep by RAISING, so a tier's exception means try the next tier; the
-        # last is re-raised for _search_failure_message to classify as a single-tier failure would be.
-        results, last_error = [], None
-        for backend in engine_tiers:
-            if cancel_event is not None and cancel_event.is_set():
-                return "Search cancelled."
-            if deadline is not None:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+        client, results, last_error = None, [], None
+        rejected_results = False
+        wikipedia_fallback = False
+        try:
+            from ddgs import DDGS
+            from ddgs.engines import ENGINES
+
+            text_engines = ENGINES.get("text") or {}
+            _install_yahoo_layout_parser(text_engines)
+            engine_tiers = _resolve_engine_tiers(text_engines)
+            if not engine_tiers:
+                raise RuntimeError("no approved search engine is available.")
+            # reset after setup to keep the primary budget; the earlier deadline bounds fallback.
+            deadline = time.monotonic() + timeout if timeout else None
+            client = DDGS(timeout = timeout)
+            # DDGS uses per-client timeouts; tiers share one budget and images reuse the client.
+            for backend in engine_tiers:
+                if cancel_event is not None and cancel_event.is_set():
+                    return "Search cancelled."
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    client = DDGS(timeout = remaining)
+                try:
+                    candidates = client.text(effective_query, max_results = wanted, backend = backend)
+                    results = _usable_search_results(candidates, website_policy)
+                    rejected_results = rejected_results or bool(candidates and not results)
+                except Exception as exc:  # noqa: BLE001 - try the next tier before classifying the failure
+                    last_error = exc
+                    continue
+                if results:
                     break
-                client = DDGS(timeout = remaining)
-            try:
-                results = client.text(effective_query, max_results = wanted, backend = backend)
-            except Exception as exc:  # noqa: BLE001 - re-raised below when no tier produced anything
-                last_error = exc
-                continue
-            if results:
-                break
-        if not results and last_error is not None:
-            raise last_error
+        except Exception as exc:
+            last_error = exc
         if cancel_event is not None and cancel_event.is_set():
             return "Search cancelled."
         if not results:
+            remaining = deadline - time.monotonic() if deadline else 5.0
+            allowed, _, _ = check_url_access("https://en.wikipedia.org/w/api.php", website_policy)
+            if allowed and remaining > 0:
+                try:
+                    fallback_timeout = min(remaining, 5.0)
+                    fallback_deadline = time.monotonic() + fallback_timeout
+                    if deadline is not None:
+                        fallback_deadline = min(fallback_deadline, deadline)
+                    results = _usable_search_results(
+                        _wikipedia_search(
+                            query,
+                            wanted,
+                            fallback_timeout,
+                            fallback_deadline,
+                            cancel_event,
+                            website_policy,
+                        ),
+                        website_policy,
+                    )
+                    wikipedia_fallback = bool(results)
+                except Exception:
+                    logger.debug("Independent Wikipedia search failed", exc_info = True)
+            if cancel_event is not None and cancel_event.is_set():
+                return "Search cancelled."
+        # blocked results take precedence over earlier tier exceptions.
+        if not results and last_error is not None and not rejected_results:
+            raise last_error
+        if not results:
             return _empty_result_with_requested_images(
-                EMPTY_SEARCH_RESULTS[0],
+                EMPTY_SEARCH_RESULTS[1]
+                if rejected_results and restricted
+                else EMPTY_SEARCH_RESULTS[0],
                 subjects,
                 include_images,
                 timeout,
@@ -16943,7 +17217,7 @@ def _web_search(
             allowed, _reason, _hostname = check_url_access(href, website_policy)
             if not allowed:
                 continue
-            title = " ".join(str(r.get("title") or "").split())
+            title = " ".join(str(r.get("title") or href).split())
             snippet = " ".join(str(r.get("body") or "").split())
             parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
         if not parts:
@@ -16956,17 +17230,23 @@ def _web_search(
                 website_policy,
             )
         text = "\n\n---\n\n".join(parts)
+        if wikipedia_fallback:
+            text = (
+                "General web search was unavailable or returned no usable results. "
+                "These are Wikipedia-only encyclopedia results, not current web coverage.\n\n"
+                + text
+            )
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
             "To get the full page content, call web_search with "
             'the url parameter (e.g. {"url": "<URL>"}).'
         )
         if include_images and subjects:
-            # The model named what it will show: one picture per subject, no generic pile.
+            # named subjects require one image each rather than a generic image batch.
             found = _image_search_or_none(subjects, timeout, cancel_event, website_policy)
             if found is not None:
                 text += "\n\n---\n\n" + found
-        elif include_images:
+        elif include_images and not wikipedia_fallback:
             text += _web_search_images_suffix(
                 client,
                 effective_query,
@@ -16975,13 +17255,12 @@ def _web_search(
                 website_policy,
             )
         elif subjects:
-            # Replayed history keeps teaching the parameter; say so, don't drop it.
+            # replayed history must retain the disabled-search reminder.
             text += "\n\n---\n\n" + IMAGE_SEARCH_DISABLED
         return text
     except Exception as e:
         failure = _search_failure_message(e, timeout)
-        # ddgs signals an empty sweep by RAISING, so that exit is an empty result too and owes the named subjects
-        # their pictures. A genuine failure keeps its message alone: pictures under an error read as a partial answer.
+        # ddgs raises on an empty sweep; attach requested images only to empty results, not genuine errors.
         if failure == EMPTY_SEARCH_RESULTS[0]:
             return _empty_result_with_requested_images(
                 failure,
@@ -20473,6 +20752,65 @@ def _split_frontend_suffix(text: str, name: "str | None") -> "tuple[str, str]":
     return body, text[len(body) :]
 
 
+MAX_TOOL_TEXT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS", 256_000)
+_TOOL_TEXT_READERS = frozenset({"terminal", "python"})
+
+
+def _hard_cap_chars() -> int:
+    """Never below the window-aware cap plus its notice, so output `_truncate` already cut (and
+    spilled) passes through with its own spill reference intact."""
+    return max(MAX_TOOL_TEXT_CHARS, _MAX_OUTPUT_CHARS + 4_000)
+
+
+def _tool_text_notice_head() -> str:
+    return f"\n\n... (tool result truncated to {_hard_cap_chars():,} chars for the model;"
+
+
+def _tool_text_search_hint(path: str, readers: "frozenset[str]") -> str:
+    ways = []
+    if "terminal" in readers and _posix_tools_available():
+        ways += [f"grep -n 'pattern' {path}", f"sed -n '1,200p' {path}"]
+    elif "terminal" in readers:
+        ways.append(f'findstr /n "pattern" {path.replace("/", chr(92))}')
+    if "python" in readers:
+        ways.append(f"open({path!r}) in python")
+    return "Search it instead of re-running the call, e.g. " + ", or ".join(ways)
+
+
+def cap_tool_text(
+    text: str,
+    *,
+    session_id: "str | None" = None,
+    thread_id: "str | None" = None,
+    readers: "frozenset[str]" = frozenset(),
+) -> str:
+    """Unconditional floor (``UNSLOTH_TOOL_RESULT_HARD_CAP_CHARS``); spills when a reader tool exists."""
+    limit = _hard_cap_chars()
+    if len(text) <= limit:
+        return text
+    head = _head_whole_lines(text, limit)[0]
+    readers = readers & _TOOL_TEXT_READERS
+    if readers and session_id and _spill_scope(session_id, thread_id) is not None:
+        try:
+            workdir = _get_workdir(session_id)
+        except Exception:  # noqa: BLE001 -- no sandbox means the plain notice
+            logger.debug("tool text spill: no workdir", exc_info = True)
+            workdir = None
+        from .tool_loop_controller import redact_studio_credentials  # noqa: PLC0415
+
+        # Masked like the card and the model copy: the model reads this file.
+        spill, complete = _spill_full_output(
+            redact_studio_credentials(text), workdir, _spill_scope(session_id, thread_id)
+        )
+        if spill is not None:
+            return (
+                head
+                + f"{_tool_text_notice_head()} {_spill_phrase(spill, complete)} in the working "
+                f"directory. {_tool_text_search_hint(spill, readers)}.)"
+            )
+    return head + f"{_tool_text_notice_head()} the full output is not retained in model context.)"
+
+
 def _head_whole_lines(text: str, limit: int) -> "tuple[str, bool]":
     """``text`` cut to at most ``limit`` characters, and whether it ended on a line break.
 
@@ -20734,7 +21072,7 @@ def sandbox_attachment_path(sha256: str, name: str) -> str:
         stem, ext = os.path.splitext(base)
         ext = ext if len(ext.encode()) <= 16 else ""
         room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
-        # Stripped again so the basename the frontend sends back derives this same path.
+        # strip again so the basename the frontend sends back derives the same path.
         base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
     if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
         base = "_" + base
@@ -20744,24 +21082,34 @@ def sandbox_attachment_path(sha256: str, name: str) -> str:
 def materialize_sandbox_attachments(
     session_id: "str | None", attachments: "list[tuple[str, str]]"
 ) -> None:
-    """Copy chat attachment originals into the sandbox, leaving one already there so edits survive."""
+    """copy chat attachment originals into the sandbox, preserving existing copies so edits survive."""
     from core import chat_originals
     with _session_in_flight(session_id):
         workdir = _get_workdir(session_id)
-        for sha256, name in attachments:
-            source = chat_originals.originals_dir() / sha256
-            if not source.is_file():
-                continue
-            try:
-                _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
-            except (OSError, ValueError):
-                logger.warning(
-                    "could not copy attachment %s into the sandbox", sha256, exc_info = True
-                )
+        missing = [
+            (sha256, name, chat_originals.originals_dir() / sha256)
+            for sha256, name in attachments
+            if not os.path.lexists(os.path.join(workdir, sandbox_attachment_path(sha256, name)))
+        ]
+        missing = [entry for entry in missing if entry[2].is_file()]
+        if not missing:
+            return
+        # register the copy as a call so concurrent chats sharing the workdir cannot claim it.
+        token = _call_started(workdir)
+        try:
+            for sha256, name, source in missing:
+                try:
+                    _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+                except (OSError, ValueError):
+                    logger.warning(
+                        "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                    )
+        finally:
+            _call_finished(token)
 
 
 def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
-    """The spill writer's discipline: no link followed, and `os.link` never replaces a name."""
+    """match the spill writer: follow no links; `os.link` never replaces existing names."""
     *dirs, name = relative.split("/")
     tmp = f".tmp-{uuid.uuid4().hex[:12]}"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -21603,8 +21951,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     # this walk runs twice per tool call.
     visited = 0
     hash_budget = 0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES
-    # Walked, not listed: a script writing outputs/report.csv is ordinary, and a top-level listing saw only the
-    # directory and dropped it.
+    # walked to include nested outputs such as outputs/report.csv that a top-level listing drops.
     for base, dirs, names in os.walk(workdir):
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
@@ -21612,24 +21959,26 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
         # depth 0 is the workdir itself, whose files are one segment.
         relative = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
-        # Dot-directories stay out: .git, .cache and friends are where the noise lives. Dot-FILES are reported, since
-        # .gitignore is a real artifact.
+        # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
+            else [
+                d
+                for d in dirs
+                if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
+                and _servable_segment(d)
+            ]
         )
         for name in names:
-            # Only at the top: a tool that wrote archive/.unsloth_sandbox made an ordinary file, and dropping it hid
-            # it from every listing while still counting it as a reason to keep the sandbox.
+            # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
                 continue
             if not _servable_segment(name):
                 continue
             path = os.path.join(base, name)
             try:
-                # One lstat where isfile + islink + stat were three, on every file of every walk. A link is not a
-                # regular file to lstat, so this drops the same entries the pair did.
+                # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)
                 if not S_ISREG(stat.st_mode):
                     continue
@@ -22057,7 +22406,8 @@ def _bash_exec(
         return _STUDIO_CREDENTIAL_BLOCKED
 
     # Chosen once, so the blocklist, env and argv all agree on the shell that will run this call.
-    profile = _terminal_profile(disable_sandbox)
+    # Sandbox Low runs on the host shell: cmd is only picked to stay inside MXC.
+    profile = _terminal_profile(disable_sandbox or tool_execution_mode == "software")
     if profile == "cmd_isolated":
         # Models often end a command with a newline; cmd /s /c cannot carry one.
         command = command.strip()
@@ -22066,9 +22416,9 @@ def _bash_exec(
 
     # Block dangerous commands (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        if profile == "cmd_isolated":
+        if profile in _CMD_PROFILES:
             # The cmd lexer misses separators glued to a word (a&powershell), cmd drops ^ escapes and
-            # ' does not quote, so screen every reading; defence in depth, MXC is the boundary.
+            # ' does not quote, so screen every reading.
             unescaped = command.replace("^", "")
             blocked = set().union(
                 *(

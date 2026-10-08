@@ -37,8 +37,19 @@ from auth.authentication import (
 )
 from auth.storage import rotate_preview_link_secret
 from auth import policy
-from utils.account_context import OWNER, bind_account, current_account, reset_account
-from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused, hf_token_arg
+from utils.account_context import (
+    OWNER,
+    bind_account,
+    current_account,
+    is_owner_context,
+    reset_account,
+)
+from hub.utils.hf_tokens import (
+    HfTokenArg,
+    cache_reads_authorized,
+    cached_read_refused,
+    hf_token_arg,
+)
 
 from routes.provider_credentials import current_credential_write, require_ui_session
 
@@ -646,6 +657,12 @@ class SystemOneModelOption(BaseModel):
     name: str
     description: str
     download_bytes: int
+    kind: Literal["catalog", "fine_tune"] = "catalog"
+    label: Optional[str] = None
+    available: bool = True
+    unavailable_reason: Optional[str] = None
+    # A GGUF with no PyTorch form: the runtime setting matters, and PyTorch cannot serve it.
+    llama_cpp_only: bool = False
 
 
 class SystemOneConnectionOption(BaseModel):
@@ -670,12 +687,23 @@ class SystemOneSettingsResponse(BaseModel):
     installing: bool = False
     error: Optional[str] = None
     mcp_url: str
+    # Runtime setting, what a text request to the configured model uses now, and why Auto chose PyTorch.
+    backend: str = "auto"
+    native_ctx: int = 16384
+    effective_backend: Optional[str] = None
+    loaded_backend: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    input_modalities: list[str] = ["text"]
+    # "laya", "clef" or "gguf" for the configured model, so env-configured local checkpoints get runtime controls.
+    layout: Optional[str] = None
 
 
 class SystemOneSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     model: Optional[str] = None
     device: Optional[str] = None
+    backend: Optional[str] = None
+    native_ctx: Optional[int] = None
     expected_enabled: Optional[bool] = None
     expected_model: Optional[str] = None
 
@@ -992,12 +1020,14 @@ class ModelOverridePayload(BaseModel):
     mirrors_reasoning_budget: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
+    mlx_int8_prefill: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
+    tensor_split: Optional[list[float]] = Field(default = None, min_length = 2, max_length = MAX_GPU_IDS)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
     # Which index space gpu_ids is in. Absent means physical, the only thing a client
     # written before this field could have meant.
@@ -1006,6 +1036,27 @@ class ModelOverridePayload(BaseModel):
     remove: Optional[bool] = None
     # Fill in, don't replace: the backfill reads the map once then writes each model.
     fill_absent_fields: bool = False
+
+    @model_validator(mode = "after")
+    def _tensor_split_matches_gpu_ids(self):
+        if self.tensor_split is not None:
+            from utils.openai_auto_switch_settings import normalize_tensor_split
+            if normalize_tensor_split(self.tensor_split, self.gpu_ids) is None:
+                raise ValueError(
+                    "tensor_split must match an ordered selection of at least two unique GPUs"
+                )
+        return self
+
+    @field_validator("tensor_split")
+    @classmethod
+    def _valid_tensor_split(cls, value: Optional[list[float]]) -> Optional[list[float]]:
+        if value is None:
+            return None
+        from utils.openai_auto_switch_settings import normalize_tensor_split
+
+        if normalize_tensor_split(value, list(range(len(value)))) is None:
+            raise ValueError("tensor_split must be finite, non-negative, and have a positive total")
+        return value
 
     @field_validator("chat_template_override")
     @classmethod
@@ -1037,6 +1088,7 @@ class ModelOverridePayload(BaseModel):
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
+        "tensor_split",
         mode = "before",
     )
     @classmethod
@@ -1454,30 +1506,82 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
+    from core.systemone import laya_runtime
+
+    if getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+        # Selectable under a PyTorch runtime: the runtime row then says to switch it.
+        try:
+            laya_runtime.select(checkpoint, preference = "auto")
+        except laya_runtime.Unavailable as exc:
+            return {"llama_cpp_only": True, "available": False, "unavailable_reason": exc.message}
+        return {"llama_cpp_only": True}
+    if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
+        return {}
+    # llama.cpp serves Clef without CUDA or ROCm.
+    if laya_runtime.native_ready(checkpoint):
+        return {}
+    return {"available": False, "unavailable_reason": reason}
+
+
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
+    from pathlib import Path
+
     from core.systemone import catalog, laya_runtime
     from routes.systemone import MCP_PATH
 
+    clef_reason = catalog.clef_unsupported_reason(wait = False)
     enabled = systemone_settings.get_enabled()
     runtime = laya_runtime.status()
-    model = catalog.default_checkpoint().name
+    configured = catalog.default_checkpoint()
+    model = configured.name
+    if is_owner_context():
+        fine_tunes = catalog.fine_tunes()
+    else:
+        # Other accounts see only the configured model, never the owner's other output folders.
+        fine_tunes = [configured] if catalog.is_fine_tune_name(configured.name) else []
+        if runtime["loaded_model"] != model:
+            runtime["loaded_model"] = runtime["device"] = None
+        if runtime["loading_model"] != model:
+            runtime["loading_model"] = None
     error = runtime["error"]
     if runtime["error_model"] not in (None, model):
         error = None
     port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
+    effective, fallback = laya_runtime.effective_backend(configured)
+    if runtime["loaded_model"] == model and runtime["fallback_reason"]:
+        fallback = runtime["fallback_reason"]
     return SystemOneSettingsResponse(
         enabled = enabled,
         enabled_locked = systemone_settings.enabled_locked(),
         model = model,
         model_locked = systemone_settings.model_locked(),
-        device = systemone_settings.get_device(),
+        # llama.cpp defaults to the GPU when no device is stored; report where it actually runs.
+        device = systemone_settings.clef_device()
+        if effective == "llama.cpp"
+        else systemone_settings.get_device(),
         device_locked = systemone_settings.device_locked(),
         gpu_available = systemone_settings.gpu_available(),
         models = [
             SystemOneModelOption(
-                name = c.name, description = c.description, download_bytes = c.download_bytes
+                name = c.name,
+                description = c.description,
+                download_bytes = c.download_bytes,
+                label = c.label,
+                **_clef_availability(c, clef_reason),
             )
             for c in catalog.CHECKPOINTS.values()
+        ]
+        + [
+            SystemOneModelOption(
+                name = c.name,
+                description = c.description,
+                download_bytes = 0,
+                kind = "fine_tune",
+                label = Path(c.source).name,
+                **_clef_availability(c, clef_reason),
+            )
+            for c in fine_tunes
         ],
         loaded_model = runtime["loaded_model"],
         loaded_device = runtime["device"],
@@ -1485,6 +1589,13 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         installing = runtime["installing"],
         error = error,
         mcp_url = f"http://127.0.0.1:{port}{MCP_PATH}/",
+        backend = systemone_settings.get_backend(),
+        native_ctx = systemone_settings.get_native_ctx(),
+        effective_backend = effective,
+        loaded_backend = runtime["loaded_backend"] if runtime["loaded_model"] else None,
+        fallback_reason = fallback if effective == "pytorch" or effective is None else None,
+        input_modalities = laya_runtime.input_modalities(configured),
+        layout = getattr(configured, "layout", None),
     )
 
 
@@ -1494,7 +1605,10 @@ _SYSTEMONE_SETTINGS_LOCK = threading.Lock()
 def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
     try:
         return systemone_settings.validate(
-            **payload.model_dump(include = {"enabled", "model", "device"}, exclude_none = True)
+            **payload.model_dump(
+                include = {"enabled", "model", "device", "backend", "native_ctx"},
+                exclude_none = True,
+            )
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -1519,7 +1633,8 @@ def _check_systemone_expectations(payload: SystemOneSettingsPayload) -> None:
         raise HTTPException(status_code = 409, detail = "Decision API settings changed. Try again.")
 
 
-@_shared_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
+# Not the shared router, which reads as the owner for everyone: this answer depends on who asks.
+@_account_settings_router.get("/systemone", response_model = SystemOneSettingsResponse)
 def get_systemone_settings(
     request: Request, current_subject: str = Depends(get_current_subject)
 ) -> SystemOneSettingsResponse:
@@ -1604,7 +1719,9 @@ async def list_systemone_connections(
 
 @_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
 def resolve_systemone_download(
-    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+    model: Optional[str] = None,
+    backend: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
 ) -> SystemOneDownloadPlan:
     from core.systemone import catalog, laya_runtime
 
@@ -1617,7 +1734,9 @@ def resolve_systemone_download(
         raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
     if isinstance(checkpoint, catalog.Connection):
         return SystemOneDownloadPlan(files = [], size_bytes = 0, cached = True)
-    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
+    if backend is not None and backend not in systemone_settings.BACKENDS:
+        raise HTTPException(status_code = 400, detail = "Unknown Decision API runtime.")
+    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint, preference = backend))
 
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
@@ -1947,6 +2066,8 @@ class DiffusionAcceleratorFallbackResponse(BaseModel):
 
 PINNED_MODELS_SETTING_KEY = "model_picker_pinned"
 PINNED_CONNECTED_MODELS_SETTING_KEY = "model_picker_pinned_connected"
+# Embedding models pinned to the RAG menu.
+PINNED_EMBEDDING_MODELS_SETTING_KEY = "rag_embedding_pinned"
 MAX_PINNED_MODELS = 512
 # Room for a "::quant" suffix or an "external::<connection>::" prefix on top of a model id.
 _MAX_PIN_KEY_LEN = MAX_MODEL_OVERRIDE_KEY_LEN + 512
@@ -1960,18 +2081,26 @@ class PinnedModelsPayload(BaseModel):
 
     pinned: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
     connected: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+    embedding: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
 
 
 class PinnedModelsResponse(BaseModel):
     # None = never stored, so the browser seeds it.
     pinned: Optional[list[str]] = None
     connected: Optional[list[str]] = None
+    embedding: Optional[list[str]] = None
 
 
 def _pinned_models_response() -> PinnedModelsResponse:
     from storage.studio_db import get_app_settings
 
-    stored = get_app_settings([PINNED_MODELS_SETTING_KEY, PINNED_CONNECTED_MODELS_SETTING_KEY])
+    stored = get_app_settings(
+        [
+            PINNED_MODELS_SETTING_KEY,
+            PINNED_CONNECTED_MODELS_SETTING_KEY,
+            PINNED_EMBEDDING_MODELS_SETTING_KEY,
+        ]
+    )
 
     def _ids(value: Any) -> Optional[list[str]]:
         return [v for v in value if isinstance(v, str)] if isinstance(value, list) else None
@@ -1979,6 +2108,7 @@ def _pinned_models_response() -> PinnedModelsResponse:
     return PinnedModelsResponse(
         pinned = _ids(stored.get(PINNED_MODELS_SETTING_KEY)),
         connected = _ids(stored.get(PINNED_CONNECTED_MODELS_SETTING_KEY)),
+        embedding = _ids(stored.get(PINNED_EMBEDDING_MODELS_SETTING_KEY)),
     )
 
 
@@ -1999,6 +2129,8 @@ def update_pinned_models(
         updates[PINNED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.pinned))
     if payload.connected is not None:
         updates[PINNED_CONNECTED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.connected))
+    if payload.embedding is not None:
+        updates[PINNED_EMBEDDING_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.embedding))
     if updates:
         upsert_app_settings(updates, read_back = False)
     return _pinned_models_response()
@@ -2356,10 +2488,11 @@ def update_openai_auto_switch_override(
             is_removal = (
                 not payload.tensor_parallel
                 and not payload.disable_vision
+                and not payload.mlx_int8_prefill
                 and not {
                     key: value
                     for key, value in saved_fields.items()
-                    if key not in ("tensor_parallel", "disable_vision")
+                    if key not in ("tensor_parallel", "disable_vision", "mlx_int8_prefill")
                 }
             )
         if requested_extra_args is None and not is_removal:
@@ -2529,6 +2662,13 @@ def update_openai_auto_switch_override(
                         max_seq_length = explicit_ctx
                     if custom_context_length is not None:
                         custom_context_length = explicit_ctx
+            tensor_split = payload.tensor_split
+            if "tensor_split" not in fields_set:
+                previous = get_model_override(target_id)
+                if previous.get("gpu_ids") == payload.gpu_ids and previous.get(
+                    "gpu_index_kind", "physical"
+                ) == (payload.gpu_index_kind or "physical"):
+                    tensor_split = previous.get("tensor_split")
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
@@ -2567,11 +2707,13 @@ def update_openai_auto_switch_override(
                 cache_ram = _kept_tuning["cache_ram"],
                 tensor_parallel = payload.tensor_parallel,
                 disable_vision = payload.disable_vision,
+                mlx_int8_prefill = payload.mlx_int8_prefill,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,
                 n_cpu_moe = payload.n_cpu_moe,
                 gpu_ids = payload.gpu_ids,
+                tensor_split = tensor_split,
                 gpu_index_kind = payload.gpu_index_kind,
                 fill_absent_fields = payload.fill_absent_fields,
             )
@@ -2673,7 +2815,7 @@ def _llama_runtime_available() -> bool:
         return True
 
 
-def _llama_backend_active(model: str | None = None) -> bool:
+def _llama_backend_active(model: str | None = None, token: HfTokenArg = None) -> bool:
     """Whether llama serves the active model, or would serve ``model`` if supplied. Delegates to the embeddings
     module so a runtime fallback from sentence-transformers to llama-server is honored: in that state the
     process loads only inert GGUF, so the ST pickle gate below must not hard-block a repo whose GGUF
@@ -2681,7 +2823,7 @@ def _llama_backend_active(model: str | None = None) -> bool:
     from core.rag import embeddings
     try:
         if model is not None:
-            return embeddings.resolved_backend_for_model(model) == "llama-server"
+            return embeddings.resolved_backend_for_model(model, token) == "llama-server"
         return embeddings.active_backend_is_llama()
     except Exception:  # noqa: BLE001 - backend probe must never block saving
         return False
@@ -2751,11 +2893,18 @@ def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
 
 
 def _no_embedding_weights_error(candidates: list[str]) -> str:
-    """Error after the caller has already exhausted GGUF and ST resolution."""
     checked = " or ".join(repr(c) for c in candidates)
     return (
         f"No GGUF weights found in {checked}, and no safetensors to fall back to. "
         "Only the model's own publisher is used as a source."
+    )
+
+
+def _st_cannot_load_error(model: str, candidates: list[str]) -> str:
+    checked = " or ".join(repr(c) for c in candidates)
+    return (
+        f"No GGUF weights found in {checked}, and {model!r} needs a newer sentence-transformers or "
+        "transformers than this install has."
     )
 
 
@@ -2769,8 +2918,7 @@ def get_embedding_model(
 class EmbeddingModelResolveResponse(BaseModel):
     embedding_model: str
     backend: Literal["llama", "sentence-transformers"]
-    # Repo the picker hands the download manager, and the files to take from it. Split GGUF plans contain
-    # every shard in the selected family; both None when nothing needs fetching or when ``error`` is set.
+    # download source; split plans include every shard; both fields are None on no fetch or error
     download_repo: Optional[str] = None
     files: Optional[list[str]] = None
     cached: bool = False
@@ -2804,7 +2952,7 @@ _EMBEDDING_RESOLVE_DEADLINE: ContextVar[float | None] = ContextVar(
 
 
 def _call_with_embedding_resolve_budget(fn, *, name: str):
-    """Run one remote probe inside the resolution's single time budget."""
+    """run one remote probe within the shared resolution deadline."""
     deadline = _EMBEDDING_RESOLVE_DEADLINE.get()
     timeout = (
         _GGUF_LIST_DEADLINE_S
@@ -2819,15 +2967,18 @@ def _call_with_embedding_resolve_budget(fn, *, name: str):
 
 
 def _with_embedding_resolve_budget(fn):
-    """Give one GET/PUT resolution a deadline shared by every Hub fallback."""
+    """share one deadline and ST proof scope so timeout skips cannot erase earlier results."""
 
     @functools.wraps(fn)
     def _wrapped(*args, **kwargs):
         if _EMBEDDING_RESOLVE_DEADLINE.get() is not None:
             return fn(*args, **kwargs)
+        from core.rag.embeddings import st_load_proof_scope
+
         marker = _EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() + _GGUF_LIST_DEADLINE_S)
         try:
-            return fn(*args, **kwargs)
+            with st_load_proof_scope():
+                return fn(*args, **kwargs)
         finally:
             _EMBEDDING_RESOLVE_DEADLINE.reset(marker)
 
@@ -2835,7 +2986,7 @@ def _with_embedding_resolve_budget(fn):
 
 
 def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
-    """List a Hub repo without letting a blackholed route pin Settings forever."""
+    """bound Hub listing time so a blackholed route cannot pin Settings."""
     from huggingface_hub import list_repo_files
     return _call_with_embedding_resolve_budget(
         lambda: list_repo_files(repo, token = hf_token),
@@ -3084,7 +3235,6 @@ def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str
 
 
 def _sentence_transformers_fallback_allowed(model: str) -> bool:
-    """Whether a newly selected model can actually be served by ST in this process."""
     try:
         from core.rag import embeddings
         return embeddings.sentence_transformers_fallback_allowed(model)
@@ -3092,8 +3242,25 @@ def _sentence_transformers_fallback_allowed(model: str) -> bool:
         return False
 
 
+def _sentence_transformers_can_load(model: str, token: HfTokenArg = None) -> bool:
+    try:
+        from core.rag import embeddings
+    except Exception:  # noqa: BLE001 - unimportable embedder: no proof either way
+        return True
+    # check known failures before the deadline so a timeout cannot erase earlier proof
+    if embeddings.sentence_transformers_known_unloadable(model):
+        return False
+    try:
+        return _call_with_embedding_resolve_budget(
+            lambda: embeddings.sentence_transformers_can_load(model, token),
+            name = "embed-settings-st-load-check",
+        )
+    except Exception:  # noqa: BLE001 - spent budget: no proof either way
+        return True
+
+
 def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Optional[int]:
-    """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the hub does not say."""
+    """return total file bytes for confirmation, or None when Hub omits the sizes."""
     try:
         from huggingface_hub import model_info
 
@@ -3159,7 +3326,7 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
 
 @_with_embedding_resolve_budget
 def _resolve_embedding_model_plan(
-    resolved: str, token: Optional[str]
+    resolved: str, token: HfTokenArg
 ) -> EmbeddingModelResolveResponse:
     """Server-owned artifact/backend plan shared by GET and PUT.
 
@@ -3194,7 +3361,7 @@ def _resolve_embedding_model_plan(
     # resolver's deadline before a miss. It was also the wrong question, per the note above.
 
     # Resolve for the model being selected.
-    on_llama = _llama_backend_active(resolved)
+    on_llama = _llama_backend_active(resolved, token)
     backend: Literal["llama", "sentence-transformers"] = (
         "llama" if on_llama else "sentence-transformers"
     )
@@ -3290,8 +3457,7 @@ def _resolve_embedding_model_plan(
         )
     plan = _remote_embedding_gguf_plan(candidates, token) or _search_hub_for_gguf(resolved, token)
     if plan is None:
-        # The loader's offline fallback accepts any complete cached quant from
-        # any candidate only after its bounded online listing fails.
+        # the offline fallback accepts any complete cached quant after bounded online listing fails
         cached_repo = _cached_embedding_gguf(candidates, require_variant = False)
         if cached_repo and not _authorized(cached_repo):
             cached_repo = None
@@ -3302,40 +3468,34 @@ def _resolve_embedding_model_plan(
                 download_repo = cached_repo,
                 cached = True,
             )
-        # No GGUF from this publisher: run it on its own safetensors only when
-        # configuration/runtime policy can actually select ST for this model.
-        st_plan = (
-            _safetensors_plan(resolved, token)
-            if _sentence_transformers_fallback_allowed(resolved)
-            else None
-        )
-        # The GGUF branches above are gated and this one was not. The plan answers with the
-        # repo the snapshot is FILED under, which for a slashless alias is not the name the
-        # caller typed, and the response then reports it cached: that is how a denied caller
-        # discovers the operator's private weights and force-saves them as the embedder.
-        # Reading our own disk to find the repo is fine; naming it back is what is gated.
+        # use publisher safetensors only when this process can select ST
+        st_allowed = _sentence_transformers_fallback_allowed(resolved)
+        st_unloadable = st_allowed and not _sentence_transformers_can_load(resolved, token)
+        st_plan = _safetensors_plan(resolved, token) if st_allowed and not st_unloadable else None
+        # authorize the plan's repo to avoid exposing a cached private repo through an alias
         if st_plan is not None and not _authorized(st_plan[0]):
             st_plan = None
         if st_plan is None:
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
                 backend = backend,
-                error = _no_embedding_weights_error(candidates),
+                error = (
+                    _st_cannot_load_error(resolved, candidates)
+                    if st_unloadable
+                    else _no_embedding_weights_error(candidates)
+                ),
             )
         st_repo, _st_files = st_plan
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
             backend = "sentence-transformers",
             download_repo = st_repo,
-            # Same alias-aware predicate, asked about the repo the plan named
-            # rather than the alias the user typed, which the gate above authorized.
+            # check the authorized plan repo because slashless aliases are cached under sentence-transformers/
             cached = _cached_snapshot_has_st_weights(st_repo),
             size_bytes = _hf_snapshot_size(st_repo, token),
         )
     repo, files = plan
-    # A gated repo can publish its filenames, so a plan coming back is not authorization to
-    # report the operator's copy of it. The repo the plan names need not be the one the
-    # caller asked about, so it is authorized in its own right like every other candidate.
+    # authorize the resolved repo before reporting whether the operator has its exact files cached
     if _authorized(repo) and _cached_embedding_gguf_files(repo, files):
         return EmbeddingModelResolveResponse(
             embedding_model = resolved,
@@ -4578,6 +4738,514 @@ def export_debug_logs(
         # waits for a cyclic GC pass, holding up to SPOOL_MAX_BYTES meanwhile.
         background = BackgroundTask(archive.close),
     )
+
+
+class SandboxToolStatus(BaseModel):
+    backend: str
+    available: bool
+    reason: str
+    protection_state: str = "unavailable"
+    limitations: list[str] = Field(default_factory = list)
+    remediation: str = ""
+
+
+class SandboxWindowsStatus(BaseModel):
+    runtime_installed: bool
+    # None: this Windows can run MXC; "arch" (not x64) or "build" (older than 26100) otherwise.
+    runtime_unsupported: Optional[Literal["arch", "build"]] = None
+    allow_dacl_fallback: bool
+    allow_dacl_fallback_saved: bool
+    dacl_locked_by_environment: bool
+    persistent_read_grants: bool
+    persistent_read_grants_saved: bool
+    grants_locked_by_environment: bool
+    # None: MXC could not tell; [] prepared; otherwise the wxc-host-prep verbs still missing.
+    host_prep_missing: Optional[list[str]] = None
+    prepare_repeats_after_restart: bool = True
+    # True: MXC runs in Windows' built-in container (BaseContainer); False: this Windows has none; None: unknown.
+    builtin_container: Optional[bool] = None
+
+
+class SandboxSetupStatus(BaseModel):
+    action: Optional[str] = None
+    # sudo | pkexec | uac, or None.
+    elevation: Optional[str] = None
+    manual_command: str = ""
+    reason: str = ""
+    needs_consent: bool = False
+    can_run: bool = False
+
+
+class SandboxStatusResponse(BaseModel):
+    platform: str
+    python: SandboxToolStatus
+    terminal: SandboxToolStatus
+    terminal_shell: Optional[str] = None
+    windows: Optional[SandboxWindowsStatus] = None
+    setup: Optional[SandboxSetupStatus] = None
+    checked_at: float
+    grants_restored: Optional[int] = None
+
+
+class SandboxSettingsPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    allow_dacl_fallback: Optional[StrictBool] = None
+    persistent_read_grants: Optional[StrictBool] = None
+
+
+class SandboxSetupPayload(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    operation: Literal["linux-install", "windows-setup", "windows-runtime"]
+    consent_dacl_fallback: StrictBool = False
+
+
+class SandboxSetupJob(BaseModel):
+    state: Literal["idle", "running", "succeeded", "declined", "failed"]
+    id: Optional[str] = None
+    operation: Optional[str] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    output_tail: list[str] = Field(default_factory = list)
+    steps: list[str] = Field(default_factory = list)
+    manual_command: str = ""
+    note: str = ""
+
+
+class SandboxPrepareJob(BaseModel):
+    state: Literal["idle", "running", "succeeded", "declined", "failed"]
+    id: Optional[str] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    output_tail: list[str] = Field(default_factory = list)
+    steps: list[str] = Field(default_factory = list)
+
+
+_SANDBOX_STATUS_TTL_SECONDS = 30.0
+_sandbox_status_lock = threading.Lock()
+_sandbox_status_cache: Optional[tuple[float, SandboxStatusResponse]] = None
+# Bumped by every change: a status built before a save must not be cached after it.
+_sandbox_status_generation = 0
+
+
+def _forget_sandbox_status() -> None:
+    global _sandbox_status_cache, _sandbox_status_generation
+    with _sandbox_status_lock:
+        _sandbox_status_cache = None
+        _sandbox_status_generation += 1
+
+
+def _sandbox_tool_status(capability) -> SandboxToolStatus:
+    return SandboxToolStatus(
+        backend = capability.backend,
+        available = capability.available,
+        reason = capability.reason,
+        protection_state = capability.protection_state,
+        limitations = list(capability.limitations),
+        remediation = capability.remediation,
+    )
+
+
+def _sandbox_terminal_target() -> tuple[str, Optional[str]]:
+    import shutil
+    import sys
+
+    from core.inference import tools
+
+    if sys.platform != "win32":
+        return shutil.which("bash") or "bash", None
+    profile = tools._terminal_profile(False)
+    if profile == "cmd_isolated":
+        return tools._windows_system_cmd(), profile
+    return tools._windows_bash() or tools._windows_system_cmd(), profile
+
+
+def _sandbox_windows_status() -> SandboxWindowsStatus:
+    from core.inference import (
+        mxc_adapter,
+        mxc_policy,
+        mxc_read_grants,
+        mxc_runtime,
+        sandbox_setup_plan,
+    )
+    from utils import mxc_isolation_settings as saved
+
+    try:
+        mxc_runtime.installation_identity()
+        installed = True
+    except Exception:
+        installed = False
+    missing: Optional[list[str]] = None
+    if installed:
+        steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
+        missing = None if steps is None else list(steps)
+    return SandboxWindowsStatus(
+        runtime_installed = installed,
+        runtime_unsupported = sandbox_setup_plan.windows_runtime_unsupported(),
+        allow_dacl_fallback = mxc_policy.dacl_fallback_enabled(),
+        allow_dacl_fallback_saved = saved.dacl_fallback_setting(),
+        dacl_locked_by_environment = saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV),
+        persistent_read_grants = mxc_read_grants.enabled(),
+        persistent_read_grants_saved = saved.persistent_grants_setting(),
+        grants_locked_by_environment = saved.locked_by_environment(
+            mxc_read_grants.PERSISTENT_GRANTS_ENV
+        ),
+        host_prep_missing = missing,
+    )
+
+
+def _sandbox_windows_block(python, dacl_at_probe: bool) -> SandboxWindowsStatus:
+    """wxc-exec does not name its tier, but with the fallback off it runs only in BaseContainer."""
+    from core.inference import mxc_probe
+
+    windows = _sandbox_windows_status()
+    builtin = None
+    # A save between the probe and this read would pair one setting's verdict with the other.
+    if windows.runtime_installed and not (windows.allow_dacl_fallback or dacl_at_probe):
+        if python.available and python.backend == "mxc-processcontainer":
+            builtin = True
+        elif python.reason == mxc_probe.NO_BUILTIN_CONTAINER_REASON:
+            builtin = False
+    return windows.model_copy(update = {"builtin_container": builtin})
+
+
+def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
+    """Blocking (live probes); run off the event loop. Never elevates: probes only."""
+    import sys
+
+    from core.inference import os_sandbox
+
+    windows_refresh = force and sys.platform == "win32"
+    if windows_refresh:
+        # The Terminal's bash-or-cmd choice reads cached verdicts; a Refresh must choose from fresh ones.
+        from core.inference import mxc_probe, sandbox_probe, tools
+
+        sandbox_probe.reset_probe_cache()
+        mxc_probe.invalidate_cache()
+        tools.reset_terminal_profile_cache()
+    # After the resets above: they raise the floor an earlier generation is dropped under.
+    generation = os_sandbox.tool_isolation_generation()
+    dacl_at_probe = False
+    if sys.platform == "win32":
+        from core.inference import mxc_policy
+        dacl_at_probe = mxc_policy.dacl_fallback_enabled()
+    python = os_sandbox.capability_snapshot(
+        force = force, execution_kind = "python", selected_executable = sys.executable
+    )
+    terminal_exe, shell = _sandbox_terminal_target()
+    # On Windows the choice above just probed this executable.
+    terminal = os_sandbox.capability_snapshot(
+        force = force and not windows_refresh,
+        execution_kind = "terminal",
+        selected_executable = terminal_exe,
+    )
+    for tool, capability in (("python", python), ("terminal", terminal)):
+        os_sandbox.note_tool_isolation(
+            tool,
+            capability.available,
+            backend = capability.backend,
+            reason = capability.reason,
+            generation = generation,
+        )
+    return SandboxStatusResponse(
+        platform = sys.platform,
+        python = _sandbox_tool_status(python),
+        terminal = _sandbox_tool_status(terminal),
+        terminal_shell = shell,
+        windows = _sandbox_windows_block(python, dacl_at_probe) if sys.platform == "win32" else None,
+        setup = _sandbox_setup_status(python.available and terminal.available),
+        checked_at = time.time(),
+    )
+
+
+def _sandbox_setup_status(available: bool) -> Optional[SandboxSetupStatus]:
+    from core.inference import sandbox_setup_plan
+    try:
+        plan = sandbox_setup_plan.detect(available)
+    except Exception as exc:  # noqa: BLE001 - the status stays useful without the setup hint
+        logger.warning("settings.sandbox_setup_plan_failed: %s", exc)
+        return None
+    return SandboxSetupStatus(
+        action = plan.action,
+        elevation = plan.elevation,
+        manual_command = plan.manual_command,
+        reason = plan.reason,
+        needs_consent = plan.needs_consent,
+    )
+
+
+def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStatusResponse:
+    """Blocking. The setup button: a direct local request, or a Linux install that prompts nobody here."""
+    from core.inference import sandbox_setup_plan
+    from utils.client_ip import is_direct_local_request
+
+    setup = status.setup
+    if setup is None:
+        return status
+    local = bool(setup.action) and is_direct_local_request(request)
+    update: dict = {"can_run": False}
+    if setup.action == sandbox_setup_plan.LINUX_INSTALL:
+        can_run, elevation = sandbox_setup_plan.linux_install_allowed(local = local)
+        update = {"can_run": can_run, "elevation": elevation}
+    elif local:
+        update = {"can_run": True}
+    return status.model_copy(update = {"setup": setup.model_copy(update = update)})
+
+
+def _sandbox_status(refresh: bool = False) -> SandboxStatusResponse:
+    global _sandbox_status_cache
+    with _sandbox_status_lock:
+        cached, generation = _sandbox_status_cache, _sandbox_status_generation
+    if not refresh and cached is not None and time.monotonic() < cached[0]:
+        return cached[1]
+    status = _build_sandbox_status(force = refresh)
+    with _sandbox_status_lock:
+        if generation == _sandbox_status_generation:
+            _sandbox_status_cache = (time.monotonic() + _SANDBOX_STATUS_TTL_SECONDS, status)
+    return status
+
+
+def _sandbox_invalidate() -> None:
+    from core.inference import mxc_probe, tools
+
+    mxc_probe.invalidate_cache()
+    tools.reset_terminal_profile_cache()
+    _forget_sandbox_status()
+
+
+def _sandbox_apply(payload: SandboxSettingsPayload) -> Optional[int]:
+    """Blocking: save, reset every cached verdict, and take the read grants back once they are off."""
+    from core.inference import mxc_policy, mxc_read_grants
+    from utils import mxc_isolation_settings as saved
+
+    if payload.allow_dacl_fallback is not None:
+        saved.set_dacl_fallback_setting(payload.allow_dacl_fallback)
+    if payload.persistent_read_grants is not None:
+        saved.set_persistent_grants_setting(payload.persistent_read_grants)
+    saved.forget_cached_setting()
+    _sandbox_invalidate()
+    if not (mxc_policy.dacl_fallback_enabled() and mxc_read_grants.enabled()):
+        return len(mxc_read_grants.revoke_recorded())
+    return None
+
+
+def _sandbox_job_response(job) -> SandboxPrepareJob:
+    return (
+        SandboxPrepareJob(**job.as_dict()) if job is not None else SandboxPrepareJob(state = "idle")
+    )
+
+
+@_owner_settings_router.get("/sandbox", response_model = SandboxStatusResponse)
+async def get_sandbox_status(
+    request: Request,
+    refresh: bool = False,
+    current_subject: str = Depends(get_current_subject),
+) -> SandboxStatusResponse:
+    """What Python and the Terminal get from the OS sandbox on this machine, plus the Windows opt-in."""
+    try:
+        status = await asyncio.to_thread(_sandbox_status, refresh)
+        return await asyncio.to_thread(_for_request, status, request)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not read the sandbox status.",
+            event = "settings.sandbox_status_failed",
+            log = logger,
+        ) from exc
+
+
+@_owner_settings_router.put("/sandbox", response_model = SandboxStatusResponse)
+async def update_sandbox_settings(
+    payload: SandboxSettingsPayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    # Host policy: changed at the console, never by an API key the owner happens to hold.
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxStatusResponse:
+    """Save the Windows MXC opt-in and the persistent read grant choice. Applies to the next launch."""
+    import sys
+
+    from core.inference import mxc_policy, mxc_read_grants
+    from utils import mxc_isolation_settings as saved
+
+    if sys.platform != "win32":
+        raise HTTPException(status_code = 409, detail = "These settings only apply on Windows.")
+    locks = (
+        (payload.allow_dacl_fallback, mxc_policy.DACL_FALLBACK_ENV),
+        (payload.persistent_read_grants, mxc_read_grants.PERSISTENT_GRANTS_ENV),
+    )
+    for value, env in locks:
+        if value is not None and saved.locked_by_environment(env):
+            raise HTTPException(
+                status_code = 409,
+                detail = f"{env} is set in the environment Unsloth runs in, which decides this.",
+            )
+    try:
+        restored = await asyncio.to_thread(_sandbox_apply, payload)
+        status = await asyncio.to_thread(_sandbox_status, False)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not save the sandbox settings.",
+            event = "settings.sandbox_update_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.sandbox_updated subject=%s dacl=%s grants=%s",
+        current_subject,
+        payload.allow_dacl_fallback,
+        payload.persistent_read_grants,
+    )
+    status = await asyncio.to_thread(_for_request, status, request)
+    return status.model_copy(update = {"grants_restored": restored})
+
+
+@_owner_settings_router.get("/sandbox/prepare", response_model = SandboxPrepareJob)
+def get_sandbox_prepare(current_subject: str = Depends(get_current_subject)) -> SandboxPrepareJob:
+    return _sandbox_job_response(_newest_host_job(prepares_host = True))
+
+
+@_owner_settings_router.post("/sandbox/prepare", response_model = SandboxPrepareJob)
+async def start_sandbox_prepare(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxPrepareJob:
+    """Run MXC's elevated host preparation; Windows shows its administrator prompt on this computer."""
+    import sys
+
+    from core.inference import mxc_host_prep_job, mxc_runtime, sandbox_setup_job
+    from utils.client_ip import is_direct_local_request
+
+    # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
+    if not is_direct_local_request(request):
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Prepare this PC from the computer running Unsloth: the Windows administrator "
+                "prompt appears there, not in this browser."
+            ),
+        )
+    if sys.platform != "win32":
+        raise HTTPException(status_code = 409, detail = "Host preparation is Windows-only.")
+    try:
+        await asyncio.to_thread(mxc_runtime.installation_identity)
+    except Exception as exc:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The MXC runtime is not installed; install it from Settings > Sandbox first.",
+        ) from exc
+    mxc_host_prep_job.add_finish_hook(_forget_sandbox_status)
+    try:
+        job = await asyncio.to_thread(mxc_host_prep_job.start)
+    except sandbox_setup_job.SetupUnavailable as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.sandbox_prepare_started subject=%s job=%s", current_subject, job.id)
+    return _sandbox_job_response(job)
+
+
+def _sandbox_setup_response(job) -> SandboxSetupJob:
+    if job is None:
+        return SandboxSetupJob(state = "idle")
+    data = job.as_dict()
+    data.setdefault("operation", "windows-setup")
+    return SandboxSetupJob(**data)
+
+
+@_owner_settings_router.get("/sandbox/setup", response_model = SandboxSetupJob)
+def get_sandbox_setup(current_subject: str = Depends(get_current_subject)) -> SandboxSetupJob:
+    return _sandbox_setup_response(_newest_host_job())
+
+
+def _newest_host_job(prepares_host: bool = False):
+    """``prepares_host``: the prepare row reads this, so a runtime-only install is not its result."""
+    from core.inference import mxc_host_prep_job, sandbox_setup_job, sandbox_setup_plan
+
+    job = sandbox_setup_job.current()
+    if prepares_host and job is not None and job.operation != sandbox_setup_plan.WINDOWS_SETUP:
+        job = None
+    prep = mxc_host_prep_job.current()
+    if prep is not None and (job is None or prep.started_at > job.started_at):
+        return prep
+    return job
+
+
+@_owner_settings_router.post("/sandbox/setup", response_model = SandboxSetupJob)
+async def start_sandbox_setup(
+    payload: SandboxSetupPayload,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> SandboxSetupJob:
+    """Install or prepare the OS sandbox here; the password or administrator prompt appears on this computer.
+
+    Steps that need no prompt (the Windows runtime-only install, a Linux install as root or with
+    passwordless sudo) also work from a remote browser.
+    """
+    import sys
+
+    from core.inference import mxc_policy, sandbox_setup_job, sandbox_setup_plan
+    from utils import mxc_isolation_settings as saved
+    from utils.client_ip import is_direct_local_request
+
+    # Stricter than client_ip(): a loopback peer carrying proxy headers is a remote browser relayed here.
+    local = is_direct_local_request(request)
+    if not local and not await asyncio.to_thread(
+        sandbox_setup_plan.remote_start_allowed, payload.operation
+    ):
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Set up the sandbox from the computer running Unsloth: the password or administrator "
+                "prompt appears there, not in this browser."
+            ),
+        )
+    platform_operations = (
+        (sandbox_setup_plan.WINDOWS_SETUP, sandbox_setup_plan.WINDOWS_RUNTIME)
+        if sys.platform == "win32"
+        else (sandbox_setup_plan.LINUX_INSTALL,)
+        if sys.platform.startswith("linux")
+        else ()
+    )
+    if payload.operation not in platform_operations:
+        raise HTTPException(
+            status_code = 409, detail = f"{payload.operation} does not apply to this computer."
+        )
+    consent = (
+        payload.operation == sandbox_setup_plan.WINDOWS_SETUP
+        and payload.consent_dacl_fallback
+        and not mxc_policy.dacl_fallback_enabled()
+    )
+    if consent and saved.locked_by_environment(mxc_policy.DACL_FALLBACK_ENV):
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                f"{mxc_policy.DACL_FALLBACK_ENV} is set in the environment Unsloth runs in, "
+                "which decides this."
+            ),
+        )
+    sandbox_setup_job.add_finish_hook(_forget_sandbox_status)
+    try:
+        job = await asyncio.to_thread(sandbox_setup_job.start, payload.operation, interactive = local)
+    except sandbox_setup_job.SetupUnavailable as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    if consent:
+        # Only once accepted: turned on first, the plan reads "already works" and never prepares.
+        await asyncio.to_thread(_sandbox_apply, SandboxSettingsPayload(allow_dacl_fallback = True))
+        sandbox_setup_plan.invalidate()
+    _forget_sandbox_status()
+    logger.info(
+        "settings.sandbox_setup_started subject=%s operation=%s job=%s",
+        current_subject,
+        payload.operation,
+        job.id,
+    )
+    return _sandbox_setup_response(job)
 
 
 router.include_router(_account_settings_router)
