@@ -104,7 +104,7 @@ import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
 import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
-import { BusyDownloadsButton, DownloadsButton } from "./downloads-button";
+import { DownloadsButton } from "./downloads-button";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
@@ -1675,7 +1675,7 @@ function BrowserFileToolbar({
         >
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
         </IconButton>
-        <BusyDownloadsButton className={NAV_BUTTON} visible={visible} />
+        <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
@@ -2062,7 +2062,7 @@ function FloatingFileToolbar({
         onClick={() => download && void saveBrowserDownload(download)}
         className="size-9"
       />
-      <BusyDownloadsButton className={cn(PILL, "size-9")} visible={visible} />
+      <DownloadsButton className={cn(PILL, "size-9")} visible={visible} idleHidden={true} />
     </>
   );
 }
@@ -2233,7 +2233,7 @@ function VideoFileToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <BusyDownloadsButton className={NAV_BUTTON} visible={visible} />
+      <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
       <PanelMenu tab={tab} />
     </>
   );

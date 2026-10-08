@@ -306,8 +306,14 @@ function DownloadingIcon() {
 }
 
 /** Toolbar Downloads button: a ring while files download, a notice when one finishes, recent downloads on click. */
-/** `visible`: false while its panel stays mounted off screen, so results go to a toast instead. */
-export function DownloadsButton({ className, visible = true }: { className?: string; visible?: boolean }) {
+/** `visible`: false while its panel stays mounted off screen, so results go to a toast instead.
+ *  `idleHidden`: file tabs keep their own save button, so the glyph shows only while a download runs
+ *  or its result is up. It stays registered meanwhile, so a quick save still finds it. */
+export function DownloadsButton({
+  className,
+  visible = true,
+  idleHidden = false,
+}: { className?: string; visible?: boolean; idleHidden?: boolean }) {
   const t = useT();
   const active = useDownloadActivity((state) => Object.keys(state.active).length > 0);
   const finished = useDownloadActivity((state) => state.finished);
@@ -325,6 +331,12 @@ export function DownloadsButton({ className, visible = true }: { className?: str
       setMode("finished");
       setHovered(false);
     }
+  }
+
+  // Off screen its popover, portaled out of the panel, would stay up over the next page.
+  if (!visible && mode !== "closed") {
+    setMode("closed");
+    setHovered(false);
   }
 
   useEffect(() => (visible ? mountDownloadsButton() : undefined), [visible]);
@@ -350,7 +362,12 @@ export function DownloadsButton({ className, visible = true }: { className?: str
   return (
     <Popover open={mode !== "closed"} onOpenChange={(open) => (open ? setMode("list") : close())}>
       <PopoverAnchor asChild={true}>
-        <span className="relative flex shrink-0">
+        <span
+          className={cn(
+            "relative flex shrink-0",
+            idleHidden && !active && !finished && mode === "closed" && "hidden",
+          )}
+        >
           <Tooltip>
             <TooltipTrigger asChild={true}>
               <button
@@ -392,10 +409,4 @@ export function DownloadsButton({ className, visible = true }: { className?: str
       </PopoverContent>
     </Popover>
   );
-}
-
-/** File tabs keep their own save button, so this shows only while a download runs or its result is up. */
-export function BusyDownloadsButton(props: { className?: string; visible?: boolean }) {
-  const busy = useDownloadActivity((state) => state.finished !== null || Object.keys(state.active).length > 0);
-  return busy ? <DownloadsButton {...props} /> : null;
 }
