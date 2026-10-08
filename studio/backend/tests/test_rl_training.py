@@ -331,18 +331,16 @@ def test_request_refuses_rl_with_decision_training():
 
 
 def test_resume_scores_with_the_stored_reward_rules():
-    from routes.training import _resume_reward_specs
+    from routes.training import _stored_reward_specs
 
     rule = {"type": "exact_match", "compare_to": "answer"}
-    stored = {"reward_specs": [{"name": "exact-answer", "weight": 2.0, "rule": rule}]}
-    req = TrainingStartRequest(
-        **BASE, objective = "grpo", grpo_rewards = [{"name": "exact-answer", "weight": 3.0}]
-    )
-    assert _resume_reward_specs(req, stored) == [
-        {"name": "exact-answer", "weight": 3.0, "rule": rule}
-    ]
-    # A reward the stored run never had falls back to the library lookup.
-    other = TrainingStartRequest(
-        **BASE, objective = "grpo", grpo_rewards = [{"name": "numeric-close", "weight": 1.0}]
-    )
-    assert _resume_reward_specs(other, stored) == []
+    stored = {
+        "reward_specs": [
+            {"name": "exact-answer", "weight": 2.0, "rule": rule},
+            {"name": "broken", "weight": 1.0},
+        ]
+    }
+    assert _stored_reward_specs(stored) == {
+        "exact-answer": {"name": "exact-answer", "weight": 2.0, "rule": rule}
+    }
+    assert _stored_reward_specs({}) == {}

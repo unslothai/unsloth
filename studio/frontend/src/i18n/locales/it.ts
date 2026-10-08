@@ -4189,7 +4189,7 @@ export const it = {
       orpoHint: "Come DPO in un solo passaggio con un termine SFT, quindi funziona da un modello base.",
       grpoHint: "Generare più risposte per prompt e rafforzare quelle a cui le tue ricompense danno un punteggio più alto.",
       cptLocked: "Il pre-addestramento continuo addestra sempre con SFT.",
-      modelLocked: "I modelli di embedding e audio si addestrano solo con SFT.",
+      modelLocked: "DPO, ORPO e GRPO richiedono un dataset di testo e un modello di testo o vision-language.",
       macLocked: "L'addestramento per preferenze e RL non è ancora disponibile su Apple Silicon.",
     },
     dataset: {

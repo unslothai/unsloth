@@ -4147,7 +4147,7 @@ export const ptBR = {
       orpoHint: "Como o DPO em uma única passada com um termo SFT, então funciona a partir de um modelo base.",
       grpoHint: "Gerar várias respostas por prompt e reforçar as que suas recompensas pontuam mais alto.",
       cptLocked: "O pré-treinamento contínuo sempre treina com SFT.",
-      modelLocked: "Modelos de embedding e de áudio treinam apenas com SFT.",
+      modelLocked: "DPO, ORPO e GRPO precisam de um dataset de texto e de um modelo de texto ou de visão e linguagem.",
       macLocked: "O treinamento por preferências e RL ainda não está disponível no Apple Silicon.",
     },
     dataset: {

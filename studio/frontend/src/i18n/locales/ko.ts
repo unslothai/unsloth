@@ -4107,7 +4107,7 @@ export const ko = {
       orpoHint: "SFT 항이 포함된 DPO를 한 번에 수행하므로 베이스 모델에서도 작동합니다.",
       grpoHint: "프롬프트마다 여러 답변을 생성하고 보상 점수가 높은 답변을 강화합니다.",
       cptLocked: "지속 사전학습은 항상 SFT로 학습합니다.",
-      modelLocked: "임베딩 및 오디오 모델은 SFT로만 학습합니다.",
+      modelLocked: "DPO, ORPO, GRPO에는 텍스트 데이터셋과 텍스트 또는 비전-언어 모델이 필요합니다.",
       macLocked: "선호 학습과 RL은 아직 Apple Silicon에서 사용할 수 없습니다.",
     },
     dataset: {

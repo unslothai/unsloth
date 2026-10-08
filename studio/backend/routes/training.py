@@ -1382,19 +1382,17 @@ _RESUME_CACHE_FIELDS = (
 )
 
 
-def _resume_reward_specs(request: TrainingStartRequest, stored: dict) -> list[dict]:
-    """A resume continues the checkpoint's objective: the run's stored reward rules, not the
-    library's current ones, which may have been edited or deleted since."""
+def _stored_reward_specs(stored: dict) -> dict[str, dict]:
+    """name -> reward spec stored with a run. A resume scores with these, not the library's
+    current rules, which may have been edited or deleted since."""
     specs = stored.get("reward_specs")
     if not isinstance(specs, list):
-        return []
-    weights = {s.name: s.weight for s in request.grpo_rewards}
-    out = [
-        {**spec, "weight": weights[spec["name"]]}
+        return {}
+    return {
+        spec["name"]: spec
         for spec in specs
-        if isinstance(spec, dict) and spec.get("name") in weights and spec.get("rule")
-    ]
-    return out if len(out) == len(weights) else []
+        if isinstance(spec, dict) and isinstance(spec.get("name"), str) and spec.get("rule")
+    }
 
 
 _RESUME_CHECKPOINT_STRUCTURE_FIELDS = (
@@ -1470,6 +1468,13 @@ def _prepare_resume_resource_provenance(
                 detail = "The training type does not match the source run.",
             )
         request.training_type = stored_training_type
+    # The checkpoint's optimizer and trainer state belong to one loss.
+    stored_objective = stored.get("objective") or "sft"
+    if request.objective != stored_objective:
+        raise HTTPException(
+            status_code = 409,
+            detail = "The training objective does not match the source run.",
+        )
     for field in _RESUME_CHECKPOINT_STRUCTURE_FIELDS:
         if field not in stored:
             continue
@@ -1943,16 +1948,17 @@ async def start_training(
                 status_code = 400,
                 detail = f"{request.objective.upper()} is not available on Apple Silicon (MLX) yet.",
             )
-        if request.objective == "grpo" and resume_run:
-            reward_specs = _resume_reward_specs(request, training_run_config(resume_run))
-        if request.objective == "grpo" and not reward_specs:
+        if request.objective == "grpo":
             from core.training.rewards import RewardError, RewardNotFoundError, get_reward
-
+            stored_specs = (
+                _stored_reward_specs(training_run_config(resume_run)) if resume_run else {}
+            )
             # Resolved here, under the caller's account, and stored with the run: later edits to a
             # library reward do not change what this run says it trained with.
             try:
                 for selection in request.grpo_rewards:
-                    reward_specs.append({**get_reward(selection.name), "weight": selection.weight})
+                    spec = stored_specs.get(selection.name) or get_reward(selection.name)
+                    reward_specs.append({**spec, "weight": selection.weight})
             except RewardNotFoundError as exc:
                 raise HTTPException(status_code = 404, detail = str(exc)) from exc
             except RewardError as exc:

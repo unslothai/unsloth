@@ -129,3 +129,18 @@ test("embedding and audio models always start as SFT", async () => {
     "sft",
   );
 });
+
+test("image and audio datasets always start as SFT", async () => {
+  const { effectiveTrainingObjective } =
+    await import("../src/features/training/lib/rl-roles.ts");
+  for (const flags of [{ isDatasetImage: true }, { isDatasetAudio: true }]) {
+    assert.equal(
+      effectiveTrainingObjective({
+        modelType: "vision",
+        trainingObjective: "grpo",
+        ...flags,
+      }),
+      "sft",
+    );
+  }
+});

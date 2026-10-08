@@ -4238,7 +4238,7 @@ export const he = {
       orpoHint: "כמו DPO במעבר אחד עם רכיב SFT, ולכן עובד ממודל בסיס.",
       grpoHint: "יצירת כמה תשובות לכל הנחיה וחיזוק אלה שהתגמולים שלך מעניקים להן ציון גבוה יותר.",
       cptLocked: "אימון מקדים מתמשך (Continued Pretraining) מתאמן תמיד עם SFT.",
-      modelLocked: "מודלי הטמעה ושמע מתאמנים עם SFT בלבד.",
+      modelLocked: "DPO, ORPO ו-GRPO דורשים מערך נתונים טקסטואלי ומודל טקסט או מודל ראייה ושפה.",
       macLocked: "אימון העדפות ו-RL עדיין אינו זמין ב-Apple Silicon.",
     },
     dataset: {

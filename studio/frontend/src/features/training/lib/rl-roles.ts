@@ -5,13 +5,17 @@ import type { TrainingObjective } from "@/types/training";
 
 export type RlObjective = Exclude<TrainingObjective, "sft">;
 
-/** Decision, embedding and audio models train with SFT only; the backend refuses RL for them. */
+/** RL needs a text dataset and a text or vision-language model; the backend refuses the rest. */
 export function rlObjectiveSupported(s: {
   modelType: string | null;
   isEmbeddingModel?: boolean;
+  isDatasetImage?: boolean | null;
+  isDatasetAudio?: boolean;
 }): boolean {
   return (
     !s.isEmbeddingModel &&
+    !s.isDatasetImage &&
+    !s.isDatasetAudio &&
     s.modelType !== "decision" &&
     s.modelType !== "embeddings" &&
     s.modelType !== "audio"
@@ -22,6 +26,8 @@ export function rlObjectiveSupported(s: {
 export function effectiveTrainingObjective(s: {
   modelType: string | null;
   isEmbeddingModel?: boolean;
+  isDatasetImage?: boolean | null;
+  isDatasetAudio?: boolean;
   trainingObjective: TrainingObjective;
 }): TrainingObjective {
   return rlObjectiveSupported(s) ? s.trainingObjective : "sft";
