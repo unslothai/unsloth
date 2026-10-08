@@ -1440,33 +1440,37 @@ def _static_cache_bytes(model, input_ids, kwargs):
     if getattr(config, "is_encoder_decoder", False) or kwargs.get("past_key_values") is not None:
         return None
     text_config = config.get_text_config(decoder = True)
-    generation_config = kwargs.get("generation_config") or model.generation_config
+    # transformers fills a caller config's unset fields from the model's before its defaults.
+    configs = (kwargs.get("generation_config"), getattr(model, "generation_config", None))
+
+    def option(name, default = None):
+        if kwargs.get(name) is not None:
+            return kwargs[name]
+        for config in configs:
+            if getattr(config, name, None) is not None:
+                return getattr(config, name)
+        return default
+
     prompt = input_ids.shape[1]
-    max_new_tokens = kwargs.get(
-        "max_new_tokens", getattr(generation_config, "max_new_tokens", None)
-    )
+    max_new_tokens = option("max_new_tokens")
     if max_new_tokens is not None:
         length = prompt + max_new_tokens
     elif kwargs.get("max_length") is not None:
         length = kwargs["max_length"]
     else:
         # Upper bound of _prepare_generated_length: a default max_length counts new tokens.
-        max_length = getattr(generation_config, "max_length", None)
-        max_length = 20 if max_length is None else max_length
+        max_length = option("max_length", 20)
         length = max_length + prompt
         max_positions = getattr(text_config, "max_position_embeddings", None)
         if type(max_positions) is int and max_length <= max_positions:
             length = min(length, max_positions)
     if type(length) is not int:
         return None
-    length = max(length, getattr(model, "_previous_max_cache_length", -1))
+    # transformers sizes the cache max_length - 1: the last token is never cached.
+    length = max(length - 1, getattr(model, "_previous_max_cache_length", -1))
     if _compiles_decode(model):
         length = _decode_cache_bucket(length)
-    copies = max(
-        kwargs.get("num_beams", getattr(generation_config, "num_beams", 1)) or 1,
-        kwargs.get("num_return_sequences", getattr(generation_config, "num_return_sequences", 1))
-        or 1,
-    )
+    copies = max(option("num_beams", 1), option("num_return_sequences", 1))
     if _static_cache_preallocates():
         # Before transformers 4.56 constructing one allocates it, so count every layer as full.
         tokens = text_config.num_hidden_layers * length

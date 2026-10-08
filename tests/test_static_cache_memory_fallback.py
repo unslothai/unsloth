@@ -83,7 +83,7 @@ def test_estimate_matches_transformers_full_attention(batch):
     config = _llama_config()
     input_ids = torch.zeros(batch, 37, dtype = torch.long)
     need = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 91})
-    assert need == _real_static_cache_bytes(config, batch, 37 + 91, torch.bfloat16)
+    assert need == _real_static_cache_bytes(config, batch, 37 + 91 - 1, torch.bfloat16)
 
 
 def test_estimate_matches_transformers_sliding_window():
@@ -94,7 +94,7 @@ def test_estimate_matches_transformers_sliding_window():
     )
     input_ids = torch.zeros(1, 10, dtype = torch.long)
     need = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 100})
-    assert need == _real_static_cache_bytes(config, 1, 110, torch.bfloat16)
+    assert need == _real_static_cache_bytes(config, 1, 109, torch.bfloat16)
 
 
 def test_estimate_matches_transformers_sliding_window_without_layer_types():
@@ -113,7 +113,7 @@ def test_estimate_matches_transformers_sliding_window_without_layer_types():
     )
     input_ids = torch.zeros(1, 10, dtype = torch.long)
     need = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 100})
-    assert need == _real_static_cache_bytes(config, 1, 110, torch.bfloat16)
+    assert need == _real_static_cache_bytes(config, 1, 109, torch.bfloat16)
 
 
 def test_estimate_uses_mla_key_and_value_dims():
@@ -131,7 +131,7 @@ def test_estimate_uses_mla_key_and_value_dims():
     )
     input_ids = torch.zeros(1, 10, dtype = torch.long)
     need = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 90})
-    assert need == 1 * 4 * (48 + 16 + 32) * 2 * 100 * 3
+    assert need == 1 * 4 * (48 + 16 + 32) * 2 * 99 * 3
 
 
 def test_estimate_default_length_adds_the_prompt():
@@ -152,6 +152,21 @@ def test_estimate_default_length_capped_at_context():
     input_ids = torch.zeros(1, 500, dtype = torch.long)
     assert _static_cache_bytes(model, input_ids, {}) == _static_cache_bytes(
         model, torch.zeros(1, 1, dtype = torch.long), {"max_new_tokens": 4095}
+    )
+
+
+def test_partial_caller_config_inherits_the_model_length():
+    """A caller GenerationConfig that only sets sampling still gets the model's max_length."""
+    from transformers import GenerationConfig
+
+    config = _llama_config(max_position_embeddings = 131072)
+    model = _model(config)
+    model.generation_config.max_length = 131072
+    input_ids = torch.zeros(1, 10, dtype = torch.long)
+    caller = GenerationConfig(do_sample = True, temperature = 0.7)
+    caller.max_length = None
+    assert _static_cache_bytes(model, input_ids, {"generation_config": caller}) == (
+        _static_cache_bytes(model, torch.zeros(1, 1, dtype = torch.long), {"max_new_tokens": 131071})
     )
 
 
@@ -176,16 +191,16 @@ def test_legacy_static_cache_is_never_constructed(monkeypatch):
     config = _llama_config(sliding_window = 16, layer_types = ["sliding_attention"] * 4)
     input_ids = torch.zeros(1, 10, dtype = torch.long)
     need = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 90})
-    assert need == 1 * 2 * (32 + 32) * 2 * 100 * 4
+    assert need == 1 * 2 * (32 + 32) * 2 * 99 * 4
 
 
 def test_estimate_uses_the_compile_decode_bucket(monkeypatch):
     config = _llama_config()
     input_ids = torch.zeros(1, 1, dtype = torch.long)
-    plain = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 1024})
+    plain = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 1026})
     monkeypatch.setattr(vision, "_compiles_decode", lambda model: True)
-    bucketed = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 1024})
-    assert bucketed * 1025 == plain * 2048
+    bucketed = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 1026})
+    assert bucketed * 1026 == plain * 2048
 
 
 def test_estimate_counts_beams_and_previous_length():
@@ -195,7 +210,7 @@ def test_estimate_counts_beams_and_previous_length():
     one = _static_cache_bytes(model, input_ids, {"max_new_tokens": 90})
     assert _static_cache_bytes(model, input_ids, {"max_new_tokens": 90, "num_beams": 4}) == 4 * one
     # transformers reuses the largest length an earlier call allocated
-    model._previous_max_cache_length = 1000
+    model._previous_max_cache_length = 990
     assert _static_cache_bytes(model, input_ids, {"max_new_tokens": 90}) == 10 * one
 
 
