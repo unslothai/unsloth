@@ -345,11 +345,8 @@ export async function deleteChatItems(
     cancelIfRunning(id);
   }
 
-  // Drop saved composer drafts and branch heads so deleted threads leave no orphan keys.
-  for (const id of threadIds) {
-    clearComposerDraft(id);
-    clearBranchHead(id);
-  }
+  // Drop saved composer drafts so deleted threads leave no orphan keys.
+  for (const id of threadIds) clearComposerDraft(id);
 
   // Optimistic tombstone: hide immediately; roll back on backend error.
   markChatThreadsDeleted(threadIds);
@@ -362,6 +359,8 @@ export async function deleteChatItems(
 
   try {
     const kept = await deleteStoredChatThreads(threadIds, args);
+    // Only once the delete holds: a rejected one brings the chat back, and it should reopen where it was.
+    for (const id of threadIds) clearBranchHead(id);
     // Whether or not deletion was asked for: a sandbox that could not be removed leaves files with
     // no card to reach them from, and the chat is already gone, so this offer is the only notice
     // and the only retry.

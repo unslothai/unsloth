@@ -186,7 +186,8 @@ import {
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
-import { savedBranchHead, writeBranchHead } from "./utils/branch-head";
+import { useBranchHeadRecorder } from "./hooks/use-branch-head-recorder";
+import { savedBranchHead } from "./utils/branch-head";
 import {
   createParentResolver,
   orderBySelectedBranch,
@@ -200,7 +201,6 @@ import {
   getStoredChatThread,
   getStoredChatThreadReadResult,
   isExpectedBackgroundChatStorageError,
-  isThreadIncognito,
   listStoredChatMessages,
   readStoredChatMessages,
   listStoredChatThreads,
@@ -3624,19 +3624,9 @@ function ActiveBranchRegistrar({
   return null;
 }
 
-// Saves the branch on screen so the history loader reopens it. Every pane, hidden ones included:
-// a reply streaming in the background moves the head too. An empty thread is still loading.
-// `incognito` reruns it when a temporary chat is saved, since saving moves no head.
+// Every pane, hidden ones included: a reply streaming in the background moves the head too.
 function BranchHeadRecorder(): ReactElement | null {
-  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
-  const headId = useAuiState(({ thread }) => thread.messages.at(-1)?.id);
-  const incognito = useChatRuntimeStore((s) => s.incognito);
-
-  useEffect(() => {
-    if (!remoteId || !headId || isThreadIncognito(remoteId)) return;
-    writeBranchHead(remoteId, headId);
-  }, [headId, incognito, remoteId]);
-
+  useBranchHeadRecorder();
   return null;
 }
 
