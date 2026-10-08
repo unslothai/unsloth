@@ -3064,6 +3064,28 @@ def _bnb_bits_requested(quantization_config):
     return None
 
 
+def refuse_fast_inference_load_in_8bit(
+    load_in_8bit,
+    model_config = None,
+    quantization_config = None,
+):
+    """Refuse bnb 8-bit (flag, caller config or checkpoint config) under fast_inference: no 8-bit vLLM path."""
+    checkpoint_config = getattr(model_config, "quantization_config", None)
+    if not (
+        load_in_8bit
+        or _bnb_bits_requested(quantization_config) == 8
+        or _bnb_bits_requested(checkpoint_config) == 8
+    ):
+        return
+    raise NotImplementedError(
+        "Unsloth: fast_inference = True does not support bitsandbytes 8-bit "
+        "(load_in_8bit = True or an 8-bit bitsandbytes checkpoint): vLLM would "
+        "not run in 8-bit. Use load_in_4bit = True or 16-bit "
+        "(load_in_4bit = False, load_in_8bit = False) with fast_inference, or set "
+        "fast_inference = False to keep load_in_8bit."
+    )
+
+
 def warn_if_bitsandbytes_quantized_nothing(
     model,
     quantization_config,

@@ -3670,6 +3670,13 @@ class FastBaseModel:
                     )
 
                 from unsloth_zoo.utils import get_quant_type
+                from .loader_utils import refuse_fast_inference_load_in_8bit
+
+                refuse_fast_inference_load_in_8bit(
+                    load_in_8bit,
+                    model_config,
+                    kwargs.get("quantization_config", None),
+                )
 
                 # Mirrors load_vllm's bnb loader test, so prequantized bnb-4bit is refused too.
                 if (
