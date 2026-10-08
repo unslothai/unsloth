@@ -236,10 +236,11 @@ def raise_if_bnb_cpu_spill(
     quantization_config = None,
     max_memory = None,
 ):
-    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error, and for a caller's own dict map (its CPU entries are a choice, and transformers' advice is the relevant one), so the caller re-raises it unchanged. `offload_layers`, `quantization_config` and `max_memory` are what the caller passed, before the loader added its own."""
+    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error, and for a caller's own dict or CPU map (that placement is a choice, and transformers' advice is the relevant one), so the caller re-raises it unchanged. `offload_layers`, `quantization_config` and `max_memory` are what the caller passed, before the loader added its own."""
     if not isinstance(error, ValueError) or not str(error).startswith(_BNB_CPU_SPILL_PREFIX):
         return
-    if isinstance(device_map, dict):
+    # On transformers 4.x an all-CPU map raises this too unless bitsandbytes' multi-backend is on.
+    if isinstance(device_map, dict) or str(device_map).split(":")[0] in ("cpu", "disk"):
         return
     free = ""
     try:

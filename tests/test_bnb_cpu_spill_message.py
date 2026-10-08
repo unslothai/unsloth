@@ -99,6 +99,13 @@ def test_a_callers_own_dict_map_keeps_the_transformers_error():
     assert raise_if_bnb_cpu_spill(original, "m", device_map = {"model": 0, "lm_head": "cpu"}) is None
 
 
+@pytest.mark.parametrize("device_map", ["cpu", "cpu:0"])
+def test_a_callers_cpu_map_keeps_the_transformers_error(device_map):
+    import torch
+    assert raise_if_bnb_cpu_spill(_spill_error(), "m", device_map = device_map) is None
+    assert raise_if_bnb_cpu_spill(_spill_error(), "m", device_map = torch.device(device_map)) is None
+
+
 @pytest.mark.parametrize(
     "error",
     [ValueError("Unrecognized configuration class"), RuntimeError(_BNB_CPU_SPILL_PREFIX)],
