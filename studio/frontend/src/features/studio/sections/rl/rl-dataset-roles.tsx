@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { getAuthSessionEpoch } from "@/features/auth";
 import { getHfToken } from "@/features/hub";
 import {
   checkDatasetFormat,
@@ -140,6 +141,9 @@ export function RlDatasetRoles({
     // Picking a dataset changes the split a moment later; a reply for the old split
     // ("Bad split: train") must not land on top of the newer one.
     const request = ++latestRequest.current;
+    const epoch = getAuthSessionEpoch();
+    const current = () =>
+      request === latestRequest.current && epoch === getAuthSessionEpoch();
     setLoading(true);
     setError(null);
     try {
@@ -150,18 +154,18 @@ export function RlDatasetRoles({
         split: datasetSplit,
         isVlm: false,
       });
-      if (request === latestRequest.current) {
+      if (current()) {
         setColumns(res.columns);
         setPreviewRow(res.preview_samples?.[0] ?? null);
       }
     } catch (err) {
-      if (request === latestRequest.current) {
+      if (current()) {
         setColumns(null);
         setPreviewRow(null);
         setError(err instanceof Error ? err.message : String(err));
       }
     } finally {
-      if (request === latestRequest.current) {
+      if (current()) {
         setLoading(false);
       }
     }
