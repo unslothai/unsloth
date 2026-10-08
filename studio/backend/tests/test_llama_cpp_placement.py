@@ -4044,6 +4044,30 @@ def test_an_inherited_expert_offload_raises_the_micro_batch(
 
 
 @pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        (["-ot", r"blk\.\d+\.ffn_.*_exps\.=CUDA0"], {}, []),
+        ([r"--override-tensor=token_embd\.weight=CUDA0"], {}, []),
+        ([], {"LLAMA_ARG_OVERRIDE_TENSOR": r"blk\.\d+\.ffn_.*_exps\.=CUDA0"}, []),
+        (["-ot", r"blk\.1\.ffn_.*_exps\.=CUDA0,blk\.2\.ffn_.*_exps\.=CPU"], {}, ["2048"]),
+        ([], {"LLAMA_ARG_OVERRIDE_TENSOR": r"blk\.\d+\.ffn_.*_exps\.=CPU"}, ["2048"]),
+    ],
+    ids = ["ot_gpu", "ot_gpu_inline", "env_ot_gpu", "ot_mixed", "env_ot_cpu"],
+)
+def test_an_override_raises_the_micro_batch_only_when_it_targets_the_host(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    # A resident model, so --fit stays off and only the override can move experts.
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, gguf = _moe_backend(tmp_path, **_RESIDENT)
+    cmd = _launch(backend, gguf, extra_args = extra_args)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "off", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize(
     "load_kwargs, env, expect_ub, expect_b",
     [
         (dict(extra_args = ["-ub", "1024"]), {}, ["1024"], []),

@@ -6956,6 +6956,46 @@ def _moe_spill_batch_ubatch(
     return n_batch, _MOE_SPILL_N_UBATCH
 
 
+def _override_targets_host(value: str) -> bool:
+    """Whether an ``--override-tensor`` value sends any tensor to a host buffer
+    (``CPU``, ``CPU_REPACK``, ``CUDA_Host``, ...) rather than only to GPUs."""
+    targets = [
+        part.rsplit("=", 1)[-1].strip().lower() for part in str(value).split(",") if "=" in part
+    ]
+    return any(t.startswith("cpu") or t.endswith("_host") for t in targets)
+
+
+def _expert_spill_places_tensors_on_cpu(
+    extra_args: Optional[Iterable[str]] = None, env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """``_args_place_tensors_on_cpu`` or ``_env_places_tensors_on_cpu``, for the
+    expert-spill micro-batch raise.
+
+    Those count any ``-ot`` as host placement, which is right for the residency gates
+    they serve. Here an override only counts when it targets a host buffer:
+    ``-ot exps=CUDA0`` keeps the weights on a GPU, so there is no copy for the larger
+    micro-batch to amortise, and on a ``--fit off`` launch its larger compute buffer
+    would go unpriced.
+    """
+    args = [str(a) for a in extra_args or ()]
+    kept: list[str] = []
+    i = 0
+    while i < len(args):
+        if _flag_name(args[i]) in {"-ot", "--override-tensor"}:
+            _, eq, inline = args[i].partition("=")
+            step = 1 if eq else 2
+            if _override_targets_host(inline if eq else (args[i + 1] if i + 1 < len(args) else "")):
+                kept.extend(args[i : i + step])
+            i += step
+            continue
+        kept.append(args[i])
+        i += 1
+    source_env = dict(os.environ if env is None else env)
+    if not _override_targets_host(source_env.get("LLAMA_ARG_OVERRIDE_TENSOR") or ""):
+        source_env.pop("LLAMA_ARG_OVERRIDE_TENSOR", None)
+    return _args_place_tensors_on_cpu(kept) or _env_places_tensors_on_cpu(source_env)
+
+
 def _build_ngram_mod_flags(
     caps: Optional[dict],
     n_match: int = 24,
@@ -27050,14 +27090,11 @@ class LlamaCppBackend:
                     # is measured by llama.cpp's fitter at the emitted micro-batch.
                     # Manual pinned layers (--fit off) are the user's placement: an
                     # unpriced larger buffer there could OOM, so they are left alone.
+                    # For the same reason an -ot that only targets GPUs does not count.
                     _moe_experts_on_host = bool(
                         not (gpu_memory_mode == "manual" and gpu_layers >= 0)
                         and not intent.cpu_fallback
-                        and (
-                            use_fit
-                            or _args_place_tensors_on_cpu(extra_args)
-                            or _env_places_tensors_on_cpu(os.environ)
-                        )
+                        and (use_fit or _expert_spill_places_tensors_on_cpu(extra_args, os.environ))
                     )
                     _spill_n_batch, _spill_n_ubatch = _moe_spill_batch_ubatch(
                         n_batch,
