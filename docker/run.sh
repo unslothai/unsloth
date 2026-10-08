@@ -424,7 +424,7 @@ if [[ $# -gt 0 ]]; then
                             -c | -) break ;;
                             -m)
                                 case "${_args[$((_i + 1))]:-}" in
-                                    accelerate.commands.launch | deepspeed.launcher.runner | torch.distributed.run)
+                                    accelerate.commands.launch | deepspeed.launcher.runner | torch.distributed.launch | torch.distributed.run)
                                         _runner=launcher
                                         _scan_from=$((_i + 2))
                                         ;;

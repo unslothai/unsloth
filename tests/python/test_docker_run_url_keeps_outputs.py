@@ -353,6 +353,13 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
             "--multi_gpu",
             "/workspace/host/train.py",
         ),
+        (
+            "python",
+            "-m",
+            "torch.distributed.launch",
+            "--nproc_per_node=2",
+            "/workspace/host/train.py",
+        ),
         ("bash", "/workspace/host/train"),
         ("bash", "--noprofile", "/workspace/host/train"),
         ("/workspace/host/train.sh",),
