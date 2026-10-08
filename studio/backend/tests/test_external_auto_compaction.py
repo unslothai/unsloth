@@ -404,8 +404,6 @@ def test_external_fit_reserves_tool_schemas():
 
 
 class _ServedWindowHandler(_Handler):
-    """An OpenAI-compatible server that reports its window the way a self-hosted engine does."""
-
     models: list[dict] = []
     props: dict | None = None
     key: str | None = None
@@ -435,7 +433,7 @@ def _served(**attrs):
 
 
 def _llama_server():
-    # llama-server -c 16384 -np 2: n_ctx is the per-slot window, n_ctx_train the trained maximum.
+    # llama-server -c 16384 -np 2 reports n_ctx per slot and n_ctx_train as the trained maximum.
     return _served(
         models = [
             {
@@ -547,7 +545,7 @@ def test_a_tool_enabled_llama_server_chat_compacts_to_the_reported_window(monkey
     async def connected(self) -> bool:
         return False
 
-    # The tool loop polls for a disconnect and would stop before reaching the provider.
+    # the tool loop polls for disconnects and would stop before reaching the provider.
     monkeypatch.setattr(Request, "is_disconnected", connected)
     _, sent = _proxy(
         "llama_cpp",
@@ -581,12 +579,12 @@ def test_an_unauthorized_read_does_not_hide_the_window_from_a_valid_key():
 
         _run(go)
     assert windows == [None, 8_192, None, 8_192]
-    # Each credential is read once, then served from the cache.
+    # each credential is read once, then served from the cache.
     assert len(server.gets) == 2
 
 
 def test_a_refused_connection_is_not_remembered():
-    # A server that is down or restarting must be read again on the next turn once it is back up.
+    # a down or restarting server must be queried again on the next turn.
     ep_mod._served_windows.clear()
     windows: list = []
 

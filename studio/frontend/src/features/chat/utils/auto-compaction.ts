@@ -26,8 +26,7 @@ export function ggufCompactionRequestFields(options: {
   return { context_overflow: "truncate_oldest" };
 }
 
-// Share of the window left free when compaction starts. Mirrored by _EXTERNAL_COMPACTION_HEADROOM in
-// routes/inference.py, which derives the threshold from a self-hosted server's reported window.
+// leaves 25% of the window free, matching _EXTERNAL_COMPACTION_HEADROOM for self-hosted servers
 const API_COMPACTION_HEADROOM = 0.25;
 // request schema ceiling for compaction_threshold
 const API_COMPACTION_THRESHOLD_MAX = 2_000_000;
@@ -42,7 +41,7 @@ export function apiCompactionRequestFields(options: {
 } {
   const { autoCompactEnabled, contextLength } = options;
   if (!autoCompactEnabled) return {};
-  // No catalogued window: a self-hosted server reports the one it runs with, so the backend reads it there.
+  // without a catalogued window, the backend reads the self-hosted server's reported window
   if (!contextLength || contextLength <= 0) return { context_overflow: "truncate_oldest" };
   return {
     context_overflow: "truncate_oldest",

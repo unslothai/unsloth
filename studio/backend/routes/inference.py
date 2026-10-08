@@ -27779,8 +27779,7 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
             pass
 
 
-# Mirror API_COMPACTION_HEADROOM and API_COMPACTION_THRESHOLD_MAX in the frontend's auto-compaction.ts, which
-# derives the threshold itself when the model catalogue publishes a window.
+# keep these limits aligned with auto-compaction.ts, which derives catalogued-window thresholds.
 _EXTERNAL_COMPACTION_HEADROOM = 0.25
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
@@ -28652,15 +28651,14 @@ async def _proxy_to_external_provider(
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
     _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
-    # Only an explicit truncate_oldest, not the UNSLOTH_CONTEXT_OVERFLOW default: Studio sends nothing with
-    # Auto-compact off, so the default would otherwise compact behind the switch.
+    # UNSLOTH_CONTEXT_OVERFLOW must not bypass Studio's auto-compact switch.
     if (
         managed is None
         and payload.context_overflow == "truncate_oldest"
         and not payload.compaction_threshold
         and not _provider_compacts
     ):
-        # No catalogued window: a self-hosted server reports the one it was started with.
+        # a self-hosted server reports its startup window when the catalog has none.
         _served_window = payload.context_window or await client.served_context_window(model)
         if _served_window:
             payload = payload.model_copy(

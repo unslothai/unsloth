@@ -186,7 +186,7 @@ test("a self-hosted connection with no catalogued window still asks the server t
   for (const providerType of ["custom", "llama_cpp", "vllm"]) {
     const contextLength = resolveModelCatalogEntry(providerType, "qwen3-next")?.contextLength;
     assert.equal(contextLength ?? null, null, providerType);
-    // The backend reads the window the server was started with and supplies the threshold.
+    // the backend derives the threshold from the self-hosted server's reported window
     assert.deepEqual(
       apiCompactionRequestFields({ autoCompactEnabled: true, contextLength }),
       { context_overflow: "truncate_oldest" },
