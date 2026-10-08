@@ -655,7 +655,11 @@ _FRAME_HTML = r"""<!doctype html>
           }
           else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
           else if (data.command === "annotateNumbers") annotation ? annotation.number(data.numbers) : (numbers = data.numbers);
-          else if (data.command === "zoom") applyZoom(data.value);
+          else if (data.command === "zoom") {
+            applyZoom(data.value);
+            // A zoom fires no scroll or resize, so marks are redrawn here.
+            annotation?.redraw();
+          }
           else if (data.command === "mute") setMuted(data.on === true);
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
@@ -805,10 +809,11 @@ _ANNOTATE_JS = r"""
               const k = zoomOf() / zoom;
               return { left: box.left + PAD + dx * k, top: box.top + PAD + dy * k, width: width * k, height: height * k };
             }
-            const { element, dx, dy, width, height } = mark.anchor;
+            const { element, dx, dy, width, height, zoom } = mark.anchor;
             if (!element.isConnected) return null;
             const rect = element.getBoundingClientRect();
-            return { left: rect.left + dx, top: rect.top + dy, width, height };
+            const k = zoomOf() / zoom;
+            return { left: rect.left + dx * k, top: rect.top + dy * k, width: width * k, height: height * k };
           };
           const boxOf = (ranges) => {
             let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -925,7 +930,7 @@ _ANNOTATE_JS = r"""
           const addArea = (area) => {
             const element = anchorOf(area);
             const rect = element.getBoundingClientRect();
-            const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height };
+            const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height, zoom: zoomOf() };
             createMark({ anchor }, { quote: "", image: false, alt: "", area: true });
           };
           // The panel numbers the marks, matching the order they take in the chat.
@@ -1046,7 +1051,7 @@ _ANNOTATE_JS = r"""
             pending = press = hover = lastMove = overlay = root = null;
             marks.clear();
           };
-          return { start, stop, forget, number };
+          return { start, stop, forget, number, redraw };
 """
 
 
