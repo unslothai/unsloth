@@ -99,6 +99,7 @@ test("normalize maps every snake_case field onto its camelCase name", () => {
       { address: "64.227.100.5", public: true },
       { address: "100.101.102.103", public: false },
     ],
+    configuredPublicAddresses: [],
     managedBy: "settings",
     canStart: false,
     canStop: true,
@@ -387,6 +388,19 @@ test("a saved address that is not up right now is still offered", () => {
     { address: TAILSCALE, public: false, detected: true },
     { address: "10.9.9.9", public: false, detected: false },
   ]);
+});
+
+test("a saved public address that is down keeps its public warning", () => {
+  const s = withAddresses(["203.0.114.7"], {
+    // biome-ignore lint/style/useNamingConvention: API schema
+    configured_public_addresses: ["203.0.114.7"],
+  });
+  assert.deepEqual(lanAccessAddressChoices(s, []).at(-1), {
+    address: "203.0.114.7",
+    public: true,
+    detected: false,
+  });
+  assert.deepEqual(withAddresses(null).configuredPublicAddresses, []);
 });
 
 test("address selections compare as sets, with Automatic distinct from any list", () => {

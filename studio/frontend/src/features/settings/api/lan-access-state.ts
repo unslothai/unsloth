@@ -21,6 +21,7 @@ export type LanAccessStatus = {
   // null is Automatic: every detected address, public ones included
   configuredAddresses: string[] | null;
   availableAddresses: LanAccessAddress[];
+  configuredPublicAddresses: string[];
   managedBy: LanAccessOwner;
   canStart: boolean;
   canStop: boolean;
@@ -50,6 +51,8 @@ export type ApiLanAccessStatus = {
   configured_addresses?: string[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   available_addresses?: LanAccessAddress[] | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  configured_public_addresses?: string[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   managed_by?: LanAccessOwner;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -115,6 +118,11 @@ export function normalizeLanAccessStatus(
         )
       : null,
     availableAddresses: normalizeAddresses(status.available_addresses),
+    configuredPublicAddresses: Array.isArray(status.configured_public_addresses)
+      ? status.configured_public_addresses.filter(
+          (address) => typeof address === "string",
+        )
+      : [],
     managedBy: status.managed_by ?? null,
     canStart: status.can_start,
     canStop: status.can_stop,
@@ -198,7 +206,11 @@ export function lanAccessAddressChoices(
   }));
   for (const address of [...(status?.configuredAddresses ?? []), ...selected]) {
     if (!choices.some((choice) => choice.address === address)) {
-      choices.push({ address, public: false, detected: false });
+      choices.push({
+        address,
+        public: status?.configuredPublicAddresses.includes(address) ?? false,
+        detected: false,
+      });
     }
   }
   return choices;

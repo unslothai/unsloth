@@ -335,6 +335,11 @@ def _available_lan_addresses() -> list[dict]:
         return []
 
 
+def _public_lan_addresses(addresses) -> list[str]:
+    from lan_access import is_public_address
+    return [address for address in addresses if is_public_address(address)]
+
+
 def save_lan_access_port(app, port: Optional[int]) -> dict:
     with _management_lock:
         status = lan_access_status(app)
@@ -524,6 +529,8 @@ def lan_access_status(app) -> dict:
         if configured_addresses is not None
         else None,
         "available_addresses": [] if launch_managed else _available_lan_addresses(),
+        # a saved address that is down still needs its public warning
+        "configured_public_addresses": _public_lan_addresses(configured_addresses or ()),
         "active_port": active_port,
         "managed_by": managed_by,
         "can_start": controllable and not running,

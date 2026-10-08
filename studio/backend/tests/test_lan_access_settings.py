@@ -276,6 +276,16 @@ def test_status_offers_every_detected_address_and_flags_the_public_ones(monkeypa
     )
 
 
+def test_status_flags_saved_public_addresses_even_when_they_are_down(monkeypatch, stored_settings):
+    monkeypatch.setattr(lan_access, "detect_lan_addresses", lambda _ip_version = 4: [])
+    stored_settings[lan_settings.LAN_ACCESS_ADDRESSES_KEY] = ["64.227.100.5", "192.168.1.24"]
+    status = lan_settings.lan_access_status(_app())
+    assert status["configured_public_addresses"] == ["64.227.100.5"]
+    assert routes.LanAccessResponse(**status).configured_public_addresses == ["64.227.100.5"]
+    stored_settings.pop(lan_settings.LAN_ACCESS_ADDRESSES_KEY)
+    assert lan_settings.lan_access_status(_app())["configured_public_addresses"] == []
+
+
 def test_status_survives_a_failing_address_detection(monkeypatch):
     def _broken(_ip_version = 4):
         raise RuntimeError("psutil exploded")
