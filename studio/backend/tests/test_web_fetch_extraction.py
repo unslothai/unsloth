@@ -2154,7 +2154,13 @@ def test_table_spans_stop_at_row_groups_tables_and_long_cells():
     assert rows(nested)[-1] == "| T2 | S2 |"
     to_group_end = "<table><tr><th>G</th><th>N</th></tr><tbody><tr><th rowspan=0>g</th><td>1</td></tr><tr><td>2</td></tr></tbody><tbody><tr><td>h</td><td>3</td></tr></tbody></table>"
     assert rows(to_group_end)[-3:] == ["| g | 1 |", "| g | 2 |", "| h | 3 |"]
-    sidebar = "<table><tr><td rowspan=5>" + "Article body text. " * 120 + "</td><td>Home</td></tr>" + "<tr><td>Link</td></tr>" * 4 + "</table>"
+    sidebar = (
+        "<table><tr><td rowspan=5>"
+        + "Article body text. " * 120
+        + "</td><td>Home</td></tr>"
+        + "<tr><td>Link</td></tr>" * 4
+        + "</table>"
+    )
     assert html_to_markdown(sidebar).count("Article body text.") == 120
 
 
