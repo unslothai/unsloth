@@ -45,7 +45,13 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
 
-from .diffusion_content import assert_local_pick_is_dit, content_variant_hint
+from .diffusion_content import (
+    assert_local_pick_is_dit,
+    content_variant_hint,
+    local_pick_file,
+    whole_pipeline_gguf_family,
+)
+from .diffusion_gguf_pipeline import load_whole_pipeline_gguf, whole_pipeline_gguf_resident_mib
 from .diffusion_families import (
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
@@ -1556,6 +1562,31 @@ def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
             continue
         state_dict[name] = have.reshape(want_shape)
     return state_dict
+
+
+def _generation_defaults_for(
+    repo_id: Optional[str], gguf_filename: Optional[str], base_repo: Optional[str]
+) -> Optional[dict[str, float]]:
+    """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
+    schnell), so the Images form can match it."""
+    try:
+        steps, guidance = default_generation_params(
+            gguf_filename, content_variant_hint(repo_id, gguf_filename), repo_id, base_repo
+        )
+    except Exception:  # noqa: BLE001 - status must not fail on a recipe lookup
+        return None
+    return {"steps": int(steps), "guidance": float(guidance)}
+
+
+_WHOLE_PIPELINE_GGUF_LORA_MSG = (
+    "LoRA is not available on a whole-pipeline GGUF: its UNet runs as the stored GGUF weights, which cannot carry "
+    "adapters. Load the .safetensors checkpoint to use a LoRA, or clear the LoRA selection."
+)
+
+
+def _whole_pipeline_gguf_pick(repo_id: Optional[str], gguf_filename: Optional[str]) -> bool:
+    """True when the pick is an on-disk GGUF carrying a whole single-file pipeline (UNet + text encoders + VAE)."""
+    return whole_pipeline_gguf_family(local_pick_file(repo_id, gguf_filename)) is not None
 
 
 def _dequantize_gguf_outside_linears(
@@ -3203,11 +3234,17 @@ class DiffusionBackend:
 
         if not family_buildable_here(fam, model_kind = kind):
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
-        # Families whose single file IS the whole pipeline have no GGUF path; reject before eviction
-        if kind == "gguf" and fam.single_file_is_pipeline:
+        # Whole-pipeline families take a GGUF only when it is whole too (stable-diffusion.cpp ``convert``).
+        if (
+            kind == "gguf"
+            and fam.single_file_is_pipeline
+            and not _whole_pipeline_gguf_pick(repo_id, gguf_filename)
+        ):
             raise ValueError(
-                f"'{fam.name}' checkpoints are whole-pipeline single files and have no GGUF "
-                f"transformer variant; load the .safetensors pipeline instead of a GGUF."
+                f"'{fam.name}' checkpoints are whole-pipeline single files, so a GGUF loads only when it "
+                f"also carries the text encoders and VAE under the checkpoint's own tensor names (a current "
+                f"stable-diffusion.cpp convert of the checkpoint, on disk). Load the .safetensors checkpoint, or "
+                f"such a GGUF, instead."
             )
         # A multi-denoiser family (Ideogram 4) has no transformer-only path; reject before eviction
         if kind in ("gguf", "single_file") and fam.pipeline_only:
@@ -3232,7 +3269,7 @@ class DiffusionBackend:
                 f"base_repo is restricted to unsloth/* repos (or a local path); got '{base_repo}'."
             )
         # A local base_repo loads as a full pipeline; reject a non-pipeline one before eviction
-        whole_file = kind == "single_file" and fam.single_file_is_pipeline
+        whole_file = kind in ("single_file", "gguf") and fam.single_file_is_pipeline
         excluded = (
             (fam.denoiser_attr,) if kind in ("gguf", "single_file") and not whole_file else ()
         )
@@ -3379,6 +3416,12 @@ class DiffusionBackend:
             text_encoder_files = text_encoder_files,
             vae_file = vae_file,
         )
+        if (
+            _has_active_lora(loras)
+            and getattr(fam, "single_file_is_pipeline", False)
+            and resolve_model_kind(gguf_filename, model_kind) == "gguf"
+        ):
+            raise ValueError(_WHOLE_PIPELINE_GGUF_LORA_MSG)
         # Refuse an EXPLICIT precision this host can never honor BEFORE the load starts, so the route answers 409 with
         # the reason instead of evicting the resident model, downloading several GB and only then failing. The
         # declines that need the real footprint can only be found mid-load and surface through load-progress.
@@ -4519,8 +4562,8 @@ class DiffusionBackend:
                         if s.rfilename == gguf_filename
                     }
                 _record_revision(revisions_out, repo_id, info)
-            # A whole-pipeline single file (SDXL) needs only the base's config/tokenizer, not its weights.
-            if kind == "single_file" and single_file_is_pipeline:
+            # A whole-pipeline single file (SDXL, or its GGUF) needs only the base's config/tokenizer, not its weights.
+            if kind in ("single_file", "gguf") and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
             else:
 
@@ -6017,6 +6060,11 @@ class DiffusionBackend:
                         speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
                     )
                     transformer_quant = "off" if speed_off else TQ_AUTO
+                    if kind == "gguf" and fam.single_file_is_pipeline:
+                        # A whole-pipeline GGUF (SDXL) has no dense twin in the base repo: its UNet runs as stored.
+                        if _has_active_lora(loras):
+                            raise ValueError(_WHOLE_PIPELINE_GGUF_LORA_MSG)
+                        transformer_quant = "off"
                 # The one case that must fail closed: a named scheme (not auto, not off). Normalized here so "FP8" and
                 # "fp8" refuse identically; a bogus value already raised above.
                 transformer_quant_pinned = (
@@ -7089,9 +7137,9 @@ class DiffusionBackend:
                                         logger,
                                         _load_token,
                                     )
-                        elif kind == "single_file" and fam.single_file_is_pipeline:
+                        elif kind in ("single_file", "gguf") and fam.single_file_is_pipeline:
                             # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline
-                            # class with ``config`` on the base repo.
+                            # class with ``config`` on the base repo. Its GGUF (validated whole) loads the same way.
                             sf_pipe_kwargs: dict[str, Any] = {
                                 "local_files_only": local_files_only,
                                 "torch_dtype": dtype,
@@ -7107,7 +7155,23 @@ class DiffusionBackend:
                                     "A ComfyUI-quantized checkpoint holds only a denoiser; this family's single "
                                     "file is a whole pipeline, so it cannot be loaded here."
                                 )
-                            pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
+                            if kind == "gguf":
+                                pipe = load_whole_pipeline_gguf(
+                                    pipeline_cls,
+                                    getattr(diffusers, fam.transformer_class),
+                                    single_file_path,
+                                    sf_pipe_kwargs,
+                                    dtype = dtype,
+                                    denoiser_attr = fam.denoiser_attr,
+                                    logger = logger,
+                                )
+                                _dequantize_gguf_outside_linears(
+                                    getattr(pipe, fam.denoiser_attr), dtype, logger
+                                )
+                            else:
+                                pipe = pipeline_cls.from_single_file(
+                                    single_file_path, **sf_pipe_kwargs
+                                )
                         else:
                             # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
                             sf_kwargs: dict[str, Any] = {
@@ -8936,7 +9000,7 @@ class DiffusionBackend:
             # is read for config only, but the plan still adds the base's cached companion weights, so a user who once
             # loaded the full pipeline has those bytes counted twice. Harmless as an offload hint, a rejected load as
             # a hard refusal.
-            if kind == "single_file" and getattr(fam, "single_file_is_pipeline", False):
+            if kind in ("single_file", "gguf") and getattr(fam, "single_file_is_pipeline", False):
                 companion = plan.estimates.get("companion_dense_mib")
                 current = plan.estimates.get("model_dense_mib")
                 if companion and current is not None and int(companion) < int(current):
@@ -9394,6 +9458,11 @@ class DiffusionBackend:
                     )
                     if _comfy_mib is not None:
                         transformer_resident = _comfy_mib
+            elif getattr(fam, "single_file_is_pipeline", False):
+                # Only the denoiser's linears stay packed; the text encoders, VAE and the rest load dense.
+                transformer_resident = whole_pipeline_gguf_resident_mib(
+                    single_file_path, dense_bytes = _float_load_itemsize(load_dtype) or 2
+                ) or estimate_gguf_resident_mib(file_size_mib(single_file_path))
             else:
                 transformer_resident = estimate_gguf_resident_mib(file_size_mib(single_file_path))
             # Companions (VAE + text encoders) load near on-disk size; sum the base-repo cache, or a LOCAL base's
@@ -11258,6 +11327,7 @@ class DiffusionBackend:
                 "supports_lora": False,
                 "supports_controlnet": False,
                 "resolved": None,
+                "generation_defaults": None,
             }
         from core.inference import diffusion_controlnet, diffusion_lora
         from hub.utils.gguf import extract_quant_token
@@ -11296,6 +11366,9 @@ class DiffusionBackend:
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": static_skip_stats(state.pipe),
             "resolved": resolved,
+            "generation_defaults": _generation_defaults_for(
+                state.repo_id, state.gguf_filename, state.base_repo
+            ),
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "supports_negative_prompt": state.family.uses_negative_prompt,
