@@ -60,8 +60,9 @@ const ROLE_REMAP: Record<string, Record<string, string>> = {
 type AttemptPhase = "preflight" | "transport" | "finished";
 
 function captureTrainingStartInputs(config: TrainingConfigState) {
+  // No hardware info: /api/system answering mid-start is not a user edit.
   return createTrainingStartInputIdentity(
-    buildTrainingStartPayload(config, null, getCachedSystemInfo()),
+    buildTrainingStartPayload(config, null),
     config,
   );
 }

@@ -319,7 +319,7 @@ def test_training_start_aborts_when_semantic_config_or_token_changes():
     snapshot = source.split("function captureTrainingStartInputs", 1)[1].split(
         "type TrainingStartInputs", 1
     )[0]
-    assert "buildTrainingStartPayload(config, null, getCachedSystemInfo())" in snapshot
+    assert "buildTrainingStartPayload(config, null)" in snapshot
     assert "payload.hf_token = null" not in snapshot
     assert "payload.model_known_cached =" not in snapshot
     assert "payload.model_local_path =" not in snapshot
