@@ -7786,7 +7786,8 @@ exit 0
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
-            $psi.Arguments = "-c `"$Code`""
+            # -I: every caller asks about a venv's own torch, which PYTHONPATH must not answer (#11980).
+            $psi.Arguments = "-I -c `"$Code`""
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
@@ -8213,7 +8214,7 @@ exit 0
             if ($SkipTorch) {
                 & $OldPy -c "import sys; print(sys.executable)" 2>$null | Out-Null
             } else {
-                & $OldPy -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
+                & $OldPy -I -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
             }
             $legacyOk = ($LASTEXITCODE -eq 0)
         } catch { $legacyOk = $false }

@@ -4206,7 +4206,7 @@ elif [ "$_STUDIO_HOME_REDIRECT" != "env" ] && [ -x "$STUDIO_HOME/.venv/bin/pytho
         if "$STUDIO_HOME/.venv/bin/python" -c "import sys; print(sys.executable)" >/dev/null 2>&1; then
             _legacy_ok=true
         fi
-    elif "$STUDIO_HOME/.venv/bin/python" -c "
+    elif "$STUDIO_HOME/.venv/bin/python" -I -c "
 import torch
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 A = torch.ones((10, 10), device=device)
@@ -6824,7 +6824,7 @@ _rocm_leaf_below() {
 # 0 when the venv's torch has no identifiable rocm family at $2.$3 or newer, mirroring _installed_rocm_wheel_is_below in studio/install_python_stack.py
 # Venv torch's AMD per-arch family from the `rocm` meta-package (as install_python_stack.py); empty if unknown.
 _venv_torch_amd_family() {
-    "$1" -c 'import re
+    "$1" -I -c 'import re
 from importlib import metadata
 try:
     reqs = metadata.requires("rocm") or []
@@ -6838,7 +6838,7 @@ for r in reqs:
 }
 
 _venv_torch_rocm_below() {
-    _vtr_leaf=$("$1" -c 'import re, torch; m = re.search(r"rocm([0-9]+)\.([0-9]+)", getattr(torch, "__version__", "") or ""); print("rocm%s.%s" % m.groups() if m else "")' 2>/dev/null || true)
+    _vtr_leaf=$("$1" -I -c 'import re, torch; m = re.search(r"rocm([0-9]+)\.([0-9]+)", getattr(torch, "__version__", "") or ""); print("rocm%s.%s" % m.groups() if m else "")' 2>/dev/null || true)
     [ -n "$_vtr_leaf" ] || return 0
     _rocm_leaf_below "$_vtr_leaf" "$2" "$3"
 }

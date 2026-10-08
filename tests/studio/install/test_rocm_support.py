@@ -2528,6 +2528,8 @@ class TestGfx1102Rocm64Floor:
             with open(venv_py, "w", encoding = "utf-8") as fh:
                 fh.write(
                     "#!/bin/sh\n"
+                    # install.sh probes the venv with `-I -c CODE`; the stub only reads CODE.
+                    'if [ "$1" = "-I" ]; then shift; fi\n'
                     f'exec \'{sys.executable.replace(os.sep, "/")}\' -c "\n'
                     "import sys, types\n"
                     "t = types.ModuleType('torch')\n"

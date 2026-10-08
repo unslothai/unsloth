@@ -2548,6 +2548,9 @@ elif [ -n "$STAGE_ROOT" ]; then
 else
     source "$VENV_DIR/bin/activate"
 fi
+# The venv is the environment being set up: an inherited PYTHONPATH (DGX OS / NGC torch, #11980)
+# would answer every torch probe below instead of it. Colab's no-venv path keeps its own.
+[ "$_COLAB_NO_VENV" = true ] || unset PYTHONPATH
 
 install_python_stack() {
     [ "${STUDIO_LOCAL_INSTALL:-0}" = 1 ] && [ -x "$VENV_DIR/bin/python" ] || _mirror_fallback

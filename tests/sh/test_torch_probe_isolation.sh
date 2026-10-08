@@ -74,6 +74,18 @@ for _probe in '_torch_trio_pins=$("$_VENV_PY" -I -c' \
     assert_contains "install.sh still carries: $_probe" "$(cat "$INSTALL_SH")" "$_probe"
 done
 
+# install.sh hands off to studio/setup.sh, whose install_python_stack.py probes torch in-process.
+SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
+assert_contains "setup.sh drops PYTHONPATH once the venv is active (Colab no-venv keeps it)" \
+    "$(cat "$SETUP_SH")" '[ "$_COLAB_NO_VENV" = true ] || unset PYTHONPATH'
+_unset_line=$(grep -n '|| unset PYTHONPATH$' "$SETUP_SH" | head -n 1 | cut -d: -f1)
+_stack_line=$(grep -n '^    python "$SCRIPT_DIR/install_python_stack.py"$' "$SETUP_SH" | head -n 1 | cut -d: -f1)
+if [ -n "$_unset_line" ] && [ -n "$_stack_line" ] && [ "$_unset_line" -lt "$_stack_line" ]; then
+    ok "setup.sh drops PYTHONPATH before install_python_stack.py runs"
+else
+    bad "setup.sh drops PYTHONPATH before install_python_stack.py runs (unset=$_unset_line stack=$_stack_line)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
