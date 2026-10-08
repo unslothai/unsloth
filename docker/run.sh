@@ -407,43 +407,68 @@ if [[ $# -gt 0 ]]; then
             WORKDIR_FLAG=(-w /workspace/host)
             ;;
         *)
+            _args=("$@")
             _runner="${1##*/}"
-            _runner_accepts_files=1
+            _scan_from=1
             case "$_runner" in
-                accelerate | accelerate-launch | torchrun | deepspeed) ;;
+                accelerate)
+                    _runner=launcher
+                    [[ "${_args[1]:-}" == launch ]] && _scan_from=2
+                    ;;
+                accelerate-launch | torchrun | deepspeed) _runner=launcher ;;
                 python | python[0-9]* | pypy | pypy[0-9]*)
-                    _args=("$@")
+                    _runner=""
+                    _script=""
                     for (( _i=1; _i < ${#_args[@]}; _i++ )); do
                         case "${_args[$_i]}" in
-                            -c | -) _runner=""; break ;;
+                            -c | -) break ;;
                             -m)
                                 case "${_args[$((_i + 1))]:-}" in
-                                    accelerate.commands.launch | deepspeed.launcher.runner | torch.distributed.run) ;;
-                                    *) _runner="" ;;
+                                    accelerate.commands.launch | deepspeed.launcher.runner | torch.distributed.run)
+                                        _runner=launcher
+                                        _scan_from=$((_i + 2))
+                                        ;;
                                 esac
                                 break
                                 ;;
-                            --) break ;;
+                            -W | -X | --check-hash-based-pycs) _i=$((_i + 1)) ;;
+                            --)
+                                _script="${_args[$((_i + 1))]:-}"
+                                break
+                                ;;
                             -*) ;;
-                            *) break ;;
+                            *) _script="${_args[$_i]}"; break ;;
                         esac
                     done
+                    case "$_script" in
+                        /workspace/host | /workspace/host/*) WORKDIR_FLAG=(-w /workspace/host) ;;
+                    esac
                     ;;
                 bash | sh | zsh)
-                    for _arg in "${@:2}"; do
-                        case "$_arg" in
-                            -c | -s) _runner=""; break ;;
-                            --) break ;;
+                    _runner=""
+                    _script=""
+                    for (( _i=1; _i < ${#_args[@]}; _i++ )); do
+                        case "${_args[$_i]}" in
+                            -c | -s) break ;;
+                            -O | -o | --init-file | --rcfile) _i=$((_i + 1)) ;;
+                            --)
+                                _script="${_args[$((_i + 1))]:-}"
+                                break
+                                ;;
                             -*) ;;
-                            *) break ;;
+                            *) _script="${_args[$_i]}"; break ;;
                         esac
                     done
+                    case "$_script" in
+                        /workspace/host | /workspace/host/*) WORKDIR_FLAG=(-w /workspace/host) ;;
+                    esac
                     ;;
                 *) _runner="" ;;
             esac
-            if [[ -n "$_runner" ]]; then
-                _prev="$1"
-                for _arg in "${@:2}"; do
+            if [[ "$_runner" == launcher ]]; then
+                _prev=""
+                for (( _i=_scan_from; _i < ${#_args[@]}; _i++ )); do
+                    _arg="${_args[$_i]}"
                     case "$_arg" in
                         -*=*)
                             _prev=""
@@ -456,10 +481,20 @@ if [[ $# -gt 0 ]]; then
                                     continue
                                     ;;
                             esac
-                            if [[ "$_prev" != -* || "$_arg" == *.py || "$_arg" == *.sh || ( $_runner_accepts_files -eq 1 && "$_arg" != /workspace/host && -f "$WORK_DIR/${_arg#/workspace/host/}" ) ]]; then
+                            _host_input="$WORK_DIR/${_arg#/workspace/host/}"
+                            if [[ "$_prev" != -* || "$_arg" == *.py || "$_arg" == *.sh || ( "$_arg" != /workspace/host && ( -f "$_host_input" || -f "$_host_input/__main__.py" ) ) ]]; then
                                 WORKDIR_FLAG=(-w /workspace/host)
                                 break
                             fi
+                            ;;
+                        *.py | *.sh)
+                            case "$_prev" in
+                                -H | --hostfile | --config_file | --config-file | --mpirun_hostfile | --mpirun-hostfile | --deepspeed_config_file | --deepspeed-config-file)
+                                    _prev=""
+                                    continue
+                                    ;;
+                            esac
+                            break
                             ;;
                         */*)
                             if [[ "$_prev" == -* ]]; then

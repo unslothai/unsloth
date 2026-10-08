@@ -345,6 +345,7 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
         ("/usr/bin/python", "/workspace/host/train.py"),
         ("python", "-u", "/workspace/host/train.py", "--data", "data/train.jsonl"),
         ("python", "-u", "/workspace/host/train"),
+        ("python", "-u", "/workspace/host/job"),
         (
             "python",
             "-m",
@@ -386,6 +387,9 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
 def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
     if "/workspace/host/train" in command:
         (tmp_path / "train").write_text("print('train')\n", encoding = "utf-8")
+    if "/workspace/host/job" in command:
+        (tmp_path / "job").mkdir()
+        (tmp_path / "job" / "__main__.py").write_text("print('job')\n", encoding = "utf-8")
     argv = _run_sh_argv(tmp_path, *command)
     image = argv.index("unsloth/unsloth:latest")
     assert ["-w", "/workspace/host"] in [argv[i : i + 2] for i in range(image)]
@@ -404,6 +408,7 @@ def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
         ("python", "-c", "print('ok')", "/workspace/host/input.py"),
         ("python", "-m", "tool", "/workspace/host/input.py"),
         ("python", "-m", "pytest", "--basetemp", "/workspace/host"),
+        ("python", "train.py", "--config", "/workspace/host/config.json"),
         ("bash", "-c", "printf ok", "/workspace/host/input.sh"),
         ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb"),
         ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb", "--out", "/workspace/host/Llama.ipynb"),
@@ -428,6 +433,8 @@ def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
     ],
 )
 def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path, command):
+    if "/workspace/host/config.json" in command:
+        (tmp_path / "config.json").write_text("{}\n", encoding = "utf-8")
     argv = _run_sh_argv(tmp_path, *command)
     flags = argv[: argv.index("unsloth/unsloth:latest")]
     assert "-w" not in flags
