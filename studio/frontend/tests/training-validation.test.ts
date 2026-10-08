@@ -52,6 +52,60 @@ test("training validation rejects non-positive learning rates", () => {
   );
 });
 
+test("launch validation checks live membership and rejects an unresolved probe", () => {
+  const config = {
+    ...validConfig,
+    parallelismMode: "ddp" as const,
+    selectedGpuIds: [2, 5],
+  };
+  for (const available of [null, [], [2], [0, 1]]) {
+    assert.equal(
+      validateTrainingConfig(config, undefined, true, available).errorKey,
+      "studio.training.validation.gpuSelectionUnavailable",
+    );
+  }
+  assert.equal(validateTrainingConfig(config, undefined, true, [2, 5]).ok, true);
+  assert.equal(
+    validateTrainingConfig(
+      { ...config, parallelismMode: "auto", selectedGpuIds: null },
+      undefined,
+      true,
+      null,
+    ).ok,
+    true,
+  );
+});
+
+test("training validation rejects empty explicit GPU selections", () => {
+  assert.equal(
+    validateTrainingConfig({
+      ...validConfig,
+      parallelismMode: "single",
+      selectedGpuIds: [],
+    }).errorKey,
+    "studio.training.validation.singleGpuRequired",
+  );
+  assert.equal(
+    validateTrainingConfig({
+      ...validConfig,
+      parallelismMode: "ddp",
+      selectedGpuIds: [0],
+    }).errorKey,
+    "studio.training.validation.multipleGpusRequired",
+  );
+});
+
+test("single-GPU validation still requires a selection even without a refresh result", () => {
+  assert.equal(
+    validateTrainingConfig({
+      ...validConfig,
+      parallelismMode: "single",
+      selectedGpuIds: null,
+    }).errorKey,
+    "studio.training.validation.singleGpuRequired",
+  );
+});
+
 test("training validation accepts a positive learning rate", () => {
   assert.deepEqual(
     validateTrainingConfig({ ...validConfig, learningRate: 0.0002 }),

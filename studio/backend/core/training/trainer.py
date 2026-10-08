@@ -50,6 +50,15 @@ from core.import_guards import ensure_real_packages as _ensure_real_packages
 
 _ensure_real_packages("unsloth_zoo", "unsloth")
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
+from core.training.ddp import model_load_dtype_for_training, training_precision_flags_for_dtype
+
+
+def _training_precision_flags() -> dict[str, bool]:
+    """Return training precision, honoring the launcher-selected DDP dtype."""
+    return training_precision_flags_for_dtype(
+        os.environ.get("UNSLOTH_DDP_COMMON_DTYPE"), is_bfloat16_supported()
+    )
+
 
 import json
 import threading
@@ -709,7 +718,9 @@ class UnslothTrainer:
         """Calculate total training steps from dataset size and training params."""
         if max_steps and max_steps > 0:
             return max_steps
-        len_dataloader = math.ceil(num_samples / batch_size)
+        # DistributedSampler pads to an equal number of samples per rank.
+        samples_per_rank = math.ceil(num_samples / world_size_from_env())
+        len_dataloader = math.ceil(samples_per_rank / batch_size)
         steps_per_epoch = max(
             len_dataloader // grad_accum + int(len_dataloader % grad_accum > 0), 1
         )
@@ -739,8 +750,7 @@ class UnslothTrainer:
             "gradient_accumulation_steps": gradient_accumulation_steps,
             "warmup_steps": warmup_steps_val if warmup_steps_val is not None else 5,
             "learning_rate": learning_rate,
-            "fp16": not is_bfloat16_supported(),
-            "bf16": is_bfloat16_supported(),
+            **_training_precision_flags(),
             "logging_steps": 1,
             "optim": optim_value,
             "weight_decay": weight_decay,
@@ -775,11 +785,22 @@ class UnslothTrainer:
         label = "",
     ):
         """Save model after training and update progress. Used by all training branches."""
+        # Keep Trainer's save calls on every rank (they own distributed save
+        # semantics), but only the writing rank may mutate auxiliary files.
+        # LOCAL_RANK is intentionally zero in every isolated DDP rank. Use the
+        # global process-zero predicate, not TrainingArguments.should_save,
+        # which may also depend on save strategy.
+        is_writing_rank = (
+            self.trainer.is_world_process_zero()
+            if hasattr(self.trainer, "is_world_process_zero")
+            else getattr(getattr(self.trainer, "args", None), "process_index", 0) == 0
+        )
         if self.should_stop and self.save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if is_writing_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training stopped" if label else "Training stopped"
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
@@ -792,8 +813,9 @@ class UnslothTrainer:
             self._update_progress(is_training = False, status_message = "Training cancelled.")
         else:
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if is_writing_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training completed" if label else "Training completed"
             logger.info(f"\n{msg}! Model saved to {output_dir}\n")
             self._update_progress(
@@ -1051,7 +1073,10 @@ class UnslothTrainer:
             _is_rocm = (
                 bool(getattr(torch.version, "hip", None)) or "rocm" in torch.__version__.lower()
             )
-            _auto_dtype = torch.float16 if (_is_rocm and not is_bfloat16_supported()) else None
+            _load_dtype = model_load_dtype_for_training(
+                os.environ.get("UNSLOTH_DDP_COMMON_DTYPE"), _is_rocm, is_bfloat16_supported()
+            )
+            _auto_dtype = {"fp16": torch.float16, "bf16": torch.bfloat16}.get(_load_dtype)
 
             # The four branches below pass load_in_4bit=False to from_pretrained whatever was
             # requested (Spark-TTS goes further and needs float32), so the base really is 16-bit.
@@ -4176,8 +4201,7 @@ class UnslothTrainer:
                 "gradient_accumulation_steps": training_args.get("gradient_accumulation_steps", 4),
                 "num_train_epochs": training_args.get("num_epochs", 3),
                 "learning_rate": lr_value,
-                "fp16": not is_bfloat16_supported(),
-                "bf16": is_bfloat16_supported(),
+                **_training_precision_flags(),
                 "logging_steps": 1,
                 "weight_decay": training_args.get("weight_decay", 0.001),
                 "seed": training_args.get("random_seed", 3407),
@@ -4337,6 +4361,21 @@ class UnslothTrainer:
             )
             if online_decision.enabled:
                 eval_dataset = self._online_eval_dataset
+
+            # PEFT wrappers are not PreTrainedModel instances: Transformers otherwise
+            # enables unused-parameter discovery, which marks checkpointed LoRA
+            # parameters ready before their reentrant backward hooks fire.
+            # Limit this to dense Llama text training; conditional model families
+            # may genuinely have unused trainable parameters.
+            if (
+                world_size_from_env() > 1
+                and config_args.get("gradient_checkpointing")
+                and not self.is_audio
+                and not self.is_vlm
+                and not self.is_audio_vlm
+                and getattr(self.model.config, "model_type", None) == "llama"
+            ):
+                config_args["ddp_find_unused_parameters"] = False
 
             logger.info(f"The configuration is: {config_args}")
 

@@ -5643,6 +5643,70 @@ def _torch_kernel_arch_tokens() -> list[str]:
         return []
 
 
+def nvidia_gpu_ids_without_torch_kernels() -> set[int]:
+    """Physical NVIDIA ids older than every CUDA architecture in this Torch wheel.
+
+    CUDA wheels commonly contain a PTX fallback for architectures newer than the
+    lowest listed cubin, so this deliberately rejects only cards *older* than
+    that floor. It is a safe early rejection for, for example, an sm_61 P4
+    alongside sm_75 cards when the wheel starts at sm_75. Any incomplete probe
+    fails open rather than making a usable host look CPU-only.
+    """
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) is not None:
+            return set()
+        if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+            return set()
+        supported: list[tuple[int, int]] = []
+        for token in _torch_kernel_arch_tokens():
+            match = re.match(r"^(?:sm|compute)_(\d+)$", token)
+            if not match:
+                continue
+            digits = match.group(1)
+            if len(digits) < 2:
+                continue
+            supported.append((int(digits[:-1]), int(digits[-1])))
+        if not supported:
+            return set()
+        physical_ids = _torch_ordinal_physical_ids(torch.cuda.device_count())
+        if physical_ids is None:
+            return set()
+
+        floor = min(supported)
+        unsupported: set[int] = set()
+        unsupported_ordinals = 0
+        readable = 0
+        for ordinal in range(torch.cuda.device_count()):
+            try:
+                props = torch.cuda.get_device_properties(ordinal)
+                capability = (int(props.major), int(props.minor))
+            except Exception:
+                continue
+            readable += 1
+            if capability < floor:
+                unsupported_ordinals += 1
+                unsupported.add(physical_ids[ordinal])
+        if readable and readable == torch.cuda.device_count() and unsupported_ordinals == readable:
+            logger.warning(
+                "The installed PyTorch build starts at CUDA architecture sm_%d%d; "
+                "leaving all GPUs visible because every detected GPU is older.",
+                floor[0],
+                floor[1],
+            )
+            return set()
+        return unsupported
+    except Exception as e:
+        logger.debug("CUDA arch coverage probe failed: %s", e)
+        return set()
+
+
+def gpu_ids_without_torch_kernels() -> set[int]:
+    """Physical ids known to be unsupported by the installed Torch wheel."""
+    return rocm_gpu_ids_without_torch_kernels() | nvidia_gpu_ids_without_torch_kernels()
+
+
 def _describe_rocm_gpus(gpu_ids) -> list[str]:
     """Best-effort labels keyed by PHYSICAL id, for an error message only; never a gate."""
     wanted = {int(gpu_id) for gpu_id in gpu_ids}
@@ -5669,10 +5733,8 @@ def _describe_rocm_gpus(gpu_ids) -> list[str]:
 
 
 def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
-    """Explicit picks bypass the #8792 auto-select skip; without this the worker dies with hipErrorInvalidImage."""
-    uncovered = sorted(
-        set(int(gpu_id) for gpu_id in gpu_ids) & rocm_gpu_ids_without_torch_kernels()
-    )
+    """Explicit picks bypass auto-selection; reject a known-incompatible Torch device early."""
+    uncovered = sorted(set(int(gpu_id) for gpu_id in gpu_ids) & gpu_ids_without_torch_kernels())
     if not uncovered:
         return
     built_for = ", ".join(_torch_kernel_arch_tokens()) or "other GPU architectures"
@@ -5685,7 +5747,7 @@ def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
 
 def gpu_ids_with_torch_kernels() -> Optional[list[int]]:
     """Exclude GPUs with known missing torch kernels; None preserves visibility."""
-    uncovered = rocm_gpu_ids_without_torch_kernels()
+    uncovered = gpu_ids_without_torch_kernels()
     if not uncovered:
         return None
     try:
@@ -5756,7 +5818,7 @@ def auto_select_gpu_ids(
         return None, metadata
 
     # Before the free-memory rank AND every fallback, which return the whole visible set.
-    _uncovered = rocm_gpu_ids_without_torch_kernels()
+    _uncovered = gpu_ids_without_torch_kernels()
     if _uncovered:
         logger.warning(
             "Excluding GPU(s) %s from automatic selection: the installed PyTorch "

@@ -326,6 +326,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "subject": values.get("subject"),
         "allow_ambient": values.get("allow_ambient", True),
         "gpu_ids": values.get("gpu_ids"),
+        "parallelism_mode": values.get("parallelism_mode", "auto"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),
     }
@@ -1758,6 +1759,11 @@ class TrainingBackend:
         # the hook, else it pins training onto a GPU the hook is about to clear.
         from utils.hardware import hardware as _hw
 
+        if config.get("parallelism_mode") == "ddp" and (
+            _hw.DEVICE != _hw.DeviceType.CUDA or _hw.IS_ROCM
+        ):
+            raise ValueError("Studio DDP currently requires NVIDIA CUDA GPUs.")
+
         gpu_ids = kwargs.get("gpu_ids")
         gpu_selection_kwargs = dict(
             model_name = config["model_name"],
@@ -1864,7 +1870,9 @@ class TrainingBackend:
                         target = run_without_native_path_secret,
                         args = process_args,
                         kwargs = process_kwargs,
-                        daemon = True,
+                        # A DDP coordinator must create one rank per selected GPU;
+                        # Python forbids child processes from a daemon process.
+                        daemon = config.get("parallelism_mode") != "ddp",
                     )
                     from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
@@ -2638,7 +2646,9 @@ class TrainingBackend:
                             target = run_without_native_path_secret,
                             args = process_args,
                             kwargs = process_kwargs,
-                            daemon = True,
+                            # Match the initial coordinator: DDP recovery must be
+                            # able to spawn its rank workers as well.
+                            daemon = config.get("parallelism_mode") != "ddp",
                         )
                         from utils.process_lifetime import adopt_pid, is_process_shutting_down
 

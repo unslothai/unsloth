@@ -29,9 +29,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow, ParamsSliderRow } from "./params-section-controls";
+import { TrainingHardwareParams } from "./training-hardware-params";
 import { TrainingMemoryParams } from "./training-memory-params";
 
-type HyperparameterTab = "optimization" | "schedule" | "memory";
+type HyperparameterTab = "optimization" | "schedule" | "memory" | "hardware";
 type StudioT = ReturnType<typeof useT>;
 
 function formatOptimizerLabel(
@@ -120,6 +121,7 @@ export function TrainingHyperparametersSection({
     { value: "optimization", label: t("studio.params.optimization") },
     { value: "schedule", label: t("studio.params.schedule") },
     { value: "memory", label: t("studio.params.memory") },
+    { value: "hardware", label: t("studio.params.hardware") },
   ] as const;
 
   return (
@@ -394,6 +396,7 @@ export function TrainingHyperparametersSection({
           </TabsContent>
 
           <TrainingMemoryParams />
+          <TrainingHardwareParams />
         </Tabs>
       </CollapsibleContent>
     </Collapsible>

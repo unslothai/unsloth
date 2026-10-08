@@ -3526,6 +3526,20 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     """Subprocess entrypoint. Fresh Python, no stale module state. ``event_queue`` carries
     progress/status/error events to the parent, ``stop_queue`` carries stop commands from it, and
     ``config`` is the training config dict."""
+    # DDP has one clean Studio worker per selected GPU. Its coordinator must
+    # run before this worker touches CUDA; child ranks re-enter here with the
+    # marker set and each sees only its own physical card. Do not import the
+    # DDP dtype helper at module scope: that would import ddp.py before this
+    # coordinator branch and trigger hardware probing before GPU selection.
+    if config.get("parallelism_mode") == "ddp" and not config.get("_ddp_child"):
+        from .ddp import run_ddp_training_process
+        run_ddp_training_process(
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
+        )
+        return
+
     # Off on Linux (forked map() workers deadlock); on spawn platforms map() is in-process.
     os.environ["TOKENIZERS_PARALLELISM"] = (
         "true" if sys.platform in ("win32", "darwin") else "false"
@@ -4944,6 +4958,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "session_start_step": progress.session_start_step,
                     "grad_norm": progress.grad_norm,
                     "num_tokens": progress.num_tokens,
+                    # Trainer already reports the aggregate evaluation metric.
                     "eval_loss": progress.eval_loss,
                     "status_message": progress.status_message,
                     "ts": time.time(),
@@ -5068,7 +5083,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         from core.import_guards import ensure_real_packages
 
         ensure_real_packages("unsloth_zoo", "unsloth")
-        from unsloth import FastSentenceTransformer, is_bfloat16_supported
+        from unsloth import FastSentenceTransformer
         from sentence_transformers import (
             SentenceTransformerTrainer,
             SentenceTransformerTrainingArguments,
@@ -5378,7 +5393,11 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     warmup_steps_val = config.get("warmup_steps")
     log_frequency = config.get("log_frequency", 50)
 
-    from core.training.trainer import _drop_hf_stdout_callbacks, _hf_stdout_progress_disabled
+    from core.training.trainer import (
+        _drop_hf_stdout_callbacks,
+        _hf_stdout_progress_disabled,
+        _training_precision_flags,
+    )
     from core.training.training import apply_save_strategy
 
     training_args_kwargs = {
@@ -5386,8 +5405,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "per_device_train_batch_size": batch_size,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "learning_rate": lr_value,
-        "fp16": not is_bfloat16_supported(),
-        "bf16": is_bfloat16_supported(),
+        **_training_precision_flags(),
         "logging_steps": 1,
         "report_to": ["wandb"] if config.get("enable_wandb") else "none",
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),

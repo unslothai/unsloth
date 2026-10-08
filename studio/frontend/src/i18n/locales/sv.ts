@@ -3192,6 +3192,13 @@ export const sv = {
         "Filerna för datauppsättningen har tagits bort från den här enheten, så träningen hämtar dem igen.",
     },
     preview: {
+      automaticGpu: "Automatisk – GPU väljs vid start",
+      noGpuSelected: "Ingen GPU vald",
+      perGpu: "per GPU",
+      gpus: "GPU:er",
+      globalBatch: "global",
+      gpuDevice: "GPU {index}: {name}",
+      totalVram: "Totalt: {total} GiB",
       title: "Förhandsvisning av körning",
       ready: "Klar",
       notReady: "Inte klar",
@@ -3515,6 +3522,25 @@ export const sv = {
       },
     },
     params: {
+      hardware: "Maskinvara",
+      gpuPlacement: "GPU-placering",
+      gpuPlacementTooltip:
+        "Välj automatiskt val, en GPU, modelluppdelning eller dataparallell DDP. DDP replikerar modellen på varje vald GPU.",
+      hardwareModeAutoLabel: "Automatisk",
+      hardwareModeSingleLabel: "Enkel GPU",
+      hardwareModeShardingLabel: "Modelluppdelning",
+      hardwareModeDdpLabel: "DDP (dataparallell)",
+      hardwareModeAuto: "Studio väljer automatiskt den minst upptagna kompatibla GPU:n.",
+      hardwareModeSingle: "En modellkopia på en vald GPU.",
+      hardwareModeSharding:
+        "En modell uppdelad över de valda GPU:erna. Detta slår samman VRAM; det är inte DDP.",
+      hardwareModeDdp:
+        "En modellreplika per vald GPU. Gradienter synkroniseras; varje vald GPU måste rymma modellen.",
+      liveInventory: "Live-inventering:",
+      memoryAvailable: "{free} / {total} GiB ledigt",
+      memoryUnknown: "Ledigt minne okänt / {total} GiB totalt",
+      noSelectableGpu: "Ingen GPU med ett stabilt fysiskt index är tillgänglig för explicit val.",
+      multipleGpusRequired: "Välj minst två GPU:er för det här läget.",
       mode: {
         simple: "Enkel",
         advanced: "Avancerad",
@@ -3629,6 +3655,10 @@ export const sv = {
       chooseDataset: "Välj en datauppsättning",
       chooseModelAndDataset: "Välj modell och datauppsättning",
       validation: {
+        multipleGpusRequired: "Välj minst två GPU:er för det här läget.",
+        singleGpuRequired: "Välj exakt en GPU för enkel-GPU-träning.",
+        gpuSelectionUnavailable:
+          "De valda GPU:erna är inte tillgängliga. Uppdatera maskinvaruvalet och försök igen.",
         s3MultimodalUnsupported:
           "S3-datauppsättningar stöds ännu inte för visionsträning.",
         s3BucketRequired: "Ange först namnet på en S3-bucket.",

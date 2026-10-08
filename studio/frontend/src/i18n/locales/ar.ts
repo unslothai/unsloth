@@ -2977,6 +2977,13 @@ export const ar = {
         "لم تعد ملفات مجموعة البيانات موجودة على هذا الجهاز، لذا سيُعاد تنزيلها عند بدء التدريب.",
     },
     preview: {
+      perGpu: "لكل GPU",
+      gpus: "GPU",
+      globalBatch: "إجمالي",
+      gpuDevice: "GPU {index}: {name}",
+      totalVram: "الإجمالي: {total} GiB",
+      automaticGpu: "تلقائي — يتم اختيار GPU عند البدء",
+      noGpuSelected: "لم يتم اختيار GPU",
       title: "معاينة العملية",
       ready: "جاهز",
       notReady: "غير جاهز",
@@ -3298,6 +3305,22 @@ export const ar = {
       },
     },
     params: {
+      hardware: "الأجهزة",
+      gpuPlacement: "توزيع GPU",
+      gpuPlacementTooltip: "اختر التحديد التلقائي أو GPU واحدًا أو تجزئة النموذج أو DDP لتوازي البيانات. ينسخ DDP النموذج على كل GPU محدد.",
+      hardwareModeAutoLabel: "تلقائي",
+      hardwareModeSingleLabel: "GPU واحد",
+      hardwareModeShardingLabel: "تجزئة النموذج",
+      hardwareModeDdpLabel: "DDP (توازي البيانات)",
+      hardwareModeAuto: "يختار Studio تلقائيًا وحدة GPU المتوافقة الأقل انشغالًا.",
+      hardwareModeSingle: "نسخة واحدة من النموذج على GPU واحد محدد.",
+      hardwareModeSharding: "نموذج واحد مجزأ عبر وحدات GPU المحددة. يجمع هذا ذاكرة VRAM؛ وليس DDP.",
+      hardwareModeDdp: "نسخة من النموذج لكل GPU محدد. تتم مزامنة التدرجات؛ ويجب أن يتسع كل GPU محدد للنموذج.",
+      liveInventory: "قائمة الأجهزة الحالية:",
+      memoryAvailable: "{free} / {total} GiB متاحة",
+      memoryUnknown: "الذاكرة المتاحة غير معروفة / الإجمالي {total} GiB",
+      noSelectableGpu: "لا تتوفر وحدة GPU ذات فهرس فعلي ثابت للتحديد الصريح.",
+      multipleGpusRequired: "حدد وحدتي GPU على الأقل لهذا الوضع.",
       mode: {
         simple: "بسيط",
         advanced: "متقدم",
@@ -3425,6 +3448,9 @@ export const ar = {
       setupChanged:
         "تغيّر إعداد التدريب أثناء التحقق منه. راجعه ثم ابدأ التدريب مجددًا.",
       validation: {
+        multipleGpusRequired: "حدد وحدتي GPU على الأقل لهذا الوضع.",
+        singleGpuRequired: "حدد GPU واحدًا فقط للتدريب على وحدة GPU واحدة.",
+        gpuSelectionUnavailable: "وحدات GPU المحددة غير متاحة. حدّث اختيار الأجهزة وحاول مرة أخرى.",
         s3MultimodalUnsupported:
           "مجموعات بيانات S3 غير مدعومة بعد لتدريب الرؤية.",
         s3BucketRequired: "أدخل اسم حاوية S3 أولًا.",
