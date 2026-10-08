@@ -377,7 +377,6 @@ def load_original_layout_transformer(
     )
     expected, optional = transformer_cls._get_signature_keys(transformer_cls)
     config.update({k: v for k, v in kwargs.items() if k in expected or k in optional})
-    # Studio's converter first: diffusers 0.41's Krea 2 one strips only model.diffusion_model.
     entry = sfm.SINGLE_FILE_LOADABLE_CLASSES.get(transformer_cls.__name__) or {}
     mapping_fn = CONVERTERS.get(transformer_cls.__name__) or entry.get("checkpoint_mapping_fn")
     if mapping_fn is None:

@@ -11231,20 +11231,13 @@ def _diffusers_main_supersedes_release() -> bool:
 
 
 def _diffusers_main_active(req: "Path | None" = None) -> bool:
-    """Whether diffusers-main.txt pins a build at all.
-
-    The line is commented out while a Diffusers release carries every family Studio ships. Without
-    this, a file with nothing in it reads as "build missing": the fast path would force a dependency
-    pass on every update, 11c would install an empty file and record a failure, and the startup
-    self-heal would try to repair it on every first boot.
-    """
+    """Whether diffusers-main.txt has an uncommented line; an all-comment file is not "build missing"."""
     if req is None:
         req = REQ_ROOT / "diffusers-main.txt"
     return _direct_reference_in_requirements(req) is not None
 
 
 def _diffusers_release_target() -> "str | None":
-    """The ``==`` version diffusers-pin.txt names for this interpreter, or None."""
     try:
         from packaging.requirements import Requirement
         text = (REQ_ROOT / "diffusers-pin.txt").read_text(encoding = "utf-8-sig")
@@ -11256,7 +11249,7 @@ def _diffusers_release_target() -> "str | None":
             continue
         try:
             requirement = Requirement(line)
-        except Exception:  # noqa: BLE001 - a line packaging cannot parse names no target
+        except Exception:  # noqa: BLE001
             continue
         if requirement.name.lower() != "diffusers":
             continue
@@ -11269,13 +11262,7 @@ def _diffusers_release_target() -> "str | None":
 
 
 def _diffusers_release_behind() -> bool:
-    """Whether the resident Diffusers is OLDER than the release diffusers-pin.txt names.
-
-    Compared on release numbers, as the family gate does, so a git build of the same version
-    (0.41.0.dev0) counts as current and only a genuinely older install (0.40.0 left behind by an
-    update that skipped the pass) is acted on. No diffusers at all, or an unreadable version, is
-    the full pass's job, not this probe's.
-    """
+    """Resident diffusers older than diffusers-pin.txt's ``==``, on release numbers (0.41.0.dev0 is current)."""
     target = _diffusers_release_target()
     installed = _installed_distribution_version("diffusers")
     if target is None or installed is None:
@@ -11330,8 +11317,7 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     """
     req = REQ_ROOT / "diffusers-main.txt"
     if not req.is_file() or not _diffusers_main_active(req):
-        # Nothing pinned from git: a release older than diffusers-pin.txt needs the pass, and so does
-        # a missing or damaged one, which the git route's residency check used to catch on the way.
+        # Missing / damaged: the git route's residency check used to catch these on the way.
         return _diffusers_release_behind() or not _payload_recorded_intact("diffusers")
     if not _diffusers_main_requested():
         # Opted out while the build is still resident: 11b puts the release back.
@@ -11364,8 +11350,7 @@ def _startup_repair_failed() -> bool:
 
 _REPAIR_LOCK_POLL_S = 5
 
-# The release-mode failure, kept apart from the git one: a host that could not reach github.com
-# for the main build must still get the PyPI release. A full update pass drops both.
+# Apart from the git key, so an old github.com failure cannot block the PyPI release.
 _DIFFUSERS_RELEASE_REPAIR_KEY = "diffusers_release_repair"
 
 
@@ -11378,8 +11363,7 @@ def _release_repair_failed() -> bool:
 
 
 def _repair_diffusers_release() -> int:
-    """11b on its own, when nothing is pinned from git and the resident release is older than the
-    pin: 0 installed, 1 nothing to do, 2 failed. Called with the pass lock held."""
+    """11b alone for the startup self-heal, pass lock held: 0 installed, 1 nothing to do, 2 failed."""
     global USE_UV, _STEP, _TOTAL
     if not _diffusers_release_behind() or _release_repair_failed():
         return 1
@@ -11394,7 +11378,6 @@ def _repair_diffusers_release() -> int:
     importlib.invalidate_caches()
     if installed and not _diffusers_release_behind():
         return 0
-    # Or every start retries an install this host cannot do.
     install_manifest.update_manifest(**{_DIFFUSERS_RELEASE_REPAIR_KEY: "failed"})
     return 2
 
@@ -11403,8 +11386,7 @@ def _repair_diffusers_main() -> int:
     """11c on its own, for the backend's startup self-heal: 0 installed, 1 nothing to do, 2 failed.
 
     An update from a release that predates 11c runs that release's installer, which never installs
-    the build; the backend that starts afterwards is the first new code such a host runs. With no
-    build pinned from git it repairs the release instead (``_repair_diffusers_release``).
+    the build; the backend that starts afterwards is the first new code such a host runs.
     """
     import time
 
@@ -11451,8 +11433,7 @@ def _prefetch_diffusers_main() -> int:
     req = REQ_ROOT / "diffusers-main.txt"
     release = not _diffusers_main_active(req)
     if release:
-        # The release repair downloads too, and only a stop HERE is survivable: the backend
-        # records it and starts, where a stop inside the install would refuse every start.
+        # A timeout here is recorded and survivable; one inside the install refuses every start.
         if not _diffusers_release_behind() or _release_repair_failed():
             return 1
     elif (
@@ -11477,7 +11458,6 @@ def _prefetch_diffusers_main() -> int:
     scratch = Path(tempfile.mkdtemp(prefix = _PREFETCH_SCRATCH_PREFIX))
     temp_reqs: list[Path] = []
     try:
-        # The release install takes its dependencies (huggingface_hub), so they are fetched too.
         args = ("--target", str(scratch)) if release else ("--no-deps", "--target", str(scratch))
         if release:
             req = REQ_ROOT / "diffusers-pin.txt"
@@ -11529,7 +11509,6 @@ def _diffusers_main_step() -> None:
     its own total for precisely the users who opted out.
     """
     if not _diffusers_main_active():
-        # Commented out while a release carries every family: 11b already installed it.
         _progress("diffusers main (none pinned, skipped)")
         _record_step("diffusers-main.txt", "skipped")
         return

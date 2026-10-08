@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Startup self-heal for the pinned Diffusers main build, or for the pinned release while
-diffusers-main.txt pins nothing (its line commented out).
+"""Startup self-heal for the pinned Diffusers main build, or the pinned release while
+diffusers-main.txt is commented out.
 
 Older installers can miss the pinned build during an update. Repair before importing the app:
 the build also upgrades huggingface_hub, which would otherwise mix new files with cached modules.
@@ -82,7 +82,6 @@ _ENV_ALLOWLIST = frozenset(
 def _opted_out(main_active: bool = True) -> bool:
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return True
-    # UNSLOTH_DIFFUSERS_MAIN=0 means "stay on the release", which is what release mode installs.
     if not main_active:
         return False
     value = (os.environ.get("UNSLOTH_DIFFUSERS_MAIN") or "").strip().lower()
@@ -94,8 +93,6 @@ def _target(main_active: bool) -> str:
 
 
 def _main_pin_active() -> bool:
-    """Whether diffusers-main.txt pins a build. Commented out while a release carries every family,
-    and then a healthy release install must start nothing."""
     try:
         text = _MAIN_PIN.read_text(encoding = "utf-8-sig")
     except (OSError, ValueError):
@@ -107,8 +104,7 @@ def _main_pin_active() -> bool:
 
 
 def _release_behind() -> bool:
-    """The installer's ``_diffusers_release_behind``: the resident Diffusers is older than the
-    release diffusers-pin.txt names for this interpreter. Metadata only, nothing imported."""
+    """The installer's ``_diffusers_release_behind``, metadata only."""
     try:
         from importlib.metadata import version
         from packaging.requirements import Requirement
@@ -220,7 +216,6 @@ def _installer_would_skip(main_active: bool = True) -> bool:
     except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
         return False
     if not main_active:
-        # Only a failed RELEASE repair counts: an old git failure must not strand a PyPI install.
         return manifest.get("diffusers_release_repair") == "failed"
     step_results = manifest.get("step_results")
     update_failed = (
@@ -339,9 +334,7 @@ def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: 
     main_active = _main_pin_active()
     if _opted_out(main_active) or not _MAIN_PIN.is_file() or not _INSTALLER.is_file():
         return False
-    # With nothing pinned from git the target is the release: only an index install older than it
-    # (an update that skipped the dependency pass) is repaired, so a healthy one starts nothing and a
-    # build the user put there (a checkout, a git or zip install) is never replaced.
+    # Release mode: only an index install older than the pin; a user's checkout or git build is theirs.
     candidate = _diffusers_is_an_index_install() and (main_active or _release_behind())
     # Check the lock too: an active install may have temporarily removed the metadata.
     if candidate and not _installer_would_skip(main_active):

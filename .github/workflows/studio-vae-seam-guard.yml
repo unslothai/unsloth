@@ -53,8 +53,7 @@ jobs:
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11'
           pip install -r studio/backend/requirements/studio.txt
-          # As Studio installs it: the release pin, then the main commit on top only while
-          # diffusers-main.txt has an uncommented line.
+          # As Studio installs it: the release, then the main commit only while that line is uncommented.
           pip install -r studio/backend/requirements/diffusers-pin.txt
           if grep -Eq '^[[:space:]]*[^#[:space:]]' studio/backend/requirements/diffusers-main.txt; then
             pip install -r studio/backend/requirements/diffusers-main.txt

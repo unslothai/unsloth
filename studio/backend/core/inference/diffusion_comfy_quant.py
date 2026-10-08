@@ -608,8 +608,7 @@ def _mapping(transformer_cls: Any) -> tuple[Any, Any]:
 
     from .diffusion_single_file_converters import CONVERTERS
 
-    # Studio's original-layout converters win over one diffusers added later (Krea 2 in 0.41 strips only
-    # model.diffusion_model.): they take every container prefix the files in the wild carry.
+    # Ahead of diffusers' own: its Krea 2 converter (0.41) strips only model.diffusion_model.
     own = CONVERTERS.get(getattr(transformer_cls, "__name__", ""))
     if own is not None:
         return own, sfm
