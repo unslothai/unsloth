@@ -104,7 +104,7 @@ def test_resolution_selects_the_backend_for_the_new_model_not_the_old_one(client
     monkeypatch.setattr(
         settings,
         "_llama_backend_active",
-        lambda model = None: seen.append(model) or False,
+        lambda model = None, token = None: seen.append(model) or False,
     )
     import utils.utils as utils
 
@@ -135,7 +135,9 @@ def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(
     monkeypatch.setattr(
         embeddings, "sentence_transformers_runtime_available", lambda: runtime_available
     )
-    monkeypatch.setattr(embeddings, "sentence_transformers_can_load", lambda model: can_load)
+    monkeypatch.setattr(
+        embeddings, "sentence_transformers_can_load", lambda model, token = None: can_load
+    )
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
     monkeypatch.setattr(
         settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
@@ -153,6 +155,42 @@ def test_runtime_st_failure_is_planned_as_a_managed_gguf_download(
     assert body["download_repo"] == "org/embed-GGUF"
     assert body["files"] == ["embed-F16.gguf"]
     assert body["size_bytes"] == 1234
+
+
+def test_request_token_reaches_the_backend_loadability_probe(client, monkeypatch):
+    from core.rag import embeddings
+
+    seen = []
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
+    monkeypatch.setattr(
+        embeddings, "_resolve_auto_for_model", lambda model = None: "sentence-transformers"
+    )
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        embeddings,
+        "sentence_transformers_can_load",
+        lambda model, token = None: seen.append((model, token)) or False,
+    )
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        settings, "_cached_embedding_gguf", lambda candidates, require_variant: None
+    )
+    monkeypatch.setattr(
+        settings,
+        "_remote_embedding_gguf_plan",
+        lambda candidates, token: (candidates[0], ["embed-F16.gguf"]),
+    )
+    monkeypatch.setattr(settings, "_hf_files_size", lambda repo, files, token: 1234)
+
+    body = client.get(
+        "/embedding-model/resolve",
+        params = {"model": "org/private-embed"},
+        headers = {"X-Unsloth-HF-Token": "hf_request"},
+    ).json()
+
+    assert seen == [("org/private-embed", "hf_request")]
+    assert body["backend"] == "llama"
 
 
 def test_sentence_transformers_local_path_is_already_present(client, monkeypatch, tmp_path):
@@ -389,7 +427,9 @@ def _no_gguf_anywhere(monkeypatch):
     monkeypatch.setattr(settings, "_search_hub_for_gguf", lambda m, token: None)
     from core.rag import embeddings
 
-    monkeypatch.setattr(embeddings, "sentence_transformers_can_load", lambda model: True)
+    monkeypatch.setattr(
+        embeddings, "sentence_transformers_can_load", lambda model, token = None: True
+    )
 
 
 def test_no_gguf_falls_back_to_the_models_own_safetensors(client, monkeypatch):
@@ -476,7 +516,9 @@ def test_no_safetensors_fallback_for_a_model_st_cannot_open(client, monkeypatch)
     _no_gguf_anywhere(monkeypatch)
     monkeypatch.setattr(settings, "_llama_runtime_available", lambda: True)
     monkeypatch.setattr(settings, "_sentence_transformers_fallback_allowed", lambda model: True)
-    monkeypatch.setattr(embeddings, "sentence_transformers_can_load", lambda model: False)
+    monkeypatch.setattr(
+        embeddings, "sentence_transformers_can_load", lambda model, token = None: False
+    )
     monkeypatch.setattr(
         settings,
         "_safetensors_plan",
@@ -535,7 +577,9 @@ def test_st_load_check_keeps_the_plan_once_the_resolve_budget_is_spent(monkeypat
     monkeypatch.setattr(
         embeddings,
         "sentence_transformers_can_load",
-        lambda model: (_ for _ in ()).throw(AssertionError("must not probe past the budget")),
+        lambda model, token = None: (_ for _ in ()).throw(
+            AssertionError("must not probe past the budget")
+        ),
     )
     marker = settings._EMBEDDING_RESOLVE_DEADLINE.set(time.monotonic() - 1)
     try:

@@ -4,6 +4,7 @@
 """Embedder concurrency tests: the fast tokenizer isn't thread-safe, so encode
 and token counting must be serialized (else threads panic "Already borrowed")."""
 
+import json
 import os
 import sys
 import threading
@@ -787,6 +788,44 @@ def test_st_can_load_reads_modules_and_model_type(tmp_path, module_type, model_c
     )
 
 
+def test_st_can_load_reads_the_transformer_modules_config(tmp_path):
+    pytest.importorskip("sentence_transformers")
+    pytest.importorskip("transformers")
+    folder = tmp_path / "embedder"
+    module = folder / "0_Transformer"
+    module.mkdir(parents = True)
+    (folder / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "0_Transformer",
+                    "type": "sentence_transformers.models.Transformer",
+                }
+            ]
+        )
+    )
+    (folder / "config.json").write_text(json.dumps({"model_type": "bert"}))
+    (module / "config.json").write_text(json.dumps({"model_type": "no_such_model_type"}))
+
+    assert embeddings.sentence_transformers_can_load(str(folder)) is False
+
+
+def test_st_can_load_preserves_anonymous_hub_access(monkeypatch):
+    pytest.importorskip("sentence_transformers")
+    seen = []
+
+    def _read(name, filename, token):
+        seen.append((filename, token))
+        return [] if filename == "modules.json" else {}
+
+    monkeypatch.setattr(embeddings, "_repo_json", _read)
+
+    assert embeddings.sentence_transformers_can_load("org/public", False) is True
+    assert seen == [("modules.json", False), ("config.json", False)]
+
+
 def test_st_can_load_without_the_files_keeps_the_plan(tmp_path):
     assert embeddings.sentence_transformers_can_load(str(tmp_path)) is True
 
@@ -807,7 +846,9 @@ def test_model_st_cannot_open_is_planned_on_llama(monkeypatch):
     _shared_setup_4(monkeypatch)
     monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
     monkeypatch.setattr(
-        embeddings, "sentence_transformers_can_load", lambda model: model != "org/st6-model"
+        embeddings,
+        "sentence_transformers_can_load",
+        lambda model, token = None: model != "org/st6-model",
     )
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
 

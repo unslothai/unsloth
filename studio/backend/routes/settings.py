@@ -44,7 +44,12 @@ from utils.account_context import (
     is_owner_context,
     reset_account,
 )
-from hub.utils.hf_tokens import cache_reads_authorized, cached_read_refused, hf_token_arg
+from hub.utils.hf_tokens import (
+    HfTokenArg,
+    cache_reads_authorized,
+    cached_read_refused,
+    hf_token_arg,
+)
 
 from routes.provider_credentials import current_credential_write, require_ui_session
 
@@ -2810,7 +2815,7 @@ def _llama_runtime_available() -> bool:
         return True
 
 
-def _llama_backend_active(model: str | None = None) -> bool:
+def _llama_backend_active(model: str | None = None, token: HfTokenArg = None) -> bool:
     """Whether llama serves the active model, or would serve ``model`` if supplied. Delegates to the embeddings
     module so a runtime fallback from sentence-transformers to llama-server is honored: in that state the
     process loads only inert GGUF, so the ST pickle gate below must not hard-block a repo whose GGUF
@@ -2818,7 +2823,7 @@ def _llama_backend_active(model: str | None = None) -> bool:
     from core.rag import embeddings
     try:
         if model is not None:
-            return embeddings.resolved_backend_for_model(model) == "llama-server"
+            return embeddings.resolved_backend_for_model(model, token) == "llama-server"
         return embeddings.active_backend_is_llama()
     except Exception:  # noqa: BLE001 - backend probe must never block saving
         return False
@@ -3237,7 +3242,7 @@ def _sentence_transformers_fallback_allowed(model: str) -> bool:
         return False
 
 
-def _sentence_transformers_can_load(model: str) -> bool:
+def _sentence_transformers_can_load(model: str, token: HfTokenArg = None) -> bool:
     try:
         from core.rag import embeddings
     except Exception:  # noqa: BLE001 - unimportable embedder: no proof either way
@@ -3247,7 +3252,7 @@ def _sentence_transformers_can_load(model: str) -> bool:
         return False
     try:
         return _call_with_embedding_resolve_budget(
-            lambda: embeddings.sentence_transformers_can_load(model),
+            lambda: embeddings.sentence_transformers_can_load(model, token),
             name = "embed-settings-st-load-check",
         )
     except Exception:  # noqa: BLE001 - spent budget: no proof either way
@@ -3321,7 +3326,7 @@ def _local_sentence_transformer_is_present(model: str) -> bool:
 
 @_with_embedding_resolve_budget
 def _resolve_embedding_model_plan(
-    resolved: str, token: Optional[str]
+    resolved: str, token: HfTokenArg
 ) -> EmbeddingModelResolveResponse:
     """Server-owned artifact/backend plan shared by GET and PUT.
 
@@ -3356,7 +3361,7 @@ def _resolve_embedding_model_plan(
     # resolver's deadline before a miss. It was also the wrong question, per the note above.
 
     # Resolve for the model being selected.
-    on_llama = _llama_backend_active(resolved)
+    on_llama = _llama_backend_active(resolved, token)
     backend: Literal["llama", "sentence-transformers"] = (
         "llama" if on_llama else "sentence-transformers"
     )
@@ -3465,7 +3470,7 @@ def _resolve_embedding_model_plan(
             )
         # use publisher safetensors only when this process can select ST
         st_allowed = _sentence_transformers_fallback_allowed(resolved)
-        st_unloadable = st_allowed and not _sentence_transformers_can_load(resolved)
+        st_unloadable = st_allowed and not _sentence_transformers_can_load(resolved, token)
         st_plan = _safetensors_plan(resolved, token) if st_allowed and not st_unloadable else None
         # authorize the plan's repo to avoid exposing a cached private repo through an alias
         if st_plan is not None and not _authorized(st_plan[0]):

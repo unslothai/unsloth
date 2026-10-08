@@ -172,7 +172,7 @@ def _ambient_hf_token() -> str | None:
         return None
 
 
-def _repo_json(name: str, filename: str, token: str | None) -> Any:
+def _repo_json(name: str, filename: str, token: str | bool | None) -> Any:
     """``filename`` parsed from the local folder or Hub repo ``name``, None when the file is absent.
     Raises whatever reading or parsing raises."""
     import json
@@ -195,7 +195,7 @@ def _repo_json(name: str, filename: str, token: str | None) -> Any:
         local = hf_hub_download(
             name,
             filename,
-            token = account_hf_token(token or None),
+            token = account_hf_token(token),
             cache_dir = active_hf_hub_cache(),
         )
     except EntryNotFoundError:
@@ -939,13 +939,13 @@ def sentence_transformers_known_unloadable(model_name: str) -> bool:
     return proofs is not None and model_name in proofs
 
 
-def sentence_transformers_can_load(model_name: str) -> bool:
+def sentence_transformers_can_load(model_name: str, token: str | bool | None = None) -> bool:
     """False when ``modules.json`` names a sentence_transformers class this install lacks (embeddinggemma-2 names
     6.x ``sentence_transformers.base`` modules) or ``config.json`` a ``model_type`` transformers does not know.
     True when either file cannot be read, so an unreachable repo keeps its plan."""
     if sentence_transformers_known_unloadable(model_name):
         return False
-    if _st_load_preflight(model_name):
+    if _st_load_preflight(model_name, token):
         return True
     proofs = _st_unloadable_proofs.get()
     if proofs is not None:
@@ -953,17 +953,29 @@ def sentence_transformers_can_load(model_name: str) -> bool:
     return False
 
 
-def _st_load_preflight(model_name: str) -> bool:
+def _st_load_preflight(model_name: str, token: str | bool | None = None) -> bool:
     try:
         from sentence_transformers.util import import_from_string
         from utils.utils import call_with_deadline
 
-        # Bounded: Settings resolves a plan inside a 20 s budget, and a blackholed Hub must not spend it here.
-        modules, model_config = call_with_deadline(
-            lambda: (
-                _repo_json(model_name, "modules.json", None),
-                _repo_json(model_name, "config.json", None),
-            ),
+        def _metadata():
+            modules = _repo_json(model_name, "modules.json", token)
+            config_files = ["config.json"]
+            for module in modules or ():
+                ref = str((module or {}).get("type", ""))
+                if ref.rsplit(".", 1)[-1] != "Transformer":
+                    continue
+                path = str((module or {}).get("path", "")).strip("/")
+                filename = f"{path}/config.json" if path else "config.json"
+                if filename not in config_files:
+                    config_files.append(filename)
+            return modules, {
+                filename: _repo_json(model_name, filename, token) for filename in config_files
+            }
+
+        # bounded with one deadline so nested module metadata cannot multiply the wait
+        modules, model_configs = call_with_deadline(
+            _metadata,
             _ST_LOAD_PREFLIGHT_TIMEOUT_S,
             name = "embed-st-load-preflight",
         )
@@ -977,19 +989,20 @@ def _st_load_preflight(model_name: str) -> bool:
                 import_from_string(ref)
             except ImportError:
                 return False
-        model_type = (model_config or {}).get("model_type")
-        if isinstance(model_type, str):
-            # CONFIG_MAPPING, not CONFIG_MAPPING_NAMES, so types registered at runtime count. An auto_map does not
-            # help an unknown type: the loader never passes trust_remote_code.
-            from transformers import CONFIG_MAPPING
-            if model_type not in CONFIG_MAPPING:
-                return False
+        for model_config in model_configs.values():
+            model_type = (model_config or {}).get("model_type")
+            if isinstance(model_type, str):
+                # CONFIG_MAPPING, not CONFIG_MAPPING_NAMES, so types registered at runtime count. An auto_map does not
+                # help an unknown type: the loader never passes trust_remote_code.
+                from transformers import CONFIG_MAPPING
+                if model_type not in CONFIG_MAPPING:
+                    return False
     except Exception as exc:  # noqa: BLE001 - offline, gated, missing or malformed: no proof either way
         logger.debug("sentence-transformers load preflight for %s failed: %s", model_name, exc)
     return True
 
 
-def resolved_backend_for_model(model_name: str) -> str:
+def resolved_backend_for_model(model_name: str, token: str | bool | None = None) -> str:
     """Backend a fresh operation for ``model_name`` would actually select."""
     raw = _raw_backend()
     forced = _forced_backends.get(model_name)
@@ -999,7 +1012,7 @@ def resolved_backend_for_model(model_name: str) -> str:
         st_unusable = not sentence_transformers_runtime_available() or (
             # An ST plan for it never loads, and its pending marker blocks the llama fallback's GGUF.
             # Auto only: an explicit ST policy ignores the stored backend.
-            raw in _AUTO_ALIASES and not sentence_transformers_can_load(model_name)
+            raw in _AUTO_ALIASES and not sentence_transformers_can_load(model_name, token)
         )
         if st_unusable:
             key = "llama-server"
