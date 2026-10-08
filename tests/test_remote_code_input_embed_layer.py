@@ -76,12 +76,12 @@ def _fresh_classes():
     return inner, outer
 
 
-def _needs_default_accessor_to_raise(model):
+def _default_accessor_raises(model):
     try:
         model.get_input_embeddings()
     except NotImplementedError:
-        return
-    pytest.skip("this transformers resolves `wte` by itself")
+        return True
+    return False
 
 
 def test_wte_accessor_is_named_and_peft_attaches():
@@ -89,11 +89,11 @@ def test_wte_accessor_is_named_and_peft_attaches():
 
     _, outer = _fresh_classes()
     model = outer(WteConfig())
-    _needs_default_accessor_to_raise(model)
+    broken = _default_accessor_raises(model)
 
     repaired = apply_remote_code_shims(model)
 
-    assert "WteModel.get_input_embeddings" in repaired
+    assert ("WteModel.get_input_embeddings" in repaired) == broken
     assert model.get_input_embeddings() is model.transformer.wte
     assert model.transformer.get_input_embeddings() is model.transformer.wte
     new = torch.nn.Embedding(32, 8)
@@ -109,9 +109,7 @@ def test_second_pass_is_a_no_op():
     from unsloth.models.remote_code_shims import apply_remote_code_shims
 
     _, outer = _fresh_classes()
-    model = outer(WteConfig())
-    _needs_default_accessor_to_raise(model)
-    apply_remote_code_shims(model)
+    apply_remote_code_shims(outer(WteConfig()))
     assert apply_remote_code_shims(outer(WteConfig())) == []
 
 
@@ -121,9 +119,7 @@ def test_native_and_own_accessor_classes_are_left_alone():
     native = type(
         "NativeWte", (WteModel,), {"__module__": "transformers.models.fake.modeling_fake"}
     )
-    model = native(WteConfig())
-    _needs_default_accessor_to_raise(model)
-    apply_remote_code_shims(model)
+    apply_remote_code_shims(native(WteConfig()))
     assert "_input_embed_layer" not in native.__dict__
 
     own = type(
