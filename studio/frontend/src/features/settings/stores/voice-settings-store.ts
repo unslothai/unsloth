@@ -103,23 +103,23 @@ export function isCuratedSttModel(model: SttModel): boolean {
 }
 
 export interface VoiceSettingsState {
-  /** Input device for dictation. "default" = system default microphone. */
+  /** input device; "default" selects the system microphone. */
   micDeviceId: string;
   setMicDeviceId: (value: string) => void;
 
-  /**
-   * "browser": Web Speech API. "model": local transcription; the model decides
-   * the backend (whisper.cpp for curated GGML, Transformers for custom repos).
-   */
+  /** "browser" uses Web Speech API; "model" chooses the local backend from the model. */
   dictationEngine: DictationEngine;
   setDictationEngine: (value: DictationEngine) => void;
 
-  /** STT model to use when dictationEngine is "model". */
+  /** STT model used when dictationEngine is "model". */
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
 
-  /** "cpu" holds the dictation model in system RAM instead of the GPU. Sent
-   *  with every load and transcribe, so a change applies on the next load. */
+  /** quant for a package folder `sttModel`; "" uses its resident or default quant. */
+  sttGgufVariant: string;
+  setSttGgufVariant: (value: string) => void;
+
+  /** "cpu" keeps the model in system RAM; loads and transcriptions apply the current value. */
   sttDevice: SttDevice;
   setSttDevice: (value: SttDevice) => void;
 
@@ -128,11 +128,11 @@ export interface VoiceSettingsState {
   sttProviderModel: string;
   setSttProviderModel: (value: string) => void;
 
-  /** bcp 47 tag for speech recognition, or "auto" for engine-specific detection. */
+  /** BCP 47 tag, or "auto" for engine-specific language detection. */
   dictationLanguage: string;
   setDictationLanguage: (value: string) => void;
 
-  /** Exact spellings applied to matching transcript words and phrases. */
+  /** exact spellings applied to matching transcript words and phrases. */
   dictionary: string[];
   addDictionaryEntry: (value: string) => void;
   updateDictionaryEntry: (index: number, value: string) => void;
@@ -234,16 +234,21 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
       sttModel: DEFAULT_STT_MODEL,
       setSttModel: (value) =>
         set((state) => {
-          const sttModel = normalizeSttModel(value);
-          return {
-            sttModel: isSttModelLanguageCompatible(
-              sttModel,
-              state.dictationLanguage,
-            )
-              ? sttModel
-              : DEFAULT_STT_MODEL,
-          };
+          const normalized = normalizeSttModel(value);
+          const sttModel = isSttModelLanguageCompatible(
+            normalized,
+            state.dictationLanguage,
+          )
+            ? normalized
+            : DEFAULT_STT_MODEL;
+          // a quant belongs to the model it was selected for.
+          return sttModel === state.sttModel
+            ? { sttModel }
+            : { sttModel, sttGgufVariant: "" };
         }),
+
+      sttGgufVariant: "",
+      setSttGgufVariant: (sttGgufVariant) => set({ sttGgufVariant }),
 
       sttDevice: DEFAULT_STT_DEVICE,
       setSttDevice: (value) => set({ sttDevice: normalizeSttDevice(value) }),
@@ -255,15 +260,15 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
 
       dictationLanguage: "auto",
       setDictationLanguage: (dictationLanguage) =>
-        set((state) => ({
-          dictationLanguage,
-          sttModel: isSttModelLanguageCompatible(
-            state.sttModel,
-            dictationLanguage,
-          )
-            ? state.sttModel
-            : DEFAULT_STT_MODEL,
-        })),
+        set((state) =>
+          isSttModelLanguageCompatible(state.sttModel, dictationLanguage)
+            ? { dictationLanguage }
+            : {
+                dictationLanguage,
+                sttModel: DEFAULT_STT_MODEL,
+                sttGgufVariant: "",
+              },
+        ),
 
       dictionary: [],
       addDictionaryEntry: (value) =>
@@ -388,6 +393,10 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
           sttModel,
+          sttGgufVariant:
+            sttModel === savedSttModel
+              ? asString(saved?.sttGgufVariant, "")
+              : "",
           sttDevice: normalizeSttDevice(saved?.sttDevice),
           sttProviderId: asString(saved?.sttProviderId, ""),
           sttProviderModel: asString(saved?.sttProviderModel, ""),

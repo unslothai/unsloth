@@ -656,6 +656,8 @@ class SystemOneModelOption(BaseModel):
     label: Optional[str] = None
     available: bool = True
     unavailable_reason: Optional[str] = None
+    # A GGUF with no PyTorch form: the runtime setting matters, and PyTorch cannot serve it.
+    llama_cpp_only: bool = False
 
 
 class SystemOneConnectionOption(BaseModel):
@@ -680,12 +682,23 @@ class SystemOneSettingsResponse(BaseModel):
     installing: bool = False
     error: Optional[str] = None
     mcp_url: str
+    # Runtime setting, what a text request to the configured model uses now, and why Auto chose PyTorch.
+    backend: str = "auto"
+    native_ctx: int = 16384
+    effective_backend: Optional[str] = None
+    loaded_backend: Optional[str] = None
+    fallback_reason: Optional[str] = None
+    input_modalities: list[str] = ["text"]
+    # "laya", "clef" or "gguf" for the configured model, so env-configured local checkpoints get runtime controls.
+    layout: Optional[str] = None
 
 
 class SystemOneSettingsPayload(BaseModel):
     enabled: Optional[bool] = None
     model: Optional[str] = None
     device: Optional[str] = None
+    backend: Optional[str] = None
+    native_ctx: Optional[int] = None
     expected_enabled: Optional[bool] = None
     expected_model: Optional[str] = None
 
@@ -1009,6 +1022,7 @@ class ModelOverridePayload(BaseModel):
     # -1 is Auto (llama.cpp --fit sizes the offload); the normalizer treats it as unset.
     gpu_layers: Optional[int] = Field(default = None, ge = -1, le = 1024)
     n_cpu_moe: Optional[int] = Field(default = None, ge = 0, le = 1024)
+    tensor_split: Optional[list[float]] = Field(default = None, min_length = 2, max_length = MAX_GPU_IDS)
     gpu_ids: Optional[list[int]] = Field(default = None, max_length = MAX_GPU_IDS)
     # Which index space gpu_ids is in. Absent means physical, the only thing a client
     # written before this field could have meant.
@@ -1017,6 +1031,27 @@ class ModelOverridePayload(BaseModel):
     remove: Optional[bool] = None
     # Fill in, don't replace: the backfill reads the map once then writes each model.
     fill_absent_fields: bool = False
+
+    @model_validator(mode = "after")
+    def _tensor_split_matches_gpu_ids(self):
+        if self.tensor_split is not None:
+            from utils.openai_auto_switch_settings import normalize_tensor_split
+            if normalize_tensor_split(self.tensor_split, self.gpu_ids) is None:
+                raise ValueError(
+                    "tensor_split must match an ordered selection of at least two unique GPUs"
+                )
+        return self
+
+    @field_validator("tensor_split")
+    @classmethod
+    def _valid_tensor_split(cls, value: Optional[list[float]]) -> Optional[list[float]]:
+        if value is None:
+            return None
+        from utils.openai_auto_switch_settings import normalize_tensor_split
+
+        if normalize_tensor_split(value, list(range(len(value)))) is None:
+            raise ValueError("tensor_split must be finite, non-negative, and have a positive total")
+        return value
 
     @field_validator("chat_template_override")
     @classmethod
@@ -1048,6 +1083,7 @@ class ModelOverridePayload(BaseModel):
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
+        "tensor_split",
         mode = "before",
     )
     @classmethod
@@ -1466,7 +1502,19 @@ def update_helper_precache(
 
 
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
+    from core.systemone import laya_runtime
+
+    if getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+        # Selectable under a PyTorch runtime: the runtime row then says to switch it.
+        try:
+            laya_runtime.select(checkpoint, preference = "auto")
+        except laya_runtime.Unavailable as exc:
+            return {"llama_cpp_only": True, "available": False, "unavailable_reason": exc.message}
+        return {"llama_cpp_only": True}
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
+        return {}
+    # llama.cpp serves Clef without CUDA or ROCm.
+    if laya_runtime.native_ready(checkpoint):
         return {}
     return {"available": False, "unavailable_reason": reason}
 
@@ -1495,12 +1543,18 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     if runtime["error_model"] not in (None, model):
         error = None
     port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
+    effective, fallback = laya_runtime.effective_backend(configured)
+    if runtime["loaded_model"] == model and runtime["fallback_reason"]:
+        fallback = runtime["fallback_reason"]
     return SystemOneSettingsResponse(
         enabled = enabled,
         enabled_locked = systemone_settings.enabled_locked(),
         model = model,
         model_locked = systemone_settings.model_locked(),
-        device = systemone_settings.get_device(),
+        # llama.cpp defaults to the GPU when no device is stored; report where it actually runs.
+        device = systemone_settings.clef_device()
+        if effective == "llama.cpp"
+        else systemone_settings.get_device(),
         device_locked = systemone_settings.device_locked(),
         gpu_available = systemone_settings.gpu_available(),
         models = [
@@ -1508,6 +1562,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
                 name = c.name,
                 description = c.description,
                 download_bytes = c.download_bytes,
+                label = c.label,
                 **_clef_availability(c, clef_reason),
             )
             for c in catalog.CHECKPOINTS.values()
@@ -1529,6 +1584,13 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         installing = runtime["installing"],
         error = error,
         mcp_url = f"http://127.0.0.1:{port}{MCP_PATH}/",
+        backend = systemone_settings.get_backend(),
+        native_ctx = systemone_settings.get_native_ctx(),
+        effective_backend = effective,
+        loaded_backend = runtime["loaded_backend"] if runtime["loaded_model"] else None,
+        fallback_reason = fallback if effective == "pytorch" or effective is None else None,
+        input_modalities = laya_runtime.input_modalities(configured),
+        layout = getattr(configured, "layout", None),
     )
 
 
@@ -1538,7 +1600,10 @@ _SYSTEMONE_SETTINGS_LOCK = threading.Lock()
 def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
     try:
         return systemone_settings.validate(
-            **payload.model_dump(include = {"enabled", "model", "device"}, exclude_none = True)
+            **payload.model_dump(
+                include = {"enabled", "model", "device", "backend", "native_ctx"},
+                exclude_none = True,
+            )
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -1649,7 +1714,9 @@ async def list_systemone_connections(
 
 @_owner_settings_router.get("/systemone/resolve", response_model = SystemOneDownloadPlan)
 def resolve_systemone_download(
-    model: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+    model: Optional[str] = None,
+    backend: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
 ) -> SystemOneDownloadPlan:
     from core.systemone import catalog, laya_runtime
 
@@ -1662,7 +1729,9 @@ def resolve_systemone_download(
         raise HTTPException(status_code = 400, detail = "Unknown Decision API model.")
     if isinstance(checkpoint, catalog.Connection):
         return SystemOneDownloadPlan(files = [], size_bytes = 0, cached = True)
-    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint))
+    if backend is not None and backend not in systemone_settings.BACKENDS:
+        raise HTTPException(status_code = 400, detail = "Unknown Decision API runtime.")
+    return SystemOneDownloadPlan(**laya_runtime.download_plan(checkpoint, preference = backend))
 
 
 @_owner_settings_router.post("/systemone/unload", response_model = SystemOneSettingsResponse)
@@ -1992,6 +2061,8 @@ class DiffusionAcceleratorFallbackResponse(BaseModel):
 
 PINNED_MODELS_SETTING_KEY = "model_picker_pinned"
 PINNED_CONNECTED_MODELS_SETTING_KEY = "model_picker_pinned_connected"
+# Embedding models pinned to the RAG menu.
+PINNED_EMBEDDING_MODELS_SETTING_KEY = "rag_embedding_pinned"
 MAX_PINNED_MODELS = 512
 # Room for a "::quant" suffix or an "external::<connection>::" prefix on top of a model id.
 _MAX_PIN_KEY_LEN = MAX_MODEL_OVERRIDE_KEY_LEN + 512
@@ -2005,18 +2076,26 @@ class PinnedModelsPayload(BaseModel):
 
     pinned: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
     connected: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+    embedding: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
 
 
 class PinnedModelsResponse(BaseModel):
     # None = never stored, so the browser seeds it.
     pinned: Optional[list[str]] = None
     connected: Optional[list[str]] = None
+    embedding: Optional[list[str]] = None
 
 
 def _pinned_models_response() -> PinnedModelsResponse:
     from storage.studio_db import get_app_settings
 
-    stored = get_app_settings([PINNED_MODELS_SETTING_KEY, PINNED_CONNECTED_MODELS_SETTING_KEY])
+    stored = get_app_settings(
+        [
+            PINNED_MODELS_SETTING_KEY,
+            PINNED_CONNECTED_MODELS_SETTING_KEY,
+            PINNED_EMBEDDING_MODELS_SETTING_KEY,
+        ]
+    )
 
     def _ids(value: Any) -> Optional[list[str]]:
         return [v for v in value if isinstance(v, str)] if isinstance(value, list) else None
@@ -2024,6 +2103,7 @@ def _pinned_models_response() -> PinnedModelsResponse:
     return PinnedModelsResponse(
         pinned = _ids(stored.get(PINNED_MODELS_SETTING_KEY)),
         connected = _ids(stored.get(PINNED_CONNECTED_MODELS_SETTING_KEY)),
+        embedding = _ids(stored.get(PINNED_EMBEDDING_MODELS_SETTING_KEY)),
     )
 
 
@@ -2044,6 +2124,8 @@ def update_pinned_models(
         updates[PINNED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.pinned))
     if payload.connected is not None:
         updates[PINNED_CONNECTED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.connected))
+    if payload.embedding is not None:
+        updates[PINNED_EMBEDDING_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.embedding))
     if updates:
         upsert_app_settings(updates, read_back = False)
     return _pinned_models_response()
@@ -2575,6 +2657,13 @@ def update_openai_auto_switch_override(
                         max_seq_length = explicit_ctx
                     if custom_context_length is not None:
                         custom_context_length = explicit_ctx
+            tensor_split = payload.tensor_split
+            if "tensor_split" not in fields_set:
+                previous = get_model_override(target_id)
+                if previous.get("gpu_ids") == payload.gpu_ids and previous.get(
+                    "gpu_index_kind", "physical"
+                ) == (payload.gpu_index_kind or "physical"):
+                    tensor_split = previous.get("tensor_split")
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
@@ -2619,6 +2708,7 @@ def update_openai_auto_switch_override(
                 gpu_layers = payload.gpu_layers,
                 n_cpu_moe = payload.n_cpu_moe,
                 gpu_ids = payload.gpu_ids,
+                tensor_split = tensor_split,
                 gpu_index_kind = payload.gpu_index_kind,
                 fill_absent_fields = payload.fill_absent_fields,
             )
@@ -4649,6 +4739,8 @@ class SandboxWindowsStatus(BaseModel):
     # None: MXC could not tell; [] prepared; otherwise the wxc-host-prep verbs still missing.
     host_prep_missing: Optional[list[str]] = None
     prepare_repeats_after_restart: bool = True
+    # True: MXC runs in Windows' built-in container (BaseContainer); False: this Windows has none; None: unknown.
+    builtin_container: Optional[bool] = None
 
 
 class SandboxSetupStatus(BaseModel):
@@ -4782,6 +4874,21 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     )
 
 
+def _sandbox_windows_block(python, dacl_at_probe: bool) -> SandboxWindowsStatus:
+    """wxc-exec does not name its tier, but with the fallback off it runs only in BaseContainer."""
+    from core.inference import mxc_probe
+
+    windows = _sandbox_windows_status()
+    builtin = None
+    # A save between the probe and this read would pair one setting's verdict with the other.
+    if windows.runtime_installed and not (windows.allow_dacl_fallback or dacl_at_probe):
+        if python.available and python.backend == "mxc-processcontainer":
+            builtin = True
+        elif python.reason == mxc_probe.NO_BUILTIN_CONTAINER_REASON:
+            builtin = False
+    return windows.model_copy(update = {"builtin_container": builtin})
+
+
 def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
     """Blocking (live probes); run off the event loop. Never elevates: probes only."""
     import sys
@@ -4798,6 +4905,10 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
         tools.reset_terminal_profile_cache()
     # After the resets above: they raise the floor an earlier generation is dropped under.
     generation = os_sandbox.tool_isolation_generation()
+    dacl_at_probe = False
+    if sys.platform == "win32":
+        from core.inference import mxc_policy
+        dacl_at_probe = mxc_policy.dacl_fallback_enabled()
     python = os_sandbox.capability_snapshot(
         force = force, execution_kind = "python", selected_executable = sys.executable
     )
@@ -4821,7 +4932,7 @@ def _build_sandbox_status(force: bool) -> SandboxStatusResponse:
         python = _sandbox_tool_status(python),
         terminal = _sandbox_tool_status(terminal),
         terminal_shell = shell,
-        windows = _sandbox_windows_status() if sys.platform == "win32" else None,
+        windows = _sandbox_windows_block(python, dacl_at_probe) if sys.platform == "win32" else None,
         setup = _sandbox_setup_status(python.available and terminal.available),
         checked_at = time.time(),
     )

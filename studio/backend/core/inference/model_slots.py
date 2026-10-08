@@ -289,6 +289,30 @@ def unload_idle() -> int:
     return len(evict_these(idle))
 
 
+def audio_cpp_model_names(orchestrator) -> list[str]:
+    """The audio.cpp models an orchestrator holds or is loading: their servers run from the managed tree."""
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES, looks_like_audio_cpp
+
+    # Snapshot the loads first: one that publishes between the two reads moves from loading to held.
+    loading = list(getattr(orchestrator, "loading_models", None) or ())
+    held = [
+        name
+        for name, entry in list((getattr(orchestrator, "models", None) or {}).items())
+        if isinstance(entry, dict) and entry.get("audio_type") in AUDIO_CPP_AUDIO_TYPES
+    ]
+    return held + [name for name in loading if name not in held and looks_like_audio_cpp(name)]
+
+
+def unload_audio_cpp_slots(strict: bool = False) -> int:
+    """Drop every slot holding or loading an audio.cpp model, for the audio.cpp runtime swap."""
+    doomed = [slot for slot in list(slots) if audio_cpp_model_names(slot.orchestrator)]
+    for slot in doomed:
+        # drop() keeps the loading marker, so a load still ahead of its spawn would start a worker after it.
+        for name in list(slot.orchestrator.loading_models):
+            slot.orchestrator.cancel_load(name)
+    return _drop_where(lambda slot, filling: any(slot is held for held in doomed), strict)
+
+
 def unload_llama_slots(strict: bool = False) -> int:
     """Drop every slot running or starting a llama-server, a GGUF load still filling one included."""
     return _drop_where(

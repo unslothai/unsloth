@@ -219,6 +219,98 @@ def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
     assert response.headers["content-type"] == "text/csv; charset=utf-8"
 
 
+@pytest.mark.parametrize(
+    "text, label, encoding",
+    [("a,😀\n", "utf-32", "utf-32"), ("a,Ç\n", "ibm437", "cp437")],
+)
+def test_raw_text_is_transcoded_from_non_whatwg_charsets(monkeypatch, text, label, encoding):
+    _fetch(
+        monkeypatch,
+        (None, text.encode(encoding), "text/plain"),
+        {"url": "https://example.com/x.txt", "charset": label},
+    )
+    response = _call(url = "https://example.com/x.txt")
+    assert response.body == text.encode("utf-8")
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    "text, label, encoding",
+    [
+        ("<p>朱镕基 中央广播电视总台</p>", "gb2312", "gbk"),
+        ("<p>丸数字①の日本語</p>", "shift_jis", "cp932"),
+        ("<p>똠방각하 한국어</p>", "euc-kr", "cp949"),
+        ("<p>廣東話嘅中文</p>", "big5", "big5hkscs"),
+    ],
+)
+def test_a_page_decodes_as_browsers_read_its_label(monkeypatch, text, label, encoding):
+    page = f"<html><meta charset={label}>{text}</html>"
+    _fetch(
+        monkeypatch,
+        (None, page.encode(encoding), "text/html"),
+        {"url": "https://example.com/", "charset": label},
+    )
+    assert text in json.loads(_call().body)["html"]
+    assert browser_mod._decode_html(page.encode(encoding), None) == page
+
+
+def test_a_stray_byte_does_not_garble_a_labelled_page(monkeypatch):
+    body = "<p>नमस्ते दुनिया</p><p>हिन्दी ".encode("utf-8") + b"\xff" + " पाठ</p>".encode("utf-8")
+    _fetch(
+        monkeypatch, (None, body, "text/html"), {"url": "https://example.com/", "charset": "utf-8"}
+    )
+    html = json.loads(_call().body)["html"]
+    assert "<p>नमस्ते दुनिया</p><p>हिन्दी \ufffd पाठ</p>" in html
+    assert html.count("\ufffd") == 1
+
+
+def test_a_malformed_header_charset_does_not_fall_through_to_meta_or_utf8(monkeypatch):
+    body = b"<html><meta charset=utf-8><p>\xc2\x81</p></html>"
+    _fetch(
+        monkeypatch,
+        (None, body, "text/html"),
+        {"url": "https://example.com/", "charset": "shift_jis"},
+    )
+    html = json.loads(_call().body)["html"]
+    assert "<p>\uff82\ufffd</p>" in html
+    assert "\x81" not in html
+
+
+def test_a_commented_meta_charset_is_ignored(monkeypatch):
+    body = b"<!-- <meta charset=shift_jis> --><p>caf\xc3\xa9</p>"
+    _fetch(
+        monkeypatch,
+        (None, body, "text/html"),
+        {"url": "https://example.com/", "charset": None},
+    )
+    assert "<p>café</p>" in json.loads(_call().body)["html"]
+
+
+@pytest.mark.parametrize(
+    "body, charset",
+    [
+        (b"<html><p>caf\xc3\xa9</p></html>", "undefined"),
+        (b"<html><meta charset=undefined><p>caf\xc3\xa9</p></html>", None),
+    ],
+)
+def test_a_page_with_an_undecodable_charset_still_renders(monkeypatch, body, charset):
+    _fetch(
+        monkeypatch, (None, body, "text/html"), {"url": "https://example.com/", "charset": charset}
+    )
+    assert "<p>café</p>" in json.loads(_call().body)["html"]
+
+
+@pytest.mark.parametrize("charset", ["undefined", "idna"])
+def test_text_with_an_undecodable_charset_passes_through(monkeypatch, charset):
+    body = "a,café\n".encode("utf-8")
+    _fetch(
+        monkeypatch,
+        (None, body, "text/csv"),
+        {"url": "https://example.com/c.csv", "charset": charset},
+    )
+    assert _call(url = "https://example.com/c.csv").body == body
+
+
 def test_other_bodies_pass_through_untouched(monkeypatch):
     pdf = b"%PDF-1.7\n..."
     _fetch(monkeypatch, (None, pdf, "application/pdf"), {"url": "https://example.com/p.pdf"})
@@ -343,3 +435,329 @@ def test_a_byte_order_mark_decides_the_encoding():
     page = "<p>caf\u00e9</p>"
     assert browser_mod._decode_html(page.encode("utf-16"), None) == page
     assert browser_mod._decode_html(b"\xef\xbb\xbf" + page.encode("utf-8"), "iso-8859-1") == page
+
+
+@pytest.fixture(autouse = True)
+def _empty_module_cache(monkeypatch):
+    monkeypatch.setattr(browser_mod, "_MODULE_CACHE", browser_mod.OrderedDict())
+    monkeypatch.setattr(browser_mod, "_module_cache_chars", 0)
+
+
+def _modules(
+    monkeypatch,
+    scripts,
+    allow_origin = None,
+    cache_control = None,
+    age = None,
+):
+    """Serve each URL in `scripts` as (error, body, content_type); return the URLs fetched."""
+    fetched = []
+
+    def fake_fetch(url, **kwargs):
+        fetched.append(url)
+        if allow_origin is not None:
+            kwargs["meta_out"]["allow_origin"] = allow_origin
+        kwargs["meta_out"].update(cache_control = cache_control, age = age)
+        return scripts.get(url, ("Failed to fetch URL: HTTP 404", "", ""))
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    return fetched
+
+
+def test_self_contained_module_scripts_are_inlined(monkeypatch):
+    _modules(
+        monkeypatch,
+        {
+            "https://example.com/js/app.js": (
+                None,
+                b'customElements.define("x-a", A);s="</script>"',
+                "text/javascript",
+            )
+        },
+    )
+    page = '<p>hi</p><script type="module" defer src="js/app.js" crossorigin integrity="sha-x" data-k="a>b"></script><p>end</p>'
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert out == (
+        '<p>hi</p><script type="module" defer data-k="a>b">'
+        'customElements.define("x-a", A);s="<\\/script>"</script><p>end</p>'
+    )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        (None, b'import {a} from "./b.js";a()', "text/javascript"),
+        (None, b'const m = await import("./lazy.js")', "application/javascript"),
+        (None, b'export * from "./c.js"', "text/javascript"),
+        # Resolves against the module's own URL, which inlining would change to the page's.
+        (None, b'new Worker(new URL("./w.js", import.meta.url))', "text/javascript"),
+        (None, b'import /* webpackChunkName: "lazy" */ ("./chunk.js")', "text/javascript"),
+        (None, b'import//x\n("./chunk.js")', "text/javascript"),
+        (None, b'export { a } from /* re-export */ "./a.js"', "text/javascript"),
+        (None, b'x="<!--";y="<script>"', "text/javascript"),
+        (None, b"a()", "text/plain"),
+        ("Failed to fetch URL: HTTP 404", "", ""),
+    ],
+)
+def test_modules_that_cannot_be_inlined_keep_their_tag(monkeypatch, result):
+    _modules(monkeypatch, {"https://example.com/m.js": result})
+    page = '<script type="module" src="/m.js"></script>'
+    assert browser_mod._inline_module_scripts(page, "https://example.com/page") == page
+
+
+def test_only_live_https_module_tags_are_fetched(monkeypatch):
+    fetched = _modules(monkeypatch, {})
+    page = (
+        '<script src="/classic.js"></script>'
+        '<script type="module">inline()</script>'
+        '<script type="module" src="http://example.com/plain.js"></script>'
+        '<!-- <script type="module" src="/old.js"></script> -->'
+        '<script type="module" src="/live.js"></script>'
+    )
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    assert fetched == ["https://example.com/live.js"]
+
+
+def test_a_fetched_page_gets_its_modules_inlined(monkeypatch):
+    def fake_fetch(url, **kwargs):
+        if url.endswith(".js"):
+            assert kwargs["raw_bytes_max"] == browser_mod._MAX_MODULE_BYTES
+            return None, b"ready()", "text/javascript"
+        return None, b'<html><script type="module" src="/a.js"></script></html>', "text/html"
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    html = json.loads(_call().body)["html"]
+    assert '<script type="module">ready()</script>' in html
+
+
+def _sri(algorithm, body):
+    import base64
+    import hashlib
+    return f"{algorithm}-" + base64.b64encode(hashlib.new(algorithm, body).digest()).decode()
+
+
+def test_an_inlined_module_still_has_its_integrity_checked(monkeypatch):
+    _modules(monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")})
+    tag = '<script type="module" src="/m.js" integrity="{}"></script>'
+    good = tag.format(f"{_sri('sha256', b'other')} {_sri('sha384', b'ready()')}")
+    bad = tag.format(f"{_sri('sha256', b'ready()')} {_sri('sha512', b'other')}")
+    assert "ready()" in browser_mod._inline_module_scripts(good, "https://example.com/")
+    assert browser_mod._inline_module_scripts(bad, "https://example.com/") == bad
+
+
+def test_modules_any_origin_may_load_keep_their_tag(monkeypatch):
+    _modules(
+        monkeypatch,
+        {"https://cdn.example/m.js": (None, b"ready()", "application/javascript")},
+        allow_origin = "*",
+    )
+    page = '<script type="module" src="https://cdn.example/m.js"></script>'
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    # A wildcard doesn't cover a credentialed request.
+    credentialed = page.replace("<script ", '<script crossorigin="use-credentials" ')
+    out = browser_mod._inline_module_scripts(credentialed, "https://example.com/")
+    assert out == '<script type="module">ready()</script>'
+
+
+def test_a_module_is_fetched_once_for_many_pages(monkeypatch):
+    fetched = _modules(
+        monkeypatch,
+        {"https://example.com/m.js": (None, b"ready()", "text/javascript")},
+        cache_control = "public, max-age=31536000, immutable",
+    )
+    page = '<script type="module" src="/m.js"></script>'
+    for _ in range(3):
+        assert "ready()" in browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert fetched == ["https://example.com/m.js"]
+
+
+@pytest.mark.parametrize(
+    "cache_control, age",
+    [
+        (None, None),
+        ("private, max-age=0", None),
+        ("max-age=600, no-cache", None),
+        ("no-store", None),
+        ("public, max-age=300", "300"),
+        ("private, max-age=600", None),
+    ],
+)
+def test_a_module_the_host_says_to_recheck_is_fetched_again(monkeypatch, cache_control, age):
+    fetched = _modules(
+        monkeypatch,
+        {"https://example.com/m.js": (None, b"ready()", "text/javascript")},
+        cache_control = cache_control,
+        age = age,
+    )
+    page = '<script type="module" src="/m.js"></script>'
+    for _ in range(2):
+        assert "ready()" in browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert fetched == ["https://example.com/m.js"] * 2
+
+
+def test_a_module_is_kept_only_while_fresh():
+    assert browser_mod._fresh_for("public, max-age=60", "20") == 40
+    assert browser_mod._fresh_for("max-age=60, s-maxage=5", None) == 5
+    assert browser_mod._fresh_for("max-age=99999999", None) == browser_mod._MODULE_CACHE_TTL_S
+
+
+def test_inlined_modules_stay_within_the_page_limit(monkeypatch):
+    _modules(
+        monkeypatch,
+        {
+            "https://example.com/a.js": (None, b"a" * 60, "text/javascript"),
+            "https://example.com/b.js": (None, b"b" * 30, "text/javascript"),
+        },
+    )
+    page = '<script type="module" src="/a.js"></script><script type="module" src="/b.js"></script>'
+    monkeypatch.setattr(browser_mod, "_MAX_BROWSER_HTML_BYTES", len(page) + 50)
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert (
+        out
+        == '<script type="module" src="/a.js"></script><script type="module">'
+        + "b" * 30
+        + "</script>"
+    )
+
+
+def test_a_module_fetch_that_raises_leaves_the_page_alone(monkeypatch):
+    def boom(url, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", boom)
+    page = '<p>x</p><script type="module" src="/m.js"></script>'
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+
+
+def test_script_attributes_are_read_from_the_tag_not_from_values(monkeypatch):
+    fetched = _modules(
+        monkeypatch,
+        {
+            "https://example.com/main.js": (None, b"main()", "text/javascript"),
+            "https://example.com/fallback.js": (None, b"fallback()", "text/javascript"),
+            "https://example.com/classic.js": (None, b"classic()", "text/javascript"),
+        },
+    )
+    page = (
+        """<script type="module" onerror="this.src='/fallback.js'" src="/main.js"></script>"""
+        '<script data-note="type=module" src="/classic.js"></script>'
+        '<script type="text/javascript" type="module" src="/classic.js"></script>'
+    )
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert out == (
+        """<script type="module" onerror="this.src='/fallback.js'">main()</script>"""
+        '<script data-note="type=module" src="/classic.js"></script>'
+        '<script type="text/javascript" type="module" src="/classic.js"></script>'
+    )
+    assert fetched == ["https://example.com/main.js"]
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        "<textarea>{}</textarea>",
+        "<title>{}</title>",
+        "<style>{}</style>",
+        "<noscript>{}</noscript>",
+        "<xmp>{}</xmp>",
+        "<textarea>{}",
+        "<plaintext>{}",
+    ],
+)
+def test_a_module_tag_written_as_text_is_left_alone(monkeypatch, wrap):
+    fetched = _modules(
+        monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
+    )
+    page = wrap.format('<script type="module" src="/m.js"></script>')
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    assert fetched == []
+
+
+def test_text_elements_in_script_code_dont_hide_later_modules(monkeypatch):
+    _modules(monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")})
+    page = (
+        "<script>var css = '<style' + '>'; var t = '<textarea>';</script>"
+        "<!-- <title> -->"
+        '<textarea><script type="module" src="/m.js"></script></textarea>'
+        '<script type="module" src="/m.js"></script>'
+    )
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert out.endswith('</textarea><script type="module">ready()</script>')
+    assert out.count("ready()") == 1
+
+
+def test_the_page_limit_is_counted_in_bytes(monkeypatch):
+    # 60 two-byte characters: counted as characters, the page would seem to have room.
+    _modules(monkeypatch, {"https://example.com/m.js": (None, b"m" * 50, "text/javascript")})
+    page = "é" * 60 + '<script type="module" src="/m.js"></script>'
+    monkeypatch.setattr(browser_mod, "_MAX_BROWSER_HTML_BYTES", 200)
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    monkeypatch.setattr(browser_mod, "_MAX_BROWSER_HTML_BYTES", 220)
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert "m" * 50 in out and len(out.encode()) <= 220
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        """<div data-example='<script type="module" src="/m.js"></script>'>x</div>""",
+        """<a title="a > b" data-x='<script type=module src=/m.js></script>'>x</a>""",
+        """<img alt="<script type='module' src='/m.js'></script>">""",
+    ],
+)
+def test_a_module_tag_inside_an_attribute_value_is_left_alone(monkeypatch, page):
+    fetched = _modules(
+        monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
+    )
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    assert fetched == []
+
+
+def test_a_module_redirected_to_plain_http_keeps_its_tag(monkeypatch):
+    def fake_fetch(url, **kwargs):
+        kwargs["meta_out"]["url"] = "http://example.com/m.js"
+        return None, b"ready()", "text/javascript"
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    page = '<p class="a">x</p><script type="module" src="/m.js"></script>'
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        '<template><script type="module" src="/m.js"></script></template>',
+        '<template><template></template><script type="module" src="/m.js"></script></template>',
+        '<template id="t"><div><script type="module" src="/m.js"></script>',
+    ],
+)
+def test_a_module_tag_in_a_template_is_left_alone(monkeypatch, page):
+    fetched = _modules(
+        monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")}
+    )
+    assert browser_mod._inline_module_scripts(page, "https://example.com/") == page
+    assert fetched == []
+
+
+def test_a_module_after_a_template_is_still_inlined(monkeypatch):
+    _modules(monkeypatch, {"https://example.com/m.js": (None, b"ready()", "text/javascript")})
+    page = '<template><p>x</p></template><script type="module" src="/m.js"></script>'
+    out = browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert out == '<template><p>x</p></template><script type="module">ready()</script>'
+
+
+def test_a_redirected_module_is_not_cached(monkeypatch):
+    fetched = []
+
+    def fake_fetch(url, **kwargs):
+        fetched.append(url)
+        kwargs["meta_out"].update(
+            url = "https://example.com/v1.js", cache_control = "public, max-age=600", age = None
+        )
+        return None, b"ready()", "text/javascript"
+
+    monkeypatch.setattr(browser_mod, "_fetch_url_raw", fake_fetch)
+    page = '<script type="module" src="/latest.js"></script>'
+    for _ in range(2):
+        assert "ready()" in browser_mod._inline_module_scripts(page, "https://example.com/")
+    assert fetched == ["https://example.com/latest.js"] * 2

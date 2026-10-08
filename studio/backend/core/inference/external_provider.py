@@ -7,6 +7,7 @@
 import asyncio
 import base64
 import contextlib
+import hashlib
 import io
 import json as _json
 import math
@@ -43,20 +44,36 @@ from models.providers import (
 # sweeping a hosted API costs a space in delimiter-like text, not sweeping a local one costs a forged turn.
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom", "lemonade"})
 
-# The subset documenting "continue_final_message" + "add_generation_prompt" on /v1/chat/completions.
+# only vLLM and llama.cpp document both continuation flags on /v1/chat/completions.
 _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 
-# The subset documenting stream_options.include_usage. An OAI-compatible stream omits usage without it, leaving the
-# chat context bar without prompt_tokens and, where no llama.cpp timings arrive, the monitor without a speed. Same
-# caution as the flag above: "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
-# "openai" is absent because it routes to /v1/responses, which reports usage on its own.
+# custom may reject include_usage; OpenAI Responses supplies usage, while listed streams require it.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "llama_cpp", "openrouter", "kimi", "lemonade"})
 
-# llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
+# launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
+_SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
+# refresh quickly enough to detect a server restart within one or two turns.
+_SERVED_WINDOW_TTL_S = 60.0
+_SERVED_WINDOW_TIMEOUT_S = 5.0
+_served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _reported_window(entry: dict[str, Any]) -> Optional[int]:
+    # llama-server's served window is meta.n_ctx, not meta.n_ctx_train; others use max_model_len.
+    meta = entry.get("meta")
+    return _positive_int(meta.get("n_ctx") if isinstance(meta, dict) else None) or _positive_int(
+        entry.get("max_model_len")
+    )
+
+
+# llama-server expects repeat_penalty rather than repetition_penalty.
 _REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
 
-# structlog so INFO diagnostics reach the backend's JSON log stream (the stdlib root logger defaults to WARNING with
-# no handlers). It accepts the existing printf-style positional args.
+# structlog sends INFO diagnostics to the backend JSON stream and accepts printf-style arguments.
 logger = structlog.get_logger(__name__)
 
 _MAX_CONCATENATED_WAV_BYTES = 64 * 1024 * 1024
@@ -7397,30 +7414,15 @@ class ExternalProviderClient:
         ]
 
     async def list_models(self) -> list[dict[str, Any]]:
-        """GET /models to discover available models. Returns dicts with at least 'id'. All providers
-        expose /models with the OpenAI {"data": [...]} shape, Anthropic included."""
+        """return each provider's OpenAI-compatible /models entries, including Anthropic."""
         try:
-            response = await _client().get(
-                f"{self.base_url}/models",
-                headers = self._auth_headers(),
-                timeout = self._timeout,
-            )
-            response.raise_for_status()
-            data = response.json()
-            # Some local servers (Ollama with no models) return data: null.
-            models: list[dict[str, Any]] = []
-            if isinstance(data, dict):
-                raw_models = data.get("data") or []
-                if isinstance(raw_models, list):
-                    models = [model for model in raw_models if isinstance(model, dict)]
+            data, models = await self._models_payload(self._timeout)
             if self.provider_type == "ollama":
-                # Only /api/tags carries the per-model "thinking" capability.
+                # only /api/tags carries each model's "thinking" capability.
                 if not models:
                     models = await self._list_ollama_native_models()
                 else:
                     models = await self._with_ollama_capabilities(models)
-            # Gemini's native /v1beta/models uses a different shape; repackage into the OpenAI-compatible one Unsloth
-            # expects.
             if not models and self.provider_type == "gemini":
                 models = self._parse_gemini_models(data)
             return models
@@ -7428,11 +7430,75 @@ class ExternalProviderClient:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
 
+    async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
+        response = await _client().get(
+            f"{self.base_url}/models", headers = self._auth_headers(), timeout = timeout
+        )
+        response.raise_for_status()
+        data = response.json()
+        # Ollama returns data: null when no models are installed.
+        raw = data.get("data") if isinstance(data, dict) else None
+        return data, [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+
+    async def _read_served_window(self, model: str) -> Optional[int]:
+        _, entries = await self._models_payload(_SERVED_WINDOW_TIMEOUT_S)
+        by_id = {e["id"]: e for e in entries if isinstance(e.get("id"), str)}
+        entry = by_id.get(model) or next(
+            (e for e in entries if isinstance(e.get("aliases"), list) and model in e["aliases"]),
+            # a single-model llama-server serves its only model for any requested id.
+            entries[0] if len(entries) == 1 else None,
+        )
+        if entry is None:
+            return None
+        window = _reported_window(entry)
+        parent = entry.get("parent")
+        if window is None and isinstance(parent, str) and parent in by_id:
+            # vLLM and SGLang LoRA adapters use their base model's context window.
+            window = _reported_window(by_id[parent])
+        if window is not None or entry.get("owned_by") != "llamacpp":
+            return window
+        # before b9500 added meta.n_ctx, /props reports n_ctx; ?model= routes only in router mode.
+        entry_id = entry.get("id")
+        props = await _client().get(
+            f"{self.base_url.removesuffix('/v1')}/props",
+            params = {"model": entry_id if isinstance(entry_id, str) else model},
+            headers = self._auth_headers(),
+            timeout = _SERVED_WINDOW_TIMEOUT_S,
+        )
+        props.raise_for_status()
+        body = props.json()
+        settings = body.get("default_generation_settings") if isinstance(body, dict) else None
+        return _positive_int(settings.get("n_ctx") if isinstance(settings, dict) else None)
+
+    async def served_context_window(self, model: str) -> Optional[int]:
+        """cache served windows and missing results for one minute to limit silent-server reads."""
+        if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
+            return None
+        now = time.monotonic()
+        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        cached = _served_windows.get(key)
+        if cached is not None and cached[0] > now:
+            return cached[1]
+        window = None
+        try:
+            # both reads share one deadline because the first token waits for them.
+            window = await asyncio.wait_for(
+                self._read_served_window(model), timeout = _SERVED_WINDOW_TIMEOUT_S
+            )
+        except httpx.ConnectError as exc:
+            # retry a down or restarting server next turn instead of caching the miss for a minute.
+            logger.info("No served context window from %s: %s", self.provider_type, exc)
+            return None
+        except (httpx.HTTPError, ValueError, asyncio.TimeoutError) as exc:
+            logger.info("No served context window from %s: %r", self.provider_type, exc)
+        for stale in [k for k, (expiry, _) in _served_windows.items() if expiry <= now]:
+            del _served_windows[stale]
+        _served_windows[key] = (now + _SERVED_WINDOW_TTL_S, window)
+        return window
+
     @staticmethod
     def _parse_gemini_models(payload: Any) -> list[dict[str, Any]]:
-        """Translate Gemini's native /v1beta/models payload to OpenAI shape, keeping only entries
-        advertising generateContent / streamGenerateContent so embedding-only models do not reach
-        the chat picker."""
+        """map Gemini models to OpenAI entries and exclude advertised embedding-only models."""
         if not isinstance(payload, dict):
             return []
         entries = payload.get("models") or []

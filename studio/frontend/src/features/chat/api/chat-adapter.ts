@@ -455,6 +455,8 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  // Studio tool loops: context after the turn; total_tokens re-counts earlier passes' completions.
+  context_tokens?: number;
   // cache_creation is Anthropic's cache-write count, cache_write_tokens OpenRouter's.
   prompt_tokens_details?: {
     cached_tokens?: number;
@@ -2263,7 +2265,7 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
-async function resolveChatInstructions(
+export async function resolveChatInstructions(
   threadId: string | undefined,
   systemPrompt: unknown,
   systemVariables: unknown,
@@ -8284,6 +8286,9 @@ export function createOpenAIStreamAdapter(
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
+            ...(typeof meta.usage.context_tokens === "number"
+              ? { contextTokens: meta.usage.context_tokens }
+              : {}),
             cachedTokens,
             cacheWriteTokens,
           };
@@ -8468,6 +8473,9 @@ export function createOpenAIStreamAdapter(
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
                     totalTokens: meta.usage.total_tokens,
+                    ...(typeof meta.usage.context_tokens === "number"
+                      ? { contextTokens: meta.usage.context_tokens }
+                      : {}),
                     cachedTokens,
                     cacheWriteTokens,
                     modelId: params.checkpoint,

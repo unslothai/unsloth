@@ -789,6 +789,8 @@ export interface OpenAIChatChunk {
     prompt_tokens: number;
     completion_tokens: number;
     total_tokens: number;
+    /** Studio tool-loop addition: the context after the turn, for usage bars. */
+    context_tokens?: number;
   };
   timings?: Record<string, number>;
   /** Studio heuristic: the response may have stopped mid-quote. */

@@ -77,6 +77,8 @@ interface InstallLatestTransformersResponse {
   /** On a version-mismatch failure: the release that superseded the requested
    *  one, so Retry can use it. */
   latest_version?: string | null;
+  /** On a version-mismatch failure: transformers main's current version. */
+  latest_main_version?: string | null;
 }
 
 /** Consented install of the latest transformers into the sidecar; synchronous, can take minutes.

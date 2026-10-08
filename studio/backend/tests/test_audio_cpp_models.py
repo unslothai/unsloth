@@ -2084,10 +2084,22 @@ def test_stt_takes_the_variant_keys_gguf_variants_lists_even_from_a_partial_cach
     assert s.resolve_audio_cpp_stt_model(f"{folder}:small/Q8_0").variant.key == "small/Q8_0"
     assert s.resolve_audio_cpp_stt_model(f"{folder}:small").variant.key == "small/Q8_0"
     assert s.is_model_downloaded(f"{folder}:small/Q8_0")
-    # A variant that is not on disk is still refused rather than swapped for another.
+    # variants missing from disk are refused instead of replaced by another variant.
     tiny = acm.resolve(folder, "tiny/Q8_0", network = False)
     assert "not found" in tiny.unsupported
-    # A file stem is a spelling of its own row, not a new scope.
+    # dictation treats this as a download opportunity, not a bad model id.
+    from core.inference.stt_sidecar import SttModelIdError, SttModelNotDownloadedError
+
+    with pytest.raises(SttModelNotDownloadedError, match = r"\(tiny/Q8_0\) is not downloaded"):
+        s.resolve_audio_cpp_stt_model(f"{folder}:tiny/Q8_0")
+    with pytest.raises(SttModelNotDownloadedError):
+        s.resolve_audio_cpp_stt_model(folder, "tiny/Q8_0")
+    assert not s.is_model_downloaded(f"{folder}:tiny/Q8_0")
+    # another task's folder remains invalid regardless of quant.
+    _kokoro(hub)
+    with pytest.raises(SttModelIdError):
+        s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF:Q8_0")
+    # a file stem names its existing row rather than a new scope.
     stem = acm.resolve(folder, "moonshine-streaming-small-q8_0", network = False)
     assert stem.variant.key == "Q8_0" and stem.unsupported is None
 
@@ -2096,7 +2108,7 @@ def test_yue2_length_follows_the_requested_duration():
     b, srv = _backend_with(_speech_model("yue2"), MUSIC_REPLY)
     b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 125)
     options = srv.calls[0][1]["request"]["options"]
-    # 5 s at 25 frames per second, with the default 200-frame floor lowered to fit.
+    # 5 s at 25 frames per second, with the 200-frame default lowered to fit.
     assert options["semantic_max_tokens"] == 125 and options["semantic_min_tokens"] == 125
     b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 1500)
     options = srv.calls[1][1]["request"]["options"]

@@ -2051,6 +2051,13 @@ class InferenceOrchestrator:
             self.loading_models.discard(model_name)
             logger.info("Load cancelled before worker start: %s", model_name)
             return False
+        # The audio.cpp update sets this before it scans loading_models, so a load registering after
+        # the scan is refused here rather than started from the tree being replaced.
+        if getattr(config, "audio_cpp", None) is not None:
+            from core.inference.audio_cpp_server import UPDATE_IN_PROGRESS
+            if UPDATE_IN_PROGRESS.is_set():
+                self.loading_models.discard(model_name)
+                raise RuntimeError("The audio runtime is being updated. Try again in a moment.")
 
         try:
             needed_major = "5" if needs_transformers_5(model_name) else "4"

@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
   type ReactNode,
   type SetStateAction,
@@ -269,11 +270,18 @@ import {
 } from "./train/train-base-selector";
 
 function withEngagedFamily(
-  { repoId, kind, filename }: RememberedImageModel,
+  { repoId, kind, filename, textEncoderFiles, vaeFile }: RememberedImageModel,
   status: Pick<DiffusionStatus, "resolved">,
 ): RememberedImageModel {
   const family = explicitFamily(resolvedFamilyOverrideSelection(status.resolved?.family_override));
-  return { repoId, kind, ...(filename ? { filename } : {}), ...(family ? { familyOverride: family } : {}) };
+  return {
+    repoId,
+    kind,
+    ...(filename ? { filename } : {}),
+    ...(family ? { familyOverride: family } : {}),
+    ...(textEncoderFiles?.length ? { textEncoderFiles } : {}),
+    ...(vaeFile ? { vaeFile } : {}),
+  };
 }
 
 /** Whether this pick may receive a transformer precision request. Unknown repos defer to the backend. */
@@ -787,6 +795,54 @@ function ResolvedBadge({
   );
 }
 
+const COMPONENT_FILES_HINT =
+  "Optional. Use separate ComfyUI text encoder / VAE .safetensors files instead of downloading the base model's. Absolute path, or relative to the model folder (e.g. ../text_encoders/clip_l.safetensors). Only for single-file or GGUF transformers.";
+
+function AdvancedTextField({
+  label,
+  hint,
+  placeholder,
+  value,
+  onValueChange,
+  multiline = false,
+}: {
+  label: string;
+  hint?: ReactNode;
+  placeholder?: string;
+  value: string;
+  onValueChange: (v: string) => void;
+  multiline?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-muted-foreground">
+        {label}
+        {hint && <InfoHint>{hint}</InfoHint>}
+      </span>
+      {multiline ? (
+        <Textarea
+          aria-label={label}
+          rows={2}
+          spellCheck={false}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          className="min-h-0 resize-y font-mono text-xs"
+        />
+      ) : (
+        <Input
+          aria-label={label}
+          spellCheck={false}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          className="h-8 font-mono text-xs"
+        />
+      )}
+    </div>
+  );
+}
+
 function AdvancedSelect({
   label,
   hint,
@@ -1270,6 +1326,14 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
         }
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
       />
+      {status.component_files && Object.keys(status.component_files).length > 0 ? (
+        <BuildRow
+          label="Text encoder / VAE files"
+          value={Object.entries(status.component_files)
+            .map(([component, file]) => `${component}: ${file}`)
+            .join(", ")}
+        />
+      ) : null}
       <BuildRow
         label="Memory"
         value={
@@ -1308,6 +1372,7 @@ function reportLoadFailure(message: string | null | undefined, fallback: string)
 
 type Busy = "loading" | "unloading" | "generating" | null;
 type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string };
+type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
 
 // What a pick optimistically replaced, so a load that never takes can put it all back. The
 // quant label and the recipe move together at pick time, so they roll back together.
@@ -1336,6 +1401,8 @@ type LoadAdvanced = Pick<
   | "family_override"
   | "loras"
   | "gpu_ids"
+  | "text_encoder_file"
+  | "vae_file"
 >;
 
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
@@ -1527,6 +1594,8 @@ export function ImagesPage({
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
+  const [textEncoderFiles, setTextEncoderFiles] = useState("");
+  const [vaeFile, setVaeFile] = useState("");
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
   // but not which card, so a refresh would reset it to Auto. A stale id is dropped on send.
@@ -1538,7 +1607,7 @@ export function ImagesPage({
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
-  const lastLoad = useRef<({ repoId: string } & ImageLoadOptions) | null>(null);
+  const lastLoad = useRef<LastLoad | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults were already seeded from a discovered resident model, so we seed
@@ -1844,6 +1913,7 @@ export function ImagesPage({
 
   // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
   const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
+  const negativeCapable = status?.supports_negative_prompt !== false;
   useEffect(() => {
     if (!controlnetCapable) {
       setAvailableControlNets([]);
@@ -2847,6 +2917,11 @@ export function ImagesPage({
           gpuChoices.some((d) => String(d.index) === selectedGpu)
             ? [Number(selectedGpu)]
             : undefined,
+        text_encoder_file: (() => {
+          const files = splitComponentFileList(textEncoderFiles);
+          return files.length > 0 ? files : undefined;
+        })(),
+        vae_file: vaeFile.trim() || undefined,
       };
     },
     [
@@ -2861,6 +2936,8 @@ export function ImagesPage({
       familyOverride,
       selectedGpu,
       gpuChoices,
+      textEncoderFiles,
+      vaeFile,
     ],
   );
 
@@ -2908,7 +2985,15 @@ export function ImagesPage({
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename, displayRepoId: opts.displayRepoId };
+      const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      lastLoad.current = {
+        repoId,
+        kind: opts.kind,
+        filename: opts.filename,
+        displayRepoId: opts.displayRepoId,
+        textEncoderFiles: componentFiles.text_encoder_file,
+        vaeFile: componentFiles.vae_file,
+      };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -2934,6 +3019,7 @@ export function ImagesPage({
           family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
+          ...componentFiles,
         });
         await startRequest;
       } catch (err) {
@@ -3156,6 +3242,7 @@ export function ImagesPage({
         // The plan route preflights precision and sizes the file set against the card the load will
         // use, so a selection the load carries has to reach the plan.
         gpu_ids: advanced.gpu_ids,
+        ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
       }),
     [],
   );
@@ -4292,7 +4379,8 @@ export function ImagesPage({
           res = await generateDiffusionImage({
             prompt: prompt.trim(),
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
-            negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+            negative_prompt:
+              negativeCapable && guidance > 0 ? negativePrompt.trim() || undefined : undefined,
             width: w,
             height: h,
             steps,
@@ -4395,7 +4483,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [allowOversized, livePreview, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -4437,7 +4525,18 @@ export function ImagesPage({
         (kind === "pipeline" ||
           ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
       ) {
-        const model = withEngagedFamily({ repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined }, status);
+        const model = withEngagedFamily(
+          lastLoad.current &&
+            matchesRememberedModel(lastLoad.current, status) &&
+            componentFilesMatch(lastLoad.current, status.component_files)
+            ? lastLoad.current
+            : rememberedModel &&
+                matchesRememberedModel(rememberedModel, status) &&
+                componentFilesMatch(rememberedModel, status.component_files)
+              ? rememberedModel
+              : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
+          status,
+        );
         rememberImageModel(model);
         setRememberedModel(model);
       }
@@ -4463,7 +4562,13 @@ export function ImagesPage({
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
       // Only the family the remembered load engaged; the live selection belongs to whatever is picked next.
-      { ...currentLoadAdvanced(rememberedModel.repoId, false, true), family_override: rememberedModel.familyOverride },
+      {
+        ...currentLoadAdvanced(rememberedModel.repoId, false, true),
+        family_override: rememberedModel.familyOverride,
+        // The recalled build's own encoder / VAE files, not whatever the fields hold now.
+        text_encoder_file: rememberedModel.textEncoderFiles,
+        vae_file: rememberedModel.vaeFile,
+      },
     );
     if (!started) pendingRecalledGeneration.current = null;
   }, [
@@ -4627,6 +4732,21 @@ export function ImagesPage({
           ] as [string, string][],
           nvfp4Diffusion,
         )}
+      />
+      <AdvancedTextField
+        label="Text encoder file(s)"
+        hint={COMPONENT_FILES_HINT}
+        multiline
+        placeholder="../text_encoders/clip_l.safetensors"
+        value={textEncoderFiles}
+        onValueChange={setTextEncoderFiles}
+      />
+      <AdvancedTextField
+        label="VAE file"
+        hint={COMPONENT_FILES_HINT}
+        placeholder="../vae/ae.safetensors"
+        value={vaeFile}
+        onValueChange={setVaeFile}
       />
       <AdvancedSelect
         label="Attention"
@@ -5295,14 +5415,16 @@ export function ImagesPage({
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
-            <NegativePromptField
-              value={negativePrompt}
-              onChange={setNegativePrompt}
-              open={negativeOpen}
-              onOpenChange={setNegativeOpen}
-              hint="What to steer the image away from. Only used when guidance is above 0."
-              textareaClassName={IMAGE_PROMPT_BOX}
-            />
+            {negativeCapable && (
+              <NegativePromptField
+                value={negativePrompt}
+                onChange={setNegativePrompt}
+                open={negativeOpen}
+                onOpenChange={setNegativeOpen}
+                hint="What to steer the image away from. Only used when guidance is above 0."
+                textareaClassName={IMAGE_PROMPT_BOX}
+              />
+            )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
               <Field

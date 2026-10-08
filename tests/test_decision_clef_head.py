@@ -199,17 +199,22 @@ def test_compile_gating(monkeypatch):
     import torch.utils._triton as triton_utils
 
     monkeypatch.setattr(triton_utils, "has_triton", lambda: True)
+    cuda = torch.device("cuda")
+    # Eager unless asked for: unset, "auto" and "0" never compile.
+    monkeypatch.delenv("UNSLOTH_CLEF_COMPILE", raising = False)
+    assert not clef._compile_supported(cuda) and clef._compiled_logits(cuda) is None
+    for choice in ("auto", "0"):
+        monkeypatch.setenv("UNSLOTH_CLEF_COMPILE", choice)
+        assert not clef._compile_supported(cuda)
+    monkeypatch.setenv("UNSLOTH_CLEF_COMPILE", "1")
+    assert clef._compile_supported(cuda)
     assert not clef._compile_supported(torch.device("cpu"))
-    assert clef._compile_supported(torch.device("cuda"))
     # ROCm reports cuda devices: compiled when its Triton is present.
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
-    assert clef._compile_supported(torch.device("cuda"))
+    assert clef._compile_supported(cuda)
     # Windows ROCm / CUDA wheels without Triton: eager.
     monkeypatch.setattr(triton_utils, "has_triton", lambda: False)
-    assert not clef._compile_supported(torch.device("cuda"))
-    monkeypatch.setattr(triton_utils, "has_triton", lambda: True)
-    monkeypatch.setenv("UNSLOTH_CLEF_COMPILE", "0")
-    assert not clef._compile_supported(torch.device("cuda"))
+    assert not clef._compile_supported(cuda)
 
 
 def test_a_failed_compile_falls_back_to_eager(monkeypatch):

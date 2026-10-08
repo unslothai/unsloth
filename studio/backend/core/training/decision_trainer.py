@@ -19,6 +19,8 @@ logger = get_logger(__name__)
 
 EVAL_MAX = 2000
 MIN_REPORTED_ITEMS = 50
+# The from-LM recipe's head rate (scripts/train_decision_from_lm.py --head-lr).
+FRESH_HEAD_LEARNING_RATE = 3e-4
 STRUCT_COLUMNS_WARNING = (
     "The state, questions or gold columns are stored as objects rather than JSON strings, so "
     "missing fields come back as nulls and choice options can change order. Store them as JSON "
@@ -306,7 +308,9 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
 
     model_name = config["model_name"]
     subfolder = config.get("model_subfolder") or None
-    clef = config.get("decision_layout") == "clef"
+    # "llm": a plain text or vision LLM that gets a fresh Clef joint schema head.
+    llm = config.get("decision_layout") == "llm"
+    clef = llm or config.get("decision_layout") == "clef"
     hf_token = _worker_hf_token(config)
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
@@ -315,32 +319,44 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     gradient_checkpointing = normalize_gradient_checkpointing(config["gradient_checkpointing"])
 
     status("Loading decision model...")
-    try:
-        root = laya_runtime._checkpoint_dir(
-            Checkpoint("base", model_name, subfolder, "", layout = "clef" if clef else "laya")
+    if llm:
+        model, tokenizer = FastDecisionModel.from_pretrained(
+            model_name,
+            decision_head = "clef",
+            max_seq_length = config.get("max_seq_length") or None,
+            load_in_4bit = use_lora and bool(config.get("load_in_4bit")),
+            full_finetuning = not use_lora,
+            token = hf_token or None,
+            use_gradient_checkpointing = gradient_checkpointing,
+            random_state = seed,
         )
-    except LocalEntryNotFoundError as exc:
-        send("error", error = f"Could not download {model_name}: {exc}", stack = "")
-        return
-    except FileNotFoundError as exc:
-        kind = "Clef" if clef else "Laya"
-        send("error", error = f"Not a {kind} decision checkpoint: {exc}", stack = "")
-        return
-    model, tokenizer = FastDecisionModel.from_pretrained(
-        str(root),
-        subfolder = subfolder,
-        full_finetuning = not use_lora,
-        use_gradient_checkpointing = gradient_checkpointing,
-        # Clef trains through Unsloth's Qwen3.5 loader, in 4-bit for QLoRA; Laya is always 16-bit.
-        **(
-            {
-                "load_in_4bit": use_lora and bool(config.get("load_in_4bit")),
-                "max_seq_length": config.get("max_seq_length") or None,
-            }
-            if clef
-            else {}
-        ),
-    )
+    else:
+        try:
+            root = laya_runtime._checkpoint_dir(
+                Checkpoint("base", model_name, subfolder, "", layout = "clef" if clef else "laya")
+            )
+        except LocalEntryNotFoundError as exc:
+            send("error", error = f"Could not download {model_name}: {exc}", stack = "")
+            return
+        except FileNotFoundError as exc:
+            kind = "Clef" if clef else "Laya"
+            send("error", error = f"Not a {kind} decision checkpoint: {exc}", stack = "")
+            return
+        model, tokenizer = FastDecisionModel.from_pretrained(
+            str(root),
+            subfolder = subfolder,
+            full_finetuning = not use_lora,
+            use_gradient_checkpointing = gradient_checkpointing,
+            # Clef trains through Unsloth's Qwen3.5 loader, in 4-bit for QLoRA; Laya is always 16-bit.
+            **(
+                {
+                    "load_in_4bit": use_lora and bool(config.get("load_in_4bit")),
+                    "max_seq_length": config.get("max_seq_length") or None,
+                }
+                if clef
+                else {}
+            ),
+        )
     if use_lora:
         model = FastDecisionModel.get_peft_model(
             model,
@@ -462,6 +478,8 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         train_dataset = items,
         eval_dataset = eval_items or None,
         processing_class = tokenizer,
+        # A fresh head starts from random weights, so it learns faster than a trained Clef head.
+        head_learning_rate = FRESH_HEAD_LEARNING_RATE if llm else None,
         callbacks = [
             _create_embedding_progress_callback(
                 event_queue,
@@ -493,6 +511,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     model.decision_config["training"] = {
         "base": model_name,
         "subfolder": subfolder,
+        "decision_head": "clef (new)" if llm else None,
         "method": ("qlora" if clef and config.get("load_in_4bit") else "lora")
         if use_lora
         else "full",

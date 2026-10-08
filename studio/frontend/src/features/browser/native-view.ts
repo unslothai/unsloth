@@ -10,9 +10,12 @@ import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
+import { approveDownload, downloadSiteOf } from "./download-approval-queue";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
+import { decideNativeDownload } from "./native-downloads";
 import { callNative as call, nativeClearing, onNativeViewsClosed } from "./native-support";
+import { useBrowserPrefsStore } from "./prefs-store";
 import { type BrowserEntry, type BrowserTab, currentEntry, entryKey, useBrowserStore } from "./store";
 
 export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
@@ -47,13 +50,19 @@ type NativeEvent =
       done: boolean;
       success: boolean;
       downloadId: string | null;
-    };
+      /** False when the file couldn't be marked as downloaded from the internet; null where nothing marks. */
+      marked?: boolean | null;
+    }
+  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
 const t = (key: TranslationKey, values?: InterpolationValues) => translate(key, values, getLocale());
 
 const views = new Map<string, number>();
+// Tabs this page has opened a view for. A download from any other tab started under the account
+// signed in before the last reload (an account switch reloads), so it isn't this account's to list.
+const openedTabs = new Set<string>();
 let recency: string[] = [];
 const zooms = new Map<string, number>();
 const icons = new Map<string, string>();
@@ -91,6 +100,7 @@ function keepReachedPage(tabId: string): void {
 function closeView(tabId: string): void {
   keepReachedPage(tabId);
   views.delete(tabId);
+  viewBounds.delete(tabId);
   zooms.delete(tabId);
   icons.delete(tabId);
   pages.delete(tabId);
@@ -108,9 +118,33 @@ function listenOnce(): void {
   );
 }
 
+/** Always answered: an unanswered download would sit in staging until the app quits. */
+function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
+  const { id, url, site, name } = event;
+  const entry = tab ? currentEntry(tab) : null;
+  // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
+  const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
+  const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
+  void decided
+    .then(async (allow) => {
+      await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
+      if (allow) toast(t("browser.native.downloading", { name }));
+    })
+    .catch(() => undefined);
+}
+
 function onNativeEvent(event: NativeEvent): void {
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === event.tabId);
+  if (event.kind === "downloadPrompt") {
+    onDownloadPrompt(event, tab);
+    return;
+  }
+  // A download outlives its page: it often lands after the tab closed or moved on, and still belongs in history.
+  if (event.kind === "download") {
+    if (openedTabs.has(event.tabId)) onDownload(event);
+    return;
+  }
   if (!tab || currentEntry(tab).kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
   switch (event.kind) {
@@ -152,11 +186,11 @@ function onNativeEvent(event: NativeEvent): void {
       newTabTimes = newTabTimes.filter((time) => now - time < NEW_TAB_WINDOW_MS);
       if (newTabTimes.length < NEW_TABS_PER_WINDOW) {
         newTabTimes.push(now);
-        store.openUrl(event.url, { newTab: true });
+        store.openUrl(event.url, { newTab: true, from: shownUrl(tab) });
       } else {
         prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
           label: t("browser.native.open"),
-          onClick: () => store.openUrl(event.url, { newTab: true }),
+          onClick: () => store.openUrl(event.url, { newTab: true, from: shownUrl(tab) }),
         });
       }
       break;
@@ -167,22 +201,24 @@ function onNativeEvent(event: NativeEvent): void {
         onClick: () => openExternalLink(event.url),
       });
       break;
-    case "download":
-      if (!event.done) {
-        toast(t("browser.native.downloading", { name: event.name }));
-      } else if (event.success) {
-        history.recordDownload({
-          name: event.name,
-          url: event.url,
-          size: event.size ?? 0,
-          contentType: "",
-          nativeId: event.downloadId ?? undefined,
-        });
-        toast.success(t("browser.native.downloaded", { name: event.name }));
-      } else {
-        toast.error(t("browser.native.downloadFailed", { name: event.name }));
-      }
-      break;
+  }
+}
+
+function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
+  if (!event.done) {
+    toast(t("browser.native.downloading", { name: event.name }));
+  } else if (event.success) {
+    useBrowserHistoryStore.getState().recordDownload({
+      name: event.name,
+      url: event.url,
+      size: event.size ?? 0,
+      contentType: "",
+      nativeId: event.downloadId ?? undefined,
+    });
+    if (event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
+    else toast.success(t("browser.native.downloaded", { name: event.name }));
+  } else {
+    toast.error(t("browser.native.downloadFailed", { name: event.name }));
   }
 }
 
@@ -225,6 +261,12 @@ export function nativeAction(tabId: string, action: "back" | "forward" | "reload
   void call("browser_view_action", { tabId, action }).catch(() => undefined);
 }
 
+/** Gives key focus back to the panel's webview. */
+export function focusPanel(tabId: string): Promise<void> {
+  if (!views.has(tabId)) return Promise.resolve();
+  return call("browser_view_action", { tabId, action: "blur" }).catch(() => undefined);
+}
+
 export function returnToNativePage(tabId: string): boolean {
   const shown = pages.get(tabId);
   const store = useBrowserStore.getState();
@@ -241,14 +283,20 @@ export function hasNativeView(tabId: string): boolean {
   return views.has(tabId);
 }
 
+/** Last shown bounds of `tabId`'s view, in window coordinates. */
+export function nativeViewBounds(tabId: string): Bounds | null {
+  return viewBounds.get(tabId) ?? null;
+}
+
 export async function nativeFind(tabId: string, query: string, backwards: boolean): Promise<boolean> {
   if (!views.has(tabId)) return false;
   return call<boolean>("browser_view_find", { tabId, query, backwards }).catch(() => false);
 }
 
 // exclude upward-opening tooltips to avoid hiding the native page on every hover; overlapping toasts still cover it.
+// `data-native-cover`: panel UI over the page, e.g. an annotation comment.
 const OVERLAY_SELECTOR =
-  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast]';
+  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast], [data-native-cover]';
 
 function intersects(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -274,7 +322,10 @@ function visibleRect(element: HTMLElement): DOMRect | null {
   }
   if (rect.width < 2 || rect.height < 2) return null;
   let bottom = rect.bottom;
-  for (const dock of document.querySelectorAll<HTMLElement>(".chat-full-view-dock, .chat-full-view-dock-minimized")) {
+  // `data-native-inset`: panel UI below the page, e.g. the annotate bar.
+  for (const dock of document.querySelectorAll<HTMLElement>(
+    ".chat-full-view-dock, .chat-full-view-dock-minimized, [data-native-inset]",
+  )) {
     const box = dock.getBoundingClientRect();
     if (box.height > 0 && intersects(box, rect)) bottom = Math.min(bottom, box.top - DOCK_GAP);
   }
@@ -379,6 +430,7 @@ export function whenNativeViewShown(tabId: string, timeoutMs = 1500): Promise<bo
 // keep the last frame on the placeholder so overlays do not leave the panel blank.
 let snapshot: { tabId: string; element: HTMLElement; url: string } | null = null;
 let shownBounds: Bounds | null = null;
+const viewBounds = new Map<string, Bounds>();
 
 function clearSnapshot(): void {
   if (!snapshot) return;
@@ -430,10 +482,12 @@ async function applyView(desired: Desired): Promise<void> {
     return true;
   };
   try {
+    openedTabs.add(tabId);
     await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
     if (stale()) return;
     clearSnapshot();
     shownBounds = bounds;
+    viewBounds.set(tabId, bounds);
     setShownView(tabId);
     // record the entry after navigation succeeds so failures remain retryable.
     if (existed && loaded !== entry) {
@@ -485,6 +539,7 @@ onNativeViewsClosed(() => {
   for (const tabId of [...views.keys()]) keepReachedPage(tabId);
   setShownView(null);
   views.clear();
+  viewBounds.clear();
   zooms.clear();
   icons.clear();
   pages.clear();

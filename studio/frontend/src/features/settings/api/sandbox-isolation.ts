@@ -35,6 +35,8 @@ export type WindowsSandboxStatus = {
   // null: MXC could not tell which host preparation steps are missing.
   hostPrepMissing: string[] | null;
   prepareRepeatsAfterRestart: boolean;
+  // true: MXC runs in Windows' built-in container; false: this Windows has none; null: unknown.
+  builtinContainer: boolean | null;
 };
 
 export type SandboxSetupPlan = {
@@ -119,6 +121,8 @@ type ApiWindowsStatus = {
   host_prep_missing?: string[] | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   prepare_repeats_after_restart?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  builtin_container?: boolean | null;
 };
 
 type ApiSandboxStatus = {
@@ -197,6 +201,7 @@ function windowsFromApi(
         ? null
         : windows.host_prep_missing,
     prepareRepeatsAfterRestart: windows.prepare_repeats_after_restart ?? true,
+    builtinContainer: windows.builtin_container ?? null,
   };
 }
 
