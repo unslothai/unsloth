@@ -117,7 +117,6 @@ def test_a_store_python_folder_keeps_the_per_launch_grant_on_every_launch(
     for _ in range(3):
         assert mxc_read_grants.ensure([store_python]) == ()
     assert _record() == {}
-    # One refused grant per process; no rollback of a change that never happened.
     assert [c[0] for c in calls] == ["/grant"]
 
 

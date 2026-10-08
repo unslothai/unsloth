@@ -234,7 +234,6 @@ def _store_python(host, tmp_path):
 
 
 def test_a_folder_windows_refuses_keeps_the_per_launch_grant(host, tmp_path):
-    # Store Python: TrustedInstaller owns the package, so icacls is denied on the root (#12941).
     root = _store_python(host, tmp_path)
     for _ in range(3):
         assert mxc_read_grants.ensure([root]) == ()
@@ -250,7 +249,6 @@ def test_a_stuck_pending_grant_on_a_folder_windows_refuses_is_dropped(host, tmp_
     mxc_read_grants._save_record(pending)
     assert mxc_read_grants.ensure([root]) == ()
     assert _record() == {}
-    # The opt-out cleanup path, which logged "Could not remove" on every check.
     mxc_read_grants._save_record(pending)
     assert mxc_read_grants.revoke_recorded() == ()
     assert _record() == {}
@@ -258,7 +256,6 @@ def test_a_stuck_pending_grant_on_a_folder_windows_refuses_is_dropped(host, tmp_
 
 
 def test_a_pending_grant_on_a_locked_folder_with_its_own_entry_still_refuses(host, tmp_path):
-    # An entry for the group is there and cannot be taken back: the state is still unknown.
     root = _store_python(host, tmp_path)
     key = os.path.normcase(root)
     host.explicit.add(key)
