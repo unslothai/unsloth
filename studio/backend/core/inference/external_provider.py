@@ -519,9 +519,7 @@ def _extract_web_search_action(item: dict[str, Any]) -> dict[str, Any]:
     return arguments
 
 
-# Families that accept `prompt_cache_retention: "24h"`. Everything else 400s with "prompt_cache_retention is not
-# supported on this model" and the turn dies (openai/codex#39397), while an unmatched model just falls back to
-# in-memory caching -- so guess narrow.
+# unsupported families return 400 for `prompt_cache_retention`; omit it to retain in-memory caching.
 _OPENAI_EXTENDED_CACHE_FAMILY = re.compile(r"^(?:gpt-5(?:\.\d+)?(?:[-.]|$)|gpt-4\.1$)")
 
 
@@ -529,8 +527,7 @@ class _AnthropicThinkingSpec(NamedTuple):
     prefixes: tuple[str, ...]
     kind: Literal["adaptive", "manual"]
     efforts: tuple[str, ...]
-    # Claude 5 thinks unless told otherwise, so "Thinking: off" must send an explicit disable. Fable/Mythos 5 and
-    # Opus 5.5 400 on it (thinking is always on); Sonnet 5.5 takes "between_tools" instead.
+    # off must be explicit; Fable/Mythos 5 and Opus 5.5 reject it; Sonnet 5.5 uses `between_tools`.
     thinking_default_on: bool = False
     can_disable: bool = True
     disable_type: str = "disabled"
@@ -2884,8 +2881,7 @@ class ExternalProviderClient:
                 effort = "none"
             elif enable_thinking is True:
                 effort = "medium"
-        # Models that think by default need an explicit disable; omitting the field leaves thinking on. Anthropic only
-        # accepts it at effort <= high, so send it alone (server default effort is high).
+        # send default-on disables alone: Anthropic defaults to valid `high` effort, while higher efforts reject them.
         if (
             effort == "none"
             and thinking_spec
@@ -2893,13 +2889,11 @@ class ExternalProviderClient:
             and thinking_spec.can_disable
         ):
             body["thinking"] = {"type": thinking_spec.disable_type}
-        # Normalize one semantic Thinking control into Anthropic's two model-era APIs: adaptive effort on Claude 4.6+,
-        # manual budget_tokens on 4.5.
+        # the shared control maps to adaptive effort on Claude 4.6+ and manual `budget_tokens` on Claude 4.5.
         if effort and effort != "none":
-            # Anthropic rejects top_k whenever thinking is enabled.
+            # Anthropic rejects `top_k` while thinking is enabled.
             body.pop("top_k", None)
-            # 4.5/4.6 require temperature=1 with thinking and forbid top_p in the same request; 4.7 removed
-            # temperature entirely (any value 400s), so skip the override there.
+            # Claude 4.5/4.6 require `temperature=1` and forbid `top_p` with thinking; Claude 4.7 rejects temperature.
             if not sampling_removed:
                 body["temperature"] = 1
             body.pop("top_p", None)
@@ -2907,9 +2901,7 @@ class ExternalProviderClient:
                 thinking_spec is None and _anthropic_model_newer_than_specs(model)
             )
             if adaptive:
-                # Force display="summarized": it defaults to "omitted" on Opus 4.7, which emits an empty thinking
-                # block and leaves the panel blank. Harmless no-op on 4.6. An unlisted id older than that gets no
-                # thinking field, since Claude 4.5 and earlier reject the adaptive shape.
+                # summarized display prevents blank Opus 4.7 panels; unlisted older models reject adaptive thinking.
                 body["thinking"] = {"type": "adaptive", "display": "summarized"}
                 # Adaptive effort lives under `output_config.effort`, not top-level (top-level 400s "Extra inputs are
                 # not permitted"). Allowed: low|medium|high|xhigh|max.

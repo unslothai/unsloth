@@ -836,7 +836,7 @@ const NO_REASONING_CAPS: ReasoningCaps = {
 
 const ANTHROPIC_REASONING_MODELS = [
   {
-    // Fable / Mythos 5 and Opus 5.5 always think: `thinking.type "disabled"` 400s, so there is no off switch.
+    // Fable, Mythos 5, and Opus 5.5 return 400 for disabled thinking; no off switch.
     prefixes: ["claude-fable-5", "claude-mythos-5", "claude-opus-5-5"],
     supportsOff: false,
     levels: ["low", "medium", "high", "xhigh", "max"],

@@ -499,14 +499,14 @@ def test_claude_5_uses_adaptive_thinking_and_effort(monkeypatch, model):
 
 
 def test_thinking_off_disables_explicitly_on_opus_5(monkeypatch):
-    """Opus 5 thinks by default, so "off" must send an explicit disable."""
+    """Opus 5 defaults to thinking, so off requires an explicit disable."""
     body = _capture_body(monkeypatch, model = "claude-opus-5", enable_thinking = False)
     assert body["thinking"] == {"type": "disabled"}
     assert "output_config" not in body
 
 
 def test_thinking_off_omits_disable_on_fable_5(monkeypatch):
-    """Fable 5 thinking is always on and 400s on an explicit disable."""
+    """Fable 5 always thinks and rejects explicit disable requests with HTTP 400."""
     body = _capture_body(monkeypatch, model = "claude-fable-5", enable_thinking = False)
     assert "thinking" not in body
 
