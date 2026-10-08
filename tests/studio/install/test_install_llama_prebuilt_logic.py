@@ -4089,6 +4089,7 @@ def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) 
     assert not (runtime_dir / "llama-cli").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
 @pytest.mark.parametrize("bundles_fit_params", [True, False])
 def test_macos_install_makes_llama_fit_params_executable(
     tmp_path: Path, bundles_fit_params: bool
@@ -4139,6 +4140,7 @@ def test_macos_install_makes_llama_fit_params_executable(
         assert not fit_params.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
 @pytest.mark.parametrize("skip_path", ["no_network_check", "plan_match"])
 def test_a_reused_install_repairs_a_non_executable_llama_fit_params(
     tmp_path: Path, monkeypatch, skip_path: str
