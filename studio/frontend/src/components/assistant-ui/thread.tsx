@@ -42,6 +42,7 @@ import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
+import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wheel-hover";
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -1977,6 +1978,13 @@ export const Thread: FC<{
   useEffect(() => {
     if (!viewportEl) return;
     return attachThreadFastCopy(viewportEl);
+  }, [viewportEl]);
+
+  // Wheeling past messages would toggle each one's hover state, and every toggle re-runs the
+  // thread's selectors; thread-wheel-hover.ts holds hover still until the scroll settles.
+  useEffect(() => {
+    if (!viewportEl) return;
+    return attachWheelHoverSuppression(viewportEl);
   }, [viewportEl]);
 
   // Bottom spacer sizing. Invariant: chat never moves on its own on composer
