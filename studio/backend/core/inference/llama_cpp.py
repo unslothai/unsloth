@@ -607,18 +607,13 @@ class _LlamaStreamCancelled(Exception):
     __slots__ = ()
 
 
-# vulkan-hpp's DeviceLostError reads "vk::Queue::submit: ErrorDeviceLost"; the raw
-# enum name covers a VkResult reported without vulkan-hpp.
+# vulkan-hpp formats DeviceLostError as "vk::Queue::submit: ErrorDeviceLost".
 _GPU_DEVICE_LOST_MARKERS = ("ErrorDeviceLost", "VK_ERROR_DEVICE_LOST")
-# How long a device loss seen in the server log waits before retiring the server.
 _DEVICE_LOST_LOG_GRACE_S = 2.0
 
 
 def _is_gpu_device_lost(exc: BaseException) -> bool:
-    """True when llama-server reported a lost GPU device (driver reset, #11453).
-
-    Covers both shapes: a 500 before the stream opens and an in-band SSE error chunk.
-    """
+    """True when llama-server reported a lost GPU device (500 body or SSE error, #11453)."""
     text = str(exc)
     return any(marker in text for marker in _GPU_DEVICE_LOST_MARKERS)
 
@@ -17932,8 +17927,7 @@ class LlamaCppBackend:
                     if level is not None:
                         levelled = True
                         to_info = level.group(1) in "WE" or (ready and level.group(1) == "I")
-                        # Only the server's own error lines: unprefixed lines can be a
-                        # request dump carrying user text.
+                        # E lines only: unprefixed lines can be a request dump with user text.
                         if (
                             not device_lost_seen
                             and level.group(1) == "E"
@@ -35691,13 +35685,10 @@ class LlamaCppBackend:
                 return started
 
     def _retire_device_lost_server(self, served_by) -> None:
-        """Kill a llama-server whose GPU device was lost (#11453).
+        """Kill the llama-server that hit a lost GPU device, if it is still current (#11453).
 
-        Vulkan reports VK_ERROR_DEVICE_LOST as an exception the server catches, so the
-        process stays up and fails every later request until a manual eject. A lost
-        device cannot be reset in place, so kill the child that served the error: that
-        is the SIGKILL'd state _respawn_if_dead already recovers from. Only that child,
-        so a caller whose error came from an already replaced server kills nothing.
+        It survives VK_ERROR_DEVICE_LOST but fails every later request; a dead child is
+        what _respawn_if_dead already recovers.
         """
         with self._respawn_lock:
             if (
@@ -35707,7 +35698,7 @@ class LlamaCppBackend:
                 or self._cancel_event.is_set()
             ):
                 return
-            # Deliberate kill: the MTP crash watchdog must not read it as an MTP crash.
+            # Else the MTP watchdog reads this kill as an MTP crash.
             self._stop_mtp_crash_watchdog()
             try:
                 served_by.kill()
@@ -35725,11 +35716,9 @@ class LlamaCppBackend:
             pass
 
     def _retire_device_lost_server_soon(self, served_by) -> None:
-        """Retire a server whose own log reported a lost GPU device.
+        """Retire after a device loss in the server log, for the passthrough routes.
 
-        Covers requests Studio does not parse itself (the OpenAI and Anthropic
-        passthrough), whose next request then respawns through the dead-server path.
-        The grace lets a Studio request that hit the same error retire and retry first.
+        The grace lets a chat request that hit the same error retire and retry first.
         """
 
         def _retire():
@@ -35776,8 +35765,7 @@ class LlamaCppBackend:
             except RuntimeError as exc:
                 if not _is_gpu_device_lost(exc):
                     raise
-                # Mid-stream (the consumer raised it): retire the server so the next
-                # request respawns it. Before the 200: nothing was emitted, so retry.
+                # Retry only before the 200; once opened the consumer may have emitted output.
                 self._retire_device_lost_server(served_by)
                 if response_opened or attempt > 0 or not self._respawn_if_dead():
                     raise
@@ -36066,8 +36054,6 @@ class LlamaCppBackend:
         _metadata_finish_reason = None
 
         def _replay_on_replacement_server():
-            # One retry on a respawned server, bounded by the private flag. Only taken
-            # before anything was yielded, so there is no duplicate output.
             context_overflow_ = retry_context_overflow
             max_tokens_ = retry_max_tokens
             if (
@@ -36277,9 +36263,6 @@ class LlamaCppBackend:
             if cancel_event is not None and cancel_event.is_set():
                 return
             if _is_gpu_device_lost(e):
-                # The server survives a lost GPU device but fails every later request:
-                # replace it, and retry now when nothing was yielded yet. Otherwise this
-                # request fails as before and the next one finds the server respawned.
                 self._retire_device_lost_server(served_by)
                 if _allow_respawn_retry and not cumulative and self._respawn_if_dead():
                     logger.warning(
