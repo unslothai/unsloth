@@ -85,6 +85,8 @@ from routes.inference import (
     openai_embeddings,
     openai_chat_completions,
 )
+import routes.inference as inf_mod
+from state import active_generations
 from state.tool_policy import reset_tool_policy, set_tool_policy
 
 # 1x1 PNGs that Pillow can actually decode, for the paths that reach the decoder.
@@ -11739,3 +11741,185 @@ def test_admission_prices_replay_against_what_generation_really_sends():
         f"reserved {image_parts} image embeddings for a request that sends "
         f"{mcp_images.MAX_TOTAL_MODEL_IMAGES + 1}"
     )
+
+
+class _MLXCompletionBackend:
+    active_model_name = "mlx/m"
+
+    def resolve_completion_prompt(self, prompt):
+        if prompt == [999]:
+            raise ValueError("Prompt contains invalid tokens.")
+        if prompt == "queued":
+            active_generations.cancel_all()  # e.g. a model swap while behind another generation
+        return {"ids": [1, 2], "text": "P"}
+
+    def generate_completion(self, prompt_ids, cancel_event, stats_holder, **kw):
+        self.call = (prompt_ids, kw)
+        if kw["stop"] == ["cancel"]:
+            cancel_event.set()
+        yield from ("a", "ab")
+        usage = {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}
+        stats_holder["stats"] = {"usage": usage, "finish_reason": "length"}
+
+    def reset_generation_state(self, _event):
+        pass
+
+
+def _run_mlx_completion(monkeypatch, body):
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/completions")
+        method = "POST"
+
+        async def json(self):
+            return body
+
+        async def is_disconnected(self):
+            return False
+
+    async def _switch(request, *_a, **_k):
+        return await request.json()
+
+    from utils.hardware import DeviceType
+
+    backend = _MLXCompletionBackend()
+    monkeypatch.setattr("utils.hardware.get_device", lambda: DeviceType.MLX)
+    # No per-model recommendation, so llama-server's own defaults show.
+    monkeypatch.setattr("utils.inference.inference_config._recommended_sampling", lambda _m: {})
+    monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3))
+    monkeypatch.setattr(inf_mod, "_auto_switch_from_request_body", _switch)
+    monkeypatch.setattr(inf_mod, "_active_mlx_backend", lambda: backend)
+    _pin_loaded_backend(monkeypatch, is_loaded = False)
+
+    async def _run():
+        out = await openai_completions(Request(), current_subject = "test")
+        if not hasattr(out, "body_iterator"):
+            return out
+        lines = [ln[6:] async for chunk in out.body_iterator for ln in chunk.split("\n")]
+        return [ln if ln == "[DONE]" else json.loads(ln) for ln in lines if ln]
+
+    return backend, asyncio.run(_run())
+
+
+def test_mlx_completion_reads_the_body_as_llama_server_does(monkeypatch):
+    body = {"prompt": "P", "echo": True, "n_predict": 5, "max_tokens": 9, "repeat_last_n": 3}
+    body.update(repeat_penalty = 1.2, seed = -1, top_k = -3, temperature = -1, stop = "x")
+    backend, out = _run_mlx_completion(monkeypatch, {**body, "logit_bias": [[7, False], [8, 2]]})
+    assert out["object"] == "text_completion" and out["id"].startswith("cmpl-")
+    assert out["choices"] == [dict(text = "Pab", index = 0, logprobs = None, finish_reason = "length")]
+    assert out["usage"]["total_tokens"] == 4 and backend.call[0] == [1, 2]
+    kw = backend.call[1]
+    read = [kw[k] for k in ("max_new_tokens", "penalty_window", "stop", "seed")]
+    assert read == [5, 3, ["x"], None]
+    # llama-server's defaults, clamps and random-seed sentinel.
+    sampled = [kw[k] for k in ("temperature", "top_k", "min_p", "repetition_penalty")]
+    assert sampled == [0.0, 0, 0.05, 1.2] and kw["logit_bias"] == {7: float("-inf"), 8: 2.0}
+    greedy, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", "top_p": 0, "top_k": 0})
+    assert greedy.call[1]["top_k"] == 1
+    assert inf_mod.api_monitor.snapshot()[0]["reply_preview"] == "ab"
+    for alias in ("n_predict", "max_completion_tokens"):
+        unset, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", alias: -1, "max_tokens": 9})
+        assert unset.call[1]["max_new_tokens"] is None and unset.call[1]["penalty_window"] == 64
+    none, out = _run_mlx_completion(monkeypatch, {"prompt": "P", "n_predict": 0})
+    assert not hasattr(none, "call") and out["choices"][0]["finish_reason"] == "length"
+    unmarked = [None, None]
+    monkeypatch.setattr("core.inference.llama_keepwarm.mark_current_response_failed", unmarked.pop)
+    _run_mlx_completion(monkeypatch, {"prompt": "P", "stop": "cancel"})
+    assert unmarked == [None] and inf_mod.api_monitor.snapshot()[0]["status"] == "cancelled"
+    queued, _ = _run_mlx_completion(monkeypatch, {"prompt": "queued"})
+    assert not hasattr(queued, "call") and unmarked == []
+    assert inf_mod.api_monitor.snapshot()[0]["status"] == "cancelled"
+    with pytest.raises(HTTPException) as exc:
+        _run_mlx_completion(monkeypatch, {"prompt": [999]})
+    assert exc.value.status_code == 400 and active_generations.count() == 0
+
+
+def test_mlx_completion_streams_text_completion_chunks(monkeypatch):
+    stream, usage = {"prompt": "P", "stream": True}, {"include_usage": True}
+    _, chunks = _run_mlx_completion(monkeypatch, {**stream, "echo": True, "stream_options": usage})
+    assert [c["choices"][0]["text"] for c in chunks[:4]] == ["P", "a", "b", ""]
+    assert chunks[3]["choices"][0]["finish_reason"] == "length"
+    assert chunks[4]["choices"] == [] and chunks[4]["usage"]["completion_tokens"] == 2
+    assert chunks[5:] == ["[DONE]"]
+    _, plain = _run_mlx_completion(monkeypatch, {**stream, "stream_options": True})
+    assert len(plain) == 4 and "usage" not in plain[2]
+    # A client gone before the body starts still closes the monitor entry and the tracker.
+    monkeypatch.setattr(inf_mod, "_sse_streaming_response", lambda _, **k: k["unstarted_cleanup"])
+    _, cleanup = _run_mlx_completion(monkeypatch, stream)
+    asyncio.run(cleanup())
+    assert inf_mod.api_monitor.snapshot()[0]["status"] == "cancelled"
+    assert active_generations.count() == 0
+
+
+# llama-server's /v1/completions fields at b11160 (tools/server/server-schema.cpp) that MLX
+# serves, or ignores because they change neither the text nor the response shape.
+_LLAMA_SERVED = (
+    "stream stream_options n_predict max_tokens max_completion_tokens top_k top_p min_p "
+    "temperature repeat_last_n repeat_penalty frequency_penalty presence_penalty seed "
+    "logit_bias stop echo"
+)
+_LLAMA_IGNORED = (
+    "cache_prompt sse_ping_interval n_keep n_discard n_cache_reuse backend_sampling "
+    "post_sampling_probs grammar_lazy grammar_triggers preserved_tokens chat_format "
+    "reasoning_format generation_prompt parse_tool_calls chat_parser continue_final_message "
+    "reasoning_control reasoning_budget_start_tag reasoning_budget_end_tags "
+    "reasoning_budget_end_tag reasoning_budget_message"
+)
+# The rest change the text or the shape with no MLX equivalent: a value MLX refuses, and the one
+# that turns the field off.
+_LLAMA_UNSERVED = json.loads(
+    '{"logprobs": [2, 0], "n_probs": [1, 0], "best_of": [2, 1], "suffix": ["x", ""], "response_format":'
+    ' [{"type": "json_object"}, {"type": "text"}], "grammar": ["r ::= x", ""], "json_schema": [{}, null],'
+    ' "n": [2, 1], "n_cmpl": [2, 1], "timings_per_token": [true, false], "return_tokens": [true, false],'
+    ' "return_progress": [true, false], "verbose": [true, false], "response_fields": [["id"], []], "lora":'
+    ' [[{"id": 0, "scale": 1}], []], "n_indent": [2, 0], "t_max_predict_ms": [100, -1], "ignore_eos":'
+    ' [true, false], "min_keep": [2, 0], "samplers": ["kt", "edskypmxt"], "typical_p": [0.5, 1.0],'
+    ' "top_n_sigma": [1.0, -1.0], "xtc_probability": [0.5, 0.0], "dynatemp_range": [0.5, 0.0],'
+    ' "mirostat": [2, 0], "dry_multiplier": [0.8, 0.0], "adaptive_target": [0.5, -1.0],'
+    ' "reasoning_budget_tokens": [0, -1]}'
+)
+# Read by llama-server only while the field named with it is on.
+_LLAMA_DEPENDENT = json.loads(
+    '{"xtc_threshold": "xtc_probability", "dynatemp_exponent": "dynatemp_range", "mirostat_tau":'
+    ' "mirostat", "mirostat_eta": "mirostat", "dry_base": "dry_multiplier", "dry_allowed_length":'
+    ' "dry_multiplier", "dry_penalty_last_n": "dry_multiplier", "dry_sequence_breakers":'
+    ' "dry_multiplier", "adaptive_decay": "adaptive_target"}'
+)
+
+
+def test_mlx_completion_refuses_only_what_mlx_cannot_reproduce(monkeypatch):
+    from routes.inference import _MLX_COMPLETION_FIELDS_OFF, _mlx_completions_refusal as refusal
+
+    for is_mlx in (True, False):
+        held = SimpleNamespace(active_model_name = "m", models = {"m": {"is_mlx": is_mlx}})
+        monkeypatch.setattr(inf_mod, "_peek_inference_backend", lambda: held)
+        assert (inf_mod._active_mlx_backend() is held) is is_mlx
+
+    assert set(_MLX_COMPLETION_FIELDS_OFF) == set(_LLAMA_UNSERVED) | set(_LLAMA_DEPENDENT)
+    assert not set((_LLAMA_SERVED + " " + _LLAMA_IGNORED).split()) & set(_MLX_COMPLETION_FIELDS_OFF)
+    for name, (on, off) in _LLAMA_UNSERVED.items():
+        assert f"'{name}'" in refusal({"prompt": "p", name: on})
+        assert refusal({"prompt": "p", name: off}) is None
+    for name, enabler in _LLAMA_DEPENDENT.items():
+        assert refusal({"prompt": "p", name: 0.3}) is None
+        assert refusal({"prompt": "p", name: 0.3, enabler: _LLAMA_UNSERVED[enabler][0]})
+    assert refusal({"prompt": "p", "xtc_probability": 0.5, "xtc_threshold": 0.6}) is None
+    assert refusal({"prompt": "p", "dry_multiplier": 0.8, "dry_penalty_last_n": 0}) is None
+    assert refusal({"prompt": "p", "n_cmpl": 1, "n": 2, "n_probs": 0, "logprobs": 5}) is None
+    assert refusal({"prompt": "p", "n": 2, "best_of": 2}) is None
+    assert refusal({"prompt": "p", "grammar": None, "json_schema": {}}) is None
+    for prompt in ([1, "a"], ["a", 1], [[1, 2]], {"prompt_string": [1, "a"]}):
+        assert refusal({"prompt": prompt, "n_predict": -1, "repeat_last_n": 0}) is None
+    for bad in (
+        {"prompt": ["a", "b"]},
+        {"prompt": {"prompt_string": "a", "multimodal_data": ["x"]}},
+        {"prompt": [1, 1.5]},
+        {"prompt": "p", "typical_p": "x"},
+        {"prompt": [True]},
+        {"prompt": {}},
+        {"prompt": []},
+        {"prompt": "p", "max_tokens": -2, "n_predict": None},
+        {"prompt": "p", "repeat_last_n": -1},
+        {"prompt": "p", "logit_bias": {"hi": 1}},
+    ):
+        assert refusal(bad), bad

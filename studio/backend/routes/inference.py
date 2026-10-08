@@ -11168,12 +11168,14 @@ async def _maybe_auto_switch_model(
     require_audio_input: bool = False,
     require_video: bool = False,
     gguf_only: bool = False,
+    gguf_only_reason: Optional[str] = None,
     audio_preflight: Optional[dict] = None,
     image_preflight: Optional[dict] = None,
     require_speech: bool = False,
     require_audio_workflow: Optional[str] = None,
     speech_budget: Optional[dict] = None,
     tool_images_only: bool = False,
+    gguf_target_check: Optional[Callable[[], None]] = None,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -11196,8 +11198,9 @@ async def _maybe_auto_switch_model(
     token. ``modality_label`` names the inputs attached, so the
     rejection does not report a modality the request never carried. ``gguf_only``
     marks an endpoint that reads llama.cpp alone, where loading a non-GGUF model
-    would unload the resident one and leave the handler with nothing to serve.
-    ``audio_preflight`` carries an audio upload whose format-dependent
+    would unload the resident one and leave the handler with nothing to serve;
+    ``gguf_only_reason`` replaces its refusal message when the request, not the
+    endpoint, is what only llama.cpp can serve. ``audio_preflight`` carries an audio upload whose format-dependent
     checks only the resolved target can decide; see
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation. ``require_audio_workflow`` refuses a target that
@@ -11302,7 +11305,7 @@ async def _maybe_auto_switch_model(
         a resident non-GGUF model reaches the handler's own error instead, since no
         swap is pending to refuse.
         """
-        message = (
+        message = gguf_only_reason or (
             f"This endpoint serves GGUF models only, and '{requested_model}' is not one. "
             "Use /v1/chat/completions for this model."
         )
@@ -11563,6 +11566,9 @@ async def _maybe_auto_switch_model(
         # llama.cpp alone, so the swap would strand them with nothing to serve.
         if gguf_only and not target_is_gguf and resolved is not None:
             _refuse_non_gguf_endpoint()
+        # Raises for a request only a non-GGUF target serves, before any GGUF load or reload.
+        if gguf_target_check is not None and target_is_gguf:
+            gguf_target_check()
         # An image/audio request naming a different text-only target would load it
         # here and only 400 below, evicting the working model. Reject before the
         # swap. Only the resolver branch (an explicit new target); the reload-stash
@@ -11928,6 +11934,8 @@ async def _auto_switch_from_request_body(
     current_subject: str,
     *,
     gguf_only: bool = False,
+    gguf_only_reason: Optional[str] = None,
+    gguf_target_check: Optional[Callable[[], None]] = None,
 ):
     """Run auto-switch from a raw-body endpoint's ``model`` without changing its
     pre-feature status codes: a malformed/non-dict body yields no model (so an
@@ -11945,12 +11953,17 @@ async def _auto_switch_from_request_body(
         model = body.get("model") or _RELOAD_ONLY_MODEL
     else:
         model = None
-    # Serves the GGUF-only /v1/completions and /v1/embeddings routes, which still 503 "No
-    # GGUF model loaded" after this returns. Don't claim here (claim_resident=False); the
-    # caller claims only once it confirms a GGUF is loaded, so that 503 can't strand a
-    # preview-owned non-GGUF model as Unsloth-owned.
+    # Serves /v1/completions and /v1/embeddings, which still 503 "No GGUF model loaded"
+    # after this returns when nothing loaded can serve them. Don't claim here
+    # (claim_resident=False), so that 503 can't strand a preview-owned model as Unsloth-owned.
     await _maybe_auto_switch_model(
-        model, request, current_subject, claim_resident = False, gguf_only = gguf_only
+        model,
+        request,
+        current_subject,
+        claim_resident = False,
+        gguf_only = gguf_only,
+        gguf_only_reason = gguf_only_reason,
+        gguf_target_check = gguf_target_check,
     )
     return body
 
@@ -37175,13 +37188,468 @@ def _completions_prompt_present(body: dict) -> bool:
     return prompt is not None
 
 
-def _raise_ignored_completions_params(body: dict) -> None:
-    if body.get("echo"):
+def _raise_ignored_completions_params(body: dict, echo: bool = True) -> None:
+    # llama-server ignores echo; an MLX model serves it, so its caller passes ``echo = False``.
+    if echo and body.get("echo"):
         _raise_unsupported_openai_parameter("echo", "echo is not supported for completions.")
     if body.get("suffix"):
         _raise_unsupported_openai_parameter("suffix", "suffix is not supported for completions.")
     if body.get("best_of") not in (None, 1, body.get("n")):
         _raise_unsupported_openai_parameter("best_of", "best_of is not supported for completions.")
+
+
+def _is_token_id(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _completion_prompts(prompt) -> Optional[list]:
+    """The prompts in a /v1/completions ``prompt``, split as llama-server's
+    ``tokenize_input_prompts`` splits it, or None for a shape it rejects. A list holding
+    any token id is one prompt; any other list is one prompt per element."""
+    if isinstance(prompt, (str, dict)) or (
+        isinstance(prompt, list) and any(_is_token_id(p) for p in prompt)
+    ):
+        prompts = [prompt]
+    elif isinstance(prompt, list):
+        prompts = prompt
+    else:
+        return None
+    for one in prompts:
+        pieces = one.get("prompt_string") if isinstance(one, dict) else one
+        if not isinstance(pieces, str) and not (
+            isinstance(pieces, list) and all(isinstance(p, str) or _is_token_id(p) for p in pieces)
+        ):
+            return None
+    return prompts
+
+
+def _llama_field(body: dict, name: str, default):
+    value = body.get(name)
+    return default if value is None else value
+
+
+def _llama_dry_off(body: dict) -> bool:
+    return (
+        _llama_field(body, "dry_multiplier", 0.0) == 0
+        or _llama_field(body, "dry_penalty_last_n", 64) == 0
+    )
+
+
+def _llama_grammar_off(body: dict) -> bool:
+    # llama-server converts json_schema only while the body has no "grammar" key at all.
+    if "grammar" not in body:
+        return body.get("json_schema") is None
+    return not (isinstance(body["grammar"], str) and body["grammar"])
+
+
+_LLAMA_DEFAULT_SAMPLERS = (
+    ["penalties", "dry", "top_n_sigma", "top_k", "typ_p", "top_p", "min_p", "xtc", "temperature"],
+    "edskypmxt",
+)
+
+# /v1/completions fields that change the text or the response shape and that MLX cannot
+# reproduce, each with the test for the value that leaves it off: llama-server's own
+# (tools/server/server-schema.cpp) plus OpenAI's. A field llama-server reads only while another
+# is on is off with it.
+_MLX_COMPLETION_FIELDS_OFF = {
+    "logprobs": lambda v, b: v == 0,
+    "n_probs": lambda v, b: v == 0,
+    # best_of equal to the choice count asks for no hidden candidates; llama-server ignores it.
+    "best_of": lambda v, b: v in (1, _llama_value(b, "n_cmpl")),
+    "suffix": lambda v, b: v == "",
+    "response_format": lambda v, b: v == {"type": "text"},
+    "grammar": lambda v, b: _llama_grammar_off(b),
+    "json_schema": lambda v, b: _llama_grammar_off(b),
+    "n": lambda v, b: v == 1,
+    "n_cmpl": lambda v, b: v == 1,
+    "timings_per_token": lambda v, b: v is False,
+    "return_tokens": lambda v, b: v is False,
+    "return_progress": lambda v, b: v is False,
+    "verbose": lambda v, b: v is False,
+    "response_fields": lambda v, b: v == [],
+    "lora": lambda v, b: v == [],
+    "n_indent": lambda v, b: v == 0,
+    "t_max_predict_ms": lambda v, b: v <= 0,
+    "ignore_eos": lambda v, b: v is False,
+    "min_keep": lambda v, b: v == 0,
+    "samplers": lambda v, b: v in _LLAMA_DEFAULT_SAMPLERS,
+    "typical_p": lambda v, b: v >= 1,
+    "top_n_sigma": lambda v, b: v <= 0,
+    # llama-server's XTC keeps one qualifying candidate chosen by an unspecified sort order.
+    "xtc_probability": lambda v, b: v <= 0 or _llama_field(b, "xtc_threshold", 0.1) > 0.5,
+    "xtc_threshold": lambda v, b: v > 0.5 or _llama_field(b, "xtc_probability", 0.0) <= 0,
+    "dynatemp_range": lambda v, b: v <= 0,
+    "dynatemp_exponent": lambda v, b: _llama_field(b, "dynatemp_range", 0.0) <= 0,
+    "mirostat": lambda v, b: v <= 0,
+    "mirostat_tau": lambda v, b: _llama_field(b, "mirostat", 0) <= 0,
+    "mirostat_eta": lambda v, b: _llama_field(b, "mirostat", 0) <= 0,
+    "dry_multiplier": lambda v, b: _llama_dry_off(b),
+    "dry_base": lambda v, b: _llama_dry_off(b),
+    "dry_allowed_length": lambda v, b: _llama_dry_off(b),
+    "dry_penalty_last_n": lambda v, b: _llama_dry_off(b),
+    "dry_sequence_breakers": lambda v, b: _llama_dry_off(b),
+    "adaptive_target": lambda v, b: v < 0,
+    "adaptive_decay": lambda v, b: _llama_field(b, "adaptive_target", -1.0) < 0,
+    "reasoning_budget_tokens": lambda v, b: v == -1,
+}
+
+_LLAMA_HARD_LIMITS = {"n_predict": (-1, 2**31 - 1), "repeat_last_n": (0, 2**31 - 1)}
+
+
+# llama-server reads only the first non-null name of each group.
+_LLAMA_ALIASES = (
+    ("n_predict", "max_completion_tokens", "max_tokens"),
+    ("n_cmpl", "n"),
+    ("n_probs", "logprobs"),
+)
+
+
+def _llama_read_fields(body: dict) -> dict:
+    """*body* without the aliases llama-server passes over."""
+    fields = dict(body)
+    for names in _LLAMA_ALIASES:
+        for name in [n for n in names if body.get(n) is not None][1:]:
+            del fields[name]
+    return fields
+
+
+def _llama_n_predict(body: dict):
+    return next((body[n] for n in _LLAMA_ALIASES[0] if body.get(n) is not None), None)
+
+
+# llama-server's defaults for the fields no pin or per-model recommendation sets, so an MLX
+# model samples a request as the GGUF route's llama-server would.
+_LLAMA_SAMPLING_DEFAULTS = {
+    "temperature": 0.8,
+    "top_p": 0.95,
+    "top_k": 40,
+    "min_p": 0.05,
+    "repetition_penalty": 1.0,
+    "presence_penalty": 0.0,
+}
+
+
+def _llama_logit_bias(raw) -> Optional[dict]:
+    """llama-server's ``logit_bias`` (an object or ``[token, bias]`` pairs; ``false`` bans the
+    token) as ``{token id: bias}``. Raises ValueError for a token given as text, which needs
+    the tokenizer."""
+    if isinstance(raw, dict):
+        pairs = list(raw.items())
+    elif isinstance(raw, list):
+        pairs = [p for p in raw if isinstance(p, list) and len(p) == 2]
+    else:
+        return None
+    bias = {}
+    for token, value in pairs:
+        if isinstance(token, str) and token.lstrip("-").isdigit() and isinstance(raw, dict):
+            token = int(token)
+        if not _is_token_id(token):
+            raise ValueError("logit_bias tokens given as text are not supported for MLX models.")
+        if value is False:
+            bias[token] = float("-inf")
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            bias[token] = bias.get(token, 0.0) + float(value)
+    return bias or None
+
+
+def _mlx_completions_refusal(body: dict) -> Optional[str]:
+    """Why an MLX model cannot serve this /v1/completions body as llama-server would, or None."""
+    prompts = _completion_prompts(body.get("prompt"))
+    if not prompts:
+        return (
+            "'prompt' must be a string, a list of strings and token ids, a "
+            '{"prompt_string": ...} object, or an array of those.'
+        )
+    if len(prompts) > 1:
+        return "Multiple prompts are not supported for MLX models."
+    if isinstance(prompts[0], dict) and prompts[0].get("multimodal_data"):
+        return "'multimodal_data' is not supported for MLX models; send images to /v1/chat/completions."
+    fields = _llama_read_fields(body)
+    for name, off in _MLX_COMPLETION_FIELDS_OFF.items():
+        value = fields.get(name)
+        try:
+            neutral = value is None or bool(off(value, fields))
+        except (TypeError, ValueError):
+            neutral = False
+        if not neutral:
+            return f"'{name}' is not supported for MLX models."
+    limited = {**fields, "n_predict": _llama_n_predict(body)}
+    for name, (low, high) in _LLAMA_HARD_LIMITS.items():
+        value = limited.get(name)
+        if value is not None and not (_is_token_id(value) and low <= value <= high):
+            return (
+                f"Field '{name}': Value must be between {low} <= value <= {high}, but got {value}"
+            )
+    try:
+        _llama_logit_bias(body.get("logit_bias"))
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _active_mlx_backend():
+    """The orchestrator while it holds an MLX model, else None."""
+    backend = _peek_inference_backend()
+    name = getattr(backend, "active_model_name", None)
+    models = getattr(backend, "models", None)
+    if name and isinstance(models, dict) and models.get(name, {}).get("is_mlx"):
+        return backend
+    return None
+
+
+def _mlx_completion_sampling(body: dict, model_id) -> dict:
+    """``generate_completion`` knobs for a /v1/completions body, read as llama-server reads
+    them: its field names and aliases, its clamps, and its defaults for anything unset."""
+    from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
+
+    explicit = {f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES}
+    sampling = {
+        **_LLAMA_SAMPLING_DEFAULTS,
+        **resolve_effective_sampling(model_id, explicit, fill_defaults = False),
+    }
+    seed = body.get("seed")
+    top_p = min(max(float(sampling["top_p"]), 0.0), 1.0)
+    return dict(
+        temperature = max(0.0, float(sampling["temperature"])),
+        top_p = top_p,
+        # llama-server's top-p keeps its one minimum candidate at p = 0; MLX reads 0 as off.
+        top_k = 1 if top_p == 0 else max(0, int(sampling["top_k"])),
+        min_p = min(max(float(sampling["min_p"]), 0.0), 1.0),
+        repetition_penalty = float(sampling["repetition_penalty"]),
+        presence_penalty = float(sampling["presence_penalty"]),
+        frequency_penalty = float(_llama_field(body, "frequency_penalty", 0.0)),
+        # llama-server draws a random seed for LLAMA_DEFAULT_SEED (0xFFFFFFFF, e.g. -1).
+        seed = None if seed is None or (int(seed) & 0xFFFFFFFF) == 0xFFFFFFFF else int(seed),
+        logit_bias = _llama_logit_bias(body.get("logit_bias")),
+        stop = _normalize_stop_sequences(body.get("stop")),
+        penalty_window = _llama_field(body, "repeat_last_n", 64),
+    )
+
+
+def _text_completion_chunk(completion_id, created, model_name, text, finish_reason) -> dict:
+    return {
+        "id": completion_id,
+        "object": "text_completion",
+        "created": created,
+        "model": model_name,
+        "choices": [{"text": text, "index": 0, "logprobs": None, "finish_reason": finish_reason}],
+    }
+
+
+async def _mlx_completions(request, current_subject, backend, body: dict, refusal):
+    """Serve /v1/completions from the resident MLX model: one prompt, untemplated."""
+    if refusal:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(refusal, status = 400, code = "unsupported_parameter"),
+        )
+    n_predict = _llama_n_predict(body)
+    budget = None if n_predict == -1 else n_predict
+    stream_options = body.get("stream_options")
+    include_usage = isinstance(stream_options, dict) and stream_options.get("include_usage") is True
+    try:
+        model_name = _orchestrator_public_model_id(backend) or backend.active_model_name
+        sampling = _mlx_completion_sampling(body, model_name)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(f"Invalid sampling parameter: {exc}", status = 400),
+        )
+    completion_id = f"cmpl-{uuid.uuid4().hex}"
+    cancel_event = threading.Event()
+    # Resolving waits behind a running generation, so the request is cancellable from here on.
+    tracker = _TrackedCancel(cancel_event, completion_id, model = model_name, kind = "completions")
+    tracker.__enter__()
+    watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
+    try:
+        resolved = await asyncio.to_thread(
+            backend.resolve_completion_prompt, _completion_prompts(body["prompt"])[0]
+        )
+    except BaseException as exc:
+        tracker.__exit__(None, None, None)
+        if not isinstance(exc, ValueError):
+            raise
+        raise HTTPException(
+            status_code = 400,
+            detail = openai_error_body(str(exc), status = 400, param = "prompt"),
+        )
+    finally:
+        await _stop_local_disconnect_cancel_watcher(watcher)
+    prompt_ids = resolved["ids"]
+    echo = resolved["text"] if body.get("echo") is True else ""
+    created = int(time.time())
+    stats_holder: dict = {}
+    monitor_id = api_monitor.start(
+        endpoint = request.url.path,
+        via_api_key = _request_used_api_key(request),
+        method = request.method,
+        model = model_name,
+        prompt = resolved["text"],
+        context_length = _monitor_context_length(),
+        subject = current_subject,
+    )
+
+    def generate():
+        return backend.generate_completion(
+            prompt_ids,
+            cancel_event = cancel_event,
+            stats_holder = stats_holder,
+            max_new_tokens = budget,
+            **sampling,
+        )
+
+    def finish():
+        """The finish reason and usage, recorded on the monitor."""
+        stats = stats_holder.get("stats")
+        if budget == 0:
+            reason = "length"
+        elif cancel_event.is_set():
+            reason = "stop"
+        else:
+            reason = _stats_finish_reason(stats, token_budget = budget)
+        usage = (stats or {}).get("usage") or {
+            "prompt_tokens": len(prompt_ids),
+            "completion_tokens": 0,
+            "total_tokens": len(prompt_ids),
+        }
+        api_monitor.set_perf(monitor_id, stop_reason = reason)
+        _monitor_usage(monitor_id, usage, timings = (stats or {}).get("timings"))
+        return reason, usage
+
+    if body.get("stream") is True:
+
+        def sse(obj) -> str:
+            return f"data: {json.dumps(obj)}\n\n"
+
+        async def stream_chunks():
+            gen = None
+            next_task = None
+            watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
+            try:
+                from core.inference.llama_keepwarm import mark_current_response_failed
+
+                if echo:
+                    yield sse(
+                        _text_completion_chunk(completion_id, created, model_name, echo, None)
+                    )
+                _DONE = object()
+                gen = generate() if budget != 0 else iter(())
+                prev = ""
+                while True:
+                    if cancel_event.is_set():
+                        break
+                    next_task = asyncio.create_task(asyncio.to_thread(next, gen, _DONE))
+                    while not (
+                        await asyncio.wait(
+                            {next_task}, timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                        )
+                    )[0]:
+                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    cumulative, next_task = next_task.result(), None
+                    if cumulative is _DONE:
+                        break
+                    if isinstance(cumulative, GenStreamError):
+                        backend.reset_generation_state(cancel_event)
+                        message = _friendly_gen_stream_error(cumulative)
+                        api_monitor.fail(monitor_id, message)
+                        yield _openai_stream_error_sse(
+                            {"error": {"message": message, "type": "server_error"}}
+                        )
+                        return
+                    delta, prev = cumulative[len(prev) :], cumulative
+                    if delta:
+                        api_monitor.append_reply(monitor_id, delta)
+                        yield sse(
+                            _text_completion_chunk(completion_id, created, model_name, delta, None)
+                        )
+                if cancel_event.is_set():
+                    backend.reset_generation_state(cancel_event)
+                    mark_current_response_failed()
+                reason, usage = finish()
+                yield sse(_text_completion_chunk(completion_id, created, model_name, "", reason))
+                if include_usage:
+                    yield sse(
+                        {
+                            **_text_completion_chunk(completion_id, created, model_name, "", None),
+                            "choices": [],
+                            "usage": usage,
+                        }
+                    )
+                api_monitor.finish(
+                    monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                )
+                yield "data: [DONE]\n\n"
+            except asyncio.CancelledError:
+                cancel_event.set()
+                backend.reset_generation_state(cancel_event)
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
+            except Exception as exc:
+                backend.reset_generation_state(cancel_event)
+                logger.error("MLX completions stream error: %s", exc, exc_info = True)
+                message = _friendly_error(exc)
+                api_monitor.fail(monitor_id, message)
+                yield _openai_stream_error_sse(
+                    {"error": {"message": message, "type": "server_error"}}
+                )
+            finally:
+                await _stop_local_disconnect_cancel_watcher(watcher)
+                await _drain_pending_worker(next_task, cancel_event)
+                if gen is not None and hasattr(gen, "close"):
+                    try:
+                        await asyncio.to_thread(gen.close)
+                    except (RuntimeError, ValueError):
+                        pass
+                tracker.__exit__(None, None, None)
+
+        async def unstarted_cleanup():
+            api_monitor.finish(monitor_id, "cancelled")
+            tracker.__exit__(None, None, None)
+
+        return _sse_streaming_response(stream_chunks(), unstarted_cleanup = unstarted_cleanup)
+
+    def drain():
+        text = ""
+        for text in generate():
+            if isinstance(text, GenStreamError):
+                return text
+        return text
+
+    watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
+    try:
+        text = (
+            ""
+            if budget == 0 or cancel_event.is_set()
+            else await _run_blocking_generation(drain, cancel_event, name = "openai-completions")
+        )
+    except asyncio.CancelledError:
+        backend.reset_generation_state(cancel_event)
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        text = exc
+    finally:
+        await _stop_local_disconnect_cancel_watcher(watcher)
+        tracker.__exit__(None, None, None)
+    if isinstance(text, (GenStreamError, Exception)):
+        backend.reset_generation_state(cancel_event)
+        message = (
+            _friendly_gen_stream_error(text)
+            if isinstance(text, GenStreamError)
+            else _friendly_error(text)
+        )
+        api_monitor.fail(monitor_id, message)
+        raise HTTPException(status_code = 500, detail = message)
+    api_monitor.set_reply(monitor_id, text)
+    reason, usage = finish()
+    if cancel_event.is_set():
+        from core.inference.llama_keepwarm import mark_current_response_failed
+        mark_current_response_failed()
+    api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
+    return {
+        **_text_completion_chunk(completion_id, created, model_name, echo + text, reason),
+        "usage": usage,
+    }
 
 
 @router.post("/completions")
@@ -37190,28 +37658,38 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     """
     OpenAI-compatible text completions endpoint (non-chat).
 
-    Proxies to the running llama-server's ``/v1/completions``. Only available
-    when a GGUF model is loaded.
+    Proxies to the running llama-server's ``/v1/completions`` when a GGUF model is
+    loaded, and serves an MLX model in process.
     """
+    from utils.hardware import DeviceType, get_device
+
+    try:
+        _pre = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        _pre = _UNPARSEABLE_BODY
+    _mlx_refusal = _mlx_completions_refusal(_pre) if isinstance(_pre, dict) else None
+    _mlx_device = await asyncio.to_thread(get_device) == DeviceType.MLX
+
     # Reject a request with no prompt before any automatic load so an invalid request never
     # swaps or reloads the resident model (as chat/embeddings already validate before
     # switching). Gate on every automatic-load trigger, and on a preview-owned slot the switch
     # helper would claim even with both features off.
     if _should_validate_before_switch():
-        try:
-            _pre = await request.json()
-        except (json.JSONDecodeError, ValueError):
-            _pre = _UNPARSEABLE_BODY
         if isinstance(_pre, dict):
             _pre_prompt = _pre.get("prompt")
-            if _pre_prompt is not None and not isinstance(_pre_prompt, (str, list, tuple)):
-                # An object/number prompt is a deterministic client error (only a
-                # string or array is valid); reject it before the switch so a bad
-                # shape can't load a GGUF only to be rejected by llama-server after.
-                raise HTTPException(status_code = 400, detail = "'prompt' must be a string or array.")
+            if _pre_prompt is not None and not (
+                isinstance(_pre_prompt, (str, list, tuple))
+                or (isinstance(_pre_prompt, dict) and "prompt_string" in _pre_prompt)
+            ):
+                # Any other prompt is a deterministic client error; reject it before the
+                # switch so a bad shape can't load a model only to be rejected after.
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "'prompt' must be a string, an array or a {\"prompt_string\": ...} object.",
+                )
             if not _completions_prompt_present(_pre):
                 raise HTTPException(status_code = 400, detail = "'prompt' is required for completions.")
-            _raise_ignored_completions_params(_pre)
+            _raise_ignored_completions_params(_pre, echo = not _mlx_device)
         elif _pre is not _UNPARSEABLE_BODY:
             # A valid JSON body that is not an object (e.g. [] or null) is rejected below as
             # "Request body must be a JSON object"; reject it here, before the switch, so the
@@ -37219,10 +37697,21 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # that never runs.
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
 
-    # Opt-in: load the requested local GGUF before the loaded-state check.
-    body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
+    # Opt-in: load the requested local model before the loaded-state check. Only an MLX model
+    # serves a raw prompt in process, and only a request it can serve as llama-server would.
+    body = await _auto_switch_from_request_body(
+        request,
+        current_subject,
+        gguf_only = _mlx_refusal is not None or not _mlx_device,
+        gguf_only_reason = _mlx_refusal,
+        # echo, which the check above left to the target: a GGUF one refuses it unloaded.
+        gguf_target_check = (
+            (lambda: _raise_ignored_completions_params(_pre)) if isinstance(_pre, dict) else None
+        ),
+    )
     llama_backend = get_llama_cpp_backend()
-    if not llama_backend.is_loaded:
+    mlx_backend = None if llama_backend.is_loaded else _active_mlx_backend()
+    if not llama_backend.is_loaded and mlx_backend is None:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
             _raw_body_model(body),
@@ -37236,6 +37725,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+    if mlx_backend is not None:
+        return await _mlx_completions(
+            request, current_subject, mlx_backend, body, _mlx_completions_refusal(body)
+        )
     _raise_ignored_completions_params(body)
 
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful

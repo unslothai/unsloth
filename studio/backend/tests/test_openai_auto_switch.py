@@ -12367,3 +12367,47 @@ def test_tensor_split_requires_matching_gpu_ids_at_the_settings_boundary(ids):
         settings_route.ModelOverridePayload(
             model_id = "org/split-GGUF", gpu_ids = ids, tensor_split = [3, 1]
         )
+
+
+@pytest.mark.parametrize("reload", [False, True], ids = ["switch", "idle reload"])
+def test_completions_echo_to_a_gguf_target_is_refused_before_it_loads_on_mlx(monkeypatch, reload):
+    from utils import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    if reload:
+        _, rec = _wired(monkeypatch, _FakeBackend(None), None, enabled = False)
+        _stash(monkeypatch)
+    else:
+        _, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    body = {"model": "org/B-GGUF", "prompt": "hi", "echo": True}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.detail["error"]["param"] == "echo" and rec.calls == []
+
+
+def test_completions_switch_admits_an_mlx_target_only_for_what_it_serves(monkeypatch):
+    from utils import hardware
+
+    seen = []
+
+    async def _switch(_request, _subject, **kw):
+        seen.append(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(inference_route, "_should_validate_before_switch", lambda: True)
+    monkeypatch.setattr(inference_route, "_auto_switch_from_request_body", _switch)
+    for device, body in (
+        (hardware.DeviceType.MLX, {"prompt": {"prompt_string": "p"}}),
+        (hardware.DeviceType.MLX, {"prompt": "p", "echo": True}),
+        (hardware.DeviceType.MLX, {"prompt": "p", "typical_p": 0.5}),
+        (hardware.DeviceType.CUDA, {"prompt": "p"}),
+    ):
+        monkeypatch.setattr(hardware, "get_device", lambda: device)
+        with pytest.raises(RuntimeError):
+            asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert [(kw["gguf_only"], kw["gguf_only_reason"]) for kw in seen] == [
+        (False, None),
+        (False, None),
+        (True, "'typical_p' is not supported for MLX models."),
+        (True, None),
+    ]
