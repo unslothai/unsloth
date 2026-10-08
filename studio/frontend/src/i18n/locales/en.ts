@@ -262,6 +262,20 @@ export const en = {
       tablet: "Tablet",
       close: "Hide device toolbar",
     },
+    downloads: {
+      title: "Downloads",
+      inProgressLabel: "Downloading",
+      inProgress: "Downloading…",
+      complete: "Download complete",
+      failed: "Download failed",
+      downloaded: "Downloaded",
+      missing: "File moved or deleted",
+      open: "Open",
+      openFailed: "Couldn't open {name}.",
+      copyLink: "Copy download link",
+      showAll: "Show all",
+      savePage: "Save page as…",
+    },
     file: {
       openIn: "Open in",
       newChat: "New chat",
@@ -571,6 +585,7 @@ export const en = {
     },
   },
   common: {
+    duplicate: "Duplicate",
     cancel: "Cancel",
     close: "Close",
     delete: "Delete",
@@ -1231,6 +1246,8 @@ export const en = {
     sandbox: {
       title: "Sandbox",
       description: "Whether Python and Terminal tool calls run inside an OS sandbox on this computer.",
+      docs: "Docs",
+      docsLabel: "Open the sandbox docs",
       toolsSection: "This computer",
       refresh: "Refresh",
       python: "Python",
@@ -2324,6 +2341,7 @@ export const en = {
         "Couldn't load all quantizations. The command will use the available model value.",
       generatedCommand: "Generated command",
       docs: "Docs",
+      docsLabel: "Open the unsloth start docs",
       agentDocs: "Open {agent} setup docs",
       copyGeneratedCommand: "Copy generated command",
       automaticSettingsNote:
@@ -2847,6 +2865,8 @@ export const en = {
       revoking: "Revoking...",
       decisionApi: {
         title: "Decision API",
+        docs: "Docs",
+        docsLabel: "Open the Decision API docs",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
@@ -2868,6 +2888,8 @@ export const en = {
         backendAuto: "Auto",
         backendDescription:
           "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. llama.cpp also reads images.",
+        backendDescriptionMlx:
+          "Auto serves Clef text through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads text only. llama.cpp also reads images.",
         backendStatus: "Runtime: {backend}",
         backendNone: "unavailable",
         mediaImages: "Reads text and images.",
@@ -3444,6 +3466,10 @@ export const en = {
       readMore: "Read more",
     },
     training: {
+      duplicateFailed: "Could not duplicate run",
+      duplicateDraftChanged:
+        "Training settings changed while loading. Try duplicating again.",
+      duplicateNoModel: "This run has no saved model configuration.",
       startTraining: "Start Training",
       starting: "Starting...",
       loadingModel: "Loading model...",

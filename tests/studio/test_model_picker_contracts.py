@@ -2145,7 +2145,8 @@ def test_staged_downloads_use_one_actionable_download_surface():
 
     panel = _read("features/hub/download-manager/download-manager-panel.tsx")
     assert 'job.variant?.startsWith("@")' in panel
-    assert '"Model file" : "Required assets"' in panel
+    assert '"Model file"' in panel
+    assert "assetLabel(" in panel and '"Required assets"' in panel
 
 
 def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension():
@@ -2185,8 +2186,8 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     assert "{ checkpoint: job.checkpoint }" in state
 
     panel = _read("features/hub/download-manager/download-manager-panel.tsx")
-    suffix = re.search(r"function variantSuffix\(.*?\n\}", panel, re.S)
-    assert suffix, "variantSuffix not found"
+    suffix = re.search(r"function isRequiredAssetJob\(.*?\n\}", panel, re.S)
+    assert suffix, "isRequiredAssetJob not found"
     body = suffix.group(0)
     assert "job.checkpoint ??" in body, "the label ignores the flag the plan carried"
     # The .gguf guess may only survive as the fallback for jobs persisted before the flag.

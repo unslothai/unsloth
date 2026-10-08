@@ -510,6 +510,7 @@ export const es = {
     },
   },
   common: {
+    duplicate: "Duplicar",
     cancel: "Cancelar",
     close: "Cerrar",
     delete: "Eliminar",
@@ -1165,6 +1166,8 @@ export const es = {
     sandbox: {
       title: "Sandbox",
       description: "Si las llamadas a herramientas de Python y Terminal se ejecutan dentro de un sandbox del sistema en este equipo.",
+      docs: "Documentación",
+      docsLabel: "Abrir la documentación del sandbox",
       toolsSection: "Este equipo",
       refresh: "Actualizar",
       python: "Python",
@@ -2285,6 +2288,7 @@ export const es = {
         "No se pudieron cargar todas las cuantizaciones. El comando usará el valor de modelo que esté disponible.",
       generatedCommand: "Comando generado",
       docs: "Documentación",
+      docsLabel: "Abrir la documentación de unsloth start",
       agentDocs: "Abrir la documentación de configuración de {agent}",
       copyGeneratedCommand: "Copiar el comando generado",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2826,6 +2830,8 @@ export const es = {
       revoking: "Revocando...",
       decisionApi: {
         title: "API de decisiones",
+        docs: "Documentación",
+        docsLabel: "Abrir la documentación de la API de decisiones",
         description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
@@ -2847,6 +2853,8 @@ export const es = {
         backendAuto: "Automático",
         backendDescription:
           "Automático sirve Clef mediante llama.cpp cuando el modelo tiene una versión GGUF y recurre a PyTorch en caso contrario. llama.cpp también lee imágenes.",
+        backendDescriptionMlx:
+          "Automático sirve el texto de Clef mediante MLX en Apple Silicon y mediante llama.cpp cuando solo la versión GGUF del modelo está cargada o descargada. MLX solo lee texto; llama.cpp también lee imágenes.",
         backendStatus: "Entorno de ejecución: {backend}",
         backendNone: "no disponible",
         mediaImages: "Lee texto e imágenes.",
@@ -3449,6 +3457,11 @@ export const es = {
       readMore: "Leer más",
     },
     training: {
+      duplicateFailed: "No se pudo duplicar la ejecución",
+      duplicateDraftChanged:
+        "La configuración del entrenamiento cambió durante la carga. Vuelve a intentar duplicarla.",
+      duplicateNoModel:
+        "Esta ejecución no tiene una configuración de modelo guardada.",
       startTraining: "Iniciar entrenamiento",
       starting: "Iniciando...",
       loadingModel: "Cargando modelo...",
