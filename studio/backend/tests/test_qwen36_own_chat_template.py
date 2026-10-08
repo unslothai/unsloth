@@ -47,7 +47,7 @@ def _prompt(monkeypatch, messages, **kwargs):
         from core.inference import inference
     except (ImportError, RuntimeError) as exc:
         pytest.skip(f"full inference backend unavailable ({type(exc).__name__}: {exc})")
-    # Another file on this worker may have bound the module to a stubbed unsloth.
+    # another test on this worker may have bound the module to a stubbed unsloth
     if getattr(inference.get_chat_template, "__module__", None) != "unsloth.chat_templates":
         pytest.skip("inference module is bound to a stubbed unsloth.chat_templates")
     backend = inference.InferenceBackend.__new__(inference.InferenceBackend)
