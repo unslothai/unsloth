@@ -172,6 +172,7 @@ def test_llmcompressor_shadow_fails_cleanly_without_git(monkeypatch, tmp_path):
     assert tv._ensure_venv_llmcompressor_exists() is False
 
 
+@pytest.mark.allow_network
 @pytest.mark.skipif(git_tool.os.name != "nt", reason = "runs the real MinGit git.exe")
 def test_real_mingit_runs_on_windows(monkeypatch, tmp_path):
     monkeypatch.setattr(git_tool.shutil, "which", lambda name: None)
