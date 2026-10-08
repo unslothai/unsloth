@@ -49,13 +49,19 @@ if printf '%s' "$_migrated_nt_block" | grep -q -- '--overrides'; then _rc=1; els
 assert_true "migrated no-torch (--no-deps) unsloth install has no overrides" "$_rc"
 
 # 2. The overrides file is only built when SKIP_TORCH=false.
-grep -B2 '_torch_trio_pins=\$(' "$INSTALL_SH" | grep -q 'SKIP_TORCH" = false'
+_ov_fn=$(sed -n '/^_build_unsloth_torch_overrides()/,/^}/p' "$INSTALL_SH")
+printf '%s\n' "$_ov_fn" | grep -q '\[ "\$SKIP_TORCH" = false \] || return 0'
 assert_true "overrides file build is gated on SKIP_TORCH=false" "$?"
+# ...and the gate precedes the probe, so a --no-torch run never runs the interpreter.
+_ov_guard_line=$(printf '%s\n' "$_ov_fn" | grep -n 'SKIP_TORCH" = false' | head -n 1 | cut -d: -f1)
+_ov_probe_line=$(printf '%s\n' "$_ov_fn" | grep -n '_torch_trio_pins=\$(' | head -n 1 | cut -d: -f1)
+if [ -n "$_ov_guard_line" ] && [ -n "$_ov_probe_line" ] && [ "$_ov_guard_line" -lt "$_ov_probe_line" ]; then _rc=0; else _rc=1; fi
+assert_true "the SKIP_TORCH gate precedes the trio probe" "$_rc"
 
 # 3. The pin-collection snippet emits exact ==pins for the installed trio (run
 #    the embedded python against this test's interpreter).
-_snippet=$(sed -n '/_torch_trio_pins=\$("\$_VENV_PY" -c "/,/^" 2>\/dev\/null)/p' "$INSTALL_SH" \
-    | sed '1s/.*-c "//' | sed '$d')
+_snippet=$(sed -n '/_torch_trio_pins=\$("\$_VENV_PY" -I -c "/,/^" 2>\/dev\/null)/p' "$INSTALL_SH" \
+    | sed '1s/.*-I -c "//' | sed '$d')
 _out=$(python3 -c "$_snippet" 2>&1) || true
 # torch may or may not be importable on the test host; the snippet must not
 # crash and every line it does emit must be an exact pkg==version pin.

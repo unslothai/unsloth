@@ -4178,7 +4178,9 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
         break
     done
     # _run_bounded the fallback: without version.py it hits `import torch`, which can wedge.
-    [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$(_run_bounded "$VENV_DIR/bin/python" -c \
+    # -I for the same reason as the trio probe below: PYTHONPATH must not decide which torch
+    # release this venv is recorded as having (the version.py walk above is already venv-scoped).
+    [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$(_run_bounded "$VENV_DIR/bin/python" -I -c \
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy, unless the caller asked for no copy at all, in which case this line would be contradicted by the "discarded" one _start_studio_venv_replacement prints a moment later. install.ps1 varies its twin the same way.
     if [ "${_NO_ROLLBACK:-false}" = true ]; then
@@ -7792,11 +7794,55 @@ print(path if path.is_file() else '')
 
 _bootstrap_packaged_mlx_override
 
+# Warn when PYTHONPATH or the user site dir exposes a DIFFERENT torch than the venv's own. The
+# pins below are read with -I so the RESOLVE describes the venv, but `import torch` is not
+# isolated, so the studio backend would import the shadowing copy while xformers, bitsandbytes and
+# the rest were just resolved against the venv's. Before the -I fix this surfaced as a failed
+# install (#11980); after it the install succeeds, and this is the only part left that the user can
+# act on. Once per run: every with-deps path calls the builder, and two identical warnings read
+# like two different problems.
+_TORCH_SHADOW_WARNED=false
+_warn_if_torch_shadowed() {
+    _wits_venv_ver="$1"
+    [ -n "$_wits_venv_ver" ] || return 0
+    [ "$_TORCH_SHADOW_WARNED" = false ] || return 0
+    # The same probe minus the -I, so this is what `import torch` will actually pick up at
+    # runtime. Same torch== shape as the isolated probe and selected BY that prefix, not by
+    # position: sitecustomize and import hooks print to stdout, and the two versions have to be
+    # compared like for like or every install reports a shadow that is not there.
+    _wits_amb_ver=$("$_VENV_PY" -c "
+from importlib.metadata import version, PackageNotFoundError
+try:
+    print('torch==' + version('torch'))
+except PackageNotFoundError:
+    pass
+" 2>/dev/null | sed -n 's/^torch==//p' | head -n 1) || _wits_amb_ver=""
+    [ -n "$_wits_amb_ver" ] || return 0
+    [ "$_wits_amb_ver" != "$_wits_venv_ver" ] || return 0
+    _TORCH_SHADOW_WARNED=true
+    # Also into the log, so the desktop diagnostics report carries it: tauri_diag_marker runs
+    # long before Step 2 and cannot know this, and it is the one fact that turns "install failed
+    # on a GB10" into a one-line triage.
+    tauri_log "DIAG" "torch_shadow=1 ambient=$_wits_amb_ver venv=$_wits_venv_ver"
+    substep "[WARN] PYTHONPATH or the user site directory exposes torch $_wits_amb_ver, which shadows this environment's torch $_wits_venv_ver when Python imports it" "$C_WARN"
+    substep "[WARN] unsloth and its kernels are being installed for $_wits_venv_ver -- unset PYTHONPATH (DGX OS and the NGC PyTorch images set it) before launching Unsloth, or the wrong torch is imported" "$C_WARN"
+}
+
 # A released unsloth wheel can pin an older torch (unsloth 2026.7.2 declares torch<2.11.0); a with-deps PyPI resolve then downgrades the whole trio, swapping the pinned +cuXXX/+rocm build for PyPI's default. The flavor guard below misses this, since PyPI's torch 2.10 default is itself cu128-flavored, so freeze the trio via uv --overrides while unsloth's other deps resolve normally. Sets _UNSLOTH_TORCH_OVERRIDES from the trio in the venv; every with-deps unsloth install must call this before resolving and rm it after.
 _build_unsloth_torch_overrides() {
     _UNSLOTH_TORCH_OVERRIDES=""
     [ "$SKIP_TORCH" = false ] || return 0
-    _torch_trio_pins=$("$_VENV_PY" -c "
+    # -I (isolated): the pins must describe the environment uv is about to resolve INTO, and
+    # without it PYTHONPATH and the user site dir are on sys.path AHEAD of the venv's own
+    # site-packages, so the probe reports a torch that is not the venv's. DGX OS and the NGC
+    # PyTorch containers export PYTHONPATH at their system torch, which is how #11980 froze
+    # torch==2.9.0a0+50eac811a6.nv25.9 -- a version published on no index and not installed in
+    # the venv either -- while the venv itself held a perfectly resolvable 2.11.0+cu130. uv
+    # attributes an override to the package that declared the requirement, so it surfaced as
+    # though the WHEEL carried the pin ("unsloth>=... depends on torch==2.9.0a0+..."). A pin
+    # read from the venv is always satisfiable there: the resident distribution matches it,
+    # whatever its local label, so a vendor or source build stays frozen as intended.
+    _torch_trio_pins=$("$_VENV_PY" -I -c "
 from importlib.metadata import version, PackageNotFoundError
 for _p in ('torch', 'torchvision', 'torchaudio'):
     try:
@@ -7804,6 +7850,7 @@ for _p in ('torch', 'torchvision', 'torchaudio'):
     except PackageNotFoundError:
         pass
 " 2>/dev/null) || _torch_trio_pins=""
+    _warn_if_torch_shadowed "$(printf '%s\n' "$_torch_trio_pins" | sed -n 's/^torch==//p' | head -n 1)"
     case "$_torch_trio_pins" in
         torch==*)
             # uv resolves an override's relative includes (-r nested.txt) against THAT file's dir, so merge beside the caller's override when they share one writable dir, else mktemp. Globbing is off for both walks below: uv reads the literal name, so an ov[1].txt would otherwise make them iterate a sibling ov1.txt.
