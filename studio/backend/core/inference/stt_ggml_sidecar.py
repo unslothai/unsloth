@@ -28,6 +28,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -79,6 +80,7 @@ from utils.process_lifetime import (
     forget_pid,
     is_process_shutting_down,
 )
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = get_logger(__name__)
 
@@ -726,6 +728,33 @@ def cancel_model_download(model: Optional[str] = None, download_id: Optional[str
     return _download_state.cancel(model_id, download_id)
 
 
+_REQUEST_PATH_SUPPORT: dict[tuple[str, int], bool] = {}
+
+
+def _supports_request_path(binary: str) -> bool:
+    """Whether ``binary`` accepts ``--request-path`` (cached per binary and mtime). An older user-supplied
+    whisper-server exits on an unknown flag, so it is launched without one instead."""
+    try:
+        key = (binary, os.stat(binary).st_mtime_ns)
+    except OSError:
+        return False
+    cached = _REQUEST_PATH_SUPPORT.get(key)
+    if cached is None:
+        try:
+            probe = subprocess.run(
+                [binary, "--help"],
+                capture_output = True,
+                timeout = 20,
+                env = _whisper_server_child_env(binary),
+                **windows_hidden_subprocess_kwargs(),
+            )
+            cached = b"--request-path" in probe.stdout + probe.stderr
+        except Exception:  # noqa: BLE001 -- a probe failure only means no route
+            cached = False
+        _REQUEST_PATH_SUPPORT[key] = cached
+    return cached
+
+
 def _pcm_to_wav_bytes(decoded_audio) -> bytes:
     """Wrap decoded float32 mono 16 kHz PCM into an in-memory 16-bit WAV."""
     import numpy as np
@@ -749,6 +778,8 @@ class GgmlSttSidecar:
         self._load_state_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
+        # Random path prefix every whisper-server route sits under, so a web page cannot reach the loopback server.
+        self._route = ""
         self._model_id: Optional[str] = None
         # --no-gpu at the user's request, tracked because it varies per request.
         self._forced_cpu = False
@@ -821,6 +852,7 @@ class GgmlSttSidecar:
         process = self._process
         self._process = None
         self._port = None
+        self._route = ""
         self._model_id = None
         self._forced_cpu = False
         if process is not None and process.poll() is None:
@@ -996,6 +1028,15 @@ class GgmlSttSidecar:
             model_path = self._ensure_model_downloaded(model_id)
             reservation, port = self._reserve_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
+            route = ""
+            if _supports_request_path(binary):
+                route = "/" + secrets.token_hex(16)
+                command.extend(["--request-path", route])
+            else:
+                logger.warning(
+                    "whisper-server at %s has no --request-path; its routes stay at the root path.",
+                    binary,
+                )
             marker = _whisper_install_marker(binary)
             cancel_event = (
                 request_cancel_event if request_cancel_event is not None else threading.Event()
@@ -1064,7 +1105,7 @@ class GgmlSttSidecar:
                         "Unsloth is shutting down; not starting whisper-server."
                     )
                 try:
-                    self._wait_for_server(process, port, cancel_event)
+                    self._wait_for_server(process, port, cancel_event, route = route)
                 except Exception:
                     if process.poll() is None:
                         process.kill()
@@ -1073,6 +1114,7 @@ class GgmlSttSidecar:
                     raise
                 self._process = process
                 self._port = port
+                self._route = route
                 self._model_id = model_id
                 self._forced_cpu = force_cpu
                 self._schedule_idle_unload_locked()
@@ -1089,6 +1131,7 @@ class GgmlSttSidecar:
         process: subprocess.Popen,
         port: int,
         cancel_event: Optional[threading.Event] = None,
+        route: str = "",
     ) -> None:
         deadline = time.monotonic() + _SERVER_START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
@@ -1104,21 +1147,25 @@ class GgmlSttSidecar:
             # Require a whisper-server-specific response twice, with the managed child alive around each probe. An
             # arbitrary local process that won the bind race would otherwise be mistaken for the sidecar and receive the
             # user's microphone audio.
-            if GgmlSttSidecar._probe_is_whisper_server(process, port) and (
-                GgmlSttSidecar._probe_is_whisper_server(process, port)
+            if GgmlSttSidecar._probe_is_whisper_server(process, port, route) and (
+                GgmlSttSidecar._probe_is_whisper_server(process, port, route)
             ):
                 return
             time.sleep(0.2)
         raise SttEngineUnavailableError("The local transcription runtime did not start in time.")
 
     @staticmethod
-    def _probe_is_whisper_server(process: subprocess.Popen, port: int) -> bool:
+    def _probe_is_whisper_server(
+        process: subprocess.Popen,
+        port: int,
+        route: str = "",
+    ) -> bool:
         """One readiness probe: our child is alive and the responder looks like
         whisper.cpp's server (its index page and errors identify whisper)."""
         if process.poll() is not None:
             return False
         try:
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/", method = "GET")
+            req = urllib.request.Request(f"http://127.0.0.1:{port}{route}/", method = "GET")
             with urllib.request.urlopen(req, timeout = 2) as response:
                 body = response.read(65536)
         except Exception:
@@ -1234,7 +1281,7 @@ class GgmlSttSidecar:
         try:
             connection.request(
                 "POST",
-                "/inference",
+                f"{self._route}/inference",
                 body = body,
                 headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"},
             )
