@@ -63,7 +63,7 @@ def _isolate(monkeypatch, tmp_path):
         mxc_runtime, "dacl_state_path", lambda: studio_home / "mxc-runtime" / "dacl-restore"
     )
     mxc_read_grants._scanned.clear()
-    mxc_read_grants._refused.clear()
+    monkeypatch.setattr(mxc_read_grants, "_refused", {}, raising = False)
     return studio_home
 
 
