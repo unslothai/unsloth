@@ -6188,7 +6188,7 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     load_fn_aliases: "set[str]" = set()
     load_fn_attr_aliases: "set[str]" = set()
     # numpy.lib.format.read_array(fp, allow_pickle) unpickles too, with the flag second.
-    read_array_aliases = {"read_array"}
+    read_array_aliases: "set[str]" = set()
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup aliased through it still fails closed.
     getattr_aliases = {"getattr"}
     # Names bound to functools.partial, so a partial that wraps open/a writer fails closed when it is called.
@@ -6208,14 +6208,18 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # ...) safe.
     invoker_aliases = set(_HIGHER_ORDER_INVOKERS)
 
+    def _in_numpy(node) -> bool:
+        # np, numpy.lib.npyio, np.lib.format: an attribute chain rooted at a numpy module alias.
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id in numpy_aliases
+
     def _is_numpy_load(node) -> bool:
         if isinstance(node, ast.Name):
             return node.id in load_fn_aliases
         if isinstance(node, ast.Attribute):
             return node.attr in load_fn_attr_aliases or (
-                node.attr == "load"
-                and isinstance(node.value, ast.Name)
-                and node.value.id in numpy_aliases
+                node.attr == "load" and _in_numpy(node.value)
             )
         return False
 
@@ -6223,8 +6227,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         # Positional index of allow_pickle: numpy.load(file, mmap_mode, allow_pickle), read_array(fp, allow_pickle).
         if _is_numpy_load(func):
             return 2
-        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-        return 1 if name in read_array_aliases else None
+        if isinstance(func, ast.Name) and func.id in read_array_aliases:
+            return 1
+        if isinstance(func, ast.Attribute) and func.attr == "read_array" and _in_numpy(func.value):
+            return 1
+        return None
 
     def _is_dynamic_namespace(node) -> bool:
         # A namespace mapping whose .get/.pop/.setdefault (or subscript) can return open/eval/a mutator:
