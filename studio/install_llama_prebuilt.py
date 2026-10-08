@@ -5442,8 +5442,7 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
 
 
 def ensure_fit_params_executable(install_dir: Path) -> None:
-    """chmod the optional Metal probe, which the guarded extractor leaves 0644 (#12901).
-    Also run on the reuse paths so installs made before this fix are repaired."""
+    """The guarded extractor leaves the optional Metal probe 0644 (#12901); reuse paths repair old installs."""
     helper = install_dir / "build" / "bin" / "llama-fit-params"
     try:
         if helper.is_file() and not helper.is_symlink():
