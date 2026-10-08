@@ -2991,9 +2991,12 @@ _STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
     # Dotted names nothing else spells, so they match bare too.
     r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\";&|)(<>`]*|\.bootstrap_password|\.desktop_secret)"
     + _WORD_END
+    # The per-launch key file, bare or as a glob (find / -name 'llama_api_key_*').
+    + r"|(?:^|[/\\\s'\"=])llama_api_key_[^/\\\s'\";&|)(<>`]*"
+    + _WORD_END
     # Path form only: the bare name is an ordinary identifier. auth.db is absent for the same reason,
     # and Studio's copy is covered by the auth-directory patterns below.
-    + r"|[/\\]llama_api_key"
+    + r"|[/\\]llama_api_key(?:_\w+)?"
     + _WORD_END
     # `unsloth start` keeps the coding-agent keys here. Path form only: matching the bare name
     # refused `print('agent_api_key.json')`.
