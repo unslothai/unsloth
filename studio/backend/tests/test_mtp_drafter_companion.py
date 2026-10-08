@@ -3096,6 +3096,7 @@ def _dflash_fetch_during_auto_load(
     dflash_draft_path = None,
     mtp_draft_path = None,
     mtp_loads = True,
+    mtp_token = "draft-mtp",
 ):
     """Whether an Auto load fetches the DFlash sidecar, and what it resolves to.
 
@@ -3115,6 +3116,7 @@ def _dflash_fetch_during_auto_load(
                 "found": True,
                 "supports_dspark": supports_dspark,
                 "supports_dflash": supports_dflash,
+                "mtp_token": mtp_token,
             }
         ),
     )
@@ -3266,6 +3268,19 @@ def test_auto_keeps_dflash_under_tensor_split_when_the_mtp_sidecar_cannot_load(m
         mtp_loads = False,
     )
     assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_when_the_binary_cannot_run_mtp(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+        mtp_token = None,
+    )
     assert seen["dflash_promoted"] is True
 
 

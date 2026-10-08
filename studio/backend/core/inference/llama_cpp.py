@@ -23998,12 +23998,15 @@ class LlamaCppBackend:
             )
 
             def _auto_dflash_blocked_by_tensor() -> bool:
-                if not (_auto_tensor_split and mtp_draft_path):
-                    return False
-                try:
-                    return _mtp_drafter_loads_standalone(mtp_draft_path)
-                except Exception:
-                    return False
+                if _auto_tensor_split and mtp_draft_path:
+                    try:
+                        return bool(
+                            _launch_caps(binary).get("mtp_token")
+                            and _mtp_drafter_loads_standalone(mtp_draft_path)
+                        )
+                    except Exception:
+                        return False
+                return False
 
             _unloadable_mtp_draft_path: Optional[str] = None
             # Scope HF_HUB_OFFLINE to the download block only when DNS is

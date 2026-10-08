@@ -13897,6 +13897,7 @@ def _gguf_resident_file_gb(
     speculative_type: Optional[str] = None,
     disable_vision: bool = False,
     local_only: bool = False,
+    tensor_parallel: bool = False,
 ) -> Optional[float]:
     """GB of files a launch would make resident: weights, projector, drafter.
 
@@ -13922,7 +13923,7 @@ def _gguf_resident_file_gb(
     )
     # In the key: a local-only answer served to the admission guard would drop a
     # remote drafter it must charge for.
-    key = (*key, local_only)
+    key = (*key, local_only, bool(tensor_parallel))
     now = time.monotonic()
     hit = _estimate_files_cache.get(key)
     if hit is not None and now - hit[0] < _ESTIMATE_FILES_TTL_SECONDS:
@@ -13934,6 +13935,7 @@ def _gguf_resident_file_gb(
         disable_vision = disable_vision,
         hf_token = hf_token,
         local_only = local_only,
+        tensor_parallel = tensor_parallel,
     )
     required_gb = _estimate_gguf_required_gb(config, max_seq_length = 0, **priced)
     if required_gb is None:
@@ -14521,6 +14523,7 @@ def _gguf_memory_breakdown(
         # No Hub listing behind a slider: a --spec-draft-hf repo is left uncharged here
         # and marked below, rather than costing a model_info per settings change.
         local_only = True,
+        tensor_parallel = tensor_parallel,
     )
     if files_gb is None:
         return None
@@ -14557,6 +14560,7 @@ def _gguf_memory_breakdown(
         speculative_type = speculative_type,
         disable_vision = disable_vision,
         local_only = True,
+        tensor_parallel = tensor_parallel,
     )
 
     def _files_bytes_with(extra: tuple[str, ...]) -> Optional[int]:

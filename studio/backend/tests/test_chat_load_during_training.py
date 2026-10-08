@@ -1678,6 +1678,18 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 ):
                     return self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto", **kw)
 
+            def _resident(**kw):
+                with (
+                    patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                    patch.object(
+                        llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _p: True
+                    ),
+                    self._dflash_capable(),
+                ):
+                    return self.route._gguf_resident_file_gb(cfg, speculative_type = "auto", **kw)
+
+            resident_tensor = _resident(tensor_parallel = True)
+            resident_layer = _resident()
             tensor = _estimate(True, tensor_parallel = True)
             tensor_extras = _estimate(True, llama_extra_args = ["-sm", "tensor"])
             layer = _estimate(True)
@@ -1686,6 +1698,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(tensor_extras, 7000 / (1024**3), places = 9)
         self.assertAlmostEqual(layer, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(unloadable, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(resident_tensor, 7000 / (1024**3), places = 9)
+        self.assertAlmostEqual(resident_layer, 5000 / (1024**3), places = 9)
 
     def test_extra_args_drafter_is_charged_once_when_it_is_the_local_sidecar(self):
         """--model-draft usually names the very sidecar discovery already found,
