@@ -125,6 +125,25 @@ def seed_skill(account) -> dict[str, str]:
     return {"name": SKILL_NAME}
 
 
+REWARD_NAME = "matrix-reward"
+
+
+@seeder("reward")
+def seed_reward(account) -> dict[str, str]:
+    # Library rewards live in each account's own workspace (the install root for the owner).
+    from core.training import rewards as rewards_module
+
+    root = run_as(account, rewards_module._user_root) / REWARD_NAME
+    root.mkdir(parents = True, exist_ok = True)
+    (root / "REWARD.md").write_text(
+        f"---\nname: {REWARD_NAME}\nkind: rule\n"
+        f"description: {json.dumps(SENTINEL, ensure_ascii = False)}\n"
+        "---\ntype: length\nmax_chars: 10\nscore: {over: -1.0, under: 0.0}\n",
+        encoding = "utf-8",
+    )
+    return {"name": REWARD_NAME}
+
+
 CORE_FACTORIES = {
     "routes.chat_history:GET:/threads/{thread_id}": Factory("chat", fragment = SENTINEL),
     "routes.chat_history:PATCH:/threads/{thread_id}": Factory(
@@ -173,6 +192,11 @@ CORE_FACTORIES = {
         absent = SENTINEL,
     ),
     "routes.skills:DELETE:/{name}": Factory("skill", success = 204, absent = SENTINEL),
+    # The export re-renders the YAML, which single-quotes the sentinel and doubles its apostrophe.
+    "routes.rewards:GET:/{name}/export": Factory(
+        "reward", fragment = SENTINEL.replace("'", "''"), absent = SENTINEL
+    ),
+    "routes.rewards:DELETE:/{name}": Factory("reward", success = 204, absent = SENTINEL),
 }
 
 

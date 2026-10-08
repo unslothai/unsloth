@@ -272,7 +272,7 @@ def _read_root(source: str, root: Path) -> list[dict]:
             continue
         record = {"name": child.name, "source": source, "valid": True, "error": None}
         try:
-            record.update(parse_reward_markdown(manifest.read_text("utf-8"), child.name))
+            record.update(parse_reward_markdown(manifest.read_text(encoding = "utf-8"), child.name))
         except (RewardError, OSError, UnicodeDecodeError) as exc:
             record.update(
                 {"valid": False, "error": str(exc), "kind": "rule", "description": "", "rule": None}
@@ -312,7 +312,7 @@ def import_reward(raw: str, *, overwrite: bool = False) -> dict:
             raise RewardExistsError(f"A reward named '{spec['name']}' already exists.")
         target.mkdir(parents = True, exist_ok = True)
         # Re-render from the parsed spec so only validated fields reach disk.
-        (target / "REWARD.md").write_text(render_reward_markdown(spec), "utf-8")
+        (target / "REWARD.md").write_text(render_reward_markdown(spec), encoding = "utf-8")
     return {**spec, "source": "user", "valid": True, "error": None, "shadowed": False}
 
 
