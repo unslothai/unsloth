@@ -246,3 +246,22 @@ test("leaving a chat closes the tabs showing its pages, and only those", () => {
   assert.equal(useBrowserStore.getState().tabs.length, 0);
   assert.equal(useBrowserStore.getState().open, false);
 });
+
+test("leaving a chat closes a duplicated page that no longer claims the card's key", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  store.openFile({
+    blob: new Blob(["<p>hi</p>"], { type: "text/html" }),
+    name: "page.html",
+    contentType: "text/html",
+    key: "html:duplicate",
+  });
+  store.duplicateTab(useBrowserStore.getState().activeTabId ?? "");
+  assert.equal(useBrowserStore.getState().tabs.length, 2);
+  assert.equal(
+    useBrowserStore.getState().tabs.filter((tab) => tab.openKey === "file:html:duplicate").length,
+    1,
+  );
+  store.closeChatPages();
+  assert.equal(useBrowserStore.getState().tabs.length, 0);
+});

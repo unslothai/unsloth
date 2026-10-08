@@ -28,6 +28,7 @@ export type BrowserEntry =
       plainText?: boolean;
       /** The tab's openKey while this entry shows, so Back restores it. */
       openKey?: string;
+      chatPage?: boolean;
     };
 
 export type InternalPage = "history" | "downloads" | "bookmarks";
@@ -484,7 +485,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     closeChatPages: () => {
       for (const tab of get().tabs) {
-        if (tab.openKey?.startsWith("file:html:")) get().closeTab(tab.id);
+        const entry = currentEntry(tab);
+        if (entry.kind === "file" && entry.chatPage) get().closeTab(tab.id);
       }
     },
     openUrl: (url, options) => {
@@ -515,6 +517,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         contentType: contentType || blob.type,
         plainText,
         ...(openKey ? { openKey } : {}),
+        ...(key?.startsWith("html:") ? { chatPage: true } : {}),
       };
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
