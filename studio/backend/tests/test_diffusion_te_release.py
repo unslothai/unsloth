@@ -76,7 +76,6 @@ def test_mps_takes_the_int8_convrot_encoder_without_the_fp8_fallback():
     )
     source = sources["text_encoder"]
     assert source.filename == "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors"
-    # The fp8 names it falls back to on CUDA cannot run on MPS.
     assert source.fallback_filenames == ()
 
 
@@ -253,9 +252,7 @@ def test_release_frees_and_reload_restores_bit_for_bit(snapshot_root):
     # Device and dtype survive, so pipelines that read them before encoding still work.
     assert pipe.text_encoder.proj.weight.device.type == device
     assert pipe.text_encoder.proj.weight.dtype == torch.float32
-    # Small and non-persistent tensors stay.
     assert pipe.text_encoder.rotary.numel() == 16
-    # The forward pre-hook reloads before the encoder runs.
     with torch.no_grad():
         after = pipe.text_encoder(ids).cpu()
     assert not releaser.released and releaser.reloads == 1

@@ -297,7 +297,7 @@ class TextEncoderReleaser:
             )
 
     def close(self) -> None:
-        """Drop the hooks and the snapshot. The weights stay as they are (the pipeline is being dropped)."""
+        """Drop the hooks and the snapshot; the weights stay as they are."""
         with self._lock:
             for hook in self._hooks:
                 try:
