@@ -101,7 +101,12 @@ def rl_log_metrics(logs: dict) -> Optional[dict]:
     return out or None
 
 
-_RL_OUTPUT_COLUMNS = frozenset({"prompt", "answer", "chosen", "rejected"})
+# Columns each objective rebuilds; a reward's compare_to column of another name survives.
+_RL_OUTPUT_COLUMNS = {
+    "grpo": frozenset({"prompt", "answer"}),
+    "dpo": frozenset({"prompt", "chosen", "rejected"}),
+    "orpo": frozenset({"prompt", "chosen", "rejected"}),
+}
 
 
 def normalize_objective(value: Any) -> str:
@@ -165,7 +170,7 @@ def format_rl_dataset(
         raise ValueError(f"{objective.upper()} training needs a dataset with known columns.")
     roles = resolve_role_columns(columns, objective, mapping)
     # Rewards read their compare_to column by name, so keep it even when it also fills a role.
-    extra = [c for c in keep_columns if c in columns and c not in _RL_OUTPUT_COLUMNS]
+    extra = [c for c in keep_columns if c in columns and c not in _RL_OUTPUT_COLUMNS[objective]]
     if objective == "grpo":
         present = set(extra) | {"prompt"} | ({"answer"} if "answer" in roles else set())
         absent = sorted({c for c in keep_columns if c not in present})

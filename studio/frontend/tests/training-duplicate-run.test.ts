@@ -253,3 +253,21 @@ test("a duplicated GRPO run keeps its objective, RL settings, rewards and column
   });
   assert.deepEqual(payload.grpo_rewards, [{ name: "exact-answer", weight: 2 }]);
 });
+
+test("switching to an RL objective and back restores the model's SFT learning rate", () => {
+  store.getState().reset();
+  store.setState({
+    modelType: "text",
+    trainingMethod: "qlora",
+    learningRate: 2e-5,
+    trainingMethodProvenance: {
+      ...store.getState().trainingMethodProvenance,
+      learningRateManuallySet: false,
+      modelAdapterLearningRate: 2e-5,
+    },
+  });
+  store.getState().setTrainingObjective("grpo");
+  assert.equal(store.getState().learningRate, 5e-6);
+  store.getState().setTrainingObjective("sft");
+  assert.equal(store.getState().learningRate, 2e-5);
+});

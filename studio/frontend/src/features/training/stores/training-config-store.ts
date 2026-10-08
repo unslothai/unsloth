@@ -1652,7 +1652,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               trainingObjective === "sft"
                 ? state.trainingMethod === "full"
                   ? LR_DEFAULT_FULL
-                  : LR_DEFAULT_LORA
+                  : (state.trainingMethodProvenance.modelAdapterLearningRate ??
+                    LR_DEFAULT_LORA)
                 : RL_LEARNING_RATES[trainingObjective];
           }
           if (trainingObjective !== "sft") {

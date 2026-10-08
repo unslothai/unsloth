@@ -344,3 +344,9 @@ def test_resume_scores_with_the_stored_reward_rules():
         "exact-answer": {"name": "exact-answer", "weight": 2.0, "rule": rule}
     }
     assert _stored_reward_specs({}) == {}
+
+
+def test_grpo_keeps_a_reward_column_named_like_a_preference_role():
+    ds = Dataset.from_list([{"question": "2+2?", "answer": "4", "chosen": "x"}])
+    out, _ = format_rl_dataset(ds, "grpo", keep_columns = ("chosen",))
+    assert out[0]["chosen"] == "x"
