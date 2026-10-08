@@ -1,0 +1,390 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ATTACHMENT_KIND_ICON_CLASS, ATTACHMENT_KIND_ICONS, attachmentFileKind } from "@/features/chat";
+import { useLocale, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+import {
+  Alert02Icon,
+  CheckmarkCircle02Icon,
+  Copy01Icon,
+  Delete02Icon,
+  Download01Icon,
+  Folder01Icon,
+  MoreHorizontalIcon,
+  ArrowUpRight01Icon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useRef, useState } from "react";
+import {
+  type FinishedDownload,
+  keptDownloadFile,
+  mountDownloadsButton,
+  useDownloadActivity,
+} from "./download-activity";
+import { formatSize, revealLabelKey } from "./download-format";
+import { type DownloadItem, useBrowserHistoryStore } from "./history-store";
+import { nativeDownloadsExist, openNativeDownload, revealNativeDownload } from "./native-downloads";
+import { useBrowserStore } from "./store";
+
+const RECENT_COUNT = 8;
+// Long enough to read and reach for Open; hovering keeps it up.
+const COMPLETE_SHOWN_MS = 6000;
+
+const ROUND_ACTION =
+  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_7%,transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40 data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)]";
+
+type Target = Pick<DownloadItem, "name" | "contentType" | "url" | "nativeId"> & { keptId?: string };
+
+/** Open a download: the saved file on the desktop, this session's copy in a tab, else its page. */
+function openTarget(target: Target, onFailed: (name: string) => void): (() => void) | undefined {
+  if (isTauri && target.nativeId) {
+    const id = target.nativeId;
+    return () => void openNativeDownload(id).catch(() => onFailed(target.name));
+  }
+  const kept = keptDownloadFile(target.keptId);
+  if (kept) {
+    return () =>
+      useBrowserStore.getState().openFile({ ...kept, key: `download:${target.keptId}` });
+  }
+  const url = target.url;
+  return url ? () => useBrowserStore.getState().openUrl(url, { newTab: true }) : undefined;
+}
+
+function revealTarget(target: Target, onFailed: (name: string) => void): (() => void) | undefined {
+  if (!isTauri || !target.nativeId) return undefined;
+  const id = target.nativeId;
+  return () => void revealNativeDownload(id).catch(() => onFailed(target.name));
+}
+
+/** Desktop downloads missing from disk, by native id; rechecked while the list is open. */
+function useMissing(downloads: DownloadItem[], enabled: boolean): ReadonlySet<string> {
+  const [missing, setMissing] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    if (!enabled || !isTauri) return;
+    const ids = downloads.flatMap((item) => (item.nativeId ? [item.nativeId] : []));
+    let live = true;
+    nativeDownloadsExist(ids).then(
+      (found) => live && setMissing(new Set(ids.filter((_, index) => !found[index]))),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [downloads, enabled]);
+  return missing;
+}
+
+function KindTile({ name, contentType, muted }: { name: string; contentType: string; muted?: boolean }) {
+  const kind = attachmentFileKind(name, contentType);
+  return (
+    <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[color-mix(in_oklab,var(--foreground)_6%,transparent)]">
+      <HugeiconsIcon
+        icon={ATTACHMENT_KIND_ICONS[kind]}
+        strokeWidth={1.75}
+        className={cn("size-4.5", muted ? "text-muted-foreground" : ATTACHMENT_KIND_ICON_CLASS[kind])}
+      />
+    </span>
+  );
+}
+
+function DownloadRow({
+  item,
+  missing,
+  onDone,
+}: {
+  item: DownloadItem;
+  missing: boolean;
+  onDone: () => void;
+}) {
+  const t = useT();
+  const locale = useLocale();
+  const failed = (key: "browser.downloads.openFailed" | "browser.pages.revealFailed") => (name: string) =>
+    toast.error(t(key, { name }));
+  const target: Target = { ...item, keptId: item.id };
+  const open = missing ? undefined : openTarget(target, failed("browser.downloads.openFailed"));
+  const reveal = missing ? undefined : revealTarget(target, failed("browser.pages.revealFailed"));
+  const time = new Intl.DateTimeFormat(locale, { timeStyle: "short" }).format(item.downloadedAt);
+  const status = t(missing ? "browser.downloads.missing" : "browser.downloads.downloaded");
+  const revealLabel = t(revealLabelKey());
+  const run = (action: (() => void) | undefined) => () => {
+    action?.();
+    onDone();
+  };
+  return (
+    <li className="group/row flex items-center gap-3 rounded-2xl px-2 py-1.5 hover:bg-[color-mix(in_oklab,var(--foreground)_4%,transparent)]">
+      <button
+        type="button"
+        onClick={run(open)}
+        disabled={!open}
+        title={item.name}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-start focus-visible:outline-none disabled:cursor-default"
+      >
+        <KindTile name={item.name} contentType={item.contentType} muted={missing} />
+        <span className="flex min-w-0 flex-col">
+          <span className={cn("truncate text-ui-14", missing ? "text-muted-foreground" : "text-foreground")}>
+            {item.name}
+          </span>
+          <span className="truncate text-ui-12 text-muted-foreground tabular-nums">
+            {[status, item.size > 0 ? formatSize(item.size, locale) : null, time].filter(Boolean).join(" · ")}
+          </span>
+        </span>
+      </button>
+      {isTauri ? (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <button type="button" aria-label={revealLabel} disabled={!reveal} onClick={run(reveal)} className={ROUND_ACTION}>
+              <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-4.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent className="tooltip-compact">{revealLabel}</TooltipContent>
+        </Tooltip>
+      ) : null}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild={true}>
+          <button type="button" aria-label={t("browser.more")} className={ROUND_ACTION}>
+            <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-4.5" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="browser-menu min-w-48 rounded-[20px] p-1.5">
+          <DropdownMenuItem disabled={!open} onSelect={run(open)}>
+            <HugeiconsIcon icon={ArrowUpRight01Icon} strokeWidth={1.75} className="size-4" />
+            {t("browser.downloads.open")}
+          </DropdownMenuItem>
+          {isTauri ? (
+            <DropdownMenuItem disabled={!reveal} onSelect={run(reveal)}>
+              <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-4" />
+              {revealLabel}
+            </DropdownMenuItem>
+          ) : null}
+          {item.url ? (
+            <DropdownMenuItem
+              onSelect={() =>
+                void copyToClipboard(item.url ?? "").then((ok) => ok && toast.success(t("browser.linkCopied")))
+              }
+            >
+              <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className="size-4" />
+              {t("browser.downloads.copyLink")}
+            </DropdownMenuItem>
+          ) : null}
+          <DropdownMenuItem onSelect={() => useBrowserHistoryStore.getState().removeDownload(item.id)}>
+            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+            {t("browser.pages.removeFromHistory")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </li>
+  );
+}
+
+function RecentDownloads({ open, onDone }: { open: boolean; onDone: () => void }) {
+  const t = useT();
+  const downloads = useBrowserHistoryStore((state) => state.downloads);
+  const active = useDownloadActivity((state) => state.active);
+  const recent = downloads.slice(0, RECENT_COUNT);
+  const missing = useMissing(recent, open);
+  const running = Object.entries(active);
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2 pr-1 pl-2">
+        <span className="text-ui-14 font-medium text-foreground">{t("browser.downloads.title")}</span>
+        <button
+          type="button"
+          onClick={() => {
+            useBrowserStore.getState().openInternal("downloads");
+            onDone();
+          }}
+          className="h-7 cursor-pointer rounded-full px-2.5 text-ui-12p5 text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_7%,transparent)] hover:text-foreground"
+        >
+          {t("browser.downloads.showAll")}
+        </button>
+      </div>
+      {running.length === 0 && recent.length === 0 ? (
+        <p className="px-2 py-6 text-center text-ui-13 text-muted-foreground">{t("browser.pages.noDownloads")}</p>
+      ) : (
+        <ul className="flex flex-col">
+          {running.map(([key, name]) => (
+            <li key={key} className="flex items-center gap-3 px-2 py-1.5">
+              <KindTile name={name} contentType="" />
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate text-ui-14 text-foreground">{name}</span>
+                <span className="text-ui-12 text-muted-foreground">{t("browser.downloads.inProgress")}</span>
+              </span>
+            </li>
+          ))}
+          {recent.map((item) => (
+            <DownloadRow
+              key={item.id}
+              item={item}
+              missing={item.nativeId !== undefined && missing.has(item.nativeId)}
+              onDone={onDone}
+            />
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+function FinishedNotice({ finished, onDone }: { finished: FinishedDownload; onDone: () => void }) {
+  const t = useT();
+  const failed = (key: "browser.downloads.openFailed" | "browser.pages.revealFailed") => (name: string) =>
+    toast.error(t(key, { name }));
+  const target: Target = { ...finished, keptId: finished.historyId ?? finished.key };
+  const open = finished.failed ? undefined : openTarget(target, failed("browser.downloads.openFailed"));
+  const reveal = finished.failed ? undefined : revealTarget(target, failed("browser.pages.revealFailed"));
+  const run = (action: () => void) => () => {
+    action();
+    onDone();
+  };
+  return (
+    <div className="flex flex-col gap-3 px-1">
+      <div className="flex min-w-0 items-start gap-2.5">
+        <HugeiconsIcon
+          icon={finished.failed ? Alert02Icon : CheckmarkCircle02Icon}
+          strokeWidth={2}
+          className={cn("mt-0.5 size-5 shrink-0", finished.failed ? "text-destructive" : "text-primary")}
+        />
+        <span className="flex min-w-0 flex-col">
+          <span className="text-ui-14 font-medium text-foreground">
+            {t(finished.failed ? "browser.downloads.failed" : "browser.downloads.complete")}
+          </span>
+          <span className="truncate text-ui-13 text-muted-foreground" title={finished.name}>
+            {finished.name}
+          </span>
+        </span>
+      </div>
+      {open || reveal ? (
+        <div className="flex justify-end gap-2">
+          {reveal ? (
+            <button
+              type="button"
+              onClick={run(reveal)}
+              className="h-8 cursor-pointer rounded-full bg-[color-mix(in_oklab,var(--foreground)_8%,transparent)] px-3.5 text-ui-13 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_12%,transparent)]"
+            >
+              {t(revealLabelKey())}
+            </button>
+          ) : null}
+          {open ? (
+            <button
+              type="button"
+              onClick={run(open)}
+              className="h-8 cursor-pointer rounded-full bg-foreground px-3.5 text-ui-13 text-background transition-opacity hover:opacity-85"
+            >
+              {t("browser.downloads.open")}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Toolbar Downloads button: a ring while files download, a notice when one finishes, recent downloads on click. */
+export function DownloadsButton({ className }: { className?: string }) {
+  const t = useT();
+  const active = useDownloadActivity((state) => Object.keys(state.active).length > 0);
+  const finished = useDownloadActivity((state) => state.finished);
+  const finishedSequence = useDownloadActivity((state) => state.finishedSequence);
+  const [mode, setMode] = useState<"closed" | "list" | "finished">("closed");
+  const hovered = useRef(false);
+  // Only finishes after mount pop the notice; earlier ones just sit in the list.
+  const [seen, setSeen] = useState(finishedSequence);
+  if (finishedSequence !== seen) {
+    setSeen(finishedSequence);
+    if (finished && mode !== "list") setMode("finished");
+  }
+
+  useEffect(() => mountDownloadsButton(), []);
+
+  useEffect(() => {
+    if (mode !== "finished") return;
+    const timer = window.setTimeout(() => {
+      if (!hovered.current) setMode("closed");
+    }, COMPLETE_SHOWN_MS);
+    return () => window.clearTimeout(timer);
+  }, [mode, finishedSequence]);
+
+  const close = () => {
+    setMode("closed");
+    useDownloadActivity.getState().dismissFinished();
+  };
+  const label = t(active ? "browser.downloads.inProgressLabel" : "browser.downloads.title");
+  const lit = active || mode === "finished";
+
+  return (
+    <Popover open={mode !== "closed"} onOpenChange={(open) => (open ? setMode("list") : close())}>
+      <PopoverAnchor asChild={true}>
+        <span className="relative flex shrink-0">
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label={label}
+                aria-expanded={mode !== "closed"}
+                onClick={() => (mode === "list" ? close() : setMode("list"))}
+                className={cn(className, "relative", lit && "text-primary hover:text-primary")}
+              >
+                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
+                {active ? (
+                  <svg
+                    aria-hidden={true}
+                    viewBox="0 0 32 32"
+                    className="pointer-events-none absolute inset-0 m-auto size-[calc(100%-2px)] animate-spin [animation-duration:1.4s]"
+                  >
+                    <circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" strokeOpacity={0.18} strokeWidth={2} />
+                    <circle
+                      cx="16"
+                      cy="16"
+                      r="14"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      strokeLinecap="round"
+                      strokeDasharray="22 66"
+                    />
+                  </svg>
+                ) : null}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="tooltip-compact">
+              {label}
+            </TooltipContent>
+          </Tooltip>
+        </span>
+      </PopoverAnchor>
+      <PopoverContent
+        align="end"
+        sideOffset={8}
+        onOpenAutoFocus={(event) => mode === "finished" && event.preventDefault()}
+        onMouseEnter={() => {
+          hovered.current = true;
+        }}
+        onMouseLeave={() => {
+          hovered.current = false;
+        }}
+        className={cn(
+          "browser-menu gap-2 rounded-[22px] p-2",
+          mode === "finished" ? "w-80 p-3" : "w-96 max-h-[min(32rem,var(--radix-popover-content-available-height))]",
+        )}
+      >
+        {mode === "finished" && finished ? (
+          <FinishedNotice finished={finished} onDone={close} />
+        ) : (
+          <RecentDownloads open={mode === "list"} onDone={close} />
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}

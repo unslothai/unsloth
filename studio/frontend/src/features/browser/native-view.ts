@@ -11,6 +11,7 @@ import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
 import { approveDownload, downloadSiteOf } from "./download-approval-queue";
+import { beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
@@ -204,10 +205,15 @@ function onNativeEvent(event: NativeEvent): void {
   }
 }
 
+/** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
 function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
+  const key = `native:${event.tabId}:${event.url}`;
   if (!event.done) {
-    toast(t("browser.native.downloading", { name: event.name }));
-  } else if (event.success) {
+    beginDownload(key, event.name);
+    if (useDownloadActivity.getState().buttons === 0) toast(t("browser.native.downloading", { name: event.name }));
+    return;
+  }
+  if (event.success) {
     useBrowserHistoryStore.getState().recordDownload({
       name: event.name,
       url: event.url,
@@ -215,11 +221,18 @@ function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
       contentType: "",
       nativeId: event.downloadId ?? undefined,
     });
-    if (event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
-    else toast.success(t("browser.native.downloaded", { name: event.name }));
-  } else {
-    toast.error(t("browser.native.downloadFailed", { name: event.name }));
   }
+  const shown = finishDownload(key, {
+    name: event.name,
+    size: event.size ?? 0,
+    contentType: "",
+    url: event.url,
+    nativeId: event.downloadId ?? undefined,
+    failed: !event.success,
+  });
+  if (event.success && event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
+  else if (!shown && event.success) toast.success(t("browser.native.downloaded", { name: event.name }));
+  else if (!shown) toast.error(t("browser.native.downloadFailed", { name: event.name }));
 }
 
 // Pages can ask in a loop: one prompt on screen, replaced at most once a second.

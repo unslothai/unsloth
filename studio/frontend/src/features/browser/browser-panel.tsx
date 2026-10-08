@@ -103,6 +103,7 @@ import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
 import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
+import { DownloadsButton } from "./downloads-button";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
@@ -1050,19 +1051,11 @@ function webAddress(tab: BrowserTab | undefined): string | null {
 }
 
 function WebActions({ tab }: { tab: BrowserTab | undefined }) {
-  const t = useT();
-  const download = tabDownload(tab);
   return (
     <>
       <AnnotatePageButton tab={tab} />
-      <IconButton
-        label={t("browser.download")}
-        disabled={!download}
-        onClick={() => download && void saveBrowserDownload(download)}
-        className={NAV_BUTTON}
-      >
-        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
-      </IconButton>
+      {/* Recent downloads and the one in flight; saving the page itself is in the menu. */}
+      <DownloadsButton className={NAV_BUTTON} />
     </>
   );
 }
@@ -1182,6 +1175,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
   const device = useBrowserStore((state) => state.device);
   const [clearOpen, setClearOpen] = useState(false);
   const webUrl = webAddress(tab);
+  const pageSave = fileTab ? undefined : tabDownload(tab);
   const bookmarked = useBookmarkFor(webUrl) !== undefined;
   const toolbarMode = useBrowserPrefsStore((state) => state.bookmarksToolbar);
   // The star's editor opens as the menu closes; focus going back to the menu button would shut it.
@@ -1269,6 +1263,12 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
           </DropdownMenuItem>
           <DropdownMenuItem disabled={!webUrl} onSelect={() => webUrl && openExternalLink(webUrl)}>
             {t("browser.openExternal")}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!pageSave}
+            onSelect={() => pageSave && void saveBrowserDownload(pageSave)}
+          >
+            {t("browser.downloads.savePage")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           </>

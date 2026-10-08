@@ -230,3 +230,34 @@ test("a finished download is listed and reported after its tab closed, and warns
     stop();
   }
 });
+
+test("with a Downloads button on screen, a download shows there, not as a toast", async () => {
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewDownloadsButton?: boolean;
+  };
+  g.nativeViewDownloadsButton = true;
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const seen: { level: string; message: string }[] = [];
+    g.nativeViewSeen = seen;
+    const event = { kind: "download", tabId, url: "https://example.com/b.zip", name: "b.zip", path: null, size: 3 };
+    g.nativeViewListener?.({ payload: { ...event, done: false, success: false, downloadId: null } });
+    g.nativeViewListener?.({ payload: { ...event, done: true, success: true, downloadId: "d1", marked: true } });
+    g.nativeViewListener?.({ payload: { ...event, done: true, success: false, downloadId: null } });
+    g.nativeViewListener?.({ payload: { ...event, done: true, success: true, downloadId: "d2", marked: false } });
+    // The unmarked warning still toasts: the button only says the file finished.
+    assert.deepEqual(seen, [
+      { level: "history", message: "d1" },
+      { level: "history", message: "d2" },
+      { level: "warning", message: "browser.native.notMarked" },
+    ]);
+  } finally {
+    g.nativeViewDownloadsButton = false;
+    stop();
+  }
+});

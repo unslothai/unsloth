@@ -238,6 +238,52 @@ pub fn browser_download_reveal(
     crate::native_intents::reveal_in_file_manager(&path)
 }
 
+/// Extensions that run code when opened, shared with download-safety.ts.
+fn runs_code(path: &Path) -> bool {
+    static EXTENSIONS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    let extensions = EXTENSIONS.get_or_init(|| {
+        #[derive(Deserialize)]
+        struct Policy {
+            extensions: Vec<String>,
+        }
+        serde_json::from_str::<Policy>(include_str!(
+            "../../frontend/src/features/browser/dangerous-file-types.json"
+        ))
+        .map(|policy| policy.extensions)
+        .unwrap_or_default()
+    });
+    // Windows drops trailing dots and spaces, so `setup.exe.` still runs.
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let name = name.trim_end_matches(['.', ' ']);
+    name.rsplit_once('.').is_some_and(|(_, ext)| {
+        let ext = ext.to_lowercase();
+        extensions.iter().any(|known| *known == ext)
+    })
+}
+
+/// Open a download with its default app. Programs and scripts are refused: they stay a reveal away.
+#[tauri::command]
+pub fn browser_download_open(
+    webview: tauri::Webview,
+    app: AppHandle,
+    state: State<'_, BrowserDownloads>,
+    id: String,
+) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    let path = with_entries(&app, &state, |entries| (path_of(entries, &id), false))
+        .ok_or_else(|| "Unknown download.".to_string())?;
+    if !path.is_file() {
+        return Err("The file was moved or deleted.".to_string());
+    }
+    if runs_code(&path) {
+        return Err("Programs and scripts open from their folder.".to_string());
+    }
+    tauri_plugin_opener::open_path(&path, None::<&str>).map_err(|error| error.to_string())
+}
+
 /// Whether each download is still where it was saved, in the order asked.
 #[tauri::command]
 pub fn browser_download_exists(
@@ -691,6 +737,30 @@ fn copy_into_place(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn programs_and_scripts_are_not_opened() {
+        for name in [
+            "setup.exe",
+            "Install.CMD",
+            "run.sh",
+            "tool.command",
+            "x.jar",
+            "Foo.app",
+            "a.exe. ",
+        ] {
+            assert!(runs_code(Path::new(name)), "{name}");
+        }
+        for name in [
+            "report.pdf",
+            "data.csv",
+            "clip.mp4",
+            "noext",
+            ".exe-notes.txt",
+        ] {
+            assert!(!runs_code(Path::new(name)), "{name}");
+        }
+    }
 
     #[test]
     fn ids_are_random_hex_and_checked() {

@@ -7,6 +7,7 @@ import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib
 import { toast } from "@/lib/toast";
 import { fileNameFromUrl, isWebUrl, safeDownloadName, withBaseUrl } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
+import { abandonDownload, beginDownload, finishDownload } from "./download-activity";
 import { approveDownload } from "./download-approval-queue";
 import { isDangerousDownload } from "./download-safety";
 import { useBrowserHistoryStore } from "./history-store";
@@ -81,11 +82,16 @@ async function writeDownload(download: BrowserDownload, target: SaveHandle | nul
   const name = safeDownloadName(download.name);
   let saved: SavedNativeDownload | null = null;
   let picked: SaveHandle | null = null;
+  const key = `save:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`;
+  beginDownload(key, name);
   try {
     if (isTauri) {
       // The app keeps the path so Download history can reveal it.
       saved = await saveNativeDownload(blob, name, useBrowserPrefsStore.getState().askWhereToSave, url);
-      if (!saved) return;
+      if (!saved) {
+        abandonDownload(key);
+        return;
+      }
     } else {
       picked = target === undefined ? await pickSaveTarget(name) : target;
       if (picked) {
@@ -97,18 +103,27 @@ async function writeDownload(download: BrowserDownload, target: SaveHandle | nul
       }
     }
   } catch (error) {
+    abandonDownload(key);
     if (!isDownloadCancelled(error)) toast.error(error instanceof Error ? error.message : String(error));
     return;
   }
+  const savedName = saved?.name || picked?.name || name;
   useBrowserHistoryStore.getState().recordDownload({
-    name: saved?.name || picked?.name || name,
+    name: savedName,
     url,
     size: blob.size,
     contentType,
     nativeId: saved?.id,
   });
+  const shown = finishDownload(
+    key,
+    { name: savedName, size: blob.size, contentType, url, nativeId: saved?.id, failed: false },
+    { blob, name: savedName, contentType },
+  );
   if (saved?.marked === false) {
-    toast.warning(translate("browser.native.notMarked", { name: saved.name || name }, getLocale()));
+    toast.warning(translate("browser.native.notMarked", { name: savedName }, getLocale()));
+  } else if (!shown) {
+    toast.success(translate("browser.downloads.complete", {}, getLocale()), { description: savedName });
   }
 }
 
