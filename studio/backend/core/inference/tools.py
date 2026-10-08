@@ -15791,20 +15791,19 @@ class _HTMLBodyLocator(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs = False)
         self.body_at = None
-        self._line_starts = [0]
-        self._fed = 0
+        self._absolute_offset = 0
         self._head_text_depth = 0
         self._template_depth = 0
 
     def feed_bytes(self, data):
-        start = self._fed
-        self._line_starts.extend(start + i + 1 for i, value in enumerate(data) if value == 10)
-        self._fed += len(data)
         self.feed(data.decode("latin-1"))
 
+    def updatepos(self, i, j):
+        self._absolute_offset += max(0, j - i)
+        return super().updatepos(i, j)
+
     def _offset(self):
-        line, column = self.getpos()
-        return self._line_starts[line - 1] + column
+        return self._absolute_offset
 
     def _mark_body(self):
         if self.body_at is None:
