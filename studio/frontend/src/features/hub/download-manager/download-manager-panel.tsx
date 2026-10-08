@@ -86,7 +86,6 @@ function repoLabel(repoId: string): string {
   return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
 }
 
-/** True for a companion repo a staged media pick needs (text encoder, VAE, configs). */
 function isRequiredAssetJob(job: ManagedDownload): boolean {
   if (!job.variant?.startsWith("@")) return false;
   // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint

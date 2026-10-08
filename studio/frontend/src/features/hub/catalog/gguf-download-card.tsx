@@ -263,8 +263,7 @@ interface GgufVariantMenuItem {
   footprint: GgufVariantFootprint | null;
 }
 
-/** Model plus uncached companion size, with the breakdown on hover. A quant already on disk shows
- *  only what Run still has to fetch, not a footprint that reads as a re-download. */
+/** Model plus uncached companion size, with the breakdown on hover; on disk, only what Run still fetches. */
 function GgufVariantSizeLabel({
   label,
   footprint,
