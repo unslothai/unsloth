@@ -2352,6 +2352,12 @@ def test_python_classifier(code, unsafe):
         ("import numpy.lib.npyio\nnumpy.lib.npyio.load('a.npy', None, True)", True),
         ("import numpy as np\nnp.lib.format.read_array(open('a.npy', 'rb'), True)", True),
         ("def read_array(path, dtype):\n return []\nread_array('x', 'float32')", False),
+        (
+            "from numpy.lib.format import read_array\nreader = read_array\nreader(open('a.npy', 'rb'), True)",
+            True,
+        ),
+        ("import numpy as np\nnp.lib.npyio.NpzFile('a.npz', False, True)['x']", True),
+        ("from numpy.lib.npyio import NpzFile\nNpzFile('a.npz')['x']", False),
     ],
 )
 def test_python_classifier_numpy_allow_pickle(code, unsafe):

@@ -2809,6 +2809,9 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
 # Loaders that can execute code embedded in the data they deserialize; gated by receiver module (torch.load,
 # yaml.load) since bare `load` is too common.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
+# numpy callables that unpickle when allow_pickle is set, mapped to its positional index: load(file, mmap_mode,
+# allow_pickle), lib.format.read_array(fp, allow_pickle), lib.npyio.NpzFile(fid, own_fid, allow_pickle).
+_NUMPY_PICKLE_FLAG_POS = {"load": 2, "read_array": 1, "NpzFile": 2}
 # The load entry points on those modules. yaml.load runs whatever its Loader= builds, and !!python/object/apply in the
 # data is a call, so it asks like the pickle-backed ones. yaml.safe_load is untouched.
 _AUTO_UNSAFE_PY_LOAD_ATTRS = frozenset({"load", "load_all"})
@@ -6181,14 +6184,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to a pickle-backed loader (import torch as t), so t.load(...) is still gated as a
     # code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
-    # numpy module names (import numpy as np) and names bound to numpy.load (from numpy import load as read;
-    # loader = np.load; box.reader = np.load), so its positional or splatted allow_pickle is still gated while
-    # json.load(*args) stays safe.
+    # numpy module names (import numpy as np) and names / attributes bound to a numpy pickle loader (from numpy import
+    # load as read; loader = np.load; box.reader = np.load), each with its allow_pickle position, so a positional or
+    # splatted flag is still gated while json.load(*args) stays safe.
     numpy_aliases = {"numpy"}
-    load_fn_aliases: "set[str]" = set()
-    load_fn_attr_aliases: "set[str]" = set()
-    # numpy.lib.format.read_array(fp, allow_pickle) unpickles too, with the flag second.
-    read_array_aliases: "set[str]" = set()
+    pickle_fn_aliases: "dict[str, int]" = {}
+    pickle_fn_attr_aliases: "dict[str, int]" = {}
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup aliased through it still fails closed.
     getattr_aliases = {"getattr"}
     # Names bound to functools.partial, so a partial that wraps open/a writer fails closed when it is called.
@@ -6214,23 +6215,15 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             node = node.value
         return isinstance(node, ast.Name) and node.id in numpy_aliases
 
-    def _is_numpy_load(node) -> bool:
+    def _allow_pickle_position(node) -> "int | None":
+        # allow_pickle's positional index when node is a numpy pickle loader, else None.
         if isinstance(node, ast.Name):
-            return node.id in load_fn_aliases
+            return pickle_fn_aliases.get(node.id)
         if isinstance(node, ast.Attribute):
-            return node.attr in load_fn_attr_aliases or (
-                node.attr == "load" and _in_numpy(node.value)
-            )
-        return False
-
-    def _allow_pickle_position(func) -> "int | None":
-        # Positional index of allow_pickle: numpy.load(file, mmap_mode, allow_pickle), read_array(fp, allow_pickle).
-        if _is_numpy_load(func):
-            return 2
-        if isinstance(func, ast.Name) and func.id in read_array_aliases:
-            return 1
-        if isinstance(func, ast.Attribute) and func.attr == "read_array" and _in_numpy(func.value):
-            return 1
+            if node.attr in pickle_fn_attr_aliases:
+                return pickle_fn_attr_aliases[node.attr]
+            if node.attr in _NUMPY_PICKLE_FLAG_POS and _in_numpy(node.value):
+                return _NUMPY_PICKLE_FLAG_POS[node.attr]
         return None
 
     def _is_dynamic_namespace(node) -> bool:
@@ -6350,10 +6343,12 @@ def _python_is_potentially_unsafe(code: str) -> bool:
         elif isinstance(node, ast.ImportFrom):
             if node.module and node.module.split(".")[0] == "numpy":
                 for alias in node.names:
-                    if alias.name in ("load", "*"):
-                        load_fn_aliases.add(alias.asname or "load")
-                    elif alias.name == "read_array":
-                        read_array_aliases.add(alias.asname or "read_array")
+                    if alias.name == "*":
+                        pickle_fn_aliases.update(_NUMPY_PICKLE_FLAG_POS)
+                    elif alias.name in _NUMPY_PICKLE_FLAG_POS:
+                        pickle_fn_aliases[alias.asname or alias.name] = _NUMPY_PICKLE_FLAG_POS[
+                            alias.name
+                        ]
                     else:
                         numpy_aliases.add(
                             alias.asname or alias.name
@@ -6411,9 +6406,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
             attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
             if isinstance(value, ast.Name) and value.id in numpy_aliases:
                 numpy_aliases.update(targets)  # np = numpy
-            if _is_numpy_load(value):
-                load_fn_aliases.update(targets)  # loader = np.load
-                load_fn_attr_aliases.update(attr_targets)  # box.reader = np.load
+            if (_pos := _allow_pickle_position(value)) is not None:
+                pickle_fn_aliases.update(dict.fromkeys(targets, _pos))  # loader = np.load
+                pickle_fn_attr_aliases.update(
+                    dict.fromkeys(attr_targets, _pos)
+                )  # box.reader = np.load
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
                 attr_open_aliases.update(attr_targets)  # box.f = open
@@ -6522,8 +6519,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                             if not isinstance(tgt_el, ast.Name):
                                 continue
                             tid = tgt_el.id
-                            if _is_numpy_load(val_el):
-                                load_fn_aliases.add(tid)  # r, _ = (np.load, 1)
+                            if (_pos := _allow_pickle_position(val_el)) is not None:
+                                pickle_fn_aliases[tid] = _pos  # r, _ = (np.load, 1)
                             if isinstance(val_el, ast.Name) and val_el.id in open_aliases:
                                 open_aliases.add(tid)
                             elif isinstance(val_el, ast.Name) and val_el.id in getattr_aliases:
@@ -6564,8 +6561,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 )
             ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
             for _param, _default in _defaulted:
-                if _is_numpy_load(_default):
-                    load_fn_aliases.add(_param.arg)  # def f(loader=np.load)
+                if (_pos := _allow_pickle_position(_default)) is not None:
+                    pickle_fn_aliases[_param.arg] = _pos  # def f(loader=np.load)
                 if isinstance(_default, ast.Name):
                     _did = _default.id
                     if _did in open_aliases:
@@ -6743,9 +6740,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     _passed_write_callable(kw.value) for kw in node.keywords
                 ):
                     return True
-                # numpy.load handed to a helper can be called there with allow_pickle positionally (read(np.load)).
-                if any(_is_numpy_load(a) for a in node.args) or any(
-                    _is_numpy_load(kw.value) for kw in node.keywords
+                # A numpy pickle loader handed to a helper can be called there with allow_pickle positionally
+                # (read(np.load)).
+                if any(_allow_pickle_position(a) is not None for a in node.args) or any(
+                    _allow_pickle_position(kw.value) is not None for kw in node.keywords
                 ):
                     return True
                 if isinstance(func, ast.Name):
