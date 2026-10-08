@@ -2054,6 +2054,10 @@ def linux_cuda_choice_from_release(
         selection_log.append(
             "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
         )
+        if driver_below_cuda_prebuilt_floor(host):
+            floor_message = cuda_driver_floor_message(host)
+            selection_log.append(f"linux_cuda_selection: {floor_message}")
+            log(floor_message)
         _warn_uncovered_cuda_host(
             host_sms,
             detected_runtime_lines,
@@ -3375,13 +3379,17 @@ def detected_windows_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
     return _core.detected_windows_runtime_lines(_OPS)
 
 
+driver_below_cuda_prebuilt_floor = _core.driver_below_cuda_prebuilt_floor
+cuda_driver_floor_message = _core.cuda_driver_floor_message
+
+
 def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
     if not host.driver_cuda_version:
         return []
     major, _minor = host.driver_cuda_version
     # cuda12 app bundles are toolkit-12.8 builds with bundled runtime libs; CUDA
-    # minor-version compatibility runs them on any 12.x driver, same as Linux.
-    if major < _MIN_CUDA_MAJOR:
+    # minor-version compatibility runs them on a 12.x driver from 12.4 on (#12842).
+    if major < _MIN_CUDA_MAJOR or driver_below_cuda_prebuilt_floor(host):
         return []
     return _cuda_runtime_lines_for_major(major)
 
@@ -3657,6 +3665,10 @@ def published_windows_cuda_attempts(
             "windows_cuda_selection: app-bundle runtime lines (major-gated)="
             + (",".join(ordered_lines) if ordered_lines else "none")
         )
+        if driver_below_cuda_prebuilt_floor(host):
+            floor_message = cuda_driver_floor_message(host)
+            selection_log.append(f"windows_cuda_selection: {floor_message}")
+            log(floor_message)
 
     host_sms = normalize_compute_caps(host.compute_caps)
     attempts: list[AssetChoice] = []
@@ -4202,6 +4214,19 @@ def resolve_release_asset_choice(
     )
     if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
         selection_host = masked_host or host
+        if (
+            driver_below_cuda_prebuilt_floor(selection_host)
+            and selection_host.driver_cuda_version[0] >= _MIN_CUDA_MAJOR
+        ):
+            # #12842: the Windows source fallback needs a toolkit this driver runs, which
+            # winget rarely offers, so setup would fail. CPU until the driver is updated.
+            cpu_choice = published_asset_choice_for_kind(release, "windows-cpu")
+            if cpu_choice is not None:
+                log(
+                    f"{cuda_driver_floor_message(selection_host)} Installing the CPU "
+                    "bundle for now."
+                )
+                return apply_approved_hashes([cpu_choice], checksums)
         torch_preference = detect_torch_cuda_runtime_preference(
             selection_host, gpu_hidden_by_mask = masked_host is not None
         )
@@ -4806,15 +4831,69 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
+def blocked_replace_hint(winerror: object) -> str:
+    # 5 is also what a scanner holding a handle returns (is_busy_lock_error: busy).
+    if winerror == 5:
+        return (
+            "access is denied -- a scanner or running process may still hold a handle, "
+            "or the ACLs are broken"
+        )
+    if winerror == 145:
+        return "the directory is not empty yet -- an earlier copy is still being removed"
+    return "a scanner is likely still holding the install open"
+
+
+def _tree_link_state(root: Path) -> str:
+    """Return "link", "unreadable" (root or a directory not readable) or "clean"."""
+    try:
+        root.lstat()
+    except OSError:
+        return "unreadable"
+    if _is_link_or_junction(root):
+        return "link"
+    unreadable: list[OSError] = []
+    for current_dir, dirnames, filenames in os.walk(
+        root, followlinks = False, onerror = unreadable.append
+    ):
+        current_path = type(root)(current_dir)
+        if any(_is_link_or_junction(current_path / name) for name in (*dirnames, *filenames)):
+            return "link"
+    return "unreadable" if unreadable else "clean"
+
+
+def log_acl_repair(path: Path) -> None:
+    # Printed, never run: repairing permissions is the user's call (#9928).
+    # takeown /R and icacls /T follow links, so recursion is offered only for a tree
+    # fully listed and link-free; otherwise just the root, which is not a link.
+    state = _tree_link_state(path)
+    if state == "link":
+        log(f"rename still denied after retrying; {path} contains a link, check its permissions")
+    else:
+        log(
+            "rename still denied after retrying; if the permissions on this tree are broken, run in an elevated PowerShell:"
+        )
+        recursive = state == "clean"
+        log(f'takeown /F "{path}"' + (" /R /D Y" if recursive else ""))
+        # /L: if an unreadable root is a link after all, reset the link, not its target.
+        log(f'icacls "{path}" /reset' + (" /T" if recursive else " /L"))
+        if not recursive:
+            log("then run the install again")
+    log(
+        "if access stays denied, Controlled folder access or antivirus may be blocking "
+        "the path: allow or exclude it there"
+    )
+
+
 def replace_with_busy_retry(
     src: Path,
     dst: Path,
     *,
     attempts: int = 8,
+    acl_repair: bool = True,
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
-    WinError 5/32/145 means a scanner still holds a handle inside the tree,
+    WinError 5/32/145 usually means a scanner holds a handle inside the tree,
     which clears in a second or two; without a backoff that turns an update
     into a failure, and on the aside-move of the *existing* install that is the
     failure this installer most needs to avoid. Mirrors the Node installer's
@@ -4830,12 +4909,16 @@ def replace_with_busy_retry(
             os.replace(src, dst)
             return
         except OSError as exc:
-            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            winerror = getattr(exc, "winerror", None)
+            transient = os.name == "nt" and winerror in (5, 32, 145)
             if not transient or attempt == attempts - 1:
+                if acl_repair and transient and winerror == 5:
+                    # src, not dst: the aside-move's dst does not exist yet.
+                    log_acl_repair(src)
                 raise
             log(
-                f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
-                f"{delay:.2f}s -- a scanner is likely still holding the install open"
+                f"rename {src.name} -> {dst.name} blocked ({winerror}), retrying in "
+                f"{delay:.2f}s -- {blocked_replace_hint(winerror)}"
             )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
@@ -5229,7 +5312,8 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
                 log(f"restoring rollback path {rollback_dir} -> {install_dir}")
                 restore_attempted = True
                 try:
-                    replace_with_busy_retry(rollback_dir, install_dir)
+                    # A copy fallback follows, so ACL advice here could name a tree it then removes.
+                    replace_with_busy_retry(rollback_dir, install_dir, acl_repair = False)
                 except OSError as restore_exc:
                     # The rename is the one-step restore; when it cannot run,
                     # the rollback tree is the sole remaining llama.cpp, so a
@@ -5390,6 +5474,17 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         prune_install_staging_root(install_dir)
 
 
+def ensure_fit_params_executable(install_dir: Path) -> None:
+    """The guarded extractor leaves the optional Metal probe 0644 (#12901); reuse paths repair old installs."""
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    try:
+        if helper.is_file() and not helper.is_symlink():
+            if stat.S_IMODE(helper.stat().st_mode) & 0o111 != 0o111:
+                os.chmod(helper, 0o755)
+    except OSError:
+        pass
+
+
 def install_from_archives(
     choice: AssetChoice, host: HostInfo, install_dir: Path, work_dir: Path
 ) -> tuple[Path, Path]:
@@ -5480,6 +5575,7 @@ def install_from_archives(
     source_bench = build_bin / "llama-bench"
     if source_bench.is_file():
         os.chmod(source_bench, 0o755)
+    ensure_fit_params_executable(install_dir)
 
     root_server = install_dir / "llama-server"
     root_quantize = install_dir / "llama-quantize"
@@ -7240,6 +7336,13 @@ def _fork_manifest_release_plans(
                 last_error = exc
                 if not allow_older_release_fallback:
                     raise
+                # #12842: the floor is the host's, so every older release fails alike.
+                if (
+                    (host.is_linux or host.is_windows)
+                    and host.has_physical_nvidia
+                    and driver_below_cuda_prebuilt_floor(host)
+                ):
+                    raise PrebuiltFallback(cuda_driver_floor_message(host)) from exc
                 log(
                     "published release skipped for install planning: "
                     f"{bundle.repo}@{bundle.release_tag} upstream_tag={resolved_tag} ({exc})"
@@ -9534,6 +9637,10 @@ def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
     """
     if not (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
         return True
+    # #12842: below the floor a CUDA prebuilt still answers --version but loads no kernel.
+    marker = load_prebuilt_metadata(install_dir) or {}
+    if marker_backend(marker) == "cuda" and driver_below_cuda_prebuilt_floor(host):
+        return False
     return _existing_install_runs(install_dir, host)
 
 
@@ -11085,9 +11192,15 @@ def select_backend_install(
             cpu_mechanism = cpu_mechanism,
             host = host,
         )
-    requested_tag, release_plans = resolve_simple_install_release_plans(
-        llama_tag, route.host, route.published_repo, route.published_release_tag
-    )
+    try:
+        requested_tag, release_plans = resolve_simple_install_release_plans(
+            llama_tag, route.host, route.published_repo, route.published_release_tag
+        )
+    except PrebuiltFallback as exc:
+        # #12842: a stored cuda choice must fall back to detection, not fail the update.
+        if route.backend == "cuda" and driver_below_cuda_prebuilt_floor(route.host):
+            raise BackendUnavailable(str(exc)) from exc
+        raise
     if route.rocm_fallback_host is not None:
         release_plans = _with_rocm_behind_vulkan(
             release_plans,
@@ -11262,6 +11375,7 @@ def install_prebuilt(
                 # honour; a request read back off the marker retries when something moves.
                 backend_request_mandatory = backend_mandatory,
             ):
+                ensure_fit_params_executable(install_dir)
                 return
             # A request detection had to replace; kept so the marker records the CHOICE.
             unhonoured_request: str | None = None
@@ -11298,6 +11412,7 @@ def install_prebuilt(
                 plan: InstallReleasePlan, reused: AssetChoice, used_fallback: bool
             ) -> None:
                 """Update selection fields when the existing bundle is reused."""
+                ensure_fit_params_executable(install_dir)
                 sync_marker_selection(
                     install_dir,
                     choice = reused,
@@ -11464,6 +11579,7 @@ def install_prebuilt(
         ):
             log("prebuilt update unavailable; keeping the existing complete install")
             log(f"prebuilt update reason: {exc}")
+            ensure_fit_params_executable(install_dir)
             return
         log(
             "prebuilt install failed; preserving the selected backend"

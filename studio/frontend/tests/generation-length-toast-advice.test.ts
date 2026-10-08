@@ -23,6 +23,9 @@ const CAP_REMEDY = /Increase Max Tokens or disable thinking/;
 const WINDOW_REMEDY = /cannot create room the window does not have/;
 const NO_UNLIMITED_CLAIM = /already unlimited/;
 const WINDOW_SETTING = /Length in Model settings/;
+const HIDDEN_WINDOW_REMEDY =
+  /Start a new chat, or shorten this one, then retry/;
+const BOTH_REMEDIES = /Max Tokens or its context window before answering/;
 
 test("the toast repeats the advice the error chose, not the Max Tokens advice", () => {
   // GenerationLengthError already decides between the Max Tokens and the Context
@@ -45,4 +48,7 @@ test("the two remedies really are different text, so passing it through matters"
   assert.match(chatApi, WINDOW_REMEDY);
   assert.match(chatApi, WINDOW_SETTING);
   assert.doesNotMatch(chatApi, NO_UNLIMITED_CLAIM);
+  // External windows need different advice.
+  assert.match(chatApi, HIDDEN_WINDOW_REMEDY);
+  assert.match(chatApi, BOTH_REMEDIES);
 });

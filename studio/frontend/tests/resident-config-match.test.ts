@@ -1686,7 +1686,7 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
     "the residency verdict is no longer callable against a second status",
   );
   const decision = USE_CHAT_MODEL_RUNTIME.search(
-    /const confirmedStatus = await getInferenceStatus\(\)/,
+    /const confirmedStatus = await readPickStatus\(\)/,
   );
   assert.ok(
     decision > 0,
@@ -1714,8 +1714,9 @@ test("the shortcut re-reads and re-judges the status before adopting", () => {
   );
   // A failed re-read must not adopt either: falling out of the block reaches /load.
   assert.ok(
-    USE_CHAT_MODEL_RUNTIME.indexOf("await getInferenceStatus().catch(() => null)", decision) ===
-      decision + "const confirmedStatus = ".length,
+    USE_CHAT_MODEL_RUNTIME.includes(
+      "getInferenceStatus(undefined, modelId).catch(() => null);",
+    ),
     "the re-read no longer tolerates a failed status",
   );
 });
@@ -1965,4 +1966,90 @@ test("legacy status without reasoning request echoes keeps its comparison", () =
     reasoning_budget: 32,
     reasoning_budget_message: "Conclude now.",
   }, { ...BLANK, reasoningBudget: 32, reasoningBudgetMessage: "Conclude now." }), true);
+});
+
+test("a pick asks the status about its own model and keeps or replaces the others per the box", () => {
+  const CONFIRM = readSrc("features/chat/utils/confirm-stop-running-chats.ts");
+  assert.equal(USE_CHAT_MODEL_RUNTIME.match(/await readPickStatus\(\)/g)?.length, 2);
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /const keepsOthers =\s*keepModelsLoaded && !forceReload && \(paramsNow\.engine \?\? "auto"\) === "auto";[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(paramsNow\.checkpoint\) && loadedNow\.length > 1;/,
+  );
+  assert.match(USE_CHAT_MODEL_RUNTIME, /touchesOnlySelected \? \(paramsNow\.checkpoint \?\? undefined\) : undefined,/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, keepsOthers \|\| touchesOnlySelected\);/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!keepsOthers && !touchesOnlySelected\) \{\s*requestLocalPromptQueueStop\(\);/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(currentCheckpoint && !keepsOthers\)/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive && !touchesOnlySelected\) \{/);
+  assert.equal(
+    USE_CHAT_MODEL_RUNTIME.match(/alongside: keepModelsLoaded \|\| touchesOnlySelected,/g)?.length,
+    2,
+  );
+  assert.match(CONFIRM, /let running = model\s*\?\s*\[\]/);
+  assert.match(CONFIRM, /await getActiveGenerations\(model\)/);
+});
+
+test("ejects stop only the ejected model's chats; eject all asks once and unloads the others first", () => {
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /function stopQueuedRuns\(decision: StopRunningChatsDecision, scoped: boolean\): void \{\s*if \(scoped\) \{\s*requestPromptQueueStop\(decision\.promptQueueThreadIds\);\s*return;\s*\}\s*cancelPreStreamRunReservations\(decision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(decision\.promptQueueThreadIds\);/,
+  );
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /confirmStopRunningChatsIfNeeded\("Unloading this model", "unload", keptId\)[\s\S]{0,80}?if \(!decision\.proceed\) return false;\s*stopQueuedRuns\(decision, true\);/,
+  );
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /const scope =\s*!confirmed && useChatRuntimeStore\.getState\(\)\.loadedModels\.length > 1\s*\?\s*params\.checkpoint\s*:\s*undefined;\s*const stopDecision =\s*confirmed \?\?\s*\(await confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*scope,\s*\)\);/,
+  );
+  assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, Boolean\(scope\)\);/);
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /"Unloading every model",\s*"unload",\s*\);\s*if \(!decision\.proceed\) return false;\s*\/\/ Before any unload[^\n]*\n\s*stopQueuedRuns\(decision, false\);\s*\/\/ Others first/,
+  );
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /others\.map\(\(id\) =>\s*unloadModel\(\{ model_path: id, force_cancel_active: decision\.forceCancelActive \}\),\s*\),\s*\);\s*if \(selectedLocal && !\(await ejectModel\(undefined, decision\)\)\) return false;\s*await refresh\(\);/,
+  );
+});
+
+test("cancelling a load clears the selection unless kept models stay loaded and this run unloaded none", () => {
+  assert.match(
+    USE_CHAT_MODEL_RUNTIME,
+    /if \(!preserveCheckpoint\) \{[\s\S]{0,160}?if \(!useChatRuntimeStore\.getState\(\)\.keepModelsLoaded \|\| run\.residentModelUnloaded\) \{\s*clearCheckpoint\(\);\s*\}\s*await refresh\(\);/,
+  );
+});
+
+test("reloading one of several stays in its own slot; a new pick with the setting off replaces as before", () => {
+  // No preliminary unload for the reload: /load finds the model's slot and replaces it there, so
+  // the server's setting gate never sends it to the primary seat.
+  assert.doesNotMatch(USE_CHAT_MODEL_RUNTIME, /replacesOneOfSeveral/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /const touchesOnlySelected =\s*forceReload &&/);
+});
+
+
+test("a remembered split matches the resident without relying on another model's store ratio", () => {
+  const config = {
+    ...BLANK,
+    gpuMemoryMode: "manual" as const,
+    gpuLayers: 66,
+    selectedGpuIds: [1, 2, 0],
+    selectedGpuIndexKind: "physical" as const,
+    tensorSplit: [30, 20, 16],
+  };
+  const running = {
+    ...DEFAULTS,
+    gpu_memory_mode: "manual" as const,
+    gpu_layers: 66,
+    gpu_ids: [1, 2, 0],
+    requested_gpu_ids: [1, 2, 0],
+    tensor_split: [30, 20, 16],
+  };
+  assert.equal(matches(running, config), true);
+  assert.equal(matches({ ...running, tensor_split: [22, 22, 22] }, config), false);
+  assert.equal(matches(running, { ...config, tensorSplit: null }), false);
+  assert.equal(matches(
+    { ...running, gpu_ids: null, requested_gpu_ids: null, tensor_split: null },
+    config,
+    { ...STANDING, reconcileGpuIds: () => null },
+  ), true);
 });

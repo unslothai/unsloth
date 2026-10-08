@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { AUDIO_CPP_AUDIO_TYPES } from "../../../audio/audio-cpp-catalog.ts";
+import {
+  AUDIO_CPP_AUDIO_TYPES,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
+} from "../../../audio/audio-cpp-catalog.ts";
 import type { FormatFilter } from "./recommended-fit";
 import type { ModelSelectorChangeMeta } from "./types";
 
@@ -84,13 +87,12 @@ export function communityAudioRowIsRunnable({
   const evidence = [id, baseModel ?? "", ...(tags ?? [])].map((value) =>
     value.toLowerCase(),
   );
-  const audioRuntimeGguf =
+  if (
     isGguf &&
-    (AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "") ||
-      [...evidence, (libraryName ?? "").toLowerCase()].some((value) =>
-        AUDIO_RUNTIME_EVIDENCE.test(value),
-      ));
-  if (audioRuntimeGguf) return true;
+    isAudioRuntimeGgufEvidence({ id, baseModel, tags, libraryName, audioType })
+  ) {
+    return true;
+  }
   if (isStt) {
     if (isGguf) return false;
     if (libraryName && libraryName.toLowerCase() !== "transformers")
@@ -114,6 +116,27 @@ export function communityAudioRowIsRunnable({
   if (!family) return false;
   // llama.cpp intentionally has no CSM decoder; CSM is Transformers-only.
   return !(isGguf && /(?:^|[-_./])csm(?:$|[-_./])/.test(family));
+}
+
+function isAudioRuntimeGgufEvidence({
+  id,
+  baseModel,
+  tags,
+  libraryName,
+  audioType,
+}: {
+  id: string;
+  baseModel?: string | null;
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+  audioType?: string | null;
+}): boolean {
+  return (
+    AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "") ||
+    [id, baseModel ?? "", ...(tags ?? []), libraryName ?? ""].some((value) =>
+      AUDIO_RUNTIME_EVIDENCE.test(value.toLowerCase()),
+    )
+  );
 }
 
 /** A GGUF llama.cpp cannot decode, however it was found: CSM is Transformers-only, so it
@@ -194,6 +217,17 @@ export function audioPickIsRoutable({
     return ["snac", "bicodec", "dac"].includes(codec) || AUDIO_CPP_AUDIO_TYPES.has(codec);
   }
   if (isCurated) return true;
+  // Hub music / audio-to-audio tags also cover MusicGen, Stable Audio, codecs, enhancers: Audio runs none.
+  if (task === "audio-to-audio") return audioType === AUDIO_CPP_SEP_AUDIO_TYPE;
+  if (task === "text-to-audio") {
+    if (NATIVE_AUDIO_TYPES.has(audioType ?? "")) return true;
+    return (
+      isGguf &&
+      (taskFromGgufArch ||
+        isLocalCheckpoint ||
+        isAudioRuntimeGgufEvidence({ id, baseModel, tags, libraryName, audioType }))
+    );
+  }
   // A checkpoint from outputs/ has no Hub identity to judge, and the family-name heuristic would
   // reject it on its directory name. Its task came from the backend reading the checkpoint,
   // the stronger signal, and the Audio page lists it off that same tag.

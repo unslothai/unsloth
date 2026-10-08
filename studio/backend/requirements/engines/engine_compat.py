@@ -11,6 +11,8 @@ Studio's choices and are left out. Run after `uv pip compile`:
     python studio/backend/requirements/engines/engine_compat.py vllm-linux-cu130-torch213
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import re
