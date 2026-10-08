@@ -38,10 +38,7 @@ from models.providers import (
     validate_provider_reasoning_contract,
 )
 
-# Local servers, not hosted APIs: each applies the model's own chat template on the way in, so a prompt built here is
-# templated just like an in-process one (#7066). "custom" is a user-supplied OpenAI-compatible base_url, i.e. how a
-# self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume a template applies:
-# sweeping a hosted API costs a space in delimiter-like text, not sweeping a local one costs a forged turn.
+# custom endpoints are treated as local because skipping their chat template can forge a turn (#7066).
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom", "lemonade"})
 
 # only vLLM and llama.cpp document both continuation flags on /v1/chat/completions.
@@ -54,7 +51,7 @@ _USAGE_STREAM_OPTION_PROVIDERS = frozenset(
 
 # launch-time windows are absent from catalogues; custom covers unregistered self-hosted servers.
 _SERVED_WINDOW_PROVIDERS = frozenset({"vllm", "llama_cpp", "custom"})
-# refresh quickly enough to detect a server restart within one or two turns.
+# refresh within one or two turns to detect server restarts.
 _SERVED_WINDOW_TTL_S = 60.0
 _SERVED_WINDOW_TIMEOUT_S = 5.0
 _served_windows: dict[tuple[str, str, str], tuple[float, Optional[int]]] = {}
