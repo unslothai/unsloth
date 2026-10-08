@@ -1067,10 +1067,18 @@ def test_the_release_prefetch_fetches_the_pin_into_scratch_only_when_behind(monk
         return module.subprocess.CompletedProcess(cmd, 0, "")
 
     monkeypatch.setattr(module.subprocess, "run", run)
+    # Windows ARM64 rewrites the file to a filtered copy, so read what was asked for, not the path.
+    asked = []
+    real_effective = module._effective_requirements
+    monkeypatch.setattr(
+        module,
+        "_effective_requirements",
+        lambda req: asked.append(req.name) or real_effective(req),
+    )
     assert module._prefetch_diffusers_main() == 0
     (cmd,) = calls
     assert "--target" in cmd and "--no-deps" not in cmd
-    assert any(str(arg).endswith("diffusers-pin.txt") for arg in cmd), cmd
+    assert asked == ["diffusers-pin.txt"]
 
 
 def _release_repair(
