@@ -62,6 +62,11 @@ test("a captions-only set created in this form remains available for follow-up f
     source,
     /const resultCaptionsOnly = res\.image_count === 0 && \(res\.clip_count \?\? 0\) === 0;/,
   );
+  assert.match(
+    source,
+    /\(info\?\.continuation_dataset_names \?\? \[\]\)\.includes\(takenName\)/,
+  );
+  assert.match(source, /\{takenNameUnlisted && \(/);
 });
 
 test("the new-set form waits for the set list before it uploads", () => {
@@ -134,10 +139,10 @@ test("adding to the selected set still uploads into it", () => {
   assert.doesNotMatch(buttons, /takenName|namesLoading/);
 });
 
-test("a taken folder that is not in the list can be continued from the new-set form", () => {
+test("a safe captions-only folder can be continued from the new-set form", () => {
   assert.match(
     source,
-    /const takenNameUnlisted =\s+takenName !== null && !\(info\?\.datasets \?\? \[\]\)\.some\(\(d\) => d\.name === takenName\);/,
+    /const takenNameUnlisted =\s+takenName !== null && \(info\?\.continuation_dataset_names \?\? \[\]\)\.includes\(takenName\);/,
   );
   const form = source.slice(source.indexOf("{uploadMode ? ("));
   const newSet = form.slice(0, form.indexOf(") : ("));

@@ -699,6 +699,13 @@ def test_create_only_upload_refuses_every_occupied_spelling(client, ds_root):
     assert (ds_root / "fresh" / "new.png").is_file()
 
 
+def test_upload_refuses_internal_dataset_folders(client, ds_root):
+    for name in ("uploads", "RECIPES", "seed-uploads", "unstructured-uploads"):
+        r = _upload(client, name, [("sample.png", _png_bytes())])
+        assert r.status_code == 400, r.text
+        assert "internal dataset storage" in r.json()["detail"]
+
+
 def test_create_only_upload_removes_a_new_folder_after_validation_failure(client, ds_root):
     rejected = client.post(
         "/api/train/diffusion/dataset",

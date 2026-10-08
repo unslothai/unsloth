@@ -780,9 +780,10 @@ export function DiffusionTrainPanel({
   const continuingUploadName = isDatasetContinuation(uploadName, continuationDatasetName);
   const createsDataset = uploadMode && !continuingUploadName;
   const takenName = createsDataset ? existingDatasetName(uploadName, occupiedDatasets) : null;
-  // a folder with no image or clip is not in the list, so it can only be continued from here.
+  // A captions-only folder is not in the picker, so the backend explicitly marks safe continuations.
+  // Other unlisted names include Studio's internal dataset storage and must stay blocked.
   const takenNameUnlisted =
-    takenName !== null && !(info?.datasets ?? []).some((d) => d.name === takenName);
+    takenName !== null && (info?.continuation_dataset_names ?? []).includes(takenName);
   const takenNameMessage = takenNameUnlisted
     ? `A folder named "${takenName}" already exists but holds no images or clips yet, so it is not in the list. Add to it, or choose another name.`
     : `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;

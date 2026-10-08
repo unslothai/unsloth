@@ -838,6 +838,8 @@ export interface DiffusionTrainingInfo {
   datasets: DiffusionDatasetSummary[];
   // includes occupied folders without trainable media, which `datasets` omits.
   dataset_names?: string[];
+  // occupied captions-only folders that the diffusion uploader may safely continue.
+  continuation_dataset_names?: string[];
   // Added by the multi-family trainer backend; tolerate its absence.
   families?: DiffusionTrainableFamily[];
 }

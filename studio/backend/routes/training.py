@@ -3632,6 +3632,26 @@ _DIFFUSION_DATASET_MEDIA_EXTS = _DIFFUSION_DATASET_IMAGE_EXTS | _DIFFUSION_DATAS
 _DIFFUSION_DATASET_TEXT_EXTS = {".txt", ".caption", ".jsonl"}
 
 
+def _reserved_diffusion_dataset_names() -> frozenset[str]:
+    """Names below the dataset root owned by other Studio dataset workflows."""
+    from utils.paths import (
+        dataset_uploads_root,
+        recipe_datasets_root,
+        seed_uploads_root,
+        unstructured_uploads_root,
+    )
+
+    return frozenset(
+        path.name.casefold()
+        for path in (
+            dataset_uploads_root(),
+            recipe_datasets_root(),
+            seed_uploads_root(),
+            unstructured_uploads_root(),
+        )
+    )
+
+
 def _resolve_dataset_caption(
     folder: Path, image_path: Path, meta_captions: dict[str, str]
 ) -> Optional[str]:
@@ -3836,6 +3856,8 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
     def scan() -> DiffusionTrainingInfoResponse:
         root = datasets_root()
         found: list[DiffusionDatasetSummary] = []
+        continuations: list[str] = []
+        reserved_names = _reserved_diffusion_dataset_names()
         try:
             # Skip hidden dirs: never user datasets, and an in-progress example import stages into a dot-prefixed
             # sibling.
@@ -3856,12 +3878,23 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
             # clip-only folders are valid for video families.
             if summary.image_count > 0 or summary.clip_count > 0:
                 found.append(summary)
+            elif child.name.casefold() not in reserved_names:
+                try:
+                    has_captions = any(
+                        entry.is_file() and entry.suffix.lower() in _DIFFUSION_DATASET_TEXT_EXTS
+                        for entry in child.iterdir()
+                    )
+                except OSError:
+                    has_captions = False
+                if has_captions:
+                    continuations.append(child.name)
         families = [DiffusionTrainableFamily(**info) for info in _ui_trainable_families(found)]
         return DiffusionTrainingInfoResponse(
             datasets_root = str(root),
             outputs_root = str(outputs_root()),
             datasets = found,
             dataset_names = [p.name for p in children],
+            continuation_dataset_names = continuations,
             families = families,
         )
 
@@ -3956,6 +3989,11 @@ async def upload_diffusion_dataset(
 
     _require_diffusion_dataset_mutable()
     cleaned = _clean_diffusion_dataset_name(name)
+    if cleaned.casefold() in _reserved_diffusion_dataset_names():
+        raise HTTPException(
+            status_code = 400,
+            detail = f"'{cleaned}' is reserved for Studio's internal dataset storage.",
+        )
     folder = _resolve_dataset_folder(name, must_exist = False)
     # serialize same-folder imports because the training interlock permits mutations; duplicate checks run here
     _lock = _dataset_import_lock(folder)

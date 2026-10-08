@@ -1199,6 +1199,8 @@ class DiffusionTrainingInfoResponse(BaseModel):
     datasets: List[DiffusionDatasetSummary]
     # includes every occupied folder name, even captions-only folders.
     dataset_names: List[str] = Field(default_factory = list)
+    # occupied, unlisted folders that this upload form may safely continue.
+    continuation_dataset_names: List[str] = Field(default_factory = list)
     families: List[DiffusionTrainableFamily] = Field(default_factory = list)
 
 
