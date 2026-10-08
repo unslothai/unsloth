@@ -298,6 +298,8 @@ test("a native page begun beside a normal chat is kept in history though its tab
     g.nativeViewVisits = visits;
     const load = (url: string, loading: boolean) =>
       g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    // The view's first page is the entry's, even when it starts loading after the chat turned normal.
+    load("https://example.net/", true);
     load("https://example.net/", false);
     load("https://example.net/next", true);
     load("https://example.net/next", false);
@@ -305,8 +307,19 @@ test("a native page begun beside a normal chat is kept in history though its tab
       { url: "https://example.net/", temporary: true },
       { url: "https://example.net/next", temporary: false },
     ]);
+    const seen: { level: string; message: string; temporary?: boolean }[] = [];
+    (globalThis as { nativeViewSeen?: unknown }).nativeViewSeen = seen;
+    (globalThis as { nativeViewApprove?: boolean }).nativeViewApprove = true;
+    const url = "https://example.net/b.zip";
+    g.nativeViewListener?.({ payload: { kind: "downloadPrompt", tabId, url, site: "", name: "b.zip", id: "p3" } });
+    await settle();
+    g.nativeViewListener?.({
+      payload: { kind: "download", tabId, url, name: "b.zip", path: null, size: 3, done: true, success: true, marked: true, downloadId: "d5" },
+    });
+    assert.deepEqual(seen.filter((item) => item.level === "history"), [{ level: "history", message: "d5" }]);
   } finally {
     useChatRuntimeStore.getState().setIncognito(false);
+    delete (globalThis as { nativeViewApprove?: boolean }).nativeViewApprove;
     stop();
   }
 });

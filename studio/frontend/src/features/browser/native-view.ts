@@ -132,10 +132,16 @@ function takeTemporaryDownload(key: string): boolean {
 }
 
 // Per tab, whether its page began loading beside a temporary chat: in-page navigation makes no new entry.
+// A view's first page is its entry's, which may load long after the entry was made (a background tab).
 const temporaryPages = new Map<string, boolean>();
 
-function notePageStart(tabId: string): void {
-  temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito);
+function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web" }>): void {
+  const first = !temporaryPages.has(tabId);
+  temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || (first && entry.temporary === true));
+}
+
+function pageTemporary(tabId: string, entry: BrowserEntry): boolean {
+  return temporaryPages.get(tabId) ?? (entry.kind === "web" && entry.temporary === true);
 }
 
 /** Always answered: an unanswered download would sit in staging until the app quits. */
@@ -143,7 +149,7 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
   const { id, url, site, name } = event;
   const entry = tab ? currentEntry(tab) : null;
   const key = downloadKey(event.tabId, url);
-  if (useChatRuntimeStore.getState().incognito || (entry?.kind === "web" && entry.temporary)) {
+  if (useChatRuntimeStore.getState().incognito || (tab && entry && pageTemporary(tab.id, entry))) {
     temporaryDownloads.set(key, (temporaryDownloads.get(key) ?? 0) + 1);
   }
   // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
@@ -174,8 +180,8 @@ function onNativeEvent(event: NativeEvent): void {
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
-  if ((event.kind === "load" && event.loading) || event.kind === "url") notePageStart(tab.id);
-  const temporary = temporaryPages.get(tab.id) ?? entry.temporary === true;
+  if ((event.kind === "load" && event.loading) || event.kind === "url") notePageStart(tab.id, entry);
+  const temporary = pageTemporary(tab.id, entry);
   switch (event.kind) {
     case "load":
       store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
