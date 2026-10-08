@@ -249,6 +249,8 @@ def _route(tmp_path, monkeypatch, config):
         raise _Routed(kwargs.get("auto_model"))
 
     monkeypatch.setattr(loader.FastBaseModel, "from_pretrained", staticmethod(capture))
+    # Its pinned host buffer needs an accelerator; CPU CI has none.
+    monkeypatch.setattr(loader, "apply_unsloth_gradient_checkpointing", lambda value, *args: value)
     with pytest.raises(_Routed) as routed:
         loader.FastModel.from_pretrained(str(tmp_path), load_in_4bit = False)
     return routed.value.args[0]
