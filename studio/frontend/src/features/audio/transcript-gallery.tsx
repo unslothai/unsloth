@@ -7,6 +7,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -25,10 +26,91 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { downloadTranscript } from "./transcript-download";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { archiveTranscript, deleteTranscript, listTranscripts } from "./api";
+import {
+  type ClipSendHandlers,
+  ClipSendToMenu,
+} from "./components/clip-card";
+import { getTranscript } from "./transcribe-api";
+import {
+  TRANSCRIPT_EXPORT_FORMATS,
+  type TranscriptExportFormat,
+} from "./transcript-export";
+import {
+  type TranscriptSource,
+  detailsFrom,
+  formatTimestamp,
+} from "./transcript-model";
 import type { TranscriptRecord } from "./transcript-stream";
+
+export function TranscriptExportItems({
+  timed,
+  label,
+  onExport,
+}: {
+  timed: boolean;
+  label: (format: TranscriptExportFormat) => ReactNode;
+  onExport: (format: TranscriptExportFormat) => void;
+}) {
+  return TRANSCRIPT_EXPORT_FORMATS.map((format) => {
+    const blocked = !timed && (format === "srt" || format === "vtt");
+    return (
+      <DropdownMenuItem
+        key={format}
+        disabled={blocked}
+        onClick={() => onExport(format)}
+      >
+        {label(format)}
+        {blocked ? (
+          <span className="ml-auto pl-3 text-ui-11p5 text-muted-foreground">
+            Needs timestamps
+          </span>
+        ) : null}
+      </DropdownMenuItem>
+    );
+  });
+}
+
+// The list carries counts only, so timed formats fetch the full record.
+async function downloadRecord(
+  record: TranscriptRecord,
+  format: TranscriptExportFormat,
+): Promise<void> {
+  let full = record;
+  if ((record.segment_count ?? 0) > 0) {
+    try {
+      full = await getTranscript(record.id);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not load transcript.",
+      );
+      return;
+    }
+  }
+  await downloadTranscript(format, {
+    title: full.title,
+    text: full.text,
+    model: full.model,
+    details: detailsFrom(full),
+    names: full.speaker_names ?? {},
+  });
+}
+
+function recordBadge(record: TranscriptRecord): string | null {
+  const speakers = record.speakers?.length ?? 0;
+  if (speakers > 0)
+    return speakers === 1 ? "1 speaker" : `${speakers} speakers`;
+  return (record.segment_count ?? 0) > 0 ? "Timestamps" : null;
+}
+
+export type TranscriptSendHandlers = (transcript: {
+  text: string;
+  source?: TranscriptSource | null;
+  duration: number | null;
+}) => ClipSendHandlers;
 
 export function TranscriptGallery({
   active,
@@ -38,6 +120,7 @@ export function TranscriptGallery({
   onDelete,
   canSelect,
   autoSelect,
+  sendHandlersFor,
 }: {
   active: boolean;
   autoSelect: boolean;
@@ -46,6 +129,7 @@ export function TranscriptGallery({
   onSelect: (record: TranscriptRecord) => void;
   onDelete: (ids: string[] | null) => void;
   canSelect: () => boolean;
+  sendHandlersFor: TranscriptSendHandlers;
 }) {
   const [records, setRecords] = useState<TranscriptRecord[]>([]);
   const [archived, setArchived] = useState(false);
@@ -96,6 +180,7 @@ export function TranscriptGallery({
   useLayoutEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `latest` is the trigger; a newly saved transcript refetches the list.
   useEffect(() => {
     if (active) void refresh();
     return () => {
@@ -211,6 +296,16 @@ export function TranscriptGallery({
               }}
             >
               <span className="min-w-0 flex-1 truncate">{record.title}</span>
+              {recordBadge(record) ? (
+                <span className="shrink-0 rounded-4xl bg-muted px-1.5 text-ui-11 text-muted-foreground">
+                  {recordBadge(record)}
+                </span>
+              ) : null}
+              {record.duration ? (
+                <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+                  {formatTimestamp(record.duration)}
+                </span>
+              ) : null}
               <span className="shrink-0 text-ui-11p5 text-muted-foreground">
                 {new Date(record.created_at).toLocaleDateString()}
               </span>
@@ -220,26 +315,30 @@ export function TranscriptGallery({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                  className="size-5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 any-pointer-coarse:opacity-100"
                   aria-label="Transcript actions"
                 >
                   <HugeiconsIcon icon={MoreVerticalIcon} className="size-3.5" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <ClipSendToMenu handlers={sendHandlersFor(record)} />
+                <TranscriptExportItems
+                  timed={(record.segment_count ?? 0) > 0}
+                  label={(format) => (
+                    <>
+                      <HugeiconsIcon icon={Download01Icon} />
+                      Download .{format}
+                    </>
+                  )}
+                  onExport={(format) => void downloadRecord(record, format)}
+                />
                 <DropdownMenuItem
                   onClick={() =>
-                    void downloadTranscript(record.text, record.title)
-                  }
-                >
-                  <HugeiconsIcon icon={Download01Icon} />
-                  Download .txt
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() =>
-                    void navigator.clipboard.writeText(record.text).then(
-                      () => toast.success("Transcript copied"),
-                      () => toast.error("Could not copy transcript."),
+                    void copyToClipboard(record.text).then((ok) =>
+                      ok
+                        ? toast.success("Transcript copied")
+                        : toast.error("Could not copy transcript."),
                     )
                   }
                 >

@@ -6,6 +6,7 @@
 import {
   type AttachmentAudioPart,
   type AttachmentPreviewKind,
+  type AttachmentVideoPart,
   selectAttachmentSource,
 } from "@/components/assistant-ui/attachment-selection";
 import { useAuiState } from "@assistant-ui/react";
@@ -21,7 +22,9 @@ export type AttachmentSource = {
   file: File | undefined;
   src: string | undefined;
   audio: AttachmentAudioPart | undefined;
+  video: AttachmentVideoPart | undefined;
   text: string | undefined;
+  hasOriginal: boolean;
 };
 
 const useFileSrc = (file: File | undefined): string | undefined => {
@@ -45,9 +48,11 @@ const useFileSrc = (file: File | undefined): string | undefined => {
 export const useAttachmentSource = (): AttachmentSource => {
   const source = useAuiState(useShallow(selectAttachmentSource));
 
-  const fileSrc = useFileSrc(source.kind === "text" ? undefined : source.file);
+  const fileSrc = useFileSrc(
+    source.kind === "text" || source.kind === "document" ? undefined : source.file,
+  );
 
-  // audio passes through unjoined: the payload is MAX_AUDIO_SIZE of base64 and every tile mounts this hook
+  // audio and video pass through unjoined: a clip is up to MAX_VIDEO_SIZE of base64 and every tile mounts this hook
   return {
     kind: source.kind,
     name: source.name,
@@ -55,7 +60,9 @@ export const useAttachmentSource = (): AttachmentSource => {
     file: source.file,
     src: fileSrc ?? source.image,
     audio: source.audio,
+    video: source.video,
     text: source.text,
+    hasOriginal: source.hasOriginal,
   };
 };
 

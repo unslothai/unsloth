@@ -74,6 +74,15 @@ def _gpu_present() -> bool:
     return False
 
 
+def _gate_torch_stack(reason: str) -> None:
+    """Let the torch warm finish ``import torch._dynamo`` before an ``unsloth_zoo`` import (never fatal)."""
+    try:
+        from utils.torch_warmup import gate_torch_stack_import
+        gate_torch_stack_import(reason)
+    except Exception:  # noqa: BLE001, S110 - the gate is a safety net, never a new failure
+        pass
+
+
 def _load_shared() -> bool:
     """Import ``unsloth_zoo.hf_xet_fallback`` on demand; return True if available. Deferred so
     importing this module at worker startup does not pull transformers in before the sidecar is
@@ -81,6 +90,8 @@ def _load_shared() -> bool:
     global _shared, _shared_available, _shared_import_error
     if _shared_available is not None:
         return _shared_available
+    # Outside _load_lock: a thread waiting on the warm must not hold up the env-var bookkeeping.
+    _gate_torch_stack("unsloth_zoo.hf_xet_fallback import")
     with _load_lock:
         if _shared_available is not None:
             return _shared_available
@@ -176,6 +187,7 @@ def _load_optional(module_name: str) -> Any:
     if cached is not _UNTRIED:
         return cached
 
+    _gate_torch_stack(f"{module_name} import")
     try:
         module = importlib.import_module(module_name)
         _optional_modules[module_name] = module
@@ -940,6 +952,7 @@ def hf_hub_download_with_xet_fallback(
     cache_dir: Optional[str] = None,
     reuse_other_cache_root: bool = False,
     local_files_only: bool = False,
+    gguf_header_delta: bool = False,
 ) -> str:
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
     ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
@@ -959,7 +972,11 @@ def hf_hub_download_with_xet_fallback(
     already cleared it. Routed THROUGH the other root rather than returned raw, so the ref still
     resolves and a republished file is picked up; the blob is reused, and offline/401
     hf_hub_download keeps the failed HEAD and serves the cached pointer. Off for
-    ``force_download``, whose point is to re-fetch."""
+    ``force_download``, whose point is to re-fetch.
+
+    ``gguf_header_delta`` (opt-in, Images / Video GGUF loads only) rebuilds a GGUF whose new revision changed only its
+    header from the cached older copy (``hub.utils.gguf_header_delta``); no network unless that file is missing for
+    the target commit and an older snapshot holds it."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
@@ -998,25 +1015,47 @@ def hf_hub_download_with_xet_fallback(
         if cancel_event is not None and cancel_event.is_set():
             raise RuntimeError("Cancelled")
         return path
+    if gguf_header_delta and str(filename).lower().endswith(".gguf"):
+        # A rebuilt file has the Hub's sha256, so it already is the newer blob a forced fetch wants.
+        try:
+            from hub.utils.gguf_header_delta import prepare_media_gguf
+            if prepare_media_gguf(
+                repo_id,
+                filename,
+                token,
+                repo_type = repo_type,
+                revision = revision,
+                cache_dir = cache_dir,
+                cancel_event = cancel_event,
+            ).placed:
+                force_download = False
+        except Exception:  # noqa: BLE001 - an optimisation only: the normal download follows
+            pass
     # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait()
     optional: dict[str, Any] = {}
     if stall_timeout is not None:
         optional["stall_timeout"] = stall_timeout
     if interval is not None:
         optional["interval"] = interval
-    return _shared_hf_hub_download_with_xet_fallback(
-        repo_id,
-        filename,
+    from hub.utils.hf_tokens import call_with_anonymous_retry
+
+    # The 401 comes on the metadata HEAD, before any byte is written.
+    return call_with_anonymous_retry(
+        lambda token: _shared_hf_hub_download_with_xet_fallback(
+            repo_id,
+            filename,
+            token,
+            cancel_event = cancel_event,
+            repo_type = repo_type,
+            revision = revision,
+            **optional,
+            grace_period = grace_period,
+            on_status = on_status,
+            force_download = force_download,
+            cache_dir = cache_dir,
+            prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
+        ),
         token,
-        cancel_event = cancel_event,
-        repo_type = repo_type,
-        revision = revision,
-        **optional,
-        grace_period = grace_period,
-        on_status = on_status,
-        force_download = force_download,
-        cache_dir = cache_dir,
-        prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
     )
 
 

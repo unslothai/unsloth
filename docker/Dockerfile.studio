@@ -37,7 +37,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY jupyter/unsloth_labext /opt/labext-src
 RUN cd /opt/labext-src \
- && /opt/unsloth-venv/bin/jlpm install \
+ && /opt/unsloth-venv/bin/jlpm install --immutable \
  && /opt/unsloth-venv/bin/jlpm build:prod
 
 FROM ${BASE_IMAGE}
@@ -63,6 +63,7 @@ USER root
 # which would fill a volume on the home with wheels; cache/ there stays runtime data.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
     UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
+    UNSLOTH_STUDIO_DOCUMENTS_HOME=/opt/unsloth-studio/documents \
     UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache \
     UNSLOTH_IMAGE_ALLOW_CPU=1 \
     JUPYTER_PORT=8888 \
@@ -90,6 +91,8 @@ COPY studio_home.sh /usr/local/bin/unsloth-studio-home
 # base's baked bundle so the installer skips a second ~400MB download; the
 # .unsloth-studio-owned marker satisfies setup.sh's ownership assertion.
 # UNSLOTH_LLAMA_KEEP_PREBUILT=1 keeps it: no GPU is visible here, so setup.sh's detection would install the CPU bundle over it.
+# UNSLOTH_AUDIO_CPP_ACCELERATOR does the same for audio.cpp: amd64 names the CUDA bundle outright
+# (arm64 has no audio.cpp bundle; auto leaves it to setup's non-fatal "no prebuilt" line).
 #
 # UNSLOTH_TORCH_INDEX_FAMILY pins the Studio venv's torch index (no nvidia-smi at
 # build time would land on cpu/cu126). cu128 on both arches, mirroring the base.
@@ -106,7 +109,8 @@ COPY studio_home.sh /usr/local/bin/unsloth-studio-home
 # UNSLOTH_ALLOW_CPU=1 is inline for install.sh only: the build has no GPU, and the image ENV must not carry it (see above).
 RUN set -eux \
  && case "${TARGETARCH:-amd64}" in \
-        amd64|arm64) TORCH_FAMILY="cu128" ;; \
+        amd64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="cuda" ;; \
+        arm64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="auto" ;; \
         *) echo "ERROR: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac \
  && mkdir -p "${UNSLOTH_STUDIO_HOME}" \
@@ -122,6 +126,7 @@ RUN set -eux \
     UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
     UNSLOTH_LLAMA_TAG="${LLAMA_PREBUILT_TAG}" \
     UNSLOTH_LLAMA_KEEP_PREBUILT=1 \
+    UNSLOTH_AUDIO_CPP_ACCELERATOR="${AUDIO_CPP_ACCELERATOR}" \
     UNSLOTH_PYTHON=3.12 \
     UNSLOTH_ALLOW_CPU=1 \
     bash install.sh --local \

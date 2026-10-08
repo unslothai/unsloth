@@ -207,6 +207,26 @@ def test_known_noise_does_not_fail(tmp_path: Path) -> None:
     assert result.returncode == 0, f"noise failed the lane: {result.stdout}"
 
 
+def test_winget_spinner_frames_do_not_fail(tmp_path: Path) -> None:
+    """How many spinner frames winget leaves in the log depends on how long its source query took."""
+    lines = BASELINE.split("\n")
+    base = _write(
+        tmp_path / "base", transcript = "\n".join(lines[:1] + ["   - ", "   \\ "] + lines[1:])
+    )
+    head = _write(
+        tmp_path / "head", transcript = "\n".join(lines[:1] + ["   - ", "   | ", "   - "] + lines[1:])
+    )
+    result = _run(base, head)
+    assert result.returncode == 0, f"spinner frames failed the lane: {result.stdout}"
+
+
+def test_a_dash_line_with_text_still_compares(tmp_path: Path) -> None:
+    """Only a bare frame is dropped: winget's own "  - Packages" list is output the user reads."""
+    base = _write(tmp_path / "base", transcript = BASELINE + "\n  - Packages")
+    head = _write(tmp_path / "head", transcript = BASELINE + "\n  - Package")
+    assert _run(base, head).returncode == 2
+
+
 def test_version_drift_is_normalised_but_still_printed(tmp_path: Path) -> None:
     """Normalising something away without saying so is how a lane stops telling you anything."""
     base = _write(tmp_path / "base")
@@ -1422,7 +1442,7 @@ def test_an_unrelated_label_does_not_restart_the_two_installs() -> None:
 
     Reading the PR's whole label list meant that adding any label to a PR that already carried
     `installer-differential` evaluated true and started the lane again, which with
-    `cancel-in-progress: true` cancels a measurement that is already running. The `labeled` event
+    `cancel-in-progress` on a pull request cancels a measurement that is already running. The `labeled` event
     has to look at the label that was just applied; `synchronize` still reads the full list, because
     there no single label was applied.
     """
@@ -1449,7 +1469,8 @@ def test_an_unrelated_label_does_not_restart_the_two_installs() -> None:
         "the concurrency group does not distinguish the label, so an unrelated label still cancels "
         "a measurement in progress before this gate can run"
     )
-    assert "unrelated-label" in group and "cancel-in-progress: true" in group
+    assert "unrelated-label" in group
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in group
 
 
 def test_installer_output_that_looks_like_a_runner_header_survives() -> None:

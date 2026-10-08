@@ -57,6 +57,7 @@ import {
   type AccountSetupCode,
   type StudioAccount,
 } from "../api/accounts";
+import { ManagedProviderUrlsSection } from "../components/managed-provider-urls-section";
 
 export function AccountsTab() {
   const owner = useIsAccountOwner();
@@ -171,7 +172,7 @@ function OwnerAccountsTab() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="settings-page">
       <header className="flex min-w-0 flex-col gap-1 pr-6">
         <h1
           className="text-xl font-semibold font-heading"
@@ -445,6 +446,8 @@ function OwnerAccountsTab() {
           )}
       </section>
 
+      <ManagedProviderUrlsSection />
+
       <Dialog
         open={editorOpen}
         onOpenChange={(open) => {
@@ -453,7 +456,7 @@ function OwnerAccountsTab() {
       >
         <DialogContent
           showCloseButton={false}
-          className="sm:max-w-md max-sm:max-w-[calc(100%-2rem)] max-sm:top-1/2 max-sm:left-1/2 max-sm:-translate-1/2 max-sm:h-auto max-sm:w-[calc(100%-2rem)] max-sm:max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-sm:rounded-2xl"
+          className="sm:max-w-md max-sm:max-w-[calc(100%-2rem)] max-sm:top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:left-1/2 max-sm:-translate-1/2 max-sm:h-auto max-sm:w-[calc(100%-2rem)] max-sm:max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-sm:rounded-2xl"
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             const trigger = actionTrigger.current;

@@ -2316,6 +2316,74 @@ def test_python_classifier(code, unsafe):
     assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
 
 
+@pytest.mark.parametrize(
+    "code, unsafe",
+    [
+        ("import numpy as np\nnp.load('a.npy')", False),
+        ("import numpy as np\nnp.load('a.npy', allow_pickle=False)", False),
+        ("import numpy as np\nnp.load('a.npy', allow_pickle=True)", True),
+        ("import numpy as np\nflag = True\nnp.load('a.npy', allow_pickle=flag)", True),
+        ("from numpy import load\nload('a.npz', allow_pickle=1)['x']", True),
+        ("import numpy as np\nnp.load('a.npy', None, True)", True),
+        ("import numpy as np\nnp.load('a.npy', None, False)", False),
+        ("import numpy as np\nnp.load('a.npy', **{'allow_pickle': True})", True),
+        ("import numpy as np\nargs = ('a.npy', None, True)\nnp.load(*args)", True),
+        ("import json\njson.load(open('a.json'))", False),
+        ("from numpy import load as read\nread('a.npy', None, True)", True),
+        ("import numpy as np\nloader = np.load\nloader('a.npy', None, True)", True),
+        ("import numpy as np\nloader = np.load\nloader(*('a.npy', None, True))", True),
+        ("import numpy as np\nloader = np.load\nloader('a.npy')", False),
+        ("import numpy as np\nbox.reader = np.load\nbox.reader('a.npy', None, True)", True),
+        ("from numpy import *\nload('a.npy', None, True)", True),
+        ("import json\nargs = (open('a.json'),)\njson.load(*args)", False),
+        ("obj.load(*args)", False),
+        ("import numpy\nnp = numpy\nnp.load('a.npy', None, True)", True),
+        (
+            "import numpy as np\ndef read(loader=np.load):\n return loader('a.npy', None, True)\nread()",
+            True,
+        ),
+        ("import numpy as np\ndef read(f):\n return f('a.npy', None, True)\nread(np.load)", True),
+        ("import numpy as np\nloader, _ = (np.load, None)\nloader('a.npy', None, True)", True),
+        ("from numpy.lib._npyio_impl import load\nload('a.npy', None, True)", True),
+        ("import numpy.lib.npyio as io\nio.load('a.npy', None, True)", True),
+        ("from numpy.lib import _npyio_impl as io\nio.load('a.npy', None, True)", True),
+        ("from numpy.lib.format import read_array\nread_array(open('a.npy', 'rb'), True)", True),
+        ("import numpy as np\nnp.lib.format.read_array(open('a.npy', 'rb'))", False),
+        ("import numpy.lib.npyio\nnumpy.lib.npyio.load('a.npy', None, True)", True),
+        ("import numpy as np\nnp.lib.format.read_array(open('a.npy', 'rb'), True)", True),
+        ("def read_array(path, dtype):\n return []\nread_array('x', 'float32')", False),
+        (
+            "from numpy.lib.format import read_array\nreader = read_array\nreader(open('a.npy', 'rb'), True)",
+            True,
+        ),
+        ("import numpy as np\nnp.lib.npyio.NpzFile('a.npz', False, True)['x']", True),
+        ("from numpy.lib.npyio import NpzFile\nNpzFile('a.npz')['x']", False),
+        (
+            "import numpy as np\nfmt = np.lib.format\nfmt.read_array(open('a.npy', 'rb'), True)",
+            True,
+        ),
+        ("import numpy as np, json\n(np.load if x else json.load)('a.npy', None, True)", True),
+        ("import numpy as np\n(loader or np.load)('a.npy', None, True)", True),
+        ("import json\n(json.load if x else json.loads)(f)", False),
+        ("import numpy as np\nnp.read_array = np.load\nnp.lib.format.read_array(f, True)", True),
+        ("import numpy as np\n(np.load if c else np.lib.format.read_array)(f, True)", True),
+        ("import numpy as np\n(loader := np.load)('a.npy', None, True)", True),
+        (
+            "import numpy as np\nbox.reader, _ = (np.load, None)\nbox.reader('a.npy', None, True)",
+            True,
+        ),
+        ("import numpy as np\nnp.load('a.npy', 'r')", False),
+        ("import numpy as np\nnp.load('a.npy', None, 'yes')", True),
+        ("import numpy as np\nnp.lib.format.read_array(f, 'yes')", True),
+        ("import numpy as np\nz = np.load('a.npz')\nz.allow_pickle = True\nz['x']", True),
+        ("import numpy as np\nz = np.load('a.npz')\nz['x']", False),
+        ("import numpy as np\nnp.load('a.npy', None, False)", False),
+    ],
+)
+def test_python_classifier_numpy_allow_pickle(code, unsafe):
+    assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
+
+
 def test_builtin_readonly_tools_are_safe():
     assert is_potentially_unsafe_tool_call("web_search", {"query": "hi"}) is False
     assert is_potentially_unsafe_tool_call("search_knowledge_base", {}) is False
@@ -2761,6 +2829,50 @@ def test_auto_mode_gates_high_risk_calls():
     assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
 
 
+class _ApprovalRecordingExecuteTool(_FakeExecuteTool):
+    def __init__(self):
+        super().__init__()
+        self.approved_seen = []
+
+    def __call__(
+        self,
+        name,
+        arguments,
+        *,
+        host_access_approved = False,
+        **kwargs,
+    ):
+        self.approved_seen.append(host_access_approved)
+        return super().__call__(name, arguments, disable_sandbox = kwargs.get("disable_sandbox"))
+
+
+@pytest.mark.parametrize(
+    "code, decisions, approved",
+    [
+        # Gated and allowed: the user saw the host path and let it through.
+        ('open(\\"/srv/data.csv\\").read()', ["allow"], [True]),
+        # Not gated in auto, so nobody approved anything.
+        ("print(1)", [], [False]),
+    ],
+)
+def test_the_approval_reaches_the_executor(code, decisions, approved):
+    exec_fn = _ApprovalRecordingExecuteTool()
+    session = f"{_SESSION}-{uuid.uuid4().hex}"
+    decision_iter = iter(decisions)
+    for ev in run_safetensors_tool_loop(
+        single_turn = _multi_turn([_tool_call("python", f'{{"code": "{code}"}}'), "final"]),
+        messages = [{"role": "user", "content": "hi"}],
+        tools = _DEFAULT_TOOLS,
+        execute_tool = exec_fn,
+        session_id = session,
+        confirm_tool_calls = True,
+        permission_mode = "auto",
+    ):
+        if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
+            resolve_tool_decision(ev["approval_id"], next(decision_iter), session_id = session)
+    assert exec_fn.approved_seen == approved
+
+
 def test_auto_mode_does_not_gate_ordinary_mutation():
     # The core of "Approve for me": an ordinary in-workdir write is not high risk,
     # so auto runs it without a prompt even though it is not read-only.
@@ -2788,6 +2900,27 @@ def test_ask_mode_gates_even_safe_calls():
     assert starts and starts[0]["awaiting_confirmation"] is True
 
 
+@pytest.mark.parametrize(("name", "gated"), [("search_conversation", False), ("web_search", True)])
+def test_ask_mode_never_gates_conversation_recall(name, gated):
+    """Every other tool, read-only ones included, still asks."""
+    session = f"{_SESSION}-{uuid.uuid4().hex}"
+    events = []
+    for ev in run_safetensors_tool_loop(
+        single_turn = _multi_turn([_tool_call(name, '{"query": "the rust code"}'), "final"]),
+        messages = [{"role": "user", "content": "hi"}],
+        tools = [{"type": "function", "function": {"name": name}}],
+        execute_tool = _FakeExecuteTool(),
+        session_id = session,
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    ):
+        events.append(ev)
+        if ev["type"] == "tool_start" and ev.get("awaiting_confirmation"):
+            resolve_tool_decision(ev["approval_id"], "allow", session_id = session)
+    starts = _tool_starts(events)
+    assert starts and starts[0]["awaiting_confirmation"] is gated
+
+
 def test_unset_mode_behaves_as_auto():
     # Unset permission_mode is the product default "auto", so a safe call runs
     # without a prompt (the old "unset behaves as ask" gated even print(1)).
@@ -2800,18 +2933,46 @@ def test_unset_mode_behaves_as_auto():
     assert starts and starts[0]["awaiting_confirmation"] is False
 
 
-def test_off_mode_never_gates_and_keeps_sandbox():
-    # "Off": no prompts even for unsafe calls, but the sandbox stays on.
+def test_off_mode_never_gates_under_os_isolation_and_keeps_sandbox():
+    from core.inference import os_sandbox
+
+    os_sandbox.note_tool_isolation("python", True, backend = "bubblewrap")
     events, exec_fn = _drive(
         [_tool_call("python", '{"code": "import os; os.remove(\\"x\\")"}'), "final"],
         [],
-        confirm_tool_calls = True,  # off must win over a stray confirm flag
+        confirm_tool_calls = True,  # the route arms the gate wherever it can prompt
         permission_mode = "off",
     )
     starts = _tool_starts(events)
     assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
     assert starts[0]["approval_id"] == ""
     assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
+
+
+def test_off_mode_asks_for_a_risky_call_without_os_isolation():
+    from core.inference import os_sandbox
+
+    os_sandbox.note_tool_isolation("python", False, backend = "none")
+    events, exec_fn = _drive(
+        [_tool_call("python", '{"code": "import os; os.remove(\\"x\\")"}'), "final"],
+        ["allow"],
+        confirm_tool_calls = True,
+        permission_mode = "off",
+    )
+    starts = _tool_starts(events)
+    assert starts and starts[0]["awaiting_confirmation"] is True, _diag(events, exec_fn)
+    assert exec_fn.disable_sandbox_seen == [False], _diag(events, exec_fn)
+
+
+def test_off_mode_without_an_armed_gate_never_asks():
+    events, exec_fn = _drive(
+        [_tool_call("python", '{"code": "import os; os.remove(\\"x\\")"}'), "final"],
+        [],
+        confirm_tool_calls = False,
+        permission_mode = "off",
+    )
+    starts = _tool_starts(events)
+    assert starts and starts[0]["awaiting_confirmation"] is False, _diag(events, exec_fn)
 
 
 def test_full_mode_never_gates_and_drops_sandbox():

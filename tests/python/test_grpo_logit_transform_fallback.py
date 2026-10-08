@@ -44,9 +44,10 @@ def _fallback_blocks():
 BLOCKS = _fallback_blocks()
 
 
-def test_both_grpo_call_sites_were_found():
-    """A rename would otherwise make this whole file silently vacuous."""
-    assert len(BLOCKS) == 2, f"expected two fallback arms, found {sorted(BLOCKS)}"
+def test_every_call_site_was_found():
+    """A rename would otherwise make this whole file silently vacuous. Two GRPO bodies plus the GKD chunked loss."""
+    assert len(BLOCKS) == 3, f"expected three fallback arms, found {sorted(BLOCKS)}"
+    assert any(site.startswith("_unsloth_gkd_logit_transforms:") for site in BLOCKS), sorted(BLOCKS)
 
 
 class _Cfg:

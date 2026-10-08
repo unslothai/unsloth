@@ -5,6 +5,7 @@
 
 from core.training.account_jobs import (
     account_event_stream,
+    account_path,
     job_busy,
     job_is_foreign,
     require_job_owner,
@@ -49,6 +50,9 @@ from models import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
+    ConvertQ4NXRequest,
+    LlmCompressorExportProbeResponse,
+    ExportDecisionInfoResponse,
 )
 
 router = APIRouter()
@@ -111,54 +115,6 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     return base or None
 
 
-def _hub_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
-    """config.json for a Hub repo id, or None when it cannot be resolved.
-
-    The worker loads remote checkpoints too, so a Hub id that never touches the local
-    filesystem would otherwise keep the 4-bit default and re-introduce the very export
-    this function exists to prevent. Only config.json is fetched -- a few KB against the
-    gigabytes the load is about to pull anyway, and cached by huggingface_hub after the
-    first call.
-
-    Every failure (offline, gated without a token, no such repo, no network) returns
-    None, which the caller reads as "unknown" and leaves on the historical default.
-    """
-    try:
-        from huggingface_hub import file_exists, hf_hub_download
-
-        # An adapter repo carries a base config.json as well, so this has to be asked
-        # first or a remote LoRA reads as a full model.
-        if file_exists(repo_id, "adapter_config.json", token = hf_token):
-            return None
-        path = hf_hub_download(repo_id, "config.json", token = hf_token)
-        return json.loads(Path(path).read_text(encoding = "utf-8-sig"))
-    except Exception:
-        return None
-
-
-def _is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
-    """Whether this checkpoint is a full model that is not already quantized.
-
-    Only ever used to turn 4-bit OFF, so every uncertain answer here is False and
-    behaves exactly as the code did before.
-    """
-    checkpoint_dir = Path(checkpoint_path)
-    config_file = checkpoint_dir / "config.json"
-    try:
-        if config_file.is_file():
-            if (checkpoint_dir / "adapter_config.json").exists():
-                return False
-            config = json.loads(config_file.read_text(encoding = "utf-8-sig"))
-        elif checkpoint_dir.exists():
-            # A local directory without a config.json is not a full model.
-            return False
-        else:
-            config = _hub_config(checkpoint_path, hf_token)
-    except (OSError, ValueError):
-        return False
-    return isinstance(config, dict) and "quantization_config" not in config
-
-
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest,
@@ -177,17 +133,8 @@ async def load_checkpoint(
     try:
         await _ensure_export_supported()
         export_hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient)
-        load_in_4bit = request.load_in_4bit
-        # Off-loop: a Hub id makes this reach the network, and the SSE log stream is
-        # served from this same event loop.
-        if "load_in_4bit" not in request.model_fields_set and await asyncio.to_thread(
-            _is_unquantized_full_finetune, request.checkpoint_path, export_hf_token
-        ):
-            load_in_4bit = False
-            logger.info(
-                f"Full fine-tune checkpoint {request.checkpoint_path} has no quantization_config - "
-                "loading in 16-bit for export"
-            )
+        # Unset lets the backend pick 16-bit for a full fine-tune.
+        load_in_4bit = request.load_in_4bit if "load_in_4bit" in request.model_fields_set else None
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
@@ -292,8 +239,11 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
         # does, so the success banner shows an identical path on either route.
         last_op_output_path = None
         if last_op and last_op.get("output_path"):
-            details = await asyncio.to_thread(_export_details, last_op["output_path"])
-            last_op_output_path = (details or {}).get("output_path")
+            if getattr(backend, "decision", None):
+                last_op_output_path = last_op["output_path"]
+            else:
+                details = await asyncio.to_thread(_export_details, last_op["output_path"])
+                last_op_output_path = (details or {}).get("output_path")
         return ExportStatusResponse(
             current_checkpoint = backend.current_checkpoint,
             is_vision = bool(getattr(backend, "is_vision", False)),
@@ -305,6 +255,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
             last_op_status = last_op.get("status") if last_op else None,
             last_op_output_path = last_op_output_path,
             last_op_error = last_op.get("error") if last_op else None,
+            decision = getattr(backend, "decision", None),
         )
     except Exception as e:
         logger.error(f"Error getting export status: {e}", exc_info = True)
@@ -412,6 +363,38 @@ def _export_details(
         return {"output_path": output_path}
 
 
+def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """A decision GGUF lands in the run folder's gguf/; not registered as a chat model folder."""
+    if not output_path:
+        return None
+    from core.export.decision import read_existing_export
+
+    # output_path is <run folder>/gguf; the contract reads from the run folder.
+    export = read_existing_export(Path(output_path).parent)
+    return {
+        "output_path": str(output_path),
+        "decision_export": export,
+        "quantizations": (export or {}).get("quantizations") or [],
+    }
+
+
+@router.get("/decision-info", response_model = ExportDecisionInfoResponse)
+async def get_decision_export_info(
+    checkpoint_path: str = Query(..., description = "Local checkpoint folder"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """GGUF export options for a decision model checkpoint (Clef / Laya); decision is null otherwise."""
+    validate_job_paths({"checkpoint_path": checkpoint_path})
+    from core.export.decision import decision_preview
+
+    try:
+        decision = await asyncio.to_thread(decision_preview, checkpoint_path)
+    except Exception as e:
+        logger.warning(f"Could not inspect {checkpoint_path} for decision export: {e}")
+        decision = None
+    return ExportDecisionInfoResponse(checkpoint_path = checkpoint_path, decision = decision)
+
+
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
     request: ExportMergedModelRequest,
@@ -439,6 +422,7 @@ async def export_merged_model(
             ),
             private = request.private,
             compressed_method = request.compressed_method,
+            install_missing_dependencies = request.install_missing_dependencies,
         )
 
         if not success:
@@ -461,6 +445,15 @@ async def export_merged_model(
             status_code = 500,
             detail = "Failed to export merged model",
         )
+
+
+@router.get("/llm-compressor-probe", response_model = LlmCompressorExportProbeResponse)
+async def probe_llm_compressor_export(current_subject: str = Depends(get_current_subject)):
+    del current_subject
+    from utils.llm_compressor_export import probe_llm_compressor_for_compressed_export
+    return LlmCompressorExportProbeResponse(
+        **probe_llm_compressor_for_compressed_export(),
+    )
 
 
 @router.post("/export/base", response_model = ExportOperationResponse)
@@ -542,16 +535,17 @@ async def export_gguf(
             ),
             imatrix_file = imatrix_file,
             private = request.private,
+            npu_q4nx = request.npu_q4nx,
         )
 
         if not success:
             raise HTTPException(status_code = 400, detail = message)
 
-        return ExportOperationResponse(
-            success = True,
-            message = message,
-            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
-        )
+        if getattr(backend, "decision", None):
+            details = await asyncio.to_thread(_decision_export_details, output_path)
+        else:
+            details = await asyncio.to_thread(_export_details, output_path, refresh_index = True)
+        return ExportOperationResponse(success = True, message = message, details = details)
     except HTTPException:
         raise
     except Exception as e:
@@ -564,6 +558,65 @@ async def export_gguf(
             status_code = 500,
             detail = "Failed to export GGUF model",
         )
+
+
+@router.post("/convert/q4nx", response_model = ExportOperationResponse)
+async def convert_q4nx(
+    request: ConvertQ4NXRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
+):
+    """Convert an existing GGUF (local file or Hub repo) to FastFlowLM Q4NX for the AMD NPU.
+
+    Needs no loaded checkpoint or GPU, so it runs here rather than in the export worker.
+    """
+    validate_job_paths(request.model_dump())
+    # A managed account may only read a GGUF inside its own workspace.
+    account_path(request.gguf_path)
+    if bool(request.gguf_path) == bool(request.repo_id and request.filename):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Give either a local gguf_path or a repo_id with a filename.",
+        )
+    token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient)
+    base_model = request.base_model.strip()
+    # The shared HF cache can hold another account's private repo: check this caller's access.
+    hub_repos = [request.repo_id] if request.repo_id else []
+    if not Path(base_model).expanduser().is_dir():
+        hub_repos.append(base_model)
+    for repo in hub_repos:
+        await asyncio.to_thread(account_access.authorize_download, repo, "model", token)
+
+    def run() -> str:
+        from core.export import q4nx
+        from utils.paths import resolve_export_write_dir
+
+        q4nx.require_converter_deps()
+        if request.gguf_path:
+            source = Path(request.gguf_path)
+            if not source.is_file() or source.suffix.lower() != ".gguf":
+                raise ValueError(f"{source} is not a .gguf file.")
+        else:
+            from huggingface_hub import hf_hub_download
+            source = Path(hf_hub_download(request.repo_id, request.filename, token = token))
+        out = q4nx.convert_existing_gguf(
+            source,
+            base_model,
+            Path(resolve_export_write_dir(request.save_directory)),
+            token = token,
+        )
+        return str(out.resolve())
+
+    try:
+        output_path = await asyncio.to_thread(run)
+    except Exception as e:
+        logger.error(f"Q4NX conversion failed: {e}", exc_info = True)
+        raise HTTPException(status_code = 400, detail = f"Q4NX conversion failed: {e}")
+    return ExportOperationResponse(
+        success = True,
+        message = "Converted to Q4NX for the AMD NPU",
+        details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+    )
 
 
 @router.post("/export/lora", response_model = ExportOperationResponse)
@@ -593,6 +646,7 @@ async def export_lora_adapter(
             private = request.private,
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,
+            adapter_format = request.adapter_format,
         )
 
         if not success:

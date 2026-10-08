@@ -71,6 +71,7 @@ export interface CachedModelRepo {
   inventory_id?: string | null;
   load_id?: string | null;
   model_format?: ModelInventoryFormat | null;
+  artifact_kind?: LocalArtifactKind | null;
   runtime?: ModelInventoryRuntime | null;
   format_variant?: string | null;
   capabilities?: BackendModelCapabilities | null;
@@ -103,6 +104,7 @@ export interface LocalModelInfo {
   path: string;
   size_bytes?: number;
   model_format?: ModelInventoryFormat | null;
+  artifact_kind?: LocalArtifactKind | null;
   runtime?: ModelInventoryRuntime | null;
   format_variant?: string | null;
   capabilities?: BackendModelCapabilities | null;
@@ -118,6 +120,8 @@ export interface LocalModelInfo {
   partial_transport?: string | null;
   /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
+  /** Pipeline repo holding only a GGUF load's VAE / text encoder: not a download to continue. */
+  companion_prefetch?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   audio_type?: string | null;
@@ -125,6 +129,16 @@ export interface LocalModelInfo {
   library_name?: string | null;
   quant_method?: string | null;
 }
+
+export type LocalArtifactKind =
+  | "diffusers_pipeline"
+  | "diffusers_modular_pipeline"
+  | "diffusers_dual_pipeline"
+  | "transformers_model"
+  | "single_file_checkpoint"
+  | "gguf"
+  | "adapter"
+  | "unknown";
 
 export interface LocalModelListResponse {
   models_dir: string;
@@ -172,11 +186,18 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Sub-folders are scanned too. Absent on older backends. */
+  recursive?: boolean;
   /** Result of the last scan. Absent on older backends, which means "ok". */
   status?: ScanFolderStatus;
 }
 
 export interface GgufVariantDetail {
+  context_length?: number | null;
+  cache_path?: string | null;
+  /** Opaque stand-in for `cache_path` under host-path redaction; the only name an
+   *  API-key caller has for one specific copy. */
+  cache_ref?: string | null;
   filename: string;
   quant: string;
   display_label?: string | null;
@@ -203,7 +224,7 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True only when Hub metadata resolved every required companion. */
+  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
 }
 
@@ -327,6 +348,7 @@ export interface CompanionAssetInfo {
 }
 
 export interface DeleteImpact {
+  cache_path?: string | null;
   repo_id: string;
   variant?: string | null;
   reclaimed_bytes: number;
@@ -340,13 +362,16 @@ export interface DeleteImpact {
 export async function fetchDeleteImpact(
   repoId: string,
   variant?: string | null,
+  cachePath?: string | null,
 ): Promise<DeleteImpact | null> {
   try {
     const response = await authFetch("/api/hub/delete-impact", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(
-        variant ? { repo_id: repoId, variant } : { repo_id: repoId },
+        variant
+          ? { repo_id: repoId, variant, ...(cachePath ? { cache_path: cachePath } : {}) }
+          : { repo_id: repoId, ...(cachePath ? { cache_path: cachePath } : {}) },
       ),
     });
     if (!response.ok) return null;
@@ -413,11 +438,14 @@ export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   return data.folders;
 }
 
-export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
+export async function addScanFolder(
+  path: string,
+  recursive?: boolean,
+): Promise<ScanFolderInfo> {
   const response = await authFetch("/api/hub/scan-folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, recursive }),
   });
   const folder = await parseJsonOrThrow<ScanFolderInfo>(response);
   bumpInventoryVersion();
@@ -476,18 +504,20 @@ export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
   options?: {
+    localOnly?: boolean;
     preferLocalCache?: boolean;
+    includeCacheLocations?: boolean;
     localPath?: string | null;
     signal?: AbortSignal;
   },
 ): Promise<GgufVariantsResponse> {
-  const offline = isHuggingFaceOffline();
+  const offline = options?.localOnly === true || isHuggingFaceOffline();
   const localPath = options?.localPath?.trim() || null;
   const preferLocalCache = !!options?.preferLocalCache || offline;
   const signal = options?.signal;
   const key = `${repoId}::${fingerprintToken(hfToken)}::${
-    preferLocalCache ? "local" : "remote"
-  }::${localPathCacheKey(localPath)}`;
+    offline ? "offline" : preferLocalCache ? "local" : "remote"
+  }::${localPathCacheKey(localPath)}::${!!options?.includeCacheLocations}`;
   const now = Date.now();
   const hit = ggufVariantsCache.get(key);
   if (hit && now < hit.expiresAt) {
@@ -499,6 +529,9 @@ export async function listGgufVariants(
     ggufVariantsCache.delete(key);
   }
   const params = new URLSearchParams({ repo_id: repoId });
+  if (options?.includeCacheLocations) {
+    params.set("include_cache_locations", "true");
+  }
   if (preferLocalCache) {
     params.set("prefer_local_cache", "true");
   }

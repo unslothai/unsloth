@@ -12,6 +12,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-store";
 import { hasAuthToken, mustChangePassword } from "@/features/auth";
 import { useSettingsDialogStore } from "@/features/settings";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
@@ -28,15 +29,15 @@ import {
   Mic01Icon,
   RemoveCircleIcon,
   Video01Icon,
-  VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
+import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef } from "react";
 import {
-  LOADED_MODEL_KIND_LABELS,
   type LoadedModelEntry,
   type LoadedModelKind,
+  loadedModelKindLabel,
   loadedModelTarget,
   shortModelLabel,
 } from "./loaded-models-sources";
@@ -55,7 +56,7 @@ const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
 const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
   text: Message01Icon,
-  tts: VolumeHighIcon,
+  tts: Volume02Icon,
   image: Image01Icon,
   video: Video01Icon,
   stt: Mic01Icon,
@@ -72,7 +73,7 @@ function canShowIndicator(pathname: string): boolean {
 }
 
 function rowSubtitle(entry: LoadedModelEntry): string {
-  const kind = LOADED_MODEL_KIND_LABELS[entry.kind];
+  const kind = loadedModelKindLabel(entry);
   return entry.detail ? `${kind} · ${entry.detail}` : kind;
 }
 
@@ -88,7 +89,7 @@ function LoadedModelRow({
   onOpen: () => void;
 }) {
   const label = shortModelLabel(entry.name);
-  const target = loadedModelTarget(entry.source);
+  const target = loadedModelTarget(entry.source, entry.workflows);
   return (
     <div className="flex items-center gap-2 rounded-[14px] px-1.5 py-1 transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
       {/* Only the label half is the link: the eject button cannot nest inside it. */}
@@ -104,7 +105,7 @@ function LoadedModelRow({
               <HugeiconsIcon
                 icon={KIND_ICONS[entry.kind]}
                 strokeWidth={1.75}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
             </span>
             <span className="min-w-0 flex-1">
@@ -184,7 +185,11 @@ export function LoadedModelsIndicator({
   const navigate = useNavigate();
   const openEntry = useCallback(
     (entry: LoadedModelEntry) => {
-      const target = loadedModelTarget(entry.source);
+      const target = loadedModelTarget(
+        entry.source,
+        entry.workflows,
+        useAudioWorkspaceStore.getState().workflow,
+      );
       if (target.open === "settings") {
         // Read on click, not at render: the settings barrel reaches back here
         // through the General tab, so the binding is only safe once both
@@ -193,9 +198,8 @@ export function LoadedModelsIndicator({
         useSettingsDialogStore.getState().openDialog(target.tab);
         return;
       }
-      // No search params: this only takes the user to the page, it does not
-      // start a new thread or reload anything.
-      void navigate({ to: target.to });
+      // Navigation only (Audio carries its workflow): no new thread, no reload.
+      void navigate({ to: target.to, search: target.search });
     },
     [navigate],
   );
@@ -278,7 +282,7 @@ export function LoadedModelsIndicator({
               <HugeiconsIcon
                 icon={SparkleIcon}
                 strokeWidth={1.75}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
               <span className="text-ui-12p5 font-medium tabular-nums">
                 {entries.length}
@@ -290,12 +294,12 @@ export function LoadedModelsIndicator({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[268px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
+        <div className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex min-h-0 w-[calc(268px*var(--ui-space-scale,1))] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[20px] p-1.5 font-heading">
           <div className="flex items-center gap-1.5 px-1.5 pb-2.5 pt-0.5">
             <HugeiconsIcon
               icon={SparkleIcon}
               strokeWidth={1.75}
-              className="size-[15px] shrink-0 text-muted-foreground"
+              className="size-[calc(15px*var(--ui-space-scale,1))] shrink-0 text-muted-foreground"
             />
             <span className="min-w-0 flex-1 truncate text-ui-12p5 font-semibold text-foreground">
               Loaded models

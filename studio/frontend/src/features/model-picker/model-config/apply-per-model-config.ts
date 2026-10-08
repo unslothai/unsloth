@@ -9,6 +9,7 @@ import {
   reconcilePersistedGpuSelection,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { defaultInferenceParams } from "@/features/chat/presets/preset-policy";
 // Its own module so hosts needing only the signature skip the chat runtime store.
 import { gpuFieldsSignature } from "./config-signature";
@@ -35,8 +36,16 @@ export function applyPerModelConfigToRuntime(
     normalizeMaxSeqLength(config.maxSeqLength) ??
     defaultInferenceParams.maxSeqLength;
   const store = useChatRuntimeStore.getState();
-  if (maxSeqLength !== store.params.maxSeqLength) {
-    store.setParams({ ...store.params, maxSeqLength });
+  const engine = config.engine ?? "auto";
+  const engineParallelism = config.engineParallelism ?? "tensor";
+  const enginePrecision = config.enginePrecision ?? "auto";
+  if (
+    maxSeqLength !== store.params.maxSeqLength ||
+    engine !== (store.params.engine ?? "auto") ||
+    enginePrecision !== (store.params.enginePrecision ?? "auto") ||
+    engineParallelism !== (store.params.engineParallelism ?? "tensor")
+  ) {
+    store.setParams({ ...store.params, maxSeqLength, engine, enginePrecision, engineParallelism });
   }
   const gpuSelection =
     config.selectedGpuIds !== undefined
@@ -48,7 +57,8 @@ export function applyPerModelConfigToRuntime(
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
     customContextLength: config.customContextLength ?? null,
-    mlxKvBits: config.mlxKvBits ?? null,
+    mlxKvQuant: config.mlxKvQuant ?? null,
+    mlxInt8Prefill: config.mlxInt8Prefill ?? false,
     kvCacheDtype: config.kvCacheDtype ?? null,
     speculativeType:
       normalizeSpeculativeType(config.speculativeType) ??
@@ -77,8 +87,8 @@ export function applyPerModelConfigToRuntime(
       : (config.disableVision ?? false),
     chatTemplateOverride: cleanTemplate(config.chatTemplateOverride),
     // GPU Memory knobs are per-model (GGUF-only). Absent = defaults; the mode is a standing
-    // preference so an absent mode falls back to the persisted one. The per-GPU split ratio is
-    // never remembered. The GPU pick is reconciled against the GPUs present now. A diffusion
+    // preference so an absent mode falls back to the persisted one. The per-GPU split is restored
+    // only when the ordered GPU pick survives reconciliation. A diffusion
     // config is sanitized to gpuMemoryMode "auto" because the mode does not apply, not because
     // the user chose Auto: writing that into the live standing preference would strand the session
     // on Auto, since the load skips saveGpuMemoryMode for diffusion and the next ordinary GGUF
@@ -88,7 +98,9 @@ export function applyPerModelConfigToRuntime(
       : (config.gpuMemoryMode ?? readPersistedGpuMemoryMode()),
     gpuLayers: config.gpuLayers ?? GPU_LAYERS_AUTO,
     nCpuMoe: config.nCpuMoe ?? 0,
-    splitRatio: null,
+    splitRatio: options.isDiffusion
+      ? null
+      : reconcileTensorSplit(config.tensorSplit, config.selectedGpuIds, gpuSelection.ids),
     selectedGpuIds: gpuSelection.ids,
     selectedGpuIndexKind: gpuSelection.indexKind,
   });
@@ -108,12 +120,16 @@ export function currentRuntimePerModelConfig(
 ): PerModelConfig {
   const s = useChatRuntimeStore.getState();
   return {
+    engine: s.params.engine ?? "auto",
+    enginePrecision: s.params.enginePrecision ?? "auto",
+    engineParallelism: s.params.engineParallelism ?? "tensor",
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
       : null,
     kvCacheDtype: s.kvCacheDtype ?? null,
-    mlxKvBits: s.mlxKvBits ?? null,
+    mlxKvQuant: s.mlxKvQuant ?? null,
+    mlxInt8Prefill: s.mlxInt8Prefill ?? false,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     specDraftCacheDtype: s.specDraftCacheDtype ?? null,
@@ -135,27 +151,37 @@ export function currentRuntimePerModelConfig(
     disableVision: s.disableVision ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous model's GPU Memory
-    // settings back. The split ratio is intentionally never remembered.
+    // settings back, split included.
     gpuMemoryMode: s.gpuMemoryMode,
     gpuLayers: s.gpuLayers,
     nCpuMoe: s.nCpuMoe,
     selectedGpuIds: s.selectedGpuIds,
     selectedGpuIndexKind: s.selectedGpuIndexKind,
+    tensorSplit: s.splitRatio,
   };
 }
 
+/** `followGlobal`: only against the running config, which holds the mode a null one resolved to.
+ *  Stored configs and presets keep null distinct from an explicit mode equal to today's global. */
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,
+  { followGlobal = false }: { followGlobal?: boolean } = {},
 ): boolean {
+  const speculative = followGlobal
+    ? resolvedSpeculativeType
+    : normalizeSpeculativeType;
   return (
+    (a.engine ?? "auto") === (b.engine ?? "auto") &&
+    (a.enginePrecision ?? "auto") === (b.enginePrecision ?? "auto") &&
+    (a.engineParallelism ?? "tensor") === (b.engineParallelism ?? "tensor") &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
-    (a.mlxKvBits ?? null) === (b.mlxKvBits ?? null) &&
-    normalizeSpeculativeType(a.speculativeType) ===
-      normalizeSpeculativeType(b.speculativeType) &&
+    (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
+    Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
+    speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
@@ -173,6 +199,10 @@ export function perModelConfigsEqual(
     extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&
     gpuFieldsEqual(a, b)
   );
+}
+
+function resolvedSpeculativeType(value: string | null | undefined): string {
+  return normalizeSpeculativeType(value) ?? readPersistedSpeculativeType();
 }
 
 /** Compare on the launched command, so "not loaded" and "cleared" are equal here. They differ

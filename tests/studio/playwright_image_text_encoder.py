@@ -175,6 +175,13 @@ def main():
                         "error": None,
                     },
                 )
+            elif path == "/api/system":
+                # NVFP4 options only render on a host that reports NVFP4 diffusion (the options go
+                # through withNvfp4Option since 8ecfd3092), and the loop below picks NVFP4, so this
+                # host is a Blackwell one.
+                system = _api_payload(path, query, full_footprint = True)
+                system["nvfp4_diffusion"] = True
+                _json(route, system)
             else:
                 _json(route, _api_payload(path, query, full_footprint = True))
 
@@ -202,16 +209,19 @@ def main():
         assert not loads
         choose("INT8")
         state["complete"] = True
-        expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled(
-            timeout = 20_000
-        )
+        expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled(timeout = 20_000)
         if DECLINE:
             # The select must show what RAN, or the page advertises a precision nothing is using.
-            expect(encoder).to_have_text("Default")
+            # A declined scheme runs the dense encoder ("off"), and since #11539 a family default
+            # can pick a scheme on its own, so Default no longer means dense: the select shows the
+            # opt-out that did run (images-page.tsx maps an engaged "off" to "none", not "auto").
+            expect(encoder).to_have_text("Dense (bf16)")
             assert loads[-1]["text_encoder_quant"] == "fp8", loads
             assert not errors, errors
             _record(page, state, loads, plans, errors)
-            print(f"Passed: a declined encoder precision reseeds to Default ({browser.version})")
+            print(
+                f"Passed: a declined encoder precision reseeds to Dense (bf16) ({browser.version})"
+            )
             context.close()
             browser.close()
             return
@@ -220,7 +230,7 @@ def main():
 
         for label, requested, displayed in [
             ("FP8 (compute)", "fp8_dynamic", "FP8 (compute)"),
-            ("NVFP4 (Blackwell)", "nvfp4", "NVFP4 (Blackwell)"),
+            ("NVFP4", "nvfp4", "NVFP4"),
             ("INT8", "int8", "FP8 (storage)"),
             ("Default", None, "Default"),
         ]:
@@ -228,15 +238,15 @@ def main():
             with page.expect_request(
                 lambda request: urlparse(request.url).path == "/api/inference/images/load"
             ):
-                page.get_by_role("button", name = "Reapply to loaded model").click()
-            expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled()
+                page.get_by_role("button", name = "Reapply", exact = True).click()
+            expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled()
             expect(encoder).to_have_text(displayed)
             assert loads[-1].get("text_encoder_quant") == requested, loads[-1]
             if requested is None:
                 assert "text_encoder_quant" not in loads[-1]
         # A completed reload can have the same precision record as its predecessor.
         state.update(cached = False, complete = False, started = False)
-        page.get_by_role("button", name = "Reapply to loaded model").scroll_into_view_if_needed()
+        page.get_by_role("button", name = "Reapply", exact = True).scroll_into_view_if_needed()
         page.locator(".unsloth-model-selector-trigger:visible").click()
         klein_row(page).click()
         gguf = page.get_by_text("GGUF", exact = True)
@@ -277,7 +287,7 @@ def main():
         # Either order ends the same, and the edit made while the load staged survives: the reseed
         # follows a change of BUILD, not every completed load, and Reapply is how the user applies it.
         expect(encoder).to_have_text("FP8 (storage)")
-        expect(page.get_by_role("button", name = "Reapply to loaded model")).to_be_enabled()
+        expect(page.get_by_role("button", name = "Reapply", exact = True)).to_be_enabled()
         assert not errors, errors
         _record(page, state, loads, plans, errors)
         print(

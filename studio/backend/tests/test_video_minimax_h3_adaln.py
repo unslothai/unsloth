@@ -319,3 +319,70 @@ def test_the_curve_forward_is_bound_per_instance_not_on_the_class():
         dense.transformer_blocks[0].adaln_proj.linear(nn.functional.silu(temb)).view(-1, 6 * HIDDEN)
     )
     assert torch.allclose(got, expected, atol = 1e-6)
+
+
+def _to_copy_inputs(proj, temb):
+    from torch.fx.experimental.proxy_tensor import make_fx
+
+    graph = make_fx(lambda t: proj(t))(temb).graph
+    casts = [n for n in graph.nodes if n.target == torch.ops.aten._to_copy.default]
+    return [tuple(n.args[0].meta["val"].shape) for n in casts]
+
+
+def test_modulation_casts_with_the_modality_axis_still_split():
+    model = _FakeH3()
+    apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
+    proj = model.transformer_blocks[0].adaln_proj
+    assert _to_copy_inputs(proj, torch.randn(2, CURVE_DIM)) == [(2, MODALITIES, 6 * HIDDEN)]
+
+
+def test_modulation_values_match_the_single_view_form_bit_for_bit():
+    model = _FakeH3()
+    apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
+    proj = model.transformer_blocks[0].adaln_proj
+    temb = torch.randn(3, CURVE_DIM)
+    got = torch.cat(proj(temb), dim = -1)
+    expected = proj.linear(temb).to(torch.bfloat16).view(-1, 6 * HIDDEN)
+    assert torch.equal(got, expected)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason = "the mis-indexing is in Inductor's CUDA lowering"
+)
+def test_compiled_modulation_with_unbacked_rows_matches_eager_on_cuda():
+    # Studio compiles with temb's rows unbacked; 2+ rows reach adaln_indices 3.. of the viewed modulation.
+    import torch.compiler.config as compiler_config
+
+    if not hasattr(compiler_config, "unbacked_sources"):
+        pytest.skip("this torch has no torch.compiler.config.unbacked_sources")
+    model = _FakeH3()
+    apply_h3_adaln_curve(model, _curve_meta(adaln_out_dtype = "bfloat16"))
+    model = model.cuda()
+    proj = model.transformer_blocks[0].adaln_proj
+    norm = nn.RMSNorm(HIDDEN, eps = 1e-5).cuda()
+
+    def modulate(temb, adaln_indices, hidden_states):
+        shift, scale, _, _, _, _ = proj(temb)
+        normed = norm(hidden_states).to(torch.bfloat16)
+        return normed * (1.0 + scale.index_select(0, adaln_indices)) + shift.index_select(
+            0, adaln_indices
+        )
+
+    saved = compiler_config.unbacked_sources
+    compiler_config.unbacked_sources = "L['temb']"
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(modulate, dynamic = True)
+        generator = torch.Generator(device = "cuda").manual_seed(0)
+        hidden = torch.randn(1, 64, HIDDEN, device = "cuda", generator = generator)
+        for rows in (1, 2, 4):
+            temb = torch.randn(rows, CURVE_DIM, device = "cuda", generator = generator)
+            indices = torch.randint(0, rows * MODALITIES, (64,), device = "cuda", generator = generator)
+            with torch.no_grad():
+                expected = modulate(temb, indices, hidden)
+                got = compiled(temb, indices, hidden)
+            torch.cuda.synchronize()
+            assert torch.allclose(got.float(), expected.float(), atol = 2e-2, rtol = 2e-2), rows
+    finally:
+        compiler_config.unbacked_sources = saved
+        torch._dynamo.reset()

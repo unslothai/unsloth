@@ -47,7 +47,14 @@
     "--chart-1",
     "--contrast-control-mix",
     "--contrast-edge-gain",
+    "--contrast-fill-mix",
+    "--contrast-ink-mix",
+    "--contrast-ink-target",
     "--contrast-line-mix",
+    "--contrast-panel-ink-target",
+    "--contrast-panel-target",
+    "--contrast-seam-gain",
+    "--contrast-state-mix",
     "--contrast-surface-mix",
     "--contrast-target",
     "--contrast-text-mix",
@@ -62,9 +69,11 @@
     "--font-mono",
     "--font-sans",
     "--foreground",
+    "--foreground-base",
     "--primary",
     "--primary-foreground",
-    "--ui-font-scale",
+    "--ui-font-size-scale",
+    "--ui-interface-scale",
   ];
 
   function clearStoredSnapshot() {

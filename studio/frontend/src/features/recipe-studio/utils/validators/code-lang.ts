@@ -22,6 +22,8 @@ export const VALIDATOR_SQL_CODE_LANGS: ValidatorCodeLang[] = [
 const VALIDATOR_CODE_LANG_SET = new Set<ValidatorCodeLang>([
   ...VALIDATOR_OXC_CODE_LANGS,
   "python",
+  "json",
+  "markdown",
   ...VALIDATOR_SQL_CODE_LANGS,
 ]);
 
@@ -41,6 +43,12 @@ export function normalizeValidatorCodeLang(
   }
   if (raw === "python") {
     return "python";
+  }
+  if (raw === "json") {
+    return "json";
+  }
+  if (raw === "markdown") {
+    return "markdown";
   }
   if (raw.startsWith("sql:")) {
     if (VALIDATOR_SQL_CODE_LANGS.includes(raw as ValidatorCodeLang)) {

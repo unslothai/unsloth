@@ -93,7 +93,7 @@ RUN set -eu; \
 
 # The whole Python stack in ONE layer, resolved once. The obvious two-step
 # (torch from the ROCm index, then the rest) fails twice: unsloth-zoo bounds
-# torch (<2.13 now), so the second step swaps the 14 GB torch and the old one
+# torch (<2.15 now), so the second step swaps the 14 GB torch and the old one
 # stays as a dead layer (measured: 70 GB image, 16 GB live); and under
 # unsafe-best-match uv takes the highest version across indexes, so a newer
 # pypi torch wins as a CUDA build and drags in nvidia-* wheels.

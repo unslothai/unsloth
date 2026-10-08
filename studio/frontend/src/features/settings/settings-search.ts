@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TranslationKey } from "@/i18n";
+import type { HubSource } from "@/lib/hf-endpoint";
 import type { SettingsTab } from "./stores/settings-dialog-store";
 
 /**
@@ -10,7 +11,12 @@ import type { SettingsTab } from "./stores/settings-dialog-store";
  * (profile, connections) are still reachable from search.
  */
 export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
-  accounts: ["settings.accounts.title", "settings.accounts.create"],
+  accounts: [
+    "settings.accounts.title",
+    "settings.accounts.create",
+    "settings.general.managedProviderUrls.sectionTitle",
+    "settings.general.managedProviderUrls.enableLabel",
+  ],
   general: [
     "settings.general.account",
     "settings.general.password",
@@ -20,15 +26,18 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.notifications.sectionTitle",
     "settings.general.notifications.showLlamaUpdates",
     "settings.general.notifications.showWhisperUpdates",
+    "settings.general.notifications.showAudioCppUpdates",
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
     "settings.general.previewSharing.revokeLabel",
-    "settings.general.managedProviderUrls.sectionTitle",
-    "settings.general.managedProviderUrls.enableLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
+    "settings.general.hub.sectionTitle",
+    "settings.general.hub.source",
+    "settings.general.hub.endpoint",
+    "settings.general.hub.datasetsServer",
     "settings.general.downloads.sectionTitle",
     "settings.general.downloads.transport",
     "settings.general.downloads.https",
@@ -64,11 +73,13 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.headingFont.label",
     "settings.appearance.custom.chatFont.label",
     "settings.appearance.custom.chatWidth.label",
+    "settings.appearance.custom.sentAttachments.label",
     "settings.appearance.custom.codeFont.label",
     "settings.appearance.custom.contrast.label",
     "settings.appearance.custom.pointerCursors.label",
     "settings.appearance.custom.reduceMotion.label",
     "settings.appearance.custom.uiFontSize.label",
+    "settings.appearance.custom.interfaceScale.label",
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
@@ -90,6 +101,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
     "settings.resources.storage.systemDisk",
+    "settings.resources.storage.caches.label",
     "settings.resources.environment.title",
     "settings.resources.environment.backend",
     "settings.resources.environment.python",
@@ -105,6 +117,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "composerSettings.showContext",
     "settings.chat.pastedTextThreshold",
     "settings.chat.groups.conversations.title",
+    "settings.chat.library.label",
     "settings.chat.groups.display.title",
     "settings.chat.modelSelection.title",
     "settings.chat.currentDate.label",
@@ -112,20 +125,73 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.projectAttachments",
     "settings.chat.rememberParamsPerModel",
     "settings.chat.autoCompact",
+    "settings.chat.autoScroll",
+    "settings.chat.scrollToBottomButton",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.visibility",
     "settings.chat.tools.visibility",
     "settings.chat.tools.foldIntoThinking",
+    "settings.chat.webSearch.images",
+    "settings.chat.modelDisclaimer",
+    "settings.chat.inlineEditResponse",
+    "settings.chat.groups.menu.title",
+  ],
+  browser: [
+    "browser.linksTitle",
+    "browser.openLinksSetting",
+    "browser.openFilesSetting",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
-    "settings.chat.webSearch.images",
-    "settings.chat.modelDisclaimer",
-    "settings.chat.projectsSection",
-    "settings.chat.groups.menu.title",
+    "browser.tabsTitle",
+    "browser.switchToNewTabsSetting",
+    "browser.defaultZoomSetting",
+    "browser.addressBarTitle",
+    "browser.searchEngineSetting",
+    "browser.showFullUrlSetting",
+    "browser.newTabPageTitle",
+    "browser.showSuggestedSetting",
+    "browser.showRecentsSetting",
+    "browser.hiddenSuggestionsSetting",
+    "browser.bookmarksTitle",
+    "browser.bookmarksToolbarSetting",
+    "browser.bookmarks.showEditor",
+    "browser.importBookmarksSetting",
+    "browser.downloadsTitle",
+    "browser.askWhereToSaveSetting",
+    "browser.askBeforeDownloadingSetting",
+    "browser.downloadSitesSetting",
+    "browser.saveDownloadHistorySetting",
+    "browser.browsingDataTitle",
+    "browser.saveHistorySetting",
+    "browser.historyRetentionSetting",
+    "browser.historySetting",
+    "browser.downloadsSetting",
+    "browser.clearDataSetting",
+    "browser.annotationsTitle",
+    "browser.annotationScreenshotsSetting",
+  ],
+  library: [
+    "settings.library.storageSection",
+    "settings.library.locationsSection",
+    "settings.library.cardSize",
+    "settings.library.imageLayout",
+    "settings.library.showCardDates",
+    "settings.library.startTab",
+    "settings.library.sort",
+    "settings.library.suggestedLimit",
+    "settings.library.tabsSection",
+    "settings.library.contentSection",
+    "settings.library.showChatAttachments",
+    "settings.library.showChatToolFiles",
+    "settings.library.showGeneratedMedia",
+    "settings.library.categoryFineTunes",
+    "settings.library.confirmDelete",
+    "settings.library.reset",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
+    "settings.data.manageFiles.label",
     "settings.data.fineTuneExport",
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",
@@ -137,6 +203,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedVideos",
     "settings.data.archivedAudio",
     "settings.data.uploadedFiles",
+    "settings.library.dataStorage",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
     "settings.chat.importChats",
@@ -146,6 +213,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.apiKeys.title",
     "settings.apiKeys.description",
     "settings.apiKeys.accessTokens",
+    "settings.apiKeys.decisionApi.title",
   ],
   // The two cards label themselves in English in every locale, so keys naming them
   // would never match their own anchor. The header carries both entries instead.
@@ -215,6 +283,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.switchToAudio.label",
     "settings.keyboardShortcuts.actions.switchToExport.label",
     "settings.keyboardShortcuts.actions.findInPage.label",
+    "settings.keyboardShortcuts.actions.newBrowserTab.label",
+    "settings.keyboardShortcuts.actions.toggleBrowserFullView.label",
     "settings.keyboardShortcuts.actions.toggleApiMonitor.label",
     "settings.keyboardShortcuts.actions.toggleSidebar.label",
     "settings.keyboardShortcuts.actions.openMcpServers.label",
@@ -237,15 +307,23 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.copyChatAsMarkdown.label",
     "settings.keyboardShortcuts.actions.copySessionId.label",
     "settings.keyboardShortcuts.actions.forkChat.label",
+    "settings.keyboardShortcuts.actions.openCommandPalette.label",
     "settings.keyboardShortcuts.actions.searchChats.label",
     "settings.keyboardShortcuts.actions.renameChat.label",
     "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
+  ],
+  // The Windows rows render only on Windows, so only the rows every platform shows are indexed.
+  sandbox: [
+    "settings.general.permissions.sectionTitle",
+    "settings.sandbox.levelLabel",
+    "settings.sandbox.toolsSection",
+    "settings.sandbox.python",
+    "settings.sandbox.terminal",
   ],
   debugging: [
     "settings.debugging.logSection",
     "settings.debugging.source",
     "settings.debugging.path",
-    "settings.debugging.refreshSection",
     "settings.debugging.mode",
     "settings.debugging.keywords",
   ],
@@ -287,14 +365,36 @@ export function createSettingsSearchIndex({
       // and searching Settings for "repair" answered "No settings found."
       "settings.general.repairInstall.label",
     ],
-    appearance: [
-      ...SETTINGS_SEARCH_INDEX.appearance,
-      "settings.appearance.custom.interfaceScale.label",
-    ],
+    browser: [...SETTINGS_SEARCH_INDEX.browser, "browser.downloadLocationSetting"],
     about: SETTINGS_SEARCH_INDEX.about.filter(
       (key) => key !== "settings.about.updates",
     ),
   };
+}
+
+const HUGGING_FACE_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.general.hub.endpoint",
+  "settings.general.hub.datasetsServer",
+]);
+
+// Rows of a tab every account sees that render only for the owner (the OS sandbox sections).
+const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.sandbox.toolsSection",
+  "settings.sandbox.python",
+  "settings.sandbox.terminal",
+]);
+
+export function renderedSearchEntries(
+  index: Record<SettingsTab, TranslationKey[]>,
+  tab: SettingsTab,
+  hubSource: HubSource,
+  isOwner = true,
+): TranslationKey[] {
+  return index[tab].filter(
+    (key) =>
+      !(hubSource === "modelscope" && HUGGING_FACE_ONLY_ENTRIES.has(key)) &&
+      (isOwner || !OWNER_ONLY_ENTRIES.has(key)),
+  );
 }
 
 /**
@@ -307,6 +407,11 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  "settings.sandbox.toolsSection": "settings.sandbox.setupKeywords",
+  // "purge", "prune" and the tool names are in none of the labels, so the row
+  // the feature is named after was unreachable by search.
+  "settings.resources.storage.caches.label":
+    "settings.resources.storage.caches.keywords",
   // mlock, vram, ulimit and pin are in none of these labels, so search
   // missed the rows the feature is named after.
   "settings.resources.modelMemory.title":
@@ -320,4 +425,6 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.thinking.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.visibility": "settings.chat.visibilityKeywords",
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
+  "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
+  "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
 };

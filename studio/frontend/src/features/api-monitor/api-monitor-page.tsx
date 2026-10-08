@@ -25,7 +25,11 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { ApiMonitorEntry } from "@/features/chat";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
-import { useSettingsDialogStore } from "@/features/settings";
+import {
+  lanApiUrls,
+  loadLanAccess,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
@@ -34,15 +38,16 @@ import { cn } from "@/lib/utils";
 import {
   Copy01Icon,
   Delete02Icon,
-  Globe02Icon,
   PauseIcon,
   PlayIcon,
   PowerSocket01Icon,
-  RefreshIcon,
+  Refresh01Icon,
   Settings02Icon,
+  ApiIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useMemo, useRef, useState } from "react";
+import { ApiModelLoadControls } from "./components/api-model-load-controls";
 import { SavedModelSettingsPanel } from "./components/saved-model-settings";
 import { isLifecycleEntry, lifecycleLabel } from "./lifecycle";
 import { unloadResident } from "./unload-resident";
@@ -374,7 +379,7 @@ function PayloadBlock({
       <pre
         data-reload-snapshot-sensitive
         className={cn(
-          "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
+          "max-h-72 overflow-auto whitespace-pre-wrap break-words scroll-rounded rounded-lg bg-muted/50 p-3 text-ui-11 leading-[1.55]",
           tone === "error" && "bg-red-500/5 text-red-700 dark:text-red-400",
         )}
       >
@@ -382,6 +387,20 @@ function PayloadBlock({
       </pre>
     </section>
   );
+}
+
+function requestStatusLabel(entry: ApiMonitorEntry): string {
+  if (entry.status !== "running") return entry.status;
+  if (entry.running_phase === "token_generation") return "Token generation";
+  if (entry.running_phase !== "prompt_processing") return "Running";
+  const progress = entry.prompt_progress;
+  if (progress?.percent != null) {
+    return `Prompt processing · ${Math.round(progress.percent)}%`;
+  }
+  if (progress?.processed != null) {
+    return `Prompt processing · ${formatCount(progress.processed)} tokens`;
+  }
+  return "Prompt processing";
 }
 
 function RequestDetail({
@@ -422,7 +441,7 @@ function RequestDetail({
               statusTextClass(entry.status),
             )}
           >
-            {entry.status}
+            {requestStatusLabel(entry)}
           </span>
           <span className="ml-auto shrink-0 font-mono text-ui-10 text-muted-foreground">
             {entry.id}
@@ -561,23 +580,27 @@ export function ApiMonitorPage(): ReactElement {
   }, [loading, signalReady]);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const lanUrls = usePlatformStore((s) => s.lanUrls);
   const [unloading, setUnloading] = useState(false);
+  // block raw unloads while a picker load could finish afterward without a lifecycle guard.
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
   useEffect(() => {
     const refreshRemoteBase = () => {
       void fetchDeviceType({ force: true });
+      loadLanAccess()
+        .then((status) =>
+          usePlatformStore.setState({ lanUrls: lanApiUrls(status) }),
+        )
+        .catch(() => undefined);
     };
     refreshRemoteBase();
     window.addEventListener("focus", refreshRemoteBase);
     return () => window.removeEventListener("focus", refreshRemoteBase);
   }, []);
 
-  // Manual release so VRAM frees without the idle timer. /unload matches on the
-  // internal id, which the monitor does not carry, so read status. unloadResident owns
-  // the read/unload/recheck sequence: this page's own feature (an API auto-switch) can
-  // swap the model out from under the read, and /unload naming a replaced model is a
-  // successful no-op, so one pass would report success over the model still resident.
+  // read status for /unload's internal id; recheck because an API auto-switch can make it a no-op.
   const unloadActiveModel = async (): Promise<void> => {
     setUnloading(true);
     try {
@@ -689,13 +712,12 @@ export function ApiMonitorPage(): ReactElement {
     detailInFlight,
   ]);
 
-  // The desktop webview's origin is tauri://, and the packaged app picks its port
-  // dynamically. Same source as the Agents tab.
+  // Tauri uses the runtime API base because its tauri:// origin omits the dynamic port.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin)}/v1`;
+  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin, lanUrls)}/v1`;
   const serverStatus = data?.status ?? "idle";
-  // Older backends omit the field; only an explicit `false` means recording is off.
+  // older backends omit the field, so only explicit `false` disables recording.
   const loggingDisabled = data?.logging_enabled === false;
   const statusCopy =
     serverStatus === "generating"
@@ -705,7 +727,7 @@ export function ApiMonitorPage(): ReactElement {
         : "No model loaded";
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-6 pb-10 pt-12 font-heading sm:px-10">
+    <main className="mx-auto flex w-full max-w-6xl 3xl:max-w-[calc(1440px*var(--ui-space-scale,1))] 4xl:max-w-[calc(1760px*var(--ui-space-scale,1))] flex-col gap-6 px-6 pb-10 pt-12 max-sm:px-4 max-sm:pt-8 font-heading sm:px-10">
       <GuidedTour {...tour.tourProps} />
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 flex-col gap-1">
@@ -717,6 +739,12 @@ export function ApiMonitorPage(): ReactElement {
           </p>
         </div>
         <div data-tour="api-toolbar" className="flex flex-wrap items-center gap-2">
+          <ApiModelLoadControls
+            activeModel={data?.active_model}
+            onSettled={refresh}
+            onUnloadActive={unloadActiveModel}
+            unloading={unloading}
+          />
           <Button
             type="button"
             variant="outline"
@@ -736,7 +764,7 @@ export function ApiMonitorPage(): ReactElement {
             variant="outline"
             size="sm"
             onClick={() => void unloadActiveModel()}
-            disabled={unloading || !data?.active_model}
+            disabled={unloading || modelLoading || !data?.active_model}
             title={
               data?.active_model
                 ? `Unload ${data.active_model} and free its VRAM`
@@ -760,7 +788,7 @@ export function ApiMonitorPage(): ReactElement {
             className="h-9 gap-1.5 rounded-full"
           >
             <HugeiconsIcon
-              icon={RefreshIcon}
+              icon={Refresh01Icon}
               strokeWidth={1.75}
               className={cn("size-4", refreshing && "animate-spin")}
             />
@@ -811,7 +839,7 @@ export function ApiMonitorPage(): ReactElement {
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-muted/40">
             <HugeiconsIcon
-              icon={Globe02Icon}
+              icon={ApiIcon}
               strokeWidth={1.75}
               className="size-4"
             />
@@ -938,7 +966,7 @@ export function ApiMonitorPage(): ReactElement {
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search model, endpoint, preview or error"
             aria-label="Search API requests"
-            className="h-9 w-full min-w-0 flex-1 rounded-full border-none bg-muted shadow-none dark:bg-background sm:w-64 sm:flex-none"
+            className="h-9 w-full min-w-0 flex-1 max-sm:basis-full rounded-full border-none bg-muted shadow-none dark:bg-background sm:w-64 sm:flex-none"
           />
           <Select
             value={statusFilter}
@@ -948,7 +976,7 @@ export function ApiMonitorPage(): ReactElement {
           >
             <SelectTrigger
               aria-label="Filter by status"
-              className="h-9 w-[150px] rounded-full border-none bg-muted shadow-none dark:bg-background"
+              className="h-9 w-[calc(150px*var(--ui-space-scale,1))] rounded-full border-none bg-muted shadow-none dark:bg-background"
             >
               <SelectValue />
             </SelectTrigger>
@@ -967,9 +995,9 @@ export function ApiMonitorPage(): ReactElement {
 
         <div
           data-tour="api-log"
-          className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]"
+          className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)] 4xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)]"
         >
-          <div className="max-h-[560px] min-h-[220px] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
+          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto border-b border-border/60 lg:border-b-0 lg:border-r">
             {loading ? (
               <div className="flex flex-col gap-3 p-4">
                 {[0, 1, 2].map((i) => (
@@ -996,7 +1024,7 @@ export function ApiMonitorPage(): ReactElement {
             )}
           </div>
 
-          <div className="max-h-[560px] min-h-[220px] overflow-y-auto">
+          <div className="max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(220px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto">
             {selected ? (
               <RequestDetail
                 entry={selected}

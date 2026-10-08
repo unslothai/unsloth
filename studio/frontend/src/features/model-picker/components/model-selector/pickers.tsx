@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  isChatGgufTask,
+  reconcileGgufPinsAfterDelete,
+} from "./reconcile-gguf-pins";
+import {
+  createTaskLimiter,
+  hubWithdrawsSoleQuant,
+  loadPickerGgufVariants,
+} from "./gguf-discovery";
+
 import { ModelMemoryBar } from "@/components/model-memory-bar";
 import { shouldRefreshPickerInventoryOnMount } from "@/components/resource-picker/picker-tab-policy";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -11,8 +21,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { isTouchClick } from "@/components/ui/touch-click";
 import { usePlatformStore } from "@/config/env";
-import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
 import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
@@ -21,10 +31,13 @@ import {
   listGgufVariants,
   listRecommendedFolders,
   listScanFolders,
+  listLoras,
   removeScanFolder,
+  revealFineTunedModel,
 } from "@/features/chat";
 import {
   chatModelLoaded,
+  DROP_CUE_CLASS,
   isExternalModelId,
   modelCatalogVersion,
   parseExternalModelId,
@@ -38,6 +51,10 @@ import type {
   GgufVariantDetail,
   LocalModelInfo,
 } from "@/features/chat";
+import type { ProviderApiType } from "@/features/chat/api/providers-api";
+// eslint-disable-next-line no-restricted-imports -- Connection contract has no React dependencies.
+import type { CustomReasoningConfig } from "@/features/chat/custom-reasoning";
+import { normalizeGgufVisionCapability } from "@/features/chat/utils/model-vision-capability";
 import {
   DotTag,
   type HubOption,
@@ -49,12 +66,9 @@ import {
   listGgufVariants as listGgufVariantsCached,
   useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
+  isHuggingFaceOffline,
 } from "@/features/hub";
-import {
-  type HfModelResult,
-  type HfSortKey,
-  useHubModelSearch,
-} from "@/features/hub";
+import { type HfModelResult, useHubModelSearch } from "@/features/hub";
 import {
   classifyUnslothSupport,
   downloadManager,
@@ -62,13 +76,26 @@ import {
   isHiddenModelId,
   jobKeyOf,
   partialSetFromRows,
+  pendingDrafterPresentation,
   scanFolderStatusCopy,
   useDownloadManagerStore,
   useHfTokenStore,
+  HubFailureHint,
+  useHubAvailability,
   useOnlineStatus,
-  pendingDrafterPresentation,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
+import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
+import {
+  type NpuModel,
+  type NpuPickerSource,
+  NpuSetupNotice,
+  npuDownloadLabel,
+  npuResumeLabel,
+  npuRowsFor,
+  npuSizeLabel,
+  useNpuCatalog,
+} from "@/features/npu";
 import {
   useDebouncedValue,
   useDenseQuantSchemes,
@@ -83,7 +110,11 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
-import { type GgufFitClass, requiredGgufMemoryGb } from "@/lib/gguf-fit";
+import {
+  type GgufFitClass,
+  ggufVariantFitSizeBytes,
+  requiredGgufMemoryGb,
+} from "@/lib/gguf-fit";
 import { extractParamLabel } from "@/lib/model-size";
 import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
@@ -100,8 +131,8 @@ import {
   FlimSlateIcon,
   Folder02Icon,
   HelpCircleIcon,
-  InformationCircleIcon,
   Image03Icon,
+  InformationCircleIcon,
   PinIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -126,17 +157,18 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { audioPickSearch } from "../../../audio/route-search.ts";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
-  audioPipelineTagFor,
   audioPickIsRoutable,
-  localAudioRowIsUndecodableGguf,
+  audioPipelineTagFor,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
+  localAudioRowIsUndecodableGguf,
   macTtsHubRowIsRunnable,
   nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
@@ -151,6 +183,8 @@ import {
 } from "./connected-model-meta";
 import { ConnectedModelSettingsDialog } from "./connected-model-settings-dialog";
 import { FolderBrowser } from "./folder-browser";
+import { curatedArtifactIsOfferable } from "./host-artifact-policy";
+import { localGgufKindFor } from "./local-gguf-policy";
 import {
   type ModelCapabilities,
   detectCapabilities,
@@ -162,15 +196,14 @@ import {
   artifactForRepoId,
   classifyGgufFit,
   classifyMediaGgufFit,
-  curatedArtifactFitsDevice,
+  curatedArtifactFit,
   curatedCapabilitiesFor,
   curatedRowLabelFor,
   curatedSizeBytesFor,
   curatedTotalParamsFor,
   groupForRepoId,
+  recommendedQuantForDevice,
 } from "./model-catalog";
-import { curatedArtifactIsOfferable } from "./host-artifact-policy";
-import { localGgufKindFor } from "./local-gguf-policy";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import { ModelRowMenu } from "./model-row-menu";
@@ -182,12 +215,16 @@ import {
 import { usePinnedConnectedModelsStore } from "./pinned-connected-models";
 import {
   makePinRank,
+  pinDropAnchor,
   pinKey,
   pinnedQuantEntries,
   usePinnedModelsStore,
 } from "./pinned-models";
 import {
+  type CuratedBudget,
   type FormatFilter,
+  curatedBudget,
+  curatedBudgetText,
   estimateQuantBytes,
   hfModelFitsDevice,
   isMlxId,
@@ -197,6 +234,7 @@ import {
   matchesFormatFilter,
   orderRecommendedRows,
   paramsFromId,
+  recommendedEmptyState,
   searchRowFitsDevice,
   searchableRecommendedIds,
 } from "./recommended-fit";
@@ -225,15 +263,17 @@ import type {
   DeletedModelRef,
   ExternalModelOption,
   LoraModelOption,
-  ModelOption,
   ModelDownloadFootprintResolver,
+  ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
+import { type PinnedDropEdge, usePinnedRowDrag } from "./use-pinned-row-drag";
 import { describeVariantListingError } from "./variant-listing-error";
 import {
   ggufQuantChipLabel,
   ggufQuantDetailLabel,
   ggufVariantPickerLabel,
+  ggufVariantContextLength,
   groupGgufVariantsForPicker,
   h3PickerHasOnlyPrunedBuilds,
   preferredGgufVariantByGroup,
@@ -437,7 +477,7 @@ function ListLabel({
     <div
       className={cn(
         "flex items-center justify-between gap-1 px-2.5 pb-1",
-        divider ? "mt-3 border-t border-border/50 pt-3" : "pt-3",
+        divider ? "mt-3 border-t border-border pt-3" : "pt-3",
       )}
     >
       <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
@@ -452,7 +492,7 @@ function ListLabel({
               type="button"
               onClick={onToggle}
               aria-label={collapsed ? "Expand section" : "Collapse section"}
-              className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+              className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
             >
               {collapsed ? (
                 <ChevronRightIcon className="size-3" />
@@ -467,7 +507,7 @@ function ListLabel({
   );
 }
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number, unitSeparator = ""): string {
   // Guard non-positive / non-finite sizes so we never render "NaN undefined".
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   // Decimal (base-1000) units to match Hugging Face's reported sizes; the GPU-fit math stays
@@ -481,7 +521,7 @@ function formatBytes(bytes: number): string {
     i += 1;
   }
   // No space: "145MB" reads as one value beside the quant chip.
-  return `${value.toFixed(value < 10 ? 1 : 0)}${units[i]}`;
+  return `${value.toFixed(value < 10 ? 1 : 0)}${unitSeparator}${units[i]}`;
 }
 
 // Most distinguishing first, since only the first MAX_CAPABILITY_BADGES are drawn: what a
@@ -489,11 +529,15 @@ function formatBytes(bytes: number): string {
 const CAPABILITY_BADGES: {
   key: keyof ModelCapabilities;
   title: string;
+  /** Glyph colour, one per capability like the vision badge's indigo, so the kinds tell apart at a glance. */
+  tone: string;
   Glyph: (props: { className: string }) => ReactNode;
 }[] = [
   {
     key: "videoGen",
     title: "Generates video",
+    // Warm, at the vision indigo's lightness and chroma: amber-300 outshone every other tag.
+    tone: "text-[oklch(0.5_0.1_55)] dark:text-[oklch(0.78_0.09_60)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={FlimSlateIcon} strokeWidth={1.8} {...props} />
     ),
@@ -501,6 +545,8 @@ const CAPABILITY_BADGES: {
   {
     key: "imageGen",
     title: "Generates images",
+    // Pink, as the Hub tags diffusion models.
+    tone: "text-pink-700 dark:text-pink-300",
     Glyph: (props) => (
       <HugeiconsIcon icon={Image03Icon} strokeWidth={1.8} {...props} />
     ),
@@ -510,6 +556,9 @@ const CAPABILITY_BADGES: {
     // Direction-neutral, unlike the two above: `audio` covers ASR and classification as well as
     // synthesis, so a Whisper row would claim to generate what it consumes.
     title: "Audio",
+    // Teal, not the Hub's rose, which is too close to the image pink at this size; held to the
+    // vision indigo's lightness and chroma, as sky-300 read brighter than the tags beside it.
+    tone: "text-[oklch(0.5_0.08_190)] dark:text-[oklch(0.78_0.08_190)]",
     Glyph: (props) => (
       <HugeiconsIcon icon={AudioWave01Icon} strokeWidth={1.8} {...props} />
     ),
@@ -540,12 +589,16 @@ function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
   const scope = useContext(CapabilityScope);
   return (
     <>
-      {visibleCapabilityBadges(caps, scope).map(({ key, title, Glyph }) => (
+      {visibleCapabilityBadges(caps, scope).map(({ key, title, tone, Glyph }) => (
+        // The vision badge's pill (same height and px-1.5), so every glyph tag in the row is one width.
         <span
           key={key}
           title={title}
           aria-label={title}
-          className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
+          className={cn(
+            "flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border px-1.5",
+            tone,
+          )}
         >
           <Glyph className="size-3" />
         </span>
@@ -561,7 +614,7 @@ function VisionBadge() {
       <TooltipTrigger asChild={true}>
         <span
           aria-label="Vision"
-          className="flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-indigo-700 dark:text-indigo-300"
+          className="flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-md border border-border px-1.5 text-indigo-700 dark:text-indigo-300"
         >
           <HugeiconsIcon icon={ViewIcon} className="size-3" strokeWidth={1.8} />
         </span>
@@ -578,18 +631,19 @@ function ParamChip({ label }: { label: string }) {
     // h-[calc(18px*var(--ui-space-scale,1))], the height every other chip in the row band pins (quant, vision, the disk mark, the
     // Loaded tag). py-px sized this one by its line box instead, the one height here that scales with
     // --ui-font-scale, so the row only looked level at the scale where the two happened to cross.
-    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-border/60 px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
+    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center whitespace-nowrap rounded-md border border-border px-1.5 text-ui-10 font-medium text-muted-foreground tabular-nums">
       {label}
     </span>
   );
 }
 
-// Format colours: gguf blue, mlx amber, safetensors/checkpoint pink, adapter.
+// Format colours: gguf blue, mlx amber, safetensors/checkpoint pink, adapter, npu cyan.
 const FORMAT_TONE_DOT: Record<FormatTone, string> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
   checkpoint: "bg-format-checkpoint",
   adapter: "bg-format-adapter",
+  npu: "bg-format-npu",
 };
 
 /** Format as a coloured dot ahead of the name, named on hover: a word like "Safetensors" is
@@ -601,11 +655,11 @@ function FormatTag({ tone, label }: { tone: FormatTone; label: string }) {
         {/* Hit area, so hovering the dot is not a pixel hunt. */}
         <span
           aria-label={label}
-          className="flex size-[14px] shrink-0 items-center justify-center"
+          className="flex size-[calc(14px*var(--ui-space-scale,1))] shrink-0 items-center justify-center"
         >
           <span
             aria-hidden="true"
-            className={cn("size-[5px] rounded-full", FORMAT_TONE_DOT[tone])}
+            className={cn("size-[calc(5px*var(--ui-space-scale,1))] rounded-full", FORMAT_TONE_DOT[tone])}
           />
         </span>
       </TooltipTrigger>
@@ -628,7 +682,7 @@ function DownloadedBadge() {
         >
           <span
             aria-hidden="true"
-            className="size-[5px] rounded-full bg-status-success"
+            className="size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-success"
           />
         </span>
       </TooltipTrigger>
@@ -653,7 +707,7 @@ function PartialBadge({ resumable }: { resumable?: boolean }) {
         >
           <span
             aria-hidden="true"
-            className="size-[5px] rounded-full bg-status-warning"
+            className="size-[calc(5px*var(--ui-space-scale,1))] rounded-full bg-status-warning"
           />
         </span>
       </TooltipTrigger>
@@ -778,7 +832,7 @@ function VramBadge({
             event.stopPropagation();
           }}
           className={cn(
-            "flex size-[18px] shrink-0 items-center justify-center",
+            "flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center",
             verdict.tone,
             revealOnHover &&
               "opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100",
@@ -822,6 +876,15 @@ function SizeText({ value }: { value: string }) {
   );
 }
 
+/** One decimal through GB/TB, so a total and its model + assets breakdown visibly add up. */
+export function formatFootprintBytes(bytes: number): string {
+  return bytes >= 1_000_000_000 && bytes < 1_000_000_000_000
+    ? `${(bytes / 1_000_000_000).toFixed(1)} GB`
+    : bytes >= 1_000_000_000_000
+      ? `${(bytes / 1_000_000_000_000).toFixed(1)} TB`
+      : formatBytes(bytes, " ");
+}
+
 /** Keep the row's size treatment consistent with every other model; diffusion GGUFs get one
  *  small explanation affordance, since their checkpoint is only part of what is kept on disk. */
 export function GgufDownloadFootprint({
@@ -831,25 +894,21 @@ export function GgufDownloadFootprint({
   checkpointBytes: number;
   companionBytes: number;
 }) {
-  const totalBytes = checkpointBytes + companionBytes;
-  // Whole-GB rounding is too lossy for a sum ("2.6 GB + 8.2 GB = 11 GB" looks contradictory),
-  // so keep one decimal through GB/TB.
-  const totalLabel =
-    totalBytes >= 1_000_000_000 && totalBytes < 1_000_000_000_000
-      ? `${(totalBytes / 1_000_000_000).toFixed(1)} GB`
-      : totalBytes >= 1_000_000_000_000
-        ? `${(totalBytes / 1_000_000_000_000).toFixed(1)} TB`
-        : formatBytes(totalBytes);
+  const totalLabel = formatFootprintBytes(checkpointBytes + companionBytes);
   return (
     <span
       data-model-download-footprint={true}
-      className="flex items-center gap-1 whitespace-nowrap text-foreground/80"
+      className="flex items-center gap-1 whitespace-nowrap text-muted-foreground"
     >
-      <SizeText value={totalLabel} />
+      {/* Keep flex gaps out of SizeText's fragments. */}
+      <span>
+        <SizeText value={totalLabel} />
+      </span>
+      {/* Align the icon with the digits. */}
       <span
         data-model-download-footprint-help={true}
         aria-hidden={true}
-        className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/70"
+        className="flex size-3.5 shrink-0 -translate-y-[0.25em] items-center justify-center text-muted-foreground/80"
       >
         <HugeiconsIcon icon={HelpCircleIcon} className="size-3" strokeWidth={1.8} />
       </span>
@@ -869,7 +928,8 @@ export function GgufDownloadFootprintExplanation({
     <>
       <span className="font-medium">Full required size</span>
       <span className="ml-1 text-muted-foreground">
-        {formatBytes(checkpointBytes)} model + {formatBytes(companionBytes)} required assets
+        {formatFootprintBytes(checkpointBytes)} model +{" "}
+        {formatFootprintBytes(companionBytes)} required assets
       </span>
     </>
   );
@@ -877,7 +937,7 @@ export function GgufDownloadFootprintExplanation({
 
 function QuantChip({ label }: { label: string }) {
   return (
-    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-full items-center overflow-hidden rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
+    <span className="inline-flex h-[calc(18px*var(--ui-space-scale,1))] max-w-full items-center overflow-hidden rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1 font-mono text-ui-9 text-muted-foreground dark:bg-muted">
       {label}
     </span>
   );
@@ -888,8 +948,13 @@ function isRuntimeLoadedModel(
   activeGgufVariant: string | null | undefined,
   modelId: string,
   variantPolicy: "none" | "required" | "ignore",
+  aliasIds: readonly string[] = [],
 ): boolean {
-  if (!modelIdsMatchForPicker(loadedModelId, modelId)) return false;
+  if (
+    !modelIdsMatchForPicker(loadedModelId, modelId) &&
+    !aliasIds.some((id) => modelIdsMatchForPicker(loadedModelId, id))
+  )
+    return false;
   if (variantPolicy === "ignore") return true;
   const hasActiveGgufVariant = !ggufVariantsMatchForPicker(
     activeGgufVariant,
@@ -907,30 +972,32 @@ function artifactBudget(gpu: {
   memoryTotalGb: number;
   systemRamAvailableGb: number;
   denseQuantSchemes?: readonly string[];
+  quantisedStreaming?: boolean;
+  extraOffloadFitTiers?: DeviceBudget["extraOffloadFitTiers"];
 }): DeviceBudget {
   return {
     gpuGb: gpu.memoryTotalGb,
     systemRamGb: gpu.systemRamAvailableGb,
     // Judges a pre-quantised row by that checkpoint's size, not the bf16 shards it replaces.
     denseQuantSchemes: gpu.denseQuantSchemes,
+    quantisedStreaming: gpu.quantisedStreaming,
+    extraOffloadFitTiers: gpu.extraOffloadFitTiers,
   };
 }
 
 const META_COLUMN = {
-  // Fits "UD-Q4_K_XL"; a hard cap, so longer quants clip.
-  quant: "min-[560px]:w-[7.2em]",
+  // Hugs its chip, capped at "UD-Q4_K_XL" (longer quants clip). Leftmost, so its slack goes to the name.
+  quant: "min-[560px]:max-w-[7.2em]",
   // Each width below is the widest set its scope can draw: anything wider makes min-w-min expand the
-  // slot and shift every column after it. This slot holds capability glyphs (18px), the vision badge
-  // (24px) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
-  badge: "min-w-min min-[560px]:w-[calc(24px*var(--ui-space-scale,1))]",
-  // One glyph plus the disk mark (18 + 4 + 14).
-  badgeMid: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
-  // On Device draws the vision badge (26px) and, since partials are listed, the partial mark
-  // (14px) beside it. 44px is that pair with its gap: reserving only the badge let a row drawing
-  // both grow past the slot and carry its quant chip 18px left of every other row.
-  badgeDevice: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
-  // Hub draws the disk mark and no vision badge (18+4+14). A second glyph grows it via min-w-min.
-  badgeWide: "min-w-min min-[560px]:w-[calc(36px*var(--ui-space-scale,1))]",
+  // slot and shift every column after it. This slot holds capability glyphs and the vision badge
+  // (both 26px pills) and the "on disk" mark (14px), gap-1 between them; scope draws no glyph.
+  badge: "min-w-min min-[560px]:w-[calc(26px*var(--ui-space-scale,1))]",
+  // One glyph plus the disk mark (26 + 4 + 14).
+  badgeMid: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
+  // On Device: the vision badge only (26px). Its partial mark sits with the name, as Loaded does.
+  badgeDevice: "min-w-min min-[560px]:w-[calc(26px*var(--ui-space-scale,1))]",
+  // Hub draws the disk mark and no vision badge (26+4+14). A second glyph grows it via min-w-min.
+  badgeWide: "min-w-min min-[560px]:w-[calc(44px*var(--ui-space-scale,1))]",
   // The fit mark (Hub rows), one 18px glyph.
   vram: "min-w-min min-[560px]:w-[calc(18px*var(--ui-space-scale,1))]",
   // Device rows reserve the slot rather than hug the chip. This is the last variable column, so
@@ -945,10 +1012,36 @@ const META_COLUMN = {
   format: "min-[560px]:w-[calc(14px*var(--ui-space-scale,1))]",
 } as const;
 
+// On Device spacing between the name, quant, modality and parameter marks: never under 6px.
+const DEVICE_META_GAP = "gap-[max(6px,calc(6px*var(--ui-space-scale,1)))]";
+
+const downloadedRowButtonClassName =
+  "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
+// Not focus-within: the dots menu returns focus to its trigger on close, so the row stayed lit
+// after the pointer left. A row carrying a memory bar is two lines tall and the shell paints
+// the background, so the radius relaxes with it or the row renders as a stadium.
+const downloadedRowShellClassName = (
+  selected: boolean,
+  hasMemoryBar = false,
+) =>
+  cn(
+    "group flex items-center transition-colors hover:bg-sidebar-accent has-[:focus-visible]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
+    hasMemoryBar ? "rounded-2xl" : "rounded-full",
+    selected && "bg-sidebar-accent",
+  );
+
 // One gutter for every row, gear or no gear, so the columns never shift by a button; the
 // buttons show on hover or while their menu is open.
 const ROW_ACTIONS_CLASS =
   "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
+
+// Drop line for a pinned-row drag. A border snaps to whole pixels, so every row matches.
+const PINNED_DROP_CUE_BASE =
+  "before:pointer-events-none before:absolute before:inset-x-2 before:z-10 before:h-0 before:border-t-[1.5px] before:border-primary before:content-['']";
+const PINNED_DROP_CUE: Record<PinnedDropEdge, string> = {
+  top: `${PINNED_DROP_CUE_BASE} before:top-0`,
+  bottom: `${PINNED_DROP_CUE_BASE} before:bottom-0`,
+};
 
 // Partial rows keep their buttons on screen. Everywhere else the gutter hides until hover because
 // the row itself is the action, but a partial cannot be loaded at all: the menu IS its only
@@ -958,7 +1051,7 @@ const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 // Same box and glyph size as ModelLoadSettingsAction, so a heading's buttons sit in the same
 // column and hover the same size as the ones on the rows under it.
 const HEADING_ACTION_CLASS =
-  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
+  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 /** A Connected group label. Wider than the On Device section labels, since nothing divides these
  *  groups but the gap, and foldable the same way. */
@@ -1042,6 +1135,7 @@ function ModelRow({
   onClick,
   vramStatus,
   vramEst,
+  vramBudget,
   gpuGb,
   tooltipText,
   hubUrl,
@@ -1068,6 +1162,8 @@ function ModelRow({
   onClick: () => void;
   vramStatus?: GgufFitClass | VramFitStatus | null;
   vramEst?: number;
+  /** Memory allowance used to judge this curated row's fit. */
+  vramBudget?: CuratedBudget;
   gpuGb?: number;
   tooltipText?: ReactNode;
   /** Hugging Face address for online/Hub rows, surfaced on hover the way local rows show an
@@ -1111,8 +1207,9 @@ function ModelRow({
       ? exceeds
         // "memory", not "VRAM": a GGUF at `partial` splits across VRAM and RAM and the figure
         // is weights plus activations plus KV, so "Needs ~47GB VRAM" contradicted the verdict.
-        ?
-          `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
+        ? vramBudget
+          ? curatedBudgetText(vramEst, gpuGb, vramBudget)
+          : `Needs ~${vramEst}GB memory (GPU: ${gpuGb}GB)`
         : vramStatus === "tight" || vramStatus === "marginal"
           ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
           : `~${vramEst}GB VRAM`
@@ -1154,6 +1251,84 @@ function ModelRow({
   const memorySegments = useModelMemory(selected ? memory : undefined, gpuGb);
   const showMemoryBar = memorySegments.status !== "unknown";
 
+  // Tooltip opens from the name or keyboard focus only, not the whole row.
+  const nameRef = useRef<HTMLSpanElement>(null);
+  const nameHoverTimer = useRef<number | undefined>(undefined);
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  // Touch has no hover, so a tap on the name opens it and a tap elsewhere closes it.
+  const [tappedOpen, setTappedOpen] = useState(false);
+  useEffect(() => () => window.clearTimeout(nameHoverTimer.current), []);
+  useEffect(() => {
+    if (!tappedOpen) return;
+    const release = (event: Event) => {
+      const target = event.target as Element | null;
+      if (nameRef.current?.contains(target)) return;
+      if (target?.closest?.('[data-slot="tooltip-content"]')) return;
+      setTappedOpen(false);
+      setTooltipOpen(false);
+    };
+    // touchstart covers WebViews without pointer events.
+    document.addEventListener("pointerdown", release, true);
+    document.addEventListener("touchstart", release, { capture: true, passive: true });
+    return () => {
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("touchstart", release, true);
+    };
+  }, [tappedOpen]);
+  const onNameEnter = (event: React.PointerEvent) => {
+    if (event.pointerType === "touch") return;
+    window.clearTimeout(nameHoverTimer.current);
+    nameHoverTimer.current = window.setTimeout(() => setTooltipOpen(true), 700);
+  };
+  const onNameLeave = () => {
+    window.clearTimeout(nameHoverTimer.current);
+    setTappedOpen(false);
+    setTooltipOpen(false);
+  };
+  // Keyboard focus opened it, so the pointer leaving the name does not close it.
+  const onNamePointerLeave = (event: React.PointerEvent) => {
+    if (event.pointerType === "touch") return;
+    if (nameRef.current?.closest("button")?.matches(":focus-visible")) {
+      window.clearTimeout(nameHoverTimer.current);
+      return;
+    }
+    onNameLeave();
+  };
+  // Read at pointerdown: the trigger closes an open tooltip before the click lands.
+  // Null without pointer events, where nothing closes it first.
+  const openAtTap = useRef<boolean | null>(null);
+  const onNameDown = (event: React.PointerEvent) => {
+    if (event.pointerType === "touch") openAtTap.current = tooltipOpen;
+  };
+  const hasTooltip = Boolean(vramTooltipText || tooltipText || hubUrl || formatDot);
+  // Like hover on iOS: the first tap shows the details, the next one picks the row.
+  const onNameClick = (event: React.MouseEvent) => {
+    const wasOpen = openAtTap.current ?? tooltipOpen;
+    openAtTap.current = null;
+    if (!hasTooltip || !isTouchClick(event)) return;
+    if (wasOpen) {
+      onNameLeave();
+      return;
+    }
+    event.stopPropagation();
+    setTappedOpen(true);
+    setTooltipOpen(true);
+  };
+  const onTooltipOpenChange = (next: boolean) => {
+    if (!next) {
+      onNameLeave();
+      return;
+    }
+    const focused = document.activeElement;
+    if (
+      focused?.matches(":focus-visible") &&
+      nameRef.current &&
+      focused.contains(nameRef.current)
+    ) {
+      setTooltipOpen(true);
+    }
+  };
+
   const content = (
     <button
       type="button"
@@ -1175,11 +1350,11 @@ function ModelRow({
         className,
       )}
     >
-      {/* gap-1: the quant chip ends the name group, so what this separates is that chip from the
-          first meta mark, on the rhythm the meta columns keep. */}
+      {/* Separates the name group from the meta cluster. */}
       <span
         className={cn(
-          "flex w-full items-center gap-1",
+          "flex w-full items-center",
+          alignMeta === "device" ? DEVICE_META_GAP : "gap-1",
           // Over budget reads as a dimmed row, which scans; hover restores it. The selected row keeps full weight.
           exceeds &&
             !selected &&
@@ -1201,23 +1376,39 @@ function ModelRow({
             </span>
           ) : null}
           {showOwner ? (
-            <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/90">
+            <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-ui-13 text-muted-foreground/80">
               <span className="truncate">{owner}</span>
-              <span className="shrink-0 text-muted-foreground/45">/</span>
+              <span className="shrink-0 text-muted-foreground/80">/</span>
             </span>
           ) : null}
-          <span className="min-w-0 flex-1 truncate">{name}</span>
-          {/* Here it eats name width instead of moving the meta columns. */}
+          <span className="min-w-0 flex-1 truncate">
+            <span
+              ref={nameRef}
+              onPointerEnter={onNameEnter}
+              onPointerDown={onNameDown}
+              onPointerLeave={onNamePointerLeave}
+              onClick={onNameClick}
+            >
+              {name}
+            </span>
+          </span>
+          {/* Here it eats name width instead of moving the meta columns. self-center: on the
+              baseline the empty dot sat the tag low. */}
+          {alignMeta === "device" && partial ? (
+            <span className="ml-[max(6px,calc(6px*var(--ui-space-scale,1)))] flex shrink-0 items-center self-center">
+              <PartialBadge resumable={partialResumable} />
+            </span>
+          ) : null}
           {aligned && loaded && (
             <DotTag
               tone="success"
               label="Loaded"
-              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 rounded-md px-1.5"
-              dotClassName="size-[5px]"
+              className="ml-2 h-[calc(18px*var(--ui-space-scale,1))] shrink-0 gap-1 self-center rounded-md px-1.5"
+              dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
             />
           )}
           {alignMeta !== "device" && quantChip ? (
-            <span className="ml-2 shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]">
+            <span className="ml-2 shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] px-1.5 py-px font-mono text-ui-10 text-muted-foreground dark:bg-muted">
               {quantChip}
             </span>
           ) : null}
@@ -1232,7 +1423,7 @@ function ModelRow({
         <span
           className={cn(
             "ml-auto flex shrink-0 items-center",
-            aligned ? "gap-1" : "gap-1.5",
+            alignMeta === "device" ? DEVICE_META_GAP : aligned ? "gap-1" : "gap-1.5",
           )}
         >
           {/* The quant chip sits in the meta cluster, not at the end of the name, so one
@@ -1240,17 +1431,15 @@ function ModelRow({
               the row's buttons. Inside the name group it was centred against THAT box instead --
               a baseline box sized by the name's own line height -- so it only agreed with the rest
               of the row for as long as the two boxes happened to share a centre. */}
-          {alignMeta === "device" ? (
+          {alignMeta === "device" && quantChip ? (
             <span
               className={cn(
-                // justify-end: the slot is sized for the longest quant, so left-aligning ended a
-                // "Q8_0" and a "UD-Q4_K_XL" at different x even once the slot itself stopped
-                // moving. Flush right is what makes the chips read as one column.
+                // Ends against the fixed badge column, so chips align whatever their length.
                 "flex shrink-0 items-center justify-end text-ui-9",
                 META_COLUMN.quant,
               )}
             >
-              {quantChip ? <QuantChip label={quantChip} /> : null}
+              <QuantChip label={quantChip} />
             </span>
           ) : null}
           {/* Capabilities, vision and the Hub lists' "on disk" mark share one
@@ -1258,14 +1447,18 @@ function ModelRow({
           {aligned ? (
             <span
               className={cn(
-                // Right, not centre: slack belongs to the name, not split either side of a glyph.
-                "flex shrink-0 items-center justify-end gap-1 text-ui-10",
+                // Right, not centre: slack belongs to the name. On Device it leads, so the eye sits
+                // the cluster gap from the quant chip.
+                "flex shrink-0 items-center gap-1 text-ui-10",
+                alignMeta === "device" ? "justify-start" : "justify-end",
                 badgeColumn,
               )}
             >
               {showCaps && <CapabilityIcons caps={caps} />}
               {showVision && <VisionBadge />}
-              {partial ? <PartialBadge resumable={partialResumable} /> : null}
+              {partial && alignMeta !== "device" ? (
+                <PartialBadge resumable={partialResumable} />
+              ) : null}
               {downloaded && !partial && !loaded ? <DownloadedBadge /> : null}
             </span>
           ) : (
@@ -1277,7 +1470,7 @@ function ModelRow({
                   tone="success"
                   label="Loaded"
                   className="h-[calc(18px*var(--ui-space-scale,1))] gap-1 rounded-md px-1.5"
-                  dotClassName="size-[5px]"
+                  dotClassName="size-[calc(5px*var(--ui-space-scale,1))]"
                 />
               )}
               {partial ? <PartialBadge resumable={partialResumable} /> : null}
@@ -1299,10 +1492,8 @@ function ModelRow({
           {aligned ? (
             <span
               className={cn(
-                // Device leads the chip, Hub trails it. Both columns are fixed, so the choice is only where the
-                // slack falls: trailing put it in FRONT of the chip, where it read as part of the gap to the
-                // modality mark and grew with the label (6.9px after "217B", 19px after "1B"). Leading leaves that
-                // gap as the cluster's own gap-1.
+                // Device leads the chip so every chip starts at one x, the cluster gap after the modality
+                // slot. Hub trails it.
                 "flex shrink-0 items-center text-ui-10",
                 alignMeta === "hub"
                   ? cn("justify-end", META_COLUMN.paramWide)
@@ -1384,7 +1575,7 @@ function ModelRow({
 
   if (tooltipBody) {
     return (
-      <Tooltip delayDuration={700}>
+      <Tooltip open={tooltipOpen} onOpenChange={onTooltipOpenChange}>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
         {/* Right, not left: this panel is docked to the model button at the window's left edge,
             so a row's own left edge is ~30px in and a tooltip opening that way ran off screen.
@@ -1392,7 +1583,7 @@ function ModelRow({
             connection name stretch the box to 320px, most of it slack beside the model id. */}
         <TooltipContent
           side="right"
-          className="tooltip-compact max-w-[15rem] break-words"
+          className="tooltip-compact max-w-[calc(15rem*var(--ui-space-scale,1))] break-words"
         >
           {tooltipBody}
         </TooltipContent>
@@ -1446,7 +1637,7 @@ function normalizeGgufVariantsResponse(
 ): {
   variants: GgufVariantDetail[];
   defaultVariant: string | null;
-  hasVision: boolean;
+  hasVision: boolean | undefined;
   contextLength: number | null;
   resolvedLocally: boolean;
   dependenciesResolved: boolean;
@@ -1460,7 +1651,7 @@ function normalizeGgufVariantsResponse(
       typeof res?.default_variant === "string" && res.default_variant.length > 0
         ? res.default_variant
         : null,
-    hasVision: res?.has_vision === true,
+    hasVision: normalizeGgufVisionCapability(res?.has_vision),
     contextLength:
       typeof contextLength === "number" &&
       Number.isFinite(contextLength) &&
@@ -1470,8 +1661,7 @@ function normalizeGgufVariantsResponse(
     // The backend's own verdict, which resolves existence-first: a marker-less relative name that
     // exists on disk is a local model. A server predating the field leaves the prefix test.
     resolvedLocally: res?.resolved_locally === true,
-    // Missing/false means the server used local or offline fallback metadata. That cannot prove
-    // whether a cached main GGUF still needs a managed drafter companion.
+    // The server proves dependencies from Hub metadata or a complete local download plan.
     dependenciesResolved: res?.dependencies_resolved === true,
   };
 }
@@ -1489,17 +1679,19 @@ function ggufVariantExpectedBytes(variant: GgufVariantDetail): number {
  *  mounts the expander, so this is its only source. */
 interface SoleDownloadedQuant {
   variant: GgufVariantDetail;
-  hasVision: boolean;
+  hasVision: boolean | undefined;
 }
 
-/** The repo's one complete quant, or null when Hub metadata cannot verify its dependencies. */
+/** The repo's one complete cached quant, or null when its dependencies cannot be verified. */
 async function readSoleQuant(
   target: SoleQuantTarget,
   hfToken?: string,
 ): Promise<SoleDownloadedQuant | null> {
   try {
     const res = await listGgufVariantsCached(target.repoId, hfToken, {
+      localOnly: true,
       localPath: target.localSource,
+      includeCacheLocations: target.includeCacheLocations,
     });
     const normalized = normalizeGgufVariantsResponse(res);
     const variant = verifiedSoleHubVariant(
@@ -1511,6 +1703,22 @@ async function readSoleQuant(
   } catch {
     return null;
   }
+}
+
+function soleQuantNeedsExpander(
+  target: SoleQuantTarget,
+  quant: string,
+  hfToken?: string,
+): Promise<boolean> {
+  if (isHuggingFaceOffline()) return Promise.resolve(false);
+  return hubWithdrawsSoleQuant(
+    () =>
+      listGgufVariantsCached(target.repoId, hfToken, {
+        localPath: target.localSource,
+        includeCacheLocations: target.includeCacheLocations,
+      }),
+    quant,
+  );
 }
 
 const EMPTY_SOLE_QUANT_ENTRIES: ReadonlyMap<
@@ -1542,6 +1750,7 @@ function useSoleDownloadedQuants(
       return {
         repoId: repo.repo_id,
         localSource,
+        includeCacheLocations: !mediaPageForTask(repo.task),
         fingerprint,
         key: soleQuantKey(versions[index], localSource, fingerprint),
       };
@@ -1579,6 +1788,7 @@ function useSoleDownloadedQuants(
     };
   }, []);
 
+  const hubProbeLimitRef = useRef(createTaskLimiter(SOLE_QUANT_WORKERS));
   const readerRef = useRef<ReturnType<
     typeof createSoleQuantReader<SoleDownloadedQuant>
   > | null>(null);
@@ -1592,6 +1802,23 @@ function useSoleDownloadedQuants(
           const next = new Map(prev);
           next.set(target.repoId, { key: target.key, quant });
           return next;
+        });
+        if (!quant) return;
+        // The disk verdict shows at once; a later Hub answer may still send the row back to its expander.
+        void hubProbeLimitRef.current(() =>
+          soleQuantNeedsExpander(
+            target,
+            quant.variant.quant,
+            hfTokenRef.current,
+          ),
+        ).then((withdraw) => {
+          if (!withdraw || !mountedRef.current) return;
+          setEntries((prev) => {
+            if (prev.get(target.repoId)?.key !== target.key) return prev;
+            const next = new Map(prev);
+            next.set(target.repoId, { key: target.key, quant: null });
+            return next;
+          });
         });
       },
     });
@@ -1627,8 +1854,10 @@ function GgufVariantExpander({
   diffusionLoad = false,
   hostPooledMemory = false,
   gpuCount,
+  loadedQuants,
 }: {
   repoId: string;
+  loadedQuants?: readonly string[];
   pipelineTag?: string | null;
   /** True on Images / Video, where a GGUF is placed by the diffusion backend rather than
    *  llama-server, so the llama.cpp budget does not apply. Audio is task-scoped but not this. */
@@ -1661,13 +1890,13 @@ function GgufVariantExpander({
     renderUpdateDescription?: (quant: string) => ReactNode;
     getUpdateSuccessMessage?: (quant: string) => string;
     updateDisabled?: boolean;
-    onDelete?: (quant: string) => Promise<void> | void;
+    onDelete?: (quant: string, cachePath?: string | null) => Promise<void> | void;
     deleteTitle?: string;
     renderDeleteDescription?: (quant: string) => ReactNode;
     getDeleteSuccessMessage?: (quant: string) => string;
     deleteDisabled?: boolean;
   };
-  /** On Device rows honor the Show all quantizations setting; browse lists always show every quant. */
+  /** On Device rows honor the All quantizations setting; browse lists always show every quant. */
   onDevice?: boolean;
   /** Only managed cached-Hub rows can surface quant pins in the Pinned section; local-path
    *  expanders leave this false. */
@@ -1693,7 +1922,7 @@ function GgufVariantExpander({
   const deleteDisabled = variantActions?.deleteDisabled ?? false;
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
-  const [hasVision, setHasVision] = useState(false);
+  const [hasVision, setHasVision] = useState<boolean | undefined>(undefined);
   // Native max context (GGUF metadata); only set once a variant is downloaded.
   const [nativeContext, setNativeContext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1703,6 +1932,9 @@ function GgufVariantExpander({
   // which a downloaded hub model also carries.
   const [resolvedLocally, setResolvedLocally] = useState(false);
   const localSource = loadId || cachePath || null;
+  const showAllQuantizations = useChatRuntimeStore(
+    (s) => s.showAllQuantizations,
+  );
 
   useEffect(() => {
     let canceled = false;
@@ -1718,21 +1950,45 @@ function GgufVariantExpander({
       setResolvedLocally(false);
     });
 
-    // The row's own directory, so disk contents count against that cache, not the active one. No
-    // preferLocalCache: it answers from disk alone.
-    listGgufVariants(repoId, hfToken, {
-      ...(localSource ? { localPath: localSource } : {}),
-      signal: controller.signal,
-    })
-      .then((res) => {
-        if (canceled) return;
-        const normalized = normalizeGgufVariantsResponse(res);
-        setVariants(normalized.variants);
-        setDefaultVariant(normalized.defaultVariant);
-        setHasVision(normalized.hasVision);
+    let cachedResponse:
+      | Awaited<ReturnType<typeof listGgufVariants>>
+      | undefined;
+    const applyResponse = (
+      res: Awaited<ReturnType<typeof listGgufVariants>>,
+    ) => {
+      if (canceled) return;
+      const normalized = normalizeGgufVariantsResponse(res);
+      setVariants(normalized.variants);
+      setDefaultVariant(normalized.defaultVariant);
+      setHasVision(normalized.hasVision);
+      if (normalized.hasVision !== undefined) {
         onHasVision?.(normalized.hasVision);
-        setNativeContext(normalized.contextLength);
-        setResolvedLocally(normalized.resolvedLocally);
+      }
+      setNativeContext(normalized.contextLength);
+      setResolvedLocally(normalized.resolvedLocally);
+    };
+
+    loadPickerGgufVariants(
+      (localOnly) =>
+        listGgufVariants(repoId, hfToken, {
+          ...(localSource ? { localPath: localSource } : {}),
+          localOnly,
+          includeCacheLocations: !mediaPageForTask(pipelineTag),
+          signal: controller.signal,
+        }),
+      {
+        onDevice,
+        canDiscoverRemote: () => !isHuggingFaceOffline(),
+        signal: controller.signal,
+      },
+      (res) => {
+        cachedResponse = res;
+        applyResponse(res);
+        if (!canceled) setLoading(false);
+      },
+    )
+      .then((res) => {
+        if (res !== cachedResponse) applyResponse(res);
       })
       .catch((err) => {
         if (canceled) return;
@@ -1746,12 +2002,16 @@ function GgufVariantExpander({
       canceled = true;
       controller.abort();
     };
-  }, [repoId, localSource, refreshKey, hfToken]);
+  }, [repoId, localSource, refreshKey, hfToken, pipelineTag, onDevice]);
 
   // Covers Unix absolute, Windows drive, UNC, relative and tilde paths.
   const isLocalPath = /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(
     repoId,
   );
+  // Repo-level true only proves that some mmproj exists; the loader may reject
+  // it for this quant/model family. Absence is authoritative text-only
+  // evidence, while presence remains unknown until load.
+  const variantVisionHint = hasVision === false ? false : undefined;
   // The prefix test cannot see a marker-less relative directory like "models/my-image-model",
   // so whether the checkpoint is on disk is asked of the listing, not of the spelling.
   const checkpointIsLocal = isLocalPath || resolvedLocally;
@@ -1765,6 +2025,7 @@ function GgufVariantExpander({
       downloaded?: boolean,
       sizeBytes?: number,
       downloadPresentation?: ModelSelectorChangeMeta["downloadPresentation"],
+      contextLength: number | null = nativeContext,
     ) => {
       const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
@@ -1777,8 +2038,9 @@ function GgufVariantExpander({
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
         downloadPresentation,
-        contextLength: isAvailable ? nativeContext : undefined,
+        contextLength: isAvailable ? contextLength : undefined,
         isGguf: true,
+        isVision: variantVisionHint,
         pipelineTag,
       });
     },
@@ -1790,6 +2052,7 @@ function GgufVariantExpander({
       sourceOverride,
       nativeContext,
       pipelineTag,
+      variantVisionHint,
     ],
   );
 
@@ -1829,6 +2092,17 @@ function GgufVariantExpander({
     ],
   );
 
+  // One verdict per variant, so the badge, the ordering and the star cannot
+  // disagree. Judged on the download footprint, which covers the companion
+  // GGUFs the loader charges for: a vision projector, or a drafter `auto`
+  // promotes to. On the bare checkpoint a vision quant could sort and badge as
+  // fitting while the recommendation had already ruled it OOM.
+  const getVariantFit = useCallback(
+    (variant: GgufVariantDetail): GgufFitClass =>
+      getGgufFit(ggufVariantFitSizeBytes(variant)),
+    [getGgufFit],
+  );
+
   const variantGroups = useMemo(
     () => groupGgufVariantsForPicker(variants ?? []),
     [variants],
@@ -1838,8 +2112,8 @@ function GgufVariantExpander({
     [variantGroups, defaultVariant],
   );
 
-  // Each workflow gets its own recommendation: if its preferred variant is OOM use the largest
-  // that can run, and if all are OOM the smallest.
+  // Each workflow gets its own recommendation: the repo default (UD-Q4_K_XL, else Q4_K_M, else
+  // Q4_K_S) wherever the device loads it, else the largest smaller quant that loads.
   const effectiveRecommendedByGroup = useMemo(() => {
     const recommended = new Map<string, string>();
     for (const group of variantGroups) {
@@ -1848,21 +2122,11 @@ function GgufVariantExpander({
         if (preferred) recommended.set(group.key, preferred.quant);
         continue;
       }
-      if (preferred && getGgufFit(preferred.size_bytes) !== "oom") {
-        recommended.set(group.key, preferred.quant);
-        continue;
-      }
-      const fitting = group.variants
-        .filter((variant) => getGgufFit(variant.size_bytes) !== "oom")
-        .sort((left, right) => right.size_bytes - left.size_bytes);
-      if (fitting[0]) {
-        recommended.set(group.key, fitting[0].quant);
-        continue;
-      }
-      const smallest = [...group.variants].sort(
-        (left, right) => left.size_bytes - right.size_bytes,
-      )[0];
-      if (smallest) recommended.set(group.key, smallest.quant);
+      // Null when the group carries no sizes at all, so there is nothing to measure.
+      const pick =
+        recommendedQuantForDevice(group.variants, getGgufFit, preferred) ??
+        preferred;
+      if (pick) recommended.set(group.key, pick.quant);
     }
     return recommended;
   }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
@@ -1883,7 +2147,7 @@ function GgufVariantExpander({
     if (!variants) return variants;
     // Tier: 0 = downloaded+fits, 1 = downloaded+tight, 2 = fits, 3 = tight, 4 = OOM
     const tierOf = (v: GgufVariantDetail) => {
-      const f = getGgufFit(v.size_bytes);
+      const f = getVariantFit(v);
       if (f === "oom") return 4;
       const base = f === "fits" ? 0 : 1;
       return v.downloaded ? base : base + 2;
@@ -1907,12 +2171,9 @@ function GgufVariantExpander({
           : a.size_bytes - b.size_bytes;
       });
     });
-  }, [variants, variantGroups, effectiveRecommendedByGroup, getGgufFit]);
+  }, [variants, variantGroups, effectiveRecommendedByGroup, getVariantFit]);
 
-  // On Device only: with Show all quantizations off, list quants already on disk, torn ones included.
-  const showAllQuantizations = useChatRuntimeStore(
-    (s) => s.showAllQuantizations,
-  );
+  // On Device only: with All quantizations off, list quants already on disk, torn ones included.
   const displayVariants = useMemo(() => {
     if (!sortedVariants) return sortedVariants;
     return visibleGgufVariants(sortedVariants, {
@@ -2120,9 +2381,10 @@ function GgufVariantExpander({
         const isRecommended =
           group != null &&
           effectiveRecommendedByGroup.get(group.key) === v.quant;
-        const fit = getGgufFit(v.size_bytes);
+        const fit = getVariantFit(v);
         const oom = fit === "oom";
         const expectedBytes = ggufVariantExpectedBytes(v);
+        const variantContext = ggufVariantContextLength(v, nativeContext);
         // This row's own dependency group, never the listing's: see the footprintVariants comment above.
         const companionBytes =
           companionBytesByKey.get(v.dependency_key ?? "") ?? null;
@@ -2142,6 +2404,7 @@ function GgufVariantExpander({
                 v.downloaded,
                 expectedBytes,
                 pendingDrafterPresentation(v),
+                variantContext,
               )
             }
             className={cn(
@@ -2161,6 +2424,10 @@ function GgufVariantExpander({
                 <span className="ml-1.5 text-ui-9 font-sans font-medium text-amber-700 dark:text-amber-300">
                   incomplete
                 </span>
+              ) : loadedQuants?.some((q) => ggufVariantsMatchForPicker(q, v.quant)) ? (
+                <span className="ml-1.5 text-ui-9 font-sans font-medium text-green-600/90 dark:text-green-400/80">
+                  loaded
+                </span>
               ) : v.downloaded ? (
                 <>
                   <span className="ml-1.5 text-ui-9 font-sans font-medium text-green-600/90 dark:text-green-400/80">
@@ -2177,7 +2444,7 @@ function GgufVariantExpander({
                   partial
                 </span>
               ) : isRecommended ? (
-                <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary/70">
+                <span className="ml-1.5 text-ui-9 font-sans font-medium text-primary">
                   recommended
                 </span>
               ) : null}
@@ -2243,8 +2510,9 @@ function GgufVariantExpander({
                     ggufVariant: v.quant,
                     isDownloaded: true,
                     expectedBytes,
-                    contextLength: nativeContext,
+                    contextLength: variantContext,
                     isGguf: true,
+                    isVision: variantVisionHint,
                   })
                 }
               />
@@ -2264,7 +2532,7 @@ function GgufVariantExpander({
                     allowPin && v.downloaded
                       ? {
                           pinned: pinnedKeys.includes(pinKey(repoId, v.quant)),
-                          pinLabel: "Pin to top",
+                          pinLabel: "Pin",
                           unpinLabel: "Unpin",
                           onToggle: () => togglePinnedQuant(repoId, v.quant),
                         }
@@ -2298,7 +2566,11 @@ function GgufVariantExpander({
                     onDeleteVariant
                       ? {
                           title: deleteVariantTitle,
-                          impact: { repoId, variant: v.quant },
+                          impact: {
+                            repoId,
+                            variant: v.quant,
+                            cachePath: v.cache_ref ?? v.cache_path,
+                          },
                           description: renderDeleteVariantDescription?.(
                             v.quant,
                           ) ?? (
@@ -2315,13 +2587,14 @@ function GgufVariantExpander({
                             `Deleted ${repoId} ${v.quant}`,
                           disabled: deleteDisabled,
                           onConfirm: async () => {
-                            await onDeleteVariant(v.quant);
-                            // Drop the pin too: a pinned row for a deleted file loads something gone.
-                            if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
+                            await onDeleteVariant(v.quant, v.cache_ref ?? v.cache_path);
+                            if (isChatGgufTask(pipelineTag)) {
+                              await reconcileGgufPinsAfterDelete(repoId, hfToken);
+                            } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
                               togglePinnedQuant(repoId, v.quant);
                             }
-                            // Re-fetch this expander's variants so the deleted quant stops showing as downloaded while the
-                            // repo's other cached quants remain.
+                            // Re-fetch this expander's variants so the deleted quant stops showing as
+                            // downloaded while other cached quants remain.
                             setRefreshKey((key) => key + 1);
                           },
                         }
@@ -2382,10 +2655,13 @@ const DIFFUSION_TASKS: ReadonlySet<string> = new Set([
   ...VIDEO_GEN_TASKS,
 ]);
 
-// Speech pipeline tasks: owned by the Audio page. TTS picks load there; ASR picks map to the dictation sidecar.
+// Audio pipeline tasks: owned by the Audio page. TTS, music and separation picks load there; ASR picks map
+// to the dictation sidecar.
 export const AUDIO_GEN_TASKS = [
   "text-to-speech",
   "automatic-speech-recognition",
+  "text-to-audio",
+  "audio-to-audio",
 ] as const;
 
 // Diffusion GGUF archs the Images backend cannot assemble yet. The backend tags them with this
@@ -2414,8 +2690,14 @@ function mediaPageForTask(
 // task itself must stay, since FLUX.2-klein carries it too.
 const IMAGE_EDIT_KEYWORDS = ["edit", "kontext", "inpaint", "layered"] as const;
 // Editing families the backend now SUPPORTS: not hidden despite the edit keyword. Mirrors the
-// backend's qwen-image-edit family.
-const SUPPORTED_EDIT_KEYWORDS = ["qwen-image-edit", "kontext"] as const;
+// backend's qwen-image-edit, flux.1-kontext and qwen-image-layered families.
+const SUPPORTED_EDIT_KEYWORDS = [
+  "qwen-image-edit",
+  "kontext",
+  "qwen-image-layered",
+  "qwen_image_layered",
+  "qwenimagelayered",
+] as const;
 // Match a keyword as a whole path/name segment, not a raw substring, so "edit" does not hide
 // ".../edited/...". Keywords are [a-z-] literals, so no escaping. Mirrors _token_in_needle.
 function idHasSegment(id: string, keyword: string): boolean {
@@ -2436,6 +2718,7 @@ function passesTaskGate(
   filter: HfTaskFilter,
   catalog?: CatalogGroup[],
   activeCatalogArtifactIds?: ReadonlySet<string>,
+  localModel?: { opaque?: boolean },
 ): boolean {
   if (filter) {
     const exactArtifact =
@@ -2452,7 +2735,7 @@ function passesTaskGate(
           pickerTask: filter,
         })) &&
       !isImageEditModel(repoId)
-    );
+    ) || localModel?.opaque === true;
   }
   // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to its page
   // on click; only the never-loadable tag is hidden.
@@ -2501,12 +2784,10 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 }
 
 
-// Recommended section sort: "recommended" = newly created unsloth GGUF/MLX that fit the
-// device; the rest are plain HF sort keys.
-type RecommendedSortKey = "recommended" | "trendingScore" | "lastModified";
+// Recommended section sort: plain HF sort keys.
+type RecommendedSortKey = "trendingScore" | "lastModified";
 
 const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
-  { value: "recommended", label: "Recommended" },
   { value: "trendingScore", label: "Trending" },
   { value: "lastModified", label: "Recent" },
 ];
@@ -2527,13 +2808,15 @@ const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
   gguf: "GGUF",
   mlx: "MLX",
   safetensors: "Safetensors",
+  npu: "NPU",
 };
 
-// Dot colors match the row format tags: gguf blue, mlx amber, safetensors pink.
+// Dot colors match the row format tags: gguf blue, mlx amber, safetensors pink, npu cyan.
 const FORMAT_FILTER_DOTS: Partial<Record<FormatFilter, string>> = {
   gguf: "bg-format-gguf",
   mlx: "bg-format-mlx",
   safetensors: "bg-format-checkpoint",
+  npu: "bg-format-npu",
 };
 
 const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
@@ -2554,6 +2837,9 @@ const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
     ),
   };
 });
+const FORMAT_FILTER_OPTIONS_WITHOUT_NPU = FORMAT_FILTER_OPTIONS.filter(
+  (option) => option.value !== "npu",
+);
 
 // Connected has no size, download date or load history, so it sorts by what a hosted catalogue
 // does offer: the connection, or the name.
@@ -2653,6 +2939,7 @@ function localModelMeta(
   isGguf = false,
   pipelineTag?: string | null,
   audioType?: string | null,
+  familyOverrideRequired = false,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -2661,6 +2948,7 @@ function localModelMeta(
     ...(isGguf ? { isGguf: true } : {}),
     pipelineTag: pipelineTag ?? null,
     audioType: audioType ?? null,
+    familyOverrideRequired,
   };
 }
 
@@ -2695,6 +2983,13 @@ function localModelMatchesFormat(
   );
 }
 
+export type ModelPickerRowFilter = (row: {
+  id: string;
+  task?: string | null;
+  audioType?: string | null;
+  audioWorkflows?: readonly string[] | null;
+}) => boolean;
+
 export function HubModelPicker({
   models,
   additionalOnDeviceModels = [],
@@ -2713,9 +3008,13 @@ export function HubModelPicker({
   section = "downloaded",
   sectionToggle,
   onEject,
+  onEjectAll,
   task,
   catalog,
   communityModelPolicy = "none",
+  opaqueKind,
+  npu,
+  rowFilter,
 }: {
   models: ModelOption[];
   /** Task-runtime downloads using a cache layout the shared Hub inventory cannot represent (for
@@ -2740,7 +3039,8 @@ export function HubModelPicker({
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "connected";
   sectionToggle?: ReactNode;
-  onEject?: () => void;
+  onEject?: (modelId?: string) => void;
+  onEjectAll?: () => void;
   /** Restrict results to a pipeline task; undefined = all tasks (the chat default). */
   task?: HfTaskFilter;
   /** Curated catalog for a task-scoped picker: one canonical row per model, formats as the second level. */
@@ -2748,6 +3048,9 @@ export function HubModelPicker({
   /** Also surface community models carrying `task`'s pipeline tags, below the unsloth rows.
    *  Opt-in, since the runtime has to load an arbitrary publisher's checkpoint: true of audio. */
   communityModelPolicy?: CommunityModelPolicy;
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
+  npu?: NpuPickerSource;
+  rowFilter?: ModelPickerRowFilter;
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -2765,6 +3068,8 @@ export function HubModelPicker({
   // resident. Same predicate as the header tick.
   const selectedCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
+  const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
+  const isChatPicker = task === undefined;
   const chatLoadedModelId = chatModelLoaded({
     checkpoint: selectedCheckpoint,
     isExternalModel: isExternalModelId(selectedCheckpoint),
@@ -2783,16 +3088,40 @@ export function HubModelPicker({
   const hfToken = useHfTokenStore((s) => s.token);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
+  const loadedIdSet = useMemo(
+    () => new Set(isChatPicker ? loadedModels.map((m) => m.id.toLowerCase()) : []),
+    [isChatPicker, loadedModels],
+  );
+  const isKeptLoaded = (repoId: string) =>
+    loadedIdSet.has(repoId.toLowerCase());
+  const loadedQuantsFor = (repoId: string): string[] => {
+    const quants = isChatPicker
+      ? loadedModels
+          .filter((m) => m.quant && modelIdsMatchForPicker(m.id, repoId))
+          .map((m) => m.quant as string)
+      : [];
+    if (activeGgufVariant && modelIdsMatchForPicker(loadedModelId, repoId)) {
+      quants.push(activeGgufVariant);
+    }
+    return [...new Set(quants)];
+  };
+  const loadedRows = useMemo(() => {
+    if (!isChatPicker || section !== "recommended") return [];
+    const q = debouncedQuery.trim().toLowerCase();
+    return loadedModels.filter((m) => m.id.toLowerCase().includes(q));
+  }, [isChatPicker, section, debouncedQuery, loadedModels]);
+  const loadedRowIds = useMemo(
+    () => new Set(loadedRows.map((m) => m.id.toLowerCase())),
+    [loadedRows],
+  );
   // Shared Hub search stack so the picker and Hub run one implementation. Scoped to unsloth like the old listing.
   const online = useOnlineStatus();
+  const { phase: hubPhase } = useHubAvailability();
   // Sanitize to anonymous on a malformed token, matching the Hub page.
   const accessToken = hfApiToken(hfToken);
   // Recommended section: a live unsloth listing sorted by the dropdown, the same sort that drives search results.
   const [recommendedSort, setRecommendedSort] =
     useState<RecommendedSortKey>("trendingScore");
-  // "recommended" surfaces the most recently created Unsloth repos.
-  const recommendedSortBy: HfSortKey =
-    recommendedSort === "recommended" ? "createdAt" : recommendedSort;
   const {
     results,
     isLoading,
@@ -2800,9 +3129,11 @@ export function HubModelPicker({
     fetchMore,
     scannedCount,
     hasMore,
+    error: searchError,
+    retry: retrySearch,
   } = useHubModelSearch(debouncedQuery, {
     ownerScope: "unsloth",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
@@ -2813,7 +3144,7 @@ export function HubModelPicker({
   });
   const recommendedSearch = useHubModelSearch("", {
     ownerScope: "unsloth",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
@@ -2835,7 +3166,7 @@ export function HubModelPicker({
   const communityQuerySearch = useHubModelSearch(debouncedQuery, {
     task,
     ownerScope: "all",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
     accessToken,
@@ -2844,7 +3175,7 @@ export function HubModelPicker({
   const communityBrowse = useHubModelSearch("", {
     task,
     ownerScope: "all",
-    sortBy: recommendedSortBy,
+    sortBy: recommendedSort,
     sortDirection: "desc",
     pinUnslothFirst: false,
     accessToken,
@@ -3017,6 +3348,7 @@ export function HubModelPicker({
   const pickerInventory = useChatPickerInventory({
     enabled: true,
     allowedHiddenModelIds: activeCatalogArtifactIds,
+    opaqueKind,
   });
   const {
     cachedGguf,
@@ -3039,14 +3371,15 @@ export function HubModelPicker({
   );
   // Ollama rows list alongside custom folders: both are user-managed stores outside ./models,
   // and an Ollama root added as a custom folder is where the rows were expected (#9226).
-  // Hermes' one-click downloads are the same kind of store; a source in no bucket never renders.
+  // Hermes and oMLX downloads are the same kind of store; a source in no bucket never renders.
   const customFolderModels = useMemo(
     () =>
       pickerInventory.localModels.filter(
         (m) =>
           m.source === "custom" ||
           m.source === "ollama" ||
-          m.source === "hermes",
+          m.source === "hermes" ||
+          m.source === "omlx",
       ),
     [pickerInventory.localModels],
   );
@@ -3236,6 +3569,30 @@ export function HubModelPicker({
       ),
     [cachedGguf, cachedModels],
   );
+  // Ids for the same files: the row, its unsloth mirror and the vendor repo the mirror copies.
+  // A copy cached under one loads for the others, so rows match all of them.
+  const aliasesOf = useCallback(
+    (id: string): string[] => {
+      const artifact = catalog && artifactForRepoId(id, catalog)?.artifact;
+      return artifact?.upstreamRepoId
+        ? [id, artifact.repoId, artifact.upstreamRepoId]
+        : [id];
+    },
+    [catalog],
+  );
+  const isValueRow = useCallback(
+    (id: string) =>
+      value === id ||
+      aliasesOf(id).some((alias) => modelIdsMatchForPicker(value, alias)),
+    [value, aliasesOf],
+  );
+  // The id on disk for a row: itself, else a cached alias.
+  const cachedIdFor = useCallback(
+    (id: string): string | null =>
+      aliasesOf(id).find((alias) => downloadedSet.has(alias.toLowerCase())) ??
+      null,
+    [aliasesOf, downloadedSet],
+  );
 
   // The torn ones, kept apart so a Hub row can mark a partial rather than show it as complete
   // or as absent. Same split, and the same helper, the Hub page uses. One repo id can hold both a
@@ -3245,6 +3602,12 @@ export function HubModelPicker({
     () =>
       partialSetFromRows([...cachedGguf, ...cachedModels], (c) => c.repo_id),
     [cachedGguf, cachedModels],
+  );
+  // A complete alias loads instead, so the row is downloaded, not partial.
+  const isPartialRow = useCallback(
+    (id: string) =>
+      cachedIdFor(id) === null && partialSet.has(id.toLowerCase()),
+    [cachedIdFor, partialSet],
   );
 
   // Which of those continue byte for byte, so a Hub row's mark promises what the On Device row's
@@ -3372,7 +3735,12 @@ export function HubModelPicker({
   const [downloadedSort, setDownloadedSort] = useState<LocalSortKey>("recent");
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
   // Format filter toggle for the Unsloth listing.
-  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const [chosenFormatFilter, setFormatFilter] = useState<FormatFilter>("all");
+  const npuCatalog = useNpuCatalog(npu);
+  const formatFilter: FormatFilter =
+    chosenFormatFilter === "npu" && !npuCatalog ? "all" : chosenFormatFilter;
+  const [npuOnDeviceCollapsed, setNpuOnDeviceCollapsed] = useState(false);
+  const [npuBrowseCollapsed, setNpuBrowseCollapsed] = useState(true);
   // What this picker's task filter has already established about every row it can show; chat
   // passes none and keeps the full set.
   const capabilityScope = useMemo<readonly (keyof ModelCapabilities)[] | null>(() => {
@@ -3448,7 +3816,7 @@ export function HubModelPicker({
    *  cannot disagree. */
   const catalogFit = useCallback(
     (id: string, budget: DeviceBudget) =>
-      catalog ? curatedArtifactFitsDevice(id, catalog, budget) : undefined,
+      catalog ? curatedArtifactFit(id, catalog, budget) : undefined,
     [catalog],
   );
 
@@ -3470,8 +3838,10 @@ export function HubModelPicker({
     [catalogSeedRows],
   );
 
-  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "recommended" sort
-  // also drops models too big for the device. Downloaded models stay visible.
+  // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "Fits on device"
+  // tick also drops models too big for the device. Downloaded models stay visible.
+  const hubRowAllowed = (r: HfModelResult) =>
+    !rowFilter || rowFilter({ id: r.id, task: r.pipelineTag });
   const recommendedRows = useMemo(() => {
     const catalogSeedIds = new Set(
       catalogSeedRows.map((row) => row.id.toLowerCase()),
@@ -3480,6 +3850,7 @@ export function HubModelPicker({
       const isCatalogSeed = catalogSeedIds.has(r.id.toLowerCase());
       return (
         !isMobileVariant(r.id) &&
+        hubRowAllowed(r) &&
         taskPickerRowMatches({
           isCatalogSeed,
           isHidden: isHiddenModelId(r.id),
@@ -3502,18 +3873,17 @@ export function HubModelPicker({
     const keepCommunity = (r: HfModelResult) =>
       keepCommon(r) && isTaskRuntimeSupported(r);
     // Members are not filtered here (see recommendedIds): that dropped them from Hub search too.
-    // "recommended" always device-filters; the "Fits on device" tick extends it to other sorts.
-    const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
+    const deviceFiltered = fitOnDeviceOnly;
     const taskScoped = Boolean(task);
     const rowGpu = loadScopedGpu(gpu, taskScoped);
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
     const pipelineBudget = artifactBudget(rowGpu);
     const fits = (r: HfModelResult) =>
       // Downloaded models show regardless of fit.
-      downloadedSet.has(r.id.toLowerCase()) ||
+      cachedIdFor(r.id) !== null ||
       // The catalog's own verdict where it has one, so this list and the OOM badge cannot disagree:
       // hfModelFitsDevice counts RAM toward a load that never leaves the card.
-      (catalogFit(r.id, pipelineBudget) ??
+      (catalogFit(r.id, pipelineBudget)?.fits ??
         hfModelFitsDevice(r, diffusionLoad || !r.isGguf ? rowGpu : rowInferenceGpu, {
           budgetFraction,
           // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
@@ -3529,11 +3899,24 @@ export function HubModelPicker({
       keep,
       deviceFiltered,
       fits,
+      // Curated families follow the dropdown's sort, not catalog order.
+      familyOf: catalog
+        ? (id) => groupForRepoId(id, catalog)?.canonicalId.toLowerCase()
+        : undefined,
+      pinnedFamilies: catalog
+        ?.filter((g) => g.pinToTop)
+        .map((g) => g.canonicalId.toLowerCase()),
     });
     if (!communityRecommendedEnabled) return unslothRows;
     // Appended below everything unsloth publishes, so scrolling past the unsloth uploads continues
     // into the wider Hub. Same keep/fits gates.
     const above = new Set(unslothRows.map((r) => r.id.toLowerCase()));
+    // A vendor repo whose unsloth mirror is listed above is the same files.
+    for (const r of unslothRows) {
+      const upstream =
+        catalog && artifactForRepoId(r.id, catalog)?.artifact.upstreamRepoId;
+      if (upstream) above.add(upstream.toLowerCase());
+    }
     const communityRows = communityBrowse.results
       .filter((r) => !r.id.toLowerCase().startsWith("unsloth/"))
       .filter((r) => isLoadableCommunityRepo(r.id))
@@ -3542,12 +3925,12 @@ export function HubModelPicker({
       .filter((r) => !deviceFiltered || fits(r));
     return [...unslothRows, ...communityRows];
   }, [
+    rowFilter,
     budgetFraction,
     diffusionLoad,
     recommendedSearch.results,
     catalogSeedRows,
-    downloadedSet,
-    recommendedSort,
+    cachedIdFor,
     fitOnDeviceOnly,
     formatFilter,
     isMac,
@@ -3574,6 +3957,7 @@ export function HubModelPicker({
         /** GGUF rows carry the classifier's own verdict; curated torch rows carry "exceeds". */
         status: GgufFitClass | VramFitStatus | null;
         est: number;
+        budget?: CuratedBudget;
       }
     >();
     /** Size-based verdict for a row whose real footprint we know, against the budget that row
@@ -3676,18 +4060,14 @@ export function HubModelPicker({
         });
         continue;
       }
-      // A curated pipeline is judged by the catalog, which knows its resident size; the QLoRA
-      // estimator reads a diffusion pipeline as a language model it can 4-bit quantize (Wan 2.2
-      // TI2V is 30 GB, where 5B params says 5.9).
-      const curatedFits = catalogFit(r.id, pipelineBudget);
-      if (curatedFits !== undefined) {
-        const curatedBytes = catalog
-          ? (r.curatedSizeBytes ?? curatedSizeBytesFor(r.id, catalog))
-          : undefined;
+      // Use the catalog's fit estimate for both the verdict and badge, not the LLM estimator.
+      const curatedFit = catalogFit(r.id, pipelineBudget);
+      if (curatedFit !== undefined) {
         map.set(r.id, {
           meta,
-          status: curatedFits ? null : "exceeds",
-          est: curatedBytes ? Math.round(curatedBytes / 1024 ** 3) : 0,
+          status: curatedFit.fits ? null : "exceeds",
+          est: curatedFit.sizeGb ? Math.round(curatedFit.sizeGb) : 0,
+          budget: curatedBudget(curatedFit),
         });
         continue;
       }
@@ -3742,6 +4122,7 @@ export function HubModelPicker({
         tags?: string[];
         libraryName?: string | null;
         audioType?: string | null;
+        taskFromGgufArch?: boolean;
       }
     >();
     for (const r of [
@@ -3776,15 +4157,18 @@ export function HubModelPicker({
       });
     }
     for (const c of cachedGguf) {
+      // Only the audio runtime's header classifier tags a GGUF text-to-audio, so it is runnable.
+      const taskFromGgufArch = c.task === "text-to-audio" ? true : undefined;
       const existing = map.get(c.repo_id);
       if (existing) {
         map.set(c.repo_id, {
           ...existing,
           audioType: existing.audioType ?? c.audio_type,
+          taskFromGgufArch,
         });
         continue;
       }
-      map.set(c.repo_id, { audioType: c.audio_type });
+      map.set(c.repo_id, { audioType: c.audio_type, taskFromGgufArch });
     }
     return map;
   }, [
@@ -3873,7 +4257,14 @@ export function HubModelPicker({
               // The task and codec both came from GGUF classification; codec provenance separates runnable
               // Orpheus from unsupported CSM.
               taskFromGgufArch: true,
-            }),
+            }) &&
+            (!rowFilter ||
+              rowFilter({
+                id: c.repo_id,
+                task: c.task,
+                audioType: c.audio_type,
+                audioWorkflows: c.audio_workflows,
+              })),
         ),
         downloadedSort,
         loadTimes,
@@ -3885,6 +4276,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
   // Cached non-GGUF repos. In chat, passesTaskGate drops diffusers image repos; the Images
@@ -3904,6 +4296,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              c,
             ) &&
             // Diffusion pickers: unsloth repos plus any repo the backend can LOAD. Gate on a curated
             // ARTIFACT, not a group-key match: a base sibling matches by key but dead-ends at the trust
@@ -3936,7 +4329,16 @@ export function HubModelPicker({
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
-                : false)),
+                : false) ||
+              // A pinned snapshot admitted only by an explicit family.
+              (c.opaque === true && Boolean(c.load_id?.trim()) && c.load_id?.trim() !== c.repo_id.trim())) &&
+            (!rowFilter ||
+              rowFilter({
+                id: c.repo_id,
+                task: c.task,
+                audioType: c.audio_type,
+                audioWorkflows: c.audio_workflows,
+              })),
         ),
         downloadedSort,
         loadTimes,
@@ -3949,6 +4351,7 @@ export function HubModelPicker({
       catalog,
       activeCatalogArtifactIds,
       isMac,
+      rowFilter,
     ],
   );
   // Task-scoped loads put the whole pipeline on ONE device, so quant fit uses the device the
@@ -4002,9 +4405,19 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
+            matchesLocalQuery(m) &&
+            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
+            // and LM Studio rows too, not just the cached Hub rows above.
+            (!rowFilter ||
+              rowFilter({
+                id: m.model_id ?? m.id,
+                task: m.task,
+                audioType: m.audio_type,
+                audioWorkflows: m.audio_workflows,
+              })),
         ),
         downloadedSort,
         loadTimes,
@@ -4019,6 +4432,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF anywhere and MLX on Mac, so raw
@@ -4048,13 +4462,23 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             (!chatOnly ||
               Boolean(task) ||
               localModelIsGguf(m) ||
               (isMac && localModelIsMlx(m))) &&
             localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
+            matchesLocalQuery(m) &&
+            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
+            // and LM Studio rows too, not just the cached Hub rows above.
+            (!rowFilter ||
+              rowFilter({
+                id: m.model_id ?? m.id,
+                task: m.task,
+                audioType: m.audio_type,
+                audioWorkflows: m.audio_workflows,
+              })),
         ),
         downloadedSort,
         loadTimes,
@@ -4071,6 +4495,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -4097,9 +4522,19 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
+            matchesLocalQuery(m) &&
+            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
+            // and LM Studio rows too, not just the cached Hub rows above.
+            (!rowFilter ||
+              rowFilter({
+                id: m.model_id ?? m.id,
+                task: m.task,
+                audioType: m.audio_type,
+                audioWorkflows: m.audio_workflows,
+              })),
         ),
         customSort,
         loadTimes,
@@ -4114,6 +4549,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
 
@@ -4183,7 +4619,7 @@ export function HubModelPicker({
         ) {
           // Loading it here would evict the chat model for a repo neither surface can run.
           toast.error(
-            `${id} is not a speech model Unsloth can run yet. The Audio page lists the families it supports.`,
+            `${id} is not an audio model Unsloth can run yet. The Audio page lists the families it supports.`,
             { duration: 7000 },
           );
           return;
@@ -4191,21 +4627,10 @@ export function HubModelPicker({
         if (page) {
           void navigateToPage({
             to: `/${page}`,
-            // `quant` is used verbatim as the gguf filename, so a label like "Q4_K_M" rides ggufQuant
-            // instead; dropping it made every non-curated GGUF repo arrive as a bare repo id.
+            // pickedTask, not meta.pipelineTag: a cached row carries no tag to forward.
             search:
               page === "audio"
-                ? {
-                    model: id,
-                    quant: meta.ggufFilename ?? undefined,
-                    ggufQuant: meta.ggufFilename
-                      ? undefined
-                      : (meta.ggufVariant ?? undefined),
-                    // pickedTask, not meta.pipelineTag: a cached row carries no tag to forward.
-                    task: pickedTask ?? undefined,
-                    audioType: meta.audioType ?? undefined,
-                    loadId: meta.loadId ?? undefined,
-                  }
+                ? audioPickSearch(id, { ...meta, task: pickedTask })
                 : diffusionRouteSearch(id, meta),
           });
           return;
@@ -4297,7 +4722,7 @@ export function HubModelPicker({
         matchesFormatFilter(model.id, model.isGguf === true, formatFilter) &&
         (!needle ||
           normalizeForSearch(
-            `${model.id} ${model.name} ${model.description ?? ""}`,
+            `${model.id} ${model.name} ${model.description ?? ""} ${model.descriptionSuffix ?? ""}`,
           ).includes(needle))
       );
     });
@@ -4319,6 +4744,23 @@ export function HubModelPicker({
     formatFilter,
     loadTimes,
   ]);
+  const npuModels = npuCatalog?.models ?? null;
+  const npuListed =
+    npuCatalog !== null && (formatFilter === "all" || formatFilter === "npu");
+  const npuOnDeviceRows = useMemo(
+    () =>
+      npuListed
+        ? npuRowsFor(npuModels, { onDevice: true, query: debouncedQuery })
+        : [],
+    [npuListed, npuModels, debouncedQuery],
+  );
+  const npuBrowseRows = useMemo(
+    () =>
+      npuListed
+        ? npuRowsFor(npuModels, { onDevice: false, query: debouncedQuery })
+        : [],
+    [npuListed, npuModels, debouncedQuery],
+  );
   const unslothAdditionalOnDeviceModels = useMemo(
     () =>
       visibleAdditionalOnDeviceModels.filter((model) =>
@@ -4353,20 +4795,6 @@ export function HubModelPicker({
   const togglePinnedConnected = usePinnedConnectedModelsStore(
     (s) => s.togglePinnedConnected,
   );
-  const movePinnedConnected = usePinnedConnectedModelsStore(
-    (s) => s.movePinnedConnected,
-  );
-  const beginPinnedConnectedDrag = usePinnedConnectedModelsStore(
-    (s) => s.beginPinnedConnectedDrag,
-  );
-  const endPinnedConnectedDrag = usePinnedConnectedModelsStore(
-    (s) => s.endPinnedConnectedDrag,
-  );
-  // The id under the cursor mid-drag. A ref, not state: dragenter fires on every row crossed.
-  const draggingPinnedConnectedRef = useRef<string | null>(null);
-  const [draggingPinnedConnectedId, setDraggingPinnedConnectedId] = useState<
-    string | null
-  >(null);
   const pinnedConnectedSet = useMemo(
     () => new Set(pinnedConnectedIds),
     [pinnedConnectedIds],
@@ -4378,6 +4806,13 @@ export function HubModelPicker({
     () =>
       new Map(
         externalProviders.map((provider) => [provider.id, provider.baseUrl]),
+      ),
+    [externalProviders],
+  );
+  const externalApiTypeById = useMemo(
+    () =>
+      new Map(
+        externalProviders.map((provider) => [provider.id, provider.apiType]),
       ),
     [externalProviders],
   );
@@ -4401,6 +4836,18 @@ export function HubModelPicker({
         externalProviders.map((provider) => [
           provider.id,
           provider.isReasoningModel === true,
+        ]),
+      ),
+    [externalProviders],
+  );
+  const externalReasoningConfigById = useMemo(
+    () =>
+      new Map(
+        externalProviders.map((provider) => [
+          provider.id,
+          provider.backendProviderType === "custom" && !provider.decisionsOnly
+            ? provider.reasoningConfig
+            : undefined,
         ]),
       ),
     [externalProviders],
@@ -4431,14 +4878,18 @@ export function HubModelPicker({
   const [infoModel, setInfoModel] = useState<{
     model: ExternalModelOption;
     providerModelId: string;
+    apiType?: ProviderApiType;
     baseUrl: string | null;
     isReasoningProvider: boolean;
+    reasoningConfig?: CustomReasoningConfig;
   } | null>(null);
   const [settingsModel, setSettingsModel] = useState<{
     model: ExternalModelOption;
     providerModelId: string;
+    apiType?: ProviderApiType;
     baseUrl: string | null;
     isReasoningProvider: boolean;
+    reasoningConfig?: CustomReasoningConfig;
     connectionMaxOutputTokens: number | null;
   } | null>(null);
 
@@ -4468,14 +4919,22 @@ export function HubModelPicker({
   }, [pinnedIds, sortedCachedGguf, formatFilter]);
   const [pinnedQuantValidation, setPinnedQuantValidation] = useState<{
     validated: boolean;
-    downloaded: ReadonlySet<string>;
-  }>({ validated: false, downloaded: new Set() });
+    /** Verified downloads by pin key; the value is the copy the listing resolved them in. */
+    downloaded: ReadonlyMap<string, string | null>;
+    visionByRepo: ReadonlyMap<string, boolean>;
+    sizes: ReadonlyMap<string, number>;
+  }>({
+    validated: false,
+    downloaded: new Map(),
+    visionByRepo: new Map(),
+    sizes: new Map(),
+  });
   const prunePinnedQuantValidation = useCallback(
     (repoId: string, quant: string) => {
       const key = pinKey(repoId, quant);
       setPinnedQuantValidation((prev) => {
         if (!prev.downloaded.has(key)) return prev;
-        const downloaded = new Set(prev.downloaded);
+        const downloaded = new Map(prev.downloaded);
         downloaded.delete(key);
         return { ...prev, downloaded };
       });
@@ -4496,22 +4955,47 @@ export function HubModelPicker({
           const response = await listGgufVariantsCached(
             repoId,
             hfToken || undefined,
-            { preferLocalCache: true },
+            { preferLocalCache: true, includeCacheLocations: !mediaPageForTask(
+              sortedCachedGguf.find((row) => row.repo_id === repoId)?.task,
+            ) },
           );
-          return normalizeGgufVariantsResponse(response)
-            .variants.filter((variant) => variant.downloaded === true)
-            .map((variant) => pinKey(repoId, variant.quant));
+          const normalized = normalizeGgufVariantsResponse(response);
+          const downloaded = normalized.variants.filter(
+            (variant) => variant.downloaded === true,
+          );
+          return {
+            repoId,
+            hasVision: normalized.hasVision,
+            downloaded: downloaded.map(
+              (variant): [string, string | null] => [
+                pinKey(repoId, variant.quant),
+                variant.cache_ref ?? variant.cache_path ?? null,
+              ],
+            ),
+            sizes: downloaded.map(
+              (variant) =>
+                [pinKey(repoId, variant.quant), variant.size_bytes] as const,
+            ),
+          };
         } catch {
           // If the backend cannot verify a quant, hiding the direct-load row is safer than claiming a
           // missing file is downloaded.
-          return [];
+          return { repoId, hasVision: undefined, downloaded: [], sizes: [] };
         }
       }),
     ).then((groups) => {
       if (!cancelled) {
         setPinnedQuantValidation({
           validated: true,
-          downloaded: new Set(groups.flat()),
+          downloaded: new Map(groups.flatMap((group) => group.downloaded)),
+          visionByRepo: new Map(
+            groups.flatMap((group) =>
+              group.hasVision === undefined
+                ? []
+                : [[group.repoId, group.hasVision] as const],
+            ),
+          ),
+          sizes: new Map(groups.flatMap((group) => group.sizes)),
         });
       }
     });
@@ -4519,12 +5003,12 @@ export function HubModelPicker({
     return () => {
       cancelled = true;
     };
-  }, [hfToken, pinnedQuantCandidates]);
-  const downloadedPinnedQuantKeys = useMemo<ReadonlySet<string>>(
+  }, [hfToken, pinnedQuantCandidates, sortedCachedGguf]);
+  const downloadedPinnedQuantPaths = useMemo<ReadonlyMap<string, string | null>>(
     () =>
       pinnedQuantValidation.validated
         ? pinnedQuantValidation.downloaded
-        : new Set(),
+        : new Map(),
     [pinnedQuantValidation],
   );
 
@@ -4533,16 +5017,26 @@ export function HubModelPicker({
     const q = normalizeForSearch(debouncedQuery.trim());
     return pinnedQuantCandidates.filter(
       (entry) =>
-        downloadedPinnedQuantKeys.has(pinKey(entry.repoId, entry.quant)) &&
+        downloadedPinnedQuantPaths.has(pinKey(entry.repoId, entry.quant)) &&
         (!q ||
           normalizeForSearch(`${entry.repoId} ${entry.quant}`).includes(q)),
     );
-  }, [debouncedQuery, downloadedPinnedQuantKeys, pinnedQuantCandidates]);
+  }, [debouncedQuery, downloadedPinnedQuantPaths, pinnedQuantCandidates]);
 
   const pinnedCachedModelRows = useMemo(
     () =>
       visibleCachedModelRows.filter((c) => pinnedSet.has(pinKey(c.repo_id))),
     [visibleCachedModelRows, pinnedSet],
+  );
+
+  // Pinned fine-tunes leave the Fine-tuned section; both hide under a task filter.
+  const pinnedFineTunedRows = useMemo(
+    () => (task ? [] : fineTunedRows.filter((m) => pinnedSet.has(pinKey(m.id)))),
+    [task, fineTunedRows, pinnedSet],
+  );
+  const unpinnedFineTunedRows = useMemo(
+    () => fineTunedRows.filter((m) => !pinnedSet.has(pinKey(m.id))),
+    [fineTunedRows, pinnedSet],
   );
 
   const pinnedRows = useMemo(() => {
@@ -4552,43 +5046,93 @@ export function HubModelPicker({
         key: pinKey(entry.repoId, entry.quant),
         entry,
         model: null,
+        fineTuned: null,
       })),
       ...pinnedCachedModelRows.map((model) => ({
         key: pinKey(model.repo_id),
         entry: null,
         model,
+        fineTuned: null,
+      })),
+      ...pinnedFineTunedRows.map((fineTuned) => ({
+        key: pinKey(fineTuned.id),
+        entry: null,
+        model: null,
+        fineTuned,
       })),
     ];
     rows.sort((a, b) => rank(a.key) - rank(b.key));
     return rows;
-  }, [pinnedIds, pinnedQuants, pinnedCachedModelRows]);
+  }, [pinnedIds, pinnedQuants, pinnedCachedModelRows, pinnedFineTunedRows]);
+
+  // A repo whose only quant is pinned moves its sole-quant row into Pinned instead of showing
+  // twice. Multi-quant repos stay, since their row picks the other quants.
+  const pinnedSoleQuantRows = useMemo(() => {
+    const rows = new Map<
+      string,
+      { repo: (typeof sortedCachedGguf)[number]; sole: SoleDownloadedQuant }
+    >();
+    for (const entry of pinnedQuants) {
+      const sole = soleQuants.quants.get(entry.repoId);
+      const repo = sortedCachedGguf.find((c) => c.repo_id === entry.repoId);
+      if (sole && repo && sole.variant.quant === entry.quant) {
+        rows.set(pinKey(entry.repoId, entry.quant), { repo, sole });
+      }
+    }
+    return rows;
+  }, [pinnedQuants, soleQuants.quants, sortedCachedGguf]);
+  const pinnedSoleQuantRepoIds = useMemo(
+    () => new Set([...pinnedSoleQuantRows.values()].map(({ repo }) => repo.repo_id)),
+    [pinnedSoleQuantRows],
+  );
 
   // Split downloaded models so non-Unsloth repos get their own "Other models" section above Fine-tuned.
+  // Kept-loaded models first: a stable partition, so the splits below keep that order.
+  const [keptFirstCachedGguf, keptFirstCachedModelRows] = useMemo(() => {
+    const first = <T extends { repo_id: string }>(rows: T[]): T[] =>
+      loadedIdSet.size === 0
+        ? rows
+        : [
+            ...rows.filter((r) => loadedIdSet.has(r.repo_id.toLowerCase())),
+            ...rows.filter((r) => !loadedIdSet.has(r.repo_id.toLowerCase())),
+          ];
+    return [first(visibleCachedGguf), first(visibleCachedModelRows)] as const;
+  }, [visibleCachedGguf, visibleCachedModelRows, loadedIdSet]);
   const unslothCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => isUnslothPublisherRepoId(c.repo_id)),
-    [visibleCachedGguf],
+    () =>
+      keptFirstCachedGguf.filter(
+        (c) =>
+          isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSoleQuantRepoIds.has(c.repo_id),
+      ),
+    [keptFirstCachedGguf, pinnedSoleQuantRepoIds],
   );
   const otherCachedGguf = useMemo(
-    () => visibleCachedGguf.filter((c) => !isUnslothPublisherRepoId(c.repo_id)),
-    [visibleCachedGguf],
+    () =>
+      keptFirstCachedGguf.filter(
+        (c) =>
+          !isUnslothPublisherRepoId(c.repo_id) &&
+          !pinnedSoleQuantRepoIds.has(c.repo_id),
+      ),
+    [keptFirstCachedGguf, pinnedSoleQuantRepoIds],
   );
   const unslothCachedModelRows = useMemo(
     () =>
-      visibleCachedModelRows.filter(
+      keptFirstCachedModelRows.filter(
         (c) =>
           isUnslothPublisherRepoId(c.repo_id) &&
           !pinnedSet.has(pinKey(c.repo_id)),
       ),
-    [visibleCachedModelRows, pinnedSet],
+    [keptFirstCachedModelRows, pinnedSet],
   );
   const otherCachedModelRows = useMemo(
     () =>
-      visibleCachedModelRows.filter(
+      keptFirstCachedModelRows.filter(
         (c) =>
           !isUnslothPublisherRepoId(c.repo_id) &&
           !pinnedSet.has(pinKey(c.repo_id)),
       ),
-    [visibleCachedModelRows, pinnedSet],
+    [keptFirstCachedModelRows, pinnedSet],
   );
 
   // Param counts come straight off the unsloth listings the picker already loaded, so the VRAM
@@ -4609,7 +5153,7 @@ export function HubModelPicker({
       estimatedSizeBytes?: number;
       curatedSizeBytes?: number;
     }) =>
-      catalogFit(row.id, artifactBudget(loadScopedGpu(gpu, Boolean(task)))) ??
+      catalogFit(row.id, artifactBudget(loadScopedGpu(gpu, Boolean(task))))?.fits ??
       searchRowFitsDevice(
         {
           ...row,
@@ -4655,7 +5199,10 @@ export function HubModelPicker({
       // Seeds included: recommendedIds hides downloaded models, which the unfiltered Recommended
       // list still paints, so without them a curated pick vanishes from search once on disk.
       searchableRecommendedIds(catalogSeedIds, recommendedIds)
-        .filter((id) => normalizeForSearch(id).includes(q))
+        // A mirror row also answers to its vendor id.
+        .filter((id) =>
+          aliasesOf(id).some((alias) => normalizeForSearch(alias).includes(q)),
+        )
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
         )
@@ -4664,7 +5211,7 @@ export function HubModelPicker({
         .filter(
           (id) =>
             !fitOnDeviceOnly ||
-            downloadedSet.has(id.toLowerCase()) ||
+            cachedIdFor(id) !== null ||
             searchRowFits({ id }),
         )
     );
@@ -4673,16 +5220,21 @@ export function HubModelPicker({
     debouncedQuery,
     catalogSeedIds,
     recommendedIds,
+    aliasesOf,
     formatFilter,
     isKnownGgufRepo,
     fitOnDeviceOnly,
-    downloadedSet,
+    cachedIdFor,
     searchRowFits,
   ]);
 
+  // Aliases included, so a vendor hit whose mirror row is listed is not shown twice.
   const recommendedSet = useMemo(
-    () => new Set(filteredRecommendedIds),
-    [filteredRecommendedIds],
+    () =>
+      new Set(
+        filteredRecommendedIds.flatMap(aliasesOf).map((id) => id.toLowerCase()),
+      ),
+    [filteredRecommendedIds, aliasesOf],
   );
 
   // One pipeline for both listings, so community rows clear the same gates; `owned` is the only difference.
@@ -4691,10 +5243,11 @@ export function HubModelPicker({
       rows
         .filter(isChatSupported)
         .filter(isTaskRuntimeSupported)
+        .filter((r) => !rowFilter || rowFilter({ id: r.id, task: r.pipelineTag }))
         .filter(
           (r) =>
             !fitOnDeviceOnly ||
-            downloadedSet.has(r.id.toLowerCase()) ||
+            cachedIdFor(r.id) !== null ||
             searchRowFits(r),
         )
         .map((result) => result.id)
@@ -4703,7 +5256,7 @@ export function HubModelPicker({
         // Search reaches the live Hub, so without this a query re-lands the exact curated row the seed
         // and Recommended filters just dropped, clickable and still refused at load.
         .filter(curatedOfferable)
-        .filter((id) => !recommendedSet.has(id))
+        .filter((id) => !recommendedSet.has(id.toLowerCase()))
         // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors on Mac, matching the
         // empty Recommended view.
         .filter(
@@ -4722,10 +5275,11 @@ export function HubModelPicker({
       isTaskRuntimeSupported,
       formatFilter,
       fitOnDeviceOnly,
-      downloadedSet,
+      cachedIdFor,
       searchRowFits,
       isMac,
       curatedOfferable,
+      rowFilter,
     ],
   );
 
@@ -4786,6 +5340,7 @@ export function HubModelPicker({
         providerType: model.providerType,
         modelId: parseExternalModelId(model.id)?.modelId ?? model.name,
         baseUrl: externalBaseUrlById.get(model.providerId) ?? null,
+        apiType: externalApiTypeById.get(model.providerId),
       });
       return connectedModality === "vision"
         ? marks.vision
@@ -4800,6 +5355,7 @@ export function HubModelPicker({
     debouncedQuery,
     connectedModality,
     externalBaseUrlById,
+    externalApiTypeById,
     catalogVersion,
   ]);
 
@@ -4810,6 +5366,33 @@ export function HubModelPicker({
       .filter((model) => pinnedConnectedSet.has(model.id))
       .sort((a, b) => rank(a.id) - rank(b.id));
   }, [connectedMatches, pinnedConnectedIds, pinnedConnectedSet]);
+
+  // Drag to reorder both Pinned groups. Drops go through the stores' drag session so they
+  // persist once.
+  const pinnedDrag = usePinnedRowDrag({
+    scope: "on-device",
+    order: () => pinnedRows.map((row) => row.key),
+    onDrop: (fromKey, drop) => {
+      const store = usePinnedModelsStore.getState();
+      const anchor = pinDropAnchor(store.pinned, fromKey, drop.key, drop.edge);
+      if (!anchor) return;
+      store.beginPinnedDrag();
+      store.movePinned(fromKey, anchor);
+      store.endPinnedDrag(true);
+    },
+  });
+  const pinnedConnectedDrag = usePinnedRowDrag({
+    scope: "connected",
+    order: () => pinnedConnectedRows.map((model) => model.id),
+    onDrop: (fromId, drop) => {
+      const store = usePinnedConnectedModelsStore.getState();
+      const anchor = pinDropAnchor(store.pinned, fromId, drop.key, drop.edge);
+      if (!anchor) return;
+      store.beginPinnedConnectedDrag();
+      store.movePinnedConnected(fromId, anchor);
+      store.endPinnedConnectedDrag(true);
+    },
+  });
 
   const connectedGroups = useMemo(() => {
     const byProvider = new Map<
@@ -4856,7 +5439,9 @@ export function HubModelPicker({
     ];
   }, [connectedMatches, pinnedConnectedSet, connectedSort]);
   const hubOptionKeys = useMemo(() => {
-    const keys: string[] = [];
+    const keys: string[] = loadedRows.map((m) =>
+      makeModelOptionKey("loaded", m.checkpoint ?? m.id),
+    );
 
     // The tab lists nothing else, so these are the whole roving order, in drawn order.
     if (section === "connected") {
@@ -4878,18 +5463,18 @@ export function HubModelPicker({
       return keys;
     }
 
-    // Pinned rows sit above the Unsloth heading on the On Device tab.
-    if (
-      section === "downloaded" &&
-      cachedReady &&
-      !pinnedCollapsed &&
-      pinnedRows.length > 0
-    ) {
+    // Pinned rows sit above the Unsloth heading on the On Device tab. They render before the
+    // cache scan settles, so their keys do not wait for it either.
+    if (section === "downloaded" && !pinnedCollapsed && pinnedRows.length > 0) {
       keys.push(
         ...pinnedRows.map((row) =>
           row.entry
-            ? makeModelOptionKey("pinned-quant", row.key)
-            : makeModelOptionKey("downloaded-model", row.model.repo_id),
+            ? pinnedSoleQuantRows.has(row.key)
+              ? makeModelOptionKey("downloaded-gguf", row.entry.repoId)
+              : makeModelOptionKey("pinned-quant", row.key)
+            : row.model
+              ? makeModelOptionKey("downloaded-model", row.model.repo_id)
+              : makeModelOptionKey("lora", row.fineTuned.id),
         ),
       );
     }
@@ -4961,7 +5546,9 @@ export function HubModelPicker({
 
     // Fine-tuned models sit below downloaded, above custom folders.
     if (section === "downloaded" && !fineTunedCollapsed) {
-      keys.push(...fineTunedRows.map((m) => makeModelOptionKey("lora", m.id)));
+      keys.push(
+        ...unpinnedFineTunedRows.map((m) => makeModelOptionKey("lora", m.id)),
+      );
     }
 
     // Custom folders sit right below the downloaded models on On Device.
@@ -4991,12 +5578,16 @@ export function HubModelPicker({
 
     if (section === "recommended") {
       keys.push(
-        ...recommendedRows.map((r) => makeModelOptionKey("recommended", r.id)),
+        ...recommendedRows
+          .filter((r) => !loadedRowIds.has(r.id.toLowerCase()))
+          .map((r) => makeModelOptionKey("recommended", r.id)),
       );
     }
 
     return keys;
   }, [
+    loadedRows,
+    loadedRowIds,
     cachedReady,
     chatOnly,
     sortedCustomFolderModels,
@@ -5007,8 +5598,9 @@ export function HubModelPicker({
     collapsedConnectedGroups,
     pinnedRows,
     pinnedCollapsed,
+    pinnedSoleQuantRows,
     downloadedCollapsed,
-    fineTunedRows,
+    unpinnedFineTunedRows,
     fineTunedCollapsed,
     filteredRecommendedIds,
     searchRowIds,
@@ -5079,7 +5671,12 @@ export function HubModelPicker({
   const recommendedVramMap = useMemo(() => {
     const map = new Map<
       string,
-      { est: number; status: VramFitStatus | null; detail: string | null }
+      {
+        est: number;
+        status: VramFitStatus | null;
+        detail: string | null;
+        budget?: CuratedBudget;
+      }
     >();
     const pipelineBudget = artifactBudget(loadScopedGpu(gpu, Boolean(task)));
     for (const id of filteredRecommendedIds) {
@@ -5088,16 +5685,16 @@ export function HubModelPicker({
       const totalParams = recommendedParamCountById.get(id) ?? paramsFromId(id);
       // Same verdict the unfiltered list gives this row: searching for a model must not change what
       // it says about the device.
-      const curatedFits = catalogFit(id, pipelineBudget);
-      if (catalog && curatedFits !== undefined) {
-        const curatedBytes = curatedSizeBytesFor(id, catalog);
+      const curatedFit = catalogFit(id, pipelineBudget);
+      if (catalog && curatedFit !== undefined) {
         // The catalog is the only source of a count for a curated repo the listing never returns and
         // whose id spells no "<n>B".
         const params = totalParams ?? curatedTotalParamsFor(id, catalog);
         map.set(id, {
-          est: curatedBytes ? Math.round(curatedBytes / 1024 ** 3) : 0,
-          status: curatedFits ? null : "exceeds",
+          est: curatedFit.sizeGb ? Math.round(curatedFit.sizeGb) : 0,
+          status: curatedFit.fits ? null : "exceeds",
           detail: params ? formatCompact(params) : null,
+          budget: curatedBudget(curatedFit),
         });
         continue;
       }
@@ -5224,16 +5821,17 @@ export function HubModelPicker({
       if (isKnownGgufRepo(id)) {
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
-        // Cached repos load now; uncached ones download via the Hub manager.
-        onSelect(id, {
+        // Cached repos load now (a cached vendor copy stands in for its mirror); others download.
+        const cached = cachedIdFor(id);
+        onSelect(cached ?? id, {
           source: "hub",
           isLora: false,
-          isDownloaded: downloadedSet.has(id.toLowerCase()),
+          isDownloaded: cached !== null,
           pipelineTag: pipelineTagById.get(id) ?? null,
         });
       }
     },
-    [onSelect, isKnownGgufRepo, downloadedSet, pipelineTagById],
+    [onSelect, isKnownGgufRepo, cachedIdFor, pipelineTagById],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab searches the HF
@@ -5241,20 +5839,31 @@ export function HubModelPicker({
   const showDownloaded = section === "downloaded";
   const showCustom = section === "downloaded";
   const showRecommendedSection = !showHfSection && section === "recommended";
+  const recommendedEmpty = recommendedEmptyState({
+    isLoading: recommendedSearch.isLoading,
+    error: recommendedSearch.error,
+    hubPhase,
+  });
+  const searchEmpty = recommendedEmptyState({
+    isLoading,
+    error: searchError,
+    hubPhase,
+  });
   const downloadedEmpty =
     pinnedRows.length === 0 &&
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
     visibleAdditionalOnDeviceModels.length === 0 &&
+    npuOnDeviceRows.length === 0 &&
     sortedLmStudio.length === 0 &&
     sortedLocalDir.length === 0 &&
     // Fine-tuned models are on-device too: do not show the empty state above a non-empty Fine-tuned section.
-    fineTunedRows.length === 0;
+    unpinnedFineTunedRows.length === 0;
 
   // Sort dropdown inline right of the section toggle; options depend on the tab and stay visible
   // while searching. Fixed width matches the Search Hub button.
   const sortTriggerClassName =
-    "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
+    "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
@@ -5270,11 +5879,13 @@ export function HubModelPicker({
           onClick={() => setFitOnDeviceOnly(!fitOnDeviceOnly)}
           className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
+          {/* --input is a hairline tuned for the page; on the menu surface this
+              14px control needs an outline you can actually find. */}
           <Checkbox
             checked={fitOnDeviceOnly}
             tabIndex={-1}
             aria-hidden={true}
-            className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
+            className="pointer-events-none size-3.5 rounded-full border-muted-foreground/70 [&_svg]:!size-2.5"
           />
           Only show models that fit
         </button>
@@ -5290,7 +5901,7 @@ export function HubModelPicker({
       <HugeiconsIcon
         icon={ArrowUpDownIcon}
         strokeWidth={1.75}
-        className="size-3.5 shrink-0 text-muted-foreground"
+        className="size-3.5 shrink-0 text-foreground"
       />
       <span className="truncate">{label}</span>
     </span>
@@ -5343,6 +5954,9 @@ export function HubModelPicker({
     );
 
   const showConnected = section === "connected";
+  const severalLoaded = loadedModels.length > 1;
+  const ejectsAll = Boolean(onEjectAll) && severalLoaded;
+  const ejectsKept = Boolean(onEject) && severalLoaded;
   // The Connected layout uses a wider box, so it drops the search inset to keep Search Hub on the last dropdown's edge.
   const hasConnected = externalModels.length > 0;
   // The Other models section and its shortcut only show with non-Unsloth downloads.
@@ -5351,27 +5965,145 @@ export function HubModelPicker({
     otherCachedModelRows.length > 0 ||
     otherAdditionalOnDeviceModels.length > 0;
 
-  const downloadedRowButtonClassName =
-    "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
-  // Not focus-within: the dots menu returns focus to its trigger on close, so the row stayed lit
-  // after the pointer left. A row carrying a memory bar is two lines tall and the shell paints
-  // the background, so the radius relaxes with it or the row renders as a stadium.
-  const downloadedRowShellClassName = (
-    selected: boolean,
-    hasMemoryBar = false,
-  ) =>
-    cn(
-      "group flex items-center transition-colors hover:bg-sidebar-accent has-[:focus-visible]:bg-sidebar-accent has-[[data-state=open]]:bg-sidebar-accent",
-      hasMemoryBar ? "rounded-2xl" : "rounded-full",
-      selected && "bg-sidebar-accent",
+  const renderHubModelRow = (id: string, row: ReactNode) => {
+    if (!onConfigure) return row;
+    if (isKnownGgufRepo(id)) {
+      // Same slot, left empty: GGUF repos configure per quant, and their badges must line up with the rest.
+      return (
+        <div className={downloadedRowShellClassName(isValueRow(id))}>
+          <div className="min-w-0 flex-1">{row}</div>
+          <span className={ROW_ACTIONS_CLASS} aria-hidden={true} />
+        </div>
+      );
+    }
+    return (
+      <div className={downloadedRowShellClassName(isValueRow(id))}>
+        <div className="min-w-0 flex-1">{row}</div>
+        <span className={ROW_ACTIONS_CLASS}>
+          <ModelLoadSettingsAction
+            ariaLabel={`Inference settings for ${id}`}
+            onConfigure={() =>
+              onConfigure(cachedIdFor(id) ?? id, {
+                source: "hub",
+                isLora: false,
+                isGguf: false,
+                isDownloaded: cachedIdFor(id) !== null,
+                pipelineTag: pipelineTagById.get(id) ?? null,
+              })
+            }
+          />
+        </span>
+      </div>
     );
+  };
+
+  // A draggable Pinned row: faded while carried, lined where it would land.
+  const renderPinnedDragRow = (
+    drag: ReturnType<typeof usePinnedRowDrag>,
+    key: string,
+    row: ReactNode,
+  ) => {
+    const edge = drag.lineEdge(key);
+    return (
+      <div
+        key={key}
+        {...drag.rowProps(key)}
+        className={cn("relative", edge && [DROP_CUE_CLASS, PINNED_DROP_CUE[edge]])}
+        style={drag.draggingKey === key ? { opacity: 0.4 } : undefined}
+      >
+        {row}
+      </div>
+    );
+  };
+
+  const ejectMenuItems = (modelId: string) =>
+    ejectsKept && isKeptLoaded(modelId)
+      ? [
+          {
+            key: "eject",
+            label: "Eject",
+            icon: (
+              <HugeiconsIcon
+                icon={RemoveCircleIcon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+            ),
+            onSelect: () => onEject?.(modelId),
+          },
+        ]
+      : undefined;
+
+  const renderLoadedRow = (entry: (typeof loadedModels)[number]) => {
+    // Select, eject and key by the checkpoint: a local model is labelled by name but loaded by
+    // path, and two files can share a name.
+    const checkpoint = entry.checkpoint ?? entry.id;
+    const optionKey = makeModelOptionKey("loaded", checkpoint);
+    const isSelected = modelIdsMatchForPicker(value, checkpoint);
+    const quant = entry.quant ?? (isSelected ? activeGgufVariant : null);
+    return (
+      <div
+        key={optionKey}
+        className={downloadedRowShellClassName(isSelected)}
+      >
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={entry.id}
+            tooltipText={entry.id}
+            hideOwner={isUnslothOwned(entry.id)}
+            alignMeta="hub"
+            meta={quant ? "GGUF" : extractParamLabel(entry.id)}
+            tags={quant ? [ggufQuantChipLabel(quant)] : undefined}
+            selected={isSelected}
+            loaded={true}
+            optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+            onClick={() =>
+              onSelect(checkpoint, {
+                source: /^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(checkpoint) ? "local" : "hub",
+                isLora: false,
+                ggufVariant: quant ?? undefined,
+                isDownloaded: true,
+                isGguf: Boolean(quant),
+              })
+            }
+            vramStatus={null}
+            className={downloadedRowButtonClassName}
+          />
+        </div>
+        <span className={ROW_ACTIONS_CLASS}>
+          {ejectsKept ? (
+            <Tooltip delayDuration={0}>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEject?.(checkpoint);
+                  }}
+                  aria-label={`Eject ${entry.id}`}
+                  className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                >
+                  <HugeiconsIcon
+                    icon={RemoveCircleIcon}
+                    strokeWidth={1.75}
+                    className="size-3.5"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="tooltip-compact">
+                Eject
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+        </span>
+      </div>
+    );
+  };
 
   // One connected model, through ModelRow like every On Device row, so the badges and the hover
   // gutter are the same components rather than a second set that drifts.
   const renderConnectedModelRow = (
     model: ExternalModelOption,
-    // Only pinned rows drag: the groups below are sorted, so a drop there could not be honoured.
-    draggable = false,
     // No heading above this row to name its connection: the pinned group, and the flat list the
     // name sort produces. Two connections can serve one model id, so the row has to say.
     headless = false,
@@ -5388,6 +6120,7 @@ export function HubModelPicker({
       providerType: model.providerType,
       modelId: providerModelId,
       baseUrl,
+      apiType: externalApiTypeById.get(model.providerId),
     });
     return (
       <div
@@ -5397,61 +6130,6 @@ export function HubModelPicker({
         // it takes the pill's left edge leftward rather than moving the name off that label.
         // The reserved leading slot used to put 23.5px of empty pill in front of every name.
         className={cn(downloadedRowShellClassName(isSelected), "ml-4")}
-        style={
-          draggingPinnedConnectedId === model.id ? { opacity: 0.4 } : undefined
-        }
-        draggable={draggable}
-        onDragStart={
-          draggable
-            ? (event) => {
-                event.dataTransfer.effectAllowed = "move";
-                // Firefox will not start a drag without data.
-                event.dataTransfer.setData("text/plain", model.id);
-                draggingPinnedConnectedRef.current = model.id;
-                setDraggingPinnedConnectedId(model.id);
-                // Reordering is live on dragenter; this is what a cancelled drag rolls back to.
-                beginPinnedConnectedDrag();
-              }
-            : undefined
-        }
-        onDragEnd={
-          draggable
-            ? () => {
-                draggingPinnedConnectedRef.current = null;
-                setDraggingPinnedConnectedId(null);
-                // Escape, or a release off-row, reaches dragend without a drop. After a drop the
-                // session is already committed and cleared, so this is a no-op.
-                endPinnedConnectedDrag(false);
-              }
-            : undefined
-        }
-        onDragOver={
-          draggable
-            ? (event) => {
-                if (draggingPinnedConnectedRef.current) event.preventDefault();
-              }
-            : undefined
-        }
-        onDragEnter={
-          draggable
-            ? () => {
-                const dragId = draggingPinnedConnectedRef.current;
-                if (dragId && dragId !== model.id) {
-                  movePinnedConnected(dragId, model.id);
-                }
-              }
-            : undefined
-        }
-        onDrop={
-          draggable
-            ? (event) => {
-                event.preventDefault();
-                draggingPinnedConnectedRef.current = null;
-                setDraggingPinnedConnectedId(null);
-                endPinnedConnectedDrag(true);
-              }
-            : undefined
-        }
       >
         <div className="min-w-0 flex-1">
           <ModelRow
@@ -5492,9 +6170,11 @@ export function HubModelPicker({
               setSettingsModel({
                 model,
                 providerModelId,
+                apiType: externalApiTypeById.get(model.providerId),
                 baseUrl,
                 isReasoningProvider:
                   externalReasoningFlagById.get(model.providerId) === true,
+                reasoningConfig: externalReasoningConfigById.get(model.providerId),
                 connectionMaxOutputTokens:
                   externalMaxOutputById.get(model.providerId) ?? null,
               })
@@ -5504,7 +6184,7 @@ export function HubModelPicker({
             ariaLabel={`More options for ${model.name}`}
             pin={{
               pinned: isPinned,
-              pinLabel: "Pin to top",
+              pinLabel: "Pin",
               unpinLabel: "Unpin",
               onToggle: () => togglePinnedConnected(model.id),
             }}
@@ -5523,9 +6203,11 @@ export function HubModelPicker({
                   setInfoModel({
                     model,
                     providerModelId,
+                    apiType: externalApiTypeById.get(model.providerId),
                     baseUrl,
                     isReasoningProvider:
                       externalReasoningFlagById.get(model.providerId) === true,
+                    reasoningConfig: externalReasoningConfigById.get(model.providerId),
                   }),
               },
               {
@@ -5549,6 +6231,13 @@ export function HubModelPicker({
 
   // A pinned quant: repo name with the quant as a grey chip, loaded in one click.
   const renderPinnedQuantRow = (entry: { repoId: string; quant: string }) => {
+    // Its repo's own sole-quant row, with that row's load target and selection state.
+    const soleRow = pinnedSoleQuantRows.get(pinKey(entry.repoId, entry.quant));
+    if (soleRow) return renderSoleQuantGgufRow(soleRow.repo, soleRow.sole);
+    // The copy the validation listing resolved this quant in, so the delete removes that one.
+    const pinnedCopyPath = downloadedPinnedQuantPaths.get(
+      pinKey(entry.repoId, entry.quant),
+    );
     const optionKey = makeModelOptionKey(
       "pinned-quant",
       pinKey(entry.repoId, entry.quant),
@@ -5559,6 +6248,19 @@ export function HubModelPicker({
       modelIdsMatchForPicker(loadedModelId, entry.repoId) &&
       !ggufVariantsMatchForPicker(activeGgufVariant, null) &&
       ggufVariantsMatchForPicker(activeGgufVariant, entry.quant);
+    // A validated false is authoritative: this repo's variants carry no mmproj.
+    // Anything else stays unknown rather than warning from a stale cache row.
+    const pinnedVisionHint =
+      pinnedQuantValidation.visionByRepo.get(entry.repoId) === false
+        ? false
+        : undefined;
+    // Same size and vision mark as this quant's row below.
+    const sizeBytes = pinnedQuantValidation.sizes.get(
+      pinKey(entry.repoId, entry.quant),
+    );
+    const hasVision =
+      pinnedQuantValidation.visionByRepo.get(entry.repoId) ??
+      sortedCachedGguf.find((c) => c.repo_id === entry.repoId)?.has_vision;
     return (
       <div
         key={optionKey}
@@ -5571,8 +6273,11 @@ export function HubModelPicker({
             tooltipText={`${entry.repoId} (${ggufQuantDetailLabel(
               entry.quant,
             )})`}
-            meta="GGUF"
+            meta={
+              sizeBytes ? `GGUF · ${formatBytes(sizeBytes)}` : "GGUF"
+            }
             quantChip={ggufQuantChipLabel(entry.quant)}
+            showVision={hasVision}
             // Same runtime gate the sole-quant row applies: a pinned quant can belong to an image, video
             // or audio task, which load through the media planner, so the KV estimator would measure
             // the wrong runtime and fall back to the file size.
@@ -5597,6 +6302,7 @@ export function HubModelPicker({
                 // The row loads one quant, so it is a GGUF pick like the expander's; without this the pages
                 // asked for a pipeline, which a GGUF repo rejects. No filename: the pin stores a label.
                 isGguf: true,
+                isVision: pinnedVisionHint,
                 pipelineTag:
                   diffusionTaskById.get(entry.repoId.toLowerCase()) ?? null,
               })
@@ -5616,6 +6322,7 @@ export function HubModelPicker({
                   ggufVariant: entry.quant,
                   isDownloaded: true,
                   isGguf: true,
+                  isVision: pinnedVisionHint,
                   pipelineTag:
                     diffusionTaskById.get(entry.repoId.toLowerCase()) ?? null,
                 })
@@ -5627,7 +6334,7 @@ export function HubModelPicker({
             cachePath={{ repoId: entry.repoId, variant: entry.quant }}
             pin={{
               pinned: true,
-              pinLabel: "Pin to top",
+              pinLabel: "Pin",
               unpinLabel: "Unpin",
               onToggle: () => togglePinned(entry.repoId, entry.quant),
             }}
@@ -5635,7 +6342,11 @@ export function HubModelPicker({
               title: "Delete cached model?",
               // Same preview the Hub On Device row asks for, so a companion base an installed image model
               // still needs shows the reason and a disabled Delete.
-              impact: { repoId: entry.repoId, variant: entry.quant },
+              impact: {
+                repoId: entry.repoId,
+                variant: entry.quant,
+                cachePath: pinnedCopyPath,
+              },
               description: (
                 <>
                   This will remove{" "}
@@ -5652,10 +6363,14 @@ export function HubModelPicker({
                   entry.repoId,
                   entry.quant,
                   hfToken || undefined,
+                  pinnedCopyPath ?? undefined,
                 );
                 refreshCachedLists();
-                // The file is gone, so drop its pin too.
-                togglePinned(entry.repoId, entry.quant);
+                if (isChatGgufTask(diffusionTaskById.get(entry.repoId.toLowerCase()))) {
+                  await reconcileGgufPinsAfterDelete(entry.repoId, hfToken || undefined);
+                } else {
+                  togglePinned(entry.repoId, entry.quant);
+                }
               },
             }}
           />
@@ -5664,7 +6379,7 @@ export function HubModelPicker({
     );
   };
 
-  // One quant on disk with "Show all quantizations" off: the expander would list just that
+  // One quant on disk with "All quantizations" off: the expander would list just that
   // quant, so the row carries it as a chip and loads it in one click.
   const renderSoleQuantGgufRow = (
     c: (typeof visibleCachedGguf)[number],
@@ -5700,6 +6415,10 @@ export function HubModelPicker({
       isDownloaded,
       expectedBytes,
       isGguf: true,
+      // readSoleQuant already read the repo's mmproj verdict, and this collapsed row is
+      // the only place it can reach the chat warning: forward it conservatively, as the
+      // expander does, so a known text-only sole quant still warns.
+      isVision: sole.hasVision === false ? false : undefined,
       pipelineTag: c.task ?? null,
     };
     return (
@@ -5736,7 +6455,7 @@ export function HubModelPicker({
             gpuGb={expanderGpuGb}
             showVision={c.has_vision || sole.hasVision}
             selected={isSelected}
-            loaded={rowState.loaded}
+            loaded={rowState.loaded || isKeptLoaded(c.repo_id)}
             alignMeta="device"
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() => onSelect(c.repo_id, selectMeta)}
@@ -5754,15 +6473,23 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+            items={ejectMenuItems(c.repo_id)}
             pin={{
               pinned: isPinned,
-              pinLabel: "Pin to top",
+              pinLabel: "Pin",
               unpinLabel: "Unpin",
               onToggle: () => togglePinned(c.repo_id, variant.quant),
             }}
             del={{
               title: "Delete cached model?",
-              impact: { repoId: c.repo_id, variant: variant.quant },
+              impact: {
+                repoId: c.repo_id,
+                variant: variant.quant,
+                cachePath:
+                  variant.cache_ref ??
+                  variant.cache_path ??
+                  (mediaPageForTask(c.task) ? c.cache_path : null),
+              },
               description: (
                 <>
                   This will remove{" "}
@@ -5779,10 +6506,16 @@ export function HubModelPicker({
                   c.repo_id,
                   variant.quant,
                   hfToken || undefined,
-                  c.cache_path || undefined,
+                  variant.cache_ref ??
+                    variant.cache_path ??
+                    (mediaPageForTask(c.task) ? c.cache_path : undefined) ??
+                    undefined,
                 );
-                // The file is gone, so drop its pin too.
-                if (isPinned) togglePinned(c.repo_id, variant.quant);
+                if (isChatGgufTask(c.task)) {
+                  await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                } else if (isPinned) {
+                  togglePinned(c.repo_id, variant.quant);
+                }
                 prunePinnedQuantValidation(c.repo_id, variant.quant);
                 refreshCachedLists();
               },
@@ -5799,6 +6532,7 @@ export function HubModelPicker({
     const isSelected = value === c.repo_id;
     const soleQuant = soleQuants.quants.get(c.repo_id);
     if (soleQuant) return renderSoleQuantGgufRow(c, soleQuant);
+    const loadedQuants = loadedQuantsFor(c.repo_id);
     // Auto-expansion waits for the probe: expanding every row first would mount an expander, and
     // its remote listing, for repos about to collapse.
     const expanderOpen = shouldMountVariantExpander({
@@ -5816,17 +6550,21 @@ export function HubModelPicker({
               label={c.repo_id}
               tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
+              quantChip={loadedQuants.map(ggufQuantChipLabel).join(", ") || undefined}
               showVision={c.has_vision ?? visionByRepo[c.repo_id]}
               alignMeta="device"
               partial={isPartialRepo}
               partialResumable={c.partial_resumable}
               selected={isSelected}
-              loaded={isRuntimeLoadedModel(
-                loadedModelId,
-                activeGgufVariant,
-                c.repo_id,
-                "required",
-              )}
+              loaded={
+                isKeptLoaded(c.repo_id) ||
+                isRuntimeLoadedModel(
+                  loadedModelId,
+                  activeGgufVariant,
+                  c.repo_id,
+                  "required",
+                )
+              }
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
               onClick={() => toggleGgufExpanded(c.repo_id, expanderOpen)}
               onArrowDownIntoChildren={
@@ -5873,8 +6611,12 @@ export function HubModelPicker({
                       hfToken || undefined,
                       c.cache_path || undefined,
                     );
-                    // Every quant goes with the repo, so every quant pin goes too.
-                    unpinRepo(c.repo_id);
+                    if (isChatGgufTask(c.task)) {
+                      // Another remembered folder may still hold a pinned quant.
+                      await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                    } else {
+                      unpinRepo(c.repo_id);
+                    }
                   },
                   onDeleted: refreshCachedLists,
                 }}
@@ -5890,6 +6632,7 @@ export function HubModelPicker({
             hostPooledMemory={gpu.loadDeviceSharesHostMemory}
             gpuCount={expanderGpuCount}
             repoId={c.repo_id}
+            loadedQuants={loadedQuants}
             pipelineTag={c.task ?? null}
             loadId={c.load_id}
             cachePath={c.cache_path}
@@ -5910,12 +6653,13 @@ export function HubModelPicker({
               onUpdate: (quant, expectedBytes) =>
                 updateGgufVariant(c.repo_id, quant, expectedBytes),
               updateDisabled: loadedModelId === c.repo_id,
-              onDelete: async (quant) => {
+              onDelete: async (quant, cachePath) => {
                 await deleteCachedModel(
                   c.repo_id,
                   quant,
                   hfToken || undefined,
-                  c.cache_path || undefined,
+                  cachePath ??
+                    (mediaPageForTask(c.task) ? c.cache_path || undefined : undefined),
                 );
                 prunePinnedQuantValidation(c.repo_id, quant);
                 refreshCachedLists();
@@ -5948,12 +6692,15 @@ export function HubModelPicker({
             alignMeta="device"
             partial={isPartial}
             partialResumable={c.partial_resumable}
-            loaded={isRuntimeLoadedModel(
-              loadedModelId,
-              activeGgufVariant,
-              c.repo_id,
-              "none",
-            )}
+            loaded={
+              isKeptLoaded(c.repo_id) ||
+              isRuntimeLoadedModel(
+                loadedModelId,
+                activeGgufVariant,
+                c.repo_id,
+                "none",
+              )
+            }
             optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
             onClick={() =>
               onSelect(c.repo_id, {
@@ -5966,6 +6713,7 @@ export function HubModelPicker({
                 isDownloaded: !isPartial,
                 pipelineTag: c.task ?? null,
                 audioType: c.audio_type ?? null,
+                familyOverrideRequired: c.opaque === true,
               })
             }
             vramStatus={null}
@@ -5990,6 +6738,7 @@ export function HubModelPicker({
                   isGguf: false,
                   pipelineTag: c.task ?? null,
                   audioType: c.audio_type ?? null,
+                  familyOverrideRequired: c.opaque === true,
                 })
               }
             />
@@ -5997,9 +6746,10 @@ export function HubModelPicker({
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id}`}
             cachePath={{ repoId: c.repo_id }}
+            items={ejectMenuItems(c.repo_id)}
             pin={{
               pinned: pinnedSet.has(pinKey(c.repo_id)),
-              pinLabel: "Pin to top",
+              pinLabel: "Pin",
               unpinLabel: "Unpin",
               onToggle: () => togglePinned(c.repo_id),
             }}
@@ -6081,6 +6831,113 @@ export function HubModelPicker({
     );
   };
 
+  const renderNpuRow = (model: NpuModel, onDevice: boolean) => {
+    if (!npuCatalog) return null;
+    const optionKey = makeModelOptionKey(
+      onDevice ? "npu-on-device" : "npu",
+      model.id,
+    );
+    const isSelected = value === model.model_path;
+    const isLoaded = loadedModelId === model.model_path;
+    const downloading = model.id in npuCatalog.downloads;
+    const progress = npuCatalog.downloads[model.id];
+    const reconnecting = model.id in npuCatalog.reconnecting;
+    const details = [
+      "NPU",
+      npuSizeLabel(model.size_gb),
+      npuResumeLabel(model),
+    ].filter(Boolean);
+    const meta = {
+      source: "local",
+      isLora: false,
+      isDownloaded: true,
+    } as const;
+    const pick = () => onSelect(model.model_path, meta);
+    const row = (
+      <ModelRow
+        label={model.id}
+        meta={
+          downloading
+            ? `NPU · ${npuDownloadLabel(progress, reconnecting)}`
+            : details.join(" · ")
+        }
+        selected={isSelected}
+        loaded={isLoaded}
+        downloaded={!onDevice && model.downloaded}
+        capabilities={{
+          vision: model.supports_vision,
+          reasoning: model.supports_reasoning,
+          audio: false,
+          imageGen: false,
+          videoGen: false,
+        }}
+        alignMeta={onDevice ? "device" : "hub"}
+        optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+        onClick={() => {
+          if (downloading) return;
+          if (model.downloaded) {
+            pick();
+            return;
+          }
+          const before = useChatRuntimeStore.getState();
+          const chosen = before.params.checkpoint;
+          void npuCatalog.download(model).then((done) => {
+            const now = useChatRuntimeStore.getState();
+            // A model picked while this downloaded is the user's newer choice; keep it.
+            if (done && now.params.checkpoint === chosen && !now.loadingModelPick) {
+              pick();
+            }
+          });
+        }}
+        vramStatus={null}
+        className={onDevice ? downloadedRowButtonClassName : undefined}
+      />
+    );
+    // Downloads do not load the model, so show settings only after download.
+    const settings =
+      onConfigure && model.downloaded && !downloading ? (
+        <ModelLoadSettingsAction
+          ariaLabel={`Inference settings for ${model.id}`}
+          onConfigure={() =>
+            onConfigure(model.model_path, {
+              ...meta,
+              contextLength: model.max_context_length,
+            })
+          }
+        />
+      ) : null;
+    if (!onDevice && !onConfigure) return <div key={model.id}>{row}</div>;
+    return (
+      <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
+        <div className="min-w-0 flex-1">{row}</div>
+        <span
+          className={cn(ROW_ACTIONS_CLASS, onDevice && "h-6")}
+          aria-hidden={settings || onDevice ? undefined : true}
+        >
+          {settings}
+          {onDevice && (
+            <ModelDeleteAction
+              ariaLabel={`Delete ${model.id}`}
+              title={`Delete ${model.id}?`}
+              description="This removes the model's NPU files from this device."
+              successMessage={`Deleted ${model.id}`}
+              disabled={isLoaded}
+              onConfirm={() => npuCatalog.remove(model)}
+            />
+          )}
+        </span>
+      </div>
+    );
+  };
+
+  const npuBrowseForcedOpen = formatFilter === "npu" || showHfSection;
+  const npuBrowseFolded = !npuBrowseForcedOpen && npuBrowseCollapsed;
+  const showNpuBrowse =
+    npuCatalog !== null &&
+    npuListed &&
+    section === "recommended" &&
+    (!showHfSection || npuBrowseRows.length > 0);
+
   return (
     <CapabilityScope.Provider value={capabilityScope}>
       <div className="relative space-y-2">
@@ -6105,7 +6962,7 @@ export function HubModelPicker({
                   : "Search Unsloth models"
               }
               data-model-picker-search-input={true}
-              className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8"
+              className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8 text-sm"
             />
             {isLoading && (
               <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -6118,7 +6975,7 @@ export function HubModelPicker({
                   type="button"
                   onClick={onBrowseHub}
                   aria-label="Search more models on the Hub"
-                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[calc(5px*var(--ui-space-scale,1))] rounded-full border-0 text-xs text-foreground transition-colors"
+                  className="hub-tab-toggle-pill hub-pill-action flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[calc(5px*var(--ui-space-scale,1))] rounded-full border-0 text-xs text-foreground transition-colors"
                 >
                   <HugeiconsIcon
                     icon={DashboardCircleIcon}
@@ -6171,7 +7028,11 @@ export function HubModelPicker({
             <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">
               <HubOptionMenu
                 value={formatFilter}
-                options={FORMAT_FILTER_OPTIONS}
+                options={
+                  npuCatalog
+                    ? FORMAT_FILTER_OPTIONS
+                    : FORMAT_FILTER_OPTIONS_WITHOUT_NPU
+                }
                 onValueChange={setFormatFilter}
                 ariaLabel="Filter by format"
                 align="end"
@@ -6187,9 +7048,12 @@ export function HubModelPicker({
           ref={scrollRef}
           onScroll={(e) => updateListFades(e.currentTarget)}
           className={cn(
-            // The list sits within the menu padding so gaps match; scroll-py and symmetric px keep the
-            // focus ring off the overflow clip edges during keyboard nav.
-            "model-list-scroll max-h-[335px] overflow-y-auto scroll-py-1.5 px-0.5 mr-1",
+            // The list sits within the menu padding so gaps match; scroll-py and the side padding keep
+            // the focus ring off the overflow clip edges during keyboard nav. The panel is padded 16px
+            // on the left but 8px on the right (16px with external providers), so the scroller can run
+            // near the edge for its scrollbar; its right inset (index.css) makes up the difference, and
+            // a row's hover pill sits 18px from both edges.
+            "model-list-scroll max-h-[calc(335px*var(--ui-space-scale,1))] overflow-y-auto scroll-py-1.5 pl-0.5",
             listScrolled && "is-scrolled",
             listMoreBelow && "is-bottom-faded",
           )}
@@ -6198,13 +7062,19 @@ export function HubModelPicker({
           <div
             className={cn(
               // Keep row actions clear of overlay scrollbars, overflowing or not.
-              "overlay-scrollbar-gutter",
+              "model-list-gutter",
               // On Device pulls the heading block tight to the controls; Recommended keeps more top room
               // above its first row.
               showDownloaded ? "pt-0" : "pt-[calc(4px*var(--ui-space-scale,1))]",
               onEject ? "pb-[calc(60px*var(--ui-space-scale,1))]" : "pb-4",
             )}
           >
+            {loadedRows.length > 0 ? (
+              <div className="pb-1.5">
+                {loadedRows.map(renderLoadedRow)}
+                <div className="mx-2.5 mt-1.5 border-t border-border/50" />
+              </div>
+            ) : null}
             {showConnected ? (
               connectedMatches.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
@@ -6230,7 +7100,11 @@ export function HubModelPicker({
                       {pinnedConnectedCollapsed
                         ? null
                         : pinnedConnectedRows.map((model) =>
-                            renderConnectedModelRow(model, true, true),
+                            renderPinnedDragRow(
+                              pinnedConnectedDrag,
+                              model.id,
+                              renderConnectedModelRow(model, true),
+                            ),
                           )}
                     </div>
                   ) : null}
@@ -6267,7 +7141,7 @@ export function HubModelPicker({
                         {collapsed
                           ? null
                           : group.models.map((model) =>
-                              renderConnectedModelRow(model, false, !headed),
+                              renderConnectedModelRow(model, !headed),
                             )}
                       </div>
                     );
@@ -6319,9 +7193,30 @@ export function HubModelPicker({
                     </ListLabel>
                     {!pinnedCollapsed &&
                       pinnedRows.map((row) =>
-                        row.entry
-                          ? renderPinnedQuantRow(row.entry)
-                          : renderDownloadedModelRow(row.model),
+                        renderPinnedDragRow(
+                          pinnedDrag,
+                          row.key,
+                          row.entry ? (
+                            renderPinnedQuantRow(row.entry)
+                          ) : row.model ? (
+                            renderDownloadedModelRow(row.model)
+                          ) : (
+                            <FineTunedRows
+                              adapters={[row.fineTuned]}
+                              value={value}
+                              loadedModelId={loadedModelId}
+                              activeGgufVariant={activeGgufVariant}
+                              onSelect={onSelect}
+                              onConfigure={onConfigure}
+                              onModelsChange={onModelsChange}
+                              deleteDisabled={deleteDisabled}
+                              loraModelList={hubModelList}
+                              expandedGguf={expandedGguf}
+                              setExpandedGguf={setExpandedGguf}
+                              gpu={inferenceGpu}
+                            />
+                          ),
+                        ),
                       )}
                   </>
                 ) : null}
@@ -6345,7 +7240,7 @@ export function HubModelPicker({
                                   type="button"
                                   onClick={scrollToOtherModels}
                                   aria-label="Go to other models"
-                                  className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                                  className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                                 >
                                   <HugeiconsIcon
                                     icon={Flag01Icon}
@@ -6368,7 +7263,7 @@ export function HubModelPicker({
                                   type="button"
                                   onClick={scrollToFineTuned}
                                   aria-label="Go to fine-tuned models"
-                                  className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                                  className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                                 >
                                   <HugeiconsIcon
                                     icon={TrainIcon}
@@ -6390,7 +7285,7 @@ export function HubModelPicker({
                                 type="button"
                                 onClick={scrollToCustomFolders}
                                 aria-label="Go to custom folders"
-                                className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                                className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                               >
                                 <HugeiconsIcon
                                   icon={Folder02Icon}
@@ -6446,13 +7341,33 @@ export function HubModelPicker({
                   </div>
                 ) : null}
 
+                {showDownloaded && npuOnDeviceRows.length > 0 ? (
+                  <>
+                    <ListLabel
+                      divider={
+                        pinnedRows.length > 0 ||
+                        unslothCachedGguf.length > 0 ||
+                        unslothCachedModelRows.length > 0 ||
+                        unslothAdditionalOnDeviceModels.length > 0 ||
+                        hasOtherModels
+                      }
+                      collapsed={npuOnDeviceCollapsed}
+                      onToggle={() => setNpuOnDeviceCollapsed((v) => !v)}
+                    >
+                      NPU
+                    </ListLabel>
+                    {!npuOnDeviceCollapsed &&
+                      npuOnDeviceRows.map((model) => renderNpuRow(model, true))}
+                  </>
+                ) : null}
+
                 {/* Fine-tuned models: always shown on On Device so the train shortcut has a target. Hidden
                     under a task filter. */}
                 {section === "downloaded" && !task ? (
                   <>
                     <div
                       ref={fineTunedSectionRef}
-                      className="mt-3 flex items-center gap-1 border-t border-border/50 px-2.5 pb-1 pt-3"
+                      className="mt-3 flex items-center gap-1 border-t border-border px-2.5 pb-1 pt-3"
                     >
                       <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
                         <HugeiconsIcon icon={TrainIcon} className="size-3.5" />
@@ -6468,7 +7383,7 @@ export function HubModelPicker({
                           }
                           title={fineTunedCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setFineTunedCollapsed((v) => !v)}
-                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {fineTunedCollapsed ? (
                             <ChevronRightIcon className="size-3" />
@@ -6478,9 +7393,9 @@ export function HubModelPicker({
                         </button>
                       </div>
                     </div>
-                    {!fineTunedCollapsed && fineTunedRows.length > 0 && (
+                    {!fineTunedCollapsed && unpinnedFineTunedRows.length > 0 && (
                       <FineTunedRows
-                        adapters={fineTunedRows}
+                        adapters={unpinnedFineTunedRows}
                         value={value}
                         loadedModelId={loadedModelId}
                         activeGgufVariant={activeGgufVariant}
@@ -6501,7 +7416,7 @@ export function HubModelPicker({
                   <>
                     <div
                       ref={customFolderSectionRef}
-                      className="mt-3 flex items-center gap-1 border-t border-border/50 px-2.5 pb-1 pt-3"
+                      className="mt-3 flex items-center gap-1 border-t border-border px-2.5 pb-1 pt-3"
                     >
                       <button
                         type="button"
@@ -6535,7 +7450,7 @@ export function HubModelPicker({
                               return !open;
                             });
                           }}
-                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                          className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
                             icon={showFolderInput ? Cancel01Icon : Add01Icon}
@@ -6547,7 +7462,7 @@ export function HubModelPicker({
                           aria-label="Browse for a folder on the server"
                           title="Browse folders on the server"
                           onClick={() => setShowFolderBrowser(true)}
-                          className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
+                          className="shrink-0 rounded p-0.5 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
                             icon={Search01Icon}
@@ -6565,7 +7480,7 @@ export function HubModelPicker({
                           }
                           title={customFoldersCollapsed ? "Expand" : "Collapse"}
                           onClick={() => setCustomFoldersCollapsed((v) => !v)}
-                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                          className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           {customFoldersCollapsed ? (
                             <ChevronRightIcon className="size-3" />
@@ -6587,11 +7502,11 @@ export function HubModelPicker({
                           >
                             <HugeiconsIcon
                               icon={Folder02Icon}
-                              className="size-3 shrink-0 text-muted-foreground/40"
+                              className="size-3 shrink-0 text-muted-foreground/80"
                             />
                             <div className="min-w-0 flex-1">
                               <span
-                                className="block truncate font-mono text-ui-10 text-muted-foreground/70"
+                                className="block truncate font-mono text-ui-10 text-muted-foreground/80"
                                 title={f.path}
                               >
                                 {f.path}
@@ -6609,7 +7524,7 @@ export function HubModelPicker({
                               type="button"
                               onClick={() => handleRemoveFolder(f.id)}
                               aria-label={`Remove folder ${f.path}`}
-                              className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                              className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                             >
                               <HugeiconsIcon
                                 icon={Cancel01Icon}
@@ -6639,7 +7554,7 @@ export function HubModelPicker({
                                 onClick={() => void handleAddFolder(p)}
                                 disabled={folderLoading}
                                 title={`Add ${p}`}
-                                className="rounded-full border border-dashed border-border/50 px-2 py-0.5 font-mono text-ui-10 text-muted-foreground/70 transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:bg-accent hover:text-foreground disabled:opacity-40"
+                                className="rounded-full border border-dashed border-border px-2 py-0.5 font-mono text-ui-10 text-muted-foreground/80 transition-colors hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:bg-accent hover:text-foreground disabled:opacity-40"
                               >
                                 <span className="text-ui-11 font-semibold">
                                   +
@@ -6657,7 +7572,7 @@ export function HubModelPicker({
                         <div className="flex items-center gap-1">
                           <HugeiconsIcon
                             icon={Folder02Icon}
-                            className="size-3 shrink-0 text-muted-foreground/40"
+                            className="size-3 shrink-0 text-muted-foreground/80"
                           />
                           <input
                             value={folderInput}
@@ -6679,7 +7594,7 @@ export function HubModelPicker({
                               }
                             }}
                             placeholder="/path/to/models"
-                            className="h-6 min-w-0 flex-1 rounded border border-border/50 bg-transparent px-1.5 font-mono text-ui-10 text-foreground outline-none placeholder:text-muted-foreground/40 focus:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]"
+                            className="h-6 min-w-0 flex-1 rounded border border-border bg-transparent px-1.5 font-mono text-ui-10 text-foreground outline-none placeholder:text-muted-foreground/80 focus:border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)]"
                             disabled={folderLoading}
                             autoFocus={true}
                           />
@@ -6689,7 +7604,7 @@ export function HubModelPicker({
                             disabled={folderLoading}
                             aria-label="Browse for folder"
                             title="Browse folders on the server"
-                            className="flex h-6 shrink-0 items-center justify-center rounded border border-border/50 px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                            className="flex h-6 shrink-0 items-center justify-center rounded border border-border px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
                           >
                             <HugeiconsIcon
                               icon={Search01Icon}
@@ -6702,7 +7617,7 @@ export function HubModelPicker({
                               void handleAddFolder();
                             }}
                             disabled={folderLoading || !folderInput.trim()}
-                            className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-ui-10 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
+                            className="h-6 shrink-0 rounded border border-border px-1.5 text-ui-10 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                           >
                             Add
                           </button>
@@ -6782,7 +7697,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -6799,6 +7714,8 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
+                                  // The downloaded rows' inset, so columns line up across sections.
+                                  className="pr-1"
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -6823,7 +7740,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -6838,6 +7755,7 @@ export function HubModelPicker({
                                   hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                   gpuCount={expanderGpuCount}
                                   repoId={m.id}
+                                  loadedQuants={loadedQuantsFor(m.id)}
                                   onDevice={true}
                                   onSelect={onSelect}
                                   resolveDownloadFootprint={resolveDownloadFootprint}
@@ -6922,7 +7840,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -6939,6 +7857,8 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
+                                  // The downloaded rows' inset, so columns line up across sections.
+                                  className="pr-1"
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -6963,7 +7883,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -6976,6 +7896,7 @@ export function HubModelPicker({
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                 gpuCount={expanderGpuCount}
                                 repoId={m.id}
+                                loadedQuants={loadedQuantsFor(m.id)}
                                 onDevice={true}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -7053,7 +7974,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7066,6 +7987,8 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
+                                  // The downloaded rows' inset, so columns line up across sections.
+                                  className="pr-1"
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -7090,7 +8013,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -7103,6 +8026,7 @@ export function HubModelPicker({
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                 gpuCount={expanderGpuCount}
                                 repoId={m.id}
+                                loadedQuants={loadedQuantsFor(m.id)}
                                 onDevice={true}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -7125,16 +8049,51 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {showRecommendedSection ? (
+                {showNpuBrowse && npuCatalog ? (
                   <>
-                    {recommendedSearch.isLoading &&
-                    recommendedRows.length === 0 ? (
+                    <ListLabel
+                      collapsed={npuBrowseFolded}
+                      onToggle={
+                        npuBrowseForcedOpen
+                          ? undefined
+                          : () => setNpuBrowseCollapsed((v) => !v)
+                      }
+                    >
+                      NPU
+                    </ListLabel>
+                    {npuBrowseFolded ? null : (
+                      <>
+                        {showHfSection ? null : (
+                          <NpuSetupNotice catalog={npuCatalog} />
+                        )}
+                        {npuBrowseRows.map((model) =>
+                          renderNpuRow(model, false),
+                        )}
+                      </>
+                    )}
+                  </>
+                ) : null}
+
+                {showRecommendedSection && formatFilter !== "npu" ? (
+                  <>
+                    {/* Below the NPU group, the curated list needs its own heading. */}
+                    {showNpuBrowse ? (
+                      <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
+                    ) : null}
+                    {recommendedRows.length === 0 &&
+                    recommendedEmpty === "loading" ? (
                       <div className="flex items-center gap-2 px-5 py-3">
                         <Spinner className="size-3 text-muted-foreground" />
                         <span className="text-xs text-muted-foreground">
                           Loading models…
                         </span>
                       </div>
+                    ) : recommendedRows.length === 0 &&
+                      recommendedEmpty === "failed" ? (
+                      <HubFailureHint
+                        message={recommendedSearch.error}
+                        onRetry={recommendedSearch.retry}
+                      />
                     ) : recommendedRows.length === 0 ? (
                       <div className="px-2.5 py-2 text-xs text-muted-foreground">
                         No models found.
@@ -7142,65 +8101,71 @@ export function HubModelPicker({
                     ) : (
                       recommendedRows.map((r) => {
                         const id = r.id;
+                        if (loadedRowIds.has(id.toLowerCase())) return null;
                         const info = recommendedMeta.get(id);
                         const isG = isKnownGgufRepo(id);
                         const optionKey = makeModelOptionKey("recommended", id);
                         return (
                           <div key={id}>
-                            <ModelRow
-                              label={curatedRow(id).name}
-                              tags={curatedRow(id).tags}
-                              hubUrl={hubRepoUrl(id)}
-                              alignMeta="hub"
-                              showSize={hubRowsShowSize}
-                              // A community row without its owner reads as an unsloth upload, and two
-                              // publishers would collide.
-                              hideOwner={isUnslothOwned(id)}
-                              downloaded={downloadedSet.has(id.toLowerCase())}
-                              partial={partialSet.has(id.toLowerCase())}
-                              partialResumable={partialResumableSet.has(
-                                id.toLowerCase(),
-                              )}
-                              capabilities={capsById.get(id)}
-                              meta={
-                                info?.meta ??
-                                (isG ? "GGUF" : extractParamLabel(id))
-                              }
-                              selected={value === id}
-                              loaded={isRuntimeLoadedModel(
-                                loadedModelId,
-                                activeGgufVariant,
-                                id,
-                                isG ? "required" : "none",
-                              )}
-                              optionProps={hubModelList.getOptionProps(
-                                optionKey,
-                                value === id,
-                              )}
-                              onClick={() => {
-                                if (isG) {
-                                  setExpandedGguf((prev) =>
-                                    prev === id ? null : id,
-                                  );
-                                } else {
-                                  handleModelClick(id);
+                            {renderHubModelRow(
+                              id,
+                              <ModelRow
+                                label={curatedRow(id).name}
+                                tags={curatedRow(id).tags}
+                                hubUrl={hubRepoUrl(id)}
+                                alignMeta="hub"
+                                showSize={hubRowsShowSize}
+                                // Without the owner a community row reads as an unsloth upload.
+                                hideOwner={isUnslothOwned(id)}
+                                downloaded={cachedIdFor(id) !== null}
+                                partial={isPartialRow(id)}
+                                partialResumable={partialResumableSet.has(
+                                  id.toLowerCase(),
+                                )}
+                                capabilities={capsById.get(id)}
+                                meta={
+                                  info?.meta ??
+                                  (isG ? "GGUF" : extractParamLabel(id))
                                 }
-                              }}
-                              vramStatus={info?.status ?? null}
-                              vramEst={info?.est}
-                              gpuGb={isG ? expanderGpuGb : expanderSystemGpuGb}
-                              onArrowDownIntoChildren={
-                                expandedGguf === id
-                                  ? () => focusFirstChildOption(optionKey)
-                                  : undefined
-                              }
-                            />
+                                selected={isValueRow(id)}
+                                loaded={isRuntimeLoadedModel(
+                                  loadedModelId,
+                                  activeGgufVariant,
+                                  id,
+                                  isG ? "required" : "none",
+                                  aliasesOf(id),
+                                )}
+                                optionProps={hubModelList.getOptionProps(
+                                  optionKey,
+                                  isValueRow(id),
+                                )}
+                                onClick={() => {
+                                  if (isG) {
+                                    setExpandedGguf((prev) =>
+                                      prev === id ? null : id,
+                                    );
+                                  } else {
+                                    handleModelClick(id);
+                                  }
+                                }}
+                                vramStatus={info?.status ?? null}
+                                vramEst={info?.est}
+                                vramBudget={info?.budget}
+                                gpuGb={isG ? expanderGpuGb : expanderSystemGpuGb}
+                                onArrowDownIntoChildren={
+                                  expandedGguf === id
+                                    ? () => focusFirstChildOption(optionKey)
+                                    : undefined
+                                }
+                              />,
+                            )}
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                 gpuCount={expanderGpuCount}
                                 repoId={id}
+                                loadedQuants={loadedQuantsFor(id)}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -7217,11 +8182,12 @@ export function HubModelPicker({
                                 systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={expanderBudgetGpu.budgetKnown}
                                 variantActions={{
-                                  onDelete: async (quant) => {
+                                  onDelete: async (quant, cachePath) => {
                                     await deleteCachedModel(
                                       id,
                                       quant,
                                       hfToken || undefined,
+                                      cachePath ?? undefined,
                                     );
                                     prunePinnedQuantValidation(id, quant);
                                     refreshCachedLists();
@@ -7259,74 +8225,80 @@ export function HubModelPicker({
                       );
                       return (
                         <div key={id}>
-                          <ModelRow
-                            label={curatedRow(id).name}
-                            tags={curatedRow(id).tags}
-                            hubUrl={hubRepoUrl(id)}
-                            alignMeta="hub"
-                            showSize={hubRowsShowSize}
-                            downloaded={downloadedSet.has(id.toLowerCase())}
-                            partial={partialSet.has(id.toLowerCase())}
-                            partialResumable={partialResumableSet.has(
-                              id.toLowerCase(),
-                            )}
-                            capabilities={capsById.get(id)}
-                            // Same meta the unfiltered Recommended row shows, so a model keeps its size chip when reached by
-                            // typing.
-                            meta={
-                              isKnownGgufRepo(id)
-                                ? (recommendedMeta.get(id)?.meta ?? "GGUF")
-                                : (vram?.detail ?? extractParamLabel(id))
-                            }
-                            selected={value === id}
-                            loaded={isRuntimeLoadedModel(
-                              loadedModelId,
-                              activeGgufVariant,
-                              id,
-                              isKnownGgufRepo(id) ? "required" : "none",
-                            )}
-                            optionProps={hubModelList.getOptionProps(
-                              optionKey,
-                              value === id,
-                            )}
-                            onClick={() => {
-                              if (isKnownGgufRepo(id)) {
-                                setExpandedGguf((prev) =>
-                                  prev === id ? null : id,
-                                );
-                              } else {
-                                handleModelClick(id);
+                          {renderHubModelRow(
+                            id,
+                            <ModelRow
+                              label={curatedRow(id).name}
+                              tags={curatedRow(id).tags}
+                              hubUrl={hubRepoUrl(id)}
+                              alignMeta="hub"
+                              showSize={hubRowsShowSize}
+                              downloaded={cachedIdFor(id) !== null}
+                              partial={isPartialRow(id)}
+                              partialResumable={partialResumableSet.has(
+                                id.toLowerCase(),
+                              )}
+                              capabilities={capsById.get(id)}
+                              meta={
+                                isKnownGgufRepo(id)
+                                  ? (recommendedMeta.get(id)?.meta ?? "GGUF")
+                                  : (vram?.detail ?? extractParamLabel(id))
                               }
-                            }}
-                            vramStatus={
-                              isKnownGgufRepo(id)
-                                ? null
-                                : (vram?.status ?? null)
-                            }
-                            vramEst={
-                              isKnownGgufRepo(id) ? undefined : vram?.est
-                            }
-                            gpuGb={
-                              isKnownGgufRepo(id)
-                                ? expanderGpuGb
-                                : expanderSystemGpuGb
-                            }
-                            onArrowDownIntoChildren={
-                              expandedGguf === id
-                                ? () => {
-                                    const focused =
-                                      focusFirstChildOption(optionKey);
-                                    return focused;
-                                  }
-                                : undefined
-                            }
-                          />
+                              selected={isValueRow(id)}
+                              loaded={isRuntimeLoadedModel(
+                                loadedModelId,
+                                activeGgufVariant,
+                                id,
+                                isKnownGgufRepo(id) ? "required" : "none",
+                                aliasesOf(id),
+                              )}
+                              optionProps={hubModelList.getOptionProps(
+                                optionKey,
+                                isValueRow(id),
+                              )}
+                              onClick={() => {
+                                if (isKnownGgufRepo(id)) {
+                                  setExpandedGguf((prev) =>
+                                    prev === id ? null : id,
+                                  );
+                                } else {
+                                  handleModelClick(id);
+                                }
+                              }}
+                              vramStatus={
+                                isKnownGgufRepo(id)
+                                  ? null
+                                  : (vram?.status ?? null)
+                              }
+                              vramEst={
+                                isKnownGgufRepo(id) ? undefined : vram?.est
+                              }
+                              vramBudget={
+                                isKnownGgufRepo(id) ? undefined : vram?.budget
+                              }
+                              gpuGb={
+                                isKnownGgufRepo(id)
+                                  ? expanderGpuGb
+                                  : expanderSystemGpuGb
+                              }
+                              onArrowDownIntoChildren={
+                                expandedGguf === id
+                                  ? () => {
+                                      const focused =
+                                        focusFirstChildOption(optionKey);
+                                      return focused;
+                                    }
+                                  : undefined
+                              }
+                            />,
+                          )}
                           {expandedGguf === id && (
                             <GgufVariantExpander
                               diffusionLoad={diffusionLoad}
                               hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                               gpuCount={expanderGpuCount}
                               repoId={id}
+                              loadedQuants={loadedQuantsFor(id)}
                               pipelineTag={pipelineTagById.get(id) ?? null}
                               onSelect={onSelect}
                               resolveDownloadFootprint={resolveDownloadFootprint}
@@ -7343,11 +8315,12 @@ export function HubModelPicker({
                               systemRamGb={expanderRamGb || undefined}
                               budgetKnown={expanderBudgetGpu.budgetKnown}
                               variantActions={{
-                                onDelete: async (quant) => {
+                                onDelete: async (quant, cachePath) => {
                                   await deleteCachedModel(
                                     id,
                                     quant,
                                     hfToken || undefined,
+                                    cachePath ?? undefined,
                                   );
                                   prunePinnedQuantValidation(id, quant);
                                   refreshCachedLists();
@@ -7361,16 +8334,20 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {showHfSection && section === "recommended" ? (
+                {showHfSection &&
+                section === "recommended" &&
+                formatFilter !== "npu" ? (
                   <>
                     {searchRowIds.length === 0 && !isLoading ? (
-                      filteredRecommendedIds.length === 0 ? (
+                      filteredRecommendedIds.length > 0 ? null : searchEmpty === "failed" ? (
+                        <HubFailureHint message={searchError} onRetry={retrySearch} />
+                      ) : (
                         <div className="px-2.5 py-2 text-xs text-muted-foreground">
                           {communityDiscoveryEnabled
                             ? "No matching models."
                             : "No matching Unsloth models."}
                         </div>
-                      ) : null
+                      )
                     ) : (
                       searchRowIds.map((id) => {
                         const vram = vramMap.get(id);
@@ -7378,76 +8355,78 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("search-hf", id);
                         return (
                           <div key={id}>
-                            <ModelRow
-                              label={curatedRow(id).name}
-                              tags={curatedRow(id).tags}
-                              hubUrl={hubRepoUrl(id)}
-                              alignMeta="hub"
-                              showSize={hubRowsShowSize}
-                              // Typed results are Hub rows like any other, so a repo left
-                              // half-downloaded is marked here too. Without it the row reads
-                              // as never fetched while the click resumes a download.
-                              partial={partialSet.has(id.toLowerCase())}
-                              partialResumable={partialResumableSet.has(
-                                id.toLowerCase(),
-                              )}
-                              capabilities={capsById.get(id)}
-                              meta={
-                                isSearchGguf
-                                  ? "GGUF"
-                                  : [
-                                      metricsById.get(id) ??
-                                        extractParamLabel(id),
-                                      isMlxId(id) ? "MLX" : "Safetensors",
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" · ")
-                              }
-                              selected={value === id}
-                              loaded={isRuntimeLoadedModel(
-                                loadedModelId,
-                                activeGgufVariant,
-                                id,
-                                isSearchGguf ? "required" : "none",
-                              )}
-                              optionProps={hubModelList.getOptionProps(
-                                optionKey,
-                                value === id,
-                              )}
-                              onClick={() => {
-                                if (isSearchGguf) {
-                                  setExpandedGguf((prev) =>
-                                    prev === id ? null : id,
-                                  );
-                                } else {
-                                  handleModelClick(id);
+                            {renderHubModelRow(
+                              id,
+                              <ModelRow
+                                label={curatedRow(id).name}
+                                tags={curatedRow(id).tags}
+                                hubUrl={hubRepoUrl(id)}
+                                alignMeta="hub"
+                                showSize={hubRowsShowSize}
+                                partial={isPartialRow(id)}
+                                partialResumable={partialResumableSet.has(
+                                  id.toLowerCase(),
+                                )}
+                                capabilities={capsById.get(id)}
+                                meta={
+                                  isSearchGguf
+                                    ? "GGUF"
+                                    : [
+                                        metricsById.get(id) ??
+                                          extractParamLabel(id),
+                                        isMlxId(id) ? "MLX" : "Safetensors",
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" · ")
                                 }
-                              }}
-                              vramStatus={
-                                isSearchGguf ? null : (vram?.status ?? null)
-                              }
-                              vramEst={isSearchGguf ? undefined : vram?.est}
-                              gpuGb={
-                                isSearchGguf
-                                  ? expanderGpuGb
-                                  : expanderSystemGpuGb
-                              }
-                              onArrowDownIntoChildren={
-                                expandedGguf === id
-                                  ? () => {
-                                      const focused =
-                                        focusFirstChildOption(optionKey);
-                                      return focused;
-                                    }
-                                  : undefined
-                              }
-                            />
+                                selected={isValueRow(id)}
+                                loaded={isRuntimeLoadedModel(
+                                  loadedModelId,
+                                  activeGgufVariant,
+                                  id,
+                                  isSearchGguf ? "required" : "none",
+                                  aliasesOf(id),
+                                )}
+                                optionProps={hubModelList.getOptionProps(
+                                  optionKey,
+                                  isValueRow(id),
+                                )}
+                                onClick={() => {
+                                  if (isSearchGguf) {
+                                    setExpandedGguf((prev) =>
+                                      prev === id ? null : id,
+                                    );
+                                  } else {
+                                    handleModelClick(id);
+                                  }
+                                }}
+                                vramStatus={
+                                  isSearchGguf ? null : (vram?.status ?? null)
+                                }
+                                vramEst={isSearchGguf ? undefined : vram?.est}
+                                gpuGb={
+                                  isSearchGguf
+                                    ? expanderGpuGb
+                                    : expanderSystemGpuGb
+                                }
+                                onArrowDownIntoChildren={
+                                  expandedGguf === id
+                                    ? () => {
+                                        const focused =
+                                          focusFirstChildOption(optionKey);
+                                        return focused;
+                                      }
+                                    : undefined
+                                }
+                              />,
+                            )}
                             {expandedGguf === id && (
                               <GgufVariantExpander
                                 diffusionLoad={diffusionLoad}
                                 hostPooledMemory={gpu.loadDeviceSharesHostMemory}
                                 gpuCount={expanderGpuCount}
                                 repoId={id}
+                                loadedQuants={loadedQuantsFor(id)}
                                 pipelineTag={pipelineTagById.get(id) ?? null}
                                 onSelect={onSelect}
                                 resolveDownloadFootprint={resolveDownloadFootprint}
@@ -7464,11 +8443,12 @@ export function HubModelPicker({
                                 systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={expanderBudgetGpu.budgetKnown}
                                 variantActions={{
-                                  onDelete: async (quant) => {
+                                  onDelete: async (quant, cachePath) => {
                                     await deleteCachedModel(
                                       id,
                                       quant,
                                       hfToken || undefined,
+                                      cachePath ?? undefined,
                                     );
                                     prunePinnedQuantValidation(id, quant);
                                     refreshCachedLists();
@@ -7496,12 +8476,12 @@ export function HubModelPicker({
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
             <button
               type="button"
-              onClick={onEject}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
-              title="Eject model"
+              onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
+              title={ejectsAll ? "Eject all models" : "Eject model"}
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-              Eject model
+              {ejectsAll ? "Eject all" : "Eject model"}
             </button>
           </div>
         ) : null}
@@ -7522,8 +8502,10 @@ export function HubModelPicker({
           displayName={settingsModel.model.name}
           modelId={settingsModel.providerModelId}
           providerType={settingsModel.model.providerType}
+          apiType={settingsModel.apiType}
           baseUrl={settingsModel.baseUrl}
           isReasoningProvider={settingsModel.isReasoningProvider}
+          reasoningConfig={settingsModel.reasoningConfig}
           connectionMaxOutputTokens={settingsModel.connectionMaxOutputTokens}
         />
       ) : null}
@@ -7537,8 +8519,10 @@ export function HubModelPicker({
           displayName={infoModel.model.name}
           providerName={infoModel.model.providerName}
           providerType={infoModel.model.providerType}
+          apiType={infoModel.apiType}
           baseUrl={infoModel.baseUrl}
           isReasoningProvider={infoModel.isReasoningProvider}
+          reasoningConfig={infoModel.reasoningConfig}
         />
       ) : null}
     </CapabilityScope.Provider>
@@ -7581,6 +8565,24 @@ function FineTunedRows({
     systemRamAvailableGb: number;
   };
 }) {
+  const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
+  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
+  const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
+  const replacePinned = usePinnedModelsStore((s) => s.replacePinned);
+  // A GGUF export's id is its first file, so deleting a variant can change or end it.
+  const repinExportedGguf = async (oldId: string) => {
+    const folder = oldId.slice(0, Math.max(oldId.lastIndexOf("/"), oldId.lastIndexOf("\\")));
+    const { loras } = await listLoras();
+    const next = loras.find(
+      (lora) =>
+        lora.source === "exported" &&
+        lora.export_type === "gguf" &&
+        (lora.adapter_path.startsWith(`${folder}/`) ||
+          lora.adapter_path.startsWith(`${folder}\\`)),
+    );
+    if (!next) unpinRepo(oldId);
+    else replacePinned(pinKey(oldId), pinKey(next.adapter_path));
+  };
   return (
     <>
       {adapters.map((adapter) => {
@@ -7636,11 +8638,19 @@ function FineTunedRows({
               : tag;
         return (
           <div key={adapter.id}>
-            <div className="group flex items-center">
+            <div
+              className={downloadedRowShellClassName(value === adapter.id)}
+              // The pill a Pinned drag lifts, not this wrapper (use-pinned-row-drag.ts).
+              data-pinned-row-face=""
+            >
               <div className="min-w-0 flex-1">
                 <ModelRow
                   label={adapter.name}
-                  meta={meta}
+                  meta={
+                    adapter.sizeBytes
+                      ? `${meta} · ${formatBytes(adapter.sizeBytes)}`
+                      : meta
+                  }
                   selected={value === adapter.id}
                   loaded={isRuntimeLoadedModel(
                     loadedModelId,
@@ -7682,6 +8692,7 @@ function FineTunedRows({
                       : undefined
                   }
                   alignMeta="device"
+                  className={downloadedRowButtonClassName}
                 />
               </div>
               <span className={ROW_ACTIONS_CLASS}>
@@ -7691,36 +8702,61 @@ function FineTunedRows({
                     onConfigure={() => onConfigure(adapter.id, selectionMeta)}
                   />
                 )}
-                {canDelete && (
-                  <ModelDeleteAction
-                    ariaLabel={`Delete ${adapter.name}`}
-                    title="Delete fine-tuned model?"
-                    description={
-                      <>
-                        This will remove{" "}
-                        <span className="font-medium text-foreground">
-                          {adapter.name}
-                        </span>{" "}
-                        from disk. This cannot be undone.
-                      </>
-                    }
-                    successMessage={`Deleted ${adapter.name}`}
-                    disabled={deleteDisabled}
-                    onConfirm={() =>
-                      deleteFineTunedModel({
-                        modelPath: adapter.id,
-                        source: isExported ? "exported" : "training",
-                        exportType: adapter.exportType,
-                      })
-                    }
-                    onDeleted={() => onModelsChange?.({ id: adapter.id })}
-                  />
-                )}
+                <ModelRowMenu
+                  ariaLabel={`More options for ${adapter.name}`}
+                  pin={{
+                    pinned: pinnedKeys.includes(pinKey(adapter.id)),
+                    pinLabel: "Pin",
+                    unpinLabel: "Unpin",
+                    onToggle: () => togglePinned(adapter.id),
+                  }}
+                  onReveal={
+                    isLocal
+                      ? undefined
+                      : () =>
+                          revealFineTunedModel(
+                            adapter.id,
+                            isExported ? "exported" : "training",
+                          )
+                  }
+                  del={
+                    canDelete
+                      ? {
+                          title: "Delete fine-tuned model?",
+                          description: (
+                            <>
+                              This will remove{" "}
+                              <span className="font-medium text-foreground">
+                                {adapter.name}
+                              </span>{" "}
+                              from disk. This cannot be undone.
+                            </>
+                          ),
+                          successMessage: `Deleted ${adapter.name}`,
+                          disabled: deleteDisabled,
+                          onConfirm: async () => {
+                            await deleteFineTunedModel({
+                              modelPath: adapter.id,
+                              source: isExported ? "exported" : "training",
+                              exportType: adapter.exportType,
+                            });
+                            unpinRepo(adapter.id);
+                          },
+                          onDeleted: () => onModelsChange?.({ id: adapter.id }),
+                        }
+                      : undefined
+                  }
+                />
               </span>
             </div>
             {expandedGguf === adapter.id && (
               <GgufVariantExpander
                 repoId={adapter.id}
+                loadedQuants={
+                  activeGgufVariant && modelIdsMatchForPicker(loadedModelId, adapter.id)
+                    ? [activeGgufVariant]
+                    : undefined
+                }
                 onSelect={onSelect}
                 onConfigure={onConfigure}
                 parentOptionKey={optionKey}
@@ -7755,6 +8791,10 @@ function FineTunedRows({
                           exportType: "gguf",
                           ggufVariant: quant,
                         });
+                        if (pinnedKeys.includes(pinKey(adapter.id))) {
+                          // If the rescan fails, drop the pin rather than leave it pointing at a gone file.
+                          await repinExportedGguf(adapter.id).catch(() => unpinRepo(adapter.id));
+                        }
                         onModelsChange?.({
                           id: adapter.id,
                           ggufVariant: quant,

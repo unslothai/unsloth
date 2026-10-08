@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from fastapi.testclient import TestClient
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -149,8 +149,13 @@ class TestMaxBodyMiddleware:
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
             == STT_AUDIO_JSON_MAX_BYTES
         )
-        # The OpenAI transcriptions route is multipart, so it gets headroom over the raw cap, on both mounts.
-        for path in ("/v1/audio/transcriptions", "/api/inference/audio/transcriptions"):
+        # The OpenAI transcription/translation routes are multipart, so they get headroom over the raw cap.
+        for path in (
+            "/v1/audio/transcriptions",
+            "/api/inference/audio/transcriptions",
+            "/v1/audio/translations",
+            "/api/inference/audio/translations",
+        ):
             assert main_module._get_request_body_max_bytes(path) == upload_request_limit_bytes(
                 STT_AUDIO_RAW_MAX_BYTES
             ), path
@@ -160,6 +165,13 @@ class TestMaxBodyMiddleware:
             ), path
             assert main_module._get_upload_passthrough_request_max_bytes(path + "/") == (
                 upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
+            ), path
+        from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
+
+        for path in ("/v1/audio/inputs", "/api/inference/audio/inputs"):
+            assert path in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS, path
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                AUDIO_INPUT_MAX_BYTES
             ), path
         from utils.upload_limits import (
             VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
@@ -266,6 +278,45 @@ class TestMaxBodyMiddleware:
         assert cap == upload_request_limit_bytes()  # DB-aware cap + multipart overhead
         assert cap > default_request_body_limit_bytes()  # not the plain default body cap
 
+    def test_library_uploads_are_capped_before_parsing(self, main_module):
+        from utils.upload_limits import (
+            LIBRARY_UPLOAD_MAX_BYTES,
+            default_request_body_limit_bytes,
+            upload_request_limit_bytes,
+        )
+
+        assert "/api/library" in main_module._BODY_PROTECTED_PREFIXES
+        for path in ("/api/library/uploads", "/api/library/uploads/"):
+            assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+                upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
+            ), path
+        path = "/api/library/uploads/abc/text"
+        assert path not in main_module._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+        assert main_module._get_upload_passthrough_request_max_bytes(path) == (
+            default_request_body_limit_bytes()
+        )
+
+    def test_browser_posts_are_capped_before_auth(self, main_module):
+        from routes.browser import router
+
+        posts = [route.path for route in router.routes if "POST" in route.methods]
+        assert posts
+        for path in posts:
+            assert any(
+                f"/api/browser{path}".startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
+            ), path
+
+    def test_auth_posts_are_capped_before_auth(self, main_module):
+        # login / refresh / desktop-login are reachable without a session.
+        from routes.auth import router
+
+        posts = [route.path for route in router.routes if "POST" in route.methods]
+        assert posts
+        for path in posts:
+            assert any(
+                f"/api/auth{path}".startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
+            ), path
+
     def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
         # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
         # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.
@@ -338,6 +389,7 @@ class TestMaxBodyMiddleware:
             "/v1/audio/generate",
             "/v1/audio/speech",
             "/v1/audio/transcriptions",
+            "/v1/audio/translations",
             "/v1/embeddings",
             "/v1/responses",
             "/v1/messages",
@@ -500,6 +552,29 @@ def _make_csp_app(main_module, attach_nonce: str | None = None):
     return app
 
 
+def _make_api_cache_app(main_module, file_path: Path | None = None):
+    app = FastAPI()
+    app.add_middleware(main_module.SecurityHeadersMiddleware)
+
+    @app.get("/api/inference/monitor")
+    async def monitor():
+        return {"entries": []}
+
+    @app.get("/api/video/asset")
+    async def asset():
+        return Response(
+            content = b"mp4",
+            media_type = "video/mp4",
+            headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+        )
+
+    @app.get("/api/file")
+    async def file():
+        return FileResponse(file_path)
+
+    return app
+
+
 class TestSecurityHeadersMiddleware:
     def test_csp_has_no_unsafe_inline_for_script_src(self, main_module):
         app = _make_csp_app(main_module)
@@ -530,6 +605,33 @@ class TestSecurityHeadersMiddleware:
         assert "microphone=(self)" in permissions_policy
         assert "geolocation=()" in permissions_policy
         assert r.headers["server"] == "unsloth-studio"
+
+    def test_api_read_without_cache_policy_is_no_store(self, main_module):
+        # Polled JSON like the API monitor: Chromium/WebView2 would write every poll to its disk cache.
+        app = _make_api_cache_app(main_module)
+        r = TestClient(app).get("/api/inference/monitor")
+        assert r.status_code == 200
+        assert r.headers["cache-control"] == "no-store"
+
+    def test_api_route_cache_policy_is_kept(self, main_module):
+        app = _make_api_cache_app(main_module)
+        r = TestClient(app).get("/api/video/asset")
+        assert r.headers["cache-control"] == "private, max-age=31536000, immutable"
+
+    def test_api_file_with_validators_stays_revalidatable(self, main_module, tmp_path):
+        # FileResponse carries ETag/Last-Modified, so the browser can revalidate instead of refetching.
+        path = tmp_path / "out.png"
+        path.write_bytes(b"png")
+        app = _make_api_cache_app(main_module, file_path = path)
+        r = TestClient(app).get("/api/file")
+        assert r.status_code == 200
+        assert "etag" in r.headers
+        assert "cache-control" not in r.headers
+
+    def test_non_api_response_gets_no_cache_policy(self, main_module):
+        app = _make_csp_app(main_module)
+        r = TestClient(app).get("/plain")
+        assert "cache-control" not in r.headers
 
     def test_mirror_endpoints_in_connect_src(self, main_module, monkeypatch):
         # A mirror must reach connect-src or the browser blocks the Hub calls.
@@ -748,15 +850,18 @@ class TestSecurityHeadersMiddleware:
         assert r.headers["server"] == "unsloth-studio"
         assert "content-security-policy" in r.headers
 
-    def test_artifact_preview_frame_omits_x_frame_options(self, main_module):
+    @pytest.mark.parametrize(
+        "path", ["/api/inference/artifact-preview-frame", "/api/inference/mcp-app-frame"]
+    )
+    def test_frame_shells_omit_x_frame_options(self, main_module, path):
         app = FastAPI()
         app.add_middleware(main_module.SecurityHeadersMiddleware)
 
-        @app.get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        @app.get(path)
         async def frame():
             return Response(content = b"<html></html>", media_type = "text/html")
 
-        r = TestClient(app).get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        r = TestClient(app).get(path)
         assert r.status_code == 200
         assert "x-frame-options" not in {k.lower() for k in r.headers.keys()}
         assert r.headers["referrer-policy"] == "no-referrer"
@@ -968,17 +1073,33 @@ class TestFrontendAssets:
         app = FastAPI()
         app.state.cloudflare_url = None
         assert main_module.setup_frontend(app, tmp_path, tunnel_only = True)
+        loopback_client = TestClient(
+            app, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 40000)
+        )
         client = TestClient(app)
         remote_client = TestClient(app, base_url = "https://remote.trycloudflare.com")
         headers = {"CF-Connecting-IP": "198.51.100.7"}
         assert client.get("/").status_code == 404
         assert client.get("/assets/app.js").status_code == 404
+        assert loopback_client.get("/").status_code == 200
+        assert loopback_client.get("/assets/app.js").status_code == 200
+        proxied_loopback = TestClient(
+            app,
+            base_url = "http://127.0.0.1:8888",
+            client = ("127.0.0.1", 40001),
+            headers = {"X-Forwarded-For": "203.0.113.7"},
+        )
+        assert proxied_loopback.get("/").status_code == 404
+        assert proxied_loopback.get("/assets/app.js").status_code == 404
+        assert loopback_client.get("/", headers = {"Host": "evil.example:8888"}).status_code == 404
         assert remote_client.get("/", headers = headers).status_code == 404
 
         app.state.cloudflare_url = "https://remote.trycloudflare.com"
         assert remote_client.get("/", headers = headers).status_code == 200
         assert remote_client.get("/settings/api", headers = headers).status_code == 200
         assert remote_client.get("/assets/app.js", headers = headers).status_code == 200
+        assert loopback_client.get("/", headers = headers).status_code == 404
+        assert loopback_client.get("/").status_code == 200
         assert client.get("/", headers = headers).status_code == 404
         assert client.get("/settings/api", headers = headers).status_code == 404
         assert client.get("/").status_code == 404
@@ -1379,6 +1500,26 @@ class TestRemoteAccessCORS:
     any page the user had open could read the local API's unauthenticated responses.
     """
 
+    def test_configured_cors_exposes_typesafe_request_id(self, main_module):
+        cors = next(
+            middleware
+            for middleware in main_module.app.user_middleware
+            if middleware.cls is main_module.RemoteAccessCORSMiddleware
+        )
+        app = FastAPI()
+        app.add_middleware(cors.cls, **{**cors.kwargs, "remote_access_state": app.state})
+
+        @app.get("/decision")
+        async def decision():
+            return Response(headers = {"x-typesafe-request-id": "decision-request"})
+
+        response = TestClient(app).get("/decision", headers = {"Origin": "tauri://localhost"})
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] in ("*", "tauri://localhost")
+        assert response.headers["x-typesafe-request-id"] == "decision-request"
+        exposed = response.headers["access-control-expose-headers"].lower().split(",")
+        assert "x-typesafe-request-id" in {header.strip() for header in exposed}
+
     TUNNEL = "https://demo-abc.trycloudflare.com"
 
     @staticmethod
@@ -1452,3 +1593,24 @@ class TestRemoteAccessCORS:
         for published in (None, self.TUNNEL):
             app.state.cloudflare_url = published
             assert self._allowed(client, "https://evil.example") == "https://evil.example"
+
+
+def test_health_reports_the_default_for_a_settings_saved_endpoint(main_module, monkeypatch):
+    from starlette.requests import Request
+    import utils.hub_settings as hub_settings
+
+    local = Request({"type": "http", "headers": [], "client": ("127.0.0.1", 1)})
+    monkeypatch.setenv("HF_ENDPOINT", "https://hub.internal")
+    monkeypatch.setenv("HF_DATASETS_SERVER", "https://hub.internal")
+    monkeypatch.setattr(hub_settings, "_saved_only_endpoints", frozenset(), raising = False)
+    assert main_module._reportable_hf_endpoints(local) == {
+        "hf_endpoint": "https://hub.internal",
+        "hf_datasets_server": "https://hub.internal",
+    }
+    monkeypatch.setattr(
+        hub_settings, "_saved_only_endpoints", frozenset({"https://hub.internal"}), raising = False
+    )
+    assert main_module._reportable_hf_endpoints(local) == {
+        "hf_endpoint": "https://huggingface.co",
+        "hf_datasets_server": "https://datasets-server.huggingface.co",
+    }

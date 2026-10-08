@@ -740,7 +740,7 @@ def test_a_filesystem_backed_row_is_not_named_by_its_path(_local_inventory):
 
 
 def _stub_rejected_scan_folder(monkeypatch):
-    def _raises(path):
+    def _raises(path, recursive = None):
         raise HTTPException(
             status_code = 400,
             detail = f"Path is not readable: [Errno 36] File name too long: '{REPO_DIR}'",
@@ -940,6 +940,7 @@ def test_a_cache_reference_lists_the_quants_of_the_copy_it_names(monkeypatch, cl
         prefer_local_cache = False,
         offline = False,
         local_path = None,
+        include_cache_locations = False,
         hf_token = None,
     ):
         seen.update(repo_id = repo_id, local_path = local_path)
@@ -994,7 +995,8 @@ def test_a_cache_row_pinned_to_a_snapshot_is_referenced_too(monkeypatch):
 def test_the_compat_scan_folder_add_does_not_answer_with_the_path(monkeypatch):
     created = {"id": 7, "path": f"{HOST_ROOT}/extra", "created_at": "2026-09-01"}
     monkeypatch.setattr(
-        "storage.studio_db.add_scan_folder_with_status", lambda path: (created, False)
+        "storage.studio_db.add_scan_folder_with_status",
+        lambda path, recursive = None: (created, False),
     )
 
     payload = _models(via_api_key = True).post("/api/models/scan-folders", json = {"path": "."})
@@ -1568,7 +1570,7 @@ def test_the_chat_status_does_not_hand_back_the_path_the_load_resolved(monkeypat
     from models.inference import InferenceStatusResponse
     from routes import inference as inference_routes
 
-    async def _payload(current_subject: str):
+    async def _payload(current_subject: str, model = None):
         return InferenceStatusResponse(
             active_model = REPO_DIR,
             model_identifier = REPO_DIR,

@@ -506,8 +506,16 @@ class TestGpuNameArchParity:
         """Every arch a name table can produce must be routable to an AMD wheel
         index, else detection succeeds and the install still lands on CPU torch."""
         families = stack_mod._GFX_TO_AMD_INDEX_ARCH
+        # RDNA 1 is Windows-only (multi-arch index, #11614); Linux tables must not produce it.
+        multiarch = stack_mod._WINDOWS_MULTIARCH_GFX
+        linux_copies = ("install.sh", "studio/setup.sh")
         for where, rows in _name_tables().items():
             for arch in {arch for _, arch in rows}:
+                if arch in multiarch and not where.startswith(linux_copies):
+                    assert (
+                        stack_mod._windows_rocm_index_url(arch) is not None
+                    ), f"{where}: {arch} has no Windows route"
+                    continue
                 assert arch in families, f"{where}: {arch} has no entry in _GFX_TO_AMD_INDEX_ARCH"
 
     def test_every_documented_gpu_resolves_somewhere(self):
@@ -678,11 +686,11 @@ class TestNoUnregisteredArchTable:
 
 
 class TestTorch211PinAllowlistParity:
-    """gfx120X-all / gfx1151 / gfx1150 / gfx1152 (and rocm7.2) ship the null
+    """gfx120X-all / gfx1151 / gfx1150 / gfx1152 / gfx103X-all / gfx110X-all (and rocm7.2) ship the null
     _grouped_mm kernel below torch 2.11, so all three installers must raise the
     same floor. A leaf missing from one copy reintroduces the crash there."""
 
-    _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152"}
+    _EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152", "gfx103x-all", "gfx110x-all"}
 
     def test_install_sh_pins_the_same_leaves(self):
         source = _INSTALL_SH.read_text(encoding = "utf-8")

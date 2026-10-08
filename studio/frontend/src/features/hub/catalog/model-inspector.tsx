@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
   TooltipContent,
@@ -31,7 +31,7 @@ import {
   Database02Icon,
   Download01Icon,
   FavouriteIcon,
-  Globe02Icon,
+  InternetIcon,
   LayersLogoIcon,
   LibraryIcon,
   LicenseIcon,
@@ -47,6 +47,7 @@ import { useCopyFeedback } from "../hooks/use-copy-feedback";
 import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
   type HubModelRunSelection,
+  hubModelRunsOnAudioPage,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
 import { studioPageForTask } from "../lib/unsloth-support";
@@ -76,6 +77,7 @@ function ViewRepositoryButton({
 }) {
   const online = useOnlineStatus();
   const hfEndpoint = useHfEndpoint();
+  const hubName = useHubName();
   const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
@@ -83,7 +85,7 @@ function ViewRepositoryButton({
     <HugeiconsIcon
       icon={Share05Icon}
       strokeWidth={1.75}
-      className="size-[13px]"
+      className="size-[calc(13px*var(--ui-space-scale,1))]"
     />
   );
   return (
@@ -116,7 +118,7 @@ function ViewRepositoryButton({
         )}
       </TooltipTrigger>
       <TooltipContent side="bottom" className="tooltip-compact">
-        {online ? "Open on Hugging Face" : "Unavailable offline"}
+        {online ? `Open on ${hubName}` : "Unavailable offline"}
       </TooltipContent>
     </Tooltip>
   );
@@ -143,7 +145,7 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
           <HugeiconsIcon
             icon={copied ? Tick02Icon : Copy01Icon}
             strokeWidth={1.75}
-            className="size-[13px]"
+            className="size-[calc(13px*var(--ui-space-scale,1))]"
           />
         </button>
       </TooltipTrigger>
@@ -189,7 +191,7 @@ function StatGrid({ children }: { children: React.ReactNode }) {
 }
 
 function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
-  return <div className="max-w-[680px] pt-3">{children}</div>;
+  return <div className="max-w-[calc(680px*var(--ui-space-scale,1))] pt-3">{children}</div>;
 }
 
 function StatusChip({
@@ -404,7 +406,7 @@ export type ModelInspectorActions = {
   onSearchHub?: (query: string) => void;
   onRun?: (
     selection: HubModelRunSelection,
-    mediaPage: ReturnType<typeof studioPageForTask>,
+    mediaPage: ReturnType<typeof studioPageForTask> | "audio",
   ) => void;
   runConfigPending?: boolean;
 };
@@ -553,10 +555,11 @@ export const ModelInspector = memo(function ModelInspector({
     : "N/A";
   // Media models use a separate runtime, so the llama.cpp memory estimate does
   // not describe their load.
-  const mediaPage = studioPageForTask(
-    taskForMediaPick(model.pipelineTag, model.task) ?? undefined,
-  );
-  const runsOnMediaRuntime = mediaPage !== undefined;
+  const mediaTask = taskForMediaPick(model.pipelineTag, model.task);
+  const mediaPage = studioPageForTask(mediaTask ?? undefined);
+  const audioPage =
+    mediaPage === undefined && hubModelRunsOnAudioPage(model, mediaTask);
+  const runsOnMediaRuntime = mediaPage !== undefined || audioPage;
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,
@@ -566,7 +569,8 @@ export const ModelInspector = memo(function ModelInspector({
   });
   const runAction =
     runEligible && onRun
-      ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
+      ? (selection: HubModelRunSelection) =>
+          onRun(selection, audioPage ? "audio" : mediaPage)
       : undefined;
 
   const languages = parseLanguageTags(model.tags);
@@ -602,7 +606,7 @@ export const ModelInspector = memo(function ModelInspector({
               {model.owner.toLowerCase() === "unsloth" && (
                 <span
                   aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-[18px] shrink-0 text-verified"
+                  className="hub-verified-badge size-[calc(18px*var(--ui-space-scale,1))] shrink-0 text-verified"
                 />
               )}
             </div>
@@ -703,10 +707,12 @@ export const ModelInspector = memo(function ModelInspector({
           ) : (
             <DownloadSection
               showMemoryBar={!runsOnMediaRuntime}
-              mediaRuntime={runsOnMediaRuntime}
+              mediaPage={mediaPage}
+              assetRuntime={mediaPage ?? (["text-to-speech", "text-to-audio"].includes(model.pipelineTag ?? model.task ?? "") ? "audio" : undefined)}
               repoId={model.isLocal ? (model.hubRepoId ?? model.id) : model.id}
               isGguf={model.isGguf}
               {...downloadState}
+              companionPrefetch={model.companionPrefetch === true}
               modelFormat={model.modelFormat}
               isActive={isActive}
               activeQuant={isActive ? (activeGgufVariant ?? null) : null}
@@ -808,7 +814,7 @@ export const ModelInspector = memo(function ModelInspector({
                   ? `${languages.slice(0, 3).join(", ")} +${languages.length - 3}`
                   : languages.join(", ")
               }
-              icon={Globe02Icon}
+              icon={InternetIcon}
             />
           )}
           <StatRow label="License" value={licenseLabel} icon={LicenseIcon} />

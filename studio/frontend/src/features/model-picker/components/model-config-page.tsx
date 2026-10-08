@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { InferenceEnginePicker } from "./inference-engines";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { useLlamaCppBackend } from "@/hooks/use-llama-backend";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -22,6 +34,10 @@ import {
   resolveStagedDiffusionClassification,
   useChatRuntimeStore,
 } from "@/features/chat";
+import {
+  distributeByWeight,
+  rebalanceSplit,
+} from "@/features/chat/stores/chat-runtime-store";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   type VramBudgetSettings,
@@ -77,17 +93,25 @@ import {
   loadManagedLlamaFlags,
   subscribeLlamaFlagCatalog,
 } from "../api/llama-flags";
-import { resolveEstimateContext } from "../model-config/estimate-context";
+import { type MemoryEstimate } from "../api/memory-estimate";
+import {
+  resolveEstimateContext,
+  resolveMlxEstimateContext,
+  resolveMlxServedWindow,
+  shouldRequestMemoryEstimate,
+} from "../model-config/estimate-context";
 import { resolveReclaimableMemoryCredit } from "../model-config/memory-fit";
 import {
   resolveResidentEstimateRequest,
   selectResidentEstimateSettings,
 } from "../model-config/resident-memory-request";
 import { useMemoryEstimate } from "../hooks/use-memory-estimate";
+import { useInt8PrefillAvailable } from "../hooks/use-int8-prefill-available";
 import {
   fetchLoadModelOverride,
   fromApiOverride,
   modelOverrideKey,
+  panelOverrideRow,
   syncModelOverride,
 } from "../api/model-overrides";
 import {
@@ -135,13 +159,15 @@ import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
   DRAFT_N_MAX_SPEC_TYPES,
-  KV_CACHE_DTYPES,
+  kvCacheDtypeOptions,
   LOAD_MODES,
   LOAD_MODE_DEFAULT,
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
-  MLX_KV_BITS,
+  MLX_KV_QUANTS,
+  mlxKvQuantLabel,
+  type MlxKvQuant,
   N_BATCH_LLAMA_DEFAULT,
   N_BATCH_MAX,
   N_BATCH_MIN,
@@ -169,9 +195,20 @@ import {
   vramFractionToPercent,
   vramPercentToFraction,
 } from "../model-config/per-model-config";
+import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
+import { isNpuModelId, NPU_DEFAULT_CONTEXT_LENGTH } from "../../npu";
+import {
+  type RunConfigImport,
+  SharedRunConfigControls,
+  SharedRunConfigReview,
+  cancelRunConfigImportForEdit,
+  isRunConfigEditorChange,
+  isRunConfigVariantUnresolved,
+} from "../sharing";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import {
   NumericValueInput,
   type NumericValueInputHandle,
@@ -182,15 +219,15 @@ import {
 
 const ROW_CLASS = "flex min-h-8 items-center justify-between gap-3";
 const LABEL_CLASS =
-  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 truncate text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 const LABEL_CLASS_WRAP =
-  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg";
+  "min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground";
 // Same surface token as the panel's fields and textareas.
 const CONTROL_SURFACE =
   "rounded-full border-transparent bg-[var(--panel-input-surface)] hover:bg-[var(--panel-input-surface-hover)] dark:bg-[var(--panel-input-surface)] dark:hover:bg-[var(--panel-input-surface-hover)]";
 // One width for every typed field: a box that resized per keystroke would jump under the
 // caret. Narrow, so the label beside it is not clipped in a ~240px panel.
-const INPUT_WIDTH_CLASS = "w-[84px] shrink-0";
+const INPUT_WIDTH_CLASS = "w-[calc(84px*var(--ui-space-scale,1))] shrink-0";
 // A select holds one of a known set of values, so it sizes to that value.
 const SELECT_WIDTH_CLASS = "w-auto max-w-full shrink-0";
 // .panel-select-trigger carries the surface, padding and type; this adds the layout.
@@ -310,6 +347,7 @@ function withoutUnsupportedDiffusionSettings(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
+    config.tensorSplit == null &&
     config.reasoningBudget === -1 &&
     config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
@@ -326,6 +364,7 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
+    tensorSplit: null,
     reasoningBudget: -1,
     reasoningBudgetMessage: "",
     tensorParallel: false,
@@ -367,6 +406,7 @@ function reconcileConfigGpuSelection(
   const next = {
     ...supported,
     selectedGpuIds: reconciled.ids ?? undefined,
+    tensorSplit: reconcileTensorSplit(supported.tensorSplit, supported.selectedGpuIds, reconciled.ids),
     selectedGpuIndexKind:
       reconciled.ids === null ? undefined : reconciled.indexKind,
   };
@@ -420,7 +460,9 @@ function MaxSeqLengthSetting({
   inputRef,
   isMlx,
   pinned,
+  fittedToMemory,
   windowUnknown,
+  hint,
 }: {
   value: number;
   max: number;
@@ -429,7 +471,9 @@ function MaxSeqLengthSetting({
   inputRef?: Ref<NumericValueInputHandle>;
   isMlx?: boolean;
   pinned?: boolean;
+  fittedToMemory?: boolean;
   windowUnknown?: boolean;
+  hint?: string;
 }) {
   // MLX sizes itself when unpinned, so the control is the GGUF path's Context Length and
   // shows the length that will be served, not "Auto". A dash only while it is unknown.
@@ -440,9 +484,13 @@ function MaxSeqLengthSetting({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>{label}</span>
           <InfoHint>
-            {isMlx
-              ? "Tokens of context the model is sized for."
-              : "Maximum context window in tokens. Applies on load."}
+            {hint ?? (isMlx
+              ? "Tokens of context the model is sized for." +
+                (fittedToMemory
+                  ? " Fitted to this machine's memory, which is less than the model's own " +
+                    "window. Set a length to ask for a different one."
+                  : "")
+              : "Maximum context window in tokens. Applies on load.")}
           </InfoHint>
         </div>
         <NumericValueInput
@@ -724,7 +772,7 @@ function VramBudgetRow() {
           type="button"
           disabled={locked}
           onClick={resetBudget}
-          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-nav-fg"
+          className="text-ui-11 text-muted-foreground underline underline-offset-2 hover:text-foreground"
         >
           Reset to the server default
         </button>
@@ -740,7 +788,7 @@ function VramBudgetRow() {
 }
 
 // GPU Memory placement controls, GGUF only. Slider ceilings come from the GGUF header dims;
-// --tensor-split is not persisted per model.
+// --tensor-split is set per GPU row but not persisted per model.
 function GpuMemorySettings({
   config,
   update,
@@ -782,11 +830,49 @@ function GpuMemorySettings({
   // The list order IS the device order the backend pins, so a re-checked GPU goes
   // to the end rather than back to its numeric slot.
   const orderedGpuIds = selectedGpuIds ?? gpuContext.ids ?? [];
-  const commitGpuIds = (next: number[]) => {
+  // Mirrors the backend's --tensor-split gate.
+  const splitTotal = Math.max(0, Math.min(gpuLayers, gpuLayersMax));
+  const showSplit =
+    !isDiffusion &&
+    isManual &&
+    !autoLayers &&
+    splitTotal > 0 &&
+    showGpuPicker &&
+    orderedGpuIds.length > 1;
+  const splitIsPercent = Boolean(config.tensorParallel);
+  const splitScale = splitIsPercent ? 100 : splitTotal;
+  const tensorSplit = config.tensorSplit ?? null;
+  const splitIsCustom =
+    tensorSplit != null && tensorSplit.length === orderedGpuIds.length;
+  // Untouched: show a VRAM-proportional split and send nothing.
+  const splitShares = showSplit
+    ? distributeByWeight(
+        splitScale,
+        splitIsCustom
+          ? tensorSplit
+          : orderedGpuIds.map(
+              (id) =>
+                pinnableDevices.find((d) => d.index === id)?.memoryTotalGb ?? 1,
+            ),
+      )
+    : [];
+  const setSplitShare = (id: number, value: number) => {
+    const k = orderedGpuIds.indexOf(id);
+    if (k < 0) return;
+    update({
+      // Bind even an all-GPU split to the exact ordered set before it can be saved.
+      selectedGpuIds: [...orderedGpuIds],
+      selectedGpuIndexKind: gpuIndexKind,
+      tensorSplit: rebalanceSplit(splitScale, splitShares, k, value),
+    });
+  };
+  const commitGpuIds = (next: number[], nextSplit: number[] | null = null) => {
     if (next.length === 0) return; // keep at least one GPU selected
     update({
       selectedGpuIds: next,
       selectedGpuIndexKind: gpuIndexKind,
+      // Positional, so a different GPU set invalidates it.
+      tensorSplit: nextSplit,
     });
   };
   const toggleGpu = (index: number) => {
@@ -809,7 +895,12 @@ function GpuMemorySettings({
     if (from < 0 || to < 0 || to >= orderedGpuIds.length) return;
     const next = [...orderedGpuIds];
     [next[from], next[to]] = [next[to], next[from]];
-    commitGpuIds(next);
+    let nextSplit: number[] | null = null;
+    if (splitIsCustom) {
+      nextSplit = [...tensorSplit];
+      [nextSplit[from], nextSplit[to]] = [nextSplit[to], nextSplit[from]];
+    }
+    commitGpuIds(next, nextSplit);
   };
   return (
     <>
@@ -842,6 +933,7 @@ function GpuMemorySettings({
                     nCpuMoe: undefined,
                     selectedGpuIds: undefined,
                     selectedGpuIndexKind: undefined,
+                    tensorSplit: null,
                   },
             )
           }
@@ -874,7 +966,9 @@ function GpuMemorySettings({
             value={Math.max(GPU_LAYERS_AUTO, Math.min(gpuLayers, gpuLayersMax))}
             min={GPU_LAYERS_AUTO}
             max={gpuLayersMax}
-            onChange={(v) => update({ gpuLayers: v })}
+            onChange={(v) =>
+              update(v < 0 ? { gpuLayers: v, tensorSplit: null } : { gpuLayers: v })
+            }
             displayValue={autoLayers ? "Auto" : undefined}
             info={
               <>
@@ -911,7 +1005,20 @@ function GpuMemorySettings({
               {!isDiffusion &&
                 " Their order here is the order the model gets them."}{" "}
               Keep at least one selected.
+              {showSplit &&
+                (splitIsPercent
+                  ? " The number beside each is its share of every layer, in percent (--tensor-split)."
+                  : " The number beside each is how many of the GPU Layers it holds (--tensor-split).")}
             </InfoHint>
+            {showSplit && splitIsCustom && (
+              <button
+                type="button"
+                className="ml-auto shrink-0 rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground"
+                onClick={() => update({ tensorSplit: null })}
+              >
+                Reset split
+              </button>
+            )}
           </div>
           <div className="flex flex-col gap-2">
             {orderedPinnableDevices.map((d, position) => (
@@ -919,12 +1026,35 @@ function GpuMemorySettings({
                 key={d.index}
                 className="flex items-center justify-between gap-3"
               >
-                <span className="min-w-0 truncate text-ui-12 text-nav-fg/80">
+                <span className="min-w-0 truncate text-ui-12 text-muted-foreground">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
                 </span>
+                {showSplit && isGpuChecked(d.index) && (
+                  <div className="ml-auto flex shrink-0 items-center gap-1">
+                    <NumericValueInput
+                      value={splitShares[orderedGpuIds.indexOf(d.index)] ?? 0}
+                      min={0}
+                      max={splitScale}
+                      step={1}
+                      onChange={(v) => setSplitShare(d.index, v)}
+                      derived={!splitIsCustom}
+                      ariaLabel={
+                        splitIsPercent
+                          ? `Share of each layer on GPU ${d.index}, percent`
+                          : `Layers on GPU ${d.index}`
+                      }
+                      className="panel-field h-7 w-[calc(52px*var(--ui-space-scale,1))] shrink-0"
+                      fixedWidth={true}
+                      size={4}
+                    />
+                    <span className="w-[3.25em] text-ui-12 text-muted-foreground">
+                      {splitIsPercent ? "%" : "layers"}
+                    </span>
+                  </div>
+                )}
                 {/* Not for diffusion: that runner drives one device and matches_gpu_ids
                     reduces the request to its lowest id, so the arrows would move a row
                     without moving the model, under help text promising the opposite. */}
@@ -932,7 +1062,7 @@ function GpuMemorySettings({
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} earlier`}
                       disabled={position === 0}
                       onClick={() => moveGpu(d.index, -1)}
@@ -941,7 +1071,7 @@ function GpuMemorySettings({
                     </button>
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-nav-fg/60 hover:text-nav-fg disabled:opacity-30"
+                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} later`}
                       disabled={position >= orderedGpuIds.length - 1}
                       onClick={() => moveGpu(d.index, 1)}
@@ -965,7 +1095,7 @@ function GpuMemorySettings({
   );
 }
 
-const MLX_KV_BITS_AUTO = "auto";
+const MLX_KV_QUANT_AUTO = "auto";
 
 function AdvancedSettingsToggle({
   checked,
@@ -976,7 +1106,7 @@ function AdvancedSettingsToggle({
 }) {
   return (
     // Ruled off from the context controls above, matching the estimate row's divider.
-    <div className={`${ROW_CLASS} border-t border-border/60 pt-5`}>
+    <div className={`${ROW_CLASS} border-t border-border pt-5`}>
       <div className="flex min-w-0 items-center gap-1.5">
         <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
           Advanced settings
@@ -996,11 +1126,68 @@ function AdvancedSettingsToggle({
   );
 }
 
+const GGUF_PARALLEL_HINT =
+  "Decode slots (--parallel) for concurrent requests. Leave blank for the server " +
+  "default. More slots share the context pool and use more VRAM.";
+
+const MLX_PARALLEL_HINT =
+  "Chat replies this model decodes at once (--parallel). Leave blank for the " +
+  "default. Replies sharing a decode finish sooner together, but each one holds " +
+  "its own context in memory for as long as it runs, and nothing reduces the " +
+  "number to fit — raise it only if the memory is there.";
+
+function ParallelSlotsRow({
+  config,
+  update,
+  hint,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  hint: string;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Parallel Slots</span>
+        <InfoHint>{hint}</InfoHint>
+      </div>
+      <input
+        type="number"
+        min={N_PARALLEL_MIN}
+        max={N_PARALLEL_MAX}
+        step={1}
+        value={config.nParallel ?? ""}
+        placeholder="auto"
+        onChange={(event) => {
+          const raw = event.target.value;
+          if (raw === "") {
+            update({ nParallel: null });
+            return;
+          }
+          const parsed = Number.parseInt(raw, 10);
+          if (Number.isFinite(parsed)) {
+            update({
+              nParallel: Math.max(
+                N_PARALLEL_MIN,
+                Math.min(N_PARALLEL_MAX, parsed),
+              ),
+            });
+          }
+        }}
+        aria-label="Parallel decode slots"
+        className={NUMBER_INPUT_CLASS}
+      />
+    </div>
+  );
+}
+
 function MlxAdvancedSettings({
   config,
   update,
   outcome,
   servedByMlx,
+  int8PrefillAvailable,
+  onInt8PrefillChange,
   onEditTemplate,
   templateOutcome,
 }: {
@@ -1010,6 +1197,8 @@ function MlxAdvancedSettings({
   outcome: string | null;
   /** KV quantization is MLX-only; a CUDA safetensors model has no such control. */
   servedByMlx: boolean;
+  int8PrefillAvailable: boolean;
+  onInt8PrefillChange: (checked: boolean) => void;
   onEditTemplate: () => void;
   /** Why the loaded model could not take the override it was given. */
   templateOutcome: string | null;
@@ -1025,12 +1214,15 @@ function MlxAdvancedSettings({
           <InfoHint>
             Lower KV cache precision to save memory, at some cost to quality.
             Auto keeps full precision; 8-bit is the safest step down.
+            TurboQuant holds quality better at the low widths and adds 3.5-bit,
+            which uses 3-bit keys beside 4-bit values; sliding-window and
+            recurrent layers keep their native cache under it.
           </InfoHint>
         </div>
         <Select
-          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO}
+          value={config.mlxKvQuant ?? MLX_KV_QUANT_AUTO}
           onValueChange={(v) =>
-            update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
+            update({ mlxKvQuant: v === MLX_KV_QUANT_AUTO ? null : (v as MlxKvQuant) })
           }
         >
           <SelectTrigger
@@ -1042,10 +1234,10 @@ function MlxAdvancedSettings({
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
-            {MLX_KV_BITS.map((bits) => (
-              <SelectItem key={bits} value={String(bits)}>
-                {bits}-bit
+            <SelectItem value={MLX_KV_QUANT_AUTO}>Auto</SelectItem>
+            {MLX_KV_QUANTS.map((quant) => (
+              <SelectItem key={quant} value={quant}>
+                {mlxKvQuantLabel(quant)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -1055,6 +1247,29 @@ function MlxAdvancedSettings({
         <p className="text-ui-11 text-muted-foreground">{outcome}</p>
       ) : null}
         </div>
+      )}
+      {/* An enabled choice stays visible so it can be turned off when availability is unknown. */}
+      {servedByMlx && (int8PrefillAvailable || config.mlxInt8Prefill) && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Int8 Prefill</span>
+            <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
+              Exp
+            </span>
+            <InfoHint>
+              Reads long prompts faster by doing part of the math at lower
+              precision. Answers can change and may be less accurate.
+            </InfoHint>
+          </div>
+          <Switch
+            className="panel-switch shrink-0"
+            checked={config.mlxInt8Prefill ?? false}
+            onCheckedChange={onInt8PrefillChange}
+          />
+        </div>
+      )}
+      {servedByMlx && (
+        <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
       )}
       <div className="space-y-1">
         <ChatTemplateSetting
@@ -1179,6 +1394,7 @@ function GgufAdvancedSettings({
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
+  const llamaBackend = useLlamaCppBackend();
   // llama-server aborts below 2 and below the slot count, so the loader raises the emitted value
   // to max(slots, 2). Surfaced so the number typed here is not silently different from the
   // one that runs. With Slots blank only the hard floor of 2 is asserted.
@@ -1225,7 +1441,7 @@ function GgufAdvancedSettings({
             <SelectItem value={KV_CACHE_DTYPE_DEFAULT}>
               {KV_CACHE_DTYPE_DEFAULT}
             </SelectItem>
-            {KV_CACHE_DTYPES.map((dtype) => (
+            {kvCacheDtypeOptions(llamaBackend, config.kvCacheDtype).map((dtype) => (
               <SelectItem key={dtype} value={dtype}>
                 {dtype}
               </SelectItem>
@@ -1341,7 +1557,10 @@ function GgufAdvancedSettings({
               <SelectItem value={KV_CACHE_DTYPE_DEFAULT}>
                 {KV_CACHE_DTYPE_DEFAULT}
               </SelectItem>
-              {KV_CACHE_DTYPES.map((dtype) => (
+              {kvCacheDtypeOptions(
+                llamaBackend,
+                config.specDraftCacheDtype,
+              ).map((dtype) => (
                 <SelectItem key={dtype} value={dtype}>
                   {dtype}
                 </SelectItem>
@@ -1351,42 +1570,7 @@ function GgufAdvancedSettings({
         </div>
       )}
 
-      <div className={ROW_CLASS}>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>Parallel Slots</span>
-          <InfoHint>
-            Decode slots (--parallel) for concurrent requests. Leave blank for
-            the server default. More slots share the context pool and use more
-            VRAM.
-          </InfoHint>
-        </div>
-        <input
-          type="number"
-          min={N_PARALLEL_MIN}
-          max={N_PARALLEL_MAX}
-          step={1}
-          value={config.nParallel ?? ""}
-          placeholder="auto"
-          onChange={(event) => {
-            const raw = event.target.value;
-            if (raw === "") {
-              update({ nParallel: null });
-              return;
-            }
-            const parsed = Number.parseInt(raw, 10);
-            if (Number.isFinite(parsed)) {
-              update({
-                nParallel: Math.max(
-                  N_PARALLEL_MIN,
-                  Math.min(N_PARALLEL_MAX, parsed),
-                ),
-              });
-            }
-          }}
-          aria-label="Parallel decode slots"
-          className={NUMBER_INPUT_CLASS}
-        />
-      </div>
+      <ParallelSlotsRow config={config} update={update} hint={GGUF_PARALLEL_HINT} />
 
       {!isDiffusion && (
         <div className="space-y-1">
@@ -1766,6 +1950,9 @@ function ExtraArgsRow({
   const diagnostics = diagnoseExtraArgs(text, catalog, {
     gpuSelectionActive: config.selectedGpuIds != null,
     manualGpuMemory: config.gpuMemoryMode === "manual",
+    // Only manual mode with a resolved layer count of 0 or more rewrites --tensor-split; at Auto
+    // layers the launcher drops it, so the value never reaches llama-server.
+    gpuLayers: config.gpuLayers,
     // The same floor the batch control shows: with Slots blank the count is the server default
     // this page cannot see, so only the hard 2 holds. A build that clamps serves one slot
     // whatever is chosen, so an explicit Slots value must not raise the floor.
@@ -1829,7 +2016,7 @@ function ExtraArgsRow({
             placeholder="--rope-scaling yarn --yarn-orig-ctx 32768"
             aria-label="Extra llama-server arguments"
             aria-describedby={diagnostics.length > 0 ? adviceId : undefined}
-            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
+            className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left font-mono text-ui-12 leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
           />
         </div>
         {(tokenCount > 0 || diagnostics.length > 0) && (
@@ -1902,14 +2089,16 @@ export function ModelConfigPage({
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
+  const residentModelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const residentEstimateSettings = useChatRuntimeStore(
     useShallow(selectResidentEstimateSettings),
   );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
-  const loadedMlxKvBitsRequested = useChatRuntimeStore(
-    (s) => s.loadedMlxKvBitsRequested,
+  const loadedMlxKvQuantRequested = useChatRuntimeStore(
+    (s) => s.loadedMlxKvQuantRequested,
   );
   const isActiveModel = loadedConfig != null;
+  const sharedVariantUnresolved = isRunConfigVariantUnresolved(target);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
@@ -1922,6 +2111,7 @@ export function ModelConfigPage({
   );
   // What settings are stored under, which is not always what loads; the probes keep target.id.
   const configId = target.configId ?? target.id;
+  const targetIsNpu = isNpuModelId(target.id);
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
     const resolved = resolveInitialConfig(configId, target.ggufVariant);
@@ -2025,17 +2215,17 @@ export function ModelConfigPage({
   // refuse. Held by the panel rather than the row, since the row unmounts whenever Advanced
   // settings collapse while its tokens stay in the config.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
-  // True until the stored-arguments read below settles: a load started before it lands sends no
-  // llama_extra_args, and /load cannot inherit them from a process that is not running.
+  // True until the server-row read below settles: a load started before it lands sends none of the
+  // row's settings, and with Remember unchecked it forgets the row it never read.
   const [extraArgsHydrating, setExtraArgsHydrating] = useState(
-    () => target.isGguf && !isDiffusion,
+    () => !isDiffusion,
   );
   // The row does not withdraw its own objection when it unmounts, or collapsing Advanced settings
   // would re-enable Load for arguments the backend refuses. Only a different model retires it.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the model, not on the setter
   useEffect(() => {
     setExtraArgsLoadable(true);
-    setExtraArgsHydrating(target.isGguf && !isDiffusion);
+    setExtraArgsHydrating(!isDiffusion);
   }, [configId, target.ggufVariant, target.isGguf, isDiffusion]);
 
   // Compare against what the backend was asked for, not what it applied: staging a new value
@@ -2048,7 +2238,7 @@ export function ModelConfigPage({
       : null;
   const mlxKvQuantOutcome =
     isActiveModel &&
-    (configState.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
+    (configState.mlxKvQuant ?? null) === (loadedMlxKvQuantRequested ?? null)
       ?  // Both, not either: dropping the note promises savings before the offset where quantization actually starts.
         [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null
       : null;
@@ -2057,6 +2247,14 @@ export function ModelConfigPage({
     platformDeviceType,
     platformChatOnlyReason,
   );
+  const int8PrefillAvailable = useInt8PrefillAvailable(
+    servedByMlx &&
+      !(target.meta.nativePathToken ?? (isActiveModel ? activeNativePathToken : null))
+      ? target.id
+      : null,
+    hfToken || null,
+  );
+  const [int8PrefillConfirmOpen, setInt8PrefillConfirmOpen] = useState(false);
   // Read live, not snapshotted at mount: the sidebar copy stays mounted while collapsed.
   const advancedPreference = useSyncExternalStore(
     subscribeAdvancedSettingsOpen,
@@ -2068,14 +2266,28 @@ export function ModelConfigPage({
   const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
     hasNonDefaultAdvanced(configState),
   );
+  const [importedConfig, setImportedConfig] = useState<RunConfigImport | null>(
+    null,
+  );
+  const handleSharedConfigImport = useCallback((imported: RunConfigImport) => {
+    setImportedConfig(imported);
+    if (Object.keys(imported.changes).length > 0) {
+      setAutoOpenAdvanced(true);
+    }
+  }, []);
   // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
   // section the user just closed.
-  const [initialMlxKvBits] = useState(() => configState.mlxKvBits ?? null);
+  const [initialMlxKvQuant] = useState(() => configState.mlxKvQuant ?? null);
+  const [initialMlxInt8Prefill] = useState(
+    () => configState.mlxInt8Prefill ?? false,
+  );
   // Applicability stays live, unlike the snapshot above: MLX can become available after mount,
   // and a width that starts applying then has to surface.
-  const autoOpenForMlxKvBits = servedByMlx && initialMlxKvBits != null;
+  const autoOpenForMlxKvQuant = servedByMlx && initialMlxKvQuant != null;
+  const autoOpenForMlxInt8Prefill = servedByMlx && initialMlxInt8Prefill;
   const showAdvanced =
-    advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
+    advancedPreference ??
+    (autoOpenAdvanced || autoOpenForMlxKvQuant || autoOpenForMlxInt8Prefill);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
@@ -2092,7 +2304,7 @@ export function ModelConfigPage({
   );
   const modelMaxPosition = useModelMaxPositionEmbeddings(
     target.id,
-    !target.isGguf,
+    !target.isGguf && !targetIsNpu,
   );
   const hasLoadedDefaultTemplate =
     isActiveModel && loadedDefaultChatTemplate != null;
@@ -2104,7 +2316,7 @@ export function ModelConfigPage({
     : templateDefaults.loading;
 
   // Fetch GGUF header dims to size the GPU Memory sliders; the context also fills in below.
-  const contextFetchKey = target.isGguf
+  const contextFetchKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
   const [fetchedStagedDims, setFetchedStagedDims] = useState<{
@@ -2171,6 +2383,10 @@ export function ModelConfigPage({
     stagedDims,
   );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
+  // Speech, music and ASR GGUFs the backend runs on its audio runtime: no llama-server launches,
+  // so none of its knobs apply. Their own options live under Advanced on the Audio page.
+  const audioRuntimeGguf =
+    target.isGguf && isAudioRuntimeGguf(target.id, target.meta.audioType);
 
   // The one field on this page whose stored value the local config may never have seen:
   // llama_extra_args can be set through the overrides API with no UI involved, so an empty box
@@ -2236,14 +2452,13 @@ export function ModelConfigPage({
   ]);
 
   // The server copy is shared by Desktop, LAN, and tunnel origins, so hydrate the whole
-  // remembered GGUF config here; localStorage is only the immediate seed. This also runs while
-  // Advanced is closed, since extra arguments affect every load.
+  // remembered config here; localStorage is only the immediate seed. This also runs while
+  // Advanced is closed, since the row reaches every load whether or not it is shown.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
   useEffect(() => {
-    if (!target.isGguf || resolvedIsDiffusion) {
-      // Nothing else even has this field: the row is GGUF-only and so is the load payload. A
-      // diffusion GGUF is GGUF-shaped but runs through the shim, which appends no llama-server
-      // flags, so it must not wait either.
+    if (resolvedIsDiffusion) {
+      // A diffusion model runs through the shim, which appends no llama-server flags, so it keeps
+      // Load free of this read.
       setExtraArgsHydrating(false);
       return;
     }
@@ -2282,8 +2497,10 @@ export function ModelConfigPage({
     Promise.all([
       // Resolved by the backend, which owns the rules; the local resolver stays as the fallback for
       // a backend that predates the parameter.
-      fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys),
-      loadManagedLlamaFlags(),
+      fetchLoadModelOverride(loadId, configId, target.ggufVariant, keys).then(
+        (row) => panelOverrideRow(row, target.isGguf),
+      ),
+      target.isGguf ? loadManagedLlamaFlags() : null,
     ])
       .then(([resolvedOverride, managed]) => {
         // Marked here rather than before the request: StrictMode replays the effect, so a key marked
@@ -2312,7 +2529,9 @@ export function ModelConfigPage({
         );
         // A list this build refuses can equally have come from local storage, saved by a build that
         // still allowed it, and nothing else would catch it while Advanced stays collapsed.
-        const local = configRef.current.llamaExtraArgs;
+        const local = target.isGguf
+          ? configRef.current.llamaExtraArgs
+          : undefined;
         // Kept for the merge below as well as for the box: a row that carries no arguments leaves the
         // local list standing, and handing back a refused list would re-enable Load.
         let sanitizedLocal = localAtStart;
@@ -2353,7 +2572,7 @@ export function ModelConfigPage({
         // declared loadable by a verdict read off the empty server list.
         const hydratedArgs = serverConfig?.llamaExtraArgs ?? stored;
         const hydratedIsLoadable =
-          hydratedArgs.length === 0
+          !target.isGguf || hydratedArgs.length === 0
             ? true
             : extraArgsAreLoadable(
                 diagnoseExtraArgs(
@@ -2521,7 +2740,12 @@ export function ModelConfigPage({
       config.nUbatch != null);
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
+  const handleSharedConfigEdit = () => {
+    cancelRunConfigImportForEdit(draftKey);
+    setImportedConfig(null);
+  };
   const update = (patch: Partial<PerModelConfig>) => {
+    handleSharedConfigEdit();
     // Every control lands here and nothing else does: the hydration effect's own sanitising
     // writes go through setConfig, and marking those would have the read refuse its result.
     markModelConfigDraftEdited(draftKey);
@@ -2591,7 +2815,10 @@ export function ModelConfigPage({
     platform.deviceType,
     platform.chatOnlyReason,
   );
-  const atBaseline = perModelConfigsEqual(config, baseline);
+  const pinsContextLength = targetIsMlx || targetIsNpu;
+  const atBaseline = perModelConfigsEqual(config, baseline, {
+    followGlobal: true,
+  });
   // The fitted value is an outcome, not an override. Auto stays at the default even
   // when a loaded model reports less than its native context. A non-GGUF pin is an
   // override too, read from whichever field it was saved in.
@@ -2605,8 +2832,11 @@ export function ModelConfigPage({
       DEFAULT_PER_MODEL_CONFIG,
     );
   const nativeMaxSeqLength =
-    floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings) ??
-    MAX_SEQ_LENGTH_MAX;
+    floorMaxSeqLength(
+      targetIsNpu
+        ? target.meta.contextLength
+        : modelMaxPosition.maxPositionEmbeddings,
+    ) ?? MAX_SEQ_LENGTH_MAX;
   // The pin, else the length a self-sizing backend would serve, so the control states a
   // context rather than declining to. Only an unread window falls back to the app default,
   // and Reset clears the pin to null so no fallback may rebuild one from a runtime value.
@@ -2625,18 +2855,6 @@ export function ModelConfigPage({
     mlxNativeWindow == null
       ? null
       : Math.min(mlxNativeWindow, MAX_SEQ_LENGTH_MAX);
-  const mlxServedWindow =
-    (targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null) ??
-    mlxProspectiveWindow;
-  const maxSeqLengthValue =
-    servedWindow(savedContextPin(config)) ??
-    mlxServedWindow ??
-    clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
-  // The slider picks a request, so it stops at the widest a load may make.
-  const maxSeqLengthMax = Math.min(
-    MAX_SEQ_LENGTH_MAX,
-    Math.max(nativeMaxSeqLength, maxSeqLengthValue),
-  );
   // An auto-fit-below-native GGUF shows activeLoadedContext while
   // customContextLength stays null. If the user fixes GPU Layers (Manual) and
   // remembers, pin that shown context so a later fresh load keeps the fitted
@@ -2674,7 +2892,11 @@ export function ModelConfigPage({
   // tri-state, not through resolvedIsDiffusion: a GGUF still being classified may be
   // DiffusionGemma, and guessing paints a footprint from the wrong plan that never clears.
   const memoryEstimateRequest =
-    target.isGguf && classifiedIsDiffusion === false
+    shouldRequestMemoryEstimate({
+      isGguf: Boolean(target.isGguf),
+      isAppleUnifiedMemory,
+      classifiedIsDiffusion,
+    })
       ? {
           modelPath: target.id,
           ggufVariant: target.ggufVariant ?? null,
@@ -2693,6 +2915,10 @@ export function ModelConfigPage({
               (target.isGguf === true && activePresetSource === "builtin-default"),
           ),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
+          maxSeqLength: target.isGguf
+            ? null
+            : resolveMlxEstimateContext(savedContextPin(config)),
+          mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
           nParallel: runtimeConfig.nParallel,
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
@@ -2718,12 +2944,39 @@ export function ModelConfigPage({
         }
       : null;
   const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  const mlxFittedWindow = targetIsMlx
+    ? servedWindow(memoryEstimate.estimate?.contextFitted)
+    : null;
+  const mlxServedWindow = resolveMlxServedWindow(
+    targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,
+    mlxFittedWindow,
+    mlxProspectiveWindow,
+  );
+  const npuServedWindow = targetIsNpu
+    ? ((isActiveModel ? servedWindow(loadedContextLength) : null) ??
+      Math.min(NPU_DEFAULT_CONTEXT_LENGTH, nativeMaxSeqLength))
+    : null;
+  const maxSeqLengthValue =
+    servedWindow(savedContextPin(config)) ??
+    mlxServedWindow ??
+    npuServedWindow ??
+    clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength);
+  const maxSeqLengthMax = Math.min(
+    MAX_SEQ_LENGTH_MAX,
+    Math.max(nativeMaxSeqLength, maxSeqLengthValue),
+  );
   // No resident credit without a reported context; pending settings cannot price it.
-  const residentContext = servedWindow(activeLoadedContext);
+  // activeLoadedContext is GGUF-only; an MLX resident reports its served window here.
+  const residentContext = servedWindow(
+    targetIsMlx && isActiveModel ? loadedContextLength : activeLoadedContext,
+  );
   const residentEstimateRequest = resolveResidentEstimateRequest(
     isActiveModel ? memoryEstimateRequest : null,
     residentEstimateSettings,
     residentContext,
+    targetIsMlx && !residentModelLoading
+      ? { kvQuant: loadedMlxKvQuantRequested ?? null }
+      : undefined,
   );
   const residentEstimate = useMemoryEstimate(residentEstimateRequest, {
     refreshMemory: true,
@@ -2895,10 +3148,8 @@ export function ModelConfigPage({
       ? "Reload model"
       : "Load model";
 
-  const handleRun = () => {
-    if (budgetSettling) {
-      return;
-    }
+  const [engineReady, setEngineReady] = useState(true);
+  const commitDraft = () => {
     // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
     // blur handler, which runs after this click closure captured the stale value, so commit
     // every numeric input imperatively.
@@ -2920,7 +3171,7 @@ export function ModelConfigPage({
       pendingPatch.customContextLength = committedContext;
     }
     if (committedMaxSeqLength != null) {
-      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));
+      Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));
     }
     if (committedGpuLayers != null) {
       pendingPatch.gpuLayers = committedGpuLayers;
@@ -2973,56 +3224,41 @@ export function ModelConfigPage({
         ? maxSeqLengthValue
         : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
           clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
-    // Recheck the committed draft so Save/Forget reloads when needed.
-    const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
-    const effectivePersistenceOnly =
-      isActiveModel && effectiveAtBaseline && rememberChanged;
+    return { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue };
+  };
+
+  const persistConfig = (next: PerModelConfig) => {
     // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
-    const normalizedRuntimeConfig = normalizePerModelConfig(
-      effectiveRuntimeConfig,
-    );
-    const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);
-    let saveFailed = false;
+    const normalized = normalizePerModelConfig(next);
     const evicted: { modelId: string; ggufVariant: string | null }[] = [];
-    if (remember) {
-      saveFailed = !savePerModelConfig(
-        configId,
-        target.ggufVariant,
-        normalizedRuntimeConfig,
-        evicted,
-      );
-    } else {
-      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
-    }
+    const saved = remember
+      ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
+      : deletePerModelConfig(configId, target.ggufVariant);
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
     // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
     // native-path lease is the same.
     // A forget also drops the local records for every other spelling the server reports clearing.
-    if (
-      !saveFailed &&
-      (target.apiLoadable ?? target.isGguf) &&
-      !nativePathToken
-    ) {
+    if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) {
       syncModelOverride(
         configId,
         target.ggufVariant,
-        remember ? normalizedRuntimeConfig : null,
+        remember ? normalized : null,
         remember
           ? {
               resetReasoningBudget:
                 baseline.reasoningBudget !== -1 &&
-                normalizedRuntimeConfig.reasoningBudget === -1,
+                normalized.reasoningBudget === -1,
               resetReasoningBudgetMessage:
                 baseline.reasoningBudgetMessage !== "" &&
-                normalizedRuntimeConfig.reasoningBudgetMessage === "",
+                normalized.reasoningBudgetMessage === "",
             }
           : undefined,
       );
     }
     // Only once the write landed: a blocked or full localStorage leaves the values on screen,
     // and clearing anyway let the next read replace them with the older stored row.
-    if (!saveFailed) {
+    if (saved) {
       clearModelConfigDraftEdited(draftKey);
     }
     // Saving can push the local map over budget and drop other models, whose server entries would
@@ -3032,30 +3268,77 @@ export function ModelConfigPage({
         keepLaunchFlags: true,
       });
     }
+    return { saved, defaultConfig: isDefaultConfig(normalized) };
+  };
+
+  const finishPersist = (defaultConfig: boolean) => {
+    const nextRemember = remember && !defaultConfig;
+    setSavedRemember(nextRemember);
+    setRemember(nextRemember);
+    toast.success(
+      nextRemember
+        ? "Settings saved."
+        : remember
+          ? "Default settings kept."
+          : "Settings forgotten.",
+    );
+  };
+
+  const handleSave = () => {
+    if (sharedVariantUnresolved) {
+      return;
+    }
+    const { effectiveRuntimeConfig } = commitDraft();
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
+    if (!saved) {
+      toast.error("Couldn't save settings for this model.");
+      return;
+    }
+    // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
+    // Not on a forget: that stored nothing, and pinning here would change the next load.
+    // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
+    if (
+      remember &&
+      effectiveRuntimeConfig.customContextLength !== config.customContextLength
+    ) {
+      setConfig((current) => ({
+        ...current,
+        customContextLength: effectiveRuntimeConfig.customContextLength,
+      }));
+    }
+    finishPersist(defaultConfig);
+  };
+
+  const handleRun = () => {
+    if (sharedVariantUnresolved) {
+      return;
+    }
+    if (budgetSettling) {
+      return;
+    }
+    const { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue } =
+      commitDraft();
+    // Recheck the committed draft so Save/Forget reloads when needed.
+    const effectivePersistenceOnly =
+      isActiveModel &&
+      perModelConfigsEqual(effectiveConfig, baseline, {
+        followGlobal: true,
+      }) &&
+      rememberChanged;
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
     if (effectivePersistenceOnly) {
-      if (saveFailed) {
+      if (!saved) {
         toast.error("Couldn't save settings for this model.");
         return;
       }
-      const nextRemember = remember && !defaultConfig;
-      setSavedRemember(nextRemember);
-      setRemember(nextRemember);
-      toast.success(
-        nextRemember
-          ? "Settings saved."
-          : remember
-            ? "Default settings kept."
-            : "Settings forgotten.",
-      );
+      finishPersist(defaultConfig);
       return;
     }
-    if (saveFailed) {
+    if (!saved) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
-    // MLX pins in customContextLength as GGUF does, so unpinned sends nothing.
-    const effectiveLoadConfig = target.isGguf
-      ? effectiveRuntimeConfig
-      : targetIsMlx
+    const effectiveLoadConfig =
+      target.isGguf || pinsContextLength
         ? effectiveRuntimeConfig
         : { ...effectiveRuntimeConfig, maxSeqLength: effectiveMaxSeqLengthValue };
     // Same reason as the numeric commits above: the budget row flushes on unmount,
@@ -3096,7 +3379,14 @@ export function ModelConfigPage({
   };
 
   return (
-    <div className="hint-on-hover flex flex-col">
+    <div
+      className="hint-on-hover flex flex-col"
+      onChange={(event) => {
+        if (isRunConfigEditorChange(event)) {
+          handleSharedConfigEdit();
+        }
+      }}
+    >
       {variant === "page" && showHeader && (
         // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
         // the same left edge as the rows below.
@@ -3118,38 +3408,56 @@ export function ModelConfigPage({
             <div className="text-ui-10 font-semibold uppercase leading-none tracking-wider text-muted-foreground">
               Run settings
             </div>
-            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-nav-fg">
+            <div className="mt-1.5 truncate text-ui-14 font-semibold leading-tight text-foreground">
               {target.displayName}
             </div>
           </div>
         </div>
       )}
 
+      <SharedRunConfigReview
+        target={target}
+        imported={importedConfig}
+        draftConfig={configState}
+        currentConfig={config}
+        remember={remember}
+        hasSavedSettings={savedRemember}
+      />
       <div className="space-y-5">
-        {target.isGguf && (
+        {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
+          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
+        )}
+        {audioRuntimeGguf ? (
+          <p className="text-ui-12 leading-snug text-muted-foreground">
+            This model runs on the audio runtime, so llama.cpp settings do not
+            apply. Its generation options are under Advanced on the Audio page
+            once it is loaded.
+          </p>
+        ) : null}
+        {memoryEstimateRequest != null && !audioRuntimeGguf && (
+          <MemoryEstimateRow
+            estimate={memoryEstimate.estimate}
+            loading={memoryEstimate.loading}
+            stale={memoryEstimate.stale}
+            gpuCapacityGb={memoryGpuCapacityGb}
+            totalCapacityGb={memoryTotalCapacityGb}
+            systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
+            freeGpuCapacityGb={memoryFreeGpuCapacityGb}
+            freeGpuCapacityKnown={memoryFreeGpuCapacityKnown}
+            freeGpuReserveDeficitGb={memoryFreeGpuReserveDeficitGb}
+            usableSystemRamGb={memoryUsableSystemRamGb}
+            usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
+            systemRamReserveDeficitGb={memorySystemRamReserveDeficitGb}
+            isUnifiedMemory={isAppleUnifiedMemory}
+            singleMemoryPool={singleMemoryPool}
+            reclaimableTotalBytes={reclaimableCredit.totalBytes}
+            reclaimableGpuBytes={reclaimableCredit.gpuBytes}
+            expanded={memoryBreakdownOpen}
+            onExpandedChange={setMemoryBreakdownOpen}
+          />
+        )}
+        {target.isGguf && !audioRuntimeGguf && (
           <>
-            {/* Above Context Length on purpose: that is the control moving this number most, and a readout
-                below it is one you go looking for. */}
-            <MemoryEstimateRow
-              estimate={memoryEstimate.estimate}
-              loading={memoryEstimate.loading}
-              stale={memoryEstimate.stale}
-              gpuCapacityGb={memoryGpuCapacityGb}
-              totalCapacityGb={memoryTotalCapacityGb}
-              systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
-              freeGpuCapacityGb={memoryFreeGpuCapacityGb}
-              freeGpuCapacityKnown={memoryFreeGpuCapacityKnown}
-              freeGpuReserveDeficitGb={memoryFreeGpuReserveDeficitGb}
-              usableSystemRamGb={memoryUsableSystemRamGb}
-              usableSystemRamKnown={inferenceGpu.systemRamAvailableKnown}
-              systemRamReserveDeficitGb={memorySystemRamReserveDeficitGb}
-              isUnifiedMemory={isAppleUnifiedMemory}
-              singleMemoryPool={singleMemoryPool}
-              reclaimableTotalBytes={reclaimableCredit.totalBytes}
-              reclaimableGpuBytes={reclaimableCredit.gpuBytes}
-              expanded={memoryBreakdownOpen}
-              onExpandedChange={setMemoryBreakdownOpen}
-            />
             <div className="space-y-2">
               <div className={ROW_CLASS}>
                 <div className="flex min-w-0 items-center gap-1.5">
@@ -3215,10 +3523,10 @@ export function ModelConfigPage({
                     <p className="text-ui-11 text-amber-500">
                       {isAppleUnifiedMemory ? (
                         <>
-                          Exceeds what fits in unified memory (
-                          {loadedMaxContextLength.toLocaleString()} tokens). The
-                          GPU and the rest of the system share one pool here, so
-                          there is nothing to offload to.
+                          Above Studio&apos;s free-memory estimate (
+                          {loadedMaxContextLength.toLocaleString()} tokens). It
+                          may still load, but macOS may have to compress or swap
+                          other apps and generation may slow down.
                         </>
                       ) : (
                         <>
@@ -3263,40 +3571,58 @@ export function ModelConfigPage({
             <MaxSeqLengthSetting
               value={maxSeqLengthValue}
               max={maxSeqLengthMax}
-              inputMax={MAX_SEQ_LENGTH_MAX}
+              inputMax={targetIsNpu ? maxSeqLengthMax : MAX_SEQ_LENGTH_MAX}
               inputRef={maxSeqLengthInputRef}
-              isMlx={targetIsMlx}
+              isMlx={pinsContextLength}
               pinned={savedContextPin(config) != null}
-              windowUnknown={
-                savedContextPin(config) == null && mlxServedWindow == null
+              fittedToMemory={
+                savedContextPin(config) == null && mlxFittedWindow != null
               }
-              onChange={(value) => update(contextPinPatch(value, targetIsMlx))}
+              windowUnknown={
+                savedContextPin(config) == null &&
+                mlxServedWindow == null &&
+                npuServedWindow == null
+              }
+              hint={
+                targetIsNpu
+                  ? `Tokens of context FastFlowLM loads the model with. Unset, it loads ${NPU_DEFAULT_CONTEXT_LENGTH.toLocaleString()}, or the model's limit if that is lower.`
+                  : undefined
+              }
+              onChange={(value) =>
+                update(contextPinPatch(value, pinsContextLength))
+              }
             />
-            <AdvancedSettingsToggle
-              checked={showAdvanced}
-              onCheckedChange={toggleAdvanced}
-            />
-            {showAdvanced && (
-              <MlxAdvancedSettings
-                config={config}
-                update={update}
-                outcome={mlxKvQuantOutcome}
-                servedByMlx={servedByMlx}
-                onEditTemplate={() => setTemplateOpen(true)}
-                templateOutcome={chatTemplateOutcome}
-              />
+            {!targetIsNpu && (
+              <>
+                <AdvancedSettingsToggle
+                  checked={showAdvanced}
+                  onCheckedChange={toggleAdvanced}
+                />
+                {showAdvanced && (
+                  <MlxAdvancedSettings
+                    config={config}
+                    update={update}
+                    outcome={mlxKvQuantOutcome}
+                    servedByMlx={servedByMlx}
+                    int8PrefillAvailable={int8PrefillAvailable}
+                    onInt8PrefillChange={(checked) =>
+                      checked
+                        ? setInt8PrefillConfirmOpen(true)
+                        : update({ mlxInt8Prefill: false })
+                    }
+                    onEditTemplate={() => setTemplateOpen(true)}
+                    templateOutcome={chatTemplateOutcome}
+                  />
+                )}
+              </>
             )}
           </>
         )}
       </div>
 
-      <div
-        className={
-          variant === "sidebar"
-            ? "mt-5 flex flex-col gap-2 border-t border-border/60 pt-5"
-            : "mt-5 flex items-center justify-between gap-3 border-t border-border/60 pt-5"
-        }
-      >
+      {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
+          commits a draft mounts Save settings, moving Load out from under the cursor. */}
+      <div className="mt-5 flex flex-col gap-2 border-t border-border pt-5">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
@@ -3310,24 +3636,20 @@ export function ModelConfigPage({
           />
           <label
             htmlFor={rememberId}
-            className="cursor-pointer select-none truncate text-ui-13 text-nav-fg"
+            className="cursor-pointer select-none truncate text-ui-13 text-foreground"
           >
             Remember for this model
           </label>
         </div>
-        <div
-          className={
-            variant === "sidebar"
-              ? "flex flex-wrap items-center gap-2"
-              : "flex shrink-0 items-center gap-2"
-          }
-        >
+        <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
             type="button"
             size="sm"
             className={FOOTER_BUTTON_CLASS}
             disabled={
+              sharedVariantUnresolved ||
+              ((config.engine ?? "auto") !== "auto" && !engineReady) ||
               stagedMetadataPending ||
               budgetSettling ||
               (!extraArgsLoadable && !sharedExtraArgsCleared) ||
@@ -3342,6 +3664,30 @@ export function ModelConfigPage({
           >
             {primaryActionLabel}
           </Button>
+          {/* Hidden with nothing to save or forget, else never-remembered models show a dead Forget. */}
+          {!persistenceOnly && (remember || savedRemember) && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={FOOTER_BUTTON_CLASS}
+              // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
+              // settings the load path strips or has already captured. Forget stores nothing, so
+              // broken saved arguments must not lock it.
+              disabled={
+                sharedVariantUnresolved ||
+                stagedMetadataPending ||
+                budgetSettling ||
+                (remember &&
+                  ((!extraArgsLoadable && !sharedExtraArgsCleared) ||
+                    sharedExtraArgsRefused ||
+                    extraArgsHydrating))
+              }
+              onClick={handleSave}
+            >
+              {remember ? "Save settings" : "Forget settings"}
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -3349,6 +3695,7 @@ export function ModelConfigPage({
             className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
             disabled={atDefault}
             onClick={() => {
+              handleSharedConfigEdit();
               // Reset writes through setConfig, not update, so it marks the draft itself.
               markModelConfigDraftEdited(draftKey);
               // And drops the raw edit: token equality alone would make the discarded text
@@ -3364,6 +3711,21 @@ export function ModelConfigPage({
           >
             Reset
           </Button>
+          {target.isGguf && (
+            <SharedRunConfigControls
+              className={FOOTER_BUTTON_CLASS}
+              target={target}
+              config={config}
+              ready={!extraArgsHydrating}
+              canImport={variant !== "sidebar"}
+              isDiffusion={resolvedIsDiffusion}
+              disabled={
+                sharedExtraArgsRefused ||
+                (!extraArgsLoadable && !sharedExtraArgsCleared)
+              }
+              onImport={handleSharedConfigImport}
+            />
+          )}
         </div>
       </div>
 
@@ -3376,6 +3738,34 @@ export function ModelConfigPage({
         readOnly={!target.isGguf && !servedByMlx}
         onSave={(override) => update({ chatTemplateOverride: override })}
       />
+      <AlertDialog
+        open={int8PrefillConfirmOpen}
+        onOpenChange={setInt8PrefillConfirmOpen}
+      >
+        <AlertDialogContent size="sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Turn on Int8 Prefill?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Long prompts are read faster, but the model&apos;s answers will
+              change and may be less accurate. Some models are affected more
+              than others. You can turn it off at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
+              onClick={() => {
+                update({ mlxInt8Prefill: true });
+                setInt8PrefillConfirmOpen(false);
+              }}
+            >
+              Turn on
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -3,6 +3,8 @@
 
 // RFC 4180 CSV parser: handles quoted fields with embedded newlines/commas.
 export function parseCsv(text: string): string[][] {
+  // Tauri text reads keep the BOM our exports write; File.text() strips it.
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   const rows: string[][] = [];
   let row: string[] = [];
   let i = 0;

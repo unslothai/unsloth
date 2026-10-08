@@ -5,9 +5,13 @@ import os
 import platform
 import shutil
 import subprocess
+import threading
+import time
 from typing import Any, Optional
 
 from loggers import get_logger
+
+from . import gpu_query
 
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.subprocess_compat import (
@@ -72,11 +76,58 @@ def _uuid_visible_ordinal_map(
     return visible_ordinals
 
 
+_UUID_MASK_TTL_S = 30.0
+_uuid_mask_cache: dict[tuple[str, int], tuple[float, Optional[list[int]]]] = {}
+
+
+def resolve_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
+    """Physical nvidia-smi indices for a full-GPU UUID mask, in mask order; None if any token is unresolvable."""
+    # gpu_query never caches a failure, and the parent GPU spec is read on every poll and load:
+    # without this a hung nvidia-smi costs its full timeout per call.
+    # Keyed on the static generation so invalidate_static() (eGPU hotplug, driver reset) drops it too.
+    key = (parent_cuda_visible_devices, gpu_query._static_gen)
+    hit = _uuid_mask_cache.get(key)
+    if hit is not None and time.monotonic() - hit[0] < _UUID_MASK_TTL_S:
+        return None if hit[1] is None else list(hit[1])
+    ids = _query_uuid_mask(parent_cuda_visible_devices)
+    _uuid_mask_cache.clear()
+    _uuid_mask_cache[key] = (time.monotonic(), ids)
+    return None if ids is None else list(ids)
+
+
+def _query_uuid_mask(parent_cuda_visible_devices: str) -> Optional[list[int]]:
+    try:
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "--query-gpu=index,uuid", "--format=csv,noheader"],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.warning("nvidia-smi query failed while resolving a UUID mask: %s", e)
+        return None
+    if result.returncode != 0:
+        return None
+    gpu_rows = []
+    for line in result.stdout.strip().splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) == 2 and parts[0].isdecimal():
+            gpu_rows.append((int(parts[0]), parts[1]))
+    visible_ordinals = _uuid_visible_ordinal_map(parent_cuda_visible_devices, gpu_rows)
+    if visible_ordinals is None:
+        return None
+    return sorted(visible_ordinals, key = visible_ordinals.__getitem__)
+
+
 def get_physical_gpu_count() -> Optional[int]:
     """Return physical GPU count via nvidia-smi, or None on failure."""
     try:
-        result = subprocess.run(
-            ["nvidia-smi", "-L"],
+        result = gpu_query.run_nvidia_smi(
+            [_nvidia_smi_executable(), "-L"],
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -98,9 +149,9 @@ def get_physical_gpu_count() -> Optional[int]:
 
 def get_primary_gpu_utilization() -> dict[str, Any]:
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 "--query-gpu=utilization.gpu,temperature.gpu,"
                 "memory.used,memory.total,power.draw,power.limit",
                 "--format=csv,noheader,nounits",
@@ -147,9 +198,9 @@ def get_visible_gpu_utilization(
         "utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
     )
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 f"--query-gpu={query_fields}",
                 "--format=csv,noheader,nounits",
             ],
@@ -238,12 +289,18 @@ def get_visible_gpu_utilization(
     }
 
 
+_WSL_NVIDIA_SMI = "/usr/lib/wsl/lib/nvidia-smi"
+
+
 def _nvidia_smi_executable() -> str:
     """The nvidia-smi to run, resolving the standard Windows locations off PATH. A driver install can leave nvidia-smi.exe in the NVSMI directory or the driver store without putting either on PATH, and a bare "nvidia-smi" then raises FileNotFoundError, leaving the physical inventory empty on exactly the host this inventory exists for: real GPUs, a PyTorch that cannot see them. Same two locations setup.ps1 falls back to. Returns the bare name when nothing better is found, so the caller's existing OSError handling still applies."""
     found = shutil.which("nvidia-smi")
     if found:
         return found
     if platform.system() != "Windows":
+        # WSL: often off PATH (secure_path strips it), and no /proc/driver/nvidia fallback.
+        if platform.system() == "Linux" and os.path.isfile(_WSL_NVIDIA_SMI):
+            return _WSL_NVIDIA_SMI
         return "nvidia-smi"
     for base, tail in (
         (os.environ.get("ProgramFiles"), r"NVIDIA Corporation\NVSMI\nvidia-smi.exe"),
@@ -261,6 +318,10 @@ def _nvidia_smi_executable() -> str:
 NVIDIA_SMI_ABSENT = object()
 
 
+# This thread's last inventory exit code: exit 6 is nvidia-smi's own "No devices were found".
+_inventory_exit = threading.local()
+
+
 def _query_gpu_inventory(caller: str) -> Any:
     """``[{index, name, memory_total_gb}]`` for every GPU nvidia-smi enumerates.
 
@@ -269,7 +330,7 @@ def _query_gpu_inventory(caller: str) -> Any:
     Split out of get_backend_visible_gpu_info so the same rows can be read WITHOUT a ``DeviceType.CUDA`` precondition: get_physical_gpu_inventory below is reached on exactly the host where torch reports no CUDA device, and that host still has its GPUs. Rows a caller cannot make sense of are dropped rather than raised on: a name holding commas is rejoined, and a malformed index or memory column skips the row.
     """
     try:
-        result = subprocess.run(
+        result = gpu_query.run_nvidia_smi(
             [
                 _nvidia_smi_executable(),
                 "--query-gpu=index,name,memory.total",
@@ -291,6 +352,7 @@ def _query_gpu_inventory(caller: str) -> Any:
         # Past this point an nvidia-smi WAS found, so a failure is a real fault on this host.
         logger.warning("nvidia-smi query failed in %s: %s", caller, e)
         return None
+    _inventory_exit.code = result.returncode
     if result.returncode != 0:
         return None
 
@@ -391,15 +453,22 @@ def get_backend_visible_gpu_info(
             "index_kind": "unresolved",
         }
     visible_ordinals = _visible_ordinal_map(parent_visible_ids)
+    _inventory_exit.code = None
     rows = _query_gpu_inventory("get_backend_visible_gpu_info")
     if rows is None or rows is NVIDIA_SMI_ABSENT:
-        return {
+        out = {
             "available": False,
             "backend_cuda_visible_devices": backend_cuda_visible_devices,
             "parent_visible_gpu_ids": parent_visible_ids or [],
             "devices": [],
             "index_kind": "physical",
         }
+        if rows is NVIDIA_SMI_ABSENT:
+            out["smi_absent"] = True
+        elif getattr(_inventory_exit, "code", None) != 6:
+            # No answer is unknown, not "no cards"; exit 6 ("No devices were found") is an answer.
+            out["probe_failed"] = True
+        return out
 
     devices = []
     for row in rows:

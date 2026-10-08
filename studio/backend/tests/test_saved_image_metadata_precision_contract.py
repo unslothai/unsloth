@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib.machinery
+import base64
 import io
 import json
 import sys
@@ -55,6 +56,13 @@ _FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src"
 # baked_loras belongs here for the same reason the other three do: promoting any of them into
 # image_gallery._REQUIRED_META would stop every PNG written before it existed from listing.
 _BUILD_KEYS = ("model_kind", "gguf_filename", "transformer_quant", "baked_loras")
+# Generation-time build knobs; additive like _BUILD_KEYS.
+_RUNTIME_BUILD_KEYS = (
+    "speed_mode",
+    "attention_backend",
+    "transformer_cache",
+    "cpu_offload",
+)
 
 
 # ── stub runtime (pared-down twin of test_diffusion_backend's) ────────────────
@@ -307,7 +315,7 @@ def test_generate_reports_the_engaged_scheme_when_it_differs_from_the_request(
     monkeypatch.setattr(
         diffusion_module,
         "select_transformer_quant_scheme",
-        lambda target, mode, family = None: engaged,
+        lambda target, mode, family = None, **_kw: engaged,
     )
     monkeypatch.setattr(diffusion_module, "resolve_prequant_source", lambda fam, scheme, **kw: None)
     monkeypatch.setattr(
@@ -486,9 +494,7 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
     assert meta["model_kind"] == "gguf"
     assert meta["gguf_filename"] == "z-image-Q4_K_M.gguf"
 
-    # ...and again through the response model, because that is what the Recipe popover reads.
-    # The dict above is pre-serialization: a GalleryImage that stops declaring these fields has
-    # FastAPI silently strip them from the wire while every assertion above still passes.
+    # the Recipe popover reads GalleryImage fields that FastAPI strips when undeclared.
     body = gen.json()["images"][0]
     for field, expected in (
         ("transformer_quant", _EngagedBackend.engaged),
@@ -501,13 +507,34 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
         )
 
 
-def test_the_openai_route_persists_the_same_build(engaged_client):
-    """The other supported way to make an image.
+def test_the_recipe_records_only_the_negative_prompt_the_backend_applied(
+    engaged_client, monkeypatch
+):
+    client, backend, saved = engaged_client
+    load = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "z-image-Q4_K_M.gguf"},
+    )
+    assert load.status_code == 200, load.text
+    body = {"prompt": "a sloth", "negative_prompt": "text, watermark", "guidance": 4.0, "seed": 7}
 
-    /v1/images/generations goes through the same backend and the same gallery, and its recipe
-    was missing every build key -- so an image made through an OpenAI client listed with no
-    quant, no kind and no filename while the contract above stayed green.
-    """
+    gen = client.post("/api/inference/images/generate", json = body)
+    assert gen.status_code == 200, gen.text
+    assert saved[-1]["negative_prompt"] is None
+    assert gen.json()["images"][0].get("negative_prompt") is None
+
+    ignoring = backend.generate
+    monkeypatch.setattr(
+        backend,
+        "generate",
+        lambda **kw: {**ignoring(**kw), "negative_prompt": kw["negative_prompt"]},
+    )
+    gen = client.post("/api/inference/images/generate", json = body)
+    assert gen.status_code == 200, gen.text
+    assert saved[-1]["negative_prompt"] == "text, watermark"
+
+
+def test_the_openai_route_persists_the_same_build(engaged_client):
     client, backend, saved = engaged_client
     load = client.post(
         "/api/inference/images/load",
@@ -652,8 +679,184 @@ def test_the_recipe_popover_renders_the_build_fields():
     src = (_FRONTEND / "features" / "images" / "images-page.tsx").read_text(encoding = "utf-8")
     popover = src[src.index("function RecipePopover(") :]
     popover = popover[: popover.index("\ntype Busy")]
-    assert '<RecipeRow label="Quant" value={image.transformer_quant} />' in popover
+    assert '<RecipeRow label="Transformer" value={image.transformer_quant} />' in popover
     assert '<RecipeRow label="File" value={image.gguf_filename} mono />' in popover
+    assert '<RecipeRow label="Workflow" value={recipeWorkflowLabel(image.workflow)} />' in popover
+    assert "image.speed_mode" in popover
+    assert "image.attention_backend" in popover
+    assert "image.transformer_cache" in popover
     # Rendered conditionally, so an older PNG without them shows the rest of the recipe.
     for key in ("transformer_quant", "gguf_filename"):
         assert f"image.{key} ?" in popover
+
+
+@pytest.fixture
+def recipe_e2e_client(monkeypatch, tmp_path):
+    """Full HTTP path: generate -> gallery list -> PNG file bytes, with real image_gallery.save."""
+
+    class _Backend(_EngagedBackend):
+        def generate(
+            self,
+            *,
+            seed = None,
+            batch_size = 1,
+            prompts = None,
+            seeds = None,
+            **kwargs,
+        ):
+            pytest.importorskip("PIL")
+            from PIL import Image
+
+            if not self.loaded:
+                raise RuntimeError("No diffusion model is loaded.")
+            self.last_workflow = kwargs.get("workflow")
+            return {
+                "images": [Image.new("RGB", (512, 512), (40, 80, 120)) for _ in range(batch_size)],
+                "seed": seed if seed is not None else 4242,
+                "repo_id": "x/z-image",
+                "model_kind": "gguf",
+                "gguf_filename": "z-image-Q4_K_M.gguf",
+                "transformer_quant": self.engaged,
+                "text_encoder_quant": "fp8",
+                "memory_mode": "balanced",
+                "offload_policy": "model",
+                "speed_mode": "default",
+                "attention_backend": "_native_cudnn",
+                "transformer_cache": "fbcache",
+                "cpu_offload": True,
+                "baked_loras": [],
+                "workflow": "inpaint" if kwargs.get("mask_image") else "img2img",
+                "reference_resolution": None,
+                "localized_edit": None,
+            }
+
+    backend = _Backend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    import core.inference.diffusion_engine_router as engine_router
+
+    monkeypatch.setattr(engine_router, "select_and_activate_engine", lambda fam, **kw: backend)
+    monkeypatch.setattr(engine_router, "get_active_diffusion_engine", lambda: backend)
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: "diffusers")
+    monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
+    monkeypatch.setattr(engine_router, "_fallback_reason", None)
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
+    monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
+
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: False
+    return TestClient(app), backend
+
+
+def test_recipe_e2e_generate_response_png_and_file_endpoint_agree(recipe_e2e_client):
+    """HTTP smoke: wire JSON, embedded PNG chunk, and gallery file download match."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from core.inference.image_gallery import RECIPE_SCHEMA_VERSION
+
+    client, _backend = recipe_e2e_client
+    assert (
+        client.post(
+            "/api/inference/images/load",
+            json = {
+                "model_path": "unsloth/Z-Image-Turbo-GGUF",
+                "gguf_filename": "z-image-Q4_K_M.gguf",
+            },
+        ).status_code
+        == 200
+    )
+
+    gen = client.post(
+        "/api/inference/images/generate",
+        json = {
+            "prompt": "a sloth in a recipe test",
+            "seed": 99,
+            "steps": 4,
+            "guidance": 1.0,
+            "strength": 0.55,
+        },
+    )
+    assert gen.status_code == 200, gen.text
+    wire = gen.json()["images"][0]
+    image_id = wire["id"]
+    assert wire["schema_version"] == RECIPE_SCHEMA_VERSION
+
+    for key, expected in (
+        ("speed_mode", "default"),
+        ("attention_backend", "_native_cudnn"),
+        ("transformer_cache", "fbcache"),
+        ("cpu_offload", True),
+        ("workflow", "img2img"),
+        ("transformer_quant", _EngagedBackend.engaged),
+        ("text_encoder_quant", "fp8"),
+    ):
+        assert (
+            wire.get(key) == expected
+        ), f"generate response {key}={wire.get(key)!r}, want {expected!r}"
+
+    listed = client.get("/api/inference/images/gallery").json()["images"]
+    assert any(row["id"] == image_id for row in listed)
+
+    png_resp = client.get(f"/api/inference/images/gallery/{image_id}/file")
+    assert png_resp.status_code == 200
+    assert png_resp.headers["content-type"].startswith("image/png")
+    embedded = json.loads(Image.open(io.BytesIO(png_resp.content)).text["unsloth"])
+    assert embedded["schema_version"] == RECIPE_SCHEMA_VERSION
+    assert embedded["speed_mode"] == "default"
+    assert embedded["workflow"] == "img2img"
+    assert embedded["prompt"] == "a sloth in a recipe test"
+
+
+def test_png_recipe_stamps_schema_version(tmp_gallery):
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from core.inference.image_gallery import RECIPE_SCHEMA_VERSION
+
+    meta = {**_old_schema_meta(), "model_kind": "pipeline"}
+    record = gallery.save(Image.new("RGB", (16, 16), (10, 20, 30)), meta)
+    raw = (gallery.gallery_dir() / f"{record['id']}.png").read_bytes()
+    with Image.open(io.BytesIO(raw)) as im:
+        embedded = json.loads(im.text["unsloth"])
+    assert embedded["schema_version"] == RECIPE_SCHEMA_VERSION
+    for key in _RUNTIME_BUILD_KEYS:
+        assert key not in embedded
+
+
+def test_extend_is_recorded_as_outpaint_but_runs_as_inpaint(recipe_e2e_client):
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    client, backend = recipe_e2e_client
+    load = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "z-image-Q4_K_M.gguf"}
+    assert client.post("/api/inference/images/load", json = load).status_code == 200
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+    png = base64.b64encode(buf.getvalue()).decode()
+    body = {
+        "prompt": "p",
+        "seed": 1,
+        "steps": 4,
+        "init_image": png,
+        "mask_image": png,
+        "strength": 1.0,
+    }
+
+    inpaint = client.post("/api/inference/images/generate", json = body)
+    assert inpaint.status_code == 200, inpaint.text
+    assert inpaint.json()["images"][0]["workflow"] == "inpaint"
+
+    extend = client.post("/api/inference/images/generate", json = {**body, "workflow": "outpaint"})
+    assert extend.status_code == 200, extend.text
+    assert backend.last_workflow is None
+    image_id = extend.json()["images"][0]["id"]
+    assert extend.json()["images"][0]["workflow"] == "outpaint"
+    png_resp = client.get(f"/api/inference/images/gallery/{image_id}/file")
+    assert (
+        json.loads(Image.open(io.BytesIO(png_resp.content)).text["unsloth"])["workflow"]
+        == "outpaint"
+    )

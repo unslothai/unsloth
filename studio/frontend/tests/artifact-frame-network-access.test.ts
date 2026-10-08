@@ -23,11 +23,11 @@ const sourceFile = (relative: string): ts.SourceFile => {
   );
 };
 
-const SURFACE = "../src/features/chat/artifacts/artifact-surface.tsx";
+const SURFACE = "../src/features/browser/file-view.tsx";
 const FRAME = "../src/features/chat/artifacts/html-frame.tsx";
 const ALERT = "../src/components/ui/alert.tsx";
 
-/** Every `<ArtifactHtmlFrame>` opening tag in the artifact surface. */
+/** Every `<ArtifactHtmlFrame>` opening tag in the browser's file view, where chat HTML opens. */
 function readFrameOpeningTags(): string[] {
   const source = sourceFile(SURFACE);
   const tags: string[] = [];
@@ -49,7 +49,7 @@ test("no canvas preview is gated on the artifact source", () => {
   const tags = readFrameOpeningTags();
   assert.ok(
     tags.length > 0,
-    "<ArtifactHtmlFrame> not found in the artifact surface",
+    "<ArtifactHtmlFrame> not found in the browser file view",
   );
   for (const tag of tags) {
     assert.doesNotMatch(
@@ -258,7 +258,7 @@ test("blocked reports from a stale frame load are rejected", () => {
   const visit = (node: ts.Node): void => {
     if (
       ts.isIfStatement(node) &&
-      /event\.data\.v !== codeVersion/.test(node.expression.getText()) &&
+      /event\.data\.v !== loadVersion/.test(node.expression.getText()) &&
       node.thenStatement.getText().includes("return")
     ) {
       guarded = true;
@@ -411,8 +411,8 @@ test("the banner deep-links to the network access setting", () => {
     1,
     "the banner opens the settings dialog once",
   );
-  assert.equal(deepLinks[0].tab, '"chat"');
-  assert.match(deepLinks[0].options, /scrollTarget:\s*"chat-canvas-network"/);
+  assert.equal(deepLinks[0].tab, '"browser"');
+  assert.match(deepLinks[0].options, /scrollTarget:\s*"browser-html-network"/);
   assert.equal(deepLinks[0].handler, "onClick");
 });
 
@@ -479,21 +479,10 @@ test("the settings deep link keeps the invoking button as its opener", () => {
   assert.doesNotMatch(handler, /iframeRef\.current\?\.focus/);
 });
 
-test("fullscreen canvas actions return focus inside the dialog", () => {
+test("page actions return focus to the frame unless a caller names a target", () => {
   const tags = readFrameOpeningTags();
   assert.equal(tags.length, 1);
-  assert.match(
-    tags[0],
-    /actionFocusTargetRef=\{\s*variant === "overlay" \? closeButtonRef : undefined\s*\}/,
-  );
-  const surface = readFileSync(
-    fileURLToPath(new URL(SURFACE, import.meta.url)),
-    "utf8",
-  );
-  assert.match(
-    surface,
-    /ref=\{closeButtonRef\}[\s\S]*?aria-label="Close canvas"/,
-  );
+  assert.doesNotMatch(tags[0], /actionFocusTargetRef/);
   assert.match(
     readConst("focusAfterAction"),
     /\(actionFocusTargetRef\?\.current \?\? iframeRef\.current\)\?\.focus/,
@@ -531,7 +520,7 @@ test("the blocked alert scopes direction to its locale", () => {
   };
   source.forEachChild(visit);
   assert.ok(alert, "blocked alert not found");
-  assert.match(alert, /dir=\{locale === "ar" \? "rtl" : "ltr"\}/);
+  assert.match(alert, /dir=\{locale === "ar" \|\| locale === "he" \? "rtl" : "ltr"\}/);
 });
 
 test("the climbing blocked count stays outside the assertive live region", () => {

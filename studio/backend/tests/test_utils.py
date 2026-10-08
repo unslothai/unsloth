@@ -93,8 +93,6 @@ class TestGetDevice:
 
     @needs_torch
     def test_detect_survives_device0_probe_failure(self, capsys):
-        # is_available() True but the device-0 name probe raises: startup must
-        # still resolve CUDA rather than crash.
         with (
             patch("utils.hardware.hardware._has_torch", return_value = True),
             patch("torch.cuda.is_available", return_value = True),
@@ -103,6 +101,27 @@ class TestGetDevice:
         ):
             assert _reset_and_detect() == DeviceType.CUDA
         assert "<unavailable>" in capsys.readouterr().out
+
+    @needs_torch
+    def test_device0_probe_failure_is_logged_with_allocator_config(self, monkeypatch):
+        # failed CUDA initialization can crash later, so log its cause at error rather than debug
+        monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising = False)
+        monkeypatch.delenv("PYTORCH_HIP_ALLOC_CONF", raising = False)
+        monkeypatch.setenv("PYTORCH_ALLOC_CONF", "expandable_segments:maybe")
+        error = ValueError(
+            "Expected 'True' or 'False' at index 2 in ConfigTokenizer but got 'maybe'"
+        )
+        with (
+            patch("utils.hardware.hardware._has_torch", return_value = True),
+            patch("torch.cuda.is_available", return_value = True),
+            patch("torch.cuda.device_count", return_value = 1),
+            patch("torch.cuda.get_device_properties", side_effect = error),
+            patch.object(_hw_module, "logger") as logger,
+        ):
+            assert _reset_and_detect() == DeviceType.CUDA
+        logged = [c.args for c in logger.error.call_args_list if error in c.args]
+        assert len(logged) == 1
+        assert {"PYTORCH_ALLOC_CONF": "expandable_segments:maybe"} in logged[0]
 
     @needs_mlx
     def test_returns_mlx_when_on_apple_silicon_with_mlx(self):
@@ -709,6 +728,49 @@ class TestFormatErrorMessage:
         err = Exception("Something completely unexpected")
         msg = format_error_message(err, "any/model")
         assert msg == "Something completely unexpected"
+
+
+class TestSafeErrorDetailNamesAMetalFailure:
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "[METAL] Command buffer execution failed: Caused GPU Timeout Error "
+            "(0000000b:kIOGPUCommandBufferCallbackErrorTimeout)",
+            "[METAL] Command buffer execution failed: Ignored (for causing prior/excessive "
+            "GPU errors) (0000000e:kIOGPUCommandBufferCallbackErrorSubmissionsIgnored)",
+        ],
+        ids = ["watchdog", "ignored"],
+    )
+    def test_a_dead_queue_says_the_gpu_stopped(self, message):
+        from utils.utils import is_metal_queue_dead, safe_error_detail
+        assert is_metal_queue_dead(Exception(message))
+        assert safe_error_detail(Exception(message)) == (
+            "The GPU stopped responding. Reload the model to recover."
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "[malloc] Unable to allocate 42949672960 bytes.",
+            "[METAL] Command buffer execution failed: Insufficient Memory.",
+        ],
+        ids = ["malloc", "command-buffer"],
+    )
+    def test_an_allocation_failure_says_memory_and_leaves_the_queue_alive(self, message):
+        """mlx wraps this like a watchdog kill, but recovers from it."""
+        from utils.utils import is_metal_queue_dead, safe_error_detail
+
+        assert not is_metal_queue_dead(Exception(message))
+        assert safe_error_detail(Exception(message)) == (
+            "Ran out of memory. Try a smaller model or shorter input."
+        )
+
+    def test_an_ordinary_timeout_still_reads_as_upstream(self):
+        from utils.utils import is_metal_queue_dead, safe_error_detail
+
+        error = TimeoutError("read timed out")
+        assert not is_metal_queue_dead(error)
+        assert safe_error_detail(error) == "Could not reach an upstream service. Please try again."
 
 
 class TestAuthSafeRedirectHandler:

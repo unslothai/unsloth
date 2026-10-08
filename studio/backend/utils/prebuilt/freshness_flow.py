@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import http.client
 import json
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,54 @@ logger = structlog.get_logger(__name__)
 RELEASE_CACHE_TTL_SECONDS = 24 * 60 * 60
 # Briefly memoize failed lookups so recurring status reads do not retry an unreachable GitHub endpoint on every request.
 RELEASE_FAILURE_CACHE_TTL_SECONDS = 60
+GITHUB_RATE_LIMITED_DEFAULT_SECONDS = 15 * 60
+# A skewed or proxied reset header is held to one primary window.
+GITHUB_RATE_LIMIT_MAX_SECONDS = 60 * 60
+# Secondary limits can 403 with no rate headers; only the body names them.
+_RATE_LIMIT_BODY_MARKERS = ("rate limit", "abuse detection")
+
+# One lockout for the whole process: the quota is per token or per IP, not per repo.
+_api_rate_limited_lock = threading.Lock()
+_api_rate_limited_until: float = 0.0
+
+
+def rate_limit_wait(exc: BaseException) -> Optional[float]:
+    """Seconds a GitHub refusal asks us to wait, capped at one window; None when throttling does not explain it (an SSO or permission 403)."""
+    code = getattr(exc, "code", None)
+    if code not in (403, 429):
+        return None
+    headers = getattr(exc, "headers", None) or {}
+    retry_after = str(headers.get("Retry-After") or "").strip()
+    spent = str(headers.get("X-RateLimit-Remaining") or "").strip() == "0"
+    if code != 429 and not retry_after and not spent:
+        try:
+            body = exc.read(2048).decode("utf-8", errors = "replace").lower()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - an unreadable body names nothing
+            body = ""
+        if not any(marker in body for marker in _RATE_LIMIT_BODY_MARKERS):
+            return None
+    wait = float(GITHUB_RATE_LIMITED_DEFAULT_SECONDS)
+    try:
+        if retry_after:
+            wait = float(retry_after)
+        elif spent:
+            wait = float(headers.get("X-RateLimit-Reset")) - time.time()
+    except (TypeError, ValueError):
+        pass
+    return min(max(wait, 0.0), GITHUB_RATE_LIMIT_MAX_SECONDS)
+
+
+def hold_github_api(wait: Optional[float]) -> None:
+    """Park every api.github.com caller for ``wait`` seconds; never shortens a lockout already in place."""
+    global _api_rate_limited_until
+    if wait is None:
+        return
+    with _api_rate_limited_lock:
+        _api_rate_limited_until = max(_api_rate_limited_until, time.monotonic() + wait)
+
+
+def github_rate_limit_remaining() -> float:
+    return max(_api_rate_limited_until - time.monotonic(), 0.0)
 
 
 def read_install_marker(
@@ -45,7 +95,7 @@ def read_install_marker(
         if candidate.is_file():
             try:
                 marker = json.loads(candidate.read_text(encoding = "utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 logger.debug(log_message, path = str(candidate), error = str(exc))
                 marker = None
             else:
@@ -116,11 +166,13 @@ def _fetch_newest_published_release(
 def _fetch_newest_published_release_blocking(
     repo: str, timeout: float, *, log_message: str
 ) -> Optional[dict]:
-    """Newest published (non-draft, non-prerelease) release object for `repo`, by ``published_at``. Resolves "latest" the way the installers do, NOT via GitHub's ``/releases/latest`` pointer, which sorts by commit date and can lag the build the installer installs, making detection and apply disagree (the downgrade / sticky-banner bug). None on any failure (offline, rate-limited)."""
+    """Newest published (non-draft, non-prerelease) release object for `repo`, by ``published_at``. Resolves "latest" the way the installers do, NOT via GitHub's ``/releases/latest`` pointer, which sorts by commit date and can lag the build the installer installs, making detection and apply disagree (the downgrade / sticky-banner bug). None on any failure (offline, rate-limited) and while the shared lockout holds."""
     import os
     import urllib.error
     import urllib.request
 
+    if github_rate_limit_remaining() > 0:
+        return None
     url = f"https://api.github.com/repos/{repo}/releases?per_page=30"
     headers = {
         "Accept": "application/vnd.github+json",
@@ -133,10 +185,15 @@ def _fetch_newest_published_release_blocking(
     try:
         with auth_safe_open(req, timeout = timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        wait = rate_limit_wait(exc)
+        hold_github_api(wait)
+        logger.debug(log_message, repo = repo, error = str(exc), backoff_seconds = wait)
+        return None
     except (
         urllib.error.URLError,
-        urllib.error.HTTPError,
         OSError,
+        http.client.HTTPException,
         json.JSONDecodeError,
     ) as exc:
         logger.debug(log_message, repo = repo, error = str(exc))

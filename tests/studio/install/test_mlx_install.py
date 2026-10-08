@@ -101,6 +101,77 @@ def _repair_specs():
     )
 
 
+# The MLX grammar engine step (11d) runs after "unsloth extras", where the harness above stops,
+# so the totals below count its slot from here. The guard after them keeps this in step with the
+# installer: the slot and the step have to stay behind the same Apple Silicon gate.
+_GRAMMAR_ENGINE_SLOT = 1
+
+
+def _progress_calls(nodes) -> int:
+    return sum(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_progress"
+        for node in nodes
+        for n in ast.walk(node)
+    )
+
+
+def _one_unconditional_progress(branch) -> bool:
+    """The branch reaches exactly one _progress call, as a statement of its own, on every path."""
+    direct = [
+        stmt
+        for stmt in branch
+        if isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Call)
+        and isinstance(stmt.value.func, ast.Name)
+        and stmt.value.func.id == "_progress"
+    ]
+    # Anything before it that can leave the branch would let a path skip the slot.
+    before = branch[: branch.index(direct[0])] if len(direct) == 1 else []
+    exits = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+    return (
+        len(direct) == 1
+        and _progress_calls(branch) == 1
+        and not any(isinstance(n, exits) for stmt in before for n in ast.walk(stmt))
+    )
+
+
+def test_the_grammar_engine_slot_and_step_share_the_apple_silicon_gate():
+    source = Path(stack.__file__).read_text(encoding = "utf-8")
+    lines = source.splitlines()
+    install = next(
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef) and node.name == "install_python_stack"
+    )
+    # `if <gate>: base_total += 1  # MLX grammar engine ...`
+    budget_gates = [
+        node
+        for node in ast.walk(install)
+        if isinstance(node, ast.If)
+        and len(node.body) == 1
+        and isinstance(node.body[0], ast.AugAssign)
+        and isinstance(node.body[0].target, ast.Name)
+        and node.body[0].target.id == "base_total"
+        and "# MLX grammar engine" in lines[node.body[0].lineno - 1]
+    ]
+    # The step: the top-level `if` of install_python_stack() that announces the grammar engine.
+    step_gates = [
+        node
+        for node in install.body
+        if isinstance(node, ast.If)
+        and '"MLX grammar engine' in (ast.get_source_segment(source, node) or "")
+    ]
+    assert len(budget_gates) == 1 and len(step_gates) == 1, "the budget line or step 11d moved"
+    for gate in (budget_gates[0], step_gates[0]):
+        assert isinstance(gate.test, ast.Name) and gate.test.id == "IS_MAC_ARM", ast.dump(gate.test)
+    assert not step_gates[0].orelse, "a slot spent off Apple Silicon has no budget"
+    # One slot on every path through the step: a single if/else, and each arm spends one.
+    (branch,) = step_gates[0].body
+    assert isinstance(branch, ast.If) and branch.orelse, ast.dump(branch)
+    assert _one_unconditional_progress(branch.body), ast.get_source_segment(source, branch)
+    assert _one_unconditional_progress(branch.orelse), ast.get_source_segment(source, branch)
+
+
 @pytest.mark.parametrize("platform", ["macos_arm", "macos_intel", "linux", "windows"])
 @pytest.mark.parametrize("skip_base", [True, False], ids = ["fresh", "update"])
 @pytest.mark.parametrize("no_torch", [False, True], ids = ["training", "gguf_only"])
@@ -123,10 +194,14 @@ def test_mlx_install_respects_platform_mode_and_pins(
     if platform.startswith("macos"):
         # An update without torch announces the no-torch runtime deps on their own slot.
         # Two mac-arm slots: the MLX step, and the re-resolve after the core phase.
+        # The +1 is the diffusers main slot (11c), spent on every platform and every path.
+        # The grammar engine slot (11d) is spent on every Apple Silicon run, torch or not.
         assert stack._TOTAL == (
             (12 if skip_base and not shared_base else 13)
+            + 1
             + 2 * int(enabled)
             + int(no_torch and not skip_base)
+            + _GRAMMAR_ENGINE_SLOT * int(platform == "macos_arm")
         )
     if enabled:
         # --upgrade-package takes a bare NAME, not a pin: skip its argument.
@@ -206,7 +281,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
     if len(commands) > 1:
         assert "--upgrade" in commands[1]
         assert "--upgrade-package" not in commands[1]
-        # ...and no project twice: pip refuses "mlx==0.32.2 mlx" with "Double requirement given".
+        # ...and no project twice: pip refuses "mlx==0.32.3 mlx" with "Double requirement given".
         projects = [
             arg.split(";")[0].split("[")[0].split("=")[0].split("<")[0].split(">")[0].strip()
             for arg in commands[1]
@@ -231,7 +306,7 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
 def test_mlx_pin_floor_matches_the_published_wheels(
     monkeypatch, python_version, macos_major, installable
 ):
-    """0.32.2 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
+    """0.32.3 ships macosx_14_0_arm64 wheels, no sdist, and the pinned set starts at cp310."""
     monkeypatch.setattr(stack.sys, "version_info", python_version)
     monkeypatch.setattr(stack, "_macos_release_major", Mock(return_value = macos_major))
     assert stack._mlx_pins_are_installable() is installable
@@ -240,9 +315,9 @@ def test_mlx_pin_floor_matches_the_published_wheels(
 def test_pin_floor_is_revisited_whenever_the_pins_move():
     """A pin bumped without its floor silently starts failing installs, so tie them here."""
     assert _repair_specs() == {
-        "mlx": "==0.32.2",
+        "mlx": "==0.32.3",
         "mlx-lm": "==0.31.3",
-        "mlx-vlm": ">=0.4.4,<=0.7.1",
+        "mlx-vlm": ">=0.4.4,<=0.7.4",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 
@@ -270,11 +345,15 @@ def test_unsupported_apple_silicon_skips_mlx_without_failing_the_install(
     assert "MLX stack (skipped, no wheel for this macOS or Python)" in steps
     # A skipped step still spends its slot.
     # Two mac-arm slots even with no wheel: the re-resolve slot is spent unconditionally.
-    assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + 2
+    # Plus the diffusers main slot (11c), which is likewise spent whatever it decides, and the
+    # grammar engine slot (11d), which does not depend on an MLX wheel either.
+    assert (
+        stack._TOTAL == (12 if skip_base and not shared_base else 13) + 1 + 2 + _GRAMMAR_ENGINE_SLOT
+    )
 
 
 def test_supported_and_unsupported_hosts_share_one_progress_budget(monkeypatch):
-    """Same total either way, so the bar cannot end at 13/14 on an old Mac."""
+    """Same total either way, so the bar cannot end short of its own total on an old Mac."""
     _run_to_extras(
         monkeypatch,
         platform = "macos_arm",

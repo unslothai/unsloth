@@ -53,29 +53,33 @@ test("the download glyph is gone from the picker entirely", () => {
 });
 
 test("the scoped badge column reserves the wider on-device marker", () => {
-  // Video can show one 18px capability, a 4px gap and the 14px marker. If the
-  // fixed width remains 34px, min-w-min expands only those rows and shifts all
+  // Video can show one 26px capability pill, a 4px gap and the 14px marker. If the
+  // fixed width is any narrower, min-w-min expands only those rows and shifts all
   // metadata columns after the badge slot.
-  assert.ok(PICKERS.includes('badgeMid: "min-w-min min-[560px]:w-[36px]"'));
+  assert.ok(PICKERS.includes('badgeMid: "min-w-min min-[560px]:w-[44px]"'));
 });
 
 test("the unscoped badge column is sized per list, not to the union of both", () => {
   // Sized to the widest set each list can draw, not to both lists at once. On Device is the vision
-  // badge (26px), a gap-1 (4px) and the partial mark (14px): a GGUF repo can show vision and be
-  // half-downloaded at once, and at 26px that row alone grew and carried its quant chip 18px left
-  // of every other row -- the exact drift the fixed columns exist to stop.
-  assert.ok(PICKERS.includes('badgeDevice: "min-w-min min-[560px]:w-[44px]"'));
-  assert.ok(PICKERS.includes('badgeWide: "min-w-min min-[560px]:w-[36px]"'));
-  // Both marks really can land on one On Device row, which is what makes 44 the right number.
+  // badge alone (26px), so the quant chip sits beside it.
+  assert.ok(PICKERS.includes('badgeDevice: "min-w-min min-[560px]:w-[26px]"'));
+  // Hub: one 26px capability pill, a gap-1 and the disk mark.
+  assert.ok(PICKERS.includes('badgeWide: "min-w-min min-[560px]:w-[44px]"'));
+  // Both marks can land on one On Device row, so the partial mark sits with the name, as Loaded
+  // does. In the slot it would widen that row alone and shift its quant chip left.
   const gguf = PICKERS.slice(PICKERS.indexOf("const renderDownloadedGgufRow"));
   const row = gguf.slice(0, gguf.indexOf("\n  };"));
   assert.ok(row.includes('alignMeta="device"'));
   assert.ok(row.includes("showVision={c.has_vision"));
   assert.ok(row.includes("partial={isPartialRepo}"));
-  // And they sit in that one slot rather than overlapping.
   assert.match(
     PICKERS,
-    /\{showVision && <VisionBadge \/>\}\n\s*\{partial \? <PartialBadge resumable=\{partialResumable\} \/> : null\}/,
+    /\{alignMeta === "device" && partial \? \(\n\s*<span className="ml-\[max\(6px,6px\)\] flex shrink-0 items-center self-center">\n\s*<PartialBadge resumable=\{partialResumable\} \/>/,
+  );
+  // Hub keeps it in the slot, beside the vision badge.
+  assert.match(
+    PICKERS,
+    /\{showVision && <VisionBadge \/>\}\n\s*\{partial && alignMeta !== "device" \? \(\n\s*<PartialBadge resumable=\{partialResumable\} \/>/,
   );
   assert.match(
     PICKERS,
@@ -122,19 +126,22 @@ test("the parameter column is fixed, so the quant column cannot drift row to row
 });
 
 test("the parameter chip leads its column, so the modality gap is the cluster's own", () => {
-  // Trailing the chip spends the column's leftover in FRONT of it, where it reads as part of the
-  // gap to the modality mark and grows with the label: 6.9px after a "217B", 19px after a "1B".
-  // Leading it leaves that gap as gap-1 -- the same 4px the quant chip keeps to the same mark.
+  // Every chip starts at one x, the cluster gap (6px minimum) after the modality slot. Trailing
+  // put the slack in front of the chip, where it grew that gap with the label.
   assert.match(
     PICKERS,
     /alignMeta === "hub"\n\s*\? cn\("justify-end", META_COLUMN\.paramWide\)\n\s*: cn\("justify-start", META_COLUMN\.param\)/,
   );
+  // Every On Device section ends its rows at one inset, so chips line up across sections.
+  assert.equal(PICKERS.split('className="pr-1"').length - 1, 3, "the custom folder rows");
 });
 
+
+
 test("the quant chip is flush right in its slot, so the chips read as one column", () => {
-  // The slot is sized for the longest quant, so left-aligning ended a "Q8_0" and a "UD-Q4_K_XL"
-  // at different x even once the slot itself stopped moving.
-  assert.ok(PICKERS.includes('quant: "min-[560px]:w-[7.2em]"'));
+  // Leftmost meta column: hugs its chip (capped at "UD-Q4_K_XL") so its slack goes to the name.
+  // Chips still end against the fixed badge column.
+  assert.ok(PICKERS.includes('quant: "min-[560px]:max-w-[7.2em]"'));
   assert.match(PICKERS, /"flex shrink-0 items-center justify-end text-ui-9"/);
 });
 
@@ -161,7 +168,7 @@ test("every chip in the row band pins the same height", () => {
   // ParamChip sized itself from its line box, the one height here that scales with
   // --ui-font-scale: at 1.0 it stood 1px prouder than the quant and vision chips beside it and at
   // 0.8125 it sat 1.8px shorter, so the row was only level at the scale where the two crossed.
-  for (const chip of ["QuantChip", "VisionBadge", "ParamChip"]) {
+  for (const chip of ["QuantChip", "VisionBadge", "CapabilityIcons", "ParamChip"]) {
     const start = PICKERS.indexOf(`function ${chip}(`);
     assert.ok(start > 0, `${chip} exists`);
     const body = PICKERS.slice(start, PICKERS.indexOf("\n}", start));
@@ -307,7 +314,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   assert.match(
     INSPECTOR,
-    /showMemoryBar=\{!runsOnMediaRuntime\}\n\s*mediaRuntime=\{runsOnMediaRuntime\}/,
+    /showMemoryBar=\{!runsOnMediaRuntime\}\n\s*mediaPage=\{mediaPage\}/,
   );
   // Parent rows and the fit gate take the same rule as the quant rows under them, or a media row
   // reads as fitting while everything inside it reads as oom.
@@ -525,7 +532,7 @@ test("a GGUF row takes the GGUF verdict, not the torch refusal", () => {
   );
   assert.equal(producers.length, 2, "curated rows only");
   for (const line of producers) {
-    assert.match(line, /curatedFits \? null : "exceeds"/);
+    assert.match(line, /curatedFit\.fits \? null : "exceeds"/);
   }
 });
 
@@ -582,12 +589,16 @@ test("the row tooltip reports the figure the verdict was reached with", () => {
 });
 
 test("aligned meta slots spend their slack on the name", () => {
-  // Centring a lone glyph splits the slack either side of it, reading as a gap on both sides.
-  assert.ok(
-    PICKERS.includes(
-      '"flex shrink-0 items-center justify-end gap-1 text-ui-10"',
-    ),
-  );
+  // Centring a lone glyph splits the slack either side of it. On Device the badge leads its slot,
+  // so the eye sits the cluster gap from the quant chip.
+  assert.ok(PICKERS.includes('"flex shrink-0 items-center gap-1 text-ui-10"'));
+  assert.ok(PICKERS.includes('alignMeta === "device" ? "justify-start" : "justify-end"'));
+});
+
+test("On Device keeps at least 6px between the name, quant, modality and parameter marks", () => {
+  assert.ok(PICKERS.includes('const DEVICE_META_GAP = "gap-[max(6px,6px)]";'));
+  assert.ok(PICKERS.includes('alignMeta === "device" ? DEVICE_META_GAP : "gap-1"'));
+  assert.ok(PICKERS.includes('alignMeta === "device" ? DEVICE_META_GAP : aligned ? "gap-1" : "gap-1.5"'));
 });
 
 test("every select-model surface shares that one badge", () => {
@@ -612,23 +623,19 @@ test("every select-model surface shares that one badge", () => {
 });
 
 test("list header actions end where a hovered row's action does", () => {
-  // A row action is `right-0 pr-1.5` inside a pill the list inset by
-  // unrailedRowPadding: 12px in normally, 11px under the desktop titlebar.
+  // A row action is `right-0 pr-0.75` inside a pill the list inset by
+  // unrailedRowPadding: 9px in normally, 8px under the desktop titlebar.
   assert.match(
     CSS,
-    /\.sidebar-row-action \{\n\t\t@apply absolute top-0 bottom-0 right-0[^;]*pr-1\.5/,
+    /\.sidebar-row-action \{\n\t\t@apply absolute top-0 bottom-0 right-0[^;]*pr-0\.75 /,
   );
   const label = CSS.slice(CSS.indexOf(".sidebar-sticky-label {"));
-  assert.match(label.slice(0, 400), /pl-\[16px\] pr-3 /);
+  // pl: unrailedRowPadding + a row's pl-3, so labels start where row content does.
+  assert.match(label.slice(0, 500), /pl-\[18px\] pr-\[9px\] /);
 
   assert.ok(
     CSS.includes(
-      ".sidebar-sticky-label.sidebar-sticky-label-desktop {\n\t\tpadding-right: 11px;",
-    ),
-  );
-  assert.ok(
-    CSS.includes(
-      ".sidebar-sticky-label.sidebar-sticky-label-desktop-recents {\n\t\tpadding-right: 13px;",
+      ".sidebar-sticky-label.sidebar-sticky-label-desktop {\n\t\tpadding-left: 17px;\n\t\tpadding-right: 8px;",
     ),
   );
 
@@ -638,29 +645,38 @@ test("list header actions end where a hovered row's action does", () => {
   );
   assert.ok(
     SIDEBAR.includes(
-      'const headerRightPadding = usesDesktopTitlebar\n    ? "sidebar-sticky-label-desktop"\n    : null;',
-    ),
-  );
-  // Recents is nudged 2px right there and carries its padding with it.
-  assert.ok(
-    SIDEBAR.includes(
-      'const recentsHeaderRightPadding = usesDesktopTitlebar\n    ? "sidebar-sticky-label-desktop-recents"\n    : null;',
+      'const headerInset = usesDesktopTitlebar\n    ? "sidebar-sticky-label-desktop"\n    : null;',
     ),
   );
 });
 
-test("all three list headers take the same alignment", () => {
-  // Pinned and Projects share one class string; Recents has its own because of
-  // the translate. Two of the first, one of the second.
-  // Both headers are drop zones now, so the class list is spread over lines.
+test("every list header takes the same alignment", () => {
+  // Pinned, the custom sections, Projects and Recents share one class string, and none is
+  // nudged on its own.
+  // They are drop zones, so the class list is spread over lines.
   const shared = (
     SIDEBAR.match(
-      /"sidebar-sticky-label sidebar-sticky-label-following group\/sidebar-header gap-1",\n\s*headerRightPadding,/g,
+      /"sidebar-sticky-label sidebar-sticky-label-following group\/sidebar-header gap-1",\n\s*headerInset,/g,
     ) ?? []
   ).length;
-  assert.equal(shared, 2, "Pinned and Projects");
-  assert.ok(
-    SIDEBAR.includes("recentsHeaderRightPadding,"),
-    "and Recents applies its own",
-  );
+  assert.equal(shared, 4, "Pinned, custom sections, Projects and Recents");
+  assert.ok(!SIDEBAR.includes("translate-x-[2px]"));
+});
+
+test("capability glyph tags are the vision badge's pill, each in its own colour", () => {
+  const body = (name: string) => {
+    const start = PICKERS.indexOf(`function ${name}(`);
+    return PICKERS.slice(start, PICKERS.indexOf("\n}", start));
+  };
+  // Same height and padding around the same 12px glyph, so image, video and audio tags are as
+  // wide as the vision one instead of 18px squares beside a 26px pill.
+  for (const name of ["VisionBadge", "CapabilityIcons"]) {
+    assert.match(body(name), /h-\[18px\] shrink-0 items-center justify-center rounded-md border border-border px-1\.5/);
+  }
+  assert.ok(!body("CapabilityIcons").includes("text-muted-foreground"), "no grey glyphs left");
+  const list = PICKERS.slice(PICKERS.indexOf("const CAPABILITY_BADGES"), PICKERS.indexOf("const CapabilityScope"));
+  const tones = [...list.matchAll(/tone: "([^"]+)"/g)].map((m) => m[1]);
+  assert.equal(tones.length, 3, "every capability names a tone");
+  assert.equal(new Set(tones).size, 3, "no two tags share a colour");
+  assert.ok(tones.every((t) => !t.includes("indigo")), "none reuses the vision indigo");
 });

@@ -130,6 +130,7 @@ _VALUE_FLAGS = {
     "--only-final",
     "--requirements-from-script",
     "--uploaded-prior-to",
+    "--output-format",
 }
 _REQ_FILE_FLAGS = {"-r", "--requirement", "--requirements"}
 _CONSTRAINT_FILE_FLAGS = {"-c", "--constraint", "--constraints"}
@@ -165,6 +166,16 @@ _TARGET_VALUE_FLAGS = {"--group", "--upgrade-group", "--requirements-from-script
 
 
 _ARCHIVE_EXTS = (".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar", ".zip")
+
+
+def _restore_install_privileges():
+    if os.environ.get("UNSLOTH_NB_ROOT_INSTALL") != "1":
+        return
+    try:
+        os.setgid(0)
+        os.setuid(0)
+    except OSError as exc:
+        raise SystemExit(f"unsloth notebook install could not restore root: {exc}") from exc
 
 
 def _norm_name(name):
@@ -1094,6 +1105,8 @@ def main():
 
     if argv[:1] == ["--unsloth-selfcheck-value-flags"]:
         _selfcheck_value_flags()
+
+    _restore_install_privileges()
 
     if os.environ.get("UNSLOTH_NB_SHIM") != "1":
         os.execv(REAL[tool], [REAL[tool]] + argv)

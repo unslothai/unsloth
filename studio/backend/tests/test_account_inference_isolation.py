@@ -338,11 +338,12 @@ def test_cpu_resident_provenance_does_not_depend_on_a_gpu_lease(monkeypatch):
 
 def test_stt_private_status_and_download_state_are_filtered(monkeypatch):
     monkeypatch.setattr(inference, "_stt_download_accounts", {"transformers": ALICE.account_id})
+    monkeypatch.setattr(inference, "_stt_download_id_accounts", {})
     monkeypatch.setattr(access, "_resident_accounts", {})
     monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
     run_as(ALICE, access.note_resident_account, "stt:transformers", "org/private")
     status = {"loaded_model": "org/private"}
-    for engine in ["transformers", "gguf", "mtmd"]:
+    for engine in ["transformers", "gguf", "mtmd", "audiocpp"]:
         status[engine] = {
             "loaded_model": "org/private",
             "downloaded_models": ["org/private"],
@@ -354,14 +355,56 @@ def test_stt_private_status_and_download_state_are_filtered(monkeypatch):
     assert "private error" not in str(result)
 
 
+def test_stt_filtered_status_preserves_only_caller_relevant_attempt_identity(monkeypatch):
+    monkeypatch.setattr(inference, "_stt_download_accounts", {"audiocpp": BOB.account_id})
+    monkeypatch.setattr(
+        inference,
+        "_stt_download_id_accounts",
+        {
+            "audiocpp": {
+                "alice-complete": ALICE.account_id,
+                "bob-complete": BOB.account_id,
+                "bob-active": BOB.account_id,
+            }
+        },
+    )
+    monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
+    monkeypatch.setattr(access, "model_visible", lambda model: True)
+    status = {"loaded_model": None}
+    for engine in ["transformers", "gguf", "mtmd", "audiocpp"]:
+        status[engine] = {
+            "loaded_model": None,
+            "downloaded_models": [],
+            "download": {"downloading": False, "completed_download_ids": []},
+        }
+    status["audiocpp"]["download"] = {
+        "downloading": True,
+        "model": "bob/private-model",
+        "download_id": "bob-active",
+        "completed_download_ids": ["alice-complete", "bob-complete"],
+        "error": "bob private error",
+    }
+
+    result = run_as(ALICE, inference._account_stt_status, status)
+
+    assert result["audiocpp"]["download"] == {
+        "downloading": False,
+        "download_id": "bob-active",
+        "completed_download_ids": ["alice-complete"],
+    }
+    assert "private-model" not in str(result)
+    assert "private error" not in str(result)
+
+
 def test_stt_downloads_grant_only_the_initiator_and_cancel_is_scoped(monkeypatch):
     monkeypatch.setattr(inference, "_stt_download_accounts", {})
+    monkeypatch.setattr(inference, "_stt_download_id_accounts", {})
     monkeypatch.setattr(inference, "_stt_grant_pending", {})
     monkeypatch.setattr(inference, "_stt_repo_reference", lambda model, engine: model)
     monkeypatch.setattr(access, "authorize_download", lambda *a: None)
     calls = []
     module = SimpleNamespace(
-        start_model_download = lambda *a: calls.append(a),
+        start_model_download = lambda *a: calls.append(a) or "alice-attempt",
         download_status = lambda: {"downloading": False},
         is_model_downloaded = lambda model: True,
         cancel_model_download = lambda: calls.append("cancel") or True,
@@ -375,6 +418,9 @@ def test_stt_downloads_grant_only_the_initiator_and_cancel_is_scoped(monkeypatch
         "alice-token",
     )
     assert inference._stt_grant_pending["transformers"].wait(5)
+    assert inference._stt_download_id_accounts == {
+        "transformers": {"alice-attempt": ALICE.account_id}
+    }
     assert run_as(ALICE, access.repo_visible, "org/private")
     assert not run_as(BOB, access.repo_visible, "org/private")
     assert run_as(BOB, inference._cancel_account_stt_download, module, "transformers") == {

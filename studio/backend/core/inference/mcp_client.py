@@ -90,7 +90,8 @@ def _public_mcp_address(url: str) -> str:
 
 
 def validate_mcp_address(url: str) -> None:
-    if not _managed_mcp_restricted():
+    # Studio's own Decisions server is answered in process; with a local model no request leaves this machine.
+    if not _managed_mcp_restricted() or (is_studio_decisions(url) and _local_decisions()):
         return
     if is_stdio(url):
         from fastapi import HTTPException
@@ -391,10 +392,20 @@ def _strip_client_id_under_basic_auth(auth) -> None:
         logger.warning("MCP OAuth: client_id fixup could not be applied: %s", exc)
 
 
-def _oauth(url: str):
+def _oauth(
+    url: str,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
+):
     from fastmcp.client.auth import OAuth
 
-    auth = OAuth(mcp_url = url, token_storage = _oauth_store())
+    # A pre-registered client skips Dynamic Client Registration (Google's MCP servers have no /register).
+    auth = OAuth(
+        mcp_url = url,
+        token_storage = _oauth_store(),
+        client_id = oauth_client_id,
+        client_secret = oauth_client_secret,
+    )
     _strip_client_id_under_basic_auth(auth)
     return auth
 
@@ -555,13 +566,36 @@ def _stdio_argv(parts: list, env: Optional[dict]) -> list:
     return [executable, *parts[1:]]
 
 
+def _local_decisions() -> bool:
+    from core.systemone.catalog import parse_connection
+    from utils.systemone_settings import get_model
+    return parse_connection(get_model()) is None
+
+
+def is_studio_decisions(url: str) -> bool:
+    from routes.systemone import MCP_PATH
+    from utils.host_policy import is_loopback_host
+
+    parts = urlsplit(url)
+    return (
+        parts.scheme == "http"
+        and is_loopback_host(parts.hostname or "")
+        and parts.path.rstrip("/") == MCP_PATH
+    )
+
+
 def _client(
     url: str,
     headers: Optional[dict],
     use_oauth: bool = False,
+    **oauth,
 ):
     validate_mcp_address(url)
     from fastmcp import Client
+
+    if is_studio_decisions(url):
+        from routes.systemone import decisions_mcp
+        return Client(decisions_mcp)
 
     if is_stdio(url):
         # Belt-and-suspenders: never spawn unless stdio is enabled on this host.
@@ -588,7 +622,7 @@ def _client(
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
 
-    auth = _oauth(url) if use_oauth else None
+    auth = _oauth(url, **oauth) if use_oauth else None
 
     transport_cls = (
         SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
@@ -599,6 +633,16 @@ def _client(
         if auth is not None:
             auth.httpx_client_factory = _public_http_client_factory
     return Client(transport_cls(url = url, headers = headers or None, auth = auth, **kwargs))
+
+
+def oauth_client_kwargs(row: dict) -> dict:
+    # Empty unless configured, so test doubles of _client without these kwargs keep working.
+    if not row.get("oauth_client_id"):
+        return {}
+    return {
+        "oauth_client_id": row["oauth_client_id"],
+        "oauth_client_secret": row.get("oauth_client_secret"),
+    }
 
 
 _SESSION_IDLE_TTL = 300.0
@@ -1440,9 +1484,10 @@ async def list_tools_async(
     headers: Optional[dict] = None,
     timeout: float = 5.0,
     use_oauth: bool = False,
+    **oauth,
 ) -> list[dict]:
     async def _fetch() -> list[dict]:
-        async with _client(url, headers, use_oauth) as client:
+        async with _client(url, headers, use_oauth, **oauth) as client:
             tools = await client.list_tools()
         return [t.model_dump(exclude_none = True) for t in tools]
 
@@ -1485,7 +1530,9 @@ def serialize_mcp_server_mutation(handler):
 # MCP server fields whose change invalidates a server's discovered tools: the endpoint/auth used to probe it (url,
 # headers, oauth) or whether it's used at all (is_enabled). A rename does not. The update route's eviction and
 # get_enabled_mcp_tools' mid-probe guard both key off this so they can't drift.
-TOOL_CACHE_INVALIDATING_FIELDS = frozenset({"url", "headers_json", "use_oauth", "is_enabled"})
+TOOL_CACHE_INVALIDATING_FIELDS = frozenset(
+    {"url", "headers_json", "use_oauth", "oauth_client_id", "oauth_client_secret", "is_enabled"}
+)
 
 
 def get_cached_tools(server_id: str) -> Optional[list[dict]]:
@@ -1520,8 +1567,94 @@ def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
         _probe_cooloff_until.pop(_account_key(server_id), None)
 
 
+UI_RESOURCE_SCHEME = "ui://"
+MAX_UI_RESOURCE_CHARS = 5_000_000
+
+
+def _ui_meta_field(tool: Any, field: str):
+    """`ui.<field>`, else the flat `ui/<field>`, from the SDK's `meta` or the wire `_meta`."""
+    metas = [tool.get(k) for k in ("meta", "_meta")] if isinstance(tool, dict) else []
+    metas = [m for m in metas if isinstance(m, dict)]
+    for ui in (m.get("ui") for m in metas):
+        if isinstance(ui, dict) and ui.get(field) is not None:
+            return ui[field]
+    return next((m[f"ui/{field}"] for m in metas if m.get(f"ui/{field}") is not None), None)
+
+
+def tool_ui_resource_uri(tool: Any) -> Optional[str]:
+    """Only ui:// is honoured: the host fetches this URI."""
+    uri = _ui_meta_field(tool, "resourceUri")
+    uri = uri.strip() if isinstance(uri, str) else ""
+    return (
+        uri if uri.startswith(UI_RESOURCE_SCHEME) and len(uri) > len(UI_RESOURCE_SCHEME) else None
+    )
+
+
+def tool_visible_to(tool: Any, audience: str) -> bool:
+    """`audience` is "model" or "app"; an undeclared visibility means both."""
+    visibility = _ui_meta_field(tool, "visibility")
+    return audience in visibility if isinstance(visibility, (list, tuple)) else True
+
+
 MCP_IMAGES_SENTINEL = mcp_images.SENTINEL
 MAX_IMAGE_PAYLOAD_CHARS = 12_000_000
+
+# Emitted BEFORE the image envelope, whose parse reads to end of string.
+MCP_UI_SENTINEL = "__MCP_UI__:"
+MAX_UI_STRUCTURED_CHARS = 1_000_000
+
+
+def _json_within(value: Any, limit: int) -> Optional[str]:
+    try:
+        line = json.dumps(value)
+    except (TypeError, ValueError, RecursionError):
+        return None
+    return line if len(line) <= limit else None
+
+
+def _ui_envelope(result: Any, ui_resource_uri: str, seed: list) -> str:
+    payload: dict = {"resourceUri": ui_resource_uri}
+    meta = getattr(result, "meta", None)
+    if isinstance(meta, dict) and meta:
+        payload["_meta"] = meta
+    structured = getattr(result, "structured_content", None)
+    if structured is not None:
+        payload["structuredContent"] = structured
+    if seed:
+        payload["content"] = [
+            _seeded_image_block(b, m) if m else _content_block_json(b) for b, m in seed
+        ]
+    line = _json_within(payload, MAX_UI_STRUCTURED_CHARS)
+    if line is None:
+        # Shed structuredContent, then content, then _meta: the view still gets its template.
+        reduced = {"resourceUri": ui_resource_uri, "structuredContentOmitted": True}
+        keys = [k for k in ("content", "_meta") if k in payload]
+        for kept in (keys, keys[:1], keys[1:]):
+            line = _json_within(
+                {**reduced, **{k: payload[k] for k in kept}}, MAX_UI_STRUCTURED_CHARS
+            )
+            if line:
+                break
+        else:
+            line = json.dumps(reduced)
+    return "\n" + MCP_UI_SENTINEL + line
+
+
+def _is_ui_envelope_line(line: str) -> bool:
+    if not line.startswith(MCP_UI_SENTINEL):
+        return False
+    try:
+        payload = json.loads(line[len(MCP_UI_SENTINEL) :])
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(payload, dict) and isinstance(payload.get("resourceUri"), str)
+
+
+def _drop_forged_ui_sentinels(body: str) -> str:
+    """Readers take the last marker, so a tool-written one could summon a widget with forged seed text."""
+    if MCP_UI_SENTINEL not in body:
+        return body
+    return "\n".join(line for line in body.split("\n") if not _is_ui_envelope_line(line))
 
 
 def _block_text(block: Any) -> Optional[str]:
@@ -1696,9 +1829,19 @@ def _strip_payloads(value: Any, payloads: set[str]) -> Any:
     return _MIRRORED if value and not kept else kept
 
 
-def _flatten_result(result: Any) -> str:
+# The frontend refills bytes positionally: `data` on an image block, `resource.blob` on an embedded one.
+def _seeded_image_block(block: Any, mime: str) -> dict:
+    out = {k: v for k, v in _content_block_json(block).items() if k != "data"}
+    if isinstance(out.get("resource"), dict):
+        out["resource"] = {k: v for k, v in out["resource"].items() if k != "blob"}
+        return out
+    return {**out, "type": "image", "mimeType": mime}
+
+
+def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
     parts = []
     images = []
+    seed = []
     unshown = []
     payloads = set()
     omitted = 0
@@ -1709,10 +1852,12 @@ def _flatten_result(result: Any) -> str:
         if text:
             parts.append(text)
             has_text = True
+            seed.append((block, None))
             continue
         link = _block_link(block)
         if link:
             parts.append(link)
+            seed.append((block, None))
             continue
         image = _block_image(block)
         if image is not None:
@@ -1723,7 +1868,9 @@ def _flatten_result(result: Any) -> str:
                 continue
             budget -= len(data)
             images.append({"data": data, "mimeType": mime})
+            seed.append((block, mime))
             continue
+        seed.append((block, None))
         attachment = _block_attachment(block)
         if attachment is not None:
             note, data = attachment
@@ -1751,6 +1898,9 @@ def _flatten_result(result: Any) -> str:
     if getattr(result, "is_error", False):
         # "Error: " prefix triggers tool_call_parser's TOOL_ERROR_PREFIXES nudge.
         body = f"Error: {body}" if body else "Error: tool returned no content"
+    body = _drop_forged_ui_sentinels(body)
+    if ui_resource_uri and not getattr(result, "is_error", False):
+        body += _ui_envelope(result, ui_resource_uri, seed)
     if images:
         body += "\n" + MCP_IMAGES_SENTINEL + json.dumps(images)
     return body
@@ -1821,6 +1971,7 @@ def _call_session_tool(
     scope: Optional[str],
     config_check,
     use_oauth: bool = False,
+    dispatch = None,
 ) -> Any:
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
@@ -1916,7 +2067,9 @@ def _call_session_tool(
                 rem = _remaining()
                 # raise_on_error=False for the same reason as the one-shot path.
                 coro = _race_tool_call(
-                    session.client.call_tool(name, args, raise_on_error = False),
+                    dispatch(session.client)
+                    if dispatch is not None
+                    else session.client.call_tool(name, args, raise_on_error = False),
                     rem,
                     cancel_event,
                     # Only a cached session is worth waiting on.
@@ -1984,6 +2137,8 @@ def call_tool_sync(
     cancel_event = None,
     scope: Optional[str] = None,
     config_check = None,
+    ui_resource_uri: Optional[str] = None,
+    **oauth,
 ) -> str:
     """Call one MCP tool and return its flattened text/image result. Never raises: every failure comes
     back as an "Error: ..." string for the model.
@@ -1998,11 +2153,15 @@ def call_tool_sync(
 
     ``timeout`` is one budget covering connect and call together. ``cancel_event`` aborts an
     in-flight call. ``config_check`` re-reads the server row so a call that raced an edit or delete
-    cannot dispatch on the stale configuration.
+    cannot dispatch on the stale configuration. ``ui_resource_uri`` appends the frontend-only
+    __MCP_UI__ envelope.
     """
 
     async def _one_shot() -> Any:
-        async with _client(url, headers, use_oauth) as client:
+        async with _client(url, headers, use_oauth, **oauth) as client:
+            # Connecting (OAuth included) can outlast an edit or delete of the server row.
+            if config_check is not None and not config_check():
+                raise RuntimeError("MCP server was updated or removed while connecting")
             # raise_on_error=False lets an is_error result (which may still carry image content) reach _flatten_result
             # instead of FastMCP raising ToolError and dropping the images. Transport failures still raise (handled
             # below).
@@ -2029,7 +2188,145 @@ def call_tool_sync(
         logger.exception("MCP call_tool failed for %s: %s", name, exc)
         return f"Error: MCP tool '{name}' failed: {exc}"
 
-    return _flatten_result(result)
+    return _flatten_result(result, ui_resource_uri)
+
+
+MAX_UI_TOOL_RESULT_CHARS = 4_000_000
+
+
+def _content_block_json(block: Any) -> dict:
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        try:
+            # by_alias, or the SDK's `meta` reaches the widget instead of `_meta`.
+            return dump(mode = "json", exclude_none = True, by_alias = True)
+        except Exception:  # noqa: BLE001
+            pass
+    out = {"type": getattr(block, "type", "text")}
+    for field in ("text", "data", "mimeType", "uri", "name"):
+        value = getattr(block, field, None)
+        if value is not None:
+            out[field] = value if isinstance(value, (str, int, float, bool)) else str(value)
+    return out
+
+
+def _structured_result(result: Any) -> dict:
+    out: dict = {
+        "content": [_content_block_json(b) for b in getattr(result, "content", None) or []],
+        "is_error": bool(getattr(result, "is_error", False)),
+    }
+    if getattr(result, "structured_content", None) is not None:
+        out["structured_content"] = result.structured_content
+    meta = getattr(result, "meta", None)
+    if isinstance(meta, dict) and meta:
+        out["meta"] = meta
+    if _json_within(out, MAX_UI_TOOL_RESULT_CHARS) is None:
+        raise ValueError(
+            f"tool result is not JSON-serialisable or over {MAX_UI_TOOL_RESULT_CHARS} chars"
+        )
+    return out
+
+
+def _ui_request_sync(
+    url,
+    headers,
+    label,
+    dispatch,
+    *,
+    timeout,
+    use_oauth = False,
+    cancel_event = None,
+    scope = None,
+    config_check = None,
+    **oauth,
+) -> Any:
+    """``dispatch(client)`` on the transport call_tool_sync would pick for this scope."""
+
+    async def _one_shot() -> Any:
+        # As the session branch: an edit during discovery must not reach the old endpoint.
+        if config_check is not None and not config_check():
+            raise RuntimeError("MCP server was updated or removed during the call")
+        async with _client(url, headers, use_oauth, **oauth) as client:
+            return await dispatch(client)
+
+    session_args = (url, headers, label, {}, timeout, cancel_event, scope, config_check, use_oauth)
+    try:
+        if is_stdio(url) or (scope and not use_oauth):
+            return _call_session_tool(*session_args, dispatch = dispatch)
+        return asyncio.run(_race_tool_call(_one_shot(), timeout, cancel_event))
+    except _MCPCancelled as exc:
+        raise TimeoutError(f"{label} was cancelled") from exc
+
+
+def call_tool_structured_sync(
+    url: str, headers: Optional[dict], name: str, args: dict, **kw
+) -> dict:
+    dispatch = lambda client: client.call_tool(name, args, raise_on_error = False)  # noqa: E731
+    return _structured_result(_ui_request_sync(url, headers, f"MCP tool '{name}'", dispatch, **kw))
+
+
+def read_resource_sync(url: str, headers: Optional[dict], uri: str, **kw) -> dict:
+    dispatch = lambda client: client.read_resource(uri)  # noqa: E731
+    return _resource_contents(
+        _ui_request_sync(url, headers, f"MCP resource '{uri}'", dispatch, **kw), uri
+    )
+
+
+def _resource_contents(blocks: Any, uri: str) -> dict:
+    """Keyed as McpUiResourceResponse. Of several contents the one matching ``uri`` wins, else the first."""
+    import base64
+
+    items = list(blocks or [])
+    if not items:
+        raise ValueError("resource is empty")
+    chosen = next((b for b in items if str(getattr(b, "uri", "")) == uri), items[0])
+    text, blob = getattr(chosen, "text", None), None
+    if text is None:
+        if getattr(chosen, "blob", None) is None:
+            raise ValueError("resource carries neither text nor blob content")
+        blob = str(chosen.blob)
+        try:
+            raw = base64.b64decode(blob, validate = True)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"resource blob is not base64: {exc}") from exc
+        try:
+            # Decoded for the host to render a template; the widget still gets the server's blob.
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = ""
+    text = str(text)
+    # Every block for a widget's own multi-block read; a single block is the fields above.
+    contents = []
+    for item in items if len(items) > 1 else ():
+        entry = {"uri": str(getattr(item, "uri", "") or uri)}
+        if _resource_mime(item):
+            entry["mimeType"] = str(_resource_mime(item))
+        if getattr(item, "text", None) is not None:
+            entry["text"] = str(item.text)
+        elif getattr(item, "blob", None) is not None:
+            entry["blob"] = str(item.blob)
+        else:
+            continue
+        contents.append(entry)
+    size = (
+        len(text)
+        + len(blob or "")
+        + sum(len(c.get("text") or c.get("blob") or "") for c in contents)
+    )
+    if size > MAX_UI_RESOURCE_CHARS:
+        raise ValueError(f"resource is {size} chars, over the {MAX_UI_RESOURCE_CHARS} limit")
+    # _meta.ui on the contents, not the tool: the template's CSP declaration.
+    metas = (getattr(chosen, "meta", None), getattr(chosen, "_meta", None))
+    ui = next((m["ui"] for m in metas if isinstance(m, dict) and isinstance(m.get("ui"), dict)), {})
+    mime = str(_resource_mime(chosen) or "")
+    return {
+        "uri": uri,
+        "mime_type": mime,
+        "text": text,
+        "blob": blob,
+        "ui": ui,
+        "contents": contents,
+    }
 
 
 class _MCPCancelled(Exception):

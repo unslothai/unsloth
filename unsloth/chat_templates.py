@@ -648,6 +648,19 @@ DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message
 CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
 DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message
 
+qwen25_coder_ollama = _ollama_template("qwen-25-coder")
+CHAT_TEMPLATES["qwen-2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen-25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen-25-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen2.5-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen2.5-coder"] = qwen25_default_system_message
+
+CHAT_TEMPLATES["qwen25-coder"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_coder_ollama,)
+DEFAULT_SYSTEM_MESSAGE["qwen25-coder"] = qwen25_default_system_message
+
 # "{{ bos_token }}"\ # Phi-4 removes BOS?
 # =========================================== Phi-4
 phi4_template = \
@@ -1056,6 +1069,61 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
 
 CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
+
+# 26B-A4B / 31B generate after an empty thought channel their template omits from history; final-turn reasoning fills it.
+_gemma4_model_turn = "{{ '<|turn>' + role + '\n' }}\n"
+gemma4_empty_thought_template = gemma4_thinking_template.replace(
+    _gemma4_model_turn,
+    _gemma4_model_turn + \
+"""    {%- if role == "model" -%}
+        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
+            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
+        {%- elif not thinking -%}
+            {{ '<|channel>thought\n<channel|>' }}
+        {%- endif -%}
+    {%- endif -%}
+""",
+    1,
+).replace(
+    "{%- for message in loop_messages -%}",
+    "{%- set ns_turn = namespace(last_user_idx=-1) -%}\n"
+    "{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}\n"
+    "{%- for message in loop_messages -%}",
+    1,
+)
+assert gemma4_empty_thought_template != gemma4_thinking_template
+# Ollama re-renders history each request, so every assistant turn gets the channel too.
+gemma4_empty_thought_ollama = '''
+FROM {__FILE_LOCATION__}
+TEMPLATE """{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 }}
+{{- if eq .Role "assistant" }}<|turn>model
+<|channel>thought
+<channel|>{{ .Content }}{{ if not $last }}<turn|>
+{{ end }}
+{{- else }}<|turn>{{ .Role }}
+{{ .Content }}<turn|>
+{{ if $last }}<|turn>model
+<|channel>thought
+<channel|>{{ end }}
+{{- end }}
+{{- end }}"""
+'''
+GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking",)
+
+
+def _gemma4_wants_empty_thought(*holders):
+    # Content based: the model's own template primes the empty channel (E2B / E4B do not).
+    for holder in holders:
+        template = getattr(holder, "chat_template", None)
+        if isinstance(template, dict): template = template.get("default")
+        if not isinstance(template, str): continue
+        # Unsloth's gemma-4-thinking primes it for every size
+        if template.endswith(gemma4_thinking_template): continue
+        if "<|channel>thought\\n<channel|>" in template or "<|channel>thought\n<channel|>" in template:
+            return True
+    return False
 
 # Obtained via print(tokenizer.chat_template.replace("}\n", "####").replace("\n", "\\n").replace("####", "}\n"))
 # =========================================== GPT-OSS
@@ -1792,8 +1860,7 @@ DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None
 
 # =========================================== Liquid-LFM2
 liquid_lfm2_template = \
-'''
-{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+'''{{bos_token}}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
 ' }}{% endif %}'''
@@ -1811,10 +1878,10 @@ DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 starling_template = \
 """{{ bos_token }}
 {%- for message in messages %}
-    {{ 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
+    {{- 'GPT4 Correct ' + message['role'].title() + ': ' + message['content'] + '<|end_of_turn|>' }}
 {%- endfor %}
 {%- if add_generation_prompt %}
-    {{ 'GPT4 Correct Assistant:' }}
+    {{- 'GPT4 Correct Assistant:' }}
 {%- endif %}"""
 
 # Ollama from https://ollama.com/library/starling-lm:7b/blobs/4b21bfc435b4
@@ -1829,12 +1896,10 @@ DEFAULT_SYSTEM_MESSAGE["starling"] = None
 # =========================================== Yi-chat
 
 yi_chat_template = \
-"""
-{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
+"""{% if not add_generation_prompt is defined %}{% set add_generation_prompt = false %}{% endif %}{% for message in messages %}{{'<|im_start|>' + message['role'] + '
 ' + message['content'] + '<|im_end|>' + '
 '}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
-' }}{% endif %}
-"""
+' }}{% endif %}"""
 
 # Ollama from https://ollama.com/library/yi:34b-chat/blobs/62fbfd9ed093
 yi_chat_ollama = _ollama_template("yi-chat")
@@ -1944,6 +2009,15 @@ def get_chat_template(
         type_chat_template = chat_template.lower()
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
+
+        if type_chat_template in GEMMA4_TEMPLATE_NAMES and \
+            _gemma4_wants_empty_thought(_processor, old_tokenizer):
+            logger.warning_once(
+                "Unsloth: This Gemma-4 model expects an empty thought channel on non-thinking turns. "\
+                "Adding <|channel>thought\\n<channel|> to assistant turns without thinking content."
+            )
+            chat_template = gemma4_empty_thought_template
+            ollama_modelfile = gemma4_empty_thought_ollama
 
         # The template can veto the eos mapping, but it must not force it back on: map_eos_token = False is
         # an explicit choice by the caller.
@@ -2084,13 +2158,6 @@ def get_chat_template(
     if IS_GEMMA and not chat_template.startswith(("{{ bos_token }}", "{{- bos_token }}")):
         chat_template = "{{ bos_token }}" + chat_template
 
-    # The spliced ShareGPT values land inside Jinja literals, so escape them.
-    new_chat_template = chat_template\
-        .replace("'role'",      "'" + _escape_jinja_literal(mapping["role"])      + "'")\
-        .replace("'content'",   "'" + _escape_jinja_literal(mapping["content"])   + "'")\
-        .replace("'user'",      "'" + _escape_jinja_literal(mapping["user"])      + "'")\
-        .replace("'assistant'", "'" + _escape_jinja_literal(mapping["assistant"]) + "'")
-
     if use_zoo_tokenizer_patch:
         # Unsloth MLX avoids the model-utils tokenizer wrapper: that import path pulls Torch/GPU-specific
         # modules in before MLX training.
@@ -2102,14 +2169,22 @@ def get_chat_template(
 
     # If not normal HF, we add a check to make old templates work
     if mapping != {"role" : "role", "content" : "content", "user" : "user", "assistant" : "assistant"}:
+        role, content, user, assistant = (
+            "'" + _escape_jinja_literal(mapping[key]) + "'"
+            for key in ("role", "content", "user", "assistant")
+        )
         chat_template = \
-            "{% if 'role' in messages[0] %}" + \
-            chat_template + \
-            "{% else %}" + \
-            new_chat_template + \
-            "{% endif %}"
-    else:
-        chat_template = new_chat_template
+            "{%- if 'role' not in messages[0] -%}" + \
+            "{%- set sharegpt = namespace(messages = []) -%}" + \
+            "{%- for message in messages -%}" + \
+            "{%- set role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
+            ".get(message[" + role + "], message[" + role + "]) -%}" + \
+            "{%- set sharegpt.messages = sharegpt.messages + " + \
+            "[dict(message, role = role, content = message[" + content + "])] -%}" + \
+            "{%- endfor -%}" + \
+            "{%- set messages = sharegpt.messages -%}" + \
+            "{%- endif %}" + \
+            chat_template
 
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
 
@@ -2133,6 +2208,8 @@ def get_chat_template(
     # tokenizer and remapped eos. The loader mirrors these onto the processor
     # (models/vision.py), so refresh them here or that copy goes stale.
     if _processor is not None:
+        # GGUF export unwraps the processor before it builds the Ollama Modelfile.
+        tokenizer._ollama_modelfile = ollama_modelfile
         _processor.tokenizer = tokenizer
         _processor.chat_template = chat_template
         for _token in ("bos_token", "eos_token", "pad_token",):
@@ -2170,8 +2247,17 @@ def remove_special_tokens(tokenizer, prompt):
     return prompt
 
 
+# The prompt is rendered with str.format, so `{{` / `}}` are literal braces, not columns.
+_ESCAPED_BRACES_RE = re.compile(r"\{\{|\}\}")
+_COLUMN_RE = re.compile(r"\{(.+?)\}")
+
+
+def _column_names_in(text):
+    return _COLUMN_RE.findall(_ESCAPED_BRACES_RE.sub("", text))
+
+
 def _parse_combined_prompt(combined_prompt, dataset):
-    possible_columns = re.findall(r"\{(.+?)\}", combined_prompt)
+    possible_columns = _column_names_in(combined_prompt)
     dataset_columns = set(dataset.column_names)
     for column in possible_columns:
         if column not in dataset_columns:
@@ -2214,14 +2300,14 @@ def _create_formatter(possible_columns, final_optional_prompts, user_column_name
 
     for j, optional_prompt in enumerate(final_optional_prompts):
         if type(optional_prompt) is str:
-            needed_columns = re.findall(r"\{(.+?)\}", optional_prompt)
+            needed_columns = _column_names_in(optional_prompt)
             formatter_templates.append(("required", optional_prompt, needed_columns))
             merged_prompt_parts.append(optional_prompt)
             continue
 
         _, prompt = optional_prompt
         prompt = prompt[2:-2]
-        needed_columns = re.findall(r"\{(.+?)\}", prompt)
+        needed_columns = _column_names_in(prompt)
         if len(needed_columns) == 0:
             raise IndexError("Unsloth: Optional [[...]] blocks must contain at least 1 {column}.")
         optional_name = f"__optional_{j}__"
@@ -2340,7 +2426,8 @@ def to_sharegpt(
     all_shuffled = [dataset]
     for j in range(1, n_extensions+1):
         shuffled = dataset.shuffle(seed = random_state+j).rename_columns({"conversations0" : f"conversations{j}"})
-        all_shuffled.append(shuffled)
+        # Kept caller columns live on copy 0; repeating them makes axis=1 concat fail.
+        all_shuffled.append(shuffled.select_columns([f"conversations{j}"]))
     dataset = concatenate_datasets(all_shuffled, axis = 1)
 
     n_extensions += 1
@@ -2359,7 +2446,7 @@ def to_sharegpt(
         __combine_conversations__,
         batched = True,
         desc = "Extending conversations",
-        remove_columns = dataset.column_names if remove_unused_columns else None,
+        remove_columns = dataset.column_names if remove_unused_columns else conversation_columns,
     )
     return dataset
 

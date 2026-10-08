@@ -53,7 +53,7 @@ test("a preflight already in flight is not run again", () => {
     body.indexOf("await startManagedServer()") > release,
     "no long await may run while the flag is held",
   );
-  assert.ok(body.indexOf("await startRepair()") > release);
+  assert.ok(body.indexOf("await startRepair({ preflightReason: preflight.reason })") > release);
   // Released twice, and by then a later call may hold the flag: an unowned clear would let a
   // third preflight through.
   assert.match(

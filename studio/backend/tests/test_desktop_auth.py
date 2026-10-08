@@ -809,6 +809,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     settings_module.router = APIRouter()
     llama_module = ModuleType("routes.llama")
     llama_module.router = APIRouter()
+    engines_module = ModuleType("routes.engines")
+    engines_module.router = APIRouter()
     llama_compat_module = ModuleType("routes.llama_compat")
     llama_compat_module.router = APIRouter()
     # main.py imports this name alongside the router and calls it from serve_frontend.
@@ -819,10 +821,24 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     preview_module.router = APIRouter()
     whisper_module = ModuleType("routes.whisper")
     whisper_module.router = APIRouter()
+    npu_module = ModuleType("routes.npu")
+    npu_module.router = APIRouter()
     profile_stats_module = ModuleType("routes.profile_stats")
     profile_stats_module.router = APIRouter()
     accounts_module = ModuleType("routes.accounts")
     accounts_module.router = APIRouter()
+    library_module = ModuleType("routes.library")
+    library_module.router = APIRouter()
+    sandbox_capability_module = ModuleType("routes.sandbox_capability")
+    sandbox_capability_module.router = APIRouter()
+    systemone_module = ModuleType("routes.systemone")
+    systemone_module.router = APIRouter()
+    # main.py mounts the Decisions MCP app from these at import.
+    from fastmcp import FastMCP
+
+    systemone_module.MCP_PATH = "/mcp/decisions"
+    systemone_module.RequireStudioAuth = lambda app: app
+    systemone_module.decisions_mcp = FastMCP("Unsloth Decisions")
 
     # Derived from main.py's import block, not hand-listed: the old hardcoded dict went stale
     # twice (#8511's openai_codex_auth_router, #8648's youtube_router), each time killing every
@@ -840,12 +856,17 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes", routes_module)
     monkeypatch.setitem(sys.modules, "routes.settings", settings_module)
     monkeypatch.setitem(sys.modules, "routes.llama", llama_module)
+    monkeypatch.setitem(sys.modules, "routes.engines", engines_module)
     monkeypatch.setitem(sys.modules, "routes.llama_compat", llama_compat_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
     monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
+    monkeypatch.setitem(sys.modules, "routes.npu", npu_module)
     monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
     monkeypatch.setitem(sys.modules, "routes.accounts", accounts_module)
+    monkeypatch.setitem(sys.modules, "routes.library", library_module)
+    monkeypatch.setitem(sys.modules, "routes.sandbox_capability", sandbox_capability_module)
+    monkeypatch.setitem(sys.modules, "routes.systemone", systemone_module)
 
     import studio.backend.main as backend_main
 

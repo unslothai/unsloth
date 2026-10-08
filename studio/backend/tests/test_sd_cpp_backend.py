@@ -143,6 +143,22 @@ def test_loaded_repo_ids_includes_native_companions():
     assert b.loaded_repo_ids() == ()
 
 
+def test_native_status_preserves_the_logical_picker_identity():
+    import dataclasses
+
+    b = _loaded_backend()
+    b._state = dataclasses.replace(
+        b._state,
+        repo_id = "/cache/models--unsloth--Z-Image-Turbo-GGUF/snapshots/abc",
+        display_repo_id = "unsloth/Z-Image-Turbo-GGUF",
+    )
+    status = b.status()
+    assert status["repo_id"].endswith("/snapshots/abc")
+    assert status["display_repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+    result = b.generate(prompt = "logical identity", steps = 1, seed = 1)
+    assert result["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
+
+
 def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():
     # A local *klein-9B*.gguf carries the variant keyword only in the basename, so loaded_repo_ids() must include the filename or the guard protects the wrong repo.
     b = SdCppDiffusionBackend(engine = _FakeEngine())
@@ -191,7 +207,9 @@ class _FakeServer:
         native_speed = None,
         threads = None,
         extra_args = None,
+        env = None,
     ):
+        self.env = env
         self.started = dict(
             files = files,
             vae_format = vae_format,
@@ -726,14 +744,89 @@ def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
 
 
 def test_map_guidance_flux_uses_distilled_guidance():
-    cfg, g = _map_guidance(detect_family("flux.1"), 3.5)
-    assert cfg is None and g == 3.5
+    # cfg must be explicit: unset, sd.cpp applies its default 7.0 and FLUX.1 renders dark or burnt.
+    assert _map_guidance(detect_family("flux.1"), 3.5) == (1.0, 3.5)
+    assert _map_guidance(detect_family("flux.1"), 0.0) == (1.0, 0.0)
+    assert _map_guidance(detect_family("flux.1-kontext"), 2.5) == (1.0, 2.5)
+    assert _map_guidance(detect_family("flux.2-dev"), 4.0) == (1.0, 4.0)
+    assert _map_guidance(detect_family("flux.1"), None) == (1.0, None)
+
+
+def test_map_guidance_flux2_klein_distilled_off_base_real_cfg():
+    assert _map_guidance(detect_family("flux.2-klein"), 1.0) == (1.0, None)
+    assert _map_guidance(detect_family("flux.2-klein"), 5.0) == (5.0, None)
+    assert _map_guidance(detect_family("flux.2-klein"), None) == (1.0, None)
+
+
+# (repo, family, cfg, embedded guidance) at Studio's per-model default guidance.
+_FLUX_DEFAULT_GUIDANCE_CASES = [
+    ("unsloth/FLUX.1-dev-GGUF", "flux.1", 1.0, 3.5),
+    ("unsloth/FLUX.1-schnell-GGUF", "flux.1", 1.0, 0.0),
+    ("unsloth/FLUX.1-Kontext-dev-GGUF", "flux.1-kontext", 1.0, 2.5),
+    ("unsloth/FLUX.2-dev-GGUF", "flux.2-dev", 1.0, 4.0),
+    ("unsloth/FLUX.2-klein-4B-GGUF", "flux.2-klein", 1.0, None),
+    ("unsloth/FLUX.2-klein-9B-GGUF", "flux.2-klein", 1.0, None),
+    ("unsloth/FLUX.2-klein-base-4B-GGUF", "flux.2-klein", 5.0, None),
+    ("unsloth/FLUX.2-klein-base-9B-GGUF", "flux.2-klein", 5.0, None),
+]
+
+
+def _edit_source(fam_name):
+    """Kontext is edit-only on both engines: it renders from a source image, never from text alone."""
+    if detect_family(fam_name).edit:
+        import base64
+        import io
+
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 512), (10, 20, 30)).save(buf, format = "PNG")
+        return {"init_image": base64.b64encode(buf.getvalue()).decode()}
+    return {}
+
+
+@pytest.mark.parametrize("repo_id,fam_name,cfg,distilled", _FLUX_DEFAULT_GUIDANCE_CASES)
+def test_flux_oneshot_argv_sends_explicit_cfg(repo_id, fam_name, cfg, distilled):
+    from core.inference.diffusion_families import default_generation_params
+    from core.inference.sd_cpp_args import build_sd_cpp_command
+
+    steps, guidance = default_generation_params(repo_id)
+    eng = _FakeEngine()
+    b = _loaded_backend(fam_name, engine = eng)
+    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1, **_edit_source(fam_name))
+    files, params, out, _kw = eng.calls[-1]
+    argv = build_sd_cpp_command("/bin/sd-cli", files, params, output_path = str(out))
+    assert float(argv[argv.index("--cfg-scale") + 1]) == cfg
+    if distilled is None:
+        assert "--guidance" not in argv
+    else:
+        assert float(argv[argv.index("--guidance") + 1]) == distilled
+
+
+@pytest.mark.parametrize("repo_id,fam_name,cfg,distilled", _FLUX_DEFAULT_GUIDANCE_CASES)
+def test_flux_server_request_sends_txt_cfg(repo_id, fam_name, cfg, distilled):
+    import dataclasses
+
+    from core.inference.diffusion_families import default_generation_params
+
+    steps, guidance = default_generation_params(repo_id)
+    b = _loaded_backend(fam_name)
+    server = _FakeServer("/bin/sd-server")
+    b._state = dataclasses.replace(b._state, mode = "server", server = server)
+    b.generate(prompt = "a fox", steps = steps, guidance = guidance, seed = 1, **_edit_source(fam_name))
+    g = server.payloads[-1]["sample_params"]["guidance"]
+    assert g["txt_cfg"] == cfg
+    assert g.get("distilled_guidance") == distilled
 
 
 def test_map_guidance_cfg_family_off_when_distilled():
     # qwen-image uses real CFG; a distilled 0 -> CFG off (1.0), a >1 value passes through.
     assert _map_guidance(detect_family("qwen-image"), 0.0) == (1.0, None)
     assert _map_guidance(detect_family("qwen-image"), 4.0) == (4.0, None)
+
+
+def test_map_guidance_z_image_converts_diffusers_g_to_standard_cfg():
+    # The shared default is diffusers' g = 3 (ComfyUI cfg 4); sd.cpp's standard CFG must get 4, Turbo's 0 stays off.
+    assert _map_guidance(detect_family("Tongyi-MAI/Z-Image"), 3.0) == (4.0, None)
+    assert _map_guidance(detect_family("Tongyi-MAI/Z-Image-Turbo"), 0.0) == (1.0, None)
 
 
 # ── status ────────────────────────────────────────────────────────────────────
@@ -764,7 +857,7 @@ def test_status_loaded_shape():
 def test_generate_returns_images_and_seed():
     eng = _FakeEngine()
     b = _loaded_backend(engine = eng)
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 123, batch_size = 2)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, seed = 123, batch_size = 2)
     assert out["seed"] == 123
     assert out["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
     assert len(out["images"]) == 2
@@ -938,7 +1031,7 @@ def test_generate_publishes_progress_before_lora_resolution(monkeypatch):
 
     monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
 
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, loras = [("some/lora", 1.0)])
     assert out["images"]
     assert seen["progress"]["active"] is True
     assert seen["progress"]["total_steps"] == 8
@@ -1230,25 +1323,29 @@ def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
     assert bk.sd_cpp_lists_accelerator_device(None) is False
 
 
-def test_supports_graph_cut_needs_both_flags_and_fails_closed(monkeypatch):
-    # The opposite default to the H3 gate: sd-cli exits non-zero on an unknown option, so "cannot tell" must not emit these.
+def test_graph_cut_options_support_legacy_and_current_builds_and_fail_closed(monkeypatch):
+    # unknown flags fail closed because sd-cli rejects them.
     monkeypatch.setattr(
         bk,
         "_sd_cpp_probe_output",
         lambda *_a: "  --max-vram         budget\n  --stream-layers    residency\n",
     )
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is True
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram", "--stream-layers"}
 
-    # --stream-layers is a no-op without --max-vram, so half a build is not a build to emit on.
+    # current builds stream automatically and reject the removed --stream-layers flag.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --max-vram budget\n")
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == {"--max-vram"}
+
+    # --stream-layers requires --max-vram, so a partial advertisement emits neither.
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --stream-layers    residency\n")
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: _PRE_H3_HELP)
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
 
     monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
-    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
-    assert bk.sd_cpp_supports_graph_cut(None) is False
+    assert bk.sd_cpp_graph_cut_options("/existing/sd-cli") == frozenset()
+    assert bk.sd_cpp_graph_cut_options(None) == frozenset()
 
 
 def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
@@ -1421,6 +1518,7 @@ def _run_server_load(
     fam_name = "z-image",
     device = "cpu",
     gguf_filename = "z.gguf",
+    family_override = None,
 ):
     fam = detect_family(fam_name)
     monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
@@ -1449,6 +1547,7 @@ def _run_server_load(
         gguf_filename = gguf_filename,
         base = fam.base_repo,
         fam = fam,
+        family_override = family_override,
         hf_token = None,
         _load_token = 1,
     )
@@ -1464,6 +1563,18 @@ def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     assert b.status()["native_mode"] == "server"
 
 
+def test_server_status_preserves_explicit_family_provenance(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, family_override = "z-image")
+
+    family = b.status()["resolved"]["family_override"]
+    assert (family["value"], family["requested"], family["source"]) == ("z-image",) * 2 + (
+        "explicit",
+    )
+    assert (family["status"], family["reason"]) == ("applied", "requested")
+
+
 def test_server_status_reports_selected_gguf_quant(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
@@ -1475,7 +1586,7 @@ def test_server_generate_uses_one_request_for_whole_batch(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, seed = 7, batch_size = 3)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, seed = 7, batch_size = 3)
     assert len(out["images"]) == 3
     assert all(isinstance(im, Image.Image) for im in out["images"])
     # ONE job for the whole batch (no per-image model reload), unlike the one-shot path.
@@ -1502,7 +1613,7 @@ def test_server_generation_restarts_on_the_cpu_backend_after_a_ggml_abort(monkey
     _run_server_load(monkeypatch, b, servers, device = "mps")
     servers[0].img_gen_error = RuntimeError(_GGML_ABORT)
 
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 3)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 3)
 
     assert len(out["images"]) == 1  # the retry produced the image
     assert len(servers) == 2 and servers[0].stopped is True
@@ -1558,7 +1669,7 @@ def test_server_generate_splits_batches_above_server_limit(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 100, batch_size = 10)
+    out = b.generate(prompt = "x", width = 256, height = 256, steps = 4, seed = 100, batch_size = 10)
     assert len(out["images"]) == 10
     counts = [p["batch_count"] for p in servers[0].payloads]
     assert counts == [bk._MAX_SERVER_BATCH, 10 - bk._MAX_SERVER_BATCH]  # [8, 2]
@@ -1578,7 +1689,7 @@ def test_server_generate_masks_large_seed(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
     _run_server_load(monkeypatch, b, servers)
-    out = b.generate(prompt = "x", width = 64, height = 64, steps = 4, seed = 2**64 - 1, batch_size = 1)
+    out = b.generate(prompt = "x", width = 256, height = 256, steps = 4, seed = 2**64 - 1, batch_size = 1)
     assert servers[0].payloads[0]["seed"] <= (1 << 63) - 1
     assert all(s <= (1 << 63) - 1 for s in out["seeds"])
 
@@ -2003,7 +2114,7 @@ def test_generate_treats_zero_strength_controlnet_as_disabled(cn_strength):
 
 
 def test_generate_rejects_image_conditioned_on_native_engine():
-    # img2img / inpaint / reference / upscale are diffusers-only; a native call with an init image gets a clean ValueError, not a silent txt2img.
+    # image-conditioned generation is diffusers-only; native calls must fail, not use txt2img.
     b = _loaded_backend(engine = _FakeEngine())
     with pytest.raises(ValueError, match = "not yet supported on the native"):
         b.generate(prompt = "x", steps = 4, seed = 1, init_image = "data:image/png;base64,AAAA")
@@ -2014,14 +2125,28 @@ def test_status_native_reports_supports_controlnet_false():
     assert b.status()["supports_controlnet"] is False
 
 
+def test_native_negative_prompt_reaches_sd_cli_only_when_cfg_runs():
+    klein = _loaded_backend("flux.2-klein")
+    assert klein.status()["supports_negative_prompt"] is True
+    kw = dict(prompt = "a fox", negative_prompt = "text", width = 256, height = 256, steps = 4, seed = 1)
+    out = klein.generate(guidance = 4.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt == "text"
+    assert out["negative_prompt"] == "text"
+    out = klein.generate(guidance = 1.0, **kw)
+    assert klein._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+    flux = _loaded_backend("flux.1")
+    assert flux.status()["supports_negative_prompt"] is False
+    out = flux.generate(guidance = 3.5, **kw)
+    assert flux._engine.calls[-1][1].negative_prompt is None
+    assert out["negative_prompt"] is None
+
+
 def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirror(
     monkeypatch, tmp_path
 ):
-    """Repointing the tables at unsloth mirrors would re-pull tens of GB on upgrade.
-
-    The HF cache is keyed by repo id, so an install that already holds the byte-identical repack
-    has it filed under the OLD id: the mirror's namespace is empty, the fetch re-downloads, and an
-    offline load fails outright over bytes already on disk."""
+    """reuse repo-id-keyed legacy caches to avoid redownloads and keep offline loads working."""
     from core.inference.diffusion_families import prefer_cached_legacy_source
     from core.inference.sd_cpp_backend import _fetch_repo_map
 
@@ -2210,7 +2335,7 @@ def test_generate_reports_the_build_the_recipe_persists():
         gguf_filename = "z-image-turbo-Q4_K_M.gguf",
         offload_flags = ("--vae-on-cpu", "--clip-on-cpu"),
     )
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["model_kind"] == "gguf"
     assert out["gguf_filename"] == "z-image-turbo-Q4_K_M.gguf"
     assert out["offload_policy"] == "active"
@@ -2218,6 +2343,8 @@ def test_generate_reports_the_build_the_recipe_persists():
     assert out["offload_policy"] == b.status()["offload_policy"]
     assert out["transformer_quant"] is None and out["text_encoder_quant"] is None
     assert out["memory_mode"] is None
+    assert out["cpu_offload"] is True and out["cpu_offload"] == b.status()["cpu_offload"]
+    assert out["speed_mode"] == b.status()["speed_mode"]
 
 
 def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(monkeypatch):
@@ -2237,11 +2364,11 @@ def test_a_completed_native_generation_stops_advertising_itself_as_cancellable(m
 
     monkeypatch.setattr(b, "_generate_oneshot", _oneshot)
     with pytest.raises(RuntimeError, match = "cancelled"):
-        b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+        b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
 
     # And once a run completes, the event is gone before the result is handed back.
     b2 = _loaded_backend()
-    out = b2.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b2.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["images"]
     seen.append(b2.cancel_generate())
     assert seen == [False]
@@ -2286,7 +2413,7 @@ def test_a_card_pick_is_not_reported_as_an_offload():
     status = b.status()
     assert status["cpu_offload"] is False
     assert status["offload_policy"] == "none"
-    out = b.generate(prompt = "a fox", width = 64, height = 64, steps = 4, seed = 1)
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 1)
     assert out["offload_policy"] == "none"
 
 
@@ -2411,7 +2538,7 @@ def test_generation_in_flight_tracks_a_generation(monkeypatch):
     monkeypatch.setattr(diffusion_lora, "resolve_specs", _resolve)
 
     assert bk.generation_in_flight() is False
-    b.generate(prompt = "a fox", width = 64, height = 64, steps = 8, loras = [("some/lora", 1.0)])
+    b.generate(prompt = "a fox", width = 256, height = 256, steps = 8, loras = [("some/lora", 1.0)])
     assert (
         seen["in_flight"] is True
     ), "liveness cannot tell this backend from a dead one while the native engine renders"
@@ -2426,3 +2553,86 @@ def test_generation_in_flight_never_builds_a_backend(monkeypatch):
         lambda *a, **k: pytest.fail("liveness constructed a native diffusion backend"),
     )
     assert bk.generation_in_flight() is False
+
+
+# ── the architecture marker scan ─────────────────────────────────────────────
+
+
+def test_the_marker_is_found_even_when_it_straddles_a_read_boundary(tmp_path):
+    # The scan reads in 8 MiB blocks, and a literal landing across the seam is exactly the case a
+    # naive loop misses: it would report a current build as incapable and quietly send every load
+    # of the family to diffusers. Placed so the first block ends mid-literal.
+    marker = "qwen_image_2_1"
+    chunk = 8 << 20
+    path = tmp_path / "sd-cli"
+    body = bytearray(b"\0" * (chunk + len(marker) * 2))
+    body[chunk - len(marker) // 2 : chunk - len(marker) // 2 + len(marker)] = marker.encode()
+    path.write_bytes(bytes(body))
+    assert bk.binary_carries_marker(str(path), marker) is True
+    assert bk.binary_carries_marker(str(path), "wan_2_2_no_such_arch") is False
+
+
+def test_an_unreadable_binary_and_an_unmarked_family_both_leave_the_route_alone(tmp_path):
+    # Two "no claim" cases that must not become a refusal. A family with no marker asks nothing of
+    # the build, and a path that cannot be stat-ed or opened is not evidence about its contents:
+    # refusing there would take the native engine away on a host where it works.
+    present = tmp_path / "sd-cli"
+    present.write_bytes(b"nothing interesting")
+    assert bk.binary_carries_marker(str(present), None) is True
+    assert bk.binary_carries_marker(str(tmp_path / "missing"), "qwen_image_2_1") is True
+    assert bk.binary_carries_marker(None, "qwen_image_2_1") is False
+    assert bk.sd_cpp_binary_runs_family(str(present), detect_family("z-image")) is True
+    assert bk.sd_cpp_binary_runs_family(str(present), detect_family("qwen-image-2.1")) is False
+
+
+def test_the_scan_is_redone_when_the_binary_on_that_path_changes(tmp_path):
+    # An upgrade writes a new build to the SAME path, so a result memoised on the path alone would
+    # keep reporting the old answer for the life of the process and the upgrade would never take
+    # effect. Keyed on size and mtime as well.
+    path = tmp_path / "sd-cli"
+    path.write_bytes(b"an old build")
+    assert bk.binary_carries_marker(str(path), "qwen_image_2_1") is False
+    path.write_bytes(b"a new build with qwen_image_2_1 in it")
+    assert bk.binary_carries_marker(str(path), "qwen_image_2_1") is True
+
+
+def test_a_cached_engine_is_re_checked_against_the_family_now_loading(tmp_path):
+    # _engine is resolved lazily and never cleared, so it outlives the load that created it. An
+    # sd-cli cached by an older family's one-shot load would otherwise be handed straight back for
+    # a family it cannot run, and the load would report ready and die on the first generation,
+    # which is the failure the gate exists to prevent.
+    old = tmp_path / "sd-cli-old"
+    old.write_bytes(b"a build from before the family landed")
+    backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    backend._engine = types.SimpleNamespace(binary = str(old), is_available = lambda: True)
+    backend._engine_injected = False
+
+    # A family the cached build does carry is still served from the cache, unchanged.
+    backend._loading_family = detect_family("z-image")
+    assert backend._resolve_engine() is backend._engine
+
+    backend._loading_family = detect_family("qwen-image-2.1")
+    with pytest.raises(RuntimeError, match = "predates qwen-image-2.1 support"):
+        backend._resolve_engine()
+
+
+def test_a_rejected_concurrent_load_cannot_move_the_family_the_worker_validates_against():
+    # begin_load assigns the family BEFORE taking _lock to refuse a second load, so on shared state
+    # a request refused a line later would still have replaced the family the running worker checks
+    # its binaries against, and could refuse a good build or accept an incapable one.
+    backend = SdCppDiffusionBackend.__new__(SdCppDiffusionBackend)
+    worker_family = detect_family("qwen-image-2.1")
+    backend._loading_family = worker_family
+    seen = {}
+    started = threading.Event()
+
+    def _other_request():
+        backend._loading_family = detect_family("z-image")
+        started.set()
+
+    other = threading.Thread(target = _other_request)
+    other.start()
+    started.wait(timeout = 5)
+    other.join(timeout = 5)
+    seen["worker"] = backend._loading_family
+    assert seen["worker"] is worker_family, "another thread's family reached this worker"

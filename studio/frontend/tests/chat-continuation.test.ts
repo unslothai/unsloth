@@ -25,12 +25,15 @@ const {
   budgetImpliesTruncation,
   hasRenderableContent,
   incompleteLabel,
+  incompleteReasonAfterError,
   incompleteRemedy,
   isContinuableContent,
   isProviderReportedReason,
   isRestart,
   joinContinuation,
   modeAllowsContinuation,
+  noteRunStartedThisSession,
+  providerCompactionContinuationFields,
   readContinuationRequest,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -40,6 +43,7 @@ const {
   recordAutoContinue,
   rejectsAssistantPrefill,
   resetAutoContinue,
+  runStartedThisSession,
   wasAutoContinued,
   shouldAutoContinue,
   shouldAutoContinueMessage,
@@ -262,6 +266,39 @@ test("the adapter marks a finish that rendered nothing", () => {
   assert.match(ending, /yield \{\s*content: finalContent,/);
 });
 
+test("a reply cut mid-quote is reported, and offers a retry rather than a resume", () => {
+  // A lone backtick or quote can be intentional, so the warning stays tentative.
+  assert.equal(incompleteLabel("quote_cut"), "This response may have ended early");
+  assert.match(incompleteRemedy("quote_cut") ?? "", /may have emitted a special token/);
+  assert.match(incompleteRemedy("quote_cut") ?? "", /< \|im_end\|>/);
+  assert.deepEqual(
+    readIncompleteInfo({ custom: { incomplete: { reason: "quote_cut" } } }),
+    { reason: "quote_cut" },
+  );
+  assert.equal(shouldAutoContinue("quote_cut", "parent-1"), false);
+  // A cancelled status would hide the label.
+  assert.deepEqual(
+    restoredAssistantStatus({ custom: { incomplete: { reason: "quote_cut" } } }),
+    { type: "incomplete", reason: "length" },
+  );
+});
+
+test("the adapter stamps a cut the backend reported on a clean finish", () => {
+  assert.match(
+    CHAT_ADAPTER,
+    /if \(chunk\.quote_cut\) \{\s*quoteCut = true;\s*continue;\s*\}/,
+  );
+  const ending = CHAT_ADAPTER.slice(
+    CHAT_ADAPTER.indexOf("const finalIncompleteReason ="),
+  );
+  const reason = ending.slice(0, ending.indexOf("yield {"));
+  // After the reported finish (`length` wins) and before the empty-turn fallback.
+  assert.match(
+    reason,
+    /resolveIncompleteReason\(incompleteReason, contextWindowExceeded\) \?\?\s*\(quoteCut \? "quote_cut" : null\) \?\?/,
+  );
+});
+
 test("the provider's own reason outranks every reason the client infers", () => {
   // The event ends Anthropic's turn, so the model has already stopped. A null reason
   // matters most: it reads as a completed answer.
@@ -343,10 +380,13 @@ test("the adapter latches the backend window-exhaustion event", () => {
     /reason: resolveIncompleteReason\([\s\S]{0,400}contextWindowExceeded,\s*\)/,
     "the error path decides a reason without asking what the provider reported",
   );
+  // The provisional reason on every streamed yield is the durability gate's call - a run with a server-side
+  // run to resume from reads as cancelled, a walk-away reads as interrupted - and either guess still goes
+  // through the resolver, so a window the provider reported outranks what the client inferred.
   assert.match(
     adapter,
-    /incomplete: \{\s*reason: resolveIncompleteReason\("cancelled" as const, contextWindowExceeded\),\s*\}/,
-    "an abort saves a bare cancelled again, losing what the provider reported",
+    /incomplete: \{\s*reason: resolveIncompleteReason\(\s*(?:\/\/[^\n]*\n\s*)*incompleteReason \?\?\s*\(\s*generationDecision === "durable" \?\s*"cancelled"\s*:\s*"interrupted"\),\s*contextWindowExceeded,\s*\)/,
+    "an abort saves a bare cancelled again, losing the gate that names a walk-away and what the provider reported",
   );
   // The finish chunk carries no delta, so nothing between here and `[DONE]` need yield.
   const handler = adapter.slice(
@@ -439,6 +479,52 @@ test("a continuation request is read only when it carries text", () => {
   );
   assert.equal(readContinuationRequest({}), null);
   assert.equal(readContinuationRequest(undefined), null);
+});
+
+test("a continuation carries a complete provider compaction tuple", () => {
+  const fields = {
+    providerCompaction: {
+      type: "compaction",
+      content: "summary",
+      encrypted_content: "opaque",
+    },
+    providerCompactionAfterToolCalls: 0,
+    providerCompactionProviderType: "anthropic",
+    providerCompactionModelId: "claude-opus-4-7",
+    providerCompactionConnectionKey: "v1:connection-a",
+  };
+  assert.deepEqual(
+    providerCompactionContinuationFields({ custom: fields }),
+    fields,
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: { partial: "half an answer", ...fields },
+      },
+    }),
+    { partial: "half an answer", ...fields },
+  );
+  assert.deepEqual(
+    readContinuationRequest({
+      custom: {
+        unslothContinuation: {
+          partial: "half an answer",
+          ...fields,
+          providerCompactionModelId: undefined,
+        },
+      },
+    }),
+    { partial: "half an answer" },
+  );
+  assert.match(
+    THREAD,
+    /\.\.\.providerCompactionContinuationFields\(metadata\)/,
+  );
+  assert.match(
+    CHAT_ADAPTER,
+    /const continuationCompaction = continuation[\s\S]*providerCompactionForTarget\([\s\S]*content: continuationCompaction/,
+  );
 });
 
 test("a turn that called a tool cannot be continued", () => {
@@ -730,6 +816,7 @@ test("a claim is reported and cleared by a full reset", async () => {
 
 test("a message already claimed stops reporting itself as continuing", async () => {
   resetAutoContinue();
+  noteRunStartedThisSession("m1");
   // The turn that fires it: nothing has claimed the message yet.
   assert.equal(shouldAutoContinueMessage("m1", "length", "parent-1"), true);
   await claimAutoContinue("m1", PANE);
@@ -747,17 +834,66 @@ test("a claim on one message does not silence another", async () => {
   await claimAutoContinue("m1", PANE);
   // The next round of the same turn is a new message with budget left, and continues.
   recordAutoContinue("parent-1");
+  noteRunStartedThisSession("m2");
   assert.equal(shouldAutoContinueMessage("m2", "length", "parent-1"), true);
 });
 
 test("a claimed message still honours the gates the turn itself fails", () => {
   resetAutoContinue();
+  noteRunStartedThisSession("m1");
+  noteRunStartedThisSession("m2");
   // Nothing about the claim resurrects a cut that was never automatic in the first place.
   assert.equal(shouldAutoContinueMessage("m1", "cancelled", "parent-1"), false);
   assert.equal(
     shouldAutoContinueMessage("m2", "length", "parent-1", { fits: false }),
     false,
   );
+});
+
+// --- history ---------------------------------------------------------------------------
+// Opening a saved chat must not auto-continue its Max Tokens cut.
+
+test("a Max Tokens cut loaded from history is left to the Continue button", () => {
+  resetAutoContinue();
+  assert.equal(runStartedThisSession("saved-reply"), false);
+  assert.equal(shouldAutoContinueMessage("saved-reply", "length", "parent-1"), false);
+  // The manual button still offers it.
+  assert.equal(shouldAutoContinue("length", "parent-1"), true);
+  assert.equal(autoContinueCount("parent-1"), 0);
+});
+
+test("a Max Tokens cut from a run this page started still continues on its own", () => {
+  resetAutoContinue();
+  noteRunStartedThisSession("live-reply");
+  assert.equal(shouldAutoContinueMessage("live-reply", "length", "parent-1"), true);
+  // Each round is a new sibling, noted as it starts.
+  recordAutoContinue("parent-1");
+  noteRunStartedThisSession("round-2");
+  assert.equal(shouldAutoContinueMessage("round-2", "length", "parent-1"), true);
+});
+
+test("a missing message id never counts as started", () => {
+  resetAutoContinue();
+  noteRunStartedThisSession(undefined);
+  noteRunStartedThisSession(null);
+  noteRunStartedThisSession("");
+  assert.equal(runStartedThisSession(undefined), false);
+  assert.equal(runStartedThisSession(""), false);
+});
+
+test("a full reset forgets which runs this page started", () => {
+  noteRunStartedThisSession("live-reply");
+  resetAutoContinue();
+  assert.equal(runStartedThisSession("live-reply"), false);
+});
+
+test("every adapter run records its assistant message before it starts", () => {
+  const start = CHAT_ADAPTER.indexOf("  return {\n    async *run(args) {");
+  assert.ok(start >= 0);
+  const wrapper = CHAT_ADAPTER.slice(start);
+  const noted = wrapper.indexOf("noteRunStartedThisSession(args.unstable_assistantMessageId)");
+  const delegated = wrapper.indexOf("yield* adapter.run(args)");
+  assert.ok(noted >= 0 && delegated >= 0 && noted < delegated);
 });
 
 // --- cross-tab claim ------------------------------------------------------------------
@@ -2694,7 +2830,11 @@ test("only the gate's own tokens are read as a refusal", () => {
 test("the gate's pulse is tagged where it is fired and read where it matters", () => {
   // Neither end is exercised by a unit test: the adapter's gate is deep inside a run, and
   // the keeper's real signal reads a zustand store. Pinned at both ends instead.
-  const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason ="));
+  const gate = CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const blockAttachmentRun ="));
+  assert.match(
+    CHAT_ADAPTER.slice(CHAT_ADAPTER.indexOf("const imageGateReason =")),
+    /if \(imageGateReason\) \{\n\s*blockAttachmentRun\(imageGateReason\);/,
+  );
   assert.match(
     gate,
     /const gateOwner = createImageGateRunOwner\(\)/,
@@ -2851,4 +2991,34 @@ test("a merger with repair off is the identity, streaming or final", () => {
   const full = `${partial}${REASONING}`;
   assert.equal(merge(full), full);
   assert.equal(merge(full, { final: true }), full);
+});
+
+const ERROR_PATH_REASON =
+  /incompleteReasonAfterError\(\s*incompleteReason,\s*err instanceof GenerationLengthError\s*\?\s*lengthIncompleteReason\(err\.stopCause\)/;
+
+test("a length error refines the length the terminal chunk latched", () => {
+  // The terminal chunk latches length before GenerationLengthError identifies the cause.
+  assert.equal(
+    incompleteReasonAfterError("length", "context_window"),
+    "context_window",
+  );
+  assert.equal(incompleteReasonAfterError("length", "length"), "length");
+  // An explicit Stop still outranks whatever the error says.
+  assert.equal(
+    incompleteReasonAfterError("cancelled", "context_window"),
+    "cancelled",
+  );
+  // Nothing latched: the error decides, as before.
+  assert.equal(
+    incompleteReasonAfterError(null, "context_window"),
+    "context_window",
+  );
+  assert.equal(incompleteReasonAfterError(null, "interrupted"), "interrupted");
+  // A latched reason is not overridden by an unrelated error.
+  assert.equal(incompleteReasonAfterError("length", "interrupted"), "length");
+});
+
+test("the adapter's error path asks the length error which limit it was", () => {
+  // Check the wiring without initializing the adapter's stores.
+  assert.match(CHAT_ADAPTER, ERROR_PATH_REASON);
 });

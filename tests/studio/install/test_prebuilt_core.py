@@ -17,6 +17,7 @@ would use, including the "no fallback backend -> report no prebuilt" policy.
 """
 
 import contextlib
+import http.client
 import importlib.util
 import io
 import json
@@ -965,6 +966,104 @@ def test_github_api_403_without_a_reachable_reset_makes_one_request():
         )
 
     assert len(requests) == 1
+
+
+# urllib wraps only a failure to SEND in URLError: an exception out of getresponse() or a
+# body read reaches the retry loop raw. These are what a dropped GitHub release download
+# looks like ("Remote end closed connection without response" sent a Windows install with
+# no Visual Studio to the source build on its first attempt).
+_DROPPED_CONNECTIONS = [
+    http.client.RemoteDisconnected("Remote end closed connection without response"),
+    ConnectionResetError(104, "Connection reset by peer"),
+    ConnectionAbortedError(10053, "An established connection was aborted"),
+    http.client.IncompleteRead(b"partial", 1024),
+]
+
+_NODE_SPEC = importlib.util.spec_from_file_location(
+    "studio_install_node_prebuilt_for_core", STUDIO_DIR / "install_node_prebuilt.py"
+)
+assert _NODE_SPEC is not None and _NODE_SPEC.loader is not None
+install_node_prebuilt = importlib.util.module_from_spec(_NODE_SPEC)
+sys.modules[_NODE_SPEC.name] = install_node_prebuilt
+_NODE_SPEC.loader.exec_module(install_node_prebuilt)
+
+
+@pytest.mark.parametrize("exc", _DROPPED_CONNECTIONS, ids = lambda e: type(e).__name__)
+@pytest.mark.parametrize(
+    "classify",
+    [core.is_retryable_url_error, install_node_prebuilt.is_retryable_url_error],
+    ids = ["prebuilt_core", "install_node_prebuilt"],
+)
+def test_a_dropped_connection_is_retried(classify, exc):
+    assert classify(exc) is True
+
+
+@pytest.mark.parametrize(
+    "classify",
+    [core.is_retryable_url_error, install_node_prebuilt.is_retryable_url_error],
+    ids = ["prebuilt_core", "install_node_prebuilt"],
+)
+def test_a_programming_error_is_still_not_retried(classify):
+    assert classify(ValueError("bad url")) is False
+    assert classify(FileNotFoundError("gone")) is False
+
+
+class _Response:
+    def __init__(
+        self,
+        body,
+        *,
+        fail_after = None,
+    ):
+        self._body = io.BytesIO(body)
+        self._fail_after = fail_after
+        self.headers = {"Content-Length": str(len(body))}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, size = -1):
+        if self._fail_after is not None and self._body.tell() >= self._fail_after:
+            raise ConnectionResetError(104, "Connection reset by peer")
+        return self._body.read(size)
+
+
+@pytest.mark.parametrize("where", ["before the response", "mid-body"])
+def test_a_download_that_drops_once_is_retried_to_completion(monkeypatch, tmp_path, where):
+    component = Component(LLAMA_DESCRIPTOR)
+    monkeypatch.setattr(core.time, "sleep", lambda s: None)
+    body = b"x" * (3 << 20)
+    requests = []
+
+    class Opener:
+        def open(
+            self,
+            request,
+            timeout = None,
+        ):
+            requests.append(request.full_url)
+            if len(requests) == 1:
+                if where == "before the response":
+                    raise http.client.RemoteDisconnected(
+                        "Remote end closed connection without response"
+                    )
+                return _Response(body, fail_after = 1 << 20)
+            return _Response(body)
+
+    component.namespace["_URL_OPENER"] = Opener()
+    destination = tmp_path / "app-windows-x64-cpu.zip"
+    core.download_file(
+        component.ops,
+        "https://github.com/unslothai/llama.cpp/releases/download/b1/a.zip",
+        destination,
+    )
+
+    assert len(requests) == 2
+    assert destination.read_bytes() == body
+    assert [p.name for p in tmp_path.iterdir()] == [destination.name]
 
 
 def test_a_settle_does_not_hold_a_finished_launch_for_the_install_timeout(tmp_path):

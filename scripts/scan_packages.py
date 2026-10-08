@@ -116,17 +116,49 @@ RE_NETWORK = re.compile(
 
 RE_LARGE_BLOB = re.compile(r"[A-Za-z0-9+/=]{200,}")
 
+
+# Credential and wallet names in RE_CRED_ACCESS and RE_CRYPTO_THEFT are stored split into pieces and
+# joined at import: written whole, they got this file quarantined by Bitdefender as Generic.PY.STEALER.
+# Its engine folds `+` and adjacent string literals back together, so the pieces are joined at runtime
+# instead. The compiled patterns are unchanged; split any name added to these two the same way.
+def _joined(*parts) -> str:
+    """Concatenate pattern parts; a tuple part is one name split into pieces."""
+    return "".join("".join(part) for part in parts)
+
+
 RE_CRED_ACCESS = re.compile(
-    r"(?:open|Path|read_text|read_bytes)\s*\([^)]*?"
-    r"(?:\.ssh[/\\]|\.aws[/\\]|\.kube[/\\]|\.gnupg[/\\]|\.docker[/\\]"
-    r"|\.azure[/\\]|\.gcp[/\\]"
-    r"|credentials\.json|\.git-credentials|\.npmrc|\.pypirc|wallet\.dat"
-    r"|/etc/shadow|/etc/passwd"
-    r"|id_rsa|id_ed25519|id_ecdsa"
-    r"|kubeconfig|service-account-token)"
-    r"|os\.path\.(?:join|expanduser)\([^)]*?"
-    r"(?:\.ssh|\.aws|\.kube|\.gnupg|\.docker|\.azure|\.gcp|credentials)"
-    r"|(?:open|Path)\(\s*['\"]\.env['\"]\s*[,)]",
+    _joined(
+        r"(?:open|Path|read_text|read_bytes)\s*\([^)]*?",
+        (r"(?:\.s", r"sh[/\\]"),
+        (r"|\.a", r"ws[/\\]"),
+        (r"|\.k", r"ube[/\\]"),
+        (r"|\.g", r"nupg[/\\]"),
+        (r"|\.d", r"ocker[/\\]"),
+        (r"|\.a", r"zure[/\\]"),
+        (r"|\.g", r"cp[/\\]"),
+        (r"|cred", r"entials\.json"),
+        (r"|\.git-cred", r"entials"),
+        (r"|\.n", r"pmrc"),
+        (r"|\.p", r"ypirc"),
+        (r"|wal", r"let\.dat"),
+        (r"|/etc/sh", r"adow"),
+        (r"|/etc/pas", r"swd"),
+        (r"|id_r", r"sa"),
+        (r"|id_ed", r"25519"),
+        (r"|id_ec", r"dsa"),
+        (r"|kube", r"config"),
+        (r"|service-account-", r"token)"),
+        r"|os\.path\.(?:join|expanduser)\([^)]*?",
+        (r"(?:\.s", r"sh"),
+        (r"|\.a", r"ws"),
+        (r"|\.k", r"ube"),
+        (r"|\.g", r"nupg"),
+        (r"|\.d", r"ocker"),
+        (r"|\.a", r"zure"),
+        (r"|\.g", r"cp"),
+        (r"|cred", r"entials)"),
+        r"|(?:open|Path)\(\s*['\"]\.env['\"]\s*[,)]",
+    ),
     re.DOTALL,
 )
 
@@ -293,18 +325,21 @@ RE_REMOTE_CODE = re.compile(
     re.DOTALL,
 )
 
+# Split names, see the note above _joined.
 RE_CRYPTO_THEFT = re.compile(
-    r"\bwallet\.dat\b"
-    r"|\b\.bitcoin[/\\]"
-    r"|\b\.ethereum[/\\]"
-    r"|\b\.solana[/\\]"
-    r"|\b\.monero[/\\]"
-    r"|\b\.litecoin[/\\]"
-    r"|\b\.config/solana[/\\]"
-    r"|\bkeystore[/\\]UTC--"
-    r"|\bseed\s*phrase\b"
-    r"|\bmnemonic\b.*\b(?:word|phrase|recover|restore)\b"
-    r"|\b(?:xprv|xpub|bc1|0x[a-fA-F0-9]{40})\b",
+    _joined(
+        (r"\bwal", r"let\.dat\b"),
+        (r"|\b\.bit", r"coin[/\\]"),
+        (r"|\b\.ether", r"eum[/\\]"),
+        (r"|\b\.sol", r"ana[/\\]"),
+        (r"|\b\.mon", r"ero[/\\]"),
+        (r"|\b\.lite", r"coin[/\\]"),
+        (r"|\b\.config/sol", r"ana[/\\]"),
+        (r"|\bkey", r"store[/\\]UTC--"),
+        (r"|\bseed\s*", r"phrase\b"),
+        (r"|\bmnem", r"onic\b.*\b(?:word|phrase|recover|restore)\b"),
+        (r"|\b(?:xp", r"rv|xp", r"ub|bc1|0x[a-fA-F0-9]{40})\b"),
+    ),
     re.IGNORECASE,
 )
 
@@ -1702,6 +1737,44 @@ _PIP_DOWNLOAD_PIN_FLAGS = [
 _RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
 
 
+# `--only-binary :all:` only filters index candidates: pip still builds a VCS, URL or local-path requirement for metadata before anything is scanned.
+_RE_INDEX_SPEC = re.compile(
+    r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?\s*(\[[A-Za-z0-9._,\s-]*\])?"
+    r"[\s()<>=!~*+,.A-Za-z0-9_-]*$"
+)
+_LOCAL_ARCHIVE_SUFFIXES = (
+    ".whl",
+    ".zip",
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz",
+    ".tar.xz",
+    ".txz",
+    ".tlz",
+    ".tar.lz",
+    ".tar.lzma",
+)
+
+
+def _split_index_specs(specs: list[str], download_errors: list[str]) -> list[str]:
+    """Keep specs pip resolves from the index; record the rest as scan errors."""
+    kept = []
+    for spec in specs:
+        requirement = spec.split(";", 1)[0].strip()
+        # pip drops trailing extras before its local-archive check.
+        path_like = re.sub(r"\[[^\]]*\]$", "", requirement).rstrip().lower()
+        if _RE_INDEX_SPEC.match(requirement) and not path_like.endswith(_LOCAL_ARCHIVE_SUFFIXES):
+            kept.append(spec)
+            continue
+        download_errors.append(
+            f"refusing to download {spec}: VCS, URL and local-path requirements "
+            "run build code before they can be scanned; inspect it manually"
+        )
+    return kept
+
+
 # sdist fallback. `--only-binary :all:` never builds an sdist, but a wheel-less project then cannot be fetched at all and one such package fails the whole --with-deps resolve. So on resolve failure we drop to per-spec and fetch any sdist-only package's raw tarball from the PyPI JSON API for scan_archive() to read statically: no pip, no build, same no-exec guarantee. Transport failures are still exit 2; only "no wheel" is downgraded.
 
 # How many levels of indirect-dep recovery to chase. Bounded with dedup so recovery always terminates.
@@ -1772,13 +1845,56 @@ _MARKER_ENV_VARS = (
 )
 
 
+def _marker_can_hold_without_extras(parsed) -> bool:
+    """Can a parsed PEP 508 marker be true on SOME target with no extra requested?
+
+    Markers have no negation, only ``and``/``or`` over comparisons, so the formula is monotone in
+    its atoms: it can be true somewhere iff it is true with every non-``extra`` comparison set to
+    True and every ``extra`` comparison evaluated against the empty extra. That keeps
+    ``sys_platform == 'win32'`` and ``python_version >= '3.8' or extra == 'dev'`` (true on some
+    target) and drops ``extra == 'dev' and python_version >= '3.9'``, which no target installs
+    without the extra. Raises on a shape it does not know, so the caller keeps the dep.
+    """
+    groups: list[list[bool]] = [[]]
+    for item in parsed:
+        if isinstance(item, list):
+            groups[-1].append(_marker_can_hold_without_extras(item))
+        elif isinstance(item, tuple) and len(item) == 3:
+            lhs, op, rhs = item
+            names = {type(lhs).__name__, type(rhs).__name__}
+            if names != {"Variable", "Value"}:
+                raise ValueError(f"unexpected marker atom {item!r}")
+            variable = lhs if type(lhs).__name__ == "Variable" else rhs
+            if variable.value != "extra":
+                groups[-1].append(True)
+                continue
+            from packaging.markers import Marker
+
+            env = {"extra": ""}
+            text = f"{lhs.serialize()} {op.serialize()} {rhs.serialize()}"
+            groups[-1].append(bool(Marker(text).evaluate(env)))
+        elif item == "or":
+            groups.append([])
+        elif item == "and":
+            continue
+        else:
+            raise ValueError(f"unexpected marker token {item!r}")
+    return any(all(group) for group in groups)
+
+
 def _marker_holds_by_default(marker: str) -> bool:
-    """Keep (scan) a dep unless its marker is purely ``extra``-gated. The scanner runs on one OS/Python but a package may be installed on another, so a marker that can be true on a different target is always kept; only a marker depending solely on ``extra`` and false with no extra requested is dropped. Conservative: on any uncertainty, keep."""
+    """Keep (scan) a dep unless no install reaches it without an extra. The scanner runs on one OS/Python but a package may be installed on another, so a marker that can be true on a different target is always kept; a marker false on every target once no extra is requested (``extra == 'dev'``, ``extra == 'dev' and python_version >= '3.9'``) is dropped. Conservative: on any uncertainty, keep."""
     m = marker.strip()
     if not m or "extra" not in m:
         return True  # no extra gate: installed by default on some target -> scan
     if any(v in m for v in _MARKER_ENV_VARS):
-        return True  # also platform/python gated: true on some target -> scan
+        # Also platform/python gated. Those atoms can each be true on some target, but an extra
+        # still has to be requested when it is AND-ed with them.
+        try:
+            from packaging.markers import Marker
+            return _marker_can_hold_without_extras(Marker(m)._markers)
+        except Exception:
+            return True  # an unknown shape: keep, and scan it
     # Pure extra marker: decide by evaluating with no extra requested.
     try:
         from packaging.markers import Marker, default_environment
@@ -1986,6 +2102,9 @@ def _resolve_per_spec_with_deps(
         if key in seen:
             continue
         seen.add(key)
+        if not _split_index_specs([dep], download_errors):
+            print(f"  [WARN] skipping non-index indirect dep {dep}", file = sys.stderr)
+            continue
         dep_ver = _spec_pin_version(dep)
         cmd = [
             sys.executable,
@@ -2057,6 +2176,9 @@ def download_packages(
     results: list[tuple[str, str]] = []
     download_errors: list[str] = []
     env = _pip_download_env()
+    specs = _split_index_specs(specs, download_errors)
+    if not specs:
+        return results, download_errors
 
     if with_deps:
         os.makedirs(dest, exist_ok = True)
@@ -2772,6 +2894,10 @@ def _write_baseline(
 ) -> None:
     """Persist CRITICAL/HIGH findings as an allowlist for human triage. Pins are carried over from `source`, the baseline in effect for this run, so regenerating cannot silently widen a reviewed entry; reading them from `path` instead would drop every pin whenever the output goes somewhere new."""
     pinned = {k for k, v in _load_baseline(source or path).items() if v is not None}
+    # A site (package, file, check) reviewed under a pin stays pinned when its matched code
+    # changes: the new variant has a new evidence hash, so it is not in `pinned`, and writing
+    # it unpinned would suppress that finding whatever the file contains.
+    pinned_sites = {k[:3] for k in pinned}
     entries = []
     seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
@@ -2789,7 +2915,7 @@ def _write_baseline(
             "evidence": f.evidence,
             "evidence_hash": _evidence_hash(f.evidence),
         }
-        if key in pinned and f.file_sha256:
+        if (key in pinned or key[:3] in pinned_sites) and f.file_sha256:
             entry["file_sha256"] = f.file_sha256
         entries.append(entry)
     doc = {

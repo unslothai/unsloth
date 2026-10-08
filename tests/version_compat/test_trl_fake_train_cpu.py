@@ -212,10 +212,16 @@ def _load_plain():
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
+        # No dtype kwarg: `dtype=` fails at the 4.52.4 floor, `torch_dtype=` is deprecated from 4.57.6. Cast after.
         tok = AutoTokenizer.from_pretrained(_MODEL)
-        model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype = torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(_MODEL).to(torch.float32)
     except OSError as e:  # hub unreachable / model missing
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    got = next(model.parameters()).dtype
+    assert got == torch.float32, (
+        f"the cast after load left the model in {got}, not float32. These tests compare "
+        f"losses, so a silent dtype change is a silent change of what they measure."
+    )
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     # Unsloth's GRPO path calls model.for_training()/for_inference() (added by FastLanguageModel). A plain HF model
@@ -273,7 +279,16 @@ def test_sft_trains_on_cpu(tmp_path):
     SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
 
 
+def _skip_if_unsloth_refuses_grpo():
+    # Unsloth refuses GRPO below trl 0.20.0 (unsloth/models/rl.py); the floor lane runs below it.
+    import trl
+    from packaging.version import Version
+    if Version(trl.__version__) < Version("0.20.0"):
+        pytest.skip(f"unsloth refuses GRPO on trl {trl.__version__} (< 0.20.0)")
+
+
 def test_grpo_trains_on_cpu(tmp_path):
+    _skip_if_unsloth_refuses_grpo()
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
@@ -335,7 +350,47 @@ def test_dpo_trains_on_cpu(tmp_path):
     DPOTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
 
 
+def test_grpo_evaluates_with_an_explicit_eval_batch_size(tmp_path):
+    """Shrinking an explicit eval batch of 8 to the train batch of 2 split num_generations = 4 groups."""
+    _skip_if_unsloth_refuses_grpo()
+    from datasets import Dataset
+    from trl import GRPOConfig, GRPOTrainer
+
+    model, tok = _load_plain()
+    _guard_finite_logits(model)
+    ds = Dataset.from_list([{"prompt": "hi there"}] * 8)
+    cfg = GRPOConfig(
+        output_dir = str(tmp_path / "ci_grpo_eval"),
+        per_device_train_batch_size = 2,
+        gradient_accumulation_steps = 2,
+        per_device_eval_batch_size = 8,
+        num_generations = 4,
+        eval_strategy = "steps",
+        max_completion_length = 8,
+        report_to = "none",
+        temperature = 1.0,
+        beta = 0.0,
+        save_strategy = "no",
+        use_cpu = True,
+        use_vllm = False,
+        fp16 = False,
+        bf16 = False,
+        optim = "adamw_torch",
+    )
+    trainer = GRPOTrainer(
+        model = model,
+        processing_class = tok,
+        reward_funcs = [lambda completions, **k: [float(len(c)) for c in completions]],
+        args = cfg,
+        train_dataset = ds,
+        eval_dataset = ds,
+    )
+    assert trainer.args.per_device_eval_batch_size == 8
+    assert "eval_loss" in trainer.evaluate()
+
+
 def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
+    _skip_if_unsloth_refuses_grpo()
     """The canary above proves the GRPO trainer runs. It does NOT prove Unsloth's own
     ``get_batch_samples`` runs, because ``_load_plain`` never goes through the loader that
     installs it, so ``Trainer.get_batch_samples`` stays stock transformers.
@@ -448,3 +503,57 @@ def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
         "no batch arrived as a list, so this canary is not exercising the GRPO collator "
         "shape and would not have caught unsloth-zoo#1217"
     )
+
+
+def test_sft_applies_trl_router_aux_loss_coef(tmp_path):
+    """The MoE forward must apply SFTConfig.router_aux_loss_coef, not the checkpoint value cached at init."""
+    import inspect
+    from datasets import Dataset
+    from trl import SFTConfig, SFTTrainer
+    from transformers import AutoTokenizer, MixtralConfig, MixtralForCausalLM
+
+    if "router_aux_loss_coef" not in inspect.signature(SFTConfig).parameters:
+        pytest.skip("SFTConfig has no router_aux_loss_coef before TRL 1.7")
+    try:
+        tok = AutoTokenizer.from_pretrained(_MODEL)
+    except OSError as e:
+        pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    tok.pad_token = tok.pad_token or tok.eos_token
+    config = MixtralConfig(
+        vocab_size = len(tok),
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        router_aux_loss_coef = 0.02,
+    )
+    torch.manual_seed(0)
+    model = MixtralForCausalLM(config)
+    ds = Dataset.from_list([{"text": "The quick brown fox jumps over the lazy dog."}] * 8)
+    cfg = SFTConfig(
+        output_dir = str(tmp_path / "ci_sft_moe"),
+        per_device_train_batch_size = 2,
+        max_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        max_length = None,
+        padding_free = False,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+        router_aux_loss_coef = 0.05,
+    )
+    SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds)
+    ids = tok(["The quick brown fox jumps over the lazy dog."], return_tensors = "pt").input_ids
+    model.train()
+    with torch.no_grad():
+        on = model(input_ids = ids, labels = ids, output_router_logits = True)
+        off = model(input_ids = ids, labels = ids, output_router_logits = False)
+    applied = (float(on.loss) - float(off.loss)) / float(on.aux_loss)
+    assert (
+        abs(applied - 0.05) < 1e-4
+    ), f"applied aux coefficient {applied}, expected SFTConfig's 0.05"

@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import importlib.util
+import errno
 import inspect
+import os
 import shutil
 import subprocess
 import sys
@@ -55,7 +57,7 @@ REAL_MSVCRT = sys.modules.get("msvcrt")
 
 
 @pytest.fixture
-def studio(monkeypatch):
+def studio(monkeypatch, tmp_path):
     package = types.ModuleType("unsloth_cli")
     package.__path__ = [str(REPO_ROOT / "unsloth_cli")]
     commands = types.ModuleType("unsloth_cli.commands")
@@ -81,6 +83,10 @@ def studio(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, module_name, module)
     spec.loader.exec_module(module)
+    # update() takes an exclusive flock under STUDIO_HOME, which defaults to the real
+    # ~/.unsloth/studio. Another xdist worker holding it made update() exit 1 before
+    # the call order these tests check, and the tests wrote into the user's home.
+    monkeypatch.setattr(module, "STUDIO_HOME", tmp_path / "studio_home")
     return module
 
 
@@ -143,6 +149,23 @@ def _successful_version_run(calls = None):
         if calls is not None:
             calls.append((argv, kwargs))
         return types.SimpleNamespace(returncode = 0)
+
+    return run
+
+
+def _unrunnable_version_run(calls):
+    """What running one of these stubs answers, without running it.
+
+    The launchers in this file are a few bytes behind an MZ, never a real PE image. Handing one to
+    CreateProcess on a Windows desktop can raise the modal "Unsupported 16-Bit Application" dialog,
+    and elsewhere it fails with an exec format error. That failure is the answer the recovery path
+    is exercised against, so it is raised here directly and the file is never started.
+    """
+
+    def run(argv, **kwargs):
+        # The bytes it would have started, so a caller can tell which file was asked.
+        calls.append((argv, Path(argv[0]).read_bytes()))
+        raise OSError(errno.ENOEXEC, os.strerror(errno.ENOEXEC), argv[0])
 
     return run
 
@@ -221,9 +244,13 @@ def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp
         raise RuntimeError("setup failed")
 
     monkeypatch.setattr(studio, "_run_setup_script", setup)
+    calls = []
+    monkeypatch.setattr(studio.subprocess, "run", _unrunnable_version_run(calls))
 
     with pytest.raises(RuntimeError, match = "setup failed"):
         _update(studio)
+
+    assert calls, "the restore never asked a launcher for --version"
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
     assert (scripts / "unsloth.exe.update-backup").read_bytes() == ORIGINAL_LAUNCHER
@@ -242,8 +269,15 @@ def test_invalid_launcher_is_restored_and_update_fails(monkeypatch, studio, tmp_
     monkeypatch.setattr(
         studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(invalid)
     )
+    calls = []
+    monkeypatch.setattr(studio.subprocess, "run", _unrunnable_version_run(calls))
 
     _shared_setup_3(launcher, studio)
+    # The invalid file is refused before anything runs; only the restored original is asked.
+    assert calls and all(
+        argv == [str(launcher), "--version"] and started == ORIGINAL_LAUNCHER
+        for argv, started in calls
+    )
     assert (scripts / "unsloth.exe.update-backup").exists()
 
 
@@ -755,6 +789,95 @@ def test_a_quarantined_away_launcher_with_a_broken_package_still_fails(
 
     with pytest.raises(studio.typer.Exit):
         _update(studio)
+
+
+def test_a_failed_recovery_reports_the_verdict_it_acted_on(monkeypatch, studio, tmp_path, capsys):
+    """#9804: a failed recovery reports why, not that the launcher is absent."""
+    _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        studio.subprocess,
+        "run",
+        lambda argv, **_kwargs: types.SimpleNamespace(returncode = 3),
+    )
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    err = capsys.readouterr().err
+    assert "the managed Python CLI returned 3 for --version" in err
+    assert "update failed because the updated launcher is not on disk" not in err
+
+
+def test_a_failed_recovery_with_no_interpreter_says_both(monkeypatch, studio, tmp_path, capsys):
+    """No interpreter: the reason itself carries the absence."""
+    scripts, _launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
+    (scripts / "python.exe").unlink()
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    # Whole clause: __enter__ already prints a "missing or invalid" warning.
+    assert (
+        "the updated launcher is missing and there is no managed interpreter"
+        in capsys.readouterr().err
+    )
+
+
+def test_a_recovered_launcher_still_reports_what_setup_published(
+    monkeypatch, studio, tmp_path, capsys
+):
+    """A broken published launcher is still the reported cause after a successful restore."""
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    monkeypatch.setattr(
+        studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(b"MZ-new")
+    )
+
+    def run(argv, **_kwargs):
+        target = Path(argv[0])
+        if target.name == "unsloth.exe" and target.read_bytes() == ORIGINAL_LAUNCHER:
+            return types.SimpleNamespace(returncode = 0)
+        return types.SimpleNamespace(returncode = 1)
+
+    monkeypatch.setattr(studio.subprocess, "run", run)
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    err = capsys.readouterr().err
+    assert "the updated launcher returned 1 for --version" in err
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    assert "The previous launcher was restored." in err
+
+
+def test_a_published_launcher_keeps_its_own_verdict_when_recovery_also_fails(
+    monkeypatch, studio, tmp_path, capsys
+):
+    """The restored copy's failure never replaces the published launcher's."""
+    scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
+    published = b"MZ-published"
+    monkeypatch.setattr(
+        studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(published)
+    )
+
+    def run(argv, **_kwargs):
+        target = Path(argv[0])
+        if target.name != "unsloth.exe":
+            return types.SimpleNamespace(returncode = 9)
+        if target.read_bytes() == published:
+            return types.SimpleNamespace(returncode = 7)
+        return types.SimpleNamespace(returncode = 8)
+
+    monkeypatch.setattr(studio.subprocess, "run", run)
+
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    err = capsys.readouterr().err
+    assert "the updated launcher returned 7 for --version" in err
+    assert "returned 8 for --version" not in err
 
 
 def test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked(

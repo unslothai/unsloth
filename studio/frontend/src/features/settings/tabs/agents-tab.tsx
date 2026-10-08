@@ -190,6 +190,12 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
     logo: "deepseek",
   },
+  {
+    id: "vibe",
+    name: "Mistral Vibe",
+    docsUrl: "https://github.com/mistralai/mistral-vibe",
+    logo: "mistral",
+  },
 ];
 
 const FALLBACK_AGENT = SUPPORTED_AGENTS[0];
@@ -1259,7 +1265,7 @@ export function AgentsTab() {
   // _require_gguf_for_agent): the picker only ever offers GGUF models.
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-8">
+    <div className="settings-page">
       {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
         <h1
@@ -1532,10 +1538,10 @@ export function AgentsTab() {
             </div>
 
             <div className="flex min-w-0 flex-col gap-1.5">
-              <div className="flex h-5 items-center">
+              <div className="flex h-5 min-w-0 items-center">
                 <span
                   data-settings-label={t("settings.agents.quantization")}
-                  className="text-xs font-medium text-foreground"
+                  className="truncate text-xs font-medium text-foreground"
                 >
                   {t("settings.agents.quantization")}
                 </span>
@@ -1575,7 +1581,7 @@ export function AgentsTab() {
                     )}
                   </SelectValue>
                 </SelectTrigger>
-                <SelectContent align="start" className="min-w-[16rem]">
+                <SelectContent align="start" className="min-w-[min(calc(16rem*var(--ui-space-scale,1)),calc(100vw-32px))]">
                   {variants.map((variant) => {
                     // Size only: the recommended/downloaded tags wrapped every
                     // row onto two lines and made the list hard to scan.

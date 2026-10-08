@@ -96,6 +96,19 @@ _BLUE_PNG_B64 = (
 )
 
 
+# Wall-clock bound for the cancel-drain tests: sized for a loaded runner, only ever reached when something is genuinely
+# stuck. The worker starts on a thread-pool thread, so a start wait of 1.0s measured scheduling, not the route, and
+# failed as `assert False` on loaded Backend CI shards (on main 8849f481d, and again on #11644). #10008 raised it, but
+# its hunk landed on the tool twin of the test it named, which kept the 1.0s bound along with three others shaped
+# like it.
+_DRAIN_BUDGET_S = 30.0
+
+# How long each stub worker keeps running after it sees the cancel flag. A route that drains its worker waits this out
+# before it raises; one that skips the drain raises first, and `assert released.is_set()` catches it. Without it that
+# catch rests on the assertion running inside the worker's 5 ms poll, which a slow runner need not honour.
+_WORKER_LINGER_S = 0.3
+
+
 @pytest.fixture(autouse = True)
 def _reset_admission_queues():
     reset_llama_admission_queues()
@@ -1125,7 +1138,7 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_an_unreadable_part_alone_is_still_answered(self, monkeypatch):
-        """Control: one remote image and no top-level image is not a multi-image
+        """Control: one payloadless image and no top-level image is not a multi-image
         call, and clients relying on that text answer must keep it."""
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
@@ -1137,7 +1150,7 @@ class TestChatCompletionRequestToolFields:
                         "role": "user",
                         "content": [
                             {"type": "text", "text": "x"},
-                            {"type": "image_url", "image_url": {"url": "https://e.com/a.png"}},
+                            {"type": "image_url", "image_url": {"url": "data:image/png;base64,"}},
                         ],
                     }
                 ]
@@ -1371,9 +1384,10 @@ class TestChatCompletionRequestToolFields:
         assert backend.generated[0]["image"] is not None
         assert monitor.active_count() == 0
 
-    def test_a_single_undecodable_image_is_left_alone(self, monkeypatch):
-        """One remote image is not a multi-image call. Clients that pass a remote
-        URL today get a text answer, and this guard must not turn that into a 400."""
+    def test_an_unfetchable_remote_image_closes_the_monitor_row(self, monkeypatch):
+        import core.inference.external_provider as ep
+
+        monkeypatch.setattr(ep, "safe_fetch_remote_image_sync", lambda *_a, **_k: None)
         monitor = ApiMonitor(max_entries = 3)
         client, backend = self._standard_vision_client(monkeypatch, monitor)
         resp = client.post(
@@ -1394,9 +1408,9 @@ class TestChatCompletionRequestToolFields:
             },
         )
 
-        assert resp.status_code == 200
-        assert len(backend.generated) == 1
-        assert backend.generated[0]["image"] is None
+        assert resp.status_code == 400
+        assert "Could not fetch the remote image URL" in resp.text
+        assert backend.generated == []
         assert monitor.active_count() == 0
 
     def test_a_text_only_model_closes_the_monitor_row(self, monkeypatch):
@@ -2617,6 +2631,79 @@ class TestChatCompletionRequestToolFields:
             assert "confirm_tool_calls requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
 
+    def test_safetensors_client_tools_keep_the_template_default_after_the_date(self, monkeypatch):
+        import routes.inference as inference_route
+
+        from core.inference import chat_template_helpers
+
+        captured = {}
+
+        class _NoGGUFBackend:
+            is_loaded = False
+            supports_tools = False
+
+        class _InferenceBackend:
+            active_model_name = "test-model"
+            models = {
+                "test-model": {
+                    "is_vision": False,
+                    "chat_template_info": {"template": "tool-template"},
+                    "context_length": 4096,
+                }
+            }
+
+            def generate_chat_response(self, **kwargs):
+                captured.update(kwargs)
+                yield "ok"
+
+            def reset_generation_state(self, cancel_event = None):
+                pass
+
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": True},
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "_local_template_system_turn",
+            lambda _today, image = False, tools = False, controls = (): (
+                True,
+                "You are Qwen." if tools else "",
+            ),
+        )
+        monkeypatch.setattr(
+            inference_route,
+            "current_date_prompt_line",
+            lambda **_kwargs: "The current date is 2026-10-04.",
+        )
+        monkeypatch.setattr(
+            chat_template_helpers,
+            "renderable_tool_catalog_for_targets",
+            lambda tools, *_args, **_kwargs: tools,
+        )
+        monkeypatch.setattr(inference_route, "api_monitor", ApiMonitor(max_entries = 3))
+        client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
+        resp = client.post(
+            "/v1/chat/completions",
+            json = {
+                "messages": [{"role": "user", "content": "use client tool"}],
+                "enable_tools": False,
+                "tools": _lookup_tools(),
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert captured["system_prompt"] == ""
+        assert captured["messages"][:2] == [
+            {
+                "role": "system",
+                "content": "The current date is 2026-10-04.\n\nYou are Qwen.",
+            },
+            {"role": "user", "content": "use client tool"},
+        ]
+        assert captured["tools"] == _lookup_tools()
+
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
             messages = [
@@ -3350,6 +3437,32 @@ class TestOpenAICompatibilityHelpers:
         assert usage["completion_tokens"] == 7
         assert usage["total_tokens"] == 7
 
+    def test_stream_usage_chunk_forwards_tool_loop_context_tokens(self):
+        payload = SimpleNamespace(stream_options = {"include_usage": True})
+        tool_loop = {
+            "prompt_tokens": 140,
+            "completion_tokens": 40,
+            "total_tokens": 180,
+            "context_tokens": 150,
+        }
+        line = _openai_stream_usage_chunk(payload, "c", 1, "m", tool_loop, None)
+        usage = json.loads(line.removeprefix("data: "))["usage"]
+        assert usage["total_tokens"] == 180
+        assert usage["context_tokens"] == 150
+
+        single = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        line = _openai_stream_usage_chunk(payload, "c", 1, "m", single, None)
+        assert "context_tokens" not in json.loads(line.removeprefix("data: "))["usage"]
+
+    def test_non_streaming_usage_omits_unset_context_tokens(self):
+        from models.inference import CompletionUsage
+
+        assert "context_tokens" not in json.loads(CompletionUsage(total_tokens = 5).model_dump_json())
+        assert "context_tokens" not in CompletionUsage(total_tokens = 5).model_dump()
+        assert (
+            json.loads(CompletionUsage(context_tokens = 4).model_dump_json())["context_tokens"] == 4
+        )
+
     def test_completion_stream_monitor_reads_usage_before_client_strip(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -3705,12 +3818,6 @@ class TestFriendlyErrorHttpx:
 
     def test_generic_exception_returns_generic_message(self):
         assert _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
-
-
-from routes.inference import (  # noqa: E402
-    _drop_empty_assistant_sentinels,
-    _openai_messages_for_gguf_chat,
-)
 
 
 def _image_question_messages():
@@ -4369,6 +4476,7 @@ class TestGgufVisionMessages:
             "role": "tool",
             "content": "[1 image returned]",
             "name": "mcp__fs__read_media_file",
+            "tool_call_id": "call_0",
         }
 
     def test_a_replayed_envelope_alone_does_not_demand_a_vision_model(self):
@@ -4845,8 +4953,10 @@ class TestGgufVisionToolRouting:
             yield {"type": "content", "text": "done"}
 
         class ApiRequest(self._Request):
-            headers = {"authorization": "Bearer sk-unsloth-test"}
             state = SimpleNamespace(skip_api_monitor = True)
+
+            def __init__(self):
+                self.headers = {"authorization": "Bearer sk-unsloth-test"}
 
         monkeypatch.setattr(
             inf_mod,
@@ -5028,6 +5138,29 @@ class TestGgufVisionToolRouting:
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
         assert "".join(d.get("content", "") for d in deltas) == "done"
+
+    def test_a_tool_heartbeat_is_not_sent_as_a_stall_keepalive(self, monkeypatch):
+        # Durable runs renew their lease on the tool heartbeat, never on `: keep-alive`.
+        import routes.inference as inf_mod
+
+        def _tools(**_kwargs):
+            yield {"type": "heartbeat"}
+            yield {"type": "content", "text": "done"}
+            yield _stop_metadata()
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "stream": True,
+                "enable_tools": True,
+                "enabled_tools": ["terminal"],
+                "messages": [{"role": "user", "content": "run something"}],
+            },
+            request = self._Request(ui_events = True),
+        )
+        assert inf_mod._OPENAI_TOOL_HEARTBEAT_SSE in result.chunks
+        assert inf_mod._OPENAI_PASSTHROUGH_SSE_KEEPALIVE not in result.chunks
 
     def test_an_empty_selection_is_not_refused_for_a_prompt_it_can_never_show(self, monkeypatch):
         # mcp_enabled arms _confirm_gate_needs_stream on intent, but discovery finds no MCP
@@ -5211,6 +5344,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -5244,12 +5378,14 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
             pending = asyncio.create_task(iterator.__anext__())
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             await asyncio.sleep(0)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, timeout = 1.0)
+                await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -5419,6 +5555,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -5455,12 +5592,14 @@ class TestGgufVisionToolRouting:
             iterator = response.body_iterator
             assert await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
             pending = asyncio.create_task(iterator.__anext__())
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             await asyncio.sleep(0)
             pending.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(pending, timeout = 1.0)
+                await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -6132,6 +6271,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -6167,11 +6307,11 @@ class TestGgufVisionToolRouting:
             # not on this code, and it went red once on a runner busy with the
             # rest of the backend suite. Failing here still takes seconds, and
             # the assertion is unchanged.
-            assert await asyncio.to_thread(started.wait, self._DRAIN_BUDGET_S)
+            assert await asyncio.to_thread(started.wait, _DRAIN_BUDGET_S)
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = self._DRAIN_BUDGET_S)
+                await asyncio.wait_for(task, timeout = _DRAIN_BUDGET_S)
 
             # Waited on, not sampled. Cancelling the task unblocks the awaiting
             # coroutine; it does not join the worker, which is off polling
@@ -6179,7 +6319,7 @@ class TestGgufVisionToolRouting:
             # instant the await returns is a race that happens to be won on an
             # idle box, and it is the drain itself that matters, not whether it
             # had already finished by the time we looked.
-            assert await asyncio.to_thread(released.wait, self._DRAIN_BUDGET_S)
+            assert await asyncio.to_thread(released.wait, _DRAIN_BUDGET_S)
             assert get_llama_admission_queue("http://llama.tool.test").snapshot().active == 0
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -6288,11 +6428,6 @@ class TestGgufVisionToolRouting:
         assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
         assert captured["perf_callback"] is None
 
-    # Wall-clock bound for the cancel drain. Only ever hit when something is
-    # genuinely stuck, so it is sized for a loaded runner rather than for the
-    # ~5ms this takes when it works.
-    _DRAIN_BUDGET_S = 30.0
-
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -6304,6 +6439,7 @@ class TestGgufVisionToolRouting:
                 started.set()
                 while not cancel_event.is_set():
                     time.sleep(0.005)
+                time.sleep(_WORKER_LINGER_S)
                 released.set()
                 yield from ()
 
@@ -6327,11 +6463,13 @@ class TestGgufVisionToolRouting:
             task = asyncio.create_task(
                 openai_chat_completions(payload, request = self._Request(), current_subject = "test")
             )
-            assert await asyncio.to_thread(started.wait, 1.0)
+            assert await asyncio.to_thread(
+                started.wait, _DRAIN_BUDGET_S
+            ), "the worker never started"
 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout = 1.0)
+                await asyncio.wait_for(task, timeout = _DRAIN_BUDGET_S)
 
             assert released.is_set()
             [entry] = monitor.snapshot()
@@ -6340,7 +6478,86 @@ class TestGgufVisionToolRouting:
 
         asyncio.run(_run())
 
-    def _drive_standard_gguf(self, monkeypatch, date_line: str) -> list[dict]:
+    @pytest.mark.parametrize(
+        "payload_kwargs",
+        [
+            pytest.param({}, id = "plain"),
+            pytest.param({"n": 3}, id = "plain-n"),
+            pytest.param({"enable_tools": True}, id = "tools"),
+        ],
+    )
+    def test_non_streaming_gguf_disconnect_stops_generation(self, monkeypatch, payload_kwargs):
+        import routes.inference as inf_mod
+
+        total = 200
+        emitted = []
+        generations = []
+        started = threading.Event()
+
+        class _LeavingRequest(self._Request):
+            async def is_disconnected(self):
+                return started.is_set()
+
+        def _emit(kwargs, event):
+            generations.append("plain" if event is None else "tools")
+            cancel_event = kwargs["cancel_event"]
+            for _ in range(total):
+                if cancel_event.wait(0.005):
+                    return
+                emitted.append(1)
+                started.set()
+                yield event
+
+        def _generate(**kwargs):
+            text = ""
+            for _ in _emit(kwargs, None):
+                text += "x"
+                yield text
+
+        def _tools(**kwargs):
+            yield from _emit(kwargs, {"type": "content", "text": "x"})
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            base_url = "http://llama.disconnect.test",
+            effective_parallel_slots = 1,
+            generate_chat_completion = _generate,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(inf_mod, "_select_request_tools", fake_select_tools)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            **payload_kwargs,
+        )
+        response = self._drive(
+            openai_chat_completions(payload, request = _LeavingRequest(), current_subject = "test")
+        )
+
+        assert response.status_code == 200
+        assert len(emitted) < total, "generation ran to completion after the client left"
+        assert generations == ["tools" if payload_kwargs.get("enable_tools") else "plain"]
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+        assert get_llama_admission_queue("http://llama.disconnect.test").snapshot().active == 0
+
+    def _drive_standard_gguf(
+        self,
+        monkeypatch,
+        date_line: str,
+        messages = None,
+        chat_template = None,
+    ) -> list[dict]:
         """Run one non-tool GGUF completion with the current-date setting pinned."""
         import routes.inference as inf_mod
 
@@ -6362,6 +6579,8 @@ class TestGgufVisionToolRouting:
             model_identifier = "test-gguf",
             context_length = 4096,
             generate_chat_completion = _generate,
+            chat_template = chat_template,
+            chat_template_override = None,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
         # Pinned, not left to the host's stored setting, so the assertion is the same everywhere.
@@ -6369,7 +6588,8 @@ class TestGgufVisionToolRouting:
 
         payload = ChatCompletionRequest(
             model = "default",
-            messages = [
+            messages = messages
+            or [
                 {"role": "system", "content": "original system"},
                 {"role": "developer", "content": "developer rules"},
                 {"role": "user", "content": "hi"},
@@ -6396,6 +6616,40 @@ class TestGgufVisionToolRouting:
             },
             {"role": "user", "content": "hi"},
         ]
+
+    @pytest.mark.parametrize(
+        ("chat_template", "system"),
+        [
+            (
+                "{% if messages[0]['role'] == 'system' %}{% set s = messages[0]['content'] %}"
+                "{% set rest = messages[1:] %}{% else %}{% set s = 'You are Qwen.' %}"
+                "{% set rest = messages %}{% endif %}<|im_start|>system\n{{ s }}<|im_end|>\n"
+                "{% for m in rest %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n"
+                "{% endfor %}",
+                "The current date is 2026-08-15.\n\nYou are Qwen.",
+            ),
+            (
+                "{% for m in messages %}<start_of_turn>{{ m['role'] }}\n{{ m['content'] }}"
+                "<end_of_turn>\n{% endfor %}",
+                "The current date is 2026-08-15.",
+            ),
+        ],
+    )
+    def test_standard_gguf_without_a_system_prompt_dates_a_system_turn(
+        self, monkeypatch, chat_template, system
+    ):
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "second"},
+        ]
+        sent = self._drive_standard_gguf(
+            monkeypatch,
+            "The current date is 2026-08-15.",
+            messages = history,
+            chat_template = chat_template,
+        )
+        assert sent == [{"role": "system", "content": system}, *history]
 
     @pytest.mark.parametrize(
         ("seed", "expected"),
@@ -6470,6 +6724,7 @@ class TestApiMonitorProviderAndCompletionStreams:
         monkeypatch,
         lines,
         stream_options = None,
+        **payload_extra,
     ):
         import routes.inference as inf_mod
 
@@ -6494,6 +6749,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             stream = True,
             stream_options = stream_options,
             tools = [_LOOKUP_TOOL],
+            **payload_extra,
         )
 
         response = await _openai_passthrough_stream(
@@ -6510,6 +6766,8 @@ class TestApiMonitorProviderAndCompletionStreams:
             chunks = chunks,
             body = "".join(chunks),
             monitor = monitor,
+            monitor_id = monitor_id,
+            response_headers = dict(response.headers),
             upstream_bodies = upstream_bodies,
         )
 
@@ -7311,7 +7569,8 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
-    def test_completions_stream_requests_usage_only_for_monitor(self, monkeypatch):
+    @pytest.mark.parametrize("client_progress", [False, True])
+    def test_completions_stream_requests_usage_only_for_monitor(self, monkeypatch, client_progress):
         import routes.inference as inf_mod
         async def _run():
             class Request:
@@ -7320,7 +7579,10 @@ class TestApiMonitorProviderAndCompletionStreams:
                 method = "POST"
 
                 async def json(self):
-                    return {"prompt": "hi", "stream": True}
+                    body = {"prompt": "hi", "stream": True}
+                    if client_progress:
+                        body["return_progress"] = True
+                    return body
 
                 async def is_disconnected(self):
                     return False
@@ -7333,6 +7595,8 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             async def fake_items(*_args, **_kwargs):
                 yield (
+                    b'data: {"choices":[{"text":"","finish_reason":null}],'
+                    b'"prompt_progress":{"total":4,"processed":2,"cache":0,"time_ms":1}}\n\n'
                     b'data: {"choices":[{"text":"ok","finish_reason":"stop"}]}\n\n'
                     b'data: {"choices":[],"usage":{"prompt_tokens":3,'
                     b'"completion_tokens":2,"total_tokens":5}}\n\n'
@@ -7344,12 +7608,20 @@ class TestApiMonitorProviderAndCompletionStreams:
             _pin_loaded_backend(monkeypatch)
             monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
             monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+            monkeypatch.setattr(
+                inf_mod, "_openai_passthrough_stream_keepalive_interval", lambda: 1e-9
+            )
 
             response = await openai_completions(Request(), current_subject = "test")
             body = b"".join([chunk async for chunk in response.body_iterator])
 
+            assert upstream_bodies[0]["return_progress"] is True
+            assert (b": prefill-progress" in body) is not client_progress
+            assert (b": keep-alive" in body) is False
             assert upstream_bodies[0]["stream_options"]["include_usage"] is True
             assert b'"usage"' not in body
+            assert (b"prompt_progress" in body) is client_progress
+            assert b'"ok"' in body
             [entry] = monitor.snapshot()
             assert entry["prompt_tokens"] == 3
             assert entry["completion_tokens"] == 2
@@ -8291,6 +8563,61 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    @pytest.mark.parametrize(
+        ("route", "path", "body"),
+        [
+            (openai_completions, "/v1/completions", {"prompt": "hi", "stream": False}),
+            (openai_embeddings, "/v1/embeddings", {"input": ["hi"], "model": "embed"}),
+        ],
+    )
+    def test_non_streaming_proxy_disconnect_returns_499(self, monkeypatch, route, path, body):
+        import routes.inference as inf_mod
+        async def _run():
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = path)
+                method = "POST"
+
+                def __init__(self):
+                    self.disconnected = False
+
+                async def json(self):
+                    return body
+
+                async def is_disconnected(self):
+                    return self.disconnected
+
+            client = HangingCancelableClient()
+            request = Request()
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+
+            task = asyncio.create_task(route(request, current_subject = "test"))
+            await asyncio.wait_for(client.started.wait(), 0.2)
+            request.disconnected = True
+
+            with pytest.raises(HTTPException) as exc:
+                await asyncio.wait_for(task, 0.5)
+
+            assert exc.value.status_code == 499
+            assert client.closed.is_set()
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_task_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -8477,11 +8804,13 @@ class TestApiMonitorProviderAndCompletionStreams:
                         break
                     await asyncio.sleep(0.01)
                 body = body_holder["body"]
-                assert await asyncio.to_thread(body.started.wait, 1.0)
+                assert await asyncio.to_thread(
+                    body.started.wait, _DRAIN_BUDGET_S
+                ), "the worker never started"
 
                 pending.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await asyncio.wait_for(pending, timeout = 1.0)
+                    await asyncio.wait_for(pending, timeout = _DRAIN_BUDGET_S)
             finally:
                 aclose = getattr(iterator, "aclose", None)
                 if aclose is not None:
@@ -8716,6 +9045,35 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    @pytest.mark.parametrize("client_progress", [False, True])
+    def test_passthrough_prompt_progress_reaches_monitor_and_response_header(
+        self, monkeypatch, client_progress
+    ):
+        async def _run():
+            extra = {"return_progress": True} if client_progress else {}
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    'data: {"prompt_progress":{"total":2000,"processed":1200,"cache":0,"time_ms":15000},"choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}',
+                    'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}',
+                    "data: [DONE]",
+                ],
+                **extra,
+            )
+
+            assert result.upstream_bodies[0]["return_progress"] is True
+            assert (
+                result.response_headers.get("x-unsloth-monitor-id") == result.monitor_id
+            ), result.response_headers
+            [entry] = result.monitor.snapshot()
+            assert entry["running_phase"] == "token_generation"
+            assert entry["prompt_progress"]["processed"] == 1200
+            assert entry["prompt_progress"]["percent"] == 60.0
+            assert ("prompt_progress" in result.body) is client_progress
+            assert '"ok"' in result.body
+
+        asyncio.run(_run())
+
     def test_passthrough_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -8754,6 +9112,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                 "chatcmpl-test",
                 monitor_id = monitor_id,
             )
+            assert response.headers["x-unsloth-monitor-id"] == monitor_id
             iterator = response.body_iterator
             try:
                 chunk = await asyncio.wait_for(iterator.__anext__(), timeout = 0.2)
@@ -9019,6 +9378,41 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_non_streaming_task_cancel_propagates(self, monkeypatch):
+        import routes.inference as inf_mod
+        async def _run():
+            client = HangingCancelableClient()
+            monitor, monitor_id = _install_monitor(monkeypatch)
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                tools = [_LOOKUP_TOOL],
+            )
+
+            task = asyncio.create_task(
+                _openai_passthrough_non_streaming(
+                    _passthrough_backend(),
+                    payload,
+                    "gguf",
+                    monitor_id = monitor_id,
+                    request = _ConnectedRequest(),
+                    cancel_event = threading.Event(),
+                )
+            )
+            await asyncio.wait_for(client.started.wait(), 0.2)
+            task.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert client.closed.is_set()
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_passthrough_non_streaming_cancel_closes_blocked_upstream_post(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -9051,9 +9445,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             await asyncio.wait_for(client.started.wait(), 0.2)
             cancel_event.set()
 
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(HTTPException) as exc:
                 await asyncio.wait_for(task, 0.5)
 
+            assert exc.value.status_code == 499
             assert client.closed.is_set()
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
@@ -9115,9 +9510,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert cancel_id in inf_mod._CANCEL_REGISTRY
             assert inf_mod._cancel_by_cancel_id_or_stash(cancel_id) == 1
 
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(HTTPException) as exc:
                 await asyncio.wait_for(task, 5.0)
 
+            assert exc.value.status_code == 499
             assert client.closed.is_set()
             assert cancel_id not in inf_mod._CANCEL_REGISTRY
             [entry] = monitor.snapshot()
@@ -9166,9 +9562,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             await asyncio.wait_for(client.started.wait(), 0.2)
             request.disconnected = True
 
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(HTTPException) as exc:
                 await asyncio.wait_for(task, 0.5)
 
+            assert exc.value.status_code == 499
             assert client.closed.is_set()
             assert cancel_event.is_set()
             [entry] = monitor.snapshot()
@@ -10162,6 +10559,45 @@ class TestResponsesChatTemplateKwargs:
         chat_req = _build_chat_request(payload, self._messages, stream = False)
         assert chat_req.enable_thinking is None
 
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_nested_reasoning_controls_reach_llama_server(self, stream):
+        payload = ResponsesRequest(
+            model = "local",
+            input = "hi",
+            chat_template_kwargs = {
+                "reasoning_effort": "none",
+                "preserve_thinking": True,
+            },
+        )
+        chat_req = _build_chat_request(payload, self._messages, stream = stream)
+        body = _build_openai_passthrough_body(
+            chat_req,
+            backend_ctx = 4096,
+            llama_backend = _reasoning_backend(
+                reasoning_style = "reasoning_effort",
+                supports_preserve_thinking = True,
+            ),
+        )
+
+        assert chat_req.enable_thinking is False
+        assert body["chat_template_kwargs"] == {
+            "reasoning_effort": "none",
+            "preserve_thinking": True,
+        }
+
+    def test_native_responses_effort_wins_over_nested_effort(self):
+        payload = ResponsesRequest(
+            model = "local",
+            input = "hi",
+            reasoning = {"effort": "high"},
+            chat_template_kwargs = {"reasoning_effort": "none"},
+        )
+
+        chat_req = _build_chat_request(payload, self._messages, stream = True)
+
+        assert chat_req.enable_thinking is True
+        assert chat_req.reasoning_effort == "high"
+
     def test_responses_stream_queued_request_sends_keepalive_before_upstream(self, monkeypatch):
         import routes.inference as inf_mod
         async def _run():
@@ -10596,6 +11032,82 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+
+
+def test_a_lenient_schema_reaches_llama_server_where_it_reads_one():
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _response_format_for_llama_server as for_llama
+
+    schema = {"type": "integer"}
+    wrapped = {"type": "json_schema", "json_schema": {"schema": schema}}
+    lenient = {"type": "json_schema", "schema": schema}
+    assert for_llama(lenient) == wrapped
+    assert for_llama({"type": "json_schema", "json_schema": None, "schema": schema}) == wrapped
+    for already in (
+        {"type": "json_schema", "json_schema": {"name": "x", "schema": schema}},
+        {"type": "json_schema", "json_schema": {"schema": schema}, "schema": {}},
+        {"type": "json_object", "schema": schema},
+        {"type": "json_object"},
+        {"type": "text"},
+        None,
+    ):
+        assert for_llama(already) is already
+    request = ChatCompletionRequest(
+        model = "m", messages = [{"role": "user", "content": "hi"}], response_format = lenient
+    )
+    assert _build_openai_passthrough_body(request)["response_format"] == wrapped
+
+
+_WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    },
+}
+_WEATHER_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "final_output",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}, "temp_c": {"type": "number"}},
+            "required": ["city", "temp_c"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _weather_body(**fields):
+    request = ChatCompletionRequest(
+        model = "m", messages = [{"role": "user", "content": "Weather in Paris?"}], **fields
+    )
+    return _build_openai_passthrough_body(request)
+
+
+@pytest.mark.parametrize("response_format", [_WEATHER_FORMAT, {"type": "json_object"}])
+@pytest.mark.parametrize(
+    "tool_choice",
+    [None, "auto", "required", {"type": "function", "function": {"name": "get_weather"}}],
+)
+def test_a_response_format_does_not_lock_out_callable_tools(tool_choice, response_format):
+    body = _weather_body(
+        tools = [_WEATHER_TOOL], tool_choice = tool_choice, response_format = response_format
+    )
+    assert [tool["function"]["name"] for tool in body["tools"]] == ["get_weather"]
+    assert "response_format" not in body
+
+
+def test_a_response_format_still_applies_when_tools_cannot_be_called():
+    body = _weather_body(tools = [_WEATHER_TOOL], tool_choice = "none", response_format = _WEATHER_FORMAT)
+    assert body["response_format"] == _WEATHER_FORMAT
+    assert _weather_body(response_format = _WEATHER_FORMAT)["response_format"] == _WEATHER_FORMAT
 
 
 class TestPassthroughImageNormalization:

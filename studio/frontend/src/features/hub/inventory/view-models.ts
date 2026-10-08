@@ -20,6 +20,8 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
   switch (source) {
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "ollama":
       return "Ollama";
     case "hermes":
@@ -163,12 +165,14 @@ export function buildCachedInventoryRow(
     audio_type?: string | null;
     single_file?: boolean;
     companion?: boolean;
+    companion_prefetch?: boolean;
     tags?: string[];
     library_name?: string | null;
     quant_method?: string | null;
     inventory_id?: string | null;
     load_id?: string | null;
     model_format?: ModelInventoryFormat | null;
+    artifact_kind?: import("./api").LocalArtifactKind | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
     last_modified?: number | null;
@@ -205,6 +209,7 @@ export function buildCachedInventoryRow(
     repo: row.repo_id.includes("/") ? repoOf(row.repo_id) : row.repo_id,
     isGguf: modelFormat === "gguf",
     modelFormat,
+    artifact: row.artifact_kind ?? "unknown",
     formatVariant: row.format_variant ?? null,
     capabilities,
     bytes: row.size_bytes,
@@ -220,6 +225,7 @@ export function buildCachedInventoryRow(
     audioType: row.audio_type ?? null,
     singleFile: row.single_file ?? false,
     companion: row.companion ?? false,
+    companionPrefetch: row.companion_prefetch ?? false,
     tags: row.tags,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,
@@ -234,6 +240,7 @@ function sourceSortWeight(source: LocalModelInfo["source"]): number {
     case "custom":
       return 1;
     case "lmstudio":
+    case "omlx":
       return 2;
     case "ollama":
       return 3;
@@ -287,6 +294,7 @@ export function buildLocalInventoryRows(
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
+        artifact: model.artifact_kind ?? "unknown",
         formatVariant: model.format_variant ?? null,
         capabilities,
         baseModel,
@@ -298,6 +306,7 @@ export function buildLocalInventoryRows(
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
         partialResumable: model.partial_resumable === true,
+        companionPrefetch: model.companion_prefetch === true,
         activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
         task: model.task ?? null,

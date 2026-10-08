@@ -97,6 +97,17 @@ async function recoverViaStatus(
   throw new Error("Timed out waiting for the export to finish.");
 }
 
+/** Every quant in the run folder's gguf/export.json, else the ones requested. */
+export function decisionQuantizations(
+  details: ExportOperationResponse["details"] | undefined,
+  requested: string[],
+): string[] {
+  const reported = details?.quantizations;
+  return Array.isArray(reported) && reported.length > 0
+    ? reported.map(String)
+    : requested.map((q) => q.toUpperCase());
+}
+
 // Keep the same scrollback depth as the backend ring buffer so the inline
 // panel shows the full server-side history.
 const MAX_LOG_LINES = 4000;
@@ -139,8 +150,11 @@ export interface RunExportParams {
   exportMethod: ExportMethod;
   isAdapter: boolean;
   quantLevels: string[];
-  /** GGUF: use an importance matrix (auto-download); required for the IQ quants. */
+  /** GGUF: use an importance matrix, auto-downloaded unless imatrixPath is set; required for the IQ quants. */
   useImatrix?: boolean;
+  imatrixPath?: string;
+  /** GGUF: also write a FastFlowLM Q4NX folder for the AMD Ryzen AI NPU. */
+  npuQ4nx?: boolean;
   /** Merged: precision formats, each exported to its own sibling directory. Defaults to 16-bit.
    *  `label` is the display name for the success banner's per-format output line. */
   mergedSelections?: {
@@ -150,6 +164,7 @@ export interface RunExportParams {
   }[];
   /** LoRA: also emit a GGUF LoRA adapter (llama.cpp `--lora`), and its output float type. */
   loraGguf?: boolean;
+  adapterFormat?: "mlx" | "peft";
   loraGgufOuttype?: string;
   saveDirectory: string;
   destination: ExportDestination;
@@ -157,6 +172,9 @@ export interface RunExportParams {
   token?: string;
   privateRepo: boolean;
   baseModelId?: string | null;
+  installMissingDependencies?: boolean;
+  /** Decision model (Clef / Laya): labels the run folder's gguf/ output with the quants it holds. */
+  decisionOutputLabel?: (quantizations: string[]) => string;
   summary: ExportRunSummary;
 }
 
@@ -402,7 +420,10 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
     // failing. Returns the resolved output path (null for load/hub-only).
     const runRecoverableOp = async (
       post: () => Promise<ExportOperationResponse>,
-    ): Promise<{ outputPath: string | null }> => {
+    ): Promise<{
+      outputPath: string | null;
+      details?: ExportOperationResponse["details"];
+    }> => {
       let baseline: number | null = null;
       try {
         baseline = (await getExportStatus()).last_op_seq ?? 0;
@@ -411,7 +432,10 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       }
       try {
         const resp = await post();
-        return { outputPath: resp.details?.output_path ?? null };
+        return {
+          outputPath: resp.details?.output_path ?? null,
+          details: resp.details,
+        };
       } catch (err) {
         if (!isRecoverableTransportError(err)) throw err;
         set({ reconnecting: true });
@@ -475,6 +499,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               repo_id: params.repoId,
               hf_token: params.token,
               private: params.privateRepo,
+              install_missing_dependencies: Boolean(
+                params.installMissingDependencies,
+              ),
             }),
           );
           if (outputPath) outputs.push({ label: sel.label, path: outputPath });
@@ -484,7 +511,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       } else if (params.exportMethod === "gguf") {
         // Send the whole quant list in ONE call: the model is merged once and every GGUF comes
         // from that single merge (unsloth save_to_gguf loops internally).
-        const { outputPath } = await runRecoverableOp(() =>
+        const { outputPath, details } = await runRecoverableOp(() =>
           exportGGUF({
             save_directory: params.saveDirectory,
             quantization_method: params.quantLevels,
@@ -494,10 +521,27 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             // token when there is no hub-upload token (both are the same HF token).
             hf_token: params.token ?? params.loadToken ?? null,
             imatrix: params.useImatrix,
+            imatrix_path: params.useImatrix
+              ? params.imatrixPath?.trim() || null
+              : null,
             private: params.privateRepo,
+            npu_q4nx: params.npuQ4nx,
           }),
         );
-        if (outputPath) outputs.push({ label: "GGUF", path: outputPath });
+        if (outputPath) {
+          outputs.push({
+            label: params.decisionOutputLabel
+              ? params.decisionOutputLabel(
+                  decisionQuantizations(details, params.quantLevels),
+                )
+              : "GGUF",
+            path: outputPath,
+          });
+        }
+        if (outputPath && params.npuQ4nx) {
+          const sep = outputPath.includes("\\") ? "\\" : "/";
+          outputs.push({ label: "AMD NPU (Q4NX)", path: `${outputPath}${sep}npu-q4nx` });
+        }
         if (!isCurrent()) return;
         set({ quantIndex: get().quantTotal });
       } else if (params.exportMethod === "lora") {
@@ -512,6 +556,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             private: params.privateRepo,
             gguf: params.loraGguf ?? false,
             gguf_outtype: params.loraGgufOuttype ?? "q8_0",
+            adapter_format: params.adapterFormat,
           }),
         );
         if (outputPath) {

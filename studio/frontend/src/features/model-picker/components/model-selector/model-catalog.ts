@@ -7,8 +7,16 @@
 
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 import {
+  AUDIO_CPP_MODELS,
+  type AudioCppModel,
+  type AudioCppTask,
+  audioCppDisplayName,
+} from "../../../audio/audio-cpp-catalog.ts";
+import {
   type GgufFitClass,
+  type GgufVariantSizes,
   classifyGgufFit as classifyGgufFitForDevice,
+  ggufVariantFitSizeBytes,
 } from "../../../../lib/gguf-fit.ts";
 import {
   type HostClass,
@@ -29,6 +37,8 @@ export type LoadKind = "gguf" | "single_file" | "pipeline";
 export interface ModelArtifact {
   /** Exact artifact repo id (the pre-grouping id, stays loadable/searchable). */
   repoId: string;
+  /** Vendor repo this unsloth mirror copies byte for byte; its id (a cached copy) resolves here too. */
+  upstreamRepoId?: string;
   format: ArtifactFormat;
   loadKind: LoadKind;
   /** single_file loads name their exact checkpoint inside the repo. */
@@ -46,7 +56,7 @@ export interface ModelArtifact {
   approxSizeGb?: number;
   /** Measured CPU-offload fit tiers. Any tier whose GPU and available-RAM floors are both met can
    *  auto-route this artifact without the resident 70% rule. */
-  offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
+  offloadFitTiers?: readonly OffloadFitTier[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
   /** Parameter count of THIS artifact's checkpoint, for the row's size chip. Only a fallback: the
@@ -77,6 +87,8 @@ export interface CatalogGroup {
    *  `ModelArtifact.totalParams`: the Hub listing's tags win, since a name like "MiniMax-H3-GGUF"
    *  says nothing about the audio track the model emits. */
   capabilities?: Partial<ModelCapabilities>;
+  /** Leads the Recommended list whatever the dropdown sort, in catalog order among pinned groups. */
+  pinToTop?: boolean;
 }
 
 
@@ -132,6 +144,17 @@ const bf16Pipeline = (
   ...extra,
 });
 
+// The unsloth mirror of a vendor bf16 pipeline, identical files, so it replaces the vendor row.
+const bf16Mirror = (
+  upstreamRepoId: string,
+  approxSizeGb?: number,
+  extra?: Partial<ModelArtifact>,
+): ModelArtifact =>
+  bf16Pipeline(`unsloth/${upstreamRepoId.split("/")[1]}`, approxSizeGb, {
+    upstreamRepoId,
+    ...extra,
+  });
+
 // A bf16 single-file DiT checkpoint: from_single_file against the family base repo for the VAE /
 // text encoder, like the fp8 single-file checkpoints.
 const bf16Single = (
@@ -151,6 +174,39 @@ const bf16Single = (
   ...extra,
 });
 
+const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
+  tts: "Text-to-speech",
+  music: "Text-to-music",
+  asr: "Speech-to-text",
+  sep: "Source separation",
+};
+
+function audioGgufDescription(model: AudioCppModel): string {
+  const workflows = model.workflows;
+  if (!workflows || workflows.includes("speak")) {
+    return AUDIO_GGUF_DESCRIPTIONS[model.task];
+  }
+  const clones = workflows.includes("clone");
+  const converts = workflows.includes("convert");
+  if (clones && converts) return "Voice cloning and conversion";
+  if (converts) return "Voice conversion";
+  if (clones) return "Voice cloning";
+  return AUDIO_GGUF_DESCRIPTIONS[model.task];
+}
+
+// Recommended audio GGUFs the backend runs on its audio runtime. They are plain GGUF rows, so the
+// quant ladder, fit and downloads work as for any other; the backend routes them by GGUF header.
+// Music lives in Speak like MiniMax Music 3, since both load into the main audio slot.
+const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
+  AUDIO_CPP_MODELS.filter((model) => tasks.includes(model.task)).map((model) => ({
+    canonicalId: model.id,
+    displayName: audioCppDisplayName(model.id),
+    description: audioGgufDescription(model),
+    scope: "audio",
+    task: model.task === "asr" ? "stt" : "tts",
+    artifacts: [gguf(model.id)],
+  }));
+
 // Sizes are steady resident estimates (GB) used only for routing; missing = never auto-pick
 // unless downloaded. GGUF entries carry none: pickDefaultQuant sizes the .gguf files.
 
@@ -161,7 +217,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("Tongyi-MAI/Z-Image-Turbo", 30, {
+      // Resident bf16 GiB, not the Hub's fp32 DiT: 11.5 DiT + 7.5 Qwen3-4B + 0.2 VAE.
+      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 19.1, {
         totalParams: 6154908736,
         prequantRepo: "unsloth/Z-Image-Turbo-FP8",
         prequantSizeGb: { fp8: 5.86, int8: 5.86 },
@@ -178,6 +235,25 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     artifacts: [gguf("unsloth/Z-Image-GGUF")],
   },
   {
+    canonicalId: "unsloth/Qwen-Image-2.1",
+    displayName: "Qwen-Image 2.1",
+    // One pipeline for text-to-image and editing (`unified_edit`); the Images page follows the engine's status.
+    description: "Text-to-image and image editing",
+    scope: "image",
+    // Same reason as the 2512 row below: the int8 half of the prequant repo is reached through
+    // prequant_variant_repos and has no artifact row, so alias it to keep a pasted id finding it.
+    aliases: ["unsloth/Qwen-Image-2.1-FP8"],
+    pinToTop: true,
+    artifacts: [
+      bf16Mirror("Qwen/Qwen-Image-2.1", 33, {
+        totalParams: 7115124736,
+        prequantRepo: "unsloth/Qwen-Image-2.1-FP8",
+        prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+      }),
+      gguf("unsloth/Qwen-Image-2.1-GGUF"),
+    ],
+  },
+  {
     canonicalId: "unsloth/Qwen-Image-2512",
     displayName: "Qwen-Image 2512",
     description: "Text-to-image",
@@ -186,7 +262,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     // artifact row here, so alias it to keep a pasted id finding it.
     aliases: ["unsloth/Qwen-Image-2512-FP8"],
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image-2512", 54, {
+      bf16Mirror("Qwen/Qwen-Image-2512", 54, {
         totalParams: 20430401088,
         prequantRepo: "unsloth/Qwen-Image-2512-FP8",
         prequantSizeGb: { fp8: 19.06, int8: 25.4 },
@@ -203,7 +279,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image", 54, {
+      bf16Mirror("Qwen/Qwen-Image", 54, {
         totalParams: 20430401088,
         prequantRepo: "unsloth/Qwen-Image-FP8",
         prequantSizeGb: { fp8: 19.06, int8: 31.73 },
@@ -217,10 +293,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      // Apache-2.0 but still gated on the Hub (gated: "auto", a contact-info form), so an anonymous
-      // download 401s exactly like dev. The licence and the gate are independent.
-      bf16Pipeline("black-forest-labs/FLUX.1-schnell", 32, {
-        gated: true,
+      bf16Mirror("black-forest-labs/FLUX.1-schnell", 32, {
         totalParams: 11891178560,
         prequantRepo: "unsloth/FLUX.1-schnell-FP8",
         prequantSizeGb: { fp8: 11.09, int8: 14.13 },
@@ -234,20 +307,19 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      // FLUX.1-dev is gated (license acceptance + token), like FLUX.1-schnell above.
-      bf16Pipeline("black-forest-labs/FLUX.1-dev", 32, { gated: true, totalParams: 11901408320 }),
+      bf16Mirror("black-forest-labs/FLUX.1-dev", 32, { totalParams: 11901408320 }),
       gguf("unsloth/FLUX.1-dev-GGUF"),
     ],
   },
   {
     // Krea guidance-distilled FLUX.1-dev finetune: same arch/layout as dev, so it runs under the
-    // flux.1 family. The base repo is gated like dev; QuantStack publishes the open GGUF quants.
+    // flux.1 family. QuantStack publishes the open GGUF quants.
     canonicalId: "black-forest-labs/FLUX.1-Krea-dev",
     displayName: "FLUX.1 Krea dev",
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("black-forest-labs/FLUX.1-Krea-dev", 32, { gated: true, totalParams: 11901408320 }),
+      bf16Mirror("black-forest-labs/FLUX.1-Krea-dev", 32, { totalParams: 11901408320 }),
       gguf("QuantStack/FLUX.1-Krea-dev-GGUF"),
     ],
   },
@@ -271,7 +343,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Image editing",
     scope: "image",
     artifacts: [
-      bf16Pipeline("Qwen/Qwen-Image-Edit-2511", 54, { totalParams: 20430401088 }),
+      bf16Mirror("Qwen/Qwen-Image-Edit-2511", 54, { totalParams: 20430401088 }),
       gguf("unsloth/Qwen-Image-Edit-2511-GGUF"),
     ],
   },
@@ -281,8 +353,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Image editing",
     scope: "image",
     artifacts: [
-      // FLUX.1-Kontext-dev is gated on the Hub (license acceptance + token).
-      bf16Pipeline("black-forest-labs/FLUX.1-Kontext-dev", 32, { gated: true, totalParams: 11901408320 }),
+      bf16Mirror("black-forest-labs/FLUX.1-Kontext-dev", 32, { totalParams: 11901408320 }),
       gguf("unsloth/FLUX.1-Kontext-dev-GGUF"),
     ],
   },
@@ -291,11 +362,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Krea 2 Turbo",
     description: "Text-to-image",
     scope: "image",
-    // Gated on the Hub, and the group's only artifact, so a bare click has nothing open to fall
-    // through to: the picker must show the gate rather than start a download that 401s.
     artifacts: [
-      bf16Pipeline("krea/Krea-2-Turbo", 18, {
-        gated: true,
+      bf16Mirror("krea/Krea-2-Turbo", 18, {
         totalParams: 12820073036,
         prequantRepo: "unsloth/Krea-2-Turbo-FP8",
         prequantSizeGb: { fp8: 11.95, int8: 12.19 },
@@ -309,7 +377,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Lumina Image 2.0",
     description: "Text-to-image",
     scope: "image",
-    artifacts: [bf16Pipeline("Alpha-VLLM/Lumina-Image-2.0", 11, { totalParams: 2609769152 })],
+    artifacts: [bf16Mirror("Alpha-VLLM/Lumina-Image-2.0", 11, { totalParams: 2609769152 })],
   },
   {
     // 17B dual-stream 2K-native DiT with a Qwen2.5-VL encoder; the mirror's guider components load
@@ -335,13 +403,13 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("HiDream-ai/HiDream-I1-Full", 63, { totalParams: 17105733184 }),
-      bf16Pipeline("HiDream-ai/HiDream-I1-Dev", 63, {
+      bf16Mirror("HiDream-ai/HiDream-I1-Full", 63, { totalParams: 17105733184 }),
+      bf16Mirror("HiDream-ai/HiDream-I1-Dev", 63, {
         label: "BF16 - Dev (distilled)",
         keywords: ["bf16", "dev", "distilled"],
         totalParams: 17105733184,
       }),
-      bf16Pipeline("HiDream-ai/HiDream-I1-Fast", 63, {
+      bf16Mirror("HiDream-ai/HiDream-I1-Fast", 63, {
         label: "BF16 - Fast (distilled)",
         keywords: ["bf16", "fast", "distilled"],
         totalParams: 17105733184,
@@ -369,7 +437,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     artifacts: [
       // SDXL uses a UNet rather than a transformer.
-      bf16Pipeline("stabilityai/sdxl-turbo", 8, {
+      bf16Mirror("stabilityai/sdxl-turbo", 8, {
         label: "Safetensors",
         totalParams: 2567463684,
         denseQuantable: false,
@@ -383,7 +451,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     scope: "image",
     artifacts: [
       // SDXL uses a UNet rather than a transformer.
-      bf16Pipeline("stabilityai/stable-diffusion-xl-base-1.0", 8, {
+      bf16Mirror("stabilityai/stable-diffusion-xl-base-1.0", 8, {
         label: "Safetensors",
         totalParams: 2567463684,
         denseQuantable: false,
@@ -408,7 +476,9 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         // mirror are decimal GB (video.py divides by 1_000_000_000), so never copy figures across:
         // converted, these are 79.5 / 150.3 and 132.1 / 85.9 GB, matching the estimators' 78.74 / 150
         // and 132 / 85. Copying applies the conversion twice and sends capable hosts to GGUF.
+        // 30 GiB: streamed int8 denoiser + int8 conditioner, measured 27.6 GB peak VRAM on a 32 GiB-capped B200.
         offloadFitTiers: [
+          { gpuGb: 30, systemRamGb: 80, requiresQuantisedStreaming: true },
           { gpuGb: 74, systemRamGb: 140 },
           { gpuGb: 123, systemRamGb: 80 },
         ],
@@ -603,6 +673,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
+  ...audioGgufGroups(["tts", "music", "sep"]),
   // Llasa is deliberately absent: it speaks XCodec2 (65,536 <|s_N|> tokens), which is in neither
   // _AUDIO_TOKEN_PATTERNS nor AudioCodecManager, so a curated row loaded then failed at generation.
   // Training still works (unsloth_Llasa-3B.yaml). Re-add both rows with an xcodec2 decoder.
@@ -672,6 +743,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     task: "stt",
     artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
   },
+  ...audioGgufGroups(["asr"]),
 ];
 
 
@@ -764,9 +836,12 @@ function indexFor(catalog: CatalogGroup[]): CatalogIndex {
       byKey.set(canonicalKeyFor(alias), group);
     }
     for (const artifact of group.artifacts) {
-      byId.set(artifact.repoId.toLowerCase(), group);
-      byKey.set(canonicalKeyFor(artifact.repoId), group);
-      artifactById.set(artifact.repoId.toLowerCase(), artifact);
+      for (const id of [artifact.repoId, artifact.upstreamRepoId]) {
+        if (!id) continue;
+        byId.set(id.toLowerCase(), group);
+        byKey.set(canonicalKeyFor(id), group);
+        artifactById.set(id.toLowerCase(), artifact);
+      }
     }
   }
   const built = { byId, byKey, artifactById };
@@ -963,7 +1038,8 @@ export function curatedRowLabelFor(
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
   // The chip is the precision the artifact is STORED at, which is what tells two rows apart; what it
   // RUNS at is the loader's answer, reported by `resolved` after the load.
-  const tags = [format.trim()].filter(Boolean);
+  // "Safetensors" is left off: the row's format dot already says it.
+  const tags = [format.trim()].filter((tag) => tag && tag.toLowerCase() !== "safetensors");
   const kept: string[] = [];
   for (const part of rest) {
     if (RESOLUTION_RE.test(part.trim())) tags.push(part.trim());
@@ -993,7 +1069,8 @@ export function catalogToModelOptions(
         name:
           curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
           group.displayName,
-        description: `${group.description} - ${artifact.label}`,
+        description: group.description,
+        descriptionSuffix: artifact.label,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
       });
@@ -1054,6 +1131,18 @@ export function groupMatchesQuery(group: CatalogGroup, query: string): boolean {
 }
 
 
+export interface OffloadFitTier {
+  gpuGb: number;
+  systemRamGb: number;
+  /** Only offered where `/api/system.quantised_streaming` says group offload streams torchao weights. */
+  requiresQuantisedStreaming?: boolean;
+}
+
+function offloadTierMet(tier: OffloadFitTier, budget: DeviceBudget): boolean {
+  if (tier.requiresQuantisedStreaming && budget.quantisedStreaming !== true) return false;
+  return budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb;
+}
+
 export interface DeviceBudget {
   /** Total GPU memory in GB (0/undefined = unknown or none). */
   gpuGb: number;
@@ -1065,6 +1154,23 @@ export interface DeviceBudget {
   gpuCount?: number;
   /** Dense quant schemes this host runs, best first; empty keeps the bf16 sizing rule. */
   denseQuantSchemes?: readonly string[];
+  /** Group offload can stream torchao weights; absent = unknown, so streamed tiers are not offered. */
+  quantisedStreaming?: boolean;
+  /** Backend-reported extra offload tiers per lower-cased repo id (`/api/system.diffusers_offload_tiers`).
+   *  Unioned with an artifact's own `offloadFitTiers`, so they can only widen; ignored for artifacts
+   *  without catalog tiers, whose size rule they must not replace. */
+  extraOffloadFitTiers?: Readonly<Record<string, readonly OffloadFitTier[]>>;
+}
+
+/** The artifact's catalog tiers plus any the backend reports for it. Empty when the catalog has none. */
+function artifactOffloadTiers(
+  artifact: ModelArtifact,
+  budget: DeviceBudget,
+): readonly OffloadFitTier[] {
+  const own = artifact.offloadFitTiers ?? [];
+  if (!own.length) return own;
+  const extra = budget.extraOffloadFitTiers?.[artifact.repoId.trim().toLowerCase()];
+  return extra?.length ? [...own, ...extra] : own;
 }
 
 /** GGUF fit, delegated to the one formula the Hub badge already uses. Its old private rule
@@ -1104,6 +1210,66 @@ export function classifyMediaGgufFit(
  *  the second by offloading to CPU. */
 export function ggufFitRuns(fit: GgufFitClass): boolean {
   return fit !== "oom";
+}
+
+/** Whether a verdict loads with room to spare. `fits` clears the VRAM budget and `ram` the RAM
+ *  one, both of which already hold a reserve back; `marginal` and `partial` run at the edge. */
+export function ggufFitIsComfortable(fit: GgufFitClass): boolean {
+  return fit === "fits" || fit === "ram";
+}
+
+/** What to recommend on a device whose budget is known. With a repo default (`preferred`, the
+ *  backend's pick: UD-Q4_K_XL, else Q4_K_M, else Q4_K_S), that default wherever it loads, and
+ *  the largest smaller quant that does when it cannot. Spare memory is not a reason to star F16:
+ *  on a large card that recommended a 13 GiB F16 over a 3.9 GiB Q4_K_M. Without one, the largest
+ *  quant that runs with room to spare, else the largest that runs at all, else the smallest.
+ *
+ *  Null when no variant carries a size, since then there is nothing to weigh against the device
+ *  and the caller's repo default is the better guess. */
+export function recommendedQuantForDevice<T extends GgufVariantSizes>(
+  variants: readonly T[],
+  fitOf: (sizeBytes: number) => GgufFitClass,
+  preferred: T | null = null,
+): T | null {
+  // Ranked by the weights, since that is the quality on offer and the size the row shows. Judged on
+  // the download footprint, which also covers the companion GGUFs the loader charges for: a vision
+  // projector, or a drafter `auto` promotes to. On `size_bytes` alone this starred quants that go
+  // OOM once the mmproj lands beside them.
+  const fitOfVariant = (variant: T) => fitOf(ggufVariantFitSizeBytes(variant));
+  // A listing with no size metadata reports zero (gguf_variants.py: an OSError stat-ing a local
+  // file, or a manifest an older backend cannot read). Zero prices as the bare context allowance,
+  // so it reads comfortable on any device and would outrank a real quant that only runs at the
+  // edge. Unknown is not comfortable, so it does not compete.
+  const sized = variants.filter((variant) => ggufVariantFitSizeBytes(variant) > 0);
+  if (sized.length === 0) return null;
+  const bySizeDesc = [...sized].sort(
+    (left, right) => right.size_bytes - left.size_bytes,
+  );
+  // Nothing runs, so the pick is whatever is closest to running: the smallest
+  // FOOTPRINT, not the smallest checkpoint. Companions are chosen per
+  // checkpoint (FLUX.2-klein sizes its text encoder that way), so a lighter
+  // quant can drag a heavier dependency along and end up furthest from fitting.
+  // Ties keep the larger checkpoint, since bySizeDesc is ranked by quality.
+  const smallestFootprint = bySizeDesc.reduce((best, variant) =>
+    ggufVariantFitSizeBytes(variant) < ggufVariantFitSizeBytes(best)
+      ? variant
+      : best,
+  );
+  // Step down from the default when it cannot load, never up past it.
+  const candidates =
+    preferred && variants.includes(preferred)
+      ? ggufVariantFitSizeBytes(preferred) <= 0 ||
+        fitOfVariant(preferred) !== "oom"
+        ? [preferred]
+        : bySizeDesc.filter(
+            (variant) => variant.size_bytes < preferred.size_bytes,
+          )
+      : bySizeDesc;
+  return (
+    candidates.find((variant) => ggufFitIsComfortable(fitOfVariant(variant))) ??
+    candidates.find((variant) => fitOfVariant(variant) !== "oom") ??
+    smallestFootprint
+  );
 }
 
 export interface QuantVariant {
@@ -1197,8 +1363,8 @@ function fitsArtifactBudget(
   budget: DeviceBudget,
 ): boolean {
   if (artifact.offloadFitTiers?.length) {
-    return artifact.offloadFitTiers.some(
-      (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+    return artifactOffloadTiers(artifact, budget).some(
+      (tier) => offloadTierMet(tier, budget),
     );
   }
   const allowanceGb = budget.gpuGb * 0.7;
@@ -1249,34 +1415,56 @@ export function pickDefaultArtifact(
   )[0];
 }
 
-/** Whether ONE curated artifact loads on this device, by the rule `pickDefaultArtifact` routes with,
- *  since a row click loads that exact artifact. System RAM is not part of a discrete-GPU budget: a
- *  pipeline goes wholly on the card unless the catalog states a measured offload tier or the loader
- *  falls back to CPU, which only transcription does. A unified-memory host reports RAM and no GPU,
- *  and there the RAM is the card. Undefined where nothing can be judged. */
+/** Fit verdict and badge estimate for one curated artifact; undefined if unknown.
+ *  Uses GPU memory, or RAM for unified-memory hosts and transcription fallback.
+ *  Measured offload tiers return the catalog size without an allowance. */
+export function curatedArtifactFit(
+  repoId: string,
+  catalog: CatalogGroup[],
+  budget: DeviceBudget,
+): {
+  fits: boolean;
+  sizeGb?: number;
+  allowanceGb?: number;
+  /** Memory the allowance is 70% of, and which device it is. */
+  deviceGb?: number;
+  device?: "GPU" | "RAM";
+} | undefined {
+  const hit = artifactForRepoId(repoId, catalog);
+  if (!hit || hit.artifact.format === "gguf") return undefined;
+  const { group, artifact } = hit;
+  if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
+  if (artifact.offloadFitTiers?.length) {
+    return {
+      fits: fitsArtifactBudget(group, artifact, budget),
+      sizeGb: artifact.approxSizeGb,
+    };
+  }
+  // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
+  // there, but the WHOLE model lands on one device: the larger of the two, not their sum. An
+  // image, video or TTS load rejects CPU offload.
+  const onRam =
+    group.task === "stt" ? budget.systemRamGb > budget.gpuGb : budget.gpuGb <= 0;
+  const deviceGb = onRam ? budget.systemRamGb : budget.gpuGb;
+  const allowanceGb = deviceGb * 0.7;
+  const sizeGb = residentSizeGb(group, artifact, budget, allowanceGb);
+  if (sizeGb === undefined) return undefined;
+  return {
+    fits: sizeGb <= allowanceGb,
+    sizeGb,
+    allowanceGb,
+    deviceGb,
+    device: onRam ? "RAM" : "GPU",
+  };
+}
+
+/** `curatedArtifactFit`'s verdict alone. */
 export function curatedArtifactFitsDevice(
   repoId: string,
   catalog: CatalogGroup[],
   budget: DeviceBudget,
 ): boolean | undefined {
-  const hit = artifactForRepoId(repoId, catalog);
-  if (!hit || hit.artifact.format === "gguf") return undefined;
-  const { group, artifact } = hit;
-  if (budget.gpuGb <= 0 && budget.systemRamGb <= 0) return undefined;
-  if (artifact.offloadFitTiers?.length) return fitsArtifactBudget(group, artifact, budget);
-  // Transcription retries a failed device load on CPU (stt_sidecar.py), so RAM is a real budget
-  // there, but the WHOLE model lands on one device: the larger of the two, not their sum. An
-  // image, video or TTS load rejects CPU offload.
-  const deviceGb =
-    group.task === "stt"
-      ? Math.max(budget.gpuGb, budget.systemRamGb)
-      : budget.gpuGb > 0
-        ? budget.gpuGb
-        : budget.systemRamGb;
-  const allowanceGb = deviceGb * 0.7;
-  const sizeGb = residentSizeGb(group, artifact, budget, allowanceGb);
-  if (sizeGb === undefined) return undefined;
-  return sizeGb <= allowanceGb;
+  return curatedArtifactFit(repoId, catalog, budget)?.fits;
 }
 
 /** Whether the "fit on device" toggle keeps a group, including measured offload tiers when an
@@ -1296,8 +1484,8 @@ export function catalogGroupFitsDevice(
     // matching pickDefaultArtifact.
     if (a.format === "gguf") return true;
     if (a.offloadFitTiers?.length) {
-      return a.offloadFitTiers.some(
-        (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+      return artifactOffloadTiers(a, budget).some(
+        (tier) => offloadTierMet(tier, budget),
       );
     }
     // The same quantised sizing the row badge and pickDefaultArtifact use: the dense figure would

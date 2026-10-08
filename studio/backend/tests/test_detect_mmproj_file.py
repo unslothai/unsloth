@@ -9,6 +9,8 @@ from pathlib import Path
 
 import struct
 
+import pytest
+
 from utils.models.model_config import (
     _detect_family_token,
     detect_mmproj_file,
@@ -20,14 +22,17 @@ _GGUF_MAGIC = 0x46554747
 
 
 def _gguf_with_general(path: Path, fields: dict) -> Path:
-    """Write a minimal GGUF with only ``general.*`` string KVs."""
+    """Write a minimal GGUF with string and unsigned integer KVs."""
     body = b""
     for k, v in fields.items():
         kb = k.encode("utf-8")
-        vb = v.encode("utf-8")
         body += struct.pack("<Q", len(kb)) + kb
-        body += struct.pack("<I", 8)  # STRING vtype
-        body += struct.pack("<Q", len(vb)) + vb
+        if isinstance(v, int):
+            body += struct.pack("<II", 4, v)
+        else:
+            vb = v.encode("utf-8")
+            body += struct.pack("<I", 8)
+            body += struct.pack("<Q", len(vb)) + vb
     header = struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, len(fields))
     path.parent.mkdir(parents = True, exist_ok = True)
     path.write_bytes(header + body)
@@ -380,6 +385,42 @@ def test_trusted_companion_snapshot_finds_nested_projector(tmp_path: Path):
     ) == str(projector.resolve())
 
 
+def test_a_containing_trusted_root_does_not_recurse_into_a_sibling_quant(tmp_path: Path):
+    """#10599's widening must not reach the quant next door.
+
+    ``allow_disjoint_search_root`` used to set ``recursive_root`` for every root, including
+    the one holding the weights, which is the case the incremental walk at the top of
+    detect_mmproj_file exists to confine. Every other quant subdirectory of the snapshot
+    became a candidate, and since none of them shares a prefix with the weight stem they
+    all tie at zero, so the shorter-stem rule handed UD-Q4_K_XL the IQ1_S projector.
+    """
+    snapshot = tmp_path / "snapshots" / "rev"
+    weight = _touch(snapshot / "UD-Q4_K_XL" / "Qwen3-VL-235B-UD-Q4_K_XL.gguf")
+    mine = _touch(snapshot / "UD-Q4_K_XL" / "mmproj-UD-Q4_K_XL.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "Qwen3-VL-235B-UD-IQ1_S.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "mmproj-UD-IQ1_S.gguf")
+
+    assert detect_mmproj_file(
+        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+    ) == str(mine.resolve())
+
+
+def test_a_containing_trusted_root_keeps_its_own_root_level_projector(tmp_path: Path):
+    """The same guard, where the only correct projector sits at the snapshot root.
+
+    The ancestor walk still has to reach it, and a foreign quant's projector must not win
+    on a longer shared prefix just because the recursion made it a candidate.
+    """
+    snapshot = tmp_path / "snapshots" / "rev"
+    weight = _touch(snapshot / "UD-Q4_K_XL" / "vision-model-UD-Q4_K_XL.gguf")
+    root_level = _touch(snapshot / "mmproj-F16.gguf")
+    _touch(snapshot / "UD-IQ1_S" / "mmproj-vision-model-UD-Q4_K_XL-F16.gguf")
+
+    assert detect_mmproj_file(
+        str(weight), search_root = str(snapshot), allow_disjoint_search_root = True
+    ) == str(root_level.resolve())
+
+
 def test_finds_the_projector_hermes_stages_under_assets(tmp_path: Path):
     """Hermes keeps a download's mmproj in models/assets/ so its router never lists it as a
     model; the weight sits one level up. A sibling-only walk loads Qwen3.8-27B text-only."""
@@ -411,3 +452,49 @@ def test_a_draft_model_under_assets_is_not_mistaken_for_a_projector(tmp_path: Pa
     model = _touch(tmp_path / "Qwen3.8-27B-UD-Q4_K_M.gguf")
     _touch(tmp_path / "assets" / "Qwen3.8-0.8B-draft-Q4_K_M.gguf")
     assert detect_mmproj_file(str(model)) is None
+
+
+@pytest.mark.parametrize("projection_dim", [5376, 2560, 0])
+@pytest.mark.parametrize("identity_matches", [False, True])
+def test_gemma4_finetune_pairs_by_functional_metadata(tmp_path, projection_dim, identity_matches):
+    model = _gguf_with_general(
+        tmp_path / "gembrain.gguf",
+        {
+            "general.architecture": "gemma4",
+            "general.basename": "Gemma-4" if identity_matches else "Gemma-4-Gembrain",
+            "general.base_model.0.repo_url": (
+                "https://huggingface.co/google/gemma-4-31B-it"
+                if identity_matches
+                else "https://huggingface.co/community/Gembrain"
+            ),
+            "gemma4.embedding_length": 5376,
+        },
+    )
+    projector = _gguf_with_general(
+        tmp_path / "mmproj-gemma-4-31B-it-BF16.gguf",
+        {
+            "general.architecture": "clip",
+            "general.type": "mmproj",
+            "general.basename": "Gemma-4",
+            "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-31B-it",
+            "clip.vision.projector_type": "gemma4v",
+            "clip.vision.projection_dim": projection_dim,
+        },
+    )
+    expected = (
+        str(projector)
+        if projection_dim == 5376 or (projection_dim == 0 and identity_matches)
+        else None
+    )
+    assert detect_mmproj_file(str(model)) == expected
+    if projection_dim:
+        assert mmproj_matches_model_family(str(model), str(projector)) == (projection_dim == 5376)
+
+
+def test_mmproj_rejection_names_mismatched_fields(tmp_path, capsys):
+    model = _gguf_with_general(tmp_path / "model.gguf", {"general.basename": "Foo"})
+    _gguf_with_general(tmp_path / "mmproj.gguf", {"general.basename": "Bar"})
+    assert detect_mmproj_file(str(model)) is None
+    output = capsys.readouterr().out
+    assert "general.basename" in output
+    assert "Foo" in output and "Bar" in output
