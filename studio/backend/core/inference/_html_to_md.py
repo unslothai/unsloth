@@ -272,7 +272,11 @@ class _HeaderFrame:
         self.text_chars: int = 0
         self.link_chars: int = 0
 
-    def render(self, closed_by_own_tag: bool) -> str:
+    def render(
+        self,
+        closed_by_own_tag: bool,
+        strip: bool | None = None,
+    ) -> str:
         """The buffer, or only its headings when the header is link furniture.
 
         Without a matching ``</header>`` the header may have adopted the page
@@ -284,7 +288,11 @@ class _HeaderFrame:
         # droppable chars only: headings survive, and blank structure _cleanup collapses must not inflate a tiny header
         droppable = self.rendered_chars - self.heading_chars
         big_enough = self.text_chars >= _HEADER_MIN_CHARS or droppable >= _HEADER_MAX_RENDERED_CHARS
-        if big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars:
+        if (
+            strip
+            if strip is not None
+            else (big_enough and self.link_chars >= _HEADER_LINK_DENSITY * self.text_chars)
+        ):
             self.stripped = True
             # the closing tag's blank line lands after the heading mark pops, so terminate it here
             return headings + "\n\n" if headings.strip() else headings
@@ -337,6 +345,7 @@ class _MarkdownRenderer(HTMLParser):
         scope_tags: frozenset[str] | None = None,
         strip_header: bool = False,
         span_char_limit: int = _MAX_SPAN_CHARS,
+        header_decisions: list[bool] | None = None,
     ):
         super().__init__(convert_charrefs = False)
         self._out: list[str] = []
@@ -359,6 +368,8 @@ class _MarkdownRenderer(HTMLParser):
         # Open <header> buffers, innermost last. Empty unless strip_header.
         self._strip_header = strip_header
         self._header_stack: list[_HeaderFrame] = []
+        self.header_decisions: list[bool] = []
+        self._header_decisions = header_decisions
         # Furniture chars removed, so a candidate is sized as the page wrote it.
         self._dropped_chars: int = 0
         self._seg_dropped_start: int = 0
@@ -697,7 +708,13 @@ class _MarkdownRenderer(HTMLParser):
                 self._header_stack[-1].link_chars += frame.link_chars
                 self._header_stack[-1].heading_parts.extend(frame.heading_parts)
                 self._header_stack[-1].heading_chars += frame.heading_chars
-            out = frame.render(closed_by_own_tag)
+            strip = (
+                self._header_decisions[len(self.header_decisions)]
+                if self._header_decisions is not None
+                else None
+            )
+            out = frame.render(closed_by_own_tag, strip)
+            self.header_decisions.append(frame.stripped)
             if frame.stripped:
                 self._dropped_chars += max(0, frame.rendered_chars - frame.heading_chars)
             self._emit(out)
@@ -1208,12 +1225,14 @@ def _new_renderer(
     scope_tags: frozenset[str] | None,
     strip_header: bool,
     span_char_limit: int | None = None,
+    header_decisions: list[bool] | None = None,
 ) -> _MarkdownRenderer:
     # generated span cells stay proportional to their source and cannot consume the fetch cap alone
     renderer = _MarkdownRenderer(
         scope_tags = scope_tags,
         strip_header = strip_header,
         span_char_limit = 2 * len(source_html) if span_char_limit is None else span_char_limit,
+        header_decisions = header_decisions,
     )
     renderer.feed(source_html)
     renderer.close()
@@ -1247,7 +1266,13 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     # Generated span cells belong in the returned Markdown but must not help a tiny scope clear the content gate or
     # outrank source-backed prose. Only span-bearing pages pay for this second, unexpanded scoring pass.
     scoring = (
-        _new_renderer(source_html, frozenset({tag}), strip_header = True, span_char_limit = 0)
+        _new_renderer(
+            source_html,
+            frozenset({tag}),
+            strip_header = True,
+            span_char_limit = 0,
+            header_decisions = renderer.header_decisions,
+        )
         if renderer._span_chars
         else renderer
     )

@@ -2162,6 +2162,11 @@ def test_generated_table_spans_do_not_make_a_main_content_candidate():
         "<article><blockquote><table><tr><td rowspan='101'>x</td></tr>"
         + "<tr></tr>" * 100
         + "</table></blockquote></article>",
+        "<article><header><table><tr><td colspan='1000'><a href='/nav'>"
+        + "Navigation " * 12
+        + "</a></td></tr></table></header><p>"
+        + "Teaser. " * 12
+        + "</p></article>",
     )
     for decoy in decoys:
         out = html_to_markdown(f"<body>{decoy}{body}</body>", main_content = True)
