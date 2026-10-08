@@ -195,3 +195,15 @@ def test_a_gpu_resident_drafter_keeps_llama_cpp_split_and_status_reports_ours():
     arm = src[src.index("_mixed_split = (") : src.index("# Expose Prometheus /metrics")]
     assert 'not _spill_inputs["separate_draft_on_gpu"]' in arm
     assert "self._auto_tensor_split_emitted = self._auto_split_fingerprint(" in arm
+
+
+def test_an_inherited_projector_or_device_list_is_respected():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    arm = src[src.index("_mixed_split = (") : src.index("if _mixed_split is not None:")]
+    for needle in (
+        '"env_mmproj_bytes"',
+        '"env_mmproj_unsized"',
+        "_extra_args_main_device(extra_args) is None",
+        '"LLAMA_ARG_DEVICE"',
+    ):
+        assert needle in arm

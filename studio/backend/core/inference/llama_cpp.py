@@ -27909,6 +27909,7 @@ class LlamaCppBackend:
                                 _spill_inputs["compute_buffer_flat"]
                                 + _spill_inputs["soft_overhead"]
                                 + _spill_inputs["extra_gpu_bytes"]
+                                + int(_spill_inputs.get("env_mmproj_bytes") or 0)
                             )
                             / (1024 * 1024),
                             self._PIPELINE_PER_DEVICE_OVERHEAD_MIB,
@@ -27918,8 +27919,12 @@ class LlamaCppBackend:
                         # A GPU-resident separate drafter spreads over every device;
                         # the split cannot price its per-card share, so leave it off.
                         and not _spill_inputs["separate_draft_on_gpu"]
+                        and not _spill_inputs.get("env_mmproj_unsized")
                         and not tensor_parallel
                         and not _extra_args_have_tensor_split(extra_args, env)
+                        # A surviving device list owns the order the shares follow.
+                        and _extra_args_main_device(extra_args) is None
+                        and not str(env.get("LLAMA_ARG_DEVICE", "")).strip()
                         else None
                     )
                     if _mixed_split is not None:
