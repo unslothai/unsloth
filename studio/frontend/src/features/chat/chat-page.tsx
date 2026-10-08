@@ -3347,7 +3347,11 @@ export function ChatPage({
                 ? VOICE_SLOT_CODECS.has(c.audio_type)
                 : TTS_REPO_KEYWORDS.some((kw) => lower(c.repo_id).includes(kw)),
             )
-            .map((c) => toOption(c.repo_id, true)),
+            // the codec rides along so the speaker picker needn't guess from the name
+            .map((c) => ({
+              ...toOption(c.repo_id, true),
+              audioType: c.audio_type ?? null,
+            })),
         );
       })
       .catch(() => {});

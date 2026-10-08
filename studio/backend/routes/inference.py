@@ -21407,7 +21407,7 @@ async def voice_load_model(
                 and voice_backend.model_identifier
                 and voice_backend.model_identifier.lower() == config.identifier.lower()
                 and (not config.gguf_variant or voice_backend.hf_variant == config.gguf_variant)
-                and getattr(voice_backend, "_n_parallel", 1) == request.parallel
+                and getattr(voice_backend, "requested_parallel_slots", 1) == request.parallel
                 and int(getattr(voice_backend, "requested_n_ctx", 0) or 0)
                 == int(request.n_ctx or 0)
                 and getattr(voice_backend, "_is_audio", False)

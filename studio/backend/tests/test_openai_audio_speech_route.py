@@ -2068,3 +2068,47 @@ def test_status_reaping_holds_the_voice_load_lock(monkeypatch):
 
     assert asyncio.run(_run()) is True
     assert arb.current_owner() is None
+
+
+def test_a_voice_whose_parallel_slots_were_clamped_is_still_already_loaded(monkeypatch):
+    """A build without a unified KV cache launches --parallel 1 for a request of 2, and the reuse
+    check compared that effective count to the request, so the same load relaunched every time."""
+    relaunched = []
+
+    class Voice:
+        _process = SimpleNamespace(poll = lambda: None)
+        is_active = is_loaded = True
+        model_identifier = "voices/orpheus-GGUF"
+        hf_variant = "Q4_K_M"
+        _n_parallel = 1
+        requested_parallel_slots = 2
+        requested_n_ctx = 4096
+        _is_audio, _audio_type = True, "snac"
+
+        def load_model(self, *a, **k):
+            relaunched.append(True)
+
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: Voice())
+    aa = routes_module.account_access
+    monkeypatch.setattr(aa, "managed_account", lambda: False)
+    monkeypatch.setattr(aa, "require_idle_other_accounts", lambda *a, **k: None)
+    monkeypatch.setattr(aa, "resident_hidden", lambda *a, **k: False)
+    config = SimpleNamespace(
+        is_gguf = True,
+        identifier = "voices/orpheus-GGUF",
+        gguf_variant = "Q4_K_M",
+        gguf_hf_repo = "voices/orpheus-GGUF",
+        gguf_file = None,
+        base_model = None,
+    )
+    monkeypatch.setattr("utils.models.ModelConfig.from_identifier", lambda **k: config)
+
+    async def _placement(*a, **k):
+        return None
+
+    monkeypatch.setattr(routes_module, "_prepare_load_placement", _placement)
+    monkeypatch.setattr(routes_module, "_offline_guarded", lambda *a, **k: None)
+    request = routes_module._VoiceLoadRequest(model_path = "voices/orpheus-GGUF", parallel = 2)
+    result = asyncio.run(routes_module.voice_load_model(request, "s"))
+    assert result["status"] == "already_loaded"
+    assert relaunched == []

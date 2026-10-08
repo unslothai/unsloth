@@ -27,6 +27,14 @@ test("the speaker picker shows for any SNAC voice, not only ids that say orpheus
   );
 });
 
+test("a cached voice keeps its detected codec, so a renamed SNAC voice gets the speaker picker", () => {
+  const cached = readSrc("features/chat/chat-page.tsx").match(
+    /setCachedGgufs\(([\s\S]*?)\);\n/,
+  );
+  assert.ok(cached, "setCachedGgufs call not found");
+  assert.match(cached[1], /\.map\(\(c\) => \(\{[\s\S]*audioType: c\.audio_type \?\? null/);
+});
+
 test("the dictation mic resumes its AudioContext before expecting frames", () => {
   const adapter = readSrc(
     "features/chat/adapters/studio-whisper-dictation-adapter.ts",
