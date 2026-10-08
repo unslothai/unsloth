@@ -57,16 +57,12 @@ function PartsBar({ parts }: { parts: DownloadPart[] }) {
           </div>
         ))}
       </div>
-      <div className="flex gap-0.5 text-ui-10p5">
-        {parts.map((part, i) => (
-          <div
-            key={part.kind}
-            className={`whitespace-nowrap ${PART_STYLE[part.kind].text} ${i === parts.length - 1 && i > 0 ? "text-right" : ""}`}
-            style={{ width: `${widths[i]}%` }}
-          >
-            {PART_STYLE[part.kind].label}
-            {widths[i] >= 30 ? ` ${formatBytes(part.bytes)}` : ""}
-          </div>
+      {/* A legend, not labels under each segment: a 2% VAE segment has no room for its own. */}
+      <div className="flex flex-wrap gap-x-3 text-ui-10p5">
+        {parts.map((part) => (
+          <span key={part.kind} className={`whitespace-nowrap ${PART_STYLE[part.kind].text}`}>
+            {PART_STYLE[part.kind].label} {formatBytes(part.bytes)}
+          </span>
         ))}
       </div>
     </div>
