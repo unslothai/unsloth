@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import {
   CodeBlockActions,
   MarkdownTextSource,
@@ -287,6 +288,42 @@ const Fragment = memo(function Fragment({
   );
 });
 
+// IntersectionObserver reports after paint, so a jump past its one-screen margin (scrollbar drag,
+// Ctrl+End) would paint a far transcript's stale rows. One listener per viewport catches those.
+const jumpWatchers = new WeakMap<
+  HTMLElement,
+  { checks: Set<() => void>; stop: () => void }
+>();
+
+function onViewportJump(scroll: HTMLElement, check: () => void): () => void {
+  let watcher = jumpWatchers.get(scroll);
+  if (!watcher) {
+    const checks = new Set<() => void>();
+    let last = scroll.scrollTop;
+    const listener = () => {
+      const top = scroll.scrollTop;
+      const jumped = Math.abs(top - last) >= scroll.clientHeight / 2;
+      last = top;
+      if (jumped) for (const run of [...checks]) run();
+    };
+    scroll.addEventListener("scroll", listener, { passive: true });
+    watcher = {
+      checks,
+      stop: () => {
+        scroll.removeEventListener("scroll", listener);
+        jumpWatchers.delete(scroll);
+      },
+    };
+    jumpWatchers.set(scroll, watcher);
+  }
+  const { checks, stop } = watcher;
+  checks.add(check);
+  return () => {
+    checks.delete(check);
+    if (!checks.size) stop();
+  };
+}
+
 export function ReasoningTranscript({
   initialAnchor,
   documents,
@@ -471,23 +508,46 @@ export function ReasoningTranscript({
     if (scroll.firstElementChild) observer.observe(scroll.firstElementChild);
     if (nearby.current)
       scroll.addEventListener("scroll", schedule, { passive: true });
+    let stopJumpWatch: (() => void) | undefined;
+    const setNearby = (near: boolean, beforePaint = false) => {
+      if (near === nearby.current) return;
+      nearby.current = near;
+      if (near) {
+        stopJumpWatch?.();
+        stopJumpWatch = undefined;
+        scroll.addEventListener("scroll", schedule, { passive: true });
+        if (beforePaint)
+          // A jump lands on it this frame: its top went stale while away (only scrolling
+          // re-measures it), so re-measure and render the live range before paint.
+          flushSync(() => {
+            measure();
+            followOffset.current?.(true);
+          });
+        else {
+          followOffset.current?.(true);
+          schedule();
+        }
+      } else {
+        followOffset.current?.(false);
+        scroll.removeEventListener("scroll", schedule);
+        readingAnchor = undefined;
+        stopJumpWatch = onViewportJump(scroll, () => {
+          const box = element.getBoundingClientRect();
+          const view = scroll.getBoundingClientRect();
+          if (
+            box.bottom > view.top - view.height &&
+            box.top < view.bottom + view.height
+          )
+            setNearby(true, true);
+        });
+      }
+    };
     const proximity =
       typeof IntersectionObserver === "undefined"
         ? undefined
         : new IntersectionObserver(
-            (entries) => {
-              const near = entries.at(-1)?.isIntersecting ?? nearby.current;
-              if (near === nearby.current) return;
-              nearby.current = near;
-              followOffset.current?.(nearby.current);
-              if (nearby.current) {
-                scroll.addEventListener("scroll", schedule, { passive: true });
-                schedule();
-              } else {
-                scroll.removeEventListener("scroll", schedule);
-                readingAnchor = undefined;
-              }
-            },
+            (entries) =>
+              setNearby(entries.at(-1)?.isIntersecting ?? nearby.current),
             { root: scroll, rootMargin: "100% 0px" },
           );
     proximity?.observe(element);
@@ -495,6 +555,7 @@ export function ReasoningTranscript({
     return () => {
       observer.disconnect();
       proximity?.disconnect();
+      stopJumpWatch?.();
       scroll.removeEventListener("scroll", schedule);
       cancelAnimationFrame(frame);
     };
