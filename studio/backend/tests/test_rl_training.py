@@ -473,3 +473,13 @@ def test_grpo_refuses_a_dataset_smaller_than_one_generation_batch(monkeypatch):
     with pytest.raises(ValueError, match = "at least 4 prompts"):
         build_rl_trainer("grpo", train_dataset = [{"prompt": "x"}] * 3, **args)
     assert build_rl_trainer("grpo", train_dataset = [{"prompt": "x"}] * 4, **args)
+
+
+def test_grpo_epoch_rows_drop_the_partial_prompt_group():
+    from core.training.trainer import grpo_completion_rows
+
+    args = types.SimpleNamespace(num_generations = 4, generation_batch_size = 8)
+    # Five prompts in groups of two: TRL trains four, so 16 completion rows.
+    assert grpo_completion_rows(5, args) == 16
+    assert grpo_completion_rows(6, args) == 24
+    assert grpo_completion_rows(5, types.SimpleNamespace(num_generations = 4)) == 20

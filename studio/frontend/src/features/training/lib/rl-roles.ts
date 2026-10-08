@@ -109,3 +109,24 @@ export function missingRewardColumns(
     column === "answer" ? !hasAnswer : !columns.includes(column),
   );
 }
+
+/** resolveRlMapping, keeping columns mapped to another objective's roles so switching back
+ * restores them; the backend ignores roles the objective does not use. */
+export function syncRlMapping(
+  objective: RlObjective,
+  columns: readonly string[],
+  mapping: Record<string, string>,
+): Record<string, string> {
+  const active: readonly string[] = RL_ROLES[objective];
+  const next = resolveRlMapping(objective, columns, mapping);
+  for (const [column, role] of Object.entries(mapping)) {
+    if (
+      !active.includes(role) &&
+      columns.includes(column) &&
+      !(column in next)
+    ) {
+      next[column] = role;
+    }
+  }
+  return next;
+}

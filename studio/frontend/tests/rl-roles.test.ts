@@ -7,7 +7,7 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { missingRlRoles, resolveRlMapping } =
+const { missingRlRoles, resolveRlMapping, syncRlMapping } =
   await import("../src/features/training/lib/rl-roles.ts");
 
 test("GSM8K columns auto-map for GRPO", () => {
@@ -99,4 +99,21 @@ test("a start whose detected modality rules out RL cancels instead of training S
   assert.ok(
     cancel < src.indexOf("prepareSelectedDataset(attempt, hfToken)", detect),
   );
+});
+
+test("switching DPO to GRPO and back keeps manual preference columns", () => {
+  const columns = ["q", "good", "bad", "chosen", "rejected", "answer"];
+  const dpo = { q: "prompt", good: "chosen", bad: "rejected" };
+  const grpo = syncRlMapping("grpo", columns, dpo);
+  assert.deepEqual(resolveRlMapping("grpo", columns, grpo), {
+    q: "prompt",
+    answer: "answer",
+  });
+  const back = syncRlMapping("dpo", columns, grpo);
+  assert.deepEqual(resolveRlMapping("dpo", columns, back), {
+    q: "prompt",
+    good: "chosen",
+    bad: "rejected",
+  });
+  assert.equal(back.answer, "answer");
 });

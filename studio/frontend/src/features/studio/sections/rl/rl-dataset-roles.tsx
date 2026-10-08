@@ -21,7 +21,7 @@ import {
   type RlObjective,
   type RlRole,
   missingRlRoles,
-  resolveRlMapping,
+  syncRlMapping,
 } from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -177,7 +177,7 @@ export function RlDatasetRoles({
     if (!columns) {
       return;
     }
-    const next = resolveRlMapping(objective, columns, mapping);
+    const next = syncRlMapping(objective, columns, mapping);
     if (JSON.stringify(next) !== JSON.stringify(mapping)) {
       setMapping(next);
     }
@@ -267,7 +267,9 @@ export function RlDatasetRoles({
             <span>{t("rl.dataset.roleHeader")}</span>
           </div>
           {columns.map((column) => {
-            const role = config.mapping[column] as RlRole | undefined;
+            // A role kept for another objective shows as ignored here.
+            const mapped = config.mapping[column] as RlRole | undefined;
+            const role = mapped && roles.includes(mapped) ? mapped : undefined;
             const sample = previewCell(previewRow?.[column]);
             return (
               <div

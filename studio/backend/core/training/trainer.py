@@ -340,6 +340,16 @@ def normalize_gradient_checkpointing(value) -> Union[str, bool]:
     return "unsloth"
 
 
+def grpo_completion_rows(prompts: int, rl_args) -> int:
+    """Completion rows one GRPO epoch trains: TRL's sampler drops a trailing partial group of
+    prompts, and each kept prompt becomes num_generations rows."""
+    generations = int(getattr(rl_args, "num_generations", 1) or 1)
+    group = (getattr(rl_args, "generation_batch_size", None) or 0) // generations
+    if group > 0:
+        prompts -= prompts % group
+    return prompts * generations
+
+
 class UnslothTrainer:
     def __new__(cls, *args, **kwargs):
         if cls is UnslothTrainer and should_use_mlx_training_backend():
@@ -4665,7 +4675,7 @@ class UnslothTrainer:
                     # Unsloth may resize the batch to fit num_generations, and each prompt becomes
                     # num_generations rows, so count from the trainer's own args.
                     rl_args = self.trainer.args
-                    num_samples *= int(getattr(rl_args, "num_generations", 1) or 1)
+                    num_samples = grpo_completion_rows(num_samples, rl_args)
                     batch_size = rl_args.per_device_train_batch_size
                     grad_accum = rl_args.gradient_accumulation_steps
                 total_steps = self._calculate_total_steps(
