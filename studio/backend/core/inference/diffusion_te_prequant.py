@@ -26,7 +26,7 @@ None and the caller falls back to the dense download + cast. Inert with nothing 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Optional
 
 # Reuse the DiT module's operator allowlist for local paths: one env var, one policy.
@@ -129,6 +129,9 @@ TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 # measured encoder rather than under-stating any: an under-estimate is the expensive direction, since it lets an
 # oversized load through to the OS killer.
 TE_PREQUANT_BUDGET_SCALE = 0.65
+# The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
+# 17,534,339,488 for the dense encoder, 0.533, rounded up.
+TE_INT8_CONVROT_BUDGET_SCALE = 0.56
 
 
 def te_prequant_budget_scale(
@@ -156,7 +159,25 @@ def te_prequant_budget_scale(
         )
     except Exception:  # noqa: BLE001 -- an unresolvable pre-cast just means the dense encoder
         return 1.0
-    return TE_PREQUANT_BUDGET_SCALE if sources else 1.0
+    if not sources:
+        return 1.0
+    if _int8_convrot_only(te_quant_mode, target):
+        return TE_INT8_CONVROT_BUDGET_SCALE
+    return TE_PREQUANT_BUDGET_SCALE
+
+
+def _int8_convrot_only(te_quant_mode: Optional[str], target: Any) -> bool:
+    """Whether this pick can ONLY take the int8 ConvRot file (no fp8 fallback): Apple Silicon."""
+    try:
+        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
+
+        return (
+            normalize_te_quant(te_quant_mode) == "int8"
+            and int8_convrot_te_runs_on(target)
+            and not te_quant_supported(target, TE_QUANT_FP8)
+        )
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one
@@ -224,6 +245,19 @@ class TePrequantSource:
     # Names to try after ``filename``, in order, when the repo does not carry it. Only the "repo"
     # kind uses this: a local path either exists or it does not.
     fallback_filenames: tuple = ()
+
+
+def int8_convrot_te_runs_on(target: Any) -> bool:
+    """Whether the hosted int8 ConvRot encoder can run on ``target`` without the fp8 path: Apple Silicon (MPS).
+
+    The encoder is plain tensors (int8 codes, fp32 row scales) and its forward is a Hadamard matmul plus
+    ``F.linear`` on a per-call dequantised view, so it needs no torchao, no fp8 dtype and no CUDA kernel. On CUDA
+    the fp8 gate already admits it."""
+    return getattr(target, "device", None) == "mps"
+
+
+def _is_fp8_te_name(name: Optional[str]) -> bool:
+    return bool(name) and "fp8" in str(name).lower()
 
 
 def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
@@ -399,11 +433,18 @@ def te_prequant_sources(
         if callable(denied) and denied(family, mode):
             return {}
         # int8 dequantizes to bf16 per call (no torchao) and falls back to the fp8 file: it needs what fp8 needs.
-        if not te_quant_supported(target, TE_QUANT_FP8):
+        # On Apple Silicon the int8 ConvRot file alone still runs (plain tensors, a Hadamard matmul and F.linear),
+        # but the fp8 fallback does not, so that target keeps the int8 file and drops the fp8 names.
+        fp8_runs = te_quant_supported(target, TE_QUANT_FP8)
+        if not fp8_runs and not (mode == "int8" and int8_convrot_te_runs_on(target)):
             return {}
         sources: dict[str, TePrequantSource] = {}
         for component in components:
             source = resolve_te_prequant_source(fam, component, mode)
+            if source is not None and not fp8_runs:
+                if source.kind == "repo" and _is_fp8_te_name(source.filename):
+                    continue
+                source = replace(source, fallback_filenames = ())
             if source is not None:
                 sources[component] = source
         return sources
@@ -745,7 +786,7 @@ def _te_prequant_pipe_kwargs(
     The later ``quantize_text_encoders`` call re-applies the cast idempotently and keeps
     status reporting truthful."""
     try:
-        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant
+        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
 
         sources = te_prequant_sources_for_base(
@@ -780,6 +821,7 @@ def _te_prequant_pipe_kwargs(
                 and mode == "int8"
                 and source.kind == "repo"
                 and fp8_names
+                and te_quant_supported(target, TE_QUANT_FP8)
                 and _held_locally(source.location, source.filename, hf_token)
             ):
                 # The int8 file resolved but was refused: the plan dropped the dense shards, so take the fp8 names.
