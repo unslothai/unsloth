@@ -1687,7 +1687,7 @@ def detected_windows_runtime_lines(ops: ModuleOps) -> tuple[list[str], dict[str,
 def driver_below_cuda_prebuilt_floor(host: Any) -> bool:
     """A reported driver too old for any CUDA prebuilt (see _COMPRESSED_FATBIN_MIN_DRIVER)."""
     driver = host.driver_cuda_version
-    return bool(driver) and len(driver) >= 2 and tuple(driver[:2]) < _COMPRESSED_FATBIN_MIN_DRIVER
+    return bool(driver) and tuple(driver[:2]) < _COMPRESSED_FATBIN_MIN_DRIVER
 
 
 def cuda_driver_floor_message(host: Any) -> str:

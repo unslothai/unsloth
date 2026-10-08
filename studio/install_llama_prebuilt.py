@@ -4215,6 +4215,18 @@ def resolve_release_asset_choice(
     )
     if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
         selection_host = masked_host or host
+        if driver_below_cuda_prebuilt_floor(selection_host):
+            # #12842: no CUDA prebuilt loads on this driver, and the source build it would
+            # fall back to needs a toolkit the driver can run, which winget rarely offers,
+            # so setup would fail. The CPU bundle keeps GGUF inference working until the
+            # driver is updated; the next update then picks CUDA again.
+            cpu_choice = published_asset_choice_for_kind(release, "windows-cpu")
+            if cpu_choice is not None:
+                log(
+                    f"{cuda_driver_floor_message(selection_host)} Installing the CPU "
+                    "bundle for now."
+                )
+                return apply_approved_hashes([cpu_choice], checksums)
         torch_preference = detect_torch_cuda_runtime_preference(
             selection_host, gpu_hidden_by_mask = masked_host is not None
         )

@@ -205,3 +205,44 @@ def test_a_driver_below_the_floor_stops_the_release_walk(monkeypatch, system):
     with pytest.raises(m.PrebuiltFallback, match = "older than the CUDA 12.4"):
         m._fork_manifest_release_plans("latest", host(system, (12, 2)), "unslothai/llama.cpp", "")
     assert len(walked) == 1
+
+
+def _release_with_windows_cpu():
+    cpu = m.parse_published_artifact(
+        {
+            "asset_name": f"app-{TAG}-windows-x64-cpu.zip",
+            "install_kind": "windows-cpu",
+            "bundle_profile": "windows-cpu-x64",
+            "runtime_line": None,
+            "coverage_class": None,
+            "rank": 1000,
+        }
+    )
+    assert cpu is not None
+    return m.PublishedReleaseBundle(
+        repo = RELEASE.repo,
+        release_tag = RELEASE.release_tag,
+        upstream_tag = RELEASE.upstream_tag,
+        assets = {**RELEASE.assets, cpu.asset_name: f"https://example.com/{cpu.asset_name}"},
+        artifacts = [*RELEASE.artifacts, cpu],
+    )
+
+
+class TestWindowsBelowTheFloorGetsTheCpuBundle:
+    # A Windows source build after a CUDA miss needs a toolkit the old driver can run,
+    # which winget rarely has, so setup would fail. The CPU bundle keeps loads working.
+    def _choices(self, monkeypatch, driver):
+        monkeypatch.setattr(m, "apply_approved_hashes", lambda attempts, _checksums: attempts)
+        monkeypatch.setattr(m, "github_release_assets", lambda _repo, _tag: {})
+        return m.resolve_release_asset_choice(
+            host("Windows", driver), "b11443", _release_with_windows_cpu(), None
+        )
+
+    def test_a_12_2_driver_gets_the_cpu_bundle(self, monkeypatch):
+        choices = self._choices(monkeypatch, (12, 2))
+        assert [c.install_kind for c in choices] == ["windows-cpu"]
+
+    @pytest.mark.parametrize("driver", [(12, 4), (13, 0)])
+    def test_a_driver_from_the_floor_keeps_cuda(self, monkeypatch, driver):
+        choices = self._choices(monkeypatch, driver)
+        assert choices and all(c.install_kind == "windows-cuda" for c in choices)

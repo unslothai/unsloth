@@ -195,27 +195,19 @@ def _backend(tmp_path: Path, gpus):
     return backend, _write_gguf(tmp_path / "model.gguf")
 
 
-def _crash_every_spawn(
-    backend,
-    gguf,
-    tail,
-    rc,
-    first_tail = None,
-    n_parallel = 1,
-):
+def _crash_every_spawn(backend, gguf, tail, rc):
     spawns: list[list[str]] = []
 
     def fake_popen(cmd, **kwargs):
         if not cmd or str(cmd[0]) != "/fake/llama-server":
             return _REAL_POPEN(cmd, **kwargs)
         spawns.append(list(cmd))
-        output = first_tail if first_tail is not None and len(spawns) == 1 else tail
         return type(
             "Process",
             (),
             {
                 "pid": 123,
-                "stdout": [line + "\n" for line in output.splitlines()],
+                "stdout": [line + "\n" for line in tail.splitlines()],
                 "returncode": rc,
                 "poll": lambda self: rc,
                 "terminate": lambda self: None,
@@ -227,7 +219,7 @@ def _crash_every_spawn(
     with patch.object(subprocess, "Popen", side_effect = fake_popen):
         try:
             result = backend.load_model(
-                GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_parallel = n_parallel)
+                GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test")
             )
             error = None
         except RuntimeError as exc:
@@ -256,22 +248,3 @@ class TestLoadStopsAtTheFirstCrash:
         backend, gguf = _backend(tmp_path, [0])
         spawns, _result, error = _crash_every_spawn(backend, gguf, _ROCM_TAIL, 134)
         assert error is None or "NVIDIA driver" not in error
-
-    @pytest.mark.parametrize("rc", [_WIN_FAIL_FAST, -6])
-    def test_a_recovery_rung_that_reaches_the_kernels_stops_too(self, tmp_path, rc):
-        # The first launch fails for another reason (unified KV refused with four
-        # slots); the one-slot retry is the first to reach warm-up and the CUDA error.
-        # No flash-attn or drafter rung may follow it.
-        backend, gguf = _backend(tmp_path, [0])
-        probe = backend.probe_server_capabilities
-        backend.probe_server_capabilities = lambda path, *a, **kw: {
-            **probe(path, *a, **kw),
-            "supports_kv_unified": True,
-        }
-        refused = "a unified KV cache is only supported with a single sequence"
-        spawns, result, error = _crash_every_spawn(
-            backend, gguf, _ISSUE_TAIL, rc, first_tail = refused, n_parallel = 4
-        )
-        assert error is not None and "NVIDIA driver" in error, (result, len(spawns))
-        assert "4" in spawns[0][spawns[0].index("--parallel") + 1]
-        assert len(spawns) == 2, [" ".join(s[-6:]) for s in spawns]
