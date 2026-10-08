@@ -27,6 +27,7 @@ export const MODEL_DEFAULT_STATE_KEYS = [
   "randomSeed",
   "offloadLayers",
   "offloadVramGb",
+  "offloadVramGbPerDevice",
   "prefetchDepth",
   "visionImageSize",
   "enableWandb",

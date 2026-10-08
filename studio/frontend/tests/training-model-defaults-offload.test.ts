@@ -26,6 +26,15 @@ test("importing an exported config restores every offload field", () => {
   });
   assert.equal(off.offloadVramGb, null);
   assert.equal(off.prefetchDepth, 3);
+  const cards = mapBackendModelConfigToTrainingPatch({
+    training: { offload_vram_gb_per_device: { "0": 20, "1": null, "3": 12.5 } },
+  });
+  assert.deepEqual(cards.offloadVramGbPerDevice, { "0": 20, "3": 12.5 });
+  assert.deepEqual(
+    mapBackendModelConfigToTrainingPatch({ training: { offload_vram_gb_per_device: [null, 6] } })
+      .offloadVramGbPerDevice,
+    { "1": 6 },
+  );
   // Configs exported before these fields existed keep the current values.
   assert.equal("offloadVramGb" in mapBackendModelConfigToTrainingPatch({ training: {} }), false);
 });
