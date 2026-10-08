@@ -419,6 +419,11 @@ async def probe(instance: dict) -> dict:
     }
 
 
+# A remote marks media models with a task. Only image generation is forwarded among them;
+# text models carry no task and go through chat, completions, responses, messages, embeddings.
+_FORWARDED_TASKS = (None, "text-to-image")
+
+
 async def _instance_catalog(instance: dict) -> list[dict]:
     cached = _catalog_cache.get(instance["id"])
     if cached and time.monotonic() - cached[0] < _CATALOG_TTL_S:
@@ -432,6 +437,7 @@ async def _instance_catalog(instance: dict) -> list[dict]:
             "linked_instance": instance["name"],
         }
         for model in result["models"]
+        if model.get("task") in _FORWARDED_TASKS
     ]
     _catalog_cache[instance["id"]] = (time.monotonic(), objects)
     return objects

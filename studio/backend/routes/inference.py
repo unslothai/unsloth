@@ -37086,6 +37086,12 @@ def _embeddings_input_present(body: dict) -> bool:
 async def openai_embeddings(request: Request, current_subject: str = Depends(get_current_subject)):
     """OpenAI-compatible embeddings: the resident embedding GGUF when one is loaded,
     else Studio's configured embedding model."""
+    try:
+        _linked_model = (await request.json()).get("model")
+    except (ValueError, AttributeError):
+        _linked_model = None
+    if linked := await linked_instances.resolve(request, _linked_model):
+        return await _forward_linked(request, "embeddings", linked, current_subject)
     if model_slots.slots:
         try:
             await _route_to_extra_slot(_raw_body_model(await request.json()))

@@ -842,3 +842,38 @@ def test_a_linked_url_image_request_never_returns_the_remotes_own_url(monkeypatc
     )
     url = json.loads(response.body)["data"][0]["url"]
     assert url.startswith("http://studio.local:8888/api/inference/images/gallery/local-1/")
+
+
+def test_catalog_lists_only_models_a_forwarded_endpoint_serves(monkeypatch):
+    linked_instances_db.create_instance("wsl", "http://remote", REMOTE_KEY)
+    remote = [
+        {"id": "unsloth/chat"},
+        {"id": "unsloth/flux", "task": "text-to-image"},
+        {"id": "unsloth/wan", "task": "text-to-video"},
+        {"id": "unsloth/whisper", "task": "automatic-speech-recognition"},
+        {"id": "unsloth/kokoro", "task": "text-to-speech"},
+        {"id": "unsloth/demucs", "task": "audio-to-audio"},
+    ]
+    _remote(lambda request: httpx.Response(200, json = {"data": remote}), monkeypatch)
+    models = asyncio.run(linked_instances.catalog_objects(_request({})))
+    assert [m["id"] for m in models] == ["@wsl/unsloth/chat", "@wsl/unsloth/flux"]
+
+
+def test_a_linked_embedding_model_is_forwarded(monkeypatch):
+    import routes.inference as inference
+
+    seen = {}
+
+    async def resolve(request, model):
+        return ({"id": "i", "name": "wsl"}, "unsloth/embed")
+
+    async def forward(request, path, target, **kwargs):
+        seen["path"] = path
+        return httpx.Response(200)
+
+    monkeypatch.setattr(inference.linked_instances, "resolve", resolve)
+    monkeypatch.setattr(inference.linked_instances, "forward", forward)
+    endpoint = getattr(inference.openai_embeddings, "__wrapped__", inference.openai_embeddings)
+    request = _request({"model": "@wsl/unsloth/embed", "input": "hi"})
+    asyncio.run(endpoint(request, current_subject = "unsloth"))
+    assert seen["path"] == "embeddings"
