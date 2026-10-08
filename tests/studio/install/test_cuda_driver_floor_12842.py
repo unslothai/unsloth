@@ -281,3 +281,30 @@ class TestTheSourceStageDoesNotKeepABrokenCudaPrebuilt:
         monkeypatch.setattr(m, "_existing_install_runs", lambda *_a: True)
         tree = self._tree(tmp_path, {"backend": "cpu"})
         assert m.reusable_existing_install(tree, host("Linux", (12, 2)))
+
+
+class TestAStoredCudaChoiceBelowTheFloorFallsBackToDetection:
+    # A Studio settings choice of CUDA is stored and advisory. Below the floor Linux CUDA
+    # planning failed with PrebuiltFallback, which the advisory path does not catch, so the
+    # whole update (and the Desktop update waiting on it) failed instead of re-detecting.
+    def _select(self, monkeypatch, driver):
+        def no_plans(*_args, **_kwargs):
+            raise m.PrebuiltFallback("no compatible Linux prebuilt asset was found")
+
+        monkeypatch.setattr(m, "resolve_simple_install_release_plans", no_plans)
+        return m.select_backend_install(
+            backend = "cuda",
+            llama_tag = "latest",
+            published_repo = "unslothai/llama.cpp",
+            published_release_tag = "",
+            host = host("Linux", driver),
+        )
+
+    def test_below_the_floor_it_reads_as_unavailable(self, monkeypatch):
+        with pytest.raises(m.BackendUnavailable):
+            self._select(monkeypatch, (12, 2))
+
+    def test_from_the_floor_the_failure_is_unchanged(self, monkeypatch):
+        with pytest.raises(m.PrebuiltFallback) as excinfo:
+            self._select(monkeypatch, (12, 8))
+        assert not isinstance(excinfo.value, m.BackendUnavailable)

@@ -11185,9 +11185,17 @@ def select_backend_install(
             cpu_mechanism = cpu_mechanism,
             host = host,
         )
-    requested_tag, release_plans = resolve_simple_install_release_plans(
-        llama_tag, route.host, route.published_repo, route.published_release_tag
-    )
+    try:
+        requested_tag, release_plans = resolve_simple_install_release_plans(
+            llama_tag, route.host, route.published_repo, route.published_release_tag
+        )
+    except PrebuiltFallback as exc:
+        # #12842: below the driver floor CUDA planning fails before the filter below, so
+        # a stored cuda choice must read as unavailable and fall back to detection
+        # rather than fail the whole update.
+        if route.backend == "cuda" and driver_below_cuda_prebuilt_floor(route.host):
+            raise BackendUnavailable(str(exc)) from exc
+        raise
     if route.rocm_fallback_host is not None:
         release_plans = _with_rocm_behind_vulkan(
             release_plans,
