@@ -21,7 +21,7 @@ const STUBS = {
     export const useNativeBrowser = { getState: () => ({ enabled: true }) };
     export const callNative = (command, args) => globalThis.nativeViewCall(command, args);
     export const nativeClearing = () => false;
-    export const onNativeViewsClosed = () => () => {};
+    export const onNativeViewsClosed = (callback) => { globalThis.nativeViewsClosed = callback; return () => {}; };
     export const clearNativeBrowsingData = async () => {};
   `),
   "./favicon": stub("export const proxiedFavicon = async () => null;"),

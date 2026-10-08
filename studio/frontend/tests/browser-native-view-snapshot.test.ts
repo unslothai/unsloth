@@ -96,7 +96,7 @@ let captureDone: ((bytes: ArrayBuffer) => void) | null = null;
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 register("./helpers/native-view-resolver.mjs", import.meta.url);
-const { useBrowserStore } = await import("../src/features/browser/store.ts");
+const { currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
 const { startNativeViews } = await import(
   "../src/features/browser/native-view.ts"
 );
@@ -320,6 +320,49 @@ test("a native page begun beside a normal chat is kept in history though its tab
   } finally {
     useChatRuntimeStore.getState().setIncognito(false);
     delete (globalThis as { nativeViewApprove?: boolean }).nativeViewApprove;
+    stop();
+  }
+});
+
+test("a native page begun beside a temporary chat keeps it through a redirect and a clear", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewVisits?: unknown;
+    nativeViewsClosed?: () => void;
+  };
+  try {
+    useBrowserStore.getState().openUrl("https://example.edu/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const visits: { url: string; temporary: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    load("https://example.edu/", true);
+    load("https://example.edu/", false);
+    useChatRuntimeStore.getState().setIncognito(true);
+    load("https://example.edu/go", true);
+    useChatRuntimeStore.getState().setIncognito(false);
+    // The redirect starts again inside the same navigation.
+    load("https://example.edu/landed", true);
+    load("https://example.edu/landed", false);
+    assert.deepEqual(visits.at(-1), { url: "https://example.edu/landed", temporary: true });
+    useChatRuntimeStore.getState().setIncognito(true);
+    load("https://example.edu/private", true);
+    load("https://example.edu/private", false);
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.nativeViewsClosed?.();
+    await frame();
+    const tab = useBrowserStore.getState().tabs.find((item) => item.id === tabId)!;
+    const reached = currentEntry(tab);
+    assert.ok(reached.kind === "web" && reached.temporary === true);
+    load("https://example.edu/private", true);
+    load("https://example.edu/private", false);
+    assert.deepEqual(visits.at(-1), { url: "https://example.edu/private", temporary: true });
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
     stop();
   }
 });

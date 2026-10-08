@@ -106,6 +106,7 @@ function closeView(tabId: string): void {
   icons.delete(tabId);
   pages.delete(tabId);
   temporaryPages.delete(tabId);
+  loadingPages.delete(tabId);
   recency = recency.filter((id) => id !== tabId);
   void call("browser_view_close", { tabId }).catch(() => undefined);
 }
@@ -134,10 +135,13 @@ function takeTemporaryDownload(key: string): boolean {
 // Per tab, whether its page began loading beside a temporary chat: in-page navigation makes no new entry.
 // A view's first page is its entry's, which may load long after the entry was made (a background tab).
 const temporaryPages = new Map<string, boolean>();
+// Tabs mid-load: a redirect starts again within the same navigation, which keeps its state.
+const loadingPages = new Set<string>();
 
 function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web" }>): void {
-  const first = !temporaryPages.has(tabId);
-  temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || (first && entry.temporary === true));
+  const previous = temporaryPages.get(tabId);
+  const kept = previous === undefined ? entry.temporary === true : loadingPages.has(tabId) && previous;
+  temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || kept);
 }
 
 function pageTemporary(tabId: string, entry: BrowserEntry): boolean {
@@ -181,6 +185,10 @@ function onNativeEvent(event: NativeEvent): void {
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
   if ((event.kind === "load" && event.loading) || event.kind === "url") notePageStart(tab.id, entry);
+  if (event.kind === "load") {
+    if (event.loading) loadingPages.add(tab.id);
+    else loadingPages.delete(tab.id);
+  }
   const temporary = pageTemporary(tab.id, entry);
   switch (event.kind) {
     case "load":
@@ -582,6 +590,8 @@ onNativeViewsClosed(() => {
   zooms.clear();
   icons.clear();
   pages.clear();
+  temporaryPages.clear();
+  loadingPages.clear();
   resume.clear();
   recency = [];
   epoch += 1;
