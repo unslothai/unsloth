@@ -17,7 +17,13 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { XIcon } from "lucide-react";
-import { type KeyboardEvent, useEffect, useState } from "react";
+import {
+  type Dispatch,
+  type KeyboardEvent,
+  type SetStateAction,
+  useEffect,
+  useState,
+} from "react";
 import {
   listResearchMcpTools,
   type ResearchMcpTool,
@@ -151,29 +157,38 @@ function DomainList({
   );
 }
 
+const MAX_RESEARCH_MCP_SOURCES = 20;
+
+const matches = (tool: ResearchMcpTool, value: ResearchMcpSource) =>
+  value.serverId === tool.serverId && value.tool === tool.tool;
+
 function McpSourceList({
   values,
   onChange,
 }: {
   values: ResearchMcpSource[];
-  onChange: (values: ResearchMcpSource[]) => void;
+  onChange: Dispatch<SetStateAction<ResearchMcpSource[]>>;
 }) {
   const [tools, setTools] = useState<ResearchMcpTool[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    listResearchMcpTools()
-      .catch(() => [])
-      .then((found) => {
-        if (!cancelled) setTools(found);
-      });
+    listResearchMcpTools().then(
+      (found) => {
+        if (cancelled) return;
+        setTools(found);
+        onChange((current) =>
+          current.filter((value) => found.some((tool) => matches(tool, value))),
+        );
+      },
+      () => {
+        if (!cancelled) setTools([]);
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const matches = (tool: ResearchMcpTool, value: ResearchMcpSource) =>
-    value.serverId === tool.serverId && value.tool === tool.tool;
+  }, [onChange]);
 
   return (
     <div className="space-y-2">
@@ -208,6 +223,10 @@ function McpSourceList({
             </span>
             <Switch
               checked={values.some((value) => matches(tool, value))}
+              disabled={
+                values.length >= MAX_RESEARCH_MCP_SOURCES &&
+                !values.some((value) => matches(tool, value))
+              }
               onCheckedChange={(checked) =>
                 onChange(
                   checked
