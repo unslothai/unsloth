@@ -9204,6 +9204,7 @@ class LlamaCppBackend:
         *,
         layer_min_gpus: int,
         tensor_parallel: bool,
+        pin_owns_devices: bool = False,
     ) -> Optional[List[float]]:
         """The discrete-first split for a full-offload mixed Vulkan pin, or None to
         leave llama.cpp's own split (the pre-existing behaviour) wherever its inputs
@@ -9221,9 +9222,15 @@ class LlamaCppBackend:
             or spill_inputs.get("host_mmproj_bytes")
             or not _kv_offload_from_args(extra_args, env)
             or _extra_args_have_tensor_split(extra_args, env)
-            # A surviving device list owns the order the shares follow.
-            or _extra_args_main_device(extra_args) is not None
-            or str(env.get("LLAMA_ARG_DEVICE", "")).strip()
+            # A surviving device list owns the order the shares follow; a gpu_ids
+            # pin strips both before launch, so only an unpinned one survives.
+            or (
+                not pin_owns_devices
+                and (
+                    _extra_args_main_device(extra_args) is not None
+                    or str(env.get("LLAMA_ARG_DEVICE", "")).strip()
+                )
+            )
         ):
             return None
         # Adapters may target only some layers, which a total cannot place.
@@ -28045,6 +28052,7 @@ class LlamaCppBackend:
                         env,
                         layer_min_gpus = _layer_min_gpus,
                         tensor_parallel = tensor_parallel,
+                        pin_owns_devices = _gpu_ids_own_device_flags,
                     )
                     if _mixed_split is not None:
                         self._mixed_split_flags = [
