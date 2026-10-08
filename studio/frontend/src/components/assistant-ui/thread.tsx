@@ -447,15 +447,12 @@ function followUpShortcutBehavior(event: {
   return id ? FOLLOW_UP_SHORTCUTS[id] : null;
 }
 
-// Prompt queues live at module level so they survive Composer remounts,
-// including the first queued message that creates a new thread. Each chat gets
-// its own queue run; completion detection subscribes to runningByThreadId
-// instead of aui.thread() so queues can keep advancing in the background.
+// module scope and runningByThreadId let queues survive Composer remounts and advance off-screen.
 type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
-  /** The project this queue was started in, for a chat with no row to read. */
+  /** project captured when a new chat has no persisted row to read. */
   getQueueProjectId: () => string | null;
-  /** A knowledge base replaces every other scope, project sources included. */
+  /** a knowledge base replaces every other scope, project sources included. */
   usesKnowledgeBase: boolean;
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
@@ -467,7 +464,7 @@ type PromptQueueTarget = {
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
   usesDeepResearch: boolean;
-  /** Whether a research run now holds this queue's thread. */
+  /** whether a research run now holds this queue's thread. */
   researchStarted: () => boolean;
   temporary: boolean;
   consumeDeepResearch: () => void;
@@ -863,7 +860,7 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  // Recheck loading after the document probe.
+  // recheck loading after the document probe.
   if (
     hasIndexingDocuments ||
     (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
@@ -1370,7 +1367,7 @@ function steerPromptQueueItem(itemId: string) {
     });
     return false;
   }
-  // Move the existing item so its captured settings and identity stay intact.
+  // move the item so its captured settings and identity stay intact.
   run.items.splice(itemIndex, 1);
   run.items.splice(steeringInsertionIndex(run.items, run.index), 0, item);
   steerPromptQueueTarget(item.target);
@@ -2983,7 +2980,6 @@ const Composer: FC<{
     },
     [],
   );
-  // Only once the draft outgrows the compact box: a hard break, or past row 3.
   const showWritingToggle = composerText.includes("\n") || editorRows > 3;
   const hasAttachments = useAuiState(
     ({ composer }) => composer.attachments.length > 0,
@@ -3001,9 +2997,7 @@ const Composer: FC<{
         isPastedTextFile((attachment as { file?: File }).file),
       ),
   );
-  // Identities only: paste autosave keys off this, and the bodies behind it can
-  // be megabytes. Every attachment counts, not just pasted ones, so removing an
-  // ordinary file also releases the paste restore waiting on it.
+  // track every attachment id so removing any file releases paste restore without hashing bodies
   const composerAttachmentSignature = useAuiState(({ composer }) =>
     composer.attachments.map((attachment) => attachment.id).join(","),
   );
@@ -3709,29 +3703,22 @@ const Composer: FC<{
     !overlay;
   const canQueueCurrentPrompt =
     composerText.trim().length > 0 && !hasAttachments && composerAcceptsQueueing;
-  // Validated text uploads and long pastes can join the per-chat queue.
+  // validated text uploads and long pastes can join the per-chat queue
   const canQueueTextAttachmentsPrompt =
     attachmentsAreQueueableText && composerAcceptsQueueing;
-  // Attachments without prepared text still park in the composer and send
-  // once the run and the queue are idle.
+  // attachments without prepared text stay parked until the run and queue are idle
   const canQueueAttachmentPrompt =
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
-  // Per-thread draft autosave: restore on mount, then mirror composer text
-  // into localStorage (debounced) so a half-typed message survives a
-  // navigation or reload. Cleared once empty (i.e. after a send). Setting the
-  // text even when no draft exists keeps a thread from inheriting the
-  // previous thread's composer contents.
+  // mirror each thread's draft to localStorage and restore it on mount
   const draftThreadId = referenceThreadId;
   const draftKey = draftThreadId ? composerDraftKey(draftThreadId) : null;
-  // A pasted attachment is a File held in memory only, so without its own slot
-  // an unsent paste is the one draft a reload throws away.
+  // unsent pasted File objects need a separate slot because they exist only in memory
   const pasteDraftKey = draftThreadId
     ? composerPasteDraftKey(draftThreadId)
     : null;
   const lastDraftKeyRef = useRef(draftKey);
-  // Which key the paste restore has finished for. The save effect writes only
-  // for that key, so a draft is never cleared before it has been put back.
+  // save only after this key's paste restore finishes to avoid premature clearing
   const restoredPasteKeyRef = useRef<string | null>(null);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -4205,17 +4192,13 @@ const Composer: FC<{
               return;
             }
           }
-          // Initialization can replace a fresh thread's local id with a remote
-          // id. Refresh queue aliases before the run begins so stop dialogs
-          // deduplicate the two identities.
+          // refresh aliases after initialization replaces a local id so stop dialogs deduplicate it
           syncPromptQueueUI();
           const appendResult = thread.append(
             queuedPromptMessage(prompt),
           ) as unknown;
           freshThreadAppendAccepted = true;
-          // Calling append synchronously accepts the user turn; its promise
-          // follows the whole provider run. Do not turn a later paid/streaming
-          // failure into an automatic duplicate dispatch.
+          // thread.append accepts synchronously; later provider failures must not dispatch a duplicate
           if (
             appendResult &&
             typeof (appendResult as Promise<void>).catch === "function"
@@ -4223,8 +4206,7 @@ const Composer: FC<{
             void (appendResult as Promise<void>).catch(() => undefined);
           }
         } catch (error) {
-          // A setup failure is retryable. Keep the initialized record unless a
-          // concurrent stop or Clear all explicitly invalidated this queue.
+          // retry setup failures unless stop or Clear all invalidated this queue
           removeFreshThreadPersistedAfterAbort();
           pendingSettingsIds.delete(settingsId);
           discardQueuedChatRunSettings(settingsId);
@@ -4304,8 +4286,7 @@ const Composer: FC<{
       waitForCurrentRun = false,
       onStarted?: () => void,
       onAborted?: () => void,
-      // Captured before an awaited step that precedes this call, so a boundary
-      // or setting changed during that step still invalidates the queue.
+      // capture before awaiting so intervening boundary or setting changes invalidate the queue
       capturedAt?: {
         localModelBoundaryGeneration: number;
         queuedSettingsEpoch: number;
@@ -4314,8 +4295,7 @@ const Composer: FC<{
       behavior: ComposerFollowUpBehavior = "queue",
     ) => {
       const reservationKey = JSON.stringify([referenceThreadId, items]);
-      // A reservation that is still going to start owns this prompt. One that
-      // is already invalid is replaced, so the retry is the one that queues.
+      // replace only invalid reservations so one attempt owns each prompt
       const existing = promptQueueStartPendingRef.current.get(reservationKey);
       if (existing && !pendingQueueStartIsStale(existing)) {
         // A new shortcut updates the pending draft instead of sending it twice.
@@ -4405,8 +4385,7 @@ const Composer: FC<{
     ],
   );
 
-  // Snapshot ready text uploads with their filename and content. Pure pastes
-  // keep the existing editable-text behavior.
+  // preserve pure pastes as editable text while snapshotting uploaded text files
   const queueTextAttachmentsPrompt = useCallback(
     (
       waitForCurrentRun: boolean,
@@ -4414,8 +4393,7 @@ const Composer: FC<{
     ): boolean => {
       const composer = aui.composer();
       const attachments = composer.getState().attachments;
-      // Uploaded text files are already validated and decoded. Keep their payloads
-      // separate from the editable prompt, including in mixed file/paste messages.
+      // keep validated decoded file payloads separate from the editable prompt
       if (!attachments.every((attachment) => isPastedTextFile(attachment.file))) {
         const prepared = snapshotQueuedTextAttachments(attachments);
         if (!prepared) return false;
@@ -4841,8 +4819,7 @@ const Composer: FC<{
     );
     const livePreStreamRunActive =
       hasPreStreamRunReservation(preStreamThreadIds);
-    // pendingSendRef too: a cancel earlier in this same commit has already
-    // dropped the send, while `pendingSend` still reads true from this render.
+    // pendingSendRef is authoritative because pendingSend still reflects the pre-cancel render.
     if (
       !pendingSend ||
       !pendingSendRef.current ||
@@ -4888,28 +4865,24 @@ const Composer: FC<{
         findPromptQueueEntry(usePromptQueueUI.getState(), preStreamThreadIds),
       );
       if (waitForCurrentRun || queueAlreadyActive) {
-        // Queueing on the project new-chat composer binds the follow-up to a
-        // thread that does not exist yet.
+        // queueing here would bind the follow-up to a nonexistent project new-chat thread.
         if (disableQueue) {
           toast.error("Wait for the current response to finish");
           return;
         }
-        // queueComposerText clears the draft from its onStarted callback, so a
-        // queue that never starts leaves the text recoverable.
+        // queueComposerText preserves the draft until the queue starts.
         if (canQueueCurrentPrompt) {
           queueComposerText(waitForCurrentRun, behavior);
           return;
         }
-        // A long paste lives in an attachment, so queueing the text alone
-        // queues nothing when that is all there is.
+        // a long paste has no separate prompt text to queue.
         if (
           canQueueTextAttachmentsPrompt &&
           queueTextAttachmentsPrompt(waitForCurrentRun, behavior)
         ) {
           return;
         }
-        // Nothing queueable while a run is live: keep it and say why. Sending
-        // would push the attachment into the running thread.
+        // sending here would add the attachment to the active thread.
         if (overlay || hasAttachments || hasPendingAudio) {
           toast.error("Wait for the current response to finish", {
             description:
@@ -4919,8 +4892,7 @@ const Composer: FC<{
         return;
       }
       clearStoredDraft();
-      // Stays synchronous: deferring lets the run state above go stale, and the
-      // send is then refused after the wait toast is already gone.
+      // keep this synchronous so stale run state cannot drop the send after dismissing the toast.
       // eslint-disable-next-line react-hooks/set-state-in-effect -- see above
       sendReservedComposer();
     }
@@ -4952,7 +4924,6 @@ const Composer: FC<{
     hasPendingAudio,
   ]);
 
-  // Drop any queued send + toast on unmount (e.g. thread switch).
   useEffect(
     () => () => {
       pendingSendRef.current = false;
@@ -5237,7 +5208,7 @@ const Composer: FC<{
         livePreStreamRunActive
       ) {
         event.preventDefault();
-        // Project new-chat composer: never queue, just ask the user to wait.
+        // the project new-chat composer has no thread to bind a queue to.
         if (disableQueue) {
           toast.error("Wait for the current response to finish");
           return;
@@ -5385,10 +5356,9 @@ const Composer: FC<{
         threadIsRunning || aui.thread().getState().isRunning,
       onAborted?: () => void,
     ) => {
-      // Saved-prompt Run-list calls this directly, so honour disableQueue here
-      // too: queuing from the project new-chat composer misbinds the thread.
+      // saved-prompt calls bypass the button, so project new-chat must still refuse queues.
       if (disableQueue) return false;
-      // false here only means an identical start is already pending and will run: not a refusal.
+      // false means an identical start is pending, not refused.
       startHydratedPromptQueue(items, waitForCurrentRun, undefined, onAborted);
       return true;
     },
@@ -5543,8 +5513,7 @@ const Composer: FC<{
                 hasPendingAttachments
               }
               dictationDisabled={dictationEntryDisabled}
-              // disableQueue (project new-chat composer) also blocks the queue
-              // button, so a running thread shows Stop instead of Queue.
+              // disableQueue makes running threads show Stop instead of Queue.
               queueDisabled={
                 disableQueue ||
                 !(
@@ -5554,8 +5523,7 @@ const Composer: FC<{
                 )
               }
               onQueueClick={() => formRef.current?.requestSubmit()}
-              // ComposerPrimitive.Send handles clicks itself rather than
-              // submitting the form, so run the complete queue/capacity path.
+              // ComposerPrimitive.Send skips form submit, so run the full queue and capacity path.
               onSendClick={handleSubmit}
               onStopClick={stopQueue}
               onResumeClick={resumeQueue}

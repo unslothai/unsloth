@@ -21,7 +21,7 @@ import {
   userStopTargetCancelMode,
 } from "../src/features/chat/utils/prompt-queue-user-stop.ts";
 
-// Run the production queue engine with controlled stores and transport.
+// runs the production queue engine with controlled stores and transport.
 const source = ts.createSourceFile(
   "thread.tsx",
   readSrc("components/assistant-ui/thread.tsx"),

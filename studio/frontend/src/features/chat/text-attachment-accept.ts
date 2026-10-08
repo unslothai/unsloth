@@ -1319,22 +1319,21 @@ export async function isBinaryOfficeTemplate(file: File): Promise<boolean> {
   );
 }
 
-/** Decode editor text, including the BOM emitted by Windows Registry Editor. */
+/** decodes editor text, including the BOM from Windows Registry Editor. */
 export async function readTextAttachment(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   return decodeTextAttachmentBytes(bytes, file.name);
 }
 
-// Dropped with the File itself, so a removed attachment retains nothing.
+// the cache entry is collected with its File, so removed attachments retain no data.
 const decodedOnce = new WeakMap<File, string>();
 
-/** Already decoded by the attachment adapter; queueing must not start another read. */
+/** returns adapter-decoded text without starting another read. */
 export function cachedTextAttachment(file: File): string | undefined {
   return decodedOnce.get(file);
 }
 
-/** Decode once per file. The composer decodes while attaching, to report a bad
- *  encoding there, and sending the same file must not read all of it again. */
+/** caches text decoded during attachment validation so sending does not reread the file. */
 export async function readTextAttachmentOnce(file: File): Promise<string> {
   const cached = decodedOnce.get(file);
   if (cached !== undefined) {
@@ -1345,7 +1344,7 @@ export async function readTextAttachmentOnce(file: File): Promise<string> {
   return text;
 }
 
-// MIME is unreliable for source files, so match by extension too.
+// source file MIME types are unreliable, so extensions must also match.
 export const TEXT_ATTACHMENT_ACCEPT = [
   "text/plain,text/markdown,text/csv,text/tab-separated-values,text/xml,text/json,text/css",
   "text/vtt,application/x-subrip,text/x-log,text/calendar,text/vcard,message/rfc822",

@@ -143,7 +143,7 @@ export function PromptQueueList({
     const id = editingId;
     setEditingId(null);
     setDraft("");
-    // The editor replaces its row controls. Restore focus once they return.
+    // restore focus after the editor's row controls return.
     requestAnimationFrame(() => {
       const row = Array.from(
         listRef.current?.querySelectorAll<HTMLElement>(
@@ -165,8 +165,7 @@ export function PromptQueueList({
   }
 
   return (
-    // Browsers paint the scrollbar outside the scroller's own radius, so the
-    // rounding and the clip live on this frame instead.
+    // browsers paint scrollbars outside scroller radii, so this frame owns rounding and clipping.
     <div
       data-queue-frame=""
       className="relative z-0 mx-3 mb-[calc(-8px*var(--ui-space-scale,1))] overflow-hidden rounded-t-[20px] border border-border/60 bg-background sm:mx-5 dark:bg-[color-mix(in_srgb,var(--card)_50%,var(--background))]"

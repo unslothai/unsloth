@@ -16,7 +16,7 @@ export type QueuedPrompt = {
   attachments?: CompleteAttachment[];
 };
 
-/** Shared by normal sends and the queue so filenames, encoding and paste markers agree. */
+/** keeps normal sends and queues aligned on filenames, encoding, and paste markers. */
 export function completeTextAttachment(
   attachment: PendingAttachment,
   text: string,
@@ -42,8 +42,7 @@ export function completeTextAttachment(
   };
 }
 
-/** Require both successful adapter validation and decoded text. Extension alone cannot
- * authorize a pending, failed, binary, or differently handled document. */
+/** requires a validated decode because extensions can also match pending, failed, or binary files. */
 export function canQueueTextAttachment(attachment: Attachment): boolean {
   return (
     attachment.type === "document" &&
@@ -54,8 +53,7 @@ export function canQueueTextAttachment(attachment: Attachment): boolean {
   );
 }
 
-/** Snapshot prepared contents without retaining File objects or awaiting a read that
- * could let a later submit overtake this one. Reject mixed unsupported attachments. */
+/** snapshots decoded content without File objects or reads that later submits could overtake. */
 export function snapshotQueuedTextAttachments(
   attachments: readonly Attachment[],
 ): CompleteAttachment[] | null {

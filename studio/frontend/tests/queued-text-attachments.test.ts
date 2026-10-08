@@ -131,7 +131,7 @@ test("mixed uploads and pastes preserve file order and paste metadata", async ()
 test("editing, reordering and removing prompts keeps each file with its own message", async () => {
   const source = await ready();
   const attachments = snapshotQueuedTextAttachments([source])!;
-  // Removing or mutating the original composer attachment cannot change the queued snapshot.
+  // later composer attachment changes must not alter the queued snapshot.
   source.name = "changed.txt";
   source.content = [{ type: "text", text: "changed" }];
   const first = { id: "first", prompt: "original", attachments };

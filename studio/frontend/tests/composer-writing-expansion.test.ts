@@ -12,7 +12,7 @@ import { readSrcAsync } from "./helpers/kit.ts";
 test("expansion is reset wherever the composer is emptied, not only on send", async () => {
   const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
 
-  // handleSubmit returns before send() on three queueing paths that also clear.
+  // handleSubmit returns before send() on three queue paths that also clear.
   const at = thread.indexOf("const armJustSent = useCallback(");
   assert.notEqual(at, -1, "armJustSent should still be the shared clear hook");
   const body = thread.slice(at, thread.indexOf("\n  }, [", at));

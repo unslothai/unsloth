@@ -214,7 +214,7 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
     };
     const release = createCallback(releaseCallback, deps);
     release();
-    release(); // An old render cannot release a cancelled/consumed send twice.
+    release(); // stale renders cannot release a consumed or cancelled send twice.
     assert.deepEqual(
       calls,
       active === "idle" ? ["clear", "send"] : [[active !== "queue", "steer"]],
