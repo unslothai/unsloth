@@ -7,6 +7,7 @@ from __future__ import annotations
 import errno
 import functools
 import hashlib
+import ntpath
 import os
 import platform
 import re
@@ -242,15 +243,16 @@ class _ScanBudgetExceeded(Exception):
 
 def _extended_path(path: str) -> str:
     """The \\\\?\\ spelling of a Windows path, which reaches a file named nul, con or com1 instead of the device."""
-    import ntpath
-
     if path.startswith(("\\\\?\\", "\\\\.\\")):
         return path
     # normpath is string-only; abspath would hand back \\.\nul for C:\work\nul, the device again.
     absolute = ntpath.normpath(path)
     drive, rest = ntpath.splitdrive(absolute)
     if not drive or not rest.startswith("\\"):
-        absolute = ntpath.normpath(ntpath.join(os.getcwd(), absolute))
+        # "." is never a reserved name, so abspath is safe for the anchor: the cwd, or C:'s own for C:work.
+        absolute = ntpath.normpath(ntpath.join(ntpath.abspath(drive + "."), rest))
+    if absolute.startswith(("\\\\?\\", "\\\\.\\")):
+        return absolute
     if absolute.startswith("\\\\"):
         return "\\\\?\\UNC\\" + absolute[2:]
     return "\\\\?\\" + absolute
@@ -286,6 +288,15 @@ def _host_channel_hazard(
     witness: "list[tuple] | None" = None,
 ) -> str | None:
     """Return a host-access hazard under *root*, or None."""
+    # One namespace for listing and stat, so a directory named nul is walked as the one stat judged.
+    top = _entry_path(root)
+    hazard = _walk_for_host_channels(top, max_entries, seconds, witness)
+    return hazard if hazard is None or top == root else hazard.replace(top, root)
+
+
+def _walk_for_host_channels(
+    root: str, max_entries: int, seconds: float, witness: "list[tuple] | None"
+) -> str | None:
     deadline = time.monotonic() + seconds
     entries = 0
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
@@ -308,7 +319,7 @@ def _host_channel_hazard(
                 )
             path = os.path.join(base, name)
             try:
-                info = os.lstat(_entry_path(path))
+                info = os.lstat(path)
             except OSError:
                 return f"changed during its safety scan: {path}"
             # Windows only: MXC grants the workdir by path, so a junction or symlink inside it widens the grant.

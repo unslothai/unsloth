@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -20,13 +22,16 @@ _EXTENDED = "\\\\?\\"
 
 def _simulate_windows_stat(monkeypatch):
     """A plain Win32 stat of ...\\nul answers for the NUL device; the \\\\?\\ spelling reaches the file."""
-    real_lstat, real_stat = os.lstat, os.stat
+    real_lstat, real_stat, real_scandir = os.lstat, os.stat, os.scandir
+
+    def posix(path):
+        return path[len(_EXTENDED) :].replace("\\", "/")
 
     def windows(real):
         def lookup(path, *args, **kwargs):
             path = os.fspath(path)
             if path.startswith(_EXTENDED):
-                return real(path[len(_EXTENDED) :].replace("\\", "/"), *args, **kwargs)
+                return real(posix(path), *args, **kwargs)
             stem = os.path.basename(path).split(".")[0].lower()
             if stem in _RESERVED:
                 return os.stat_result((stat.S_IFCHR | 0o666, 0, 0, 0, 0, 0, 0, 0, 0, 0))
@@ -37,6 +42,11 @@ def _simulate_windows_stat(monkeypatch):
     monkeypatch.setattr(os_sandbox, "_NT_PATHS", True, raising = False)
     monkeypatch.setattr(os, "lstat", windows(real_lstat))
     monkeypatch.setattr(os, "stat", windows(real_stat))
+    monkeypatch.setattr(
+        os,
+        "scandir",
+        lambda path = ".": real_scandir(posix(path) if str(path).startswith(_EXTENDED) else path),
+    )
 
 
 @pytest.mark.parametrize(
@@ -48,6 +58,7 @@ def _simulate_windows_stat(monkeypatch):
         ("\\\\server\\share\\work\\nul", "\\\\?\\UNC\\server\\share\\work\\nul"),
         ("\\\\?\\C:\\Users\\a\\work\\nul", "\\\\?\\C:\\Users\\a\\work\\nul"),
         ("\\\\?\\UNC\\server\\share\\nul", "\\\\?\\UNC\\server\\share\\nul"),
+        ("//?/C:/Users/a/work/nul", "\\\\?\\C:\\Users\\a\\work\\nul"),
     ],
 )
 def test_the_extended_spelling_of_a_workdir_entry(path, expected):
@@ -95,7 +106,11 @@ def test_a_real_device_node_beside_a_nul_file_still_refuses(monkeypatch, tmp_pat
     os.mkfifo(workdir / "planted")
     _simulate_windows_stat(monkeypatch)
 
-    with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "device or IPC node"):
+    # Named as the caller spelled it, not by the \\?\ path the walk used.
+    with pytest.raises(
+        os_sandbox.WorkdirUnsafeError,
+        match = f"device or IPC node: {re.escape(str(workdir / 'planted'))}$",
+    ):
         os_sandbox.scan_workdir_for_host_channels(str(workdir))
 
 
@@ -115,8 +130,11 @@ def test_an_outside_hard_link_named_nul_still_refuses(monkeypatch, tmp_path):
 
 def _remove_extended(path):
     # pytest's own cleanup uses plain paths and cannot remove it.
-    if os.path.lexists(_EXTENDED + path):
-        os.remove(_EXTENDED + path)
+    extended = os_sandbox._extended_path(path)
+    if os.path.isdir(extended):
+        shutil.rmtree(extended)
+    elif os.path.lexists(extended):
+        os.remove(extended)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "needs the Win32 reserved-name mapping")
@@ -124,13 +142,33 @@ def test_a_nul_file_does_not_refuse_the_session_on_windows(tmp_path):
     workdir = tmp_path / "work"
     workdir.mkdir()
     planted = str(workdir / "nul")
-    with open(_EXTENDED + planted, "w") as handle:
+    with open(os_sandbox._extended_path(planted), "w") as handle:
         handle.write("hi\n")
     try:
         # The defect this guards: a plain stat of the file answers for the NUL device.
         assert not stat.S_ISREG(os.lstat(planted).st_mode)
-        assert stat.S_ISREG(os.lstat(_EXTENDED + planted).st_mode)
+        assert stat.S_ISREG(os.lstat(os_sandbox._extended_path(planted)).st_mode)
         assert os_sandbox.scan_workdir_for_host_channels(str(workdir)) == ()
+    finally:
+        _remove_extended(planted)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "needs the Win32 reserved-name mapping")
+def test_a_nul_directory_is_walked_on_windows(tmp_path):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    planted = str(workdir / "nul")
+    os.mkdir(os_sandbox._extended_path(planted))
+    try:
+        with open(os_sandbox._extended_path(os.path.join(planted, "out.txt")), "w") as handle:
+            handle.write("hi\n")
+        assert os_sandbox.scan_workdir_for_host_channels(str(workdir)) == ()
+        os.link(
+            os_sandbox._extended_path(os.path.join(planted, "out.txt")),
+            str(tmp_path / "outside.txt"),
+        )
+        with pytest.raises(os_sandbox.WorkdirUnsafeError, match = "hard-linked from outside"):
+            os_sandbox.scan_workdir_for_host_channels(str(workdir))
     finally:
         _remove_extended(planted)
 
@@ -148,7 +186,7 @@ def test_git_bash_redirect_to_nul_does_not_refuse_the_session(tmp_path):
     try:
         subprocess.run([bash, "-c", "echo hi > nul"], cwd = workdir, check = True, timeout = 60)
         assert stat.S_ISREG(
-            os.lstat(_EXTENDED + planted).st_mode
+            os.lstat(os_sandbox._extended_path(planted)).st_mode
         ), "Git Bash did not leave a nul file"
         assert os_sandbox.scan_workdir_for_host_channels(str(workdir)) == ()
     finally:
