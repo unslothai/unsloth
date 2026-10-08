@@ -13978,7 +13978,10 @@ def execute_tool(
             "arguments to save room, not content, so nothing ran. Write the actual content "
             "out in full."
         )
-    effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    # By type, not `is _TIMEOUT_UNSET`, for the same stale-sentinel reason as `_request_context_tokens`.
+    effective_timeout = (
+        timeout if timeout is None or isinstance(timeout, (int, float)) else _EXEC_TIMEOUT
+    )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -16260,15 +16263,11 @@ def _loaded_context_tokens() -> int | None:
 
 
 def _request_context_tokens() -> int | None:
-    """Return the context window for this request.
+    """The window `execute_tool` scoped to this request, else the process probe.
 
-    ``execute_tool`` stores an ``int`` or ``None``. These values are final and must not use the
-    process probe. Any other value means that the request did not set a window, so use the probe.
-
-    The type check is important. Two live copies of this module have different sentinel objects.
-    An identity check can pass one of those objects to the budget math and raise ``TypeError``
-    (#11384).
-    """
+    An int or None is final (None = asked, unknowable, e.g. an external provider). Anything else is
+    unset, read by type rather than `is _UNSET_CONTEXT_TOKENS`: an `execute_tool` held from before a
+    reload of this module stores the previous generation's sentinel (#11384)."""
     scoped = _REQUEST_CONTEXT_TOKENS.get()
     if scoped is None or isinstance(scoped, int):
         return scoped
