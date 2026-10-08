@@ -14,7 +14,10 @@ import {
   TEXT_ATTACHMENT_EXTENSIONS,
   isTextAttachmentName,
 } from "../chat/text-attachment-accept.ts";
-import { RAG_UPLOAD_ACCEPT } from "../rag/types/rag.ts";
+import {
+  RAG_DOCUMENT_UPLOAD_ACCEPT,
+  RAG_UPLOAD_ACCEPT,
+} from "../rag/types/rag.ts";
 import { MAX_AUDIO_FILES } from "../../lib/audio-utils.ts";
 
 const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) =>
@@ -35,6 +38,14 @@ export function isComposerAttachmentName(path: string): boolean {
     isTextDropName(path)
   );
 }
+
+/** Office and Outlook files only chat with files reads; types the composer
+ * has an adapter for stay composer attachments. */
+const OFFICE_DOC_EXTS = RAG_DOCUMENT_UPLOAD_ACCEPT.split(",").filter(
+  (ext) => !isComposerAttachmentName(`file${ext}`),
+);
+
+const DROP_DOC_EXTS = [...DOC_EXTS, ...OFFICE_DOC_EXTS];
 
 function isTextDropName(path: string): boolean {
   const name = nativeFileName(path).toLowerCase();
@@ -71,7 +82,7 @@ const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
 );
 
 /** What the window actually takes, for the rejection toast and the overlay. */
-export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, source and text files, ${TOOL_ONLY_ATTACHMENT_EXTENSIONS} with Code on, ${CHAT_IMAGE_DROP_ACCEPT}, up to ${MAX_AUDIO_FILES} of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
+export const SUPPORTED_DROP_HINT = `Supported files: ${DROP_DOC_EXTS.join(",")}, ${OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS}, ${RTF_ATTACHMENT_EXTENSIONS}, source and text files, ${TOOL_ONLY_ATTACHMENT_EXTENSIONS} with Code on, ${CHAT_IMAGE_DROP_ACCEPT}, up to ${MAX_AUDIO_FILES} of ${CHAT_AUDIO_DROP_ACCEPT}, one of ${CHAT_VIDEO_DROP_ACCEPT}, or a single .gguf model.`;
 
 /** Last path segment of a native path, for display and extension checks. */
 export function nativeFileName(path: string): string {
@@ -111,7 +122,7 @@ export function classifyDropPaths(paths: string[]): NativeDropClass {
   }
   const docs = paths.filter(
     (path) =>
-      DOC_EXTS.some((ext) => hasExt(path, ext)) ||
+      DROP_DOC_EXTS.some((ext) => hasExt(path, ext)) ||
       isComposerAttachmentName(path),
   );
   const images = paths.filter((path) =>

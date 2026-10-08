@@ -81,8 +81,11 @@ def build_pptx(path):
             f"<p:sp><p:txBody>{run('Revenue increased')}</p:txBody></p:sp>"
             "</p:spTree></p:cSld></p:sld>",
             "ppt/slides/_rels/slide1.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="../notesSlides/notesSlide1.xml"/></Relationships>',
-            "ppt/notesSlides/notesSlide1.xml": f"<p:notes {P}><p:cSld><p:spTree><p:sp><p:txBody>"
-            f"{run('1')}{run('Speaker notes zebramarker')}</p:txBody></p:sp></p:spTree></p:cSld></p:notes>",
+            "ppt/notesSlides/notesSlide1.xml": f"<p:notes {P}><p:cSld><p:spTree>"
+            '<p:sp><p:nvSpPr><p:cNvPr id="5" name="Slide Number"/><p:cNvSpPr/><p:nvPr><p:ph type="sldNum" idx="5"/></p:nvPr></p:nvSpPr>'
+            '<p:txBody><a:p><a:fld id="{1}" type="slidenum"><a:t>1</a:t></a:fld></a:p></p:txBody></p:sp>'
+            f"<p:sp><p:txBody>{run('2026')}{run('Speaker notes zebramarker')}</p:txBody></p:sp>"
+            "</p:spTree></p:cSld></p:notes>",
         },
     )
 
@@ -144,11 +147,11 @@ def build_epub(path):
             '<rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>',
             "OEBPS/content.opf": '<package xmlns="http://www.idpf.org/2007/opf"><manifest>'
             '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
-            '<item id="c1" href="text/c1.xhtml" media-type="application/xhtml+xml"/>'
+            '<item id="c1" href="text/Chapter%201.xhtml#start" media-type="application/xhtml+xml"/>'
             '<item id="c2" href="text/c2.xhtml" media-type="application/xhtml+xml"/>'
             '</manifest><spine><itemref idref="nav"/><itemref idref="c2"/><itemref idref="c1"/></spine></package>',
             "OEBPS/nav.xhtml": page("Contents", "navmarker"),
-            "OEBPS/text/c1.xhtml": page("One", "Zebramarker ends the book."),
+            "OEBPS/text/Chapter 1.xhtml": page("One", "Zebramarker ends the book."),
             "OEBPS/text/c2.xhtml": page("Two", "Revenue increased."),
         },
     )
@@ -188,13 +191,19 @@ def build_doc(path, *, encrypted = False):
     struct.pack_into("<H", word, 32, 14)  # csw
     struct.pack_into("<H", word, 62, 22)  # cslw
     ccp = len(compressed) + len(wide) // 2
+    footnote, endnote, text_box = "\x02 Footnote detail\r", "\x02 Endnote source\r", "Boxed text\r"
     struct.pack_into("<i", word, 64 + 3 * 4, ccp)  # ccpText
+    struct.pack_into("<i", word, 64 + 4 * 4, len(footnote))  # ccpFtn
+    struct.pack_into("<i", word, 64 + 8 * 4, len(endnote))  # ccpEdn
+    struct.pack_into("<i", word, 64 + 9 * 4, len(text_box))  # ccpTxbx
     struct.pack_into("<H", word, 152, 93)  # cbRgFcLcb
+    stories = (footnote + endnote + text_box).encode("utf-16-le")
     word[0x1000 : 0x1000 + len(compressed)] = compressed
     word[0x1400 : 0x1400 + len(wide)] = wide
-    cps = [0, len(compressed), ccp]
-    pcds = [(0x2000 | 0x40000000), 0x1400]
-    plc = struct.pack("<3I", *cps) + b"".join(struct.pack("<HIH", 0, fc, 0) for fc in pcds)
+    word[0x1600 : 0x1600 + len(stories)] = stories
+    cps = [0, len(compressed), ccp, ccp + len(stories) // 2]
+    pcds = [(0x2000 | 0x40000000), 0x1400, 0x1600]
+    plc = struct.pack("<4I", *cps) + b"".join(struct.pack("<HIH", 0, fc, 0) for fc in pcds)
     clx = b"\x01" + struct.pack("<H", 2) + b"\0\0" + b"\x02" + struct.pack("<I", len(plc)) + plc
     struct.pack_into("<II", word, 154 + 33 * 8, 0, len(clx))  # fcClx, lcbClx
     path.write_bytes(compound_file({("WordDocument",): bytes(word), ("1Table",): clx}))
@@ -213,13 +222,19 @@ def build_xls(path):
     sst = struct.pack("<II", 2, 2) + struct.pack("<HB", 6, 0) + b"Region"
     sst += struct.pack("<HB", 12, 0) + b"Zebra"
     cont = b"\x01" + "marker€".encode("utf-16-le")
+    xf = lambda fmt: _record(0x00E0, struct.pack("<HH", 0, fmt) + b"\0" * 16)
     globals_ = (
         _record(0x0809, b"\0" * 16)
         + _record(0x0085, b"\0" * 4 + b"\0\0" + short("Revenue"))
         + _record(0x00FC, sst)
         + _record(0x003C, cont)
+        + _record(0x041E, struct.pack("<H", 164) + short("yyyy-mm-dd", 2))
+        + xf(0)
+        + xf(14)
+        + xf(164)
         + _record(0x000A, b"")
     )
+    serial = (dt.date(2026, 3, 31) - dt.date(1899, 12, 30)).days
     rk_int = lambda n: ((n << 2) | 2) & 0xFFFFFFFF
     sheet = (
         _record(0x0809, b"\0" * 16)
@@ -239,6 +254,8 @@ def build_xls(path):
         + _record(0x0006, struct.pack("<HHH", 3, 0, 0) + b"\0" * 6 + b"\xff\xff" + b"\0" * 6)
         + _record(0x0207, short("formula text", 2))
         + _record(0x0205, struct.pack("<HHHBB", 3, 1, 0, 1, 0))
+        + _record(0x0203, struct.pack("<HHHd", 4, 0, 2, serial))
+        + _record(0x027E, struct.pack("<HHHI", 4, 1, 1, rk_int(serial + 1)))
         + _record(0x000A, b"")
     )
     stream = bytearray(globals_ + sheet)
@@ -295,6 +312,26 @@ def build_ppt(path, *, from_slides = False):
             ],
         )
     path.write_bytes(compound_file({("PowerPoint Document",): document}))
+    return path
+
+
+# PidTagRtfCompressed of "{\\rtf1\\ansi\\ansicpg1252\\pard Zebramarker in the RTF body\\par repeat repeat repeat}".
+RTF_COMPRESSED = bytes.fromhex(
+    "49000000520000004c5a4675a3e8a93d03000a007263706731323502320af3205a656272612900c0726b04902"
+    "00b80207444686507f054462006e064c6790aa30970706561054010cb027d1210"
+)
+
+
+def build_ansi_msg(path):
+    """String8 properties in code page 1251 and only a compressed RTF body."""
+    props = b"\0" * 32 + struct.pack("<IIQ", 0x3FFD0003, 0, 1251)
+    streams = {
+        ("__substg1.0_0037001E",): "Привет".encode("cp1251"),
+        ("__substg1.0_0C1A001E",): "Иван".encode("cp1251"),
+        ("__substg1.0_10090102",): RTF_COMPRESSED,
+        ("__properties_version1.0",): props,
+    }
+    path.write_bytes(compound_file(streams))
     return path
 
 
@@ -363,7 +400,7 @@ def test_pptx_reads_slides_in_order_with_tables_and_notes(tmp_path):
     assert [(p.page_number, p.text) for p in pages] == [
         (
             1,
-            "Quarterly review\nRegion | Q1\nNorth | 1200\nRevenue increased\nNotes:\nSpeaker notes zebramarker",
+            "Quarterly review\nRegion | Q1\nNorth | 1200\nRevenue increased\nNotes:\n2026\nSpeaker notes zebramarker",
         )
     ]
 
@@ -407,15 +444,17 @@ def test_rtf_keeps_text_and_drops_control_groups(tmp_path):
     )
 
 
-def test_doc_reads_compressed_and_unicode_pieces(tmp_path):
+def test_doc_reads_compressed_and_unicode_pieces_and_note_stories(tmp_path):
     assert _text(build_doc(tmp_path / "memo.doc")) == (
-        "Quarterly report\nCafé 東京 link Zebramarker | 1200"
+        "Quarterly report\nCafé 東京 link Zebramarker | 1200\n\nBoxed text"
+        "\n\nFootnotes:\nFootnote detail\n\nEndnotes:\nEndnote source"
     )
 
 
-def test_xls_reads_continued_strings_numbers_and_formulas(tmp_path):
+def test_xls_reads_continued_strings_numbers_formulas_and_dates(tmp_path):
     assert _text(build_xls(tmp_path / "book.xls")) == (
         "Sheet: Revenue\nRegion | 1200.5\nZebramarker€ | -7\n3 | 4\nformula text | TRUE"
+        "\n2026-03-31 | 2026-04-01"
     )
 
 
@@ -437,6 +476,74 @@ def test_msg_reads_headers_body_and_attachment_names(tmp_path):
         "From: Ann <ann@example.com>\nTo: Bob\nDate: 2026-10-06 10:00 UTC\nSubject: Q1 numbers\n"
         "Attachments: data.csv\n\nRevenue increased.\nZebramarker in the body."
     )
+
+
+def test_msg_decodes_ansi_properties_and_compressed_rtf_body(tmp_path):
+    assert _text(build_ansi_msg(tmp_path / "ansi.msg")) == (
+        "From: Иван\nSubject: Привет\n\nZebramarker in the RTF body\nrepeat repeat repeat"
+    )
+
+
+def _strict(source, target):
+    """Rewrite a Transitional OOXML package with the Strict namespaces."""
+    pairs = [
+        (
+            b"http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+            b"http://purl.oclc.org/ooxml/spreadsheetml/main",
+        ),
+        (
+            b"http://schemas.openxmlformats.org/presentationml/2006/main",
+            b"http://purl.oclc.org/ooxml/presentationml/main",
+        ),
+        (
+            b"http://schemas.openxmlformats.org/drawingml/2006/main",
+            b"http://purl.oclc.org/ooxml/drawingml/main",
+        ),
+        (
+            b"http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+            b"http://purl.oclc.org/ooxml/officeDocument/relationships",
+        ),
+    ]
+    with zipfile.ZipFile(source) as z:
+        members = {name: z.read(name) for name in z.namelist()}
+    for name, data in members.items():
+        for old, new in pairs:
+            data = data.replace(old, new)
+        members[name] = data
+    return _zip(target, members)
+
+
+@pytest.mark.parametrize("builder, extension", [(build_xlsx, ".xlsx"), (build_pptx, ".pptx")])
+def test_strict_ooxml_reads_like_transitional(tmp_path, builder, extension):
+    transitional = builder(tmp_path / f"transitional{extension}")
+    strict = _strict(transitional, tmp_path / f"strict{extension}")
+    with zipfile.ZipFile(strict) as z:
+        assert all(b"2006/main" not in z.read(name) for name in z.namelist())
+    assert _text(strict) == _text(transitional) != ""
+
+
+def test_odt_skips_tracked_deletions_and_reads_nested_tables_once(tmp_path):
+    path = _odf(
+        tmp_path / "changes.odt",
+        "<office:text><text:tracked-changes><text:changed-region>"
+        "<text:deletion><text:p>deletedmarker</text:p></text:deletion>"
+        "</text:changed-region></text:tracked-changes>"
+        '<text:p>See <text:bookmark-ref text:ref-name="b">Chapter 2</text:bookmark-ref>.</text:p>'
+        "<table:table><table:table-header-rows><table:table-row>"
+        "<table:table-cell><text:p>Head</text:p></table:table-cell>"
+        "</table:table-row></table:table-header-rows><table:table-row><table:table-cell>"
+        "<table:table><table:table-row><table:table-cell><text:p>inner</text:p></table:table-cell>"
+        "<table:table-cell><text:p>cell</text:p></table:table-cell></table:table-row></table:table>"
+        "</table:table-cell><table:table-cell><text:p>outer</text:p></table:table-cell>"
+        "</table:table-row></table:table></office:text>",
+    )
+    assert _text(path) == "See Chapter 2.\nHead\ninner | cell | outer"
+
+
+def test_rtf_decodes_literal_bytes_in_the_document_code_page(tmp_path):
+    path = tmp_path / "ru.rtf"
+    path.write_bytes(b"{\\rtf1\\ansi\\ansicpg1251 " + "Привет".encode("cp1251") + b" \\'80}")
+    assert _text(path) == "Привет Ђ"
 
 
 def test_compound_file_reads_mini_and_regular_streams():
@@ -468,6 +575,25 @@ def test_damaged_archive_is_refused(tmp_path, extension):
     path = tmp_path / f"broken{extension}"
     path.write_bytes(b"PK\x03\x04 truncated")
     with pytest.raises(ValueError):
+        parsers.parse(str(path))
+
+
+def test_rtf_negative_binary_length_is_ignored(tmp_path):
+    path = tmp_path / "bin.rtf"
+    path.write_bytes(rb"{\rtf1\ansi before \bin-999999999 after}")
+    assert _text(path) == "before after"
+
+
+def test_ods_refuses_runaway_repeats(tmp_path):
+    cell = "x" * 100_000
+    path = _odf(
+        tmp_path / "repeats.ods",
+        '<office:spreadsheet><table:table table:name="S">'
+        '<table:table-row table:number-rows-repeated="1000">'
+        f'<table:table-cell table:number-columns-repeated="1000"><text:p>{cell}</text:p></table:table-cell>'
+        "</table:table-row></table:table></office:spreadsheet>",
+    )
+    with pytest.raises(ValueError, match = "repeats too much"):
         parsers.parse(str(path))
 
 

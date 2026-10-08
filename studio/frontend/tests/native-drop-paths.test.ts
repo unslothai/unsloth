@@ -220,6 +220,26 @@ for (const [format, extensions, adapter, rustList] of [
   });
 }
 
+test("Office and Outlook drops index in chat with files and match the native allowlist", () => {
+  const office = [".doc", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".msg"];
+  for (const extension of office) {
+    const path = `/docs/Report${extension.toUpperCase()}`;
+    assert.equal(classifyDropPaths([path]).kind, "docs", path);
+    assert.ok(!isComposerAttachmentName(path), path);
+    assert.ok(SUPPORTED_DROP_HINT.includes(extension));
+  }
+  // Types with a composer adapter keep going to the composer.
+  for (const path of ["/docs/a.odt", "/docs/a.rtf", "/docs/a.epub", "/docs/a.eml"]) {
+    assert.ok(isComposerAttachmentName(path), path);
+  }
+  const rust = [
+    ...(readText("../../src-tauri/src/native_path_policy.rs")
+      .match(/OFFICE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ].map((match) => `.${match[1]}`);
+  assert.deepEqual(rust.sort(), [...office].sort());
+});
+
 test("images route to chat vision attachments, one or many", () => {
   const dropped = classifyDropPaths([
     "/photos/cat.PNG",

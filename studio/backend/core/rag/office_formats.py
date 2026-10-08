@@ -9,6 +9,7 @@ per sheet / chapter (unnumbered). Table rows are joined with " | ", as for .docx
 
 from __future__ import annotations
 
+import codecs
 import datetime as dt
 import email
 import email.policy
@@ -17,6 +18,7 @@ import posixpath
 import re
 import struct
 import zipfile
+from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
 from .cfb import CompoundFile, CompoundFileError
@@ -28,6 +30,8 @@ _MAX_MEMBER_BYTES = 128 * 1024 * 1024
 _MAX_TOTAL_BYTES = 512 * 1024 * 1024
 _MAX_COLUMNS = 1024
 _MAX_REPEAT = 1024
+# Text a document may add by repeating cells and rows.
+_MAX_REPEATED_CHARS = 32 * 1024 * 1024
 
 _NS = {
     "s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
@@ -43,6 +47,16 @@ _NS = {
     "container": "urn:oasis:names:tc:opendocument:xmlns:container",
     "opf": "http://www.idpf.org/2007/opf",
 }
+# ISO Strict OOXML names the same schemas with other URIs.
+_STRICT_NS = tuple(
+    (f"http://purl.oclc.org/ooxml/{strict}".encode(), _NS[prefix].encode())
+    for strict, prefix in (
+        ("spreadsheetml/main", "s"),
+        ("presentationml/main", "p"),
+        ("drawingml/main", "a"),
+        ("officeDocument/relationships", "r"),
+    )
+)
 
 
 def _q(prefix: str, tag: str) -> str:
@@ -101,6 +115,9 @@ class _Archive:
         # Office XML never declares entities; refusing them rules out expansion attacks.
         if b"<!ENTITY" in data:
             raise ValueError("XML entity declarations are not supported")
+        if b"purl.oclc.org/ooxml/" in data:
+            for strict, transitional in _STRICT_NS:
+                data = data.replace(strict, transitional)
         try:
             return ET.fromstring(data)
         except ET.ParseError as exc:
@@ -268,6 +285,20 @@ def _drawing_paragraph(p: ET.Element) -> str:
     return "".join(parts)
 
 
+def _without_slide_number(root: ET.Element) -> ET.Element:
+    """Drops the notes page's slide number placeholder."""
+    ph_path = f"{_q('p', 'nvSpPr')}/{_q('p', 'nvPr')}/{_q('p', 'ph')}"
+    doomed = [
+        (parent, sp)
+        for parent in root.iter()
+        for sp in parent.findall(_q("p", "sp"))
+        if (ph := sp.find(ph_path)) is not None and ph.get("type") == "sldNum"
+    ]
+    for parent, sp in doomed:
+        parent.remove(sp)
+    return root
+
+
 def pptx(path: str) -> list[Section]:
     with _Archive(path) as zf:
         presentation_part = "ppt/presentation.xml"
@@ -287,8 +318,7 @@ def pptx(path: str) -> list[Section]:
                 None,
             )
             if notes:
-                # Skip the slide image placeholder's number field.
-                note_lines = [l for l in _drawing_lines(zf.xml(notes)) if not l.strip().isdigit()]
+                note_lines = _drawing_lines(_without_slide_number(zf.xml(notes)))
                 if note_lines:
                     lines += ["Notes:"] + note_lines
             if lines:
@@ -299,7 +329,19 @@ def pptx(path: str) -> list[Section]:
 # ---------------------------------------------------------------- OpenDocument
 
 
-def _odf_inline(node: ET.Element) -> str:
+class _Budget:
+    """Caps the text repeated cells and rows add, which their source size does not bound."""
+
+    def __init__(self):
+        self.left = _MAX_REPEATED_CHARS
+
+    def spend(self, chars: int) -> None:
+        self.left -= chars
+        if self.left < 0:
+            raise ValueError("document repeats too much content")
+
+
+def _odf_inline(node: ET.Element, budget: _Budget) -> str:
     parts = [node.text or ""]
     for child in node:
         tag = child.tag
@@ -312,48 +354,74 @@ def _odf_inline(node: ET.Element) -> str:
         elif tag == _q("text", "note"):
             body = child.find(_q("text", "note-body"))
             if body is not None:
-                parts.append(" [" + " ".join(_odf_blocks(body)) + "]")
-        elif tag in (_q("office", "annotation"), _q("text", "bookmark-ref")):
+                parts.append(" [" + " ".join(_odf_blocks(body, budget)) + "]")
+        elif tag == _q("office", "annotation"):
             pass
         else:
-            parts.append(_odf_inline(child))
+            parts.append(_odf_inline(child, budget))
         parts.append(child.tail or "")
     return "".join(parts)
 
 
-def _odf_table(table: ET.Element) -> list[str]:
+_ODF_ROW_GROUPS = frozenset(
+    _q("table", tag) for tag in ("table-header-rows", "table-rows", "table-row-group")
+)
+
+
+def _odf_rows(node: ET.Element):
+    """Rows of this table, through row groups but not into nested tables."""
+    for child in node:
+        if child.tag == _q("table", "table-row"):
+            yield child
+        elif child.tag in _ODF_ROW_GROUPS:
+            yield from _odf_rows(child)
+
+
+def _odf_repeat(node: ET.Element, attribute: str, text: str, room: int, budget: _Budget) -> int:
+    repeat = int(node.get(_q("table", attribute), "1") or 1)
+    # Trailing empty cells repeat to the sheet edge; only content is expanded.
+    count = max(min(repeat, _MAX_REPEAT, room) if text else min(repeat, 1), 0)
+    budget.spend(len(text) * max(count - 1, 0))
+    return count
+
+
+def _odf_table(table: ET.Element, budget: _Budget) -> list[str]:
     rows = []
-    for row in table.iter(_q("table", "table-row")):
+    for row in _odf_rows(table):
         cells = []
         for cell in row:
             if cell.tag not in (_q("table", "table-cell"), _q("table", "covered-table-cell")):
                 continue
-            text = " ".join(_odf_blocks(cell))
-            repeat = int(cell.get(_q("table", "number-columns-repeated"), "1") or 1)
-            # Trailing empty cells repeat to the sheet edge; only content is expanded.
-            cells += [text] * (min(repeat, _MAX_REPEAT) if text else min(repeat, 1))
+            text = " ".join(_odf_blocks(cell, budget))
+            room = _MAX_COLUMNS - len(cells)
+            cells += [text] * _odf_repeat(cell, "number-columns-repeated", text, room, budget)
             if len(cells) >= _MAX_COLUMNS:
                 break
-        line = _row(cells[:_MAX_COLUMNS])
+        line = _row(cells)
         if line:
-            repeat = int(row.get(_q("table", "number-rows-repeated"), "1") or 1)
-            rows += [line] * min(repeat, _MAX_REPEAT)
+            rows += [line] * _odf_repeat(row, "number-rows-repeated", line, _MAX_REPEAT, budget)
     return rows
 
 
-def _odf_blocks(node: ET.Element) -> list[str]:
+# Annotations and notes are read separately; tracked changes hold deleted text.
+_ODF_SKIP = frozenset(
+    (_q("office", "annotation"), _q("presentation", "notes"), _q("text", "tracked-changes"))
+)
+
+
+def _odf_blocks(node: ET.Element, budget: _Budget) -> list[str]:
     lines: list[str] = []
     for child in node:
         if child.tag in (_q("text", "p"), _q("text", "h")):
-            text = _odf_inline(child)
+            text = _odf_inline(child, budget)
             if text.strip():
                 lines.append(text)
         elif child.tag == _q("table", "table"):
-            lines += _odf_table(child)
-        elif child.tag in (_q("office", "annotation"), _q("presentation", "notes")):
+            lines += _odf_table(child, budget)
+        elif child.tag in _ODF_SKIP:
             continue
         else:
-            lines += _odf_blocks(child)
+            lines += _odf_blocks(child, budget)
     return lines
 
 
@@ -366,26 +434,27 @@ def opendocument(path: str) -> list[Section]:
         if body is None:
             return []
         sections: list[Section] = []
+        budget = _Budget()
         sheet_doc = body.find(_q("office", "spreadsheet"))
         slides_doc = body.find(_q("office", "presentation"))
         if sheet_doc is not None:
             for table in sheet_doc.findall(_q("table", "table")):
-                rows = _odf_table(table)
+                rows = _odf_table(table, budget)
                 if rows:
                     name = table.get(_q("table", "name"), "")
                     sections.append((f"Sheet: {name}\n" + "\n".join(rows), None))
         elif slides_doc is not None:
             for number, page in enumerate(slides_doc.findall(_q("draw", "page")), 1):
-                lines = _odf_blocks(page)
+                lines = _odf_blocks(page, budget)
                 notes = page.find(_q("presentation", "notes"))
                 if notes is not None:
-                    note_lines = _odf_blocks(notes)
+                    note_lines = _odf_blocks(notes, budget)
                     if note_lines:
                         lines += ["Notes:"] + note_lines
                 if lines:
                     sections.append(("\n".join(lines), number))
         else:
-            lines = _odf_blocks(body)
+            lines = _odf_blocks(body, budget)
             if lines:
                 sections.append(("\n".join(lines), None))
         return sections
@@ -413,7 +482,8 @@ def epub(path: str, html_text) -> list[Section]:
             # The navigation document only repeats the chapter titles.
             if "nav" in (item.get("properties") or "").split():
                 continue
-            member = posixpath.normpath(posixpath.join(folder, item.get("href", "")))
+            href = unquote(item.get("href", "").split("#", 1)[0])
+            member = posixpath.normpath(posixpath.join(folder, href))
             if not zf.has(member):
                 continue
             text = html_text(zf.read(member)).strip()
@@ -545,7 +615,8 @@ def _rtf_text(data: str) -> str:
                 )
         elif word is not None:
             if word == "bin":
-                pos += int(arg or 0)
+                # Raw bytes follow; a negative length would rewind and loop forever.
+                pos = min(len(data), pos + max(int(arg or 0), 0))
                 continue
             if word == "ansicpg" and arg:
                 codepage = f"cp{arg}"
@@ -572,8 +643,8 @@ def _rtf_text(data: str) -> str:
             if not skip:
                 pending.append(int(hex_byte, 16))
         elif text is not None and not skip:
-            flush()
-            out.append(text)
+            # Literal 8-bit text is in the document code page, like \'hh escapes.
+            pending += text.encode("latin-1")
     flush()
     text = re.sub(r"( \| )+\n", "\n", "".join(out))
     return re.sub(r"[ \t]+\n", "\n", text).strip()
@@ -611,11 +682,14 @@ def doc(path: str) -> list[Section]:
         raise ValueError("file is password protected")
     table = cf.open("1Table" if flags & 0x0200 else "0Table")
 
-    # FibRgLw97.ccpText and FibRgFcLcb97.fcClx/lcbClx, located by the FIB's own counts.
+    # FibRgLw97 story lengths and FibRgFcLcb97.fcClx/lcbClx, located by the FIB's own counts.
     csw = struct.unpack_from("<H", word, 32)[0]
     lw_start = 34 + csw * 2 + 2
-    ccp_text = struct.unpack_from("<i", word, lw_start + 3 * 4)[0]
     cslw = struct.unpack_from("<H", word, 34 + csw * 2)[0]
+    # ccpText, ccpFtn, ccpHdd, ccpMcr, ccpAtn, ccpEdn, ccpTxbx
+    count = max(min(cslw, 10) - 3, 1)
+    ccps = [max(n, 0) for n in struct.unpack_from(f"<{count}i", word, lw_start + 12)]
+    ccps += [0] * (7 - len(ccps))
     fc_start = lw_start + cslw * 4 + 2
     fc_clx, lcb_clx = struct.unpack_from("<II", word, fc_start + 33 * 8)
     clx = table[fc_clx : fc_clx + lcb_clx]
@@ -639,18 +713,29 @@ def doc(path: str) -> list[Section]:
     if pieces is None:
         raise ValueError("Word document has no piece table")
 
-    chars: list[str] = []
-    for start, end, fc in pieces:
-        end = min(end, max(ccp_text, 0))
-        if end <= start:
-            continue
-        count = end - start
-        if fc & 0x40000000:
-            offset = (fc & 0x3FFFFFFF) // 2
-            chars.append(word[offset : offset + count].decode("cp1252", "replace"))
-        else:
-            chars.append(word[fc : fc + 2 * count].decode("utf-16-le", "replace"))
-    return [(_word_text("".join(chars)), None)]
+    def story(first: int, length: int) -> str:
+        chars: list[str] = []
+        for start, end, fc in pieces:
+            lo, hi = max(start, first), min(end, first + length)
+            if hi <= lo:
+                continue
+            if fc & 0x40000000:
+                offset = (fc & 0x3FFFFFFF) // 2 + (lo - start)
+                chars.append(word[offset : offset + hi - lo].decode("cp1252", "replace"))
+            else:
+                offset = fc + 2 * (lo - start)
+                chars.append(word[offset : offset + 2 * (hi - lo)].decode("utf-16-le", "replace"))
+        return _word_text("".join(chars))
+
+    # Stories follow the main text in this order; headers and comments are left out, as for .docx.
+    starts = [sum(ccps[:i]) for i in range(len(ccps))]
+    text, ftn, _hdd, _mcr, _atn, edn, txbx = range(7)
+    parts = [story(0, ccps[text]), story(starts[txbx], ccps[txbx])]
+    for label, kind in (("Footnotes", ftn), ("Endnotes", edn)):
+        notes = story(starts[kind], ccps[kind])
+        if notes:
+            parts.append(f"{label}:\n{notes}")
+    return [("\n\n".join(p for p in parts if p), None)]
 
 
 def _word_text(raw: str) -> str:
@@ -670,6 +755,7 @@ def _word_text(raw: str) -> str:
     # A cell ends in 0x07; a row ends in one more.
     text = "".join(out).replace("\x07\x07", "\n").replace("\x07", " | ")
     text = text.translate({0x0D: "\n", 0x0B: "\n", 0x0C: "\n", 0x1E: "-", 0x1F: None})
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return _clean_control(text).strip()
 
 
@@ -764,6 +850,9 @@ def xls(path: str) -> list[Section]:
     strings: list[str] = []
     sst: list[bytes] | None = None  # SST body and its CONTINUE records
     sst_count = 0
+    formats: dict[int, str] = {}
+    xf_formats: list[int] = []
+    date1904 = False
     for kind, body in _Records(data):
         if sst is not None and kind != 0x003C:
             seg = pos = 0
@@ -779,8 +868,22 @@ def xls(path: str) -> list[Section]:
             sst_count, sst = struct.unpack_from("<I", body, 4)[0], [body[8:]]
         elif kind == 0x003C and sst is not None:
             sst.append(body)
+        elif kind == 0x041E and len(body) >= 5:  # FORMAT
+            formats[struct.unpack_from("<H", body)[0]] = _xls_short_string(body, 2, 2)
+        elif kind == 0x00E0 and len(body) >= 4:  # XF
+            xf_formats.append(struct.unpack_from("<H", body, 2)[0])
+        elif kind == 0x0022 and len(body) >= 2:  # DATEMODE
+            date1904 = struct.unpack_from("<H", body)[0] == 1
         elif kind == 0x000A:  # end of the workbook globals
             break
+    date_xfs = {
+        i
+        for i, fmt in enumerate(xf_formats)
+        if fmt in _BUILTIN_DATE_FORMATS or _is_date_format(formats.get(fmt, ""))
+    }
+
+    def number(value: float, xf: int) -> str:
+        return _serial_date(value, date1904) if xf in date_xfs else _number(value)
 
     sections: list[Section] = []
     for name, offset in sheets:
@@ -806,15 +909,16 @@ def xls(path: str) -> list[Section]:
                 r, c, _xf, i = struct.unpack_from("<HHHI", body)
                 put(r, c, strings[i] if i < len(strings) else "")
             elif kind == 0x0203:  # NUMBER
-                r, c, _xf, v = struct.unpack_from("<HHHd", body)
-                put(r, c, _number(v))
+                r, c, xf, v = struct.unpack_from("<HHHd", body)
+                put(r, c, number(v, xf))
             elif kind == 0x027E:  # RK
-                r, c, _xf, v = struct.unpack_from("<HHHI", body)
-                put(r, c, _number(_rk(v)))
+                r, c, xf, v = struct.unpack_from("<HHHI", body)
+                put(r, c, number(_rk(v), xf))
             elif kind == 0x00BD:  # MULRK
                 r, c = struct.unpack_from("<HH", body)
                 for i in range((len(body) - 6) // 6):
-                    put(r, c + i, _number(_rk(struct.unpack_from("<I", body, 4 + i * 6 + 2)[0])))
+                    xf, v = struct.unpack_from("<HI", body, 4 + i * 6)
+                    put(r, c + i, number(_rk(v), xf))
             elif kind == 0x0204:  # LABEL
                 r, c, _xf = struct.unpack_from("<HHH", body)
                 put(r, c, _xls_short_string(body, 6, 2))
@@ -823,11 +927,11 @@ def xls(path: str) -> list[Section]:
                 if not is_error:
                     put(r, c, "TRUE" if v else "FALSE")
             elif kind == 0x0006 and len(body) >= 14:  # FORMULA, cached result
-                r, c, _xf = struct.unpack_from("<HHH", body)
+                r, c, xf = struct.unpack_from("<HHH", body)
                 result = body[6:14]
                 last_formula = None
                 if result[6:8] != b"\xff\xff":
-                    put(r, c, _number(struct.unpack("<d", result)[0]))
+                    put(r, c, number(struct.unpack("<d", result)[0], xf))
                 elif result[0] == 0:
                     last_formula = (r, c)
                 elif result[0] == 1:
@@ -898,52 +1002,156 @@ def ppt(path: str) -> list[Section]:
 _MSG_HEADERS = (("0C1A", "From"), ("0E04", "To"), ("0E03", "Cc"), ("0037", "Subject"))
 
 
-def _msg_prop(cf: CompoundFile, prefix: tuple[str, ...], prop: str) -> str | None:
-    for kind, codec in (("001F", "utf-16-le"), ("001E", "cp1252")):
+# Windows code pages Python names differently from cpNNN.
+_CODE_PAGES = {
+    1200: "utf-16-le",
+    1201: "utf-16-be",
+    20127: "ascii",
+    20866: "koi8_r",
+    21866: "koi8_u",
+    50220: "iso2022_jp",
+    50221: "iso2022_jp",
+    50222: "iso2022_jp",
+    51932: "euc_jp",
+    51949: "euc_kr",
+    52936: "hz",
+    54936: "gb18030",
+    65000: "utf-7",
+    65001: "utf-8",
+    **{28590 + n: f"iso8859_{n}" for n in range(1, 16)},
+}
+
+
+def _code_page_codec(code_page: int | None) -> str:
+    name = _CODE_PAGES.get(code_page, f"cp{code_page}") if code_page else "cp1252"
+    try:
+        codecs.lookup(name)
+    except LookupError:
+        return "cp1252"
+    return name
+
+
+def _msg_props(cf: CompoundFile) -> dict[int, bytes]:
+    """Fixed-size top-level properties: tag -> 8-byte value."""
+    if not cf.exists("__properties_version1.0"):
+        return {}
+    props = cf.open("__properties_version1.0")
+    return {
+        struct.unpack_from("<I", props, off)[0]: props[off + 8 : off + 16]
+        for off in range(32, len(props) - 15, 16)
+    }
+
+
+def _msg_prop(cf: CompoundFile, prefix: tuple[str, ...], prop: str, codec: str) -> str | None:
+    # String8 ("001E") values are in the message code page.
+    for kind, kind_codec in (("001F", "utf-16-le"), ("001E", codec)):
         name = f"__substg1.0_{prop}{kind}"
         if cf.exists(*prefix, name):
-            return cf.open(*prefix, name).decode(codec, "replace").rstrip("\0")
+            return cf.open(*prefix, name).decode(kind_codec, "replace").rstrip("\0")
     return None
 
 
-def _msg_date(cf: CompoundFile) -> str | None:
-    if not cf.exists("__properties_version1.0"):
-        return None
-    props = cf.open("__properties_version1.0")
-    for off in range(32, len(props) - 15, 16):
-        tag = struct.unpack_from("<I", props, off)[0]
-        if tag >> 16 in (0x0039, 0x0E06) and tag & 0xFFFF == 0x0040:  # submit / delivery time
-            ticks = struct.unpack_from("<Q", props, off + 8)[0]
-            try:
-                moment = dt.datetime(1601, 1, 1) + dt.timedelta(microseconds = ticks // 10)
-            except OverflowError:
-                return None
-            return moment.isoformat(" ", "minutes") + " UTC"
+def _msg_date(props: dict[int, bytes]) -> str | None:
+    for prop in (0x0039, 0x0E06):  # submit / delivery time
+        value = props.get((prop << 16) | 0x0040)
+        if value is None:
+            continue
+        ticks = struct.unpack("<Q", value)[0]
+        try:
+            moment = dt.datetime(1601, 1, 1) + dt.timedelta(microseconds = ticks // 10)
+        except OverflowError:
+            return None
+        return moment.isoformat(" ", "minutes") + " UTC"
     return None
+
+
+# [MS-OXRTFCP] dictionary prefill for compressed RTF.
+_RTF_PREFILL = (
+    b"{\\rtf1\\ansi\\mac\\deff0\\deftab720{\\fonttbl;}{\\f0\\fnil \\froman \\fswiss "
+    b"\\fmodern \\fscript \\fdecor MS Sans SerifSymbolArialTimes New RomanCourier"
+    b"{\\colortbl\\red0\\green0\\blue0\r\n\\par \\pard\\plain\\f0\\fs20\\b\\i\\u\\tab\\tx"
+)
+
+
+def _decompress_rtf(data: bytes) -> bytes:
+    """PidTagRtfCompressed ([MS-OXRTFCP]) to RTF bytes."""
+    if len(data) < 16:
+        raise ValueError("truncated compressed RTF")
+    comp_size, raw_size, magic = struct.unpack_from("<III", data)
+    if magic == 0x414C454D:  # "MELA": stored uncompressed
+        return data[16 : 16 + raw_size]
+    if magic != 0x75465A4C:  # "LZFu"
+        raise ValueError("unknown compressed RTF format")
+    window = bytearray(4096)
+    window[: len(_RTF_PREFILL)] = _RTF_PREFILL
+    write = len(_RTF_PREFILL)
+    out = bytearray()
+    pos, end = 16, min(len(data), comp_size + 4)
+    while pos < end:
+        control = data[pos]
+        pos += 1
+        for bit in range(8):
+            if pos >= end:
+                break
+            if control & (1 << bit):
+                if pos + 2 > end:
+                    break
+                ref = (data[pos] << 8) | data[pos + 1]
+                pos += 2
+                offset, length = ref >> 4, (ref & 0xF) + 2
+                if offset == write:  # end marker
+                    return bytes(out)
+                for k in range(length):
+                    byte = window[(offset + k) % 4096]
+                    out.append(byte)
+                    window[write] = byte
+                    write = (write + 1) % 4096
+            else:
+                out.append(data[pos])
+                window[write] = data[pos]
+                write = (write + 1) % 4096
+                pos += 1
+    return bytes(out)
 
 
 def msg(path: str, html_text) -> list[Section]:
     cf = _compound(path)
     if not any(name.lower().startswith("__substg1.0_") for name in cf.listdir()):
         raise ValueError("not an Outlook message")
-    headers = {label: (_msg_prop(cf, (), prop) or "").strip() for prop, label in _MSG_HEADERS}
-    address = (_msg_prop(cf, (), "0C1F") or "").strip()
+    props = _msg_props(cf)
+    # PidTagMessageCodepage, else PidTagInternetCodepage.
+    code_page = next(
+        (
+            struct.unpack_from("<I", props[tag])[0]
+            for tag in (0x3FFD0003, 0x3FDE0003)
+            if tag in props
+        ),
+        None,
+    )
+    codec = _code_page_codec(code_page)
+    headers = {
+        label: (_msg_prop(cf, (), prop, codec) or "").strip() for prop, label in _MSG_HEADERS
+    }
+    address = (_msg_prop(cf, (), "0C1F", codec) or "").strip()
     # Exchange senders carry an X.500 path, not an address.
     if address and not address.startswith("/") and address != headers["From"]:
         headers["From"] = f"{headers['From']} <{address}>".strip()
-    headers["Date"] = _msg_date(cf) or ""
+    headers["Date"] = _msg_date(props) or ""
     lines = [
         f"{label}: {headers[label]}"
         for label in ("From", "To", "Cc", "Date", "Subject")
         if headers[label]
     ]
-    body = _msg_prop(cf, (), "1000")
+    body = _msg_prop(cf, (), "1000", codec)
     if not body and cf.exists("__substg1.0_10130102"):
         body = html_text(cf.open("__substg1.0_10130102"))
+    if not body and cf.exists("__substg1.0_10090102"):
+        rtf_bytes = _decompress_rtf(cf.open("__substg1.0_10090102"))
+        body = _rtf_text(rtf_bytes.decode("latin-1"))
     attachments = []
     for name in cf.listdir():
         if name.lower().startswith("__attach_version1.0_"):
-            label = _msg_prop(cf, (name,), "3707") or _msg_prop(cf, (name,), "3704")
+            label = _msg_prop(cf, (name,), "3707", codec) or _msg_prop(cf, (name,), "3704", codec)
             if label:
                 attachments.append(label)
     if attachments:
