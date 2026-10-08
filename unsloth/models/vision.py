@@ -4581,6 +4581,7 @@ class FastBaseModel:
         tokenizer = None,
         float32_mixed_precision = None,
     ):
+        reject_alora(model)
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         if type(float32_mixed_precision) is bool:

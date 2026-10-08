@@ -77,6 +77,7 @@ __all__ = [
     "validate_loftq_config",
     "validate_init_lora_weights",
     "validate_init_target_parameters",
+    "reject_alora",
     "RESIDUAL_INIT_LORA_WEIGHTS",
     "snapshot_residual_lora_init",
     "lora_relative_to_original_base",
@@ -5954,6 +5955,17 @@ def validate_init_target_parameters(init_lora_weights, target_parameters):
             f"parameters ({target_parameters}).\n"
             "Pass `target_parameters = []` to apply it to the other layers only, or use another init."
         )
+
+
+def reject_alora(model):
+    # Unsloth's LoRA forwards never apply aLoRA's invocation offsets, so the adapter would fire on every token (#2471).
+    for config in (getattr(model, "peft_config", None) or {}).values():
+        if getattr(config, "alora_invocation_tokens", None) is not None:
+            raise NotImplementedError(
+                "Unsloth: Activated LoRA (`alora_invocation_tokens`) is not supported yet. "
+                "Unsloth would apply the adapter to every token, not only after the invocation tokens.\n"
+                "Use plain `transformers` + `peft` for aLoRA, or drop `alora_invocation_tokens` for a normal LoRA."
+            )
 
 
 def validate_init_lora_weights(
