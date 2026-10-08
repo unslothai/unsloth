@@ -60,6 +60,8 @@ test("vLLM does not excuse any other reason a model cannot run in chat", () => {
   }
   for (const extra of [
     { pipelineTag: "text-to-image" },
+    { pipelineTag: "automatic-speech-recognition" },
+    { pipelineTag: "text-to-speech" },
     { tags: ["onnx"] },
     { tags: ["diffusers"] },
     { modelId: "owner/model-exl2" },
