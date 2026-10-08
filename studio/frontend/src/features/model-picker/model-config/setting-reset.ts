@@ -27,6 +27,10 @@ const SETTING_RESETS = {
     isDefault: (c) => c.mlxKvQuant == null,
     patch: { mlxKvQuant: null },
   },
+  mlxInt8Prefill: {
+    isDefault: (c) => !c.mlxInt8Prefill,
+    patch: { mlxInt8Prefill: false },
+  },
   // The draft depth and draft cache only exist under a strategy, so they go with it.
   speculative: {
     // The Auto option and a loaded model's status both write "auto", which reads as the default.

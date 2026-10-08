@@ -27,6 +27,7 @@ const CHANGED: [Setting, Partial<Config>][] = [
   ["contextPin", { maxSeqLength: 8192 }],
   ["kvCacheDtype", { kvCacheDtype: "q8_0" }],
   ["mlxKvQuant", { mlxKvQuant: "8" as Config["mlxKvQuant"] }],
+  ["mlxInt8Prefill", { mlxInt8Prefill: true }],
   ["speculative", { speculativeType: "mtp", specDraftNMax: 3 }],
   ["specDraftNMax", { specDraftNMax: 3 }],
   ["specDraftCacheDtype", { specDraftCacheDtype: "q8_0" }],

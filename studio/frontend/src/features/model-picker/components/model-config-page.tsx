@@ -1267,6 +1267,12 @@ function MlxAdvancedSettings({
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Int8 Prefill</span>
+            <SettingResetButton
+              label="Int8 Prefill"
+              setting="mlxInt8Prefill"
+              config={config}
+              update={update}
+            />
             <span className="shrink-0 rounded-md bg-[rgb(0_0_0_/_calc(0.04*var(--contrast-wash-gain,1)))] px-1.5 py-0.5 text-ui-10 font-medium uppercase tracking-wide text-muted-foreground dark:bg-muted">
               Exp
             </span>
