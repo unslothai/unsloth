@@ -1286,8 +1286,7 @@ export function AgentsTab() {
         data-settings-label={t("settings.agents.intro")}
         className="text-sm text-muted-foreground leading-relaxed"
       >
-        {/* The chip is the docs entry point, so no separate link is needed.
-            No aria-label: it would replace the visible "unsloth start" as the
+        {/* No aria-label: it would replace the visible "unsloth start" as the
             accessible name, leaving voice control unable to target it. */}
         <a
           href={DOCS_URL}
@@ -1298,7 +1297,16 @@ export function AgentsTab() {
         >
           unsloth start
         </a>{" "}
-        {t("settings.agents.intro")}
+        {t("settings.agents.intro")}{" "}
+        <a
+          href={DOCS_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
+        >
+          {t("settings.agents.readDocs")}
+        </a>
+        .
       </p>
 
       {/* Shared track + pill selector. The legend is sr-only: the two shell
