@@ -103,6 +103,7 @@ def test_deepseek_v4_snapshot_path_keeps_high():
     flags = detect_reasoning_flags(DEEPSEEK_V4_TEMPLATE, path)
     assert flags["reasoning_effort_levels"] == ["high", "max"]
 
+
 def test_glm_style_two_level_template_unchanged():
     """A template that already names a sub-'max' tier is left as-is."""
     from core.inference.llama_cpp import detect_reasoning_flags

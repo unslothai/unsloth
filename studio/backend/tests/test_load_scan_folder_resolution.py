@@ -124,7 +124,6 @@ def test_native_path_lease_keeps_the_requested_id(monkeypatch):
     assert inf._as_local_scan_folder_request(original, True) is original
 
 
-
 _REPO = "unsloth/Tiny-Probe-GGUF"
 
 
