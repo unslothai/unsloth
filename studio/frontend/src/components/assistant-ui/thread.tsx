@@ -1980,8 +1980,6 @@ export const Thread: FC<{
     return attachThreadFastCopy(viewportEl);
   }, [viewportEl]);
 
-  // Wheeling past messages would toggle each one's hover state, and every toggle re-runs the
-  // thread's selectors; thread-wheel-hover.ts holds hover still until the scroll settles.
   useEffect(() => {
     if (!viewportEl) return;
     return attachWheelHoverSuppression(viewportEl);

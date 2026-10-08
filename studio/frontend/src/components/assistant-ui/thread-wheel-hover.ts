@@ -2,15 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Wheeling a long thread slides messages under a still pointer, and every message boundary that
- * passes fires mouseenter/mouseleave on assistant-ui's MessagePrimitive.Root, which writes
- * `isHovering` to the store and re-runs every selector in the thread (#12025). While a wheel
- * scroll is moving the viewport, those events are stopped in the capture phase; once it settles,
- * one leave/enter pair moves the hover to the message now under the pointer.
- *
- * Not `pointer-events: none`: it pushes Chromium's scroll hit-testing onto the main thread, which
- * made heavy threads far slower. Only wheel-driven scrolls, so follow-to-bottom while streaming
- * keeps action bars responsive; not with a button held, so selection drags keep their events.
+ * Holds message hover still while a wheel scroll moves the thread: every boundary crossed would
+ * write assistant-ui's `isHovering` and re-run each thread selector (#12025); settling moves it once.
+ * Not `pointer-events: none`: that moves Chromium's scroll hit-testing onto the main thread.
+ * Wheel only, without a button held, so follow-to-bottom and selection drags keep their events.
  */
 
 // Chromium keeps animating a smooth wheel scroll for about 200ms after the last wheel event.
@@ -21,7 +16,6 @@ const MESSAGE = "[data-message-id]";
 export function attachWheelHoverSuppression(viewport: HTMLElement): () => void {
   let wheelAt = Number.NEGATIVE_INFINITY;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  // The message root whose mouseenter assistant-ui last received.
   let hovered: Element | null = null;
   const settle = () => {
     timer = undefined;
@@ -43,8 +37,7 @@ export function attachWheelHoverSuppression(viewport: HTMLElement): () => void {
   };
   const onWheel = (event: WheelEvent) => {
     wheelAt = event.buttons ? Number.NEGATIVE_INFINITY : event.timeStamp;
-    // A message mounted under a still pointer takes its hover from `:hover`, with no mouseenter
-    // to record. The wheel lands before the scroll moves anything, so `:hover` is still that one.
+    // Mounting under a still pointer hovers via `:hover`, no mouseenter; the wheel precedes the scroll.
     if (timer === undefined) {
       hovered = viewport.querySelector(`${MESSAGE}:hover`);
     }

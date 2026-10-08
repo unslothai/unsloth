@@ -10,7 +10,6 @@ import { readSrc } from "./helpers/kit.ts";
 globalThis.MouseEvent ??=
   class extends Event {} as unknown as typeof MouseEvent;
 
-// A message root that records the boundary events assistant-ui would receive.
 function message(id: string) {
   const got: string[] = [];
   const el = {
@@ -30,7 +29,6 @@ function message(id: string) {
 
 type Message = ReturnType<typeof message>;
 
-// The viewport: captures listeners and replays the capture phase down to a message root.
 const thread = {
   listeners: new Map<string, (event: Event) => void>(),
   messages: [] as Message[],
@@ -108,7 +106,6 @@ test("a wheel scroll holds message hover events, then moves hover once it settle
       [a.got, b.got, c.got],
       [["mouseenter", "mouseleave"], [], ["mouseenter"]],
     );
-    // Settled: the next real boundary events pass through.
     leave(c);
     assert.deepEqual(c.got, ["mouseenter", "mouseleave"]);
     detach();
@@ -142,7 +139,6 @@ test("a message hovered from mount, with no mouseenter, still loses hover after 
       detach,
       messages: [a, b],
     } = attach("a", "b");
-    // assistant-ui reads `:hover` on mount and marks it hovered without any event.
     a.hover = true;
     thread.fire("wheel", { buttons: 0 });
     thread.fire("scroll");
