@@ -1163,6 +1163,9 @@ export const ar = {
     sandbox: {
       title: "وضع الحماية",
       description: "ما إذا كانت استدعاءات أدوات Python والطرفية تعمل داخل وضع حماية نظام التشغيل على هذا الكمبيوتر.",
+      docs: "التوثيق",
+      docsLabel: "فتح توثيق وضع الحماية",
+      readDocs: "قراءة توثيق وضع الحماية",
       toolsSection: "هذا الكمبيوتر",
       refresh: "تحديث",
       python: "Python",

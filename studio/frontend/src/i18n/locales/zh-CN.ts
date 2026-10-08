@@ -1161,6 +1161,9 @@ export const zhCN = {
     sandbox: {
       title: "沙盒",
       description: "Python 和终端工具调用是否在此计算机上的系统沙箱中运行。",
+      docs: "文档",
+      docsLabel: "打开沙盒文档",
+      readDocs: "阅读沙盒文档",
       toolsSection: "此计算机",
       refresh: "刷新",
       python: "Python",

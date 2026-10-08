@@ -1166,6 +1166,9 @@ export const hi = {
     sandbox: {
       title: "सैंडबॉक्स",
       description: "क्या इस कंप्यूटर पर Python और टर्मिनल टूल कॉल OS सैंडबॉक्स के अंदर चलती हैं।",
+      docs: "दस्तावेज़",
+      docsLabel: "सैंडबॉक्स दस्तावेज़ खोलें",
+      readDocs: "सैंडबॉक्स दस्तावेज़ पढ़ें",
       toolsSection: "यह कंप्यूटर",
       refresh: "रीफ़्रेश करें",
       python: "Python",

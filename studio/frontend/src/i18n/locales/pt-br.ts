@@ -1165,6 +1165,9 @@ export const ptBR = {
     sandbox: {
       title: "Sandbox",
       description: "Indica se as chamadas de ferramentas de Python e Terminal rodam dentro de um sandbox do sistema neste computador.",
+      docs: "Documentação",
+      docsLabel: "Abrir a documentação do sandbox",
+      readDocs: "Leia a documentação do sandbox",
       toolsSection: "Este computador",
       refresh: "Atualizar",
       python: "Python",

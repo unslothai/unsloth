@@ -1165,6 +1165,9 @@ export const ja = {
     sandbox: {
       title: "サンドボックス",
       description: "このコンピューターで Python とターミナルのツール呼び出しを OS サンドボックス内で実行するかどうか。",
+      docs: "ドキュメント",
+      docsLabel: "サンドボックスのドキュメントを開く",
+      readDocs: "サンドボックスのドキュメントを読む",
       toolsSection: "このコンピューター",
       refresh: "更新",
       python: "Python",

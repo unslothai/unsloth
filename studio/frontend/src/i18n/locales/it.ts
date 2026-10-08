@@ -1123,6 +1123,9 @@ export const it = {
     sandbox: {
       title: "Sandbox",
       description: "Indica se le chiamate agli strumenti Python e Terminale vengono eseguite in una sandbox del sistema su questo computer.",
+      docs: "Documentazione",
+      docsLabel: "Apri la documentazione della sandbox",
+      readDocs: "Leggi la documentazione della sandbox",
       toolsSection: "Questo computer",
       refresh: "Aggiorna",
       python: "Python",

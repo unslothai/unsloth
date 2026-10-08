@@ -1166,6 +1166,9 @@ export const es = {
     sandbox: {
       title: "Sandbox",
       description: "Si las llamadas a herramientas de Python y Terminal se ejecutan dentro de un sandbox del sistema en este equipo.",
+      docs: "Documentación",
+      docsLabel: "Abrir la documentación del sandbox",
+      readDocs: "Leer la documentación del sandbox",
       toolsSection: "Este equipo",
       refresh: "Actualizar",
       python: "Python",

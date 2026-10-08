@@ -1167,6 +1167,9 @@ export const fr = {
     sandbox: {
       title: "Sandbox",
       description: "Indique si les appels d'outils Python et Terminal s'exécutent dans un bac à sable du système sur cet ordinateur.",
+      docs: "Documentation",
+      docsLabel: "Ouvrir la documentation du sandbox",
+      readDocs: "Lire la documentation du sandbox",
       toolsSection: "Cet ordinateur",
       refresh: "Actualiser",
       python: "Python",

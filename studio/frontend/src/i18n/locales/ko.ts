@@ -1163,6 +1163,9 @@ export const ko = {
     sandbox: {
       title: "샌드박스",
       description: "이 컴퓨터에서 Python 및 터미널 도구 호출을 OS 샌드박스 안에서 실행할지 여부입니다.",
+      docs: "문서",
+      docsLabel: "샌드박스 문서 열기",
+      readDocs: "샌드박스 문서 읽기",
       toolsSection: "이 컴퓨터",
       refresh: "새로 고침",
       python: "Python",

@@ -1246,6 +1246,9 @@ export const en = {
     sandbox: {
       title: "Sandbox",
       description: "Whether Python and Terminal tool calls run inside an OS sandbox on this computer.",
+      docs: "Docs",
+      docsLabel: "Open the sandbox docs",
+      readDocs: "Read the sandbox docs",
       toolsSection: "This computer",
       refresh: "Refresh",
       python: "Python",

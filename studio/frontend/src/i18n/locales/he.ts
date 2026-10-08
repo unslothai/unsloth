@@ -1245,6 +1245,9 @@ export const he = {
       title: "ארגז חול",
       description:
         "האם קריאות לכלי Python ו-Terminal רצות בתוך ארגז חול של מערכת ההפעלה במחשב זה.",
+      docs: "תיעוד",
+      docsLabel: "פתח את תיעוד ארגז החול",
+      readDocs: "קרא את תיעוד ארגז החול",
       toolsSection: "מחשב זה",
       refresh: "רענון",
       python: "Python",
