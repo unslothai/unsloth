@@ -86,6 +86,7 @@ from .diffusion_device import (
     apply_diffusion_device_ordinal,
     diffusion_device_scope,
     diffusion_device_target_from_torch_device,
+    install_frame_pad_fix,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
     resolve_diffusion_device_target,
@@ -7758,6 +7759,7 @@ class DiffusionBackend:
                         install_wide_vae_tiles(getattr(pipe, "vae", None), logger)
                     except Exception as exc:  # noqa: BLE001 - keep the stock tiled decode
                         logger.warning("diffusion.vae_tiling: not installed: %s", exc)
+                    install_frame_pad_fix(pipe, target, logger = logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""
