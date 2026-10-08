@@ -180,7 +180,11 @@ export function forgetRunSettings(
     setModelConfigDraftRemember(draftKey, false, false);
   }
   return () => {
-    if (!savePerModelConfig(id, variant, snapshot)) {
+    // A save since the reset (this tab or another) is newer than the snapshot.
+    if (
+      resolveInitialConfig(id, variant).remembered ||
+      !savePerModelConfig(id, variant, snapshot)
+    ) {
       return false;
     }
     if (mirrored) {

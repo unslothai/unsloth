@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrcAsync,
   registerStoreStubResolver,
 } from "./helpers/kit.ts";
 
@@ -119,6 +120,40 @@ test("forget drops the saved settings and undo restores the same values", async 
   } finally {
     setAuthFetchHandler(null);
   }
+});
+
+test("undo leaves settings saved after the reset alone", async () => {
+  store.clear();
+  const puts = captureOverridePuts();
+  try {
+    savePerModelConfig(REPO, QUANT, tuned());
+    const undo = forgetRunSettings(ggufTarget());
+    assert.ok(undo);
+    savePerModelConfig(REPO, QUANT, {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      kvCacheDtype: "q4_0",
+    });
+    assert.equal(undo(), false);
+    assert.equal(resolveInitialConfig(REPO, QUANT).config.kvCacheDtype, "q4_0");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(puts.length, 1);
+  } finally {
+    setAuthFetchHandler(null);
+  }
+});
+
+test("the reset in Settings > General clears the write stamps too", async () => {
+  const stampsKey = /WRITE_STAMPS_KEY = "([^"]+)"/.exec(
+    await readSrcAsync(
+      "features/model-picker/model-config/per-model-config.ts",
+    ),
+  )?.[1];
+  assert.ok(stampsKey);
+  const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
+  const start = source.indexOf("const PREFS_KEYS");
+  assert.ok(
+    source.slice(start, source.indexOf("];", start)).includes(`"${stampsKey}"`),
+  );
 });
 
 test("forget with nothing saved does nothing", () => {

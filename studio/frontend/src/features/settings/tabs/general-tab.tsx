@@ -131,6 +131,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_preferences",
   "unsloth_model_configs",
   "unsloth_model_configs_migrated",
+  "unsloth_model_config_stamps",
   "unsloth_load_settings",
   "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
