@@ -9120,42 +9120,149 @@ class LlamaCppBackend:
         gpu_indices: List[int],
         usable_mib: dict[int, float],
         shared_gpu_ids: Iterable[int],
-        layered_mib: float,
+        layer_mib: List[float],
         per_device_mib: float = 0.0,
         main_reserve_mib: float = 0.0,
         pipeline_mib: float = 0.0,
     ) -> Optional[List[float]]:
         """``--tensor-split`` shares, positional over ``gpu_indices``, filling discrete
         cards before shared-memory iGPUs, whose free "VRAM" is the host pool and would
-        otherwise win llama.cpp's free-memory split. Each device first keeps its own
-        non-layer bytes (--fit off cannot catch an overfilled one): ``per_device_mib``
-        everywhere, ``main_reserve_mib`` on device 0, ``pipeline_mib`` on the rest.
-        None unless the pin mixes both kinds."""
+        otherwise win llama.cpp's free-memory split.
+
+        llama.cpp hands each device a contiguous run of layers by COUNT
+        (llama-model.cpp get_layer_buft_list), so the shares are layer counts:
+        ``layer_mib`` is each offloaded layer's resident MiB in load order, output
+        last, and a card takes the most layers whose heaviest contiguous run fits its
+        room. Each device first keeps its non-layer bytes (--fit off cannot catch an
+        overfilled one): ``per_device_mib`` everywhere, ``main_reserve_mib`` on device
+        0, ``pipeline_mib`` on the rest. None unless the pin mixes both kinds."""
         shared = set(shared_gpu_ids)
         discrete = [i for i in gpu_indices if i not in shared]
         igpus = [i for i in gpu_indices if i in shared]
-        if not discrete or not igpus or layered_mib <= 0:
+        n = len(layer_mib)
+        if not discrete or not igpus or n == 0:
             return None
         room = {
-            i: max(
-                0.0,
-                usable_mib.get(i, 0.0)
-                - per_device_mib
-                - (main_reserve_mib if n == 0 else pipeline_mib),
-            )
-            for n, i in enumerate(gpu_indices)
+            i: usable_mib.get(i, 0.0)
+            - per_device_mib
+            - (main_reserve_mib if k == 0 else pipeline_mib)
+            for k, i in enumerate(gpu_indices)
         }
-        if sum(room[i] for i in discrete) <= 0:
-            return None
-        left = layered_mib
-        shares: dict[int, float] = {}
+        prefix = [0.0]
+        for mib in layer_mib:
+            prefix.append(prefix[-1] + mib)
+
+        def most_layers(cap: float) -> int:
+            k = 0
+            while k < n and max(prefix[j + k + 1] - prefix[j] for j in range(n - k)) <= cap:
+                k += 1
+            return k
+
+        counts: dict[int, float] = {}
+        left = n
         for i in sorted(discrete, key = lambda d: room[d], reverse = True):
-            shares[i] = min(room[i], left)
-            left -= shares[i]
-        igpu_total = sum(room[i] for i in igpus)
-        for i in igpus:
-            shares[i] = left * room[i] / igpu_total if igpu_total > 0 else left / len(igpus)
-        return [shares[i] for i in gpu_indices]
+            counts[i] = min(most_layers(room[i]), left)
+            left -= counts[i]
+        if left == n:
+            return None
+        igpu_room = {i: max(0.0, room[i]) for i in igpus}
+        igpu_total = sum(igpu_room.values())
+        given = 0
+        for k, i in enumerate(igpus):
+            if k == len(igpus) - 1:
+                counts[i] = left - given
+            else:
+                counts[i] = (
+                    round(left * igpu_room[i] / igpu_total)
+                    if igpu_total > 0
+                    else left // len(igpus)
+                )
+                given += counts[i]
+        shares = [float(counts[i]) for i in gpu_indices]
+        # Each boundary half a layer early, so float rounding in llama.cpp's
+        # upper_bound can never hand a card one layer more than it was sized for.
+        first = next(k for k, v in enumerate(shares) if v > 0)
+        if first != len(shares) - 1:
+            shares[first] -= 0.5
+            shares[-1] += 0.5
+        return shares
+
+    def _mixed_pin_split(
+        self,
+        gpu_indices: List[int],
+        spill_inputs: Optional[dict],
+        shared_gpu_ids: Iterable[int],
+        extra_args: Optional[Iterable[str]],
+        env: Mapping[str, str],
+        *,
+        layer_min_gpus: int,
+        tensor_parallel: bool,
+    ) -> Optional[List[float]]:
+        """The discrete-first split for a full-offload mixed Vulkan pin, or None to
+        leave llama.cpp's own split (the pre-existing behaviour) wherever its inputs
+        cannot be priced or someone else owns the placement."""
+        if (
+            not shared_gpu_ids
+            or spill_inputs is None
+            or tensor_parallel
+            # A downgraded tensor request keeps every device in use.
+            or layer_min_gpus > 1
+            # A GPU-resident separate drafter spreads over every device.
+            or spill_inputs["separate_draft_on_gpu"]
+            or spill_inputs.get("env_mmproj_unsized")
+            # A host-resident cache or projector draws on the pool the iGPU reports.
+            or spill_inputs.get("host_mmproj_bytes")
+            or not _kv_offload_from_args(extra_args, env)
+            or _extra_args_have_tensor_split(extra_args, env)
+            # A surviving device list owns the order the shares follow.
+            or _extra_args_main_device(extra_args) is not None
+            or str(env.get("LLAMA_ARG_DEVICE", "")).strip()
+        ):
+            return None
+        adapter_bytes = _sidecar_adapter_bytes(extra_args)
+        layout = self._tensor_spill_layout(spill_inputs.get("model_path"))
+        if adapter_bytes is None or layout is None or not layout.complete or not layout.blocks:
+            return None
+        n_blocks = len(layout.blocks)
+        kv_total = int(spill_inputs["kv_cache_bytes"] or 0)
+        kv_weights = list(spill_inputs.get("kv_layer_weights") or ())
+        if len(kv_weights) != n_blocks or sum(kv_weights) <= 0:
+            kv_weights = [1] * n_blocks
+        kv_scale = kv_total / sum(kv_weights)
+        # Adapters follow their base tensors' layers (_sidecar_adapter_bytes).
+        per_block_extra = adapter_bytes / n_blocks
+        layer_bytes = [
+            blk.spillable_bytes + blk.resident_bytes + w * kv_scale + per_block_extra
+            for blk, w in zip(layout.blocks, kv_weights)
+        ]
+        # The output layer rides index n_layer (the last device's run); an engaged
+        # draft's trailing blocks land there too.
+        layer_bytes.append(
+            layout.lm_head_bytes
+            + layout.other_resident_bytes
+            + (layout.excluded_block_bytes if spill_inputs.get("mtp_will_engage") else 0)
+        )
+        reserve = (
+            spill_inputs["compute_buffer_flat"]
+            + spill_inputs["soft_overhead"]
+            + spill_inputs["extra_gpu_bytes"]
+            + int(spill_inputs.get("env_mmproj_bytes") or 0)
+        )
+        # Hybrid caches with no per-layer vector sit on 1 layer in N: a run can hold
+        # one attention layer more than its uniform share.
+        per_device = spill_inputs["ctx_compute_per_device"]
+        if 0 < layout.n_attention_layers < n_blocks and len(kv_weights) == n_blocks:
+            per_device += kv_total / layout.n_attention_layers
+        mib = 1024 * 1024
+        return self._discrete_first_split(
+            list(gpu_indices),
+            spill_inputs["gpu_usable_mib"],
+            shared_gpu_ids,
+            [x / mib for x in layer_bytes],
+            per_device / mib,
+            reserve / mib,
+            self._PIPELINE_PER_DEVICE_OVERHEAD_MIB,
+        )
 
     @staticmethod
     def _auto_split_fingerprint(tensor_split: Optional[List[float]]) -> Optional[tuple[float, ...]]:
@@ -27917,44 +28024,14 @@ class LlamaCppBackend:
                     # and offloads ~1 GB at --parallel 4 even though the model fits.
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
-                    _mixed_split = (
-                        self._discrete_first_split(
-                            list(gpu_indices),
-                            _spill_inputs["gpu_usable_mib"],
-                            _shared_gpu_ids,
-                            (
-                                max(0, _spill_inputs["model_size"] - mmproj_size)
-                                + _spill_inputs["kv_cache_bytes"]
-                            )
-                            / (1024 * 1024),
-                            _spill_inputs["ctx_compute_per_device"] / (1024 * 1024),
-                            (
-                                _spill_inputs["compute_buffer_flat"]
-                                + _spill_inputs["soft_overhead"]
-                                + _spill_inputs["extra_gpu_bytes"]
-                                + int(_spill_inputs.get("env_mmproj_bytes") or 0)
-                            )
-                            / (1024 * 1024),
-                            self._PIPELINE_PER_DEVICE_OVERHEAD_MIB,
-                        )
-                        if _shared_gpu_ids
-                        and _spill_inputs is not None
-                        # A GPU-resident separate drafter spreads over every device;
-                        # the split cannot price its per-card share, so leave it off.
-                        and not _spill_inputs["separate_draft_on_gpu"]
-                        # A downgraded tensor request keeps every device in use.
-                        and _layer_min_gpus <= 1
-                        and not _spill_inputs.get("env_mmproj_unsized")
-                        # A host-resident cache or projector draws on the pool the iGPU
-                        # reports, which the split cannot see: llama.cpp's split, as before.
-                        and not _spill_inputs.get("host_mmproj_bytes")
-                        and _kv_offload_from_args(extra_args, env)
-                        and not tensor_parallel
-                        and not _extra_args_have_tensor_split(extra_args, env)
-                        # A surviving device list owns the order the shares follow.
-                        and _extra_args_main_device(extra_args) is None
-                        and not str(env.get("LLAMA_ARG_DEVICE", "")).strip()
-                        else None
+                    _mixed_split = self._mixed_pin_split(
+                        list(gpu_indices),
+                        _spill_inputs,
+                        _shared_gpu_ids,
+                        extra_args,
+                        env,
+                        layer_min_gpus = _layer_min_gpus,
+                        tensor_parallel = tensor_parallel,
                     )
                     if _mixed_split is not None:
                         self._mixed_split_flags = [

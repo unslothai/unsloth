@@ -75,73 +75,6 @@ def test_split_aware_passes_the_shared_set_through():
     assert picked == [DGPU]
 
 
-def test_the_split_fills_the_discrete_card_first():
-    shares = LlamaCppBackend._discrete_first_split(
-        [DGPU, IGPU],
-        {DGPU: 10180.0, IGPU: 12917.0},
-        SHARED,
-        layered_mib = 14200.0,
-        per_device_mib = 300.0,
-    )
-    assert shares == [9880.0, 4320.0]
-    assert shares[0] > shares[1]
-
-
-def test_nothing_left_over_gives_the_igpu_nothing():
-    shares = LlamaCppBackend._discrete_first_split(
-        [DGPU, IGPU], {DGPU: 10000.0, IGPU: 12000.0}, SHARED, layered_mib = 8000.0
-    )
-    assert shares == [8000.0, 0.0]
-
-
-def test_the_split_is_positional_over_the_pin_order():
-    shares = LlamaCppBackend._discrete_first_split(
-        [IGPU, DGPU], {DGPU: 10000.0, IGPU: 12000.0}, SHARED, layered_mib = 12000.0
-    )
-    assert shares == [2000.0, 10000.0]
-
-
-def test_overflow_is_shared_across_igpus_by_room():
-    shares = LlamaCppBackend._discrete_first_split(
-        [0, 1, 2], {0: 4000.0, 1: 3000.0, 2: 1000.0}, {1, 2}, layered_mib = 8000.0
-    )
-    assert shares == [4000.0, 3000.0, 1000.0]
-
-
-def test_only_a_mixed_pin_gets_a_split():
-    usable = {0: 10000.0, 1: 12000.0}
-    assert LlamaCppBackend._discrete_first_split([0, 1], usable, set(), 15000.0) is None
-    assert LlamaCppBackend._discrete_first_split([0, 1], usable, {0, 1}, 15000.0) is None
-    assert LlamaCppBackend._discrete_first_split([0, 1], usable, {1}, 0.0) is None
-
-
-def test_the_launch_emits_it_only_where_nothing_else_owns_the_split():
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    arm = src[src.index("_mixed_split = (") : src.index("if _mixed_split is not None:")]
-    assert "not tensor_parallel" in arm
-    assert "_extra_args_have_tensor_split(extra_args, env)" in arm
-    assert "_spill_inputs is not None" in arm
-
-
-def test_non_layer_bytes_stay_off_the_discrete_share():
-    shares = LlamaCppBackend._discrete_first_split(
-        [DGPU, IGPU],
-        {DGPU: 10180.0, IGPU: 12917.0},
-        SHARED,
-        layered_mib = 14200.0,
-        per_device_mib = 300.0,
-        main_reserve_mib = 1500.0,
-    )
-    assert shares == [8380.0, 5820.0]
-
-
-def test_the_launch_reserves_the_non_layer_bytes():
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    arm = src[src.index("_mixed_split = (") : src.index("if _mixed_split is not None:")]
-    for key in ("compute_buffer_flat", "soft_overhead", "extra_gpu_bytes"):
-        assert key in arm
-
-
 def test_a_card_too_full_for_its_split_buffers_does_not_outrank_the_igpu():
     picked, use_fit = LlamaCppBackend._select_gpus(
         10000 * MIB,
@@ -153,64 +86,11 @@ def test_a_card_too_full_for_its_split_buffers_does_not_outrank_the_igpu():
     assert (picked, use_fit) == ([IGPU], False)
 
 
-def test_the_projector_is_reserved_not_split():
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    arm = src[src.index("_mixed_split = (") : src.index("if _mixed_split is not None:")]
-    assert '_spill_inputs["model_size"] - mmproj_size' in arm
-
-
 def test_every_auto_placement_sort_ranks_discrete_first():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "key = lambda g: _gpu_usable(" not in src
     assert src.count("key = lambda g: _gpu_rank(") == 3
     assert "_gpu_rank(g, pin_fraction, _rank_floor_mib)" in src
-
-
-def test_device_zero_carries_the_one_time_reserve():
-    # iGPU first: the flat buffer lands there, so the card keeps its whole budget.
-    shares = LlamaCppBackend._discrete_first_split(
-        [IGPU, DGPU],
-        {DGPU: 10000.0, IGPU: 12000.0},
-        SHARED,
-        layered_mib = 12000.0,
-        main_reserve_mib = 1500.0,
-    )
-    assert shares == [2000.0, 10000.0]
-
-
-def test_igpu_room_keeps_its_own_buffers():
-    # Overflow is divided by room AFTER each iGPU's compute buffer and pipeline step.
-    shares = LlamaCppBackend._discrete_first_split(
-        [0, 1, 2],
-        {0: 4000.0, 1: 3300.0, 2: 1300.0},
-        {1, 2},
-        layered_mib = 7000.0,
-        per_device_mib = 100.0,
-        pipeline_mib = 200.0,
-    )
-    assert shares == [3900.0, 2325.0, 775.0]
-
-
-def test_a_gpu_resident_drafter_keeps_llama_cpp_split_and_status_reports_ours():
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    arm = src[src.index("_mixed_split = (") : src.index("# Expose Prometheus /metrics")]
-    assert 'not _spill_inputs["separate_draft_on_gpu"]' in arm
-    assert "self._auto_tensor_split_emitted = self._auto_split_fingerprint(" in arm
-
-
-def test_an_inherited_projector_or_device_list_is_respected():
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    arm = src[src.index("_mixed_split = (") : src.index("if _mixed_split is not None:")]
-    for needle in (
-        '"env_mmproj_bytes"',
-        '"env_mmproj_unsized"',
-        '"host_mmproj_bytes"',
-        "_kv_offload_from_args(extra_args, env)",
-        "_extra_args_main_device(extra_args) is None",
-        '"LLAMA_ARG_DEVICE"',
-        "_layer_min_gpus <= 1",
-    ):
-        assert needle in arm
 
 
 def test_a_busy_card_too_small_alone_does_not_pull_in_the_igpu():
@@ -231,3 +111,98 @@ def test_the_fit_on_retry_takes_the_generated_split_back_out():
     retry = retry[: retry.index("self._fit_load_mode_flags")]
     assert "_without_subsequence(_run, self._mixed_split_flags)" in retry
     assert "self._auto_tensor_split_emitted = None" in retry
+
+
+split = LlamaCppBackend._discrete_first_split
+
+
+def test_the_card_takes_the_layers_its_room_holds_and_the_igpu_the_rest():
+    # 10 blocks of 1000 MiB + a 500 MiB output layer; the card keeps 300 for itself.
+    shares = split(
+        [DGPU, IGPU], {DGPU: 10180.0, IGPU: 12917.0}, SHARED, [1000.0] * 10 + [500.0], 300.0
+    )
+    # 9 layers then 2; each boundary half a layer early against float rounding.
+    assert shares == [8.5, 2.5]
+
+
+def test_the_heaviest_contiguous_run_decides_not_the_average():
+    # A full-attention layer among window layers: an even byte share would give 7.
+    layers = [100.0] * 4 + [3000.0] + [100.0] * 4
+    assert split([DGPU, IGPU], {DGPU: 3500.0, IGPU: 9000.0}, SHARED, layers) == [5.5, 3.5]
+
+
+def test_nothing_left_over_gives_the_igpu_nothing():
+    assert split([DGPU, IGPU], {DGPU: 10000.0, IGPU: 12000.0}, SHARED, [1000.0] * 5 + [100.0]) == [
+        5.5,
+        0.5,
+    ]
+
+
+def test_the_split_is_positional_over_the_pin_order():
+    shares = split([IGPU, DGPU], {DGPU: 10000.0, IGPU: 12000.0}, SHARED, [1000.0] * 12)
+    assert shares == [1.5, 10.5]
+
+
+def test_device_zero_carries_the_one_time_reserve():
+    # iGPU first: the flat buffer lands there, so the card keeps its whole budget.
+    shares = split(
+        [IGPU, DGPU], {DGPU: 10000.0, IGPU: 12000.0}, SHARED, [1000.0] * 12, main_reserve_mib = 1500.0
+    )
+    assert shares == [1.5, 10.5]
+    shares = split(
+        [DGPU, IGPU], {DGPU: 10000.0, IGPU: 12000.0}, SHARED, [1000.0] * 12, main_reserve_mib = 1500.0
+    )
+    assert shares == [7.5, 4.5]
+
+
+def test_overflow_is_shared_across_igpus_by_their_own_room():
+    shares = split(
+        [0, 1, 2],
+        {0: 4000.0, 1: 3300.0, 2: 1300.0},
+        {1, 2},
+        [1000.0] * 7,
+        per_device_mib = 100.0,
+        pipeline_mib = 200.0,
+    )
+    assert shares == [2.5, 3.0, 1.5]
+
+
+def test_only_a_mixed_pin_gets_a_split():
+    usable = {0: 10000.0, 1: 12000.0}
+    assert split([0, 1], usable, set(), [1000.0] * 15) is None
+    assert split([0, 1], usable, {0, 1}, [1000.0] * 15) is None
+    assert split([0, 1], usable, {1}, []) is None
+    # A card that cannot hold even one layer: llama.cpp's split, as before.
+    assert split([0, 1], {0: 500.0, 1: 12000.0}, {1}, [1000.0] * 15) is None
+
+
+def test_the_launch_hands_placement_back_wherever_it_cannot_price_it():
+    src = inspect.getsource(LlamaCppBackend._mixed_pin_split)
+    for needle in (
+        "tensor_parallel",
+        "layer_min_gpus > 1",
+        'spill_inputs["separate_draft_on_gpu"]',
+        '"env_mmproj_unsized"',
+        '"host_mmproj_bytes"',
+        "_kv_offload_from_args(extra_args, env)",
+        "_extra_args_have_tensor_split(extra_args, env)",
+        "_extra_args_main_device(extra_args) is not None",
+        '"LLAMA_ARG_DEVICE"',
+        "_sidecar_adapter_bytes(extra_args)",
+        '"kv_layer_weights"',
+        '"compute_buffer_flat"',
+        '"extra_gpu_bytes"',
+        '"env_mmproj_bytes"',
+    ):
+        assert needle in src, needle
+
+
+def test_the_launch_records_what_it_emitted():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    arm = src[
+        src.index("_mixed_split = self._mixed_pin_split(") : src.index(
+            "# Expose Prometheus /metrics"
+        )
+    ]
+    assert "self._mixed_split_flags = [" in arm
+    assert "self._auto_tensor_split_emitted = self._auto_split_fingerprint(" in arm
