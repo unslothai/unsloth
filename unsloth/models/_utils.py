@@ -100,6 +100,7 @@ __all__ = [
     "refuse_block_swap_load",
     "legacy_offload_layers",
     "prefetch_depth_arg",
+    "auto_plan_depth",
     "block_swap_load_device",
     "begin_block_swap_load",
     "finish_block_swap_load",
@@ -6629,6 +6630,14 @@ def begin_block_swap_load(
     return load_layers_to_host(offload_layers, placement = "spread")
 
 
+def auto_plan_depth(prefetch_depth):
+    """The slot pool a swap built at `prefetch_depth` starts with, which an auto plan must reserve:
+    "auto" begins one slot ahead on a zoo that adapts, at the fixed 2 on one that does not."""
+    if prefetch_depth != "auto":
+        return prefetch_depth
+    return 1 if hasattr(BlockSwap, "stats") else 2
+
+
 def planned_prefetch_depth(device_map_planner_kwargs):
     # The depth "auto" sized the slot pool with; the swapper must allocate the same pool.
     depth = (device_map_planner_kwargs or {}).get("prefetch_depth", 2)
@@ -6868,9 +6877,7 @@ def install_block_swap(
             _check_block_swap(model)
         # An adaptive pool starts at one slot ahead and only grows into room it finds free.
         model._unsloth_offload_layers_auto = prefetch_depth
-        offload_layers = _auto_block_swap_indices(
-            model, 1 if prefetch_depth == "auto" else prefetch_depth
-        )
+        offload_layers = _auto_block_swap_indices(model, auto_plan_depth(prefetch_depth))
         if not offload_layers:
             return None
     _check_block_swap(model)
@@ -6980,9 +6987,7 @@ def replan_auto_offload_for_trainer(trainer):
                 f"get_peft_model(offload_layers = {want}) or lower per_device_train_batch_size."
             )
             return swapper
-    elif not auto_swap_indices(layers, reserve, 1 if prefetch_depth == "auto" else prefetch_depth)[
-        0
-    ]:
+    elif not auto_swap_indices(layers, reserve, auto_plan_depth(prefetch_depth))[0]:
         return swapper
     if swapper is not None:
         swapper.remove()
@@ -6991,7 +6996,7 @@ def replan_auto_offload_for_trainer(trainer):
     try:
         indices = _auto_block_swap_indices(
             model,
-            1 if prefetch_depth == "auto" else prefetch_depth,
+            auto_plan_depth(prefetch_depth),
             batch_size = rows,
             seq_len = seq_len,
         )
