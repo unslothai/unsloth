@@ -11,7 +11,9 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { offloadPayload, perDeviceBudgetPayload, trainingGpuIndices } = await import("../src/features/training/api/mappers.ts");
+const { offloadPayload, offloadSupported, perDeviceBudgetPayload, trainingGpuIndices } = await import(
+  "../src/features/training/api/mappers.ts"
+);
 const { initialTrainingConfigState } = await import(
   "../src/features/training/stores/training-config-policy.ts"
 );
@@ -101,4 +103,23 @@ test("training GPU indices come from the torch inventory only when it is availab
   assert.deepEqual(trainingGpuIndices({ available: false, devices: [{ index: 0 }] }), []);
   assert.deepEqual(trainingGpuIndices({ available: true, devices: [{ index: null }, { index: 2 }] }), [2]);
   assert.deepEqual(trainingGpuIndices(null), []);
+});
+
+test("offload goes out off wherever the run cannot offload", () => {
+  const on = { ...base, offloadLayers: "auto" as const, offloadVramGb: 8 };
+  for (const blocked of [
+    { gradientCheckpointing: "none" as const },
+    { isEmbeddingModel: true },
+    { modelType: "decision" as const },
+    { modelType: "embeddings" as const },
+  ]) {
+    assert.equal(offloadSupported({ ...on, ...blocked }), false);
+    assert.deepEqual(offloadPayload({ ...on, ...blocked }).offload_layers, 0);
+    assert.equal(offloadPayload({ ...on, ...blocked }).offload_vram_gb, null);
+  }
+  assert.equal(offloadSupported(on), true);
+});
+
+test("a count above the backend limit is clamped instead of failing the start", () => {
+  assert.equal(offloadPayload({ ...base, offloadLayers: 5000 }).offload_layers, 1024);
 });

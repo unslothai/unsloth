@@ -681,6 +681,20 @@ class TrainingStartRequest(BaseModel):
         return self
 
     @model_validator(mode = "after")
+    def _check_offload_has_checkpointing(self) -> "TrainingStartRequest":
+        # install_block_swap refuses swapped layers without checkpointing; say so before loading.
+        if (
+            self.offload_layers
+            and self.training_type != "Full Finetuning"
+            and self.gradient_checkpointing.strip().lower() in ("none", "false")
+        ):
+            raise ValueError(
+                "offload_layers needs gradient checkpointing: set gradient_checkpointing to "
+                "'unsloth' or 'true', or offload_layers to 0."
+            )
+        return self
+
+    @model_validator(mode = "after")
     def _validate_lora_variant_flags(self) -> "TrainingStartRequest":
         # A direct API, YAML or CLI caller can bypass the frontend; nothing downstream breaks, but reject
         # early instead of silently ignoring the flag.

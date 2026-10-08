@@ -4274,7 +4274,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
     # and two runs on one card can each take their share.
     # ── 2b. Training VRAM budget ──
-    if config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"):
+    # Only "auto" sizes to a budget, and decision / embedding runs never offload.
+    if (
+        (config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"))
+        and config.get("offload_layers") == "auto"
+        and not config.get("is_decision")
+        and not config.get("is_embedding")
+    ):
         try:
             import torch as _torch_budget
             _apply_training_vram_budget(

@@ -28,6 +28,7 @@ import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow } from "./params-section-controls";
 import { OffloadLayersParams } from "./training-offload-params";
+import { offloadSupported } from "@/features/training/api/mappers";
 
 const VISION_IMAGE_SIZE_PRESETS = [256, 384, 512, 768, 1024, 1536, 2048];
 
@@ -127,6 +128,7 @@ export function TrainingMemoryParams(): ReactElement {
       isVisionModel: state.isVisionModel,
       isEmbeddingModel: state.isEmbeddingModel,
       isDecision: state.modelType === "decision",
+      modelType: state.modelType,
       isDatasetImage: state.isDatasetImage,
       visionImageSize: state.visionImageSize,
       setVisionImageSize: state.setVisionImageSize,
@@ -244,8 +246,8 @@ export function TrainingMemoryParams(): ReactElement {
           </SelectContent>
         </Select>
       </ParamsRow>
-      {/* Streams frozen LoRA base weights: nothing to stream in a full finetune, and MLX has its own path. */}
-      {!isMac && store.trainingMethod !== "full" && <OffloadLayersParams />}
+      {/* MLX has its own path. */}
+      {!isMac && offloadSupported(store) && <OffloadLayersParams />}
       {showPacking && (
         <PackingOption
           isMac={isMac}
