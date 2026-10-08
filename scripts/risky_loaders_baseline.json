@@ -251,6 +251,14 @@
       "reason": "Prefix-bounded to core.inference.<gallery>; the name comes from the fixed _GALLERIES table."
     },
     {
+      "file": "studio/backend/core/rag/embeddings.py",
+      "rule": "dynamic-import",
+      "sink": "import_from_string",
+      "digest": "ad319be07f7da5ad",
+      "count": 1,
+      "reason": "The metadata reference is accepted only with the sentence_transformers. prefix, so it can import installed package code only; non-package refs are skipped and the real loader performs the same lookup."
+    },
+    {
       "file": "studio/backend/core/systemone/laya_runtime.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
