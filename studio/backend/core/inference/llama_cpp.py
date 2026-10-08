@@ -9119,35 +9119,39 @@ class LlamaCppBackend:
         shared_gpu_ids: Iterable[int],
         layered_mib: float,
         per_device_mib: float = 0.0,
-        reserve_mib: float = 0.0,
+        main_reserve_mib: float = 0.0,
+        pipeline_mib: float = 0.0,
     ) -> Optional[List[float]]:
         """``--tensor-split`` shares, positional over ``gpu_indices``, filling discrete
         cards before shared-memory iGPUs, whose free "VRAM" is the host pool and would
-        otherwise win llama.cpp's free-memory split. ``per_device_mib`` is held back on
-        each card, ``reserve_mib`` once across them (non-layer bytes; --fit off cannot
-        catch an overfilled card). None unless the pin mixes both kinds."""
+        otherwise win llama.cpp's free-memory split. Each device first keeps its own
+        non-layer bytes (--fit off cannot catch an overfilled one): ``per_device_mib``
+        everywhere, ``main_reserve_mib`` on device 0, ``pipeline_mib`` on the rest.
+        None unless the pin mixes both kinds."""
         shared = set(shared_gpu_ids)
         discrete = [i for i in gpu_indices if i not in shared]
         igpus = [i for i in gpu_indices if i in shared]
         if not discrete or not igpus or layered_mib <= 0:
             return None
-        caps = {i: max(0.0, usable_mib.get(i, 0.0) - per_device_mib) for i in discrete}
-        hold = max(0.0, reserve_mib)
-        for i in sorted(discrete, key = lambda d: caps[d], reverse = True):
-            take = min(caps[i], hold)
-            caps[i] -= take
-            hold -= take
-        if sum(caps.values()) <= 0:
+        room = {
+            i: max(
+                0.0,
+                usable_mib.get(i, 0.0)
+                - per_device_mib
+                - (main_reserve_mib if n == 0 else pipeline_mib),
+            )
+            for n, i in enumerate(gpu_indices)
+        }
+        if sum(room[i] for i in discrete) <= 0:
             return None
         left = layered_mib
         shares: dict[int, float] = {}
-        for i in sorted(discrete, key = lambda d: caps[d], reverse = True):
-            shares[i] = min(caps[i], left)
+        for i in sorted(discrete, key = lambda d: room[d], reverse = True):
+            shares[i] = min(room[i], left)
             left -= shares[i]
-        igpu_room = {i: max(0.0, usable_mib.get(i, 0.0)) for i in igpus}
-        room_total = sum(igpu_room.values())
+        igpu_total = sum(room[i] for i in igpus)
         for i in igpus:
-            shares[i] = left * igpu_room[i] / room_total if room_total > 0 else left / len(igpus)
+            shares[i] = left * room[i] / igpu_total if igpu_total > 0 else left / len(igpus)
         return [shares[i] for i in gpu_indices]
 
     @staticmethod
@@ -27906,14 +27910,13 @@ class LlamaCppBackend:
                                 + _spill_inputs["soft_overhead"]
                                 + _spill_inputs["extra_gpu_bytes"]
                             )
-                            / (1024 * 1024)
-                            + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB
-                            * sum(1 for i in list(gpu_indices)[1:] if i not in _shared_gpu_ids),
+                            / (1024 * 1024),
+                            self._PIPELINE_PER_DEVICE_OVERHEAD_MIB,
                         )
                         if _shared_gpu_ids
                         and _spill_inputs is not None
                         and not tensor_parallel
-                        and not _extra_args_set_any_flag(extra_args, _TENSOR_SPLIT_FLAGS)
+                        and not _extra_args_have_tensor_split(extra_args, env)
                         else None
                     )
                     if _mixed_split is not None:

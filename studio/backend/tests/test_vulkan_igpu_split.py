@@ -119,7 +119,7 @@ def test_the_launch_emits_it_only_where_nothing_else_owns_the_split():
     src = inspect.getsource(LlamaCppBackend.load_model)
     arm = src[src.index("_mixed_split = (") : src.index("if _mixed_split is not None:")]
     assert "not tensor_parallel" in arm
-    assert "_TENSOR_SPLIT_FLAGS" in arm
+    assert "_extra_args_have_tensor_split(extra_args, env)" in arm
     assert "_spill_inputs is not None" in arm
 
 
@@ -130,7 +130,7 @@ def test_non_layer_bytes_stay_off_the_discrete_share():
         SHARED,
         layered_mib = 14200.0,
         per_device_mib = 300.0,
-        reserve_mib = 1500.0,
+        main_reserve_mib = 1500.0,
     )
     assert shares == [8380.0, 5820.0]
 
@@ -163,3 +163,28 @@ def test_every_auto_placement_sort_ranks_discrete_first():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "key = lambda g: _gpu_usable(" not in src
     assert src.count("key = lambda g: _gpu_rank(") == 3
+
+
+def test_device_zero_carries_the_one_time_reserve():
+    # iGPU first: the flat buffer lands there, so the card keeps its whole budget.
+    shares = LlamaCppBackend._discrete_first_split(
+        [IGPU, DGPU],
+        {DGPU: 10000.0, IGPU: 12000.0},
+        SHARED,
+        layered_mib = 12000.0,
+        main_reserve_mib = 1500.0,
+    )
+    assert shares == [2000.0, 10000.0]
+
+
+def test_igpu_room_keeps_its_own_buffers():
+    # Overflow is divided by room AFTER each iGPU's compute buffer and pipeline step.
+    shares = LlamaCppBackend._discrete_first_split(
+        [0, 1, 2],
+        {0: 4000.0, 1: 3300.0, 2: 1300.0},
+        {1, 2},
+        layered_mib = 7000.0,
+        per_device_mib = 100.0,
+        pipeline_mib = 200.0,
+    )
+    assert shares == [3900.0, 2325.0, 775.0]
