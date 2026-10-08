@@ -92,7 +92,9 @@ def test_binary_without_the_flag_still_launches(monkeypatch):
 
 def _script(tmp_path, name, help_text):
     if sys.platform == "win32":
-        pytest.skip("shell script stand-in for whisper-server")
+        pytest.skip(
+            reason = "the whisper-server stand-in is a POSIX sh script, which Windows cannot exec"
+        )
     path = tmp_path / name
     path.write_text(f"#!/bin/sh\necho '{help_text}' >&2\necho run >> '{tmp_path}/{name}.runs'\n")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
