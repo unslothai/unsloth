@@ -408,28 +408,61 @@ if [[ $# -gt 0 ]]; then
             ;;
         *)
             _runner="${1##*/}"
-            _runner_accepts_files=0
+            _runner_accepts_files=1
             case "$_runner" in
-                accelerate | accelerate-launch | torchrun | deepspeed) _runner_accepts_files=1 ;;
-                python | python[0-9]* | pypy | pypy[0-9]* | bash | sh | zsh) ;;
+                accelerate | accelerate-launch | torchrun | deepspeed) ;;
+                python | python[0-9]* | pypy | pypy[0-9]*)
+                    _args=("$@")
+                    for (( _i=1; _i < ${#_args[@]}; _i++ )); do
+                        case "${_args[$_i]}" in
+                            -c | -) _runner=""; break ;;
+                            -m)
+                                case "${_args[$((_i + 1))]:-}" in
+                                    accelerate.commands.launch | deepspeed.launcher.runner | torch.distributed.run) ;;
+                                    *) _runner="" ;;
+                                esac
+                                break
+                                ;;
+                            --) break ;;
+                            -*) ;;
+                            *) break ;;
+                        esac
+                    done
+                    ;;
+                bash | sh | zsh)
+                    for _arg in "${@:2}"; do
+                        case "$_arg" in
+                            -c | -s) _runner=""; break ;;
+                            --) break ;;
+                            -*) ;;
+                            *) break ;;
+                        esac
+                    done
+                    ;;
                 *) _runner="" ;;
             esac
             if [[ -n "$_runner" ]]; then
                 _prev="$1"
                 for _arg in "${@:2}"; do
                     case "$_arg" in
-                        --*=*)
+                        -*=*)
                             _prev=""
                             continue
                             ;;
                         /workspace/host | /workspace/host/*)
-                            if [[ "$_prev" != --* || "$_arg" == *.py || "$_arg" == *.sh || ( $_runner_accepts_files -eq 1 && "$_arg" != /workspace/host && -f "$WORK_DIR/${_arg#/workspace/host/}" ) ]]; then
+                            case "$_prev" in
+                                -H | --hostfile | --config_file | --config-file | --mpirun_hostfile | --mpirun-hostfile | --deepspeed_config_file | --deepspeed-config-file)
+                                    _prev=""
+                                    continue
+                                    ;;
+                            esac
+                            if [[ "$_prev" != -* || "$_arg" == *.py || "$_arg" == *.sh || ( $_runner_accepts_files -eq 1 && "$_arg" != /workspace/host && -f "$WORK_DIR/${_arg#/workspace/host/}" ) ]]; then
                                 WORKDIR_FLAG=(-w /workspace/host)
                                 break
                             fi
                             ;;
                         */*)
-                            if [[ "$_prev" == --* ]]; then
+                            if [[ "$_prev" == -* ]]; then
                                 _prev=""
                                 continue
                             fi
