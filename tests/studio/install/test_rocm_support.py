@@ -4380,9 +4380,11 @@ class TestHardwareAmdBranching:
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        assert "_smi_query(" in func_body
-        assert '"get_visible_gpu_utilization"' in func_body
+        assert "_smi_visible_utilization(" in func_body
         assert "_reconcile_rocm_unified_memory" in func_body
+        helper_start = source.find("def _smi_visible_utilization")
+        helper = source[helper_start : source.find("\ndef ", helper_start + 1)]
+        assert re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', helper)
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
@@ -4395,10 +4397,10 @@ class TestHardwareAmdBranching:
         source = hw_path.read_text(encoding = "utf-8")
         func_start = source.find("def get_visible_gpu_utilization")
         func_body = source[func_start : source.find("\ndef ", func_start + 1)]
-        # The dispatcher call may wrap; allow whitespace before the func name arg.
-        import re as _re
-
-        assert _re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', func_body)
+        assert "_smi_visible_utilization(" in func_body
+        helper_start = source.find("def _smi_visible_utilization")
+        helper = source[helper_start : source.find("\ndef ", helper_start + 1)]
+        assert re.search(r'_smi_query\(\s*"get_visible_gpu_utilization"', helper)
         smi = source[
             source.find("def _smi_query") : source.find("\ndef ", source.find("def _smi_query") + 1)
         ]
