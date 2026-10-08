@@ -405,6 +405,63 @@ def test_predict_answers_at_the_calibrated_temperatures(checkpoint, monkeypatch)
         FastDecisionModel.predict(model, tokenizer, "s", {})
 
 
+def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
+    clef_checkpoint, checkpoint, monkeypatch, tmp_path
+):
+    import base64
+    import io
+
+    from PIL import Image
+
+    model, tokenizer = FastDecisionModel.from_pretrained(str(clef_checkpoint), max_seq_length = 2048)
+    zoo = unsloth._decision_mlx._decision_zoo()
+    buffer = io.BytesIO()
+    Image.new("RGB", (5, 4)).save(buffer, "PNG")
+    url = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+    rows = [{**_row(0), "images": [url, url]}, {**_row(1), "images": json.dumps([url])}, _row(2)]
+    (tmp_path / "i.png").write_bytes(buffer.getvalue())
+    rows += [
+        {**_row(3), "images": {"bytes": buffer.getvalue()}},
+        {**_row(4), "images": [{"bytes": b"cut"}]},
+        {**_row(5), "images": [{"bytes": None, "path": str(tmp_path / "i.png")}]},
+    ]
+    # This decoder has no vision tower: a row with images is skipped, and says why.
+    items, report = FastDecisionModel.build_dataset(rows, tokenizer, model)
+    assert [item["row"] for item in items] == [2] and "does not support images" in report["reason"]
+
+    seen, real, keep = [], zoo.clef_training_item, [True]
+
+    def item(pipeline, state, questions, max_length, *images):
+        # A row without images is asked as before, with no fifth argument.
+        seen.append([getattr(image, "size", image) for image in images[0]] if images else None)
+        return {
+            **real(pipeline, state, questions, max_length),
+            **({"images": images[0]} if keep and images else {}),
+        }
+
+    monkeypatch.setattr(zoo, "clef_training_item", item)
+    items, report = FastDecisionModel.build_dataset(rows, tokenizer, model)
+    assert [item["row"] for item in items] == [0, 1, 2, 3, 5] and seen == [
+        [url, url],
+        [url],
+        None,
+        [(5, 4)],
+        [(5, 4)],
+    ]
+    assert items[0]["images"] == [url, url]
+    keep.clear()
+    assert "cannot identify image" in report["reason"]
+    FastDecisionModel.predict(
+        model, tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = url
+    )
+    assert seen[-1] == [url]
+    laya, laya_tokenizer = FastDecisionModel.from_pretrained(str(checkpoint))
+    with pytest.raises(unsloth._decision_mlx.DecisionDataError, match = "Laya reads text only"):
+        FastDecisionModel.predict(
+            laya, laya_tokenizer, "s", {"q": {"type": "noul", "instructions": "i"}}, images = [url]
+        )
+
+
 @pytest.mark.parametrize("four_bit", [False, True])
 def test_a_plain_language_model_trains_as_a_clef(clef_checkpoint, tmp_path, four_bit):
     for name in ("joint_head.safetensors", "joint_head_config.json"):
