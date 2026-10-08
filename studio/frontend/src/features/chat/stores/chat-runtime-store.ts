@@ -81,6 +81,7 @@ import {
 } from "../utils/chat-settings-storage";
 import {
   loadShadowOwnsMirroredSetting,
+  normalizeResearchMcpSources,
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
   MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS,
   normalizeStoredPermissionMode,
@@ -139,7 +140,7 @@ export const CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY =
   "unsloth_chat_deep_research_model_timeout";
 export const CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY =
   "unsloth_chat_deep_research_mcp_sources";
-export const MAX_RESEARCH_MCP_SOURCES = 20;
+export { MAX_RESEARCH_MCP_SOURCES } from "../utils/mirrored-chat-settings";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -252,32 +253,6 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   } catch {
     return DEFAULT_RESEARCH_WEBSITE_POLICY;
   }
-}
-
-function normalizeResearchMcpSources(value: unknown): ResearchMcpSource[] {
-  if (!Array.isArray(value)) return [];
-  const sources: ResearchMcpSource[] = [];
-  const seen = new Set<string>();
-  for (const item of value) {
-    const serverId = item?.serverId;
-    const tool = item?.tool;
-    if (
-      typeof serverId !== "string" ||
-      serverId.length < 1 ||
-      serverId.length > 200 ||
-      typeof tool !== "string" ||
-      tool.length < 1 ||
-      tool.length > 500
-    ) {
-      continue;
-    }
-    const key = `${serverId}\0${tool}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    sources.push({ serverId, tool });
-    if (sources.length === MAX_RESEARCH_MCP_SOURCES) break;
-  }
-  return sources;
 }
 
 function loadResearchMcpSources(): ResearchMcpSource[] {
@@ -744,6 +719,10 @@ const MIRRORED_SETTINGS = {
   },
   researchWebsitePolicy: {
     storageKey: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
+    ...JSON_SETTING,
+  },
+  researchMcpSources: {
+    storageKey: CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY,
     ...JSON_SETTING,
   },
   researchModelTimeoutSeconds: {
@@ -2807,6 +2786,7 @@ type ScalarSettingKey =
   | "webFetchToolsEnabled"
   | "deepResearchEnabled"
   | "researchWebsitePolicy"
+  | "researchMcpSources"
   | "researchModelTimeoutSeconds"
   | "mcpEnabledForChat"
   | "confirmToolCalls"
@@ -2857,6 +2837,7 @@ const SCALAR_SETTING_KEYS = [
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchMcpSources",
   "researchModelTimeoutSeconds",
   "mcpEnabledForChat",
   "confirmToolCalls",
