@@ -422,7 +422,13 @@ if [[ $# -gt 0 ]]; then
                                     break
                                 fi
                                 ;;
-                            */*) break ;;
+                            */*)
+                                if [[ "$_prev" == --* ]]; then
+                                    _prev=""
+                                    continue
+                                fi
+                                break
+                                ;;
                         esac
                         _prev="$_arg"
                     done
