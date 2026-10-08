@@ -73,3 +73,40 @@ def test_spill_with_offload_already_requested(offload_layers):
 )
 def test_other_errors_are_left_alone(error):
     assert raise_if_bnb_cpu_spill(error, "m") is None
+
+
+@pytest.mark.parametrize(
+    "path, cls",
+    [("unsloth/models/llama.py", "FastLlamaModel"), ("unsloth/models/vision.py", "FastBaseModel")],
+)
+def test_both_loaders_route_load_errors_through_it(path, cls):
+    import ast
+
+    tree = ast.parse((ROOT / path).read_text(encoding = "utf-8"))
+    method = next(
+        node
+        for c in tree.body
+        if isinstance(c, ast.ClassDef) and c.name == cls
+        for node in c.body
+        if isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"
+    )
+    handlers = [
+        h
+        for node in ast.walk(method)
+        if isinstance(node, ast.Try)
+        for h in node.handlers
+        if isinstance(h.type, ast.Name) and h.type.id == "ValueError"
+    ]
+    routed = [
+        h
+        for h in handlers
+        if any(
+            isinstance(s, ast.Expr)
+            and isinstance(s.value, ast.Call)
+            and getattr(s.value.func, "id", None) == "raise_if_bnb_cpu_spill"
+            for s in h.body
+        )
+        and isinstance(h.body[-1], ast.Raise)
+        and h.body[-1].exc is None
+    ]
+    assert len(routed) == 1
