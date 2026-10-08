@@ -554,6 +554,29 @@ def resolve_unsloth_device_map(
         print(f"Unsloth: Not planning a device map; {reason}. Using `{_declined}`.")
         return _declined
 
+    def _plan_fits_first_device(
+        plan,
+        explicit_reserve,
+        activation_share = 0.2,
+    ):
+        """First allowed card if weights + headroom + load transient leave `activation_share` (about
+        Gemma 3n E4B fp32 on a T4) and any passed reserve free; None for a planner without sizes."""
+        try:
+            budgets = plan.raw_budgets
+            first = min(budgets)
+            budget = int(budgets[first])
+            transient = max((plan.load_transient_by_device or {}).values(), default = 0)
+            need = int(plan.total_weight_bytes) + int(plan.headroom_bytes) + int(transient)
+            free = budget * activation_share
+            if explicit_reserve:
+                # A passed reserve is a hard constraint to the planner.
+                free = max(free, int(plan.activation_reserve_by_device.get(first, 0)))
+        except Exception:
+            return None
+        if budget > 0 and need + free <= budget:
+            return first
+        return None
+
     if skip_reason is not None:
         return _fallback(skip_reason)
     if fast_inference:
@@ -639,6 +662,18 @@ def resolve_unsloth_device_map(
 
     if plan is None:
         return _declined
+    single_device = (
+        _plan_fits_first_device(plan, planner_kwargs.get("activation_reserve_bytes") is not None)
+        if device_map == UNSLOTH_DEVICE_MAP
+        else None
+    )
+    if single_device is not None:
+        # Splitting a model one card holds only adds cross-device bugs (Kaggle T4x2).
+        print(
+            f"Unsloth: Not splitting across GPUs; the model fits on cuda:{single_device} with room "
+            f'to train. Pass device_map = "{UNSLOTH_BALANCED_DEVICE_MAP}" to split it anyway.'
+        )
+        return {"": single_device}
     print(plan.describe())
     return plan.device_map
 
@@ -1538,12 +1573,13 @@ def _offline_quantize_to_fp8(
             config = text_config
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
-        model = auto_model.from_pretrained(
-            model_name,
-            config = config,
-            revision = revision,
-            **load_kwargs,
-        )
+        with sync_load_when_quantizing(qconfig, config):
+            model = auto_model.from_pretrained(
+                model_name,
+                config = config,
+                revision = revision,
+                **load_kwargs,
+            )
         tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
@@ -3062,6 +3098,27 @@ def _bnb_bits_requested(quantization_config):
     if get("load_in_8bit", False):
         return 8
     return None
+
+
+_ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
+
+
+@contextlib.contextmanager
+def sync_load_when_quantizing(quantization_config, model_config):
+    """Sync-load on-the-fly quantization: transformers 5.0-5.3 worker threads put full-precision
+    tensors on the card faster than they are quantized (5.4+ already loads these synchronously)."""
+    if (
+        quantization_config is None
+        or getattr(model_config, "quantization_config", None) is not None
+        or _ASYNC_LOAD_ENV in os.environ
+    ):
+        yield
+        return
+    os.environ[_ASYNC_LOAD_ENV] = "1"
+    try:
+        yield
+    finally:
+        os.environ.pop(_ASYNC_LOAD_ENV, None)
 
 
 def warn_if_bitsandbytes_quantized_nothing(

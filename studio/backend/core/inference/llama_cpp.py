@@ -7565,13 +7565,32 @@ def _expanded_user_path(value) -> Path:
         return Path(os.path.expanduser(str(value)))
 
 
-def _write_direct_stream_key(key: str) -> "Path":
-    """Store the direct-streaming key where only the server user can read it."""
+def _llama_server_api_key_enabled() -> bool:
+    """UNSLOTH_LLAMA_SERVER_API_KEY=0 opts out, unless UNSLOTH_DIRECT_STREAM=1 needs the key."""
+    return (
+        os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1"
+        or os.getenv("UNSLOTH_LLAMA_SERVER_API_KEY", "1") != "0"
+    )
+
+
+def _write_direct_stream_key(key: str, previous: "Optional[Path]" = None) -> "Path":
+    """0600 key file, one per backend so concurrent launches never swap keys; ``previous`` is rewritten on relaunch."""
+    import secrets as _secrets
+
     from utils.paths.storage_roots import auth_root
 
     directory = auth_root()
     directory.mkdir(parents = True, exist_ok = True)
-    path = directory / "llama_api_key"
+    if previous is None:
+        # Left by a killed Studio; llama-server reads its key only at startup.
+        stale_before = time.time() - 600
+        for stale in directory.glob("llama_api_key_*"):
+            with contextlib.suppress(OSError):
+                if stale.stat().st_mtime < stale_before:
+                    stale.unlink()
+    path = (
+        previous if previous is not None else directory / f"llama_api_key_{_secrets.token_hex(8)}"
+    )
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding = "utf-8") as handle:
         handle.write(key)
@@ -7920,6 +7939,7 @@ class LlamaCppBackend:
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
+        self._api_key_file: Optional[Path] = None
         self._slot_save_dir: Optional[str] = None
         self._slot_save_binary: Optional[tuple[str, int]] = None
         # (gguf_identity, launch_fingerprint) snapshotted at load, so a later slot
@@ -8045,8 +8065,7 @@ class LlamaCppBackend:
 
     @property
     def _auth_headers(self) -> "Optional[dict[str, str]]":
-        """Bearer header matching the --api-key direct-stream mode uses, else
-        None (so unauthenticated llama-server calls don't get a spurious 401)."""
+        """Bearer header for the child's per-launch --api-key, else None (key disabled)."""
         return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
 
     @property
@@ -9563,6 +9582,7 @@ class LlamaCppBackend:
                 # only a build whose --help positively lacks one drops it.
                 "supports_no_context_shift": True,
                 "supports_jinja": True,
+                "supports_api_key_file": True,
                 "supports_flash_attn": True,
                 "flash_attn_takes_value": True,
                 "supports_fit_ctx": False,
@@ -9619,6 +9639,7 @@ class LlamaCppBackend:
         # See the fallback dict: these fail open.
         supports_no_context_shift = True
         supports_jinja = True
+        supports_api_key_file = True
         supports_flash_attn = True
         flash_attn_takes_value = True
         supports_fit_ctx = False
@@ -9845,6 +9866,7 @@ class LlamaCppBackend:
             if probe_ok and blocks:
                 supports_no_context_shift = _is_real("--no-context-shift")
                 supports_jinja = _is_real("--jinja")
+                supports_api_key_file = _is_real("--api-key-file")
                 # Two answers, not one: whether the flag exists, and whether its
                 # declaration takes a value. A build predating flash attention
                 # has neither, and emitting the flag there is an immediate exit.
@@ -9958,6 +9980,7 @@ class LlamaCppBackend:
             "supports_kv_unified": supports_kv_unified,
             "supports_no_context_shift": supports_no_context_shift,
             "supports_jinja": supports_jinja,
+            "supports_api_key_file": supports_api_key_file,
             "supports_flash_attn": supports_flash_attn,
             "flash_attn_takes_value": flash_attn_takes_value,
             "supports_fit_ctx": supports_fit_ctx,
@@ -28428,14 +28451,21 @@ class LlamaCppBackend:
                                 "device is virtualised."
                             )
 
-                # Option C: --api-key for direct client access when enabled
+                # llama-server sends permissive CORS, so without a key any open web page could drive it.
                 import secrets as _secrets
 
-                if os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
+                _key_on = _llama_server_api_key_enabled()
+                if _key_on and not server_caps.get("supports_api_key_file", True):
+                    # A custom build predating --api-key-file would exit on the flag; run it keyless as before.
+                    logger.warning(
+                        "This llama-server build has no --api-key-file; starting it without an API key."
+                    )
+                    _key_on = False
+                if _key_on:
                     self._api_key = _secrets.token_urlsafe(32)
                     # Through a file, not argv: a command line is readable by every process of this Unix user, and the auth directory is not.
-                    cmd.extend(["--api-key-file", str(_write_direct_stream_key(self._api_key))])
-                    logger.info("llama-server started with --api-key-file for direct streaming")
+                    self._api_key_file = _write_direct_stream_key(self._api_key, self._api_key_file)
+                    cmd.extend(["--api-key-file", str(self._api_key_file)])
                 else:
                     self._api_key = None
 
@@ -31884,7 +31914,9 @@ class LlamaCppBackend:
                         from core.inference.llama_stats import maybe_start_stats_logger
                         if self._stats_logger is not None:
                             self._stats_logger.stop()
-                        self._stats_logger = maybe_start_stats_logger(self.base_url, logger)
+                        self._stats_logger = maybe_start_stats_logger(
+                            self.base_url, logger, headers = self._auth_headers
+                        )
                     except Exception as e:
                         logger.debug(f"engine-stats logger not started: {e}")
                 else:
@@ -32631,6 +32663,33 @@ class LlamaCppBackend:
                 return False
         return (self._hf_variant or "").lower() == (intent.hf_variant or "").lower()
 
+    def components_match_intent(self, intent: GgufLoadIntent) -> bool:
+        """``_runtime_matches_intent`` minus capacity and placement: same weights and components."""
+        if intent.force_reload or not self.matches_load_source(intent):
+            return False
+        requested = self.requested_extra_args
+        # Inherited extras would carry the resident's adapters and drafters unnamed by the caller.
+        if intent.extra_args_inherited and requested:
+            return False
+        extras = requested if intent.extra_args_inherited else intent.extra_args
+        if tuple(extras or ()) != tuple(requested or ()):
+            return False
+        if (self._chat_template_override or None) != (intent.chat_template_override or None):
+            return False
+        if not self._is_diffusion and (
+            bool(self._disable_vision) != bool(intent.disable_vision)
+            or self._requested_reasoning_budget
+            != resolve_reasoning_budget(extras, intent.reasoning_budget)
+            or self._requested_reasoning_budget_message
+            != resolve_reasoning_budget_message(extras, intent.reasoning_budget_message)
+        ):
+            return False
+        if _extra_args_set_spec_type(extras):
+            return self._requested_spec_mode is None
+        return (_canonicalize_spec_mode(intent.speculative_type) or "auto") == (
+            self._requested_spec_mode or "auto"
+        )
+
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
     ) -> Optional[bool]:
@@ -32741,6 +32800,10 @@ class LlamaCppBackend:
             _was_resident = self._process is not None
             self._kill_process()
             self._cleanup_cpu_fallback_runtime()
+            if self._api_key_file is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(self._api_key_file)
+                self._api_key_file = None
             # The one unload line: routes/inference.py logged a second, differently named.
             if _was_resident:
                 logger.info(f"Unloaded GGUF model: {self._model_identifier}")
@@ -35083,9 +35146,8 @@ class LlamaCppBackend:
         """llama-server's ``/props``, or None when it cannot be read."""
         url = f"{self.base_url}/props"
         try:
-            # /props is not one of llama-server's public endpoints, so under
-            # UNSLOTH_DIRECT_STREAM=1 (which launches the child with --api-key)
-            # an unauthenticated read 401s: the context readback silently keeps
+            # /props is not one of llama-server's public endpoints, so with the
+            # child's --api-key an unauthenticated read 401s: the context readback silently keeps
             # the requested -c, and video reads as unsupported on a model that
             # supports it. None when there is no child key, which is httpx's
             # default and what every other call site here relies on.

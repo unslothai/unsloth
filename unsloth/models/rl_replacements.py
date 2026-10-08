@@ -456,8 +456,10 @@ _ONLINE_DPO_MODEL_CALL = re.compile(
     r"(?P<kwargs>attention_mask=prompt_completion_mask|\*\*model_kwargs)\)[ \t]*$",
     flags = re.MULTILINE,
 )
+# TRL 0.18-0.19 slice from `prompt_ids.size(1) - 1`, TRL 0.20+ name it start_idx.
 _ONLINE_DPO_LOGITS_SLICE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, start_idx:(?:end_idx|-1)\])[ \t]*$",
+    r"^(?P<indent>[ \t]*)(?P<line>logits = output\.logits\[:, "
+    r"(?P<start>start_idx|prompt_ids\.size\(1\) - 1) ?: ?(?:end_idx|-1)\])[ \t]*$",
     flags = re.MULTILINE,
 )
 
@@ -494,7 +496,7 @@ def online_dpo_trainer__forward(function_name, function):
     j = logits_slice.group("indent")
     gather = (
         f"{j}if _unsloth_left_pad is not None:\n"
-        f"{j}    _unsloth_index = (start_idx - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
+        f"{j}    _unsloth_index = ({logits_slice.group('start')} - _unsloth_left_pad).unsqueeze(1) + torch.arange(\n"
         f"{j}        completion_ids.size(1), device = completion_ids.device\n"
         f"{j}    ).unsqueeze(0)\n"
         f"{j}    _unsloth_index = _unsloth_index.clamp(0, output.logits.size(1) - 1)\n"

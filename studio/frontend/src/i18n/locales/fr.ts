@@ -511,6 +511,7 @@ export const fr = {
     },
   },
   common: {
+    duplicate: "Dupliquer",
     cancel: "Annuler",
     close: "Fermer",
     delete: "Supprimer",
@@ -3464,6 +3465,11 @@ export const fr = {
       readMore: "En savoir plus",
     },
     training: {
+      duplicateFailed: "Impossible de dupliquer l'entraînement",
+      duplicateDraftChanged:
+        "Les paramètres d'entraînement ont changé pendant le chargement. Réessayez de le dupliquer.",
+      duplicateNoModel:
+        "Cet entraînement n'a pas de configuration de modèle enregistrée.",
       startTraining: "Démarrer l'entraînement",
       starting: "Démarrage...",
       loadingModel: "Chargement du modèle...",

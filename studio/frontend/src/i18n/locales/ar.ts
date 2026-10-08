@@ -508,6 +508,7 @@ export const ar = {
     },
   },
   common: {
+    duplicate: "تكرار",
     cancel: "إلغاء",
     close: "إغلاق",
     delete: "حذف",
@@ -3396,6 +3397,10 @@ export const ar = {
       readMore: "اقرأ المزيد",
     },
     training: {
+      duplicateFailed: "تعذّر تكرار العملية",
+      duplicateDraftChanged:
+        "تغيّرت إعدادات التدريب أثناء التحميل. حاول التكرار مرة أخرى.",
+      duplicateNoModel: "لا تحتوي هذه العملية على إعدادات نموذج محفوظة.",
       startTraining: "بدء التدريب",
       starting: "جارٍ البدء...",
       loadingModel: "جارٍ تحميل النموذج...",

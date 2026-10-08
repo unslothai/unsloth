@@ -53,7 +53,9 @@ class cuda:
 
 def _check_source() -> str:
     text = INSTALL_SH.read_text(encoding = "utf-8")
-    m = re.search(r"_run_bounded --secs 120 \"\$_VENV_PY\" -c '\n(.*?)\n' 2>/dev/null", text, re.S)
+    m = re.search(
+        r"_run_bounded --secs 120 \"\$_VENV_PY\" -I -c '\n(.*?)\n' 2>/dev/null", text, re.S
+    )
     assert m, "the post-install arch check was not found"
     return m.group(1)
 
