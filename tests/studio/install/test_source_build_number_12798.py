@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 SETUP_SH = PACKAGE_ROOT / "studio" / "setup.sh"
@@ -102,7 +103,7 @@ def test_setup_ps1_tag_parse(ref, _pr, expected):
         if line.strip().startswith("$TagBuildNumber = ")
     )
     script = f"$ResolvedSourceRef = '{ref}'\n{line}\nif ($null -eq $TagBuildNumber) {{ 'NULL' }} else {{ $TagBuildNumber }}"
-    out = subprocess.run(
+    out = run_pwsh(
         [PWSH, "-NoProfile", "-Command", script],
         capture_output = True,
         text = True,
