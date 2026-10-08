@@ -65,12 +65,8 @@ def test_finalization_only_writing_rank_mutates_auxiliary_files(
     _trainer_method("_finalize_training")(owner, "/tmp/ddp-output")
     saving = not should_stop or save_on_stop
     assert trainer.save_model.call_count == int(saving)
-    assert owner.tokenizer.save_pretrained.call_count == int(
-        saving and is_world_process_zero
-    )
-    assert owner._patch_adapter_config.call_count == int(
-        saving and is_world_process_zero
-    )
+    assert owner.tokenizer.save_pretrained.call_count == int(saving and is_world_process_zero)
+    assert owner._patch_adapter_config.call_count == int(saving and is_world_process_zero)
     assert trainer._save_checkpoint.call_count == int(should_stop and save_on_stop)
 
 
