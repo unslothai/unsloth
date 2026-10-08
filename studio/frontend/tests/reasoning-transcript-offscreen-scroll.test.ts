@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Each expanded trace kept two scroll listeners on the shared thread viewport, offscreen too, so
-// a long chat paid O(transcripts) per scroll frame (#12025). Invisible in output: pinned at source.
+// Offscreen transcripts must not listen to the shared viewport's scroll (#12025); pinned at source.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -53,7 +52,6 @@ test("a far transcript drops both viewport scroll listeners and resumes when nea
     /scroll\.addEventListener\("scroll", schedule/,
     "measure listener not restored",
   );
-  // Coming back re-measures (its top is stale) and renders the live range before paint.
   assert.match(
     near,
     /if \(beforePaint\)[\s\S]*?flushSync\(\(\) => \{\s*measure\(\);\s*followOffset\.current\?\.\(true\);\s*\}\)/,
@@ -88,7 +86,6 @@ test("a jump past the observer margin wakes far transcripts through one listener
     "a listener per transcript instead of per viewport",
   );
   assert.match(watch, /Math\.abs\(top - last\) >= scroll\.clientHeight \/ 2/);
-  // A jump needs the before-paint wake; the observer's own wake can wait a frame.
   assert.match(
     between(transcript, "stopJumpWatch = onViewportJump(", "const proximity ="),
     /setNearby\(true, true\)/,

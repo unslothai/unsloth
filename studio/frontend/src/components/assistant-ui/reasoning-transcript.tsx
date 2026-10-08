@@ -288,8 +288,7 @@ const Fragment = memo(function Fragment({
   );
 });
 
-// IntersectionObserver reports after paint, so a jump past its one-screen margin (scrollbar drag,
-// Ctrl+End) would paint a far transcript's stale rows. One listener per viewport catches those.
+// IntersectionObserver reports after paint; this catches jumps past its margin before paint.
 const jumpWatchers = new WeakMap<
   HTMLElement,
   { checks: Set<() => void>; stop: () => void }
@@ -371,8 +370,7 @@ export function ReasoningTranscript({
         stop?.();
         stop = undefined;
         if (!on) return;
-        // The viewport predates this subscription. Seed its current offset; waiting for the
-        // next scroll leaves TanStack's initial zero, or the offset from before it left, cached.
+        // Seed the live offset, else TanStack keeps its initial zero or the one from before it left.
         callback(instance.scrollElement?.scrollTop ?? 0, false);
         stop = observeElementOffset(instance, callback);
       };
@@ -517,8 +515,7 @@ export function ReasoningTranscript({
         stopJumpWatch = undefined;
         scroll.addEventListener("scroll", schedule, { passive: true });
         if (beforePaint)
-          // A jump lands on it this frame: its top went stale while away (only scrolling
-          // re-measures it), so re-measure and render the live range before paint.
+          // Its top went stale while away: re-measure and render the live range before this paint.
           flushSync(() => {
             measure();
             followOffset.current?.(true);
