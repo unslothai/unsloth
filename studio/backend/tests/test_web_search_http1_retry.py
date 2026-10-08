@@ -42,9 +42,8 @@ RESET = FakeDDGSException(
 )
 
 
-@pytest.fixture(params = [WrappingResponse, FieldsResponse], ids = ["ddgs-9.14", "ddgs-9.8"])
-def fake_ddgs(monkeypatch, request):
-    """Fake ddgs client modules whose ``request`` raises ``state["error"]`` when set."""
+def _install_fake_ddgs(monkeypatch, primp_response):
+    """Fake ddgs modules whose client ``request`` raises ``state["error"]`` when set."""
     state = {"error": None, "replay_error": None, "calls": 0}
 
     class Session:
@@ -81,17 +80,38 @@ def fake_ddgs(monkeypatch, request):
 
     pkg = types.ModuleType("ddgs")
     http_client = types.ModuleType("ddgs.http_client")
-    http_client.HttpClient, http_client.Response = HttpClient, request.param
+    http_client.HttpClient, http_client.Response = HttpClient, primp_response
     http_client2 = types.ModuleType("ddgs.http_client2")
     http_client2.HttpClient2, http_client2.Response = HttpClient2, FieldsResponse
     exceptions = types.ModuleType("ddgs.exceptions")
     exceptions.DDGSException = FakeDDGSException
+
+    class DDGS:
+        def __init__(self, timeout = None):
+            self.timeout = timeout
+
+        def text(
+            self,
+            query,
+            max_results = 5,
+            backend = "auto",
+        ):
+            resp = HttpClient(timeout = self.timeout).request(
+                "GET", "https://html.duckduckgo.com/html/"
+            )
+            return [{"title": "Weather", "href": "https://example.com/weather", "body": resp.text}]
+
+    engines = types.ModuleType("ddgs.engines")
+    engines.ENGINES = {"text": {"duckduckgo": object}}
+    pkg.DDGS = DDGS
     pkg.http_client, pkg.http_client2, pkg.exceptions = http_client, http_client2, exceptions
+    pkg.engines = engines
     for name, module in {
         "ddgs": pkg,
         "ddgs.http_client": http_client,
         "ddgs.http_client2": http_client2,
         "ddgs.exceptions": exceptions,
+        "ddgs.engines": engines,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -103,11 +123,31 @@ def fake_ddgs(monkeypatch, request):
             raise state["replay_error"]
         return FakeReplayResponse()
 
-    monkeypatch.setattr(tools, "_ddgs_http1_replay", fake_replay)
-    tools._install_ddgs_http1_retry()
+    monkeypatch.setattr(tools, "_ddgs_http1_replay", fake_replay, raising = False)
     return types.SimpleNamespace(
         state = state, replays = replays, HttpClient = HttpClient, HttpClient2 = HttpClient2
     )
+
+
+@pytest.fixture(params = [WrappingResponse, FieldsResponse], ids = ["ddgs-9.14", "ddgs-9.8"])
+def fake_ddgs(monkeypatch, request):
+    fake = _install_fake_ddgs(monkeypatch, request.param)
+    tools._install_ddgs_http1_retry()
+    return fake
+
+
+def test_web_search_returns_results_after_a_connection_reset(monkeypatch):
+    fake = _install_fake_ddgs(monkeypatch, WrappingResponse)
+    fake.state["error"] = RESET
+
+    def no_wikipedia(*args, **kwargs):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(tools, "_wikipedia_search", no_wikipedia)
+    out = tools._web_search("weather", timeout = 5)
+    assert "Search failed" not in out
+    assert "https://example.com/weather" in out
+    assert len(fake.replays) == 1
 
 
 def test_reset_detection():
