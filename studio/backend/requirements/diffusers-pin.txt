@@ -2,16 +2,18 @@
 # no other requirements file may name diffusers, and a test in
 # tests/studio/install/test_diffusers_pin.py enforces that.
 #
-# Diffusers 0.40.0 is the first release containing the MiniMax-H3 and MiniMax Music 3
-# modular pipelines. Keep the exact release pin so installs are reproducible without a
-# source build from GitHub.
+# Diffusers 0.41.0 is the first release containing Qwen-Image-2.1 (QwenImage21Pipeline and
+# its single-file transformer); 0.40.0 added the MiniMax-H3 and MiniMax Music 3 modular
+# pipelines. Keep the exact release pin so installs are reproducible without a source build
+# from GitHub. While this release carries every family Studio ships, diffusers-main.txt stays
+# commented out and the git route is never taken.
 #
 # Why it is installed from its own file, in its own step: base.txt is applied near the
 # start of the dependency pass. This step runs late, after every other requirements file,
 # so nothing can re-resolve diffusers back to a release behind it.
 #
-# python < 3.10 has no candidate: diffusers dropped 3.9 in 0.38, so pinning 0.40.0
+# python < 3.10 has no candidate: diffusers dropped 3.9 in 0.38, so pinning 0.41.0
 # outright would leave the resolver nothing at all on a 3.9 host. Those hosts get the
 # newest release they can take and the H3 guard refuses the model with a clear message.
-diffusers==0.40.0 ; python_version >= "3.10"
+diffusers==0.41.0 ; python_version >= "3.10"
 diffusers==0.36.0 ; python_version < "3.10"

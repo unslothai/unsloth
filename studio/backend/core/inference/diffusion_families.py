@@ -1747,7 +1747,8 @@ def local_pipeline_components_are_complete(
 # Studio installs the pinned main build for exactly these classes (studio/backend/requirements/
 # diffusers-main.txt), so the remedy is to put that back, not to chase a release. Delete an entry
 # here the moment its version ships, which is the same moment diffusers-pin.txt moves to it.
-_UNRELEASED_MIN_DIFFUSERS = frozenset({"0.41.0"})
+# Empty while diffusers-main.txt is commented out: 0.41.0 (Qwen-Image-2.1) shipped on 2026-10-06.
+_UNRELEASED_MIN_DIFFUSERS: frozenset = frozenset()
 
 
 _DIFFUSERS_MAIN_PIN = Path(__file__).resolve().parents[2] / "requirements" / "diffusers-main.txt"

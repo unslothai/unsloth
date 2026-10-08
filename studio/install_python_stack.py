@@ -11230,6 +11230,63 @@ def _diffusers_main_supersedes_release() -> bool:
     return _diffusers_main_requested() and _diffusers_main_resident()
 
 
+def _diffusers_main_active(req: "Path | None" = None) -> bool:
+    """Whether diffusers-main.txt pins a build at all.
+
+    The line is commented out while a Diffusers release carries every family Studio ships. Without
+    this, a file with nothing in it reads as "build missing": the fast path would force a dependency
+    pass on every update, 11c would install an empty file and record a failure, and the startup
+    self-heal would try to repair it on every first boot.
+    """
+    if req is None:
+        req = REQ_ROOT / "diffusers-main.txt"
+    return _direct_reference_in_requirements(req) is not None
+
+
+def _diffusers_release_target() -> "str | None":
+    """The ``==`` version diffusers-pin.txt names for this interpreter, or None."""
+    try:
+        from packaging.requirements import Requirement
+        text = (REQ_ROOT / "diffusers-pin.txt").read_text(encoding = "utf-8-sig")
+    except (ImportError, OSError, ValueError):
+        return None
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        try:
+            requirement = Requirement(line)
+        except Exception:  # noqa: BLE001 - a line packaging cannot parse names no target
+            continue
+        if requirement.name.lower() != "diffusers":
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        for spec in requirement.specifier:
+            if spec.operator == "==":
+                return spec.version
+    return None
+
+
+def _diffusers_release_behind() -> bool:
+    """Whether the resident Diffusers is OLDER than the release diffusers-pin.txt names.
+
+    Compared on release numbers, as the family gate does, so a git build of the same version
+    (0.41.0.dev0) counts as current and only a genuinely older install (0.40.0 left behind by an
+    update that skipped the pass) is acted on. No diffusers at all, or an unreadable version, is
+    the full pass's job, not this probe's.
+    """
+    target = _diffusers_release_target()
+    installed = _installed_distribution_version("diffusers")
+    if target is None or installed is None:
+        return False
+    try:
+        from packaging.version import Version
+        return Version(Version(installed).base_version) < Version(target)
+    except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
+        return False
+
+
 _ARCHIVE_SHA256_RE = re.compile(r"#\s*archive-sha256:\s*([0-9a-fA-F]{64})")
 
 
@@ -11272,8 +11329,9 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     github.com would repeat the whole dependency pass on every update.
     """
     req = REQ_ROOT / "diffusers-main.txt"
-    if not req.is_file():
-        return False
+    if not req.is_file() or not _diffusers_main_active(req):
+        # Nothing pinned from git: only a release older than diffusers-pin.txt needs the pass.
+        return _diffusers_release_behind()
     if not _diffusers_main_requested():
         # Opted out while the build is still resident: 11b puts the release back.
         return _diffusers_main_resident(req)
@@ -11305,12 +11363,47 @@ def _startup_repair_failed() -> bool:
 
 _REPAIR_LOCK_POLL_S = 5
 
+# The release-mode failure, kept apart from the git one: a host that could not reach github.com
+# for the main build must still get the PyPI release. A full update pass drops both.
+_DIFFUSERS_RELEASE_REPAIR_KEY = "diffusers_release_repair"
+
+
+def _release_repair_failed() -> bool:
+    try:
+        manifest = install_manifest.read_manifest() or {}
+        return manifest.get(_DIFFUSERS_RELEASE_REPAIR_KEY) == "failed"
+    except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
+        return False
+
+
+def _repair_diffusers_release() -> int:
+    """11b on its own, when nothing is pinned from git and the resident release is older than the
+    pin: 0 installed, 1 nothing to do, 2 failed. Called with the pass lock held."""
+    global USE_UV, _STEP, _TOTAL
+    if not _diffusers_release_behind() or _release_repair_failed():
+        return 1
+    USE_UV = _bootstrap_uv()
+    _STEP, _TOTAL = 0, 1
+    _progress("diffusers pin")
+    installed = pip_install_try(
+        "Installing the pinned Diffusers release",
+        "--no-cache-dir",
+        req = REQ_ROOT / "diffusers-pin.txt",
+    )
+    importlib.invalidate_caches()
+    if installed and not _diffusers_release_behind():
+        return 0
+    # Or every start retries an install this host cannot do.
+    install_manifest.update_manifest(**{_DIFFUSERS_RELEASE_REPAIR_KEY: "failed"})
+    return 2
+
 
 def _repair_diffusers_main() -> int:
     """11c on its own, for the backend's startup self-heal: 0 installed, 1 nothing to do, 2 failed.
 
     An update from a release that predates 11c runs that release's installer, which never installs
-    the build; the backend that starts afterwards is the first new code such a host runs.
+    the build; the backend that starts afterwards is the first new code such a host runs. With no
+    build pinned from git it repairs the release instead (``_repair_diffusers_release``).
     """
     import time
 
@@ -11321,6 +11414,8 @@ def _repair_diffusers_main() -> int:
             # update leaves the pass it may be rewriting diffusers, and returning would let the backend
             # that started this import it.
             if uncontended:
+                if not _diffusers_main_active():
+                    return _repair_diffusers_release()
                 if (
                     not _diffusers_main_requested()
                     or not _diffusers_main_needs_dependency_pass()
@@ -11355,6 +11450,8 @@ def _prefetch_diffusers_main() -> int:
     req = REQ_ROOT / "diffusers-main.txt"
     if (
         not req.is_file()
+        # A release is a wheel from the index: nothing to build ahead of the install.
+        or not _diffusers_main_active(req)
         or not _diffusers_main_requested()
         or not _diffusers_main_needs_dependency_pass()
         or _startup_repair_failed()
@@ -11423,6 +11520,11 @@ def _diffusers_main_step() -> None:
     fixed before any of this is known. An early return without a _progress leaves the bar short of
     its own total for precisely the users who opted out.
     """
+    if not _diffusers_main_active():
+        # Commented out while a release carries every family: 11b already installed it.
+        _progress("diffusers main (none pinned, skipped)")
+        _record_step("diffusers-main.txt", "skipped")
+        return
     if not _diffusers_main_requested():
         _progress("diffusers main (opted out, skipped)")
         return

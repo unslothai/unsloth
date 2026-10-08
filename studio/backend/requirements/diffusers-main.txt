@@ -1,7 +1,16 @@
-# INSTALLED BY DEFAULT, on top of diffusers-pin.txt. Set UNSLOTH_DIFFUSERS_MAIN=0 to opt out.
+# DISABLED: the requirement line at the bottom is commented out, so nothing below installs.
+# Diffusers 0.41.0 shipped Qwen-Image-2.1 on PyPI (2026-10-06) and diffusers-pin.txt now pins it.
+# Every piece of the git-main route (installer step 11c, the zip fallback, the startup self-heal,
+# the fast-path probe) treats a file with no active requirement as "nothing pinned" and does no
+# work. To pin an unreleased Diffusers again for a future model: uncomment the line with the new
+# full commit, bump the archive-sha256 with it, and add that minimum to _UNRELEASED_MIN_DIFFUSERS
+# in studio/backend/core/inference/diffusion_families.py.
+#
+# When active it is INSTALLED BY DEFAULT, on top of diffusers-pin.txt. Set UNSLOTH_DIFFUSERS_MAIN=0
+# to opt out.
 #
 # A pinned commit of Diffusers main, for models whose support has merged upstream but has not
-# reached a release yet. Today that is Qwen-Image-2.1: it merged on 2026-09-18, four weeks after
+# reached a release yet. The last one was Qwen-Image-2.1: it merged on 2026-09-18, four weeks after
 # 0.40.0 was cut, so 0.41.0 is the first release that can carry it and there is nothing on PyPI
 # that works. Without this file the only way to run it is to break the release pin by hand.
 #
@@ -36,6 +45,6 @@
 #   curl -sL https://github.com/huggingface/diffusers/archive/<commit>.zip | sha256sum
 # archive-sha256: 7b0d00b5b44f5ca1745d477ae4a0c2da125d58b89cff8470c422d3181a797a09
 #
-# Retiring this file: once 0.41.0 ships, bump diffusers-pin.txt to it and delete this. The family
-# entry already records 0.41.0 as QwenImage21Pipeline's minimum, so nothing else has to move.
-diffusers @ git+https://github.com/huggingface/diffusers.git@80c7ed262aeffbeb43ef13ae04baeb9b84515a69
+# Retiring a pin: once the release ships, bump diffusers-pin.txt to it and comment the line out
+# again (done for 0.41.0), rather than deleting this file, so the route stays for the next model.
+# diffusers @ git+https://github.com/huggingface/diffusers.git@80c7ed262aeffbeb43ef13ae04baeb9b84515a69
