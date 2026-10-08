@@ -1016,10 +1016,14 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
 
 
 def _mcp_evidence(sources: list[dict]) -> str:
+    if not sources:
+        return ""
+    share = 6000 // len(sources)
     text = "\n\n".join(
-        f"{_document_source_citation(source)}\n{source.get('snippet') or ''}" for source in sources
+        f"{_document_source_citation(source)}\n{(source.get('snippet') or '')[:share]}"
+        for source in sources
     )
-    return f"\n\nMCP tools:\n{text[:6000]}" if text else ""
+    return f"\n\nMCP tools:\n{text}"
 
 
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:

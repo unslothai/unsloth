@@ -13812,11 +13812,11 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
     return _mcp_listing(listed), complete
 
 
-async def get_enabled_mcp_tools() -> list[dict]:
+async def get_enabled_mcp_tools(include_stdio: bool = True) -> list[dict]:
     # Keep the SQLite-backed server list off the event loop.
     servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
     # Never spawn stdio servers when stdio is disabled on this host.
-    if not stdio_mcp_enabled():
+    if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
         return []
@@ -13889,7 +13889,11 @@ def mcp_search_argument(name: str, tool: dict) -> str | None:
 
 
 async def mcp_search_tools(include_stdio: bool = True) -> list[dict]:
-    await get_enabled_mcp_tools()
+    from state.tool_policy import get_tool_policy
+
+    if get_tool_policy() is False:
+        return []
+    await get_enabled_mcp_tools(include_stdio)
     servers = _enabled_mcp_servers(await asyncio.to_thread(mcp_servers_db.list_servers))
     if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]

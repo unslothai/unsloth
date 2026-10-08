@@ -247,3 +247,67 @@ def test_resumed_run_keeps_mcp_sources_citable(notes_server, monkeypatch):
     assert "Citation: [MCP: Project Notes · search_notes]" in synthesis_prompts[-1]
     assert "14 March 2031" in synthesis_prompts[-1]
     assert "[MCP: Project Notes · search_notes]" in completed["report"]
+
+
+def test_mcp_sources_only_accept_the_mcp_citation():
+    from core.research.citations import _validate_report
+
+    source = {"kind": "mcp", "filename": "Project Notes · search_notes"}
+    report = "A [MCP: Project Notes · search_notes]. B [Document: Project Notes · search_notes]."
+
+    assert _validate_report(report, [], [source]) == "A [MCP: Project Notes · search_notes]. B ."
+
+
+def test_every_selected_mcp_tool_reaches_the_notes():
+    from core.research_runs import _mcp_evidence
+
+    sources = [
+        {"kind": "mcp", "filename": f"Notes · search_{i}", "snippet": f"fact-{i} " + "x" * 3990}
+        for i in range(3)
+    ]
+
+    evidence = _mcp_evidence(sources)
+    assert all(f"fact-{i}" in evidence for i in range(3))
+    assert len(evidence) < 6500
+
+
+def test_research_tools_for_an_api_key_never_start_stdio_servers(notes_server, monkeypatch):
+    from core.inference import tools
+    from routes.mcp_servers import list_research_search_tools
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    mcp_servers_db.create_server(id = "local", display_name = "Local", url = "/bin/sh -c id")
+    probed = []
+
+    async def probe(**kwargs):
+        probed.append(kwargs["url"])
+        return []
+
+    monkeypatch.setattr(tools, "list_tools_async", probe)
+    listed = asyncio.run(
+        list_research_search_tools(current_subject = "alice", via_api_key = True)
+    )
+
+    assert probed == []
+    assert [tool["tool"] for tool in listed] == ["search_notes", "search_papers"]
+
+
+def test_research_ignores_mcp_sources_while_tools_are_disabled(notes_server):
+    from routes.mcp_servers import list_research_search_tools
+    from routes.research_runs import CreateResearchRun, _sanitize_config
+    from state.tool_policy import tools_force_disabled
+
+    with tools_force_disabled():
+        listed = asyncio.run(list_research_search_tools(current_subject = "alice"))
+        config = _sanitize_config(
+            CreateResearchRun(
+                threadId = "thread-1",
+                userMessageId = "user-1",
+                inferenceRequest = {"model": "local-model"},
+                mcpSources = [{"serverId": "notes", "tool": "search_notes"}],
+            ),
+            {"modelId": "local-model"},
+        )
+
+    assert listed == []
+    assert "mcpSources" not in config

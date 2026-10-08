@@ -24,6 +24,7 @@ from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
 from core.inference.providers import answers_decisions_only, provider_runs_local_tools
 from models.providers import MAX_JSON_SAFE_INTEGER
+from state.tool_policy import get_tool_policy
 from storage import mcp_servers_db, providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
@@ -406,7 +407,7 @@ def _sanitize_config(
         "model": model,
         "inferenceRequest": request,
         "ragScope": rag_scope,
-        **({"mcpSources": mcp_sources} if mcp_sources else {}),
+        **({"mcpSources": mcp_sources} if mcp_sources and get_tool_policy() is not False else {}),
         "budgets": budgets,
         "websitePolicy": website_policy,
         "instructions": (payload.instructions or "").strip(),

@@ -358,8 +358,8 @@ def _document_source_citation(source: dict) -> str:
 def _allowed_document_citations(sources: list[dict]) -> set[str]:
     allowed = set()
     for source in sources:
-        filename = str(source.get("filename") or "Document")
-        allowed.add(f"[Document: {filename}]")
+        if source.get("kind") != "mcp":
+            allowed.add(f"[Document: {source.get('filename') or 'Document'}]")
         allowed.add(_document_source_citation(source))
     return allowed
 
