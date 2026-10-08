@@ -7585,6 +7585,14 @@ def _write_direct_stream_key(key: str, previous: "Optional[Path]" = None) -> "Pa
 
     directory = auth_root()
     directory.mkdir(parents = True, exist_ok = True)
+    if previous is None:
+        # Files left by a killed Studio. llama-server reads its key once at startup, so anything older than a launch
+        # window is unused.
+        stale_before = time.time() - 600
+        for stale in directory.glob("llama_api_key_*"):
+            with contextlib.suppress(OSError):
+                if stale.stat().st_mtime < stale_before:
+                    stale.unlink()
     path = (
         previous if previous is not None else directory / f"llama_api_key_{_secrets.token_hex(8)}"
     )

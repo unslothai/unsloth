@@ -51,6 +51,19 @@ def test_key_file_is_per_backend_private_and_rewritten_on_relaunch(monkeypatch, 
         assert stat.S_IMODE(second.stat().st_mode) == 0o600
 
 
+def test_stale_key_files_are_swept_on_a_new_launch(monkeypatch, tmp_path):
+    import utils.paths.storage_roots as roots
+
+    monkeypatch.setattr(roots, "auth_root", lambda: tmp_path)
+    stale = tmp_path / "llama_api_key_dead"
+    stale.write_text("old")
+    os.utime(stale, (1, 1))
+    recent = llama_cpp._write_direct_stream_key("live")
+    current = llama_cpp._write_direct_stream_key("new")
+    assert not stale.exists()
+    assert recent.read_text() == "live" and current.read_text() == "new"
+
+
 def test_tool_guard_still_refuses_the_per_launch_key_file():
     from core.inference import tools
 
