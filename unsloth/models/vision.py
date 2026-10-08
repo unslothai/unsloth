@@ -151,6 +151,7 @@ from .loader_utils import (
     planner_model_class,
     exclude_no_placement_params,
     planner_quantization_kwargs,
+    raise_if_bnb_cpu_spill,
     requested_device_map,
     resolve_auto_block_swap,
     resolve_unsloth_device_map,
@@ -3736,6 +3737,9 @@ class FastBaseModel:
                 model.fast_generate = model.vllm_engine.generate
                 model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
 
+        except ValueError as error:
+            raise_if_bnb_cpu_spill(error, model_name, _offload_layers)
+            raise
         finally:
             raise_handler.remove()
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer

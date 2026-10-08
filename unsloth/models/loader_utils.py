@@ -223,6 +223,42 @@ def planner_kwargs_with_max_memory(planner_kwargs, loader_kwargs):
     return merged
 
 
+# transformers' bitsandbytes quantizers (4-bit and 8-bit) raise this when the automatic map spills past the GPU.
+_BNB_CPU_SPILL_PREFIX = "Some modules are dispatched on the CPU or the disk"
+
+
+def raise_if_bnb_cpu_spill(
+    error,
+    model_name,
+    offload_layers = None,
+):
+    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error so the caller re-raises it unchanged."""
+    if not isinstance(error, ValueError) or not str(error).startswith(_BNB_CPU_SPILL_PREFIX):
+        return
+    free = ""
+    try:
+        if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.is_available():
+            free = ", ".join(
+                f"cuda:{i} has {torch.cuda.mem_get_info(i)[0] / 1024**3:.2f} GB free"
+                for i in range(torch.cuda.device_count())
+            )
+            free = f" ({free})"
+    except Exception:
+        free = ""
+    if offload_layers:
+        hint = "Lower max_seq_length or the batch size, load a smaller model, or add a GPU."
+    else:
+        hint = (
+            'Pass `offload_layers = "auto"` to from_pretrained to keep the decoder layers that do '
+            "not fit in host RAM and stream them in during training (slower, but it trains), "
+            "load a smaller model, or free GPU memory held by other programs."
+        )
+    raise ValueError(
+        f"Unsloth: {model_name} does not fit in GPU memory{free}, so transformers placed "
+        f"part of it on the CPU, which bitsandbytes cannot quantize. {hint}"
+    ) from error
+
+
 def unmarked_device_map(device_map):
     """The default with its marker removed; anything else exactly as it came in. For a nested load that must not re-read the value as "nobody chose this". A bare `str()` would also flatten a caller's `{"": 0}` into text transformers reads as a device name."""
     return str(device_map) if isinstance(device_map, _DefaultDeviceMap) else device_map

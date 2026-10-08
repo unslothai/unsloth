@@ -51,6 +51,7 @@ from .loader_utils import (
     planner_hub_kwargs,
     planner_kwargs_with_max_memory,
     planner_quantization_kwargs,
+    raise_if_bnb_cpu_spill,
     requested_device_map,
     resolve_unsloth_device_map,
     resolve_auto_block_swap,
@@ -3359,6 +3360,9 @@ class FastLlamaModel:
                 llm.shared_weights = True
                 model.fast_generate = model.vllm_engine.generate
                 model.fast_generate_batches = functools.partial(generate_batches, model.vllm_engine)
+        except ValueError as error:
+            raise_if_bnb_cpu_spill(error, model_name, offload_layers)
+            raise
         finally:
             raise_handler.remove()
             _undo_block_swap_keys()
