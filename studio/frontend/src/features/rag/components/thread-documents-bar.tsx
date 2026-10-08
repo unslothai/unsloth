@@ -153,8 +153,7 @@ async function requireStoredThread(threadId: string): Promise<void> {
   try {
     stored = await ensureStoredChatThread(threadId);
   } catch (error) {
-    // A backend tombstone is an answer, not an indeterminate transport failure: indexing
-    // against it would leave documents under a thread that can never come back.
+    // tombstones block indexing; other errors do not prove the thread is gone.
     if (error instanceof ChatThreadDeletedError) {
       throw error;
     }
@@ -165,8 +164,7 @@ async function requireStoredThread(threadId: string): Promise<void> {
   }
 }
 
-/** Read-only listing of the project's sources, shown when the Docs pill is off:
- * they still reach the model, so they must not be invisible. */
+/** shows inherited sources because Docs off does not stop retrieval. */
 function InheritedProjectSources({
   documents,
   unused,
@@ -187,8 +185,7 @@ function InheritedProjectSources({
         <HugeiconsIcon icon={FolderAttachmentIcon} strokeWidth={2} className="size-3.5" />
         <span>{unused ? "Project sources not used" : "Project sources"}</span>
       </span>
-      {/* Same cap as the editable list: a linked folder can carry hundreds of
-          sources, and an uncapped row would swallow the chat viewport. */}
+      {/* cap linked folders because their sources can fill the viewport. */}
       <div
         className={cn(
           "flex max-h-24 flex-1 flex-row flex-wrap items-center gap-1.5 overflow-y-auto",
@@ -208,11 +205,8 @@ function InheritedProjectSources({
   );
 }
 
-/** The project the displayed chat belongs to, read from the chat's own row: the
- * global activeProjectId still names the project being left during a navigation.
- * `undefined` while unresolved, which holds the attach controls rather than
- * reading as "not in a project". */
-/** Reads of the chat's own row before the scope is left unresolved. */
+/** row data avoids stale activeProjectId; undefined blocks attachments. */
+/** retries chat row reads before leaving the project unresolved. */
 const PROJECT_LOOKUP_RETRIES = 3;
 
 function useThreadProjectId(
@@ -441,10 +435,7 @@ export function ThreadDocumentsBar({
   const aui = useAui();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // A fresh chat has no thread id until the first message; materialize one on demand
-  // so docs can attach (append() in runtime-provider reuses it). Track it locally:
-  // pushing to global activeThreadId would, in a project, remount this bar mid-upload
-  // (ProjectLanding's pendingNewThreadId branch) and drop the just-attached chips.
+  // materialize locally; append() reuses the id without a mid-upload remount.
   const [materializedId, setMaterializedId] = useState<string | null>(null);
   const effectiveThreadId = threadId ?? materializedId;
   const initPromiseRef = useRef<Promise<string> | null>(null);
@@ -766,9 +757,7 @@ export function ThreadDocumentsBar({
       </>
     );
   }
-  // Project sources retrieve whether the Docs pill is on or not (chat-adapter's projectRagEnabled),
-  // so list them either way rather than letting the model answer from files the user cannot see.
-  // The attach controls stay behind the pill: with it off, thread scope is inert.
+  // project sources stay visible with Docs off because retrieval uses them; thread scope is inert.
   if (!ragEnabled) {
     return (
       <>
@@ -783,7 +772,7 @@ export function ThreadDocumentsBar({
     );
   }
 
-  // Attaching before the chat's project is known would file the file by guess.
+  // block attachments until the chat's project is known to avoid guessing their scope.
   const busy = uploading || projectUploading || projectUnresolved;
   const chipCount = documents.length + projectDocuments.length;
 
@@ -791,7 +780,7 @@ export function ThreadDocumentsBar({
     <>
       {kbDialog}
       <div className="mb-2 flex w-full flex-row items-start gap-1.5 pl-0.5 pr-1.5 pt-0.5 pb-1">
-        {/* Centred together; the row stays top-aligned for chips. */}
+        {/* keep controls aligned with top-aligned chips. */}
         <div className="flex shrink-0 items-center gap-1.5">
           <AttachFilesButton
             disabled={busy}
@@ -831,7 +820,7 @@ export function ThreadDocumentsBar({
             Not used
           </span>
         ) : null}
-        {/* Cap height so a large set scrolls; fade the cut-off row. */}
+        {/* cap chip rows and fade overflow. */}
         <div
           ref={chipScrollRef}
           onScroll={updateChipFade}
@@ -841,7 +830,7 @@ export function ThreadDocumentsBar({
             ragToolDisabled && "opacity-50",
           )}
         >
-          {/* Project sources first: inherited context, and it outlives this chat. */}
+          {/* project sources precede thread sources because they outlive the chat. */}
           {projectDocuments.map((doc) => (
             <DocumentStatusChip
               key={`project:${doc.id}`}
