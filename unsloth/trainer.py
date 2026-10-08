@@ -997,7 +997,13 @@ class UnslothTrainer(SFTTrainer):
             return super().create_optimizer()
 
         if self.optimizer is None:
-            optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
+            # Trainer.create_optimizer prefers a user optimizer_cls_and_kwargs over args.optim.
+            custom = getattr(self, "optimizer_cls_and_kwargs", None)
+            if custom is not None:
+                optimizer_cls, optimizer_kwargs = custom[0], dict(custom[1])
+                optimizer_kwargs.setdefault("lr", self.args.learning_rate)
+            else:
+                optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
             self.optimizer = _create_unsloth_optimizer(
                 target_model,
                 optimizer_cls,

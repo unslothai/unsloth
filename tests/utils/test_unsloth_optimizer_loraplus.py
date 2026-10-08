@@ -118,6 +118,18 @@ def test_without_the_ratio_the_layout_is_unchanged():
     assert sorted({g["lr"] for g in optimizer.param_groups}) == [5e-6, LR]
 
 
+def test_a_custom_optimizer_cls_and_kwargs_is_kept():
+    torch = pytest.importorskip("torch")
+    model = _peft_model(torch, torch.nn)
+    trainer = _trainer(model, loraplus_lr_ratio = 16.0)
+    trainer.optimizer_cls_and_kwargs = (torch.optim.SGD, {"momentum": 0.5})
+    optimizer = UnslothTrainer.create_optimizer(trainer, model)
+
+    assert type(optimizer) is torch.optim.SGD
+    assert all(g["momentum"] == 0.5 for g in optimizer.param_groups)
+    assert sorted({g["lr"] for g in optimizer.param_groups}) == [LR, pytest.approx(LR * 16)]
+
+
 def test_a_ratio_with_no_lora_is_refused():
     torch = pytest.importorskip("torch")
     model = torch.nn.Linear(4, 4)
