@@ -2365,6 +2365,15 @@ def test_python_classifier(code, unsafe):
         ("import numpy as np, json\n(np.load if x else json.load)('a.npy', None, True)", True),
         ("import numpy as np\n(loader or np.load)('a.npy', None, True)", True),
         ("import json\n(json.load if x else json.loads)(f)", False),
+        ("import numpy as np\nnp.read_array = np.load\nnp.lib.format.read_array(f, True)", True),
+        ("import numpy as np\n(np.load if c else np.lib.format.read_array)(f, True)", True),
+        ("import numpy as np\n(loader := np.load)('a.npy', None, True)", True),
+        (
+            "import numpy as np\nbox.reader, _ = (np.load, None)\nbox.reader('a.npy', None, True)",
+            True,
+        ),
+        ("import numpy as np\nnp.load('a.npy', 'r')", False),
+        ("import numpy as np\nnp.load('a.npy', None, False)", False),
     ],
 )
 def test_python_classifier_numpy_allow_pickle(code, unsafe):

@@ -2810,7 +2810,8 @@ _AUTO_UNSAFE_PY_ATTRS = frozenset(
 # yaml.load) since bare `load` is too common.
 _AUTO_UNSAFE_PY_LOAD_MODULES = frozenset({"torch", "joblib", "cloudpickle", "yaml"})
 # numpy callables that unpickle when allow_pickle is set, mapped to its positional index: load(file, mmap_mode,
-# allow_pickle), lib.format.read_array(fp, allow_pickle), lib.npyio.NpzFile(fid, own_fid, allow_pickle).
+# allow_pickle), lib.format.read_array(fp, allow_pickle), lib.npyio.NpzFile(fid, own_fid, allow_pickle). The gate checks
+# positions 1 and 2 of any of them, so an alias that points at another loader cannot shift the flag out of view.
 _NUMPY_PICKLE_FLAG_POS = {"load": 2, "read_array": 1, "NpzFile": 2}
 # The load entry points on those modules. yaml.load runs whatever its Loader= builds, and !!python/object/apply in the
 # data is a call, so it asks like the pickle-backed ones. yaml.safe_load is untouched.
@@ -6142,6 +6143,13 @@ def _is_literal_false(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value is False
 
 
+def _is_inert_loader_arg(node: ast.AST) -> bool:
+    # A literal that cannot turn pickling on: False, None, or a string (mmap_mode="r").
+    return isinstance(node, ast.Constant) and (
+        node.value is None or node.value is False or isinstance(node.value, str)
+    )
+
+
 def _python_is_potentially_unsafe(code: str) -> bool:
     """Classify python-tool code for auto mode (fail closed)."""
     if not code or not code.strip():
@@ -6218,6 +6226,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     def _allow_pickle_position(node) -> "int | None":
         # allow_pickle's positional index when node is a numpy pickle loader, else None. A conditional or boolean
         # callee ((np.load if a else json.load)(...)) counts if any branch is a loader.
+        if isinstance(node, ast.NamedExpr):
+            return _allow_pickle_position(node.value)  # (loader := np.load)(...)
         if isinstance(node, (ast.IfExp, ast.BoolOp)):
             branches = [node.body, node.orelse] if isinstance(node, ast.IfExp) else node.values
             return next(
@@ -6522,6 +6532,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                         value.elts
                     ):
                         for tgt_el, val_el in zip(target.elts, value.elts):
+                            if (
+                                isinstance(tgt_el, ast.Attribute)
+                                and (_pos := _allow_pickle_position(val_el)) is not None
+                            ):
+                                pickle_fn_attr_aliases[tgt_el.attr] = (
+                                    _pos  # box.r, _ = (np.load, 1)
+                                )
                             if not isinstance(tgt_el, ast.Name):
                                 continue
                             tid = tgt_el.id
@@ -6731,9 +6748,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     kw.arg == "allow_pickle" and not _is_literal_false(kw.value)
                     for kw in node.keywords
                 ) or (
-                    (_flag_pos := _allow_pickle_position(func)) is not None
+                    _allow_pickle_position(func) is not None
                     and (
-                        (len(node.args) > _flag_pos and not _is_literal_false(node.args[_flag_pos]))
+                        not all(_is_inert_loader_arg(arg) for arg in node.args[1:3])
                         or any(isinstance(arg, ast.Starred) for arg in node.args)
                         or any(kw.arg is None for kw in node.keywords)
                     )
