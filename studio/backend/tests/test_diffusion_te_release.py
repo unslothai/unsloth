@@ -70,9 +70,6 @@ def _plan(
 M5_MAX = DeviceMemory("mps", "mps", "unified_memory", free_mib = 27 * GIB, total_mib = 48 * GIB)
 
 
-# -- the int8 ConvRot encoder on Apple Silicon --------------------------------------------------------------------
-
-
 def test_mps_takes_the_int8_convrot_encoder_without_the_fp8_fallback():
     sources = te_prequant.te_prequant_sources(
         _q21_family(), te_quant_mode = "int8", target = _target("mps")
@@ -146,9 +143,6 @@ def test_int8_convrot_linear_runs_on_this_accelerator():
     assert rel < 0.02, float(rel)
 
 
-# -- the load-time refusal ----------------------------------------------------------------------------------------
-
-
 def test_m5_max_refuses_the_bf16_encoder():
     weights = Q21_DIT_Q4_K_M_MIB + Q21_TE_BF16_MIB + Q21_VAE_MIB
     assert unified_memory_shortfall_message(_plan(M5_MAX, weights, Q21_TE_BF16_MIB)) is not None
@@ -171,9 +165,6 @@ def test_discrete_vram_never_refuses_here():
     memory = DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 8 * GIB, total_mib = 24 * GIB)
     weights = Q21_DIT_Q4_K_M_MIB + Q21_TE_BF16_MIB + Q21_VAE_MIB
     assert unified_memory_shortfall_message(_plan(memory, weights, Q21_TE_BF16_MIB)) is None
-
-
-# -- when the release engages -------------------------------------------------------------------------------------
 
 
 def test_release_engages_on_unified_memory_when_the_resident_set_does_not_fit(monkeypatch):
@@ -203,9 +194,6 @@ def test_release_env_forces_either_way(monkeypatch, value, expected):
     monkeypatch.setenv(te_release.RELEASE_ENV, value)
     memory = DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 8 * GIB, total_mib = 24 * GIB)
     assert te_release.release_wanted(_plan(memory, 1, 1))[0] is expected
-
-
-# -- release and reload, on this runner's accelerator ------------------------------------------------------------
 
 
 def _device() -> str:

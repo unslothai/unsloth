@@ -1,20 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Release the text encoders between prompts on unified memory.
+"""Release the text encoders during denoise on unified memory, where offloading frees nothing.
 
-On Apple Silicon (and integrated GPUs) the CPU and GPU share one memory pool, so offloading a component to the CPU
-frees nothing, and the memory planner keeps every weight resident. The text encoders run once, before step 0, yet
-they stay resident through the whole denoise and VAE decode. For Qwen-Image-2.1 that is the 17.5 GB Qwen3-VL-8B
-next to a 4.2 GB GGUF denoiser.
-
-When the planned resident set (weights plus generation headroom) does not fit the device budget, this releases the
-encoders' weights as soon as the denoise loop starts and loads them back the next time an encoder runs. The first
-release writes the encoders' tensors to a local snapshot (once per load), and every reload reads that snapshot, so a
-reload is exact and needs no network. Studio's prompt cache answers a repeated prompt without running the encoders,
-so the same prompt with a new seed never reloads.
-
-``UNSLOTH_DIFFUSION_RELEASE_TEXT_ENCODER=1`` forces it on, ``=0`` forces it off. torch is imported lazily.
+The first release snapshots the encoders' large tensors to local disk; a forward pre-hook reloads them bit-exact before
+an encoder runs again. ``UNSLOTH_DIFFUSION_RELEASE_TEXT_ENCODER=1`` / ``=0`` forces it on / off.
 """
 
 from __future__ import annotations
@@ -48,11 +38,8 @@ def release_override() -> Optional[bool]:
 
 
 def release_wanted(plan: Any) -> tuple[bool, str]:
-    """Whether a load committed to ``plan`` should release its text encoders between prompts, and why.
-
-    Auto engages only on unified memory, where nothing else can make room, and only when the planned resident
-    requirement (every weight plus the generation headroom and base overhead) exceeds the safe device budget. A
-    load that fits keeps its encoders resident and pays no reload."""
+    """``(wanted, reason)``: auto engages only on unified memory when weights plus generation headroom exceed the
+    safe budget."""
     forced = release_override()
     if forced is not None:
         return forced, f"{RELEASE_ENV}={'1' if forced else '0'}"
@@ -151,8 +138,6 @@ class TextEncoderReleaser:
         self._install_hooks()
         self._finalizer = weakref.finalize(self, _remove_dir, None)
 
-    # -- discovery -------------------------------------------------------------------------------------------------
-
     def _collect(self) -> None:
         seen: set[int] = set()
         for attr, encoder in self._encoders:
@@ -181,8 +166,6 @@ class TextEncoderReleaser:
 
         for owner in owners.values():
             self._hooks.append(owner.register_forward_pre_hook(_pre_hook))
-
-    # -- release / reload ------------------------------------------------------------------------------------------
 
     @property
     def released(self) -> bool:
@@ -243,7 +226,7 @@ class TextEncoderReleaser:
         self._shards = shards
 
     def release(self) -> int:
-        """Free the encoders' large tensors; returns the bytes released (0 when already released or refused)."""
+        """Bytes freed; 0 when already released or refused."""
         import torch
         with self._lock:
             if self._released or not self._slots:
@@ -285,7 +268,7 @@ class TextEncoderReleaser:
             return released
 
     def ensure_loaded(self) -> None:
-        """Restore every released tensor from the snapshot, on its original device. No-op when resident."""
+        """Restore every released tensor from the snapshot onto its original device."""
         import torch
         from safetensors import safe_open
 

@@ -247,11 +247,7 @@ class TePrequantSource:
 
 
 def int8_convrot_te_runs_on(target: Any) -> bool:
-    """Whether the hosted int8 ConvRot encoder can run on ``target`` without the fp8 path: Apple Silicon (MPS).
-
-    The encoder is plain tensors (int8 codes, fp32 row scales) and its forward is a Hadamard matmul plus
-    ``F.linear`` on a per-call dequantised view, so it needs no torchao, no fp8 dtype and no CUDA kernel. On CUDA
-    the fp8 gate already admits it."""
+    """MPS runs the int8 ConvRot encoder without fp8: plain tensors, a Hadamard matmul and ``F.linear``."""
     return getattr(target, "device", None) == "mps"
 
 
@@ -431,9 +427,7 @@ def te_prequant_sources(
         denied = getattr(precision, "_te_family_denied", None)
         if callable(denied) and denied(family, mode):
             return {}
-        # int8 dequantizes to bf16 per call (no torchao) and falls back to the fp8 file: it needs what fp8 needs.
-        # On Apple Silicon the int8 ConvRot file alone still runs (plain tensors, a Hadamard matmul and F.linear),
-        # but the fp8 fallback does not, so that target keeps the int8 file and drops the fp8 names.
+        # int8 falls back to the fp8 file, so it needs fp8; MPS runs the int8 file alone and drops the fp8 names.
         fp8_runs = te_quant_supported(target, TE_QUANT_FP8)
         if not fp8_runs and not (mode == "int8" and int8_convrot_te_runs_on(target)):
             return {}
