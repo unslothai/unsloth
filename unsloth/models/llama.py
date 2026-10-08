@@ -116,7 +116,8 @@ from unsloth.models._attn_mask_compat import (
 )
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
-from ..kernels.utils import has_mxfp4_base
+from ..kernels.utils import _has_active_lora_bias, has_mxfp4_base
+from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
 from ..tokenizer_utils import *
 from .vision import FastBaseModel, _is_text_seq2seq_config
 from .vision import (
@@ -168,7 +169,7 @@ def patch_saving_functions(*args, **kwargs):
 patch_saving_functions._unsloth_deferred_shim = True
 
 
-import re, os, inspect, math, sys
+import re, os, inspect, sys
 import types
 
 try:
@@ -3614,6 +3615,7 @@ class FastLlamaModel:
                     f"Unsloth: could not check the dispatch hooks "
                     f"({type(_exc).__name__}: {_exc})."
                 )
+        _install_bnb_nf4_override()
         return model, tokenizer
 
     @staticmethod
@@ -3846,14 +3848,12 @@ class FastLlamaModel:
                 f"Unsloth will patch all other layers, except LoRA matrices, causing a performance hit."
             )
 
-        if not (
-            type(init_lora_weights) is bool
-            or init_lora_weights == "gaussian"
-            or init_lora_weights == "loftq"
-            or init_lora_weights == "corda"
-        ):
-            raise ValueError(
-                'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq", "corda"].'
+        validate_init_lora_weights(init_lora_weights, model, r)
+        if init_lora_weights == "eva":
+            # EVA collects layer inputs with LoRA module forward hooks, which the fused LoRA kernels never call.
+            raise NotImplementedError(
+                "Unsloth: `init_lora_weights = 'eva'` is not supported by FastLanguageModel's fused LoRA path.\n"
+                "Use `FastModel.from_pretrained` and `FastModel.get_peft_model` instead."
             )
 
         if init_lora_weights == "loftq":
@@ -3872,12 +3872,6 @@ class FastLlamaModel:
                     "We shall use `loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)`."
                 )
                 loftq_config = LoftQConfig(loftq_bits = 4, loftq_iter = 1)
-
-            if hasattr(model.config, "quantization_config"):
-                raise ValueError(
-                    "Unsloth: You are using `loftq` init, yet `load_in_4bit = True` was set.\n"
-                    "Reload your model without any quantization by setting `load_in_4bit = False`."
-                )
 
         assert type(use_rslora) is bool
         if use_rslora:
@@ -4051,6 +4045,8 @@ class FastLlamaModel:
                 _n = max(1, min(int(finetune_last_n_layers), _total_layers))
                 layers_to_transform = list(range(_total_layers - _n, _total_layers))
 
+        validate_init_target_parameters(init_lora_weights, target_parameters)
+
         arguments = dict(
             r = r,
             lora_alpha = lora_alpha,
@@ -4103,7 +4099,13 @@ class FastLlamaModel:
                 gc.collect()
                 clean_gpu_cache()
 
-        model = _get_peft_model(model, lora_config)
+        from .lora_init import fast_lora_init, record_fast_pissa
+
+        with fast_lora_init() as fast:
+            model = _get_peft_model(model, lora_config)
+        if fast["pissa"]:
+            record_fast_pissa(model)
+        snapshot_residual_lora_init(model, init_lora_weights)
 
         try:
             from .vision import _lift_endpoint_hooks_onto_adapters
@@ -4277,6 +4279,7 @@ class FastLlamaModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
             use_reentrant = True,
         )
+        freeze_peft_variant_weights(model)
 
         for active_adapter in model.peft_config.keys():
             if False:
@@ -4352,10 +4355,13 @@ class FastLlamaModel:
                         and (len(getattr(up_proj, "lora_magnitude_vector", []) or []) == 0)
                         and (len(getattr(down_proj, "lora_magnitude_vector", []) or []) == 0)
                         and not has_mxfp4_base(gate_proj, up_proj, down_proj)
+                        and not _has_active_lora_bias(gate_proj)
+                        and not _has_active_lora_bias(up_proj)
+                        and not _has_active_lora_bias(down_proj)
                     ):
-                        # See stackoverflow.com/questions/50599045 on replacing a function within a class of a module.
+                        # MethodType binds the replacement; see stackoverflow.com/questions/50599045.
                         if hasattr(mlp_module, "_unsloth_forward"):
-                            # Then the mlp has been patched to use TiledMLP.
+                            # _unsloth_forward identifies an existing TiledMLP patch.
                             mlp_module._unsloth_forward = types.MethodType(
                                 _apply_lora_mlp, mlp_module
                             )
@@ -4382,6 +4388,9 @@ class FastLlamaModel:
                     and (len(getattr(k_proj, "lora_magnitude_vector", []) or []) == 0)
                     and (len(getattr(v_proj, "lora_magnitude_vector", []) or []) == 0)
                     and not has_mxfp4_base(q_proj, k_proj, v_proj)
+                    and not _has_active_lora_bias(q_proj)
+                    and not _has_active_lora_bias(k_proj)
+                    and not _has_active_lora_bias(v_proj)
                 ):
                     layer.self_attn.apply_qkv = apply_lora_qkv
                     n_qkv += 1
@@ -4400,6 +4409,7 @@ class FastLlamaModel:
                     and (getattr(o_proj, "base_layer", o_proj).bias is None)
                     and (len(getattr(o_proj, "lora_magnitude_vector", []) or []) == 0)
                     and not has_mxfp4_base(o_proj)
+                    and not _has_active_lora_bias(o_proj)
                 ):
                     layer.self_attn.apply_o = apply_lora_o
                     n_o += 1
@@ -4409,7 +4419,6 @@ class FastLlamaModel:
                         "are not enabled or a bias term (like in Qwen) is used."
                     )
 
-        # A zero count reads as a failure, so say why the fused kernels were skipped.
         unfused_reason = _fused_lora_skip_reason(
             lora_dropout, bias, float32_base, fsdp = fused_lora_declined_for_fsdp
         )

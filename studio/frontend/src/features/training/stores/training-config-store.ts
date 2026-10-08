@@ -3,6 +3,7 @@
 
 import {
   DEFAULT_HYPERPARAMS,
+  LR_DEFAULT_DECISION_FULL,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
 } from "@/config/training";
@@ -10,12 +11,16 @@ import { getHfToken } from "@/features/hub";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { isAdapterMethod } from "@/types/training";
-import type { ModelType } from "@/types/training";
+import type { ModelType, TrainingMethod } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
-import { checkVisionModel, getModelConfig } from "../api/models-api";
-import type { BackendModelConfig } from "../api/models-api";
+import {
+  checkVisionModel,
+  decisionLayoutHasLlmBackbone,
+  getModelConfig,
+} from "../api/models-api";
+import type { BackendModelConfig, DecisionCheckpoint } from "../api/models-api";
 import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
 import {
   createDatasetCacheUsabilityIdentity,
@@ -30,7 +35,11 @@ import { resolveDeletedLocalDatasetSelection } from "../lib/dataset-selection";
 import { requiresExplicitCachedDatasetSplit } from "../lib/dataset-split-policy";
 import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
-import { trainingConfigPatchTouchesModelDefaults } from "../lib/model-defaults-edit-policy";
+import {
+  MODEL_DEFAULT_STATE_KEYS,
+  type ModelDefaultsPatch,
+  trainingConfigPatchTouchesModelDefaults,
+} from "../lib/model-defaults-edit-policy";
 import {
   inferTrainingModelTypeFromFlags,
   resolveTrainingModelType,
@@ -72,7 +81,6 @@ export { hasSeparateStreamingEvalSplit } from "./training-config-policy";
 // AbortController for in-flight dataset multimodal checks.
 let _datasetCheckController: AbortController | null = null;
 
-
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
@@ -103,6 +111,58 @@ function canReapplyModelDefaults(modelName: string): boolean {
     _modelDefaultsEditBaseline?.modelName === modelName &&
     _modelDefaultsEditBaseline.editGeneration === _modelDefaultsEditGeneration
   );
+}
+
+const DEFAULT_DECISION_CHECKPOINT = "laya-multilingual";
+
+// evalSteps is left alone: it follows the chosen eval split, not the model.
+const GENERIC_MODEL_DEFAULTS = Object.fromEntries(
+  MODEL_DEFAULT_STATE_KEYS.filter((key) => key !== "evalSteps").map((key) => [
+    key,
+    DEFAULT_HYPERPARAMS[key],
+  ]),
+) as ModelDefaultsPatch;
+
+// No defaults could be loaded to replace the decision recipe, so fall back to the generic ones.
+function leaveDecisionWithoutDefaults(
+  state: TrainingConfigState,
+  method: TrainingMethod,
+): Partial<TrainingConfigState> {
+  const generic = {
+    ...state,
+    ...GENERIC_MODEL_DEFAULTS,
+    modelType: null,
+    trainingMethodProvenance: {
+      ...state.trainingMethodProvenance,
+      learningRateManuallySet: false,
+      modelAdapterLearningRate: null,
+    },
+  };
+  return {
+    ...GENERIC_MODEL_DEFAULTS,
+    ...buildTrainingMethodPatch(generic, method),
+    modelSubfolder: null,
+    decisionCheckpoints: null,
+    decisionLayout: null,
+    settingsBeforeDecision: null,
+  };
+}
+
+function resolveDecisionSubfolder(
+  checkpoints: DecisionCheckpoint[] | null,
+  current: string | null,
+  keepCurrent: boolean,
+): string | null {
+  if (!checkpoints || checkpoints.length === 0) {
+    return null;
+  }
+  if (keepCurrent && checkpoints.some((c) => c.subfolder === current)) {
+    return current;
+  }
+  const preferred =
+    checkpoints.find((c) => c.name === DEFAULT_DECISION_CHECKPOINT) ??
+    checkpoints[0];
+  return preferred.subfolder;
 }
 
 // streamingCompatiblePatch can silently flip streaming-coupled fields, so toast when it does,
@@ -139,8 +199,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const patch = typeof update === "function" ? update(state) : update;
           const invariantPatch = datasetSourceInvariantPatch({
             datasetSource: patch.datasetSource ?? state.datasetSource,
-            datasetStreaming:
-              patch.datasetStreaming ?? state.datasetStreaming,
+            datasetStreaming: patch.datasetStreaming ?? state.datasetStreaming,
           });
           const normalizedPatch = { ...patch, ...invariantPatch };
           if (trainingConfigPatchTouchesModelDefaults(normalizedPatch)) {
@@ -155,7 +214,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
       const loadAndApplyModelDefaults = (
         modelName: string,
-        options?: { applyTrainingDefaults?: boolean },
+        options?: {
+          applyTrainingDefaults?: boolean;
+          keepModelSubfolder?: boolean;
+        },
       ) => {
         const applyTrainingDefaults = options?.applyTrainingDefaults ?? true;
         _modelConfigController?.abort();
@@ -189,6 +251,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           requestState.selectedModel === modelName
             ? requestState.modelLocalPath
             : null;
+        const requestedAsDecision = requestState.trainAsDecision;
         const canApplyTrainingDefaults = () =>
           applyTrainingDefaults &&
           _modelDefaultsEditGeneration === requestedModelDefaultsEditGeneration;
@@ -216,13 +279,70 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           {
             preferLocalCache,
             localPath: preferLocalCache ? requestedLocalPath : null,
+            asDecision: requestedAsDecision,
           },
         )
           .then((modelDetails) => {
             if (controller.signal.aborted) return;
             if (!requestMatchesSelection()) return;
+            // Answered for the other side of the decision switch.
+            if (get().trainAsDecision !== requestedAsDecision) return;
 
-            const shouldApplyTrainingDefaults = canApplyTrainingDefaults();
+            const isDecision = modelDetails.model_type === "decision";
+            const settingsBeforeDecision = get().settingsBeforeDecision;
+            // Moving to or from a decision model replaces the whole recipe, even over edits made during the load.
+            const recipeChanged = isDecision
+              ? !(
+                  get().modelDefaultsAppliedFor === modelName &&
+                  get().modelType === "decision"
+                )
+              : settingsBeforeDecision !== null;
+            const shouldApplyTrainingDefaults =
+              recipeChanged || canApplyTrainingDefaults();
+            if (isDecision) {
+              const method = get().trainingMethod;
+              const methodWasEdited =
+                _trainingMethodEditGeneration !== trainingMethodEditGeneration;
+              // Clef and LLM decision models have an LLM backbone, so they take QLoRA; Laya is 16-bit only.
+              const takesQlora = decisionLayoutHasLlmBackbone(
+                modelDetails.decision_layout,
+              );
+              const keepMethod =
+                method === "lora" ||
+                (takesQlora && method === "qlora") ||
+                (method === "full" && (!recipeChanged || methodWasEdited));
+              set({
+                ...(keepMethod
+                  ? {}
+                  : buildTrainingMethodPatch(
+                      get(),
+                      takesQlora ? "qlora" : "lora",
+                    )),
+                settingsBeforeDecision: settingsBeforeDecision ?? {
+                  trainingMethod: method,
+                  datasetStreaming: get().datasetStreaming,
+                },
+              });
+            } else if (settingsBeforeDecision) {
+              const restoredMethod = settingsBeforeDecision.trainingMethod;
+              set({
+                ...(get().trainingMethod !== restoredMethod
+                  ? buildTrainingMethodPatch(
+                      {
+                        ...get(),
+                        modelType: null,
+                        trainingMethodProvenance: {
+                          ...get().trainingMethodProvenance,
+                          modelAdapterLearningRate: null,
+                        },
+                      },
+                      restoredMethod,
+                    )
+                  : {}),
+                settingsBeforeDecision: null,
+              });
+            }
+
             const shouldApplyCptTargetDefaults =
               applyTrainingDefaults &&
               !shouldApplyTrainingDefaults &&
@@ -246,6 +366,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     }
                   : {}),
                 modelType: null,
+                decisionLayout: null,
                 modelFormat: "adapter",
                 isVisionModel: false,
                 isEmbeddingModel: false,
@@ -276,7 +397,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
 
             // YAML LRs are tuned for adapters (LoRA/QLoRA); full fine-tune uses its own default.
             if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
-              modelDefaultsPatch.learningRate = LR_DEFAULT_FULL;
+              modelDefaultsPatch.learningRate = isDecision
+                ? LR_DEFAULT_DECISION_FULL
+                : LR_DEFAULT_FULL;
             }
 
             // Vision model + known image dataset: force trainOnCompletions off.
@@ -298,12 +421,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const inferredModelType = resolveTrainingModelType({
               modelType: modelDetails.model_type,
               isEmbedding,
+              isDecision,
               isVision: modelDetails.is_vision,
               isAudio: modelDetails.is_audio,
             });
+            const decisionCheckpoints = isDecision
+              ? (modelDetails.decision_checkpoints ?? null)
+              : null;
+            const modelSubfolder = resolveDecisionSubfolder(
+              decisionCheckpoints,
+              get().modelSubfolder,
+              !recipeChanged || options?.keepModelSubfolder === true,
+            );
 
             const modelSizeBytes = modelDetails.model_size_bytes;
             const autoSelectionPromise =
+              !isDecision &&
               shouldApplyTrainingDefaults &&
               typeof modelSizeBytes === "number" &&
               modelSizeBytes > 0 &&
@@ -416,11 +549,34 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : {}),
             };
 
+            const nextStreamingState = {
+              ...get(),
+              ...patch,
+              ...cptOverrides,
+              ...deferredCompletionDefault,
+              datasetStreaming: true,
+            };
+            const restoreStreaming =
+              !isDecision &&
+              settingsBeforeDecision?.datasetStreaming === true &&
+              nextStreamingState.datasetSource === "huggingface" &&
+              nextStreamingState.maxSteps > 0;
+
             set({
               ...patch,
               ...cptOverrides,
               ...cptTargetOverrides,
               ...deferredCompletionDefault,
+              ...(isDecision ? { datasetStreaming: false } : {}),
+              ...(restoreStreaming
+                ? {
+                    ...streamingCompatiblePatch(nextStreamingState),
+                    datasetStreaming: true,
+                    isDatasetImage: null,
+                    isDatasetAudio: false,
+                    datasetCheckFailed: false,
+                  }
+                : {}),
               ...(shouldApplyTrainingDefaults
                 ? {
                     trainingMethodProvenance: {
@@ -447,6 +603,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     }
                   : advancedSettingsBaseline,
               modelType: inferredModelType,
+              modelSubfolder,
+              decisionCheckpoints,
+              decisionLayout: isDecision
+                ? (modelDetails.decision_layout ?? "laya")
+                : null,
+              // Asked for a decision model the backend cannot make one of (audio, embeddings).
+              ...(requestedAsDecision && !isDecision
+                ? { trainAsDecision: false }
+                : {}),
               isVisionModel: modelDetails.is_vision,
               isEmbeddingModel: isEmbedding,
               isAudioModel: isAudio,
@@ -461,6 +626,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               maxPositionEmbeddings:
                 modelDetails.max_position_embeddings ?? null,
             });
+            if (restoreStreaming) {
+              trainingDatasetCacheRejections.reset(get().dataset);
+              recheckSelectedDatasetForStreamingMode(true);
+            }
 
             if (autoSelectionPromise) {
               void autoSelectionPromise.then((method) => {
@@ -499,6 +668,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (controller.signal.aborted) return;
             if (!requestMatchesSelection()) return;
 
+            const { settingsBeforeDecision } = get();
             set({
               isLoadingModelDefaults: false,
               modelDefaultsError:
@@ -507,6 +677,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   : "Failed to load model defaults",
               ...(canApplyTrainingDefaults()
                 ? { visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize }
+                : {}),
+              ...(settingsBeforeDecision && get().modelType !== "decision"
+                ? leaveDecisionWithoutDefaults(
+                    get(),
+                    settingsBeforeDecision.trainingMethod,
+                  )
+                : {}),
+              // The decision switch only holds once the backend answered for it.
+              ...(requestedAsDecision && get().modelType !== "decision"
+                ? { trainAsDecision: false }
                 : {}),
             });
 
@@ -525,6 +705,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 set({
                   modelType: inferTrainingModelTypeFromFlags({
                     isEmbedding: state.isEmbeddingModel,
+                    isDecision: state.modelType === "decision",
                     isAudio: state.isAudioModel,
                     isVision,
                   }),
@@ -1049,6 +1230,14 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               canReapplyModelDefaults(state.selectedModel),
           });
         },
+        setModelSubfolder: (modelSubfolder) => setUserEdit({ modelSubfolder }),
+        setTrainAsDecision: (trainAsDecision) => {
+          if (get().trainAsDecision === trainAsDecision) return;
+          set({ trainAsDecision });
+          const { selectedModel } = get();
+          // Reloading the model's defaults switches the whole recipe, as picking a Laya model does.
+          if (selectedModel) void loadAndApplyModelDefaults(selectedModel);
+        },
         setProjectName: (projectName) => setUserEdit({ projectName }),
         setTrainingMethod: (trainingMethod) => {
           _trainingMethodEditGeneration += 1;
@@ -1435,7 +1624,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             advancedSettingsBaseline: null,
             visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
           });
-          loadAndApplyModelDefaults(selectedModel);
+          loadAndApplyModelDefaults(selectedModel, {
+            keepModelSubfolder: true,
+          });
         },
         applyConfigPatch: (config: BackendModelConfig) => {
           const patch = mapBackendModelConfigToTrainingPatch(config);

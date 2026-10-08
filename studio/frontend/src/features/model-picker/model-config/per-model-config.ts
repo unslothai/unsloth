@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { normalizeTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
 import {
   cachedRepoConfigId,
@@ -26,6 +27,8 @@ export interface PerModelConfig {
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
   mlxKvQuant?: MlxKvQuant | null;
+  /** MLX only: run quantized projections with int8 activations, where the model supports it. */
+  mlxInt8Prefill?: boolean;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** KV cache dtype for the DRAFT context, sized and quantized independently of kvCacheDtype.
@@ -59,7 +62,7 @@ export interface PerModelConfig {
   nCpuMoe?: number;
   selectedGpuIds?: number[] | null;
   selectedGpuIndexKind?: GpuIndexKind | null;
-  /** --tensor-split in picker order, never stored. `undefined` defers to the store, `null` = default. */
+  /** --tensor-split bound to selectedGpuIds in picker order. `undefined` defers to the store, `null` = default. */
   tensorSplit?: number[] | null;
 }
 
@@ -71,6 +74,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   maxSeqLength: null,
   kvCacheDtype: null,
   mlxKvQuant: null,
+  mlxInt8Prefill: false,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
@@ -301,6 +305,16 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
+/** Menu entries for a llama.cpp backend. CUDA, ROCm and Metal have no iq4_nl FlashAttention kernel, so attention
+ *  runs on the CPU there; Vulkan and CPU builds run it. A selected value stays listed so the trigger can show it. */
+export function kvCacheDtypeOptions(
+  backend: string | null,
+  selected: string | null | undefined,
+): readonly string[] {
+  if (backend === "vulkan" || backend === "cpu") return KV_CACHE_DTYPES;
+  return KV_CACHE_DTYPES.filter((dtype) => dtype !== "iq4_nl" || dtype === selected);
+}
+
 export const MLX_KV_QUANTS = [
   "8",
   "6",
@@ -376,8 +390,11 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant
-const STORAGE_SCHEMA_VERSION = 7;
+// v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split. v8 is skipped: nightly builds stamped it for the reverted custom
+// llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
+const STORAGE_SCHEMA_VERSION = 10;
+const PRE_TENSOR_SPLIT_SCHEMA_VERSION = 9;
+const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 7;
 const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;
 const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
 const PRE_SERVER_TUNING_SCHEMA_VERSION = 4;
@@ -419,6 +436,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "maxSeqLength",
   "kvCacheDtype",
   "mlxKvQuant",
+  "mlxInt8Prefill",
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
@@ -439,6 +457,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "nCpuMoe",
   "selectedGpuIds",
   "selectedGpuIndexKind",
+  "tensorSplit",
 ]);
 
 /** Keep only a list of strings, preserving the three states above. Anything that is not an array is "not loaded"
@@ -1029,6 +1048,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
     mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
+    mlxInt8Prefill: partial.mlxInt8Prefill === true,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -1084,6 +1104,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     llamaExtraArgs: normalizeLlamaExtraArgs(partial.llamaExtraArgs),
     ...normalizeGpuFields(partial),
+    tensorSplit: normalizeTensorSplit(partial.tensorSplit, partial.selectedGpuIds),
   };
 }
 
@@ -1111,8 +1132,14 @@ function normalize(raw: unknown): PerModelConfig {
  *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
  *  The tuning group and the reasoning pair follow the same rule. */
 function storedSchemaVersion(normalized: PerModelConfig): number {
-  if (normalized.mlxKvQuant != null) {
+  if (normalized.tensorSplit != null) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.mlxInt8Prefill) {
+    return PRE_TENSOR_SPLIT_SCHEMA_VERSION;
+  }
+  if (normalized.mlxKvQuant != null) {
+    return PRE_MLX_INT8_PREFILL_SCHEMA_VERSION;
   }
   const hasReasoningBudget =
     normalized.reasoningBudget !== -1 || normalized.reasoningBudgetMessage !== "";
@@ -1289,6 +1316,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
+    !config.mlxInt8Prefill &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&
@@ -1323,7 +1351,8 @@ function gpuFieldsAtDefault(config: PerModelConfig): boolean {
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     (config.gpuLayers == null || config.gpuLayers < 0) &&
     (config.nCpuMoe == null || config.nCpuMoe === 0) &&
-    config.selectedGpuIds == null
+    config.selectedGpuIds == null &&
+    config.tensorSplit == null
   );
 }
 

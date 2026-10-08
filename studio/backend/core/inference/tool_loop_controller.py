@@ -48,6 +48,15 @@ UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 _JSON_STRUCTURAL = frozenset(',:{}[]" \t\n\r')
 
 
+def _reject_json_constant(name: str) -> Any:
+    """Refuse ``NaN`` / ``Infinity``: ``json.loads`` takes them, ``JSON.parse`` does not."""
+    raise ValueError(f"{name} is not JSON")
+
+
+# Built once: `json.loads` with any keyword constructs a fresh decoder per call.
+_STRICT_JSON_DECODER = json.JSONDecoder(parse_constant = _reject_json_constant)
+
+
 def _looks_like_broken_json(raw: str) -> bool:
     """Whether this text was MEANT to be a JSON object and stopped before finishing.
 
@@ -64,7 +73,7 @@ def _looks_like_broken_json(raw: str) -> bool:
     if not text.startswith(("{", "[")):
         return False
     try:
-        json.loads(text)
+        _STRICT_JSON_DECODER.decode(text)
     except json.JSONDecodeError as error:
         if error.msg.startswith("Unterminated string") or error.pos >= len(text):
             return True
@@ -81,6 +90,9 @@ def _looks_like_broken_json(raw: str) -> bool:
             return False
         remainder = text[error.pos :]
         return bool(remainder) and not any(ch in _JSON_STRUCTURAL for ch in remainder)
+    except (ValueError, RecursionError):
+        # Digit cap, recursion limit or NaN/Infinity: unreadable is as broken as cut off.
+        return True
     return False
 
 
@@ -703,12 +715,14 @@ def coerce_tool_arguments(
         )
     if isinstance(raw_args, str):
         try:
-            parsed = json.loads(raw_args)
+            # NaN/Infinity would replay as JSON no provider parses.
+            parsed = _STRICT_JSON_DECODER.decode(raw_args)
             if isinstance(parsed, Mapping):
                 return CoercedArguments(
                     coerce_arguments_by_schema(parsed, properties, repair = heal), False
                 )
-        except (json.JSONDecodeError, ValueError):
+        except (ValueError, RecursionError):
+            # Must not raise: this runs before the budget gate, so a raise aborts the whole turn.
             pass
         if heal:
             # Healing exists for a model that sends its ONE argument as a bare string instead of an object. Text that
@@ -1147,7 +1161,11 @@ class ToolLoopController:
         auto_heal_tool_calls: bool = True,
         one_shot_tools: frozenset[str] = _ONE_SHOT_TOOLS,
         duplicate_noop_limit: int = 2,
+        session_id: str | None = None,
+        thread_id: str | None = None,
     ) -> None:
+        self._session_id = session_id
+        self._thread_id = thread_id
         self._restrict_to_allowed = tools is not None
         self._tools = [copy.deepcopy(dict(tool)) for tool in (tools or [])]
         self._allowed_tool_names = {
@@ -1249,6 +1267,7 @@ class ToolLoopController:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
         failed = is_tool_error(result_text)
+        result_text = self._cap_result(result_text, decision.tool_name)
         self._history.append(
             _ToolCallRecord(
                 key = decision.key,
@@ -1287,6 +1306,25 @@ class ToolLoopController:
             is_error = failed,
             executed = True,
         )
+
+    def _cap_result(self, text: str, tool_name: str | None) -> str:
+        """The card and the model get the same capped body; the frontend envelope stays whole."""
+        from core.inference.tools import (  # noqa: PLC0415 -- import cycle
+            _hard_cap_chars,
+            _split_frontend_suffix,
+            cap_tool_text,
+        )
+
+        if len(text) <= _hard_cap_chars():
+            return text
+        body, suffix = _split_frontend_suffix(text, tool_name)
+        capped = cap_tool_text(
+            body,
+            session_id = self._session_id,
+            thread_id = self._thread_id,
+            readers = frozenset(self._allowed_tool_names),
+        )
+        return text if capped is body else capped + suffix
 
     def record_noop(self, decision: ToolCallDecision) -> ToolCallCompletion:
         """Record a controller no-op without creating visible tool output."""

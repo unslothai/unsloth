@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+from models.providers import ProviderReasoningConfig, normalize_provider_reasoning_config
 from storage.studio_db import connect_studio_db
 from utils.paths import studio_db_path, ensure_dir
 
@@ -94,6 +95,23 @@ def _decode_models_json(raw: Optional[str]) -> list[str]:
     return [str(model).strip() for model in parsed if str(model).strip()]
 
 
+def _encode_reasoning_config(config) -> Optional[str]:
+    if config is None:
+        return None
+    if isinstance(config, ProviderReasoningConfig):
+        config = config.model_dump()
+    return ProviderReasoningConfig.model_validate(config).model_dump_json()
+
+
+def _decode_reasoning_config(raw) -> Optional[dict]:
+    if not raw:
+        return None
+    try:
+        return normalize_provider_reasoning_config(json.loads(raw))
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
 def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
     return (
         _decode_models_json(row["models_json"] if "models_json" in row.keys() else None),
@@ -133,6 +151,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         _migrate_legacy_custom_provider_types(conn)
     if "max_output_tokens" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
+    if "reasoning_config_json" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
     # ALTER TABLE persists independently in SQLite, but its one-time data migration does not.
     conn.commit()
 
@@ -194,8 +214,10 @@ def create_provider(
     available_models: Optional[list[str]] = None,
     max_output_tokens: Optional[int] = None,
     api_type: str = "chat_completions",
+    reasoning_config: Optional[dict] = None,
 ) -> None:
     """Insert a new provider configuration."""
+    reasoning_json = _encode_reasoning_config(reasoning_config)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
@@ -204,9 +226,9 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
-                created_at, updated_at
+                reasoning_config_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -217,6 +239,7 @@ def create_provider(
                 _encode_models_json(available_models),
                 max_output_tokens,
                 api_type,
+                reasoning_json,
                 now,
                 now,
             ),
@@ -237,6 +260,7 @@ def update_provider(
     *,
     connection: sqlite3.Connection | None = None,
     api_type: str | None = None,
+    reasoning_config: dict | None | object = _UNSET,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -262,6 +286,9 @@ def update_provider(
     if max_output_tokens is not _UNSET:
         updates.append("max_output_tokens = ?")
         params.append(max_output_tokens)
+    if reasoning_config is not _UNSET:
+        updates.append("reasoning_config_json = ?")
+        params.append(_encode_reasoning_config(reasoning_config))
     if not updates:
         return False
     updates.append("updated_at = ?")
@@ -302,6 +329,7 @@ def get_provider(id: str) -> Optional[dict]:
         if not row:
             return None
         data = dict(row)
+        data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
         models, available_models = _row_models(row)
         data["models"] = models
         data["available_models"] = available_models
@@ -318,6 +346,9 @@ def list_providers() -> list[dict]:
         providers: list[dict] = []
         for row in rows:
             data = dict(row)
+            data["reasoning_config"] = _decode_reasoning_config(
+                data.pop("reasoning_config_json", None)
+            )
             models, available_models = _row_models(row)
             data["models"] = models
             data["available_models"] = available_models

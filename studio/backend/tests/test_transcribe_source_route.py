@@ -40,8 +40,14 @@ class _Sidecar:
         self.result.update(segments = SEGMENTS, speakers = ["S01", "S02"])
         self.paths, self.bytes, self.events, self.loads = [], [], [], []
 
-    def ensure_aligner(self, model, on_phase):
+    def ensure_aligner(
+        self,
+        model,
+        on_phase,
+        cancel_event = None,
+    ):
         self.events.append(("aligner", model))
+        self.aligner_cancel = cancel_event
 
     def transcribe_path(self, path, model, language, *, timestamps, cancel_event, on_phase):
         on_phase("transcribing")
@@ -159,6 +165,7 @@ def test_qwen3_timestamps_are_asked_of_the_sidecar(stub):
     assert stub.paths[0][2] is True
     # The aligner is fetched first and the server starts with it: one load, not two.
     assert stub.events == [("aligner", QWEN3), ("load", True)]
+    assert stub.aligner_cancel is not None
     assert complete["timestamps"] is False and "segments" not in complete
 
 

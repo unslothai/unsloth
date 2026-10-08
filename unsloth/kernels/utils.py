@@ -30,7 +30,6 @@ from ..device_type import (
 from ..bnb_availability import native_kernels_ready
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
-import functools
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
 import torch
@@ -65,7 +64,6 @@ elif DEVICE_TYPE == "npu":
 
 
 # tl.math.tanh is now libdevice.tanh.
-import triton
 import triton.language as tl
 
 if Version(triton.__version__) >= Version("3.0.0"):
@@ -361,6 +359,19 @@ def _has_active_dora_adapter(proj):
     if isinstance(adapters, str):
         adapters = (adapters,)
     return any(adapter in magnitude for adapter in adapters)
+
+
+def _has_active_lora_bias(proj):
+    # PEFT lora_bias=True gives lora_B a bias, which the fast LoRA paths never add.
+    lora_B = getattr(proj, "lora_B", None)
+    if not lora_B or getattr(proj, "disable_adapters", True) or getattr(proj, "merged", False):
+        return False
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    if isinstance(adapters, str):
+        adapters = (adapters,)
+    return any(adapter in lora_B and lora_B[adapter].bias is not None for adapter in adapters)
 
 
 def has_mxfp4_base(*projs):
@@ -1391,7 +1402,11 @@ def fast_linear_forward(
     temp_lora = None,
     out = None,
 ):
-    if _has_multiple_active_adapters(proj) or _has_active_dora_adapter(proj):
+    if (
+        _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_active_lora_bias(proj)
+    ):
         result = proj(X)
         return result if out is None else out.copy_(result)
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)

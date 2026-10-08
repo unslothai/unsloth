@@ -24,7 +24,7 @@ import {
 registerStoreStubResolver();
 const { storage } = installLocalStorageFake();
 
-const { fromApiOverride } = await import(
+const { fromApiOverride, toApiOverride } = await import(
   "../src/features/model-picker/api/model-overrides.ts"
 );
 const {
@@ -36,6 +36,14 @@ const {
 
 const MODEL = "unsloth/Model-GGUF";
 const VARIANT = "q4_k_m";
+
+test("int8 prefill reaches the server row only when on", () => {
+  const on = { ...DEFAULT_PER_MODEL_CONFIG, mlxInt8Prefill: true };
+  assert.equal(toApiOverride(on).mlx_int8_prefill, true);
+  assert.equal("mlx_int8_prefill" in toApiOverride(DEFAULT_PER_MODEL_CONFIG), false);
+  assert.equal(fromApiOverride({ mlx_int8_prefill: true }).mlxInt8Prefill, true);
+  assert.equal(fromApiOverride({}, on).mlxInt8Prefill, true);
+});
 
 test("a server row holding the superseded cache width hydrates as the single choice", () => {
   assert.equal(fromApiOverride({ mlx_kv_bits: 8 }).mlxKvQuant, "8");

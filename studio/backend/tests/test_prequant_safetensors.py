@@ -150,6 +150,7 @@ def test_the_derived_chain_puts_safetensors_first_and_keeps_the_pickles(monkeypa
     assert src.candidate_filenames == (
         "Model-FP8.safetensors",
         "Model-FP8.pt",
+        "Model-FP8-ComfyUI.safetensors",
         "transformer_fp8.pt",
     )
 

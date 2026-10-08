@@ -186,6 +186,8 @@ export interface ScanFolderInfo {
   id: number;
   path: string;
   created_at: string;
+  /** Sub-folders are scanned too. Absent on older backends. */
+  recursive?: boolean;
   /** Result of the last scan. Absent on older backends, which means "ok". */
   status?: ScanFolderStatus;
 }
@@ -436,11 +438,14 @@ export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   return data.folders;
 }
 
-export async function addScanFolder(path: string): Promise<ScanFolderInfo> {
+export async function addScanFolder(
+  path: string,
+  recursive?: boolean,
+): Promise<ScanFolderInfo> {
   const response = await authFetch("/api/hub/scan-folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, recursive }),
   });
   const folder = await parseJsonOrThrow<ScanFolderInfo>(response);
   bumpInventoryVersion();

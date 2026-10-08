@@ -195,6 +195,7 @@ function SongInputs({
           htmlFor={MUSIC_DESCRIPTION_FIELD_ID}
         >
           <Textarea
+            data-type-to-activate="prompt"
             id={MUSIC_DESCRIPTION_FIELD_ID}
             value={description}
             disabled={disabled}

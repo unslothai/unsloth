@@ -916,6 +916,61 @@ export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
   return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
 }
 
+const W14_NAMESPACE = "http://schemas.microsoft.com/office/word/2010/wordml";
+const DOCX_BREAK_OR_CHECKBOX_RE = /<(?:[\w.-]+:)?(?:br|cr|checkbox|checkBox)[\s/>]/;
+
+export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!DOCX_BREAK_OR_CHECKBOX_RE.test(xml)) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const tag = (local: string) => (root.prefix ? `${root.prefix}:${local}` : local);
+    const text = (value: string) => {
+      const t = doc.createElementNS(w, tag("t"));
+      t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+      t.appendChild(doc.createTextNode(value));
+      return t;
+    };
+    const isOn = (flag: Element | undefined, ns: string) =>
+      flag !== undefined && !["0", "false", "off"].includes(flag.getAttributeNS(ns, "val") ?? "");
+    // [anchor, checked, inRun]: a legacy field's glyph goes inside its run, before the fldChar.
+    const boxes: [Element, boolean, boolean][] = [];
+    for (const box of Array.from(doc.getElementsByTagNameNS(W14_NAMESPACE, "checkbox"))) {
+      const sdt = box.parentNode?.parentNode as Element | null;
+      if ((box.parentNode as Element).localName === "sdtPr" && sdt?.localName === "sdt") {
+        boxes.push([sdt, isOn(childElements(box, W14_NAMESPACE, "checked")[0], W14_NAMESPACE), false]);
+      }
+    }
+    for (const box of Array.from(doc.getElementsByTagNameNS(w, "checkBox"))) {
+      const fldChar = box.parentNode?.parentNode as Element | null;
+      if (fldChar?.localName === "fldChar" && fldChar.parentNode) {
+        const flag = childElements(box, w, "checked")[0] ?? childElements(box, w, "default")[0];
+        boxes.push([fldChar, isOn(flag, w), true]);
+      }
+    }
+    for (const [anchor, checked, inRun] of boxes) {
+      const glyph = text(checked ? "☒" : "☐");
+      const node = inRun ? glyph : doc.createElementNS(w, tag("r"));
+      if (!inRun) node.appendChild(glyph);
+      anchor.parentNode?.insertBefore(node, anchor);
+    }
+    // Page and column breaks too: mammoth's raw text drops every break, gluing the words either side.
+    const breaks = [
+      ...Array.from(doc.getElementsByTagNameNS(w, "br")),
+      ...Array.from(doc.getElementsByTagNameNS(w, "cr")),
+    ];
+    for (const br of breaks) br.parentNode?.replaceChild(text("\n"), br);
+    if (boxes.length || breaks.length) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  if (!Object.keys(rewritten).length) return archive;
+  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+}
+
 const DOCX_NOTE_REFERENCE_RE =
   /<(?:([\w.-]+):)?(footnote|endnote)Reference\b([^>]*?)(\/?)>(\s*<\/(?:[\w.-]+:)?\2Reference\s*>)?/g;
 const DOCX_NOTE_ID_RE = /(?:^|\s)(?:[\w.-]+:)?id\s*=\s*["']([^"']*)["']/;
@@ -1443,7 +1498,7 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
   );
   const marked = markDocxNotes(linearizeDocxMath(repacked));
   const { value } = await mammoth.extractRawText({
-    arrayBuffer: toArrayBuffer(marked.archive),
+    arrayBuffer: toArrayBuffer(writeDocxBreaksAndCheckboxes(marked.archive)),
   });
   return marked.label(value);
 }

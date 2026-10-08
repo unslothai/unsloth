@@ -517,6 +517,12 @@ def diffusion_device_target_from_torch_device(
     return _cpu_target(torch = None, dtype = dtype)
 
 
+def float64_device(device: Any) -> Any:
+    """Device to build float64 values on before moving the result to ``device``: itself, or CPU when it has no float64."""
+    target = diffusion_device_target_from_torch_device(str(device), None)
+    return device if target.supports_float64 else "cpu"
+
+
 def _cuda_or_rocm_target(
     torch: Any,
     *,

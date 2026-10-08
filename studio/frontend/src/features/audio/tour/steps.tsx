@@ -20,17 +20,15 @@ const modeStep: TourStep = {
   ),
 };
 
+const MAIN_SLOT = "Loading one replaces the model in the main slot.";
+
 const MODEL_STEP_BODY: Record<AudioWorkflowId, string> = {
-  speak:
-    "Text-to-speech models, including voices you fine-tuned under On Device.",
-  clone:
-    "Models that can speak in the voice of a short recording you give them.",
-  edit: "Models that can change words in a recording and keep the voice.",
-  convert:
-    "Voice conversion models. Loading one replaces the model in the main slot.",
-  music: "Music models. Loading one replaces the model in the main slot.",
-  separate:
-    "Source separation models. Loading one replaces the model in the main slot.",
+  speak: `Text-to-speech models, including voices you fine-tuned under On Device. ${MAIN_SLOT}`,
+  clone: `Models that can speak in the voice of a short recording you give them. ${MAIN_SLOT}`,
+  edit: `Models that can change words in a recording and keep the voice. ${MAIN_SLOT}`,
+  convert: `Voice conversion models. ${MAIN_SLOT}`,
+  music: `Music models. ${MAIN_SLOT}`,
+  separate: `Source separation models. ${MAIN_SLOT}`,
   transcribe:
     "Speech recognition models. They run beside your chat model, not in its place.",
 };
@@ -51,7 +49,7 @@ const outputStep: TourStep = {
   body: (
     <>
       Clips play here and stay in the history list beside them, ready to
-      download. Transcripts appear here too, but are not kept after you leave.
+      download. Transcripts appear here too and keep their own history.
     </>
   ),
 };

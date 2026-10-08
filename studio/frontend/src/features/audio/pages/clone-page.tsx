@@ -175,6 +175,7 @@ function CloneInputs({
           Text to speak
         </label>
         <Textarea
+          data-type-to-activate="prompt"
           id={CLONE_TEXT_FIELD_ID}
           value={clone.text}
           onChange={(event) => setText(event.target.value)}

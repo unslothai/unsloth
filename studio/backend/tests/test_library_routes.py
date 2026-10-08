@@ -408,6 +408,153 @@ def test_a_sandbox_file_that_is_gone_takes_no_rename_a_later_file_would_inherit(
     assert _items(client)[0][_SANDBOX_A]["name"] == "a.txt"
 
 
+def test_a_sandbox_file_the_model_edits_keeps_its_name_star_and_folder(
+    client, signed_in, monkeypatch
+):
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    folder = _folder(client, "Reports", None)
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True, folderId = folder)
+    result = execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    assert Path(path).read_bytes() == b"the report\n", result
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"], item["folderId"]) == ("Q3 report", True, folder)
+    assert _favorites(client) == [_SANDBOX_ID]
+
+
+def test_a_listing_during_an_edit_does_not_drop_the_files_name_star_and_folder(
+    client, signed_in, monkeypatch
+):
+    import contextvars
+    import threading
+
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    carry = library_db.carry_fingerprint
+    listings = []
+
+    def list_then_carry(*args):
+        library.invalidate_listing()
+        listing = threading.Thread(
+            target = contextvars.copy_context().run, args = (library.list_items,)
+        )
+        listing.start()
+        listing.join(timeout = 1)
+        listings.append(listing)
+        carry(*args)
+
+    monkeypatch.setattr(library_db, "carry_fingerprint", list_then_carry)
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    for listing in listings:
+        listing.join(timeout = 10)
+    assert Path(path).read_bytes() == b"the report\n"
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"]) == ("Q3 report", True)
+
+
+def test_a_folder_move_during_an_edit_keeps_the_files_name_and_star(client, signed_in, monkeypatch):
+    import threading
+
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    folder = _folder(client, "Reports", None)
+    carry = library_db.carry_fingerprint
+    moves = []
+
+    def move_then_carry(*args):
+        move = threading.Thread(
+            target = _patch, args = (client,), kwargs = {"id": _SANDBOX_ID, "folderId": folder}
+        )
+        move.start()
+        move.join(timeout = 1)
+        moves.append(move)
+        carry(*args)
+
+    monkeypatch.setattr(library_db, "carry_fingerprint", move_then_carry)
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    for move in moves:
+        move.join(timeout = 10)
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"], item["folderId"]) == ("Q3 report", True, folder)
+
+
+def test_a_legacy_row_keeps_its_name_and_star_through_an_edit_a_cached_listing_saw(
+    client, signed_in, monkeypatch
+):
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._remembered("_sandbox_items", 60.0),))
+    _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    _items(client)
+    conn = library_db.get_connection()
+    conn.execute("UPDATE library_entries SET fingerprint = NULL WHERE item_id = ?", (_SANDBOX_ID,))
+    conn.commit()
+    conn.close()
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    _items(client)
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"]) == ("Q3 report", True)
+
+
+def test_a_path_made_again_right_after_an_edit_starts_fresh(client, signed_in, monkeypatch):
+    from core.inference.tools import execute_tool
+
+    monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
+    directory, path = _sandbox_chat("report.txt", b"teh report\n")
+    _patch(client, id = _SANDBOX_ID, name = "Q3 report", favorite = True)
+    # Linux keeps no birth time, so a recreated file reusing a freed inode passes for it: keep both allocated.
+    os.link(path, os.path.join(directory, ".held"))
+    replace = os.replace
+
+    def replace_then_recreate(src, dst):
+        replace(src, dst)
+        if os.path.basename(dst) == "report.txt":
+            other = dst + ".other"
+            Path(other).write_bytes(b"someone else\n")
+            replace(other, dst)
+
+    monkeypatch.setattr(os, "replace", replace_then_recreate)
+    execute_tool(
+        "edit_file",
+        {"path": "report.txt", "edits": [{"old_string": "teh", "new_string": "the"}]},
+        session_id = "t-lib",
+    )
+    monkeypatch.setattr(os, "replace", replace)
+    assert Path(path).read_bytes() == b"someone else\n"
+    library.invalidate_listing()
+    item = _items(client)[0][_SANDBOX_ID]
+    assert (item["name"], item["favorite"]) == ("report.txt", False)
+
+
 def test_a_sandbox_delete_takes_only_the_file_it_was_listed_as(client, signed_in, monkeypatch):
     monkeypatch.setattr(library, "_SOURCES", (library._sandbox_items,))
     _directory, path = _sandbox_chat("a.txt", b"listed")
@@ -557,6 +704,113 @@ def test_generated_audio_and_video_are_listed_and_deleted(client, monkeypatch):
     assert _delete(client, f"video:{video}") == 200
     assert video_gallery.video_path(video) is None
     assert forgotten == [video, video]
+
+
+def _audio_clip(prompt: str, **extra) -> str:
+    from core.inference import audio_gallery
+
+    meta = {"model": "htdemucs", "audio_type": "audiocpp_sep", "sample_rate": 44100}
+    meta |= {"duration_s": 2.5, "prompt": prompt, "created_at": 1_700_000_000}
+    return audio_gallery.save(b"RIFF0000WAVE", {**meta, **extra})["id"]
+
+
+def test_an_edit_source_recording_is_not_listed(client, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    source = _audio_clip("The old words", workflow = "edit", role = "source")
+    edited = _audio_clip("The new words.", workflow = "edit", role = "output", source_clip_id = source)
+    items = _items(client)[0]
+    assert f"audio:{source}" not in items
+    assert items[f"audio:{edited}"]["name"] == "The new words.wav"
+    assert items[f"audio:{edited}"]["audio"]["workflow"] == "edit"
+
+
+def test_separated_stems_are_named_by_stem_and_carry_their_run(client, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items, library._upload_items))
+    vocals = _audio_clip("song.mp3", workflow = "separate", role = "vocals", group_id = "g1")
+    drums = _audio_clip("song.mp3", workflow = "separate", role = "drums", group_id = "g1")
+    (upload,) = _upload(client, ("notes.txt", b"hi", "text/plain"))
+    items = _items(client)[0]
+    assert (items[f"audio:{vocals}"]["name"], items[f"audio:{drums}"]["name"]) == (
+        "song - Vocals.wav",
+        "song - Drums.wav",
+    )
+    assert items[f"audio:{vocals}"]["audio"] == {
+        "workflow": "separate",
+        "role": "vocals",
+        "groupId": "g1",
+        "durationS": 2.5,
+        "model": "htdemucs",
+        "mode": None,
+        "variation": None,
+    }
+    assert items[upload]["audio"] is None
+
+
+def test_music_variations_and_edits_get_distinct_names(client, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+
+    def song(
+        role,
+        variation,
+        mode = "song",
+    ):
+        settings = {"mode": mode, "variation": variation}
+        return _audio_clip("Rainy jazz", workflow = "music", role = role, settings = settings)
+
+    first, second = song("variation", 1), song("variation", 2)
+    edit, sfx = song("edit", None, "edit"), song("output", None, "sfx")
+    items = _items(client)[0]
+    names = [items[f"audio:{clip}"]["name"] for clip in (first, second, edit, sfx)]
+    assert names == [
+        "Rainy jazz (1).wav",
+        "Rainy jazz (2).wav",
+        "Rainy jazz (edit).wav",
+        "Rainy jazz.wav",
+    ]
+    assert [items[f"audio:{clip}"]["audio"]["mode"] for clip in (first, sfx)] == ["song", "sfx"]
+    assert [items[f"audio:{clip}"]["audio"]["variation"] for clip in (second, edit)] == [2, None]
+
+
+def test_a_long_prompt_keeps_its_stem_suffix(client, monkeypatch):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    clip = _audio_clip("word " * 40 + ".wav", workflow = "separate", role = "vocals")
+    name = _items(client)[0][f"audio:{clip}"]["name"]
+    assert name.endswith(" - Vocals.wav") and len(name) <= 60 + len(" - Vocals.wav")
+
+
+def test_a_clip_made_with_a_local_model_hides_its_path_from_an_api_key(
+    client, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    local = str(tmp_path / "models" / "my-tts.gguf")
+    clip = _audio_clip("Hi", workflow = "speak", model = local)
+    assert _items(client)[0][f"audio:{clip}"]["audio"]["model"] == local
+    client.app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    keyed = client.get("/api/library").json()["items"]
+    assert local not in json.dumps(keyed)
+    assert keyed[0]["audio"]["workflow"] == "speak"
+
+
+def test_storage_counts_what_the_audio_page_keeps_outside_its_clips(client, monkeypatch):
+    from core.inference import audio_gallery, transcript_gallery
+
+    monkeypatch.setattr(library, "_SOURCES", (library._audio_items,))
+    listed = _audio_clip("Kept")
+    # An Edit's hidden original, a saved voice and a transcript: on disk, in no item.
+    _audio_clip("Original", workflow = "edit", role = "source")
+    voices = audio_gallery.gallery_dir() / "voices"
+    voices.mkdir()
+    (voices / "voice.wav").write_bytes(b"v" * 1000)
+    (transcript_gallery.gallery_dir() / "t.json").write_bytes(b"t" * 500)
+    body = client.get("/api/library").json()
+    (item,) = body["items"]
+    assert item["id"] == f"audio:{listed}"
+    hidden = sum(
+        path.stat().st_size
+        for path in audio_gallery.gallery_dir().iterdir()
+        if path.is_file() and listed not in path.name
+    )
+    assert body["unlistedBytes"] == {"audio": hidden + 1000 + 500}
 
 
 def test_the_listing_reports_the_library_disk_and_the_sources_on_it(client, monkeypatch):
@@ -1075,7 +1329,7 @@ def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project, 
     assert add(note, "p1").json() == {"already": True}
     assert add(note, "missing").status_code == 404
     assert add("upload:0123456789abcdef0123456789abcdef", "p1").status_code == 404
-    assert add("attachment:m:a", "p1").status_code == 400
+    assert add("attachment:m:a", "p1").status_code == 404
     assert add("model:training:/tmp/run", "p1").status_code == 400
     source = _file(tmp_path / "x.txt", "x")
     for bad in ("a:b.txt", "CON.txt", "trailing.", "tab\there.txt"):
@@ -1084,6 +1338,38 @@ def test_an_upload_is_copied_into_a_project_under_its_own_name(client, project, 
     with open(source, "rb") as handle:
         result = gallery_projects.copy_into_project(handle, "p1", "files", "x-1.txt")
     assert Path(result["path"]).read_text() == "x"
+
+
+def test_a_chat_image_is_copied_out_of_its_message_into_a_project(client, project, monkeypatch):
+    import base64
+
+    import storage.studio_db as studio_db
+
+    png = b"\x89PNG\r\n\x1a\nfake"
+    attachments = {
+        ("m:1", "pic"): {
+            "id": "pic",
+            "type": "image",
+            "name": "Chat image",
+            "content": [
+                {
+                    "type": "image",
+                    "image": "data:image/png;base64," + base64.b64encode(png).decode(),
+                }
+            ],
+        },
+        ("m:1", "words"): {"id": "words", "type": "file", "name": "a.txt", "content": []},
+    }
+    monkeypatch.setattr(studio_db, "get_chat_attachment", lambda *ids: attachments.get(ids))
+    add = lambda item_id: _post(client, "items/project", id = item_id, projectId = "p1")  # noqa: E731
+    assert add("attachment:m%3A1:pic").json() == {"already": False}
+    [copied] = (project / "images").iterdir()
+    assert copied.name.startswith("Chat image-") and copied.suffix == ".png"
+    assert copied.read_bytes() == png
+    assert add("attachment:m%3A1:pic").json() == {"already": True}
+    # Only an image or clip has bytes of its own to copy.
+    assert add("attachment:m%3A1:words").status_code == 404
+    assert add("attachment:m%3A1:gone").status_code == 404
 
 
 @pytest.mark.parametrize(
