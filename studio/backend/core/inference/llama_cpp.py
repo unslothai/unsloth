@@ -9119,6 +9119,7 @@ class LlamaCppBackend:
         shared_gpu_ids: Iterable[int],
         layered_mib: float,
         per_device_mib: float = 0.0,
+        reserve_mib: float = 0.0,
     ) -> Optional[List[float]]:
         """``--tensor-split`` shares, positional over ``gpu_indices``, that fill the
         discrete cards before any shared-memory iGPU.
@@ -9128,7 +9129,10 @@ class LlamaCppBackend:
         to top up (a 27B on a 12 GB card plus a Ryzen iGPU: 4.8 GB on the card,
         8.3 GB on the iGPU, 1 t/s). ``layered_mib`` is what the split divides
         (weights + KV); ``per_device_mib`` is held back on each card for its own
-        compute buffer. None unless the pin mixes both kinds.
+        compute buffer, ``reserve_mib`` once across the cards (largest first) for the
+        non-layer bytes the fit charged (flat compute buffer, context, projector):
+        --fit off leaves nothing to catch a card filled past them. None unless the
+        pin mixes both kinds.
         """
         shared = set(shared_gpu_ids)
         discrete = [i for i in gpu_indices if i not in shared]
@@ -9136,6 +9140,11 @@ class LlamaCppBackend:
         if not discrete or not igpus or layered_mib <= 0:
             return None
         caps = {i: max(0.0, usable_mib.get(i, 0.0) - per_device_mib) for i in discrete}
+        hold = max(0.0, reserve_mib)
+        for i in sorted(discrete, key = lambda d: caps[d], reverse = True):
+            take = min(caps[i], hold)
+            caps[i] -= take
+            hold -= take
         if sum(caps.values()) <= 0:
             return None
         left = layered_mib
@@ -27871,6 +27880,14 @@ class LlamaCppBackend:
                             (_spill_inputs["model_size"] + _spill_inputs["kv_cache_bytes"])
                             / (1024 * 1024),
                             _spill_inputs["ctx_compute_per_device"] / (1024 * 1024),
+                            (
+                                _spill_inputs["compute_buffer_flat"]
+                                + _spill_inputs["soft_overhead"]
+                                + _spill_inputs["extra_gpu_bytes"]
+                            )
+                            / (1024 * 1024)
+                            + self._PIPELINE_PER_DEVICE_OVERHEAD_MIB
+                            * sum(1 for i in list(gpu_indices)[1:] if i not in _shared_gpu_ids),
                         )
                         if _shared_gpu_ids
                         and _spill_inputs is not None

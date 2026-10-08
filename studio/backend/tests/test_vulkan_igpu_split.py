@@ -128,3 +128,24 @@ def test_the_launch_emits_it_only_where_nothing_else_owns_the_split():
     assert "not tensor_parallel" in arm
     assert "_TENSOR_SPLIT_FLAGS" in arm
     assert "_spill_inputs is not None" in arm
+
+
+def test_non_layer_bytes_stay_off_the_discrete_share():
+    # The flat compute buffer, context and projector are not divided by the split,
+    # so a card filled to its whole budget would run past it under --fit off.
+    shares = LlamaCppBackend._discrete_first_split(
+        [DGPU, IGPU],
+        {DGPU: 10180.0, IGPU: 12917.0},
+        SHARED,
+        layered_mib = 14200.0,
+        per_device_mib = 300.0,
+        reserve_mib = 1500.0,
+    )
+    assert shares == [8380.0, 5820.0]
+
+
+def test_the_launch_reserves_the_non_layer_bytes():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    arm = src[src.index("_mixed_split = (") : src.index("if _mixed_split is not None:")]
+    for key in ("compute_buffer_flat", "soft_overhead", "extra_gpu_bytes"):
+        assert key in arm
