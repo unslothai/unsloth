@@ -412,7 +412,7 @@ export function LanAccessSection() {
     status?.configuredPort ?? null,
   );
   const stopAction = status?.state === "online";
-  // a start binds the saved choice, so an unsaved one would expose the addresses just unticked
+  // a start (now or at boot) binds the saved choice, so an unsaved one would expose the addresses just unticked
   const actionDisabled =
     busy !== null ||
     (stopAction ? !status?.canStop : !status?.canStart || addressesDirty);
@@ -670,7 +670,11 @@ export function LanAccessSection() {
         >
           <Switch
             checked={status?.autoStart ?? false}
-            disabled={busy !== null || lanAccessAutoStartReadOnly(status)}
+            disabled={
+              busy !== null ||
+              lanAccessAutoStartReadOnly(status) ||
+              (addressesDirty && !status?.autoStart)
+            }
             onCheckedChange={setAutoStart}
             aria-label="Start automatically"
           />
