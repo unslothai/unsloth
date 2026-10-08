@@ -640,6 +640,8 @@ def engine(home, monkeypatch, tmp_path):
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
     monkeypatch.setattr(laya_runtime, "_mlx_dirs", dirs)
     monkeypatch.setattr(laya_runtime, "_training_active", lambda: False)
+    # Whatever an earlier test in this process left holding the GPU.
+    monkeypatch.setattr("core.inference.gpu_arbiter._owner", None)
     yield state
     laya_runtime.unload()
 
