@@ -111,6 +111,7 @@ export {
 } from "./events";
 export {
   parseYamlConfig,
+  parseRunConfigRlSettings,
   parseYamlRlSettings,
   serializeConfigToYaml,
 } from "./lib/yaml-config";

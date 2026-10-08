@@ -175,7 +175,23 @@ const numOrNull = (v: unknown): number | null | undefined =>
  * fields with the wrong type are dropped so the current value stays. */
 export function parseYamlRlSettings(text: string): YamlRlSettings {
   const parsed = yaml.load(text) as Record<string, unknown> | null;
-  const rl = parsed?.rl;
+  return parseRlSection(parsed?.rl);
+}
+
+/** A saved run's objective and RL settings. The stored config keeps them as `objective`,
+ * `rl_settings` (the same keys as the YAML rl section) and `reward_specs`. */
+export function parseRunConfigRlSettings(
+  config: Record<string, unknown>,
+): YamlRlSettings {
+  const settings = config.rl_settings;
+  return parseRlSection({
+    ...(settings !== null && typeof settings === "object" ? settings : {}),
+    objective: config.objective,
+    rewards: config.reward_specs,
+  });
+}
+
+function parseRlSection(rl: unknown): YamlRlSettings {
   if (rl == null || typeof rl !== "object" || Array.isArray(rl)) {
     return { trainingObjective: "sft" };
   }
@@ -236,6 +252,8 @@ export function parseYamlRlSettings(text: string): YamlRlSettings {
   }
   if (typeof r.system_prompt === "string") {
     out.grpoSystemPrompt = r.system_prompt;
+  } else if (r.system_prompt === null) {
+    out.grpoSystemPrompt = "";
   }
   if (Array.isArray(r.rewards)) {
     out.grpoRewards = r.rewards.flatMap((item) => {
