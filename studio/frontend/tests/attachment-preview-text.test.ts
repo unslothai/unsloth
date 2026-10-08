@@ -1655,6 +1655,31 @@ test("an html rowspan of zero covers the rest of its row group", async () => {
   );
 });
 
+test("an html rowspan keeps its full standards-defined range", async () => {
+  const cell = (text: string, rowspan?: string) =>
+    Object.assign(element("td", textNode(text)), {
+      getAttribute: (name: string) => (name === "rowspan" ? (rowspan ?? null) : null),
+    });
+  const labels = Array.from({ length: 1000 }, (_, index) => `row ${index + 1}`);
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("Group", "1001"), cell("row 0")),
+            ...labels.map((label) => element("tr", cell(label))),
+          ),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, ["Group\trow 0", ...labels.map((label) => `\t${label}`)].join("\n\n"));
+});
+
 /** A preview only colours what the filename says is source; extracted document text is prose whatever the file was called. */
 test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage("train.py", null), "python");
