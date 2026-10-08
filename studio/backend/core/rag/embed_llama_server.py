@@ -210,7 +210,6 @@ class LlamaServerBackend:
         self._force_cpu = False
         # trust_env=False skips HTTP(S)_PROXY; full URLs per request survive a respawn.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
-        # Per-spawn llama-server key, as for the chat server; None when off or unsupported.
         self._api_key: str | None = None
         atexit.register(self._shutdown)
 
@@ -957,8 +956,7 @@ class LlamaServerBackend:
         if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
             binary
         ).get("supports_api_key_file", True):
-            # A web page cannot drive this loopback server (it sends permissive CORS). llama-server reads the file
-            # once at startup, so it is removed once healthy; every spawn gets a new key.
+            # Per-spawn key against permissive CORS; read once at startup, so deleted once healthy.
             import secrets
 
             self._api_key = secrets.token_urlsafe(32)

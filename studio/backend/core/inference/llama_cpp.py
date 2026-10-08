@@ -7566,8 +7566,7 @@ def _expanded_user_path(value) -> Path:
 
 
 def _llama_server_api_key_enabled() -> bool:
-    """Launch llama-server with a per-launch API key; UNSLOTH_LLAMA_SERVER_API_KEY=0 opts out unless direct streaming
-    (UNSLOTH_DIRECT_STREAM=1) needs the key."""
+    """UNSLOTH_LLAMA_SERVER_API_KEY=0 opts out, unless UNSLOTH_DIRECT_STREAM=1 needs the key."""
     return (
         os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1"
         or os.getenv("UNSLOTH_LLAMA_SERVER_API_KEY", "1") != "0"
@@ -7575,10 +7574,7 @@ def _llama_server_api_key_enabled() -> bool:
 
 
 def _write_direct_stream_key(key: str, previous: "Optional[Path]" = None) -> "Path":
-    """Store the llama-server key where only the server user can read it.
-
-    One file per backend, so two backends starting together never overwrite each other's key before the child reads
-    it; ``previous`` (this backend's file) is rewritten in place on a relaunch."""
+    """0600 key file, one per backend so concurrent launches never swap keys; ``previous`` is rewritten on relaunch."""
     import secrets as _secrets
 
     from utils.paths.storage_roots import auth_root
@@ -7586,8 +7582,7 @@ def _write_direct_stream_key(key: str, previous: "Optional[Path]" = None) -> "Pa
     directory = auth_root()
     directory.mkdir(parents = True, exist_ok = True)
     if previous is None:
-        # Files left by a killed Studio. llama-server reads its key once at startup, so anything older than a launch
-        # window is unused.
+        # Left by a killed Studio; llama-server reads its key only at startup.
         stale_before = time.time() - 600
         for stale in directory.glob("llama_api_key_*"):
             with contextlib.suppress(OSError):
@@ -28456,8 +28451,7 @@ class LlamaCppBackend:
                                 "device is virtualised."
                             )
 
-                # A per-launch --api-key, so a web page the user has open cannot drive the loopback server (it sends
-                # permissive CORS).
+                # llama-server sends permissive CORS, so without a key any open web page could drive it.
                 import secrets as _secrets
 
                 _key_on = _llama_server_api_key_enabled()

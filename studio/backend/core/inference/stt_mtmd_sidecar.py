@@ -984,8 +984,7 @@ class MtmdSttSidecar:
             if _llama_server_api_key_enabled() and LlamaCppBackend.probe_server_capabilities(
                 binary
             ).get("supports_api_key_file", True):
-                # A per-launch key, as for the chat server: a web page cannot drive this loopback server (it sends
-                # permissive CORS). llama-server reads the file once at startup, so it is removed once ready.
+                # Per-launch key against permissive CORS; read once at startup, so deleted once ready.
                 api_key = secrets.token_urlsafe(32)
                 key_file = _write_direct_stream_key(api_key)
                 # Right after the binary: --no-mmproj-offload has to stay last.

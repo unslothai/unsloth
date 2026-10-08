@@ -2988,8 +2988,7 @@ _STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
     # Dotted names nothing else spells, so they match bare too.
     r"(?:^|[/\\\s'\"=])(?:\.cli_api_key_[^/\\\s'\";&|)(<>`]*|\.bootstrap_password|\.desktop_secret)"
     + _WORD_END
-    # The per-launch llama-server key file (llama_api_key_<hex>) bare or as a glob, so find / -name 'llama_api_key_*'
-    # is refused like a path read.
+    # The per-launch key file, bare or as a glob (find / -name 'llama_api_key_*').
     + r"|(?:^|[/\\\s'\"=])llama_api_key_[^/\\\s'\";&|)(<>`]*"
     + _WORD_END
     # Path form only: the bare name is an ordinary identifier. auth.db is absent for the same reason,
