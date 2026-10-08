@@ -397,10 +397,8 @@ def test_gpu_present_ignores_mps(monkeypatch, backend, expected):
 
 
 def test_optional_loader_does_not_retry_under_light_gpu_init_on_an_accelerator_host(monkeypatch):
-    """_load_optional is reached by xet_health() before every download. Its retry under
-    UNSLOTH_ZOO_DISABLE_GPU_INIT=1 makes unsloth_zoo put its pass-through triton stub in sys.modules
-    for the whole process, so @triton.jit stops decorating and xformers' unroll_varargs later fails
-    with "'function' object has no attribute 'fn'". Like _load_shared, it must not retry on a GPU host."""
+    """xet_health()'s retry under UNSLOTH_ZOO_DISABLE_GPU_INIT=1 leaves zoo's pass-through triton stub in sys.modules,
+    breaking xformers ("'function' object has no attribute 'fn'"); like _load_shared it must not retry on a GPU host."""
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
     real_triton = _types.ModuleType("triton")
     monkeypatch.setitem(sys.modules, "triton", real_triton)
@@ -428,9 +426,7 @@ def test_optional_loader_does_not_retry_under_light_gpu_init_on_an_accelerator_h
 
 
 def test_optional_loader_keeps_a_submodule_a_late_zoo_init_failure_left_loaded(monkeypatch):
-    """unsloth_zoo's __init__ imports hf_xet_tuning before its GPU init, so a GPU host whose zoo import fails
-    late still has that submodule fully executed in sys.modules. Without the light retry, use it rather than
-    dropping the RAM caps; a submodule the failed import never reached still degrades to None."""
+    """A late zoo __init__ failure leaves hf_xet_tuning loaded: reuse it; a submodule it never reached stays None."""
     monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
     monkeypatch.setattr(shim, "_gpu_present", lambda: True)
     monkeypatch.delitem(sys.modules, "unsloth_zoo.hf_xet_health", raising = False)
@@ -443,7 +439,7 @@ def test_optional_loader_keeps_a_submodule_a_late_zoo_init_failure_left_loaded(m
         sys.modules["unsloth_zoo.hf_xet_tuning"] = survivor
         raise RuntimeError("unsloth_zoo GPU init failed after importing hf_xet_tuning")
 
-    # setitem + delitem: start absent, and teardown restores whatever was there (or nothing) over the survivor.
+    # setitem + delitem: start absent; teardown restores the original (or nothing) over the survivor.
     monkeypatch.setitem(sys.modules, "unsloth_zoo.hf_xet_tuning", None)
     monkeypatch.delitem(sys.modules, "unsloth_zoo.hf_xet_tuning")
     monkeypatch.setattr(importlib, "import_module", _late_failure)
@@ -456,7 +452,6 @@ def test_optional_loader_keeps_a_submodule_a_late_zoo_init_failure_left_loaded(m
             ("unsloth_zoo.hf_xet_health", None),
         ], attempts
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
-        # A survivor another thread is still executing is not memoised.
         shim._reset_optional_module_cache()
         survivor.__spec__ = importlib.machinery.ModuleSpec("unsloth_zoo.hf_xet_tuning", None)
         survivor.__spec__._initializing = True
@@ -486,8 +481,7 @@ _XET_ENV_SWITCHES = (
     ],
 )
 def test_operator_xet_switches_survive_a_missing_health_module(monkeypatch, env):
-    """With hf_xet_health unloadable (older zoo, or a GPU host whose zoo import failed and skips the light retry),
-    the operator's env switches must still decide, or Auto picks Xet and the worker gets HF_HUB_DISABLE_XET=0."""
+    """With hf_xet_health unloadable, the operator's env switches still decide (else the worker gets HF_HUB_DISABLE_XET=0)."""
     for name in _XET_ENV_SWITCHES:
         monkeypatch.delenv(name, raising = False)
     for name, value in env.items():
@@ -498,13 +492,12 @@ def test_operator_xet_switches_survive_a_missing_health_module(monkeypatch, env)
     switched = any(value.lower() in ("1", "true", "yes", "on") for value in env.values())
     assert (got is not None) is switched and (cached is not None) is switched
 
-    # The verdicts themselves must match zoo's, read from the installed package rather than restated here.
+    # Expected verdicts come from the installed zoo, not restated here.
     real = pytest.importorskip("unsloth_zoo.hf_xet_health")
     if not hasattr(real, "XetHealth"):
         pytest.skip("installed unsloth_zoo predates XetHealth")
     expected = real.xet_health(probe = False)
     if expected.source != "forced":
-        # No override set: zoo measures the machine, the shim has nothing to say without it.
         assert got is None and cached is None
         return
     for verdict in (got, cached):

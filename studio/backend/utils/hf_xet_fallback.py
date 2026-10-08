@@ -206,13 +206,11 @@ def _load_optional(module_name: str) -> Any:
         if _gpu_present():
             import sys as _sys
 
-            # A zoo __init__ that fails late has already run `from .hf_xet_tuning import ...`; that submodule finished
-            # executing and stays in sys.modules, so keep its RAM caps instead of dropping them with the package.
+            # A zoo __init__ failing late leaves the submodules it already ran (hf_xet_tuning) in sys.modules.
             module = _sys.modules.get(module_name)
+            # Still executing in another thread: never memoise a half-built module.
             if getattr(getattr(module, "__spec__", None), "_initializing", False):
-                module = (
-                    None  # another thread is still executing it; never memoise a half-built module
-                )
+                module = None
             if module is None:
                 import logging as _logging
                 _logging.getLogger(__name__).warning(
@@ -251,8 +249,6 @@ def _load_optional(module_name: str) -> Any:
 
 @dataclass(frozen = True)
 class _EnvXetHealth:
-    """Same fields as zoo's ``XetHealth``, for the env-var verdicts below."""
-
     use_xet: bool
     reason: str
     source: str = "forced"
@@ -262,11 +258,8 @@ class _EnvXetHealth:
 
 
 def _env_xet_health() -> Any:
-    """zoo's two operator overrides, read here when ``unsloth_zoo.hf_xet_health`` could not be loaded.
-
-    Without this an older zoo, or a GPU host whose zoo import failed (no light-init retry there), answers
-    "no opinion", Auto picks Xet and the worker gets ``HF_HUB_DISABLE_XET=0`` over the operator's ``1``.
-    Mirrors the env checks at the top of ``unsloth_zoo.hf_xet_health.xet_health``; ``None`` otherwise."""
+    """The env checks atop ``unsloth_zoo.hf_xet_health.xet_health``, for when that module cannot load: without
+    them Auto picks Xet and the worker gets ``HF_HUB_DISABLE_XET=0`` over the operator's ``1``."""
 
     def _on(name: str) -> bool:
         return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
