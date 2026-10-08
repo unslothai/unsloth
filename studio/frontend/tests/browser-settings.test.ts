@@ -315,6 +315,28 @@ test("a remembered answer settles the site's other waiting downloads", async () 
   useDownloadSitesStore.getState().setSite("https://a.example", null);
 });
 
+test("a context menu download skips a site's block, and a file that runs code still asks", async () => {
+  const { approveChosenDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  useDownloadSitesStore.getState().setSite("https://e.example", "block");
+  try {
+    assert.equal(await approveChosenDownload("https://e.example/cat.png", "cat.png"), true);
+    const setup = approveChosenDownload("https://e.example/setup.exe", "setup.exe");
+    // No origin: the prompt offers nothing to remember.
+    assert.deepEqual(
+      useApprovalStore.getState().queue.map(({ origin, label, dangerous }) => [origin, label, dangerous]),
+      [["", "e.example", true]],
+    );
+    answerDownload(useApprovalStore.getState().queue[0], true, true);
+    assert.equal(await setup, true);
+    assert.equal(useDownloadSitesStore.getState().sites["https://e.example"], "block");
+  } finally {
+    useDownloadSitesStore.getState().setSite("https://e.example", null);
+  }
+});
+
 test("a file that runs code asks whatever the site's remembered answer or the ask setting", async () => {
   const { approveDownload, answerDownload, useApprovalStore } = await import(
     "../src/features/browser/download-approval-queue.ts"

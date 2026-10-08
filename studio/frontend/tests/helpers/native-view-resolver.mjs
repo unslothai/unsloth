@@ -27,7 +27,8 @@ const STUBS = {
   "./favicon": stub("export const proxiedFavicon = async () => null;"),
   "./native-downloads": stub("export const decideNativeDownload = async () => {};"),
   "./download-approval-queue": stub(
-    "export const approveDownload = async () => false; export const downloadSiteOf = () => '';",
+    "export const approveDownload = async () => false; export const approveChosenDownload = async () => false;" +
+      " export const downloadSiteOf = () => '';",
   ),
   "./history-store": stub(
     "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {}," +
