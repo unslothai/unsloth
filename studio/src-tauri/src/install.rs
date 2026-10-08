@@ -61,6 +61,11 @@ fn is_disk_full_text(text: &str) -> bool {
     }
 }
 
+/// install.sh (`_set_disk_full_suffix`) and install.ps1 append this to their
+/// `[TAURI:ERROR_DEFAULT]` message when the studio home has under 64 MiB free.
+/// It is the installers' own English text, so it is the same on every OS.
+const INSTALLER_DISK_FULL_PHRASE: &str = "so the disk is full";
+
 fn generic_failure_message(code: i32) -> String {
     format!(
         "Installation failed with exit code {}. Open the installer logs for details.",
@@ -224,6 +229,8 @@ struct InstallFailureContext {
     /// True when `explicit_error` was taken from `disk_full_line`. This is the
     /// flag the UI trusts; it does not re-read OS error numbers.
     disk_full: bool,
+    /// True when `default_error` is the installer's own low-space diagnosis.
+    default_disk_full: bool,
 }
 
 impl InstallFailureContext {
@@ -257,6 +264,7 @@ impl InstallFailureContext {
             let message = message.trim();
             if !message.is_empty() {
                 self.default_error = Some(Self::bounded_line(message));
+                self.default_disk_full = message.contains(INSTALLER_DISK_FULL_PHRASE);
             }
             return true;
         }
@@ -370,6 +378,7 @@ impl InstallFailureContext {
         }
         if stream == InstallOutputStream::Stdout {
             self.default_error = None;
+            self.default_disk_full = false;
         }
         self.clear_stream(stream);
     }
@@ -407,6 +416,15 @@ impl InstallFailureContext {
             diagnostics::valid_utf8_boundary(&text, text.len().min(FAILURE_CONTEXT_LINE_BYTES));
         text.truncate(boundary);
         text
+    }
+
+    /// Whether the failure `message` reports is a full disk: a disk-full output line
+    /// became the error, or the installer's low-space default is what gets shown.
+    fn reports_disk_full(&self) -> bool {
+        self.disk_full
+            || (self.explicit_error.is_none()
+                && self.default_error.is_some()
+                && self.default_disk_full)
     }
 
     fn message(&self, code: i32) -> String {
@@ -1085,7 +1103,7 @@ fn run_install_with_event_mode(
                     .map(|context| {
                         (
                             failure_message(&context, code, &script),
-                            context.disk_full,
+                            context.reports_disk_full(),
                         )
                     })
                     .unwrap_or_else(|_| (generic_failure_message(code), false));
@@ -2050,6 +2068,38 @@ mod tests {
         assert!(!is_disk_full_text("enospc"));
         assert!(!is_disk_full_text("Disk quota exceeded"));
         assert!(!is_disk_full_text("os error 280"));
+    }
+
+    #[test]
+    fn installer_low_space_default_reports_disk_full() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("Finishing setup");
+        assert!(context.observe_stdout(
+            "[TAURI:ERROR_DEFAULT] studio setup failed (exit code 1): /tmp/studio has only 12 MB free, so the disk is full, which is very likely the cause. Free some space and re-run."
+        ));
+        assert!(context.reports_disk_full());
+        assert!(context.message(1).contains("so the disk is full"));
+    }
+
+    #[test]
+    fn explicit_setup_error_wins_over_the_low_space_default() {
+        let mut context = InstallFailureContext::default();
+        context.observe_stdout("[TAURI:ERROR] llama.cpp setup did not produce a usable server");
+        assert!(context.observe_stdout(
+            "[TAURI:ERROR_DEFAULT] studio setup failed (exit code 1): /tmp/studio has only 12 MB free, so the disk is full, which is very likely the cause. Free some space and re-run."
+        ));
+        assert!(!context.reports_disk_full());
+        assert_eq!(
+            context.message(1),
+            "Installation failed: llama.cpp setup did not produce a usable server"
+        );
+    }
+
+    #[test]
+    fn plain_setup_default_is_not_disk_full() {
+        let mut context = InstallFailureContext::default();
+        assert!(context.observe_stdout("[TAURI:ERROR_DEFAULT] studio setup failed (exit code 4)"));
+        assert!(!context.reports_disk_full());
     }
 
     #[test]
