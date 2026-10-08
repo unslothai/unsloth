@@ -795,9 +795,14 @@ _ANNOTATE_JS = r"""
             }
             return document.documentElement;
           };
-          // Where a mark is now: around what it marks, or its blank area, moved with its anchor.
+          // Where a mark is now: a drag as drawn, a click around its target, a blank area by its anchor.
           const markBox = (mark) => {
-            if (mark.ranges) return boxOf(mark.ranges);
+            if (mark.ranges) {
+              const box = boxOf(mark.ranges);
+              if (!box || !mark.frame) return box;
+              const { dx, dy, width, height } = mark.frame;
+              return { left: box.left + dx, top: box.top + dy, width, height };
+            }
             const { element, dx, dy, width, height } = mark.anchor;
             if (!element.isConnected) return null;
             const rect = element.getBoundingClientRect();
@@ -902,12 +907,17 @@ _ANNOTATE_JS = r"""
             marks.set(id, mark);
             send("mark", { id, rect: mark.at, ...details });
           };
-          const addMark = (ranges) => {
+          const addMark = (ranges, area = null) => {
             if (!ranges || !ranges.length) return;
             const quote = quoteOf(ranges);
             const picture = pictureOf(ranges);
             if (!quote && picture === null) return;
-            createMark({ ranges }, { quote, image: picture !== null, alt: picture || "", area: false });
+            // Keep a drag's box as drawn, not shrunk to its text.
+            const content = area && boxOf(ranges);
+            const frame = content
+              ? { dx: area.left - content.left, dy: area.top - content.top, width: area.width, height: area.height }
+              : null;
+            createMark({ ranges, frame }, { quote, image: picture !== null, alt: picture || "", area: false });
           };
           // An area with nothing in it marks that part of the page itself.
           const addArea = (area) => {
@@ -983,7 +993,7 @@ _ANNOTATE_JS = r"""
             send("up");
             if (box) {
               const ranges = blocksIn(new DOMRect(box.left, box.top, box.width, box.height));
-              ranges.length ? addMark(ranges) : addArea(box);
+              ranges.length ? addMark(ranges, box) : addArea(box);
             }
             else if (pin !== null) send("open", { id: pin });
             else addMark(blockAt(document.elementFromPoint(event.clientX, event.clientY) || event.target));
