@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import secrets
+import struct
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -862,6 +863,10 @@ def parse(path: str, *, want_images: bool = False):
         pages = _docx(path)
         return (pages, []) if want_images else pages
 
+    if ext in config.DOCUMENT_UPLOAD_EXTS:
+        pages = _office_document(path, ext)
+        return (pages, []) if want_images else pages
+
     if ext in (".html", ".htm", ".txt", ".md", ".markdown") or ext in config.SOURCE_TEXT_EXTS:
         is_html = ext in (".html", ".htm")
         with open(path, "rb") as f:
@@ -876,6 +881,35 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     raise ValueError(f"unsupported file type: {ext}")
+
+
+def _html_bytes_text(raw: bytes) -> str:
+    return "\n\n".join(page.text for page in _html(_decode_text(raw, html = True)))
+
+
+def _office_document(path: str, ext: str) -> list[Page]:
+    from . import office_formats as office
+
+    readers = {
+        ".doc": office.doc,
+        ".xls": office.xls,
+        ".xlsx": office.xlsx,
+        ".xlsm": office.xlsx,
+        ".ppt": office.ppt,
+        ".pptx": office.pptx,
+        ".odt": office.opendocument,
+        ".ods": office.opendocument,
+        ".odp": office.opendocument,
+        ".rtf": office.rtf,
+        ".epub": lambda p: office.epub(p, _html_bytes_text),
+        ".eml": lambda p: office.eml(p, _html_bytes_text),
+        ".msg": lambda p: office.msg(p, _html_bytes_text),
+    }
+    try:
+        sections = readers[ext](path)
+    except (KeyError, IndexError, struct.error, UnicodeError, EOFError) as exc:
+        raise ValueError(f"could not read {os.path.basename(path)}: file is damaged") from exc
+    return [_page(text, number) for text, number in sections if text.strip()]
 
 
 def parse_text(text: str) -> list[Page]:

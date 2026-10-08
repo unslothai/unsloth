@@ -68,7 +68,11 @@ SOURCE_TEXT_EXTS = frozenset(
     .mmd .mermaid .puml .plantuml .dot .gv .feature .robot .http .rest .diff .patch
     """.split()
 )
-_PARSEABLE_EXTS = SUPPORTED_UPLOAD_EXTS | SOURCE_TEXT_EXTS
+# Office, OpenDocument, e-book, email and RTF files read by office_formats.py.
+DOCUMENT_UPLOAD_EXTS = frozenset(
+    ".doc .xls .xlsx .xlsm .ppt .pptx .msg .eml .rtf .odt .ods .odp .epub".split()
+)
+_PARSEABLE_EXTS = SUPPORTED_UPLOAD_EXTS | SOURCE_TEXT_EXTS | DOCUMENT_UPLOAD_EXTS
 # RAG_UPLOAD_EXTS (e.g. ".md,.markdown") can only narrow: a type without a parser would fail every ingest.
 _requested_exts = {
     "." + ext.strip().lstrip(".").lower()

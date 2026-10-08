@@ -181,3 +181,14 @@ export interface PreviewTarget {
 }
 
 export const RAG_UPLOAD_ACCEPT = ".pdf,.txt,.md,.markdown,.docx,.html,.htm";
+
+/** Office, OpenDocument, e-book, email and RTF files; mirrors backend `DOCUMENT_UPLOAD_EXTS`. */
+export const RAG_DOCUMENT_UPLOAD_ACCEPT =
+  ".doc,.xls,.xlsx,.xlsm,.ppt,.pptx,.msg,.eml,.rtf,.odt,.ods,.odp,.epub";
+
+/** Everything chat with files indexes. */
+export const CHAT_FILES_ACCEPT = [
+  RAG_UPLOAD_ACCEPT,
+  RAG_DOCUMENT_UPLOAD_ACCEPT,
+  ".csv,.tsv,.json,.xml",
+].join(",");
