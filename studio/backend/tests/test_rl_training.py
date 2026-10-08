@@ -169,6 +169,8 @@ def test_request_refuses_unknown_grpo_variant():
 
 
 def test_fsdp_stub_only_when_the_real_module_cannot_import(monkeypatch):
+    # The stub stands in for torch.distributed.fsdp; it needs torch itself (the no-torch legs lack it).
+    pytest.importorskip("torch")
     import builtins
 
     real_import = builtins.__import__
