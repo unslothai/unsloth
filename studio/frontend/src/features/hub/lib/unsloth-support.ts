@@ -135,8 +135,7 @@ const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "gptq",
 ]);
 const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
-// Chat tasks only: Studio's vLLM engine refuses audio (_reject_unsupported_managed_kind) and
-// embeddings are not served through it. Untagged repos (unsloth/Qwen3.8-27B-NVFP4) are chat.
+// Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.
 const VLLM_CHAT_TASKS: ReadonlySet<string> = new Set(["text-generation", "image-text-to-text"]);
 
 // Generation tasks the Images / Video pages handle. Mirrors IMAGE_GEN_TASKS and the video picker's tasks; image-to-video is included for LTX-2.3.
