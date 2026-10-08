@@ -138,6 +138,8 @@ def test_a_core_ultra_record_establishes_a_mismatch(monkeypatch, tmp_path):
         ("0,,1", [0]),  # an empty index ends the list
         ("1,,1", [1]),  # ...before a later repeat is seen
         ("0,1,", [0, 1]),
+        (",0", []),  # a leading empty index exposes nothing
+        (",", []),
         # Unchanged:
         ("-1", []),
         ("", []),

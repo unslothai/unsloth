@@ -4700,7 +4700,7 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
         prefix = re.fullmatch(r"-?\d+", value) if _is_rocm_spec else re.match(r"[+-]?\d+", value)
         if prefix is None:
             # A UUID/MIG id, or a mask not starting with a number, keeps the UUID path below.
-            if not numeric_ids or value.upper().startswith(("GPU-", "MIG-")):
+            if value and (not numeric_ids or value.upper().startswith(("GPU-", "MIG-"))):
                 numeric_ids = None
             break
         gpu_id = int(prefix.group())
