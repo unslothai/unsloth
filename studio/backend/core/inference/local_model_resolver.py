@@ -866,6 +866,12 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             found += _scan_lmstudio_dir(lm_dir)
     except Exception as exc:
         logger.debug("auto-switch: LM Studio scan failed: %s", exc)
+    try:
+        from utils.paths import omlx_model_dirs
+        for omlx_dir in omlx_model_dirs():
+            found += _scan_hf_once(omlx_dir) + _scan_lmstudio_dir(omlx_dir, source = "omlx")
+    except Exception as exc:
+        logger.debug("auto-switch: oMLX scan failed: %s", exc)
     # Read-only like the LM Studio scan, so it is safe on the request path. This is the path Hermes
     # itself takes: it downloads the GGUF, then asks Unsloth for it by name.
     try:
@@ -888,12 +894,16 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         for folder in list_scan_folders():
             try:
                 fp = Path(folder["path"])
-                custom_found += dedupe_custom_gguf_rows(
+                rows = (
                     _scan_models_dir(fp, limit = 200)
                     + [row for hub in scan_folder_hf_caches(fp) for row in _scan_hf_once(hub)]
                     + _scan_lmstudio_dir(fp)
                     + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
                 )
+                if folder.get("recursive"):
+                    from routes.models import _scan_nested_compat_rows
+                    rows += _scan_nested_compat_rows(fp, rows, limit = 200)
+                custom_found += dedupe_custom_gguf_rows(rows)
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
         found += suppress_grouped_gguf_file_rows(custom_found)

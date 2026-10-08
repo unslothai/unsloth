@@ -76,9 +76,13 @@ import {
   syncStoredChatMessages,
 } from "../utils/chat-history-storage";
 import { notifyChatHistoryUpdated } from "../api/chat-api";
-import { toolResultModelText } from "../api/chat-adapter";
+import { resolveChatInstructions, toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
 import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
+import {
+  settleThreadScopedSettingsForCopy,
+  threadScopedDefault,
+} from "../stores/chat-runtime-store";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -231,24 +235,55 @@ async function loadConversationMessages(
   options: {
     emptyMessage?: string;
     includeSiblings?: boolean;
+    includeInstructions?: boolean;
   } = {},
 ) {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
+    includeInstructions = true,
   } = options;
   // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
   const liveBranch = liveThreadBranch(threadId);
-  const raw = await listStoredChatMessages(threadId);
+  const [raw, instructions] = await Promise.all([
+    listStoredChatMessages(threadId),
+    includeInstructions ? chatInstructionsTurn(threadId) : [],
+  ]);
   if (raw.length === 0) {
     toast.info(emptyMessage);
     return null;
   }
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
-  if (!hasParentIds) return raw;
+  if (!hasParentIds) return [...instructions, ...raw];
   const headId = liveBranchHeadId(liveBranch, raw);
-  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
+  return [
+    ...instructions,
+    ...orderByParentChain(raw, { includeSiblings, headId }),
+  ] as typeof raw;
+}
+
+async function chatInstructionsTurn(threadId: string): Promise<MessageRecord[]> {
+  // A debounced or held edit is not on the row yet, and the next reply already runs with it.
+  await settleThreadScopedSettingsForCopy(threadId);
+  const thread = await getStoredChatThread(threadId);
+  if (!thread) return [];
+  const text = await resolveChatInstructions(
+    threadId,
+    thread.settings?.systemPrompt ?? threadScopedDefault("systemPrompt"),
+    thread.settings?.systemVariables ?? threadScopedDefault("systemVariables"),
+    async () => thread,
+  );
+  if (!text) return [];
+  return [
+    {
+      id: `${threadId}-instructions`,
+      threadId,
+      role: "system",
+      content: [{ type: "text", text }],
+      createdAt: thread.createdAt,
+    },
+  ];
 }
 
 // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
@@ -498,7 +533,7 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 // One place decides that markdown carries the branch on screen; callers keep their own empty-state wording.
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string } = {},
+  options: { emptyMessage?: string; includeInstructions?: boolean } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
 /** Same markdown the download produces, for the "Copy as Markdown" shortcut. */
@@ -526,6 +561,7 @@ async function saveConversationAsProjectSource(
 ): Promise<SaveSourceOutcome> {
   const messages = await loadDisplayedBranchMessages(threadId, {
     emptyMessage: "No messages in this conversation to save.",
+    includeInstructions: false,
   });
   if (!messages) return "skipped";
   const markdown = buildConversationMarkdown(
@@ -963,7 +999,10 @@ export async function buildFineTuneJsonl(
   let skipped = 0;
   for (const id of ids) {
     const liveBranch = liveThreadBranch(id);
-    const raw = await listStoredChatMessages(id);
+    const [raw, instructions] = await Promise.all([
+      listStoredChatMessages(id),
+      chatInstructionsTurn(id),
+    ]);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
@@ -974,7 +1013,7 @@ export async function buildFineTuneJsonl(
           headId: liveBranchHeadId(liveBranch, raw),
         }) as typeof raw)
       : raw;
-    const turns = messagesToFineTuneTurns(ordered);
+    const turns = messagesToFineTuneTurns([...instructions, ...ordered]);
     const converted = turns ? turnsToFineTuneLines(turns, format) : [];
     if (converted.length === 0) {
       skipped += 1;
@@ -2597,7 +2636,7 @@ export function PromptStorageDialog({
                 className="w-full rounded-lg border-0 bg-muted/50 pl-9 pr-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 transition-shadow"
               />
               {showSuggestions && searchQuery.trim() !== "" && suggestions.length > 0 && (
-                <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
+                <div className="dropdown-surface absolute top-full left-0 right-0 z-50 mt-1 rounded-xl border border-border/60 bg-popover shadow-lg overflow-hidden">
                   {suggestions.map((name) => (
                     <button
                       key={name}

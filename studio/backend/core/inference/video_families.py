@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
+from .family_name_match import normalize_family_name, token_in_name, token_length
 
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
 # refusal names the lattice point above the request, and suggesting one the request model would itself reject is a
@@ -83,6 +84,10 @@ class VideoFamily:
     # Opt-in to the CUDA-graph capture of the denoiser forward (diffusion_cuda_graph.py): only for a family that runs
     # ONE forward per step with no CFG and no step cache, so a capture has one stable input tree to replay.
     supports_cuda_graph: bool = False
+    # Opt-in to the capture when the denoiser is offloaded: the replay then records the onloads too (set from an A/B).
+    offload_cuda_graph: bool = False
+    # Status text when the family declines the capture (the measured reason), instead of "family opts out".
+    cuda_graph_decline: Optional[str] = None
     # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
     fp16_incompatible: bool = True
     # "native" = measured accurate in plain float16 on fp16-only cards; None = promote (unmeasured).
@@ -207,6 +212,12 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # capture peak, on a family already needing 87.5 GB, and 31.1 s on the first render (break-even ~530 videos).
         # This is the CHEAPEST grid H3 ships, so the larger presets can only be more GPU-bound.
         supports_cuda_graph = False,
+        # Streamed, H3's prequant groups onload through diffusers' stream path, which waits on the host per group: a
+        # capture cannot hold them (arm_after_placement refuses it by name when the family is forced).
+        cuda_graph_decline = (
+            "measured GPU-bound: 1.0018x resident for 3.93 GB held; streamed, its group onloads wait on the host "
+            "(27 per step at 16 GB), which a graph cannot record"
+        ),
         gguf_repo = "unsloth/MiniMax-H3-GGUF",
         # Hosted pre-quantized FL2VA denoisers. The modular workflow builds each component through its own
         # from_pretrained, so there is no dense module to quantise in place: these are the ONLY way to run the 66.3 GB
@@ -281,9 +292,14 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        prequant_repos = (("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),),
+        # fp8 / int8 share one repo, files Wan2.2-TI2V-5B-<SCHEME>.pt. Sizes from Hub metadata (2026-08-04).
+        prequant_repos = (
+            ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
+            ("fp8", "unsloth/Wan2.2-TI2V-5B-FP8"),
+            ("int8", "unsloth/Wan2.2-TI2V-5B-FP8"),
+        ),
         prequant_filenames = (("nvfp4", "Wan2.2-TI2V-5B-NVFP4.pt"),),
-        prequant_resident_gb_by_scheme = (("nvfp4", 2.9),),
+        prequant_resident_gb_by_scheme = (("nvfp4", 2.9), ("fp8", 5.1), ("int8", 5.0)),
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
         has_audio = False,
@@ -301,6 +317,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
         cudnn_benchmark = False,
+        # Streamed: faster than eager with bit-identical latents; two replays per step (CFG), one graph per shape.
+        offload_cuda_graph = True,
         # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
         fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
@@ -315,14 +333,22 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
-        prequant_repos = (("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),),
+        # fp8 / int8: expert 2 is <name>-2.pt, not the derived transformer_2 name, so it needs its own row.
+        prequant_repos = (
+            ("nvfp4", "unsloth/Wan2.2-T2V-A14B-NVFP4"),
+            ("fp8", "unsloth/Wan2.2-T2V-A14B-FP8"),
+            ("int8", "unsloth/Wan2.2-T2V-A14B-FP8"),
+        ),
         prequant_filenames = (
             ("nvfp4", "Wan2.2-T2V-A14B-NVFP4.pt"),
             ("nvfp4", "transformer_2", "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"),
+            ("fp8", "transformer_2", "Wan2.2-T2V-A14B-FP8-2.pt"),
+            ("int8", "transformer_2", "Wan2.2-T2V-A14B-INT8-2.pt"),
         ),
         # BOTH experts: the plan subtracts one denoiser term and this family builds two.
-        prequant_resident_gb_by_scheme = (("nvfp4", 16.2),),
-        aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan-t2v-a14b", "wan-a14b"),
+        prequant_resident_gb_by_scheme = (("nvfp4", 16.2), ("fp8", 29.2), ("int8", 28.8)),
+        # "wan2.2_t2v": ComfyUI's expert files (wan2.2_t2v_high_noise_14B_*.safetensors), paired at load.
+        aliases = ("wan2.2-14b", "wan-t2v", "wan2.2-t2v", "wan2.2_t2v", "wan-t2v-a14b", "wan-a14b"),
         has_audio = False,
         # is_moe drives the dual-DiT optimisation layers; cfg2_kwarg names the pipeline kwarg for transformer_2's
         # guidance.
@@ -344,7 +370,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         vae_force_fp32 = True,
         # same VAE as TI2V-5B
         cudnn_benchmark = False,
-        # no gguf_repo: community GGUFs split the experts, and a single-file load covers only one
+        # no gguf_repo: community GGUFs split the experts; a gguf / single_file pick of either expert loads the pair
+        # (video_moe_pair)
     ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG
     # on the ``guider``), no callback_on_step_end (generate() wraps scheduler.step), and no upstream model_index.json,
@@ -377,6 +404,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (16.6, 14.8, 2.4),
         fp16_guard = "native",
         cudnn_benchmark = False,
+        # Needs the capture-safe forward (diffusion_capture_safe) and the memoized trim (diffusion_attention).
+        offload_cuda_graph = True,
     ),
     # The 720p t2v repack: same architecture and footprint as the 480p entry, only the trained resolution differs. Its
     # own family so a 720p load defaults to 720p sizes; the full-path alias outranks the generic token.
@@ -411,7 +440,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
 def _token_in_needle(token: str, needle: str) -> bool:
     """Whole path/name segment match, as in diffusion_families (a short alias like
     'ltx' must not match inside an unrelated word)."""
-    return re.search(r"(?:^|[-_./\\])" + re.escape(token) + r"(?:$|[-_./\\])", needle) is not None
+    return token_in_name(token, needle)
 
 
 def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optional[VideoFamily]:
@@ -426,13 +455,17 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
         for fam in _FAMILIES:
             if key == fam.name or key in fam.aliases:
                 return fam
+        norm = normalize_family_name(key)
+        for fam in _FAMILIES:
+            if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
+                return fam
         return None
     needle = repo_id.lower()
     best: Optional[tuple[VideoFamily, int]] = None
     for fam in _FAMILIES:
         for token in (fam.name, *fam.aliases):
-            if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
-                best = (fam, len(token))
+            if _token_in_needle(token, needle) and (best is None or token_length(token) > best[1]):
+                best = (fam, token_length(token))
     if best is None:
         return None
     fam = best[0]
@@ -860,6 +893,8 @@ def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:
         for key, _steps, _guidance in _VIDEO_GENERATION_DEFAULTS:
             # Match the key as a name segment: reject a preceding ASCII letter so "swan-video" does not false-match
             # "wan".
-            if re.search(r"(?<![a-z])" + re.escape(key), needle):
+            if re.search(r"(?<![a-z])" + re.escape(key), needle) or re.search(
+                r"(?<![a-z])" + re.escape(normalize_family_name(key)), normalize_family_name(needle)
+            ):
                 return key
     return None

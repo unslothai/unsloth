@@ -626,9 +626,7 @@ export function ChatSettingsPanel({
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
-      toast.error(
-        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
-      );
+      toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }, [applyLlamaUpdate, speculativeDrafterLabel]);
   const loadedEffectiveContext = customContextLength ?? loadedContextLength;
@@ -1165,10 +1163,10 @@ export function ChatSettingsPanel({
                       reason: specFallbackReason,
                       drafter: speculativeDrafterLabel,
                       isLocalGguf,
-                      updateAvailable: Boolean(llamaUpdateStatus?.update_available),
+                      updateAvailable: Boolean(llamaUpdateStatus?.llama.update_available),
                     })}
                   </p>
-                  {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                  {mtpUpdatable && llamaUpdateStatus?.llama.update_available && (
                     <Button
                       size="sm"
                       className="corner-squircle mt-2 h-7 text-ui-12"
@@ -2032,6 +2030,7 @@ function NudgeToolCallsToggle() {
 
 function ConfirmToolCallsToggle() {
   const setConfirmToolCalls = useChatRuntimeStore((s) => s.setConfirmToolCalls);
+  const setPermissionMode = useChatRuntimeStore((s) => s.setPermissionMode);
   const permissionMode = useChatRuntimeStore((s) => s.permissionMode);
 
   return (
@@ -2045,7 +2044,8 @@ function ConfirmToolCallsToggle() {
             When on, every local Unsloth tool call pauses for your approval
             before it runs (the "Ask for approval" level). When off, tool calls
             run without prompts inside the sandbox (the "Run automatically"
-            level).
+            level); on a computer without a working OS sandbox, risky Python
+            and Terminal calls still ask.
             Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
@@ -2058,7 +2058,14 @@ function ConfirmToolCallsToggle() {
       <Switch
         className="panel-switch shrink-0"
         checked={permissionMode === "ask"}
-        onCheckedChange={setConfirmToolCalls}
+        onCheckedChange={(checked) => {
+          if (checked) {
+            setConfirmToolCalls(true);
+          } else {
+            // Same as picking "Run automatically".
+            setPermissionMode("off");
+          }
+        }}
         disabled={permissionMode === "full"}
       />
     </div>

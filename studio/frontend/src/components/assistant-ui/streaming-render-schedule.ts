@@ -3,7 +3,10 @@
 
 import remend from "remend";
 import { type BlockProps } from "streamdown";
-import { parseMarkdownIntoBlocks } from "../../lib/parse-markdown-blocks.ts";
+import {
+  parseMarkdownBlockDetails,
+  parseMarkdownIntoBlocks,
+} from "../../lib/parse-markdown-blocks.ts";
 
 // How far behind the live edge a block has to be before it can be retained.
 // The block list interleaves "\n\n" separators, so this is about four
@@ -212,6 +215,52 @@ function hasLinkReference(text: string): boolean {
   }
   return false;
 }
+// A shortcut `[label]` or collapsed `[label][]` resolves against a definition too. Code spans,
+// inline links and the like are deliberately not excluded: that only adds false positives.
+const SHORTCUT_REFERENCE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
+const DEFINITION_LABEL_RE = /\[((?:\\[\s\S]|[^\]\\]){1,999})\]:/u;
+
+// micromark's `normalizeIdentifier`, so `[SS]` finds `[\u1E9E]:` as the renderer does.
+function normalizeLabel(label: string): string {
+  return label
+    .replace(/[\t\n\r ]+/g, " ")
+    .replace(/^ | $/g, "")
+    .toLowerCase()
+    .toUpperCase();
+}
+
+function hasShortcutReference(
+  prose: string,
+  references: string,
+  definitions: readonly string[],
+): boolean {
+  const labels = new Set<string>();
+  // Marked's tokens as well: an unmatched `[` line before a definition widens the regex's label.
+  for (const definition of [
+    ...definitions,
+    ...(prose.match(LINK_DEFINITION_KEY_RE) ?? []),
+  ]) {
+    const label = DEFINITION_LABEL_RE.exec(definition)?.[1];
+    if (label !== undefined) {
+      labels.add(normalizeLabel(label));
+    }
+  }
+  labels.delete("");
+  if (labels.size === 0) {
+    return false;
+  }
+  // Marked's definitions, not a regex: `[1]: <broken` is prose whose `[1]` is a reference.
+  const uses = normalizeLineEndings(references);
+  for (const match of uses.matchAll(SHORTCUT_REFERENCE_RE)) {
+    if (
+      !isEscaped(uses, match.index) &&
+      labels.has(normalizeLabel(match[1]))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -221,13 +270,28 @@ const HTML_TAG_START_RE = /[a-zA-Z/]/;
 // paying for exactly the one split it already paid for before any of this existed.
 let splitMarkdown: string | null = null;
 let splitBlocks: readonly string[] = [];
+let splitReferenceProse = "";
+let splitDefinitions: readonly string[] = [];
 
 function blocksOf(markdown: string): readonly string[] {
   if (splitMarkdown !== markdown) {
     splitMarkdown = markdown;
-    splitBlocks = parseMarkdownIntoBlocks(markdown);
+    const details = parseMarkdownBlockDetails(markdown);
+    splitBlocks = details.blocks;
+    splitReferenceProse = details.referenceProse.join("\n\n");
+    splitDefinitions = details.definitions;
   }
   return splitBlocks;
+}
+
+function referenceProseOf(markdown: string): string {
+  blocksOf(markdown);
+  return splitReferenceProse;
+}
+
+function definitionsOf(markdown: string): readonly string[] {
+  blocksOf(markdown);
+  return splitDefinitions;
 }
 
 // Which replies have to be lexed in one piece.
@@ -252,12 +316,9 @@ function blocksOf(markdown: string): readonly string[] {
 // not, so the scope would otherwise follow the reply's line ending. NOT for
 // `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
 // a normalised copy misses it and costs a CRLF reply two splits per render.
-// Definition first is a cost decision: both are pure so the conjunction is unchanged, but only
-// the one asked SECOND is skipped, and the reference scan is the dearer. `][` without a `]:` is
-// the shape that separates them.
+// A shortcut reference can be any `[label]`, so a definition alone is enough to pay for the split.
 function documentProse(markdown: string): string | null {
-  const normalized = normalizeLineEndings(markdown);
-  if (!hasLinkDefinition(normalized) || !hasLinkReference(normalized)) {
+  if (!hasLinkDefinition(normalizeLineEndings(markdown))) {
     return null;
   }
   const prose = normalizeLineEndings(
@@ -265,7 +326,13 @@ function documentProse(markdown: string): string | null {
       .filter((block) => !isCodeBlock(block))
       .join("\n"),
   );
-  return LINK_DEFINITION_LINE_RE.test(prose) && hasLinkReference(prose)
+  return LINK_DEFINITION_LINE_RE.test(prose) &&
+    (hasLinkReference(prose) ||
+      hasShortcutReference(
+        prose,
+        referenceProseOf(markdown),
+        definitionsOf(markdown),
+      ))
     ? prose
     : null;
 }
@@ -910,6 +977,31 @@ export type IncrementalMarkdownRender = {
   parseMarkdownIntoBlocks: (markdown: string) => string[];
 };
 
+const INCOMPLETE_LINK_REPAIR = "](streamdown:incomplete-link)";
+
+export function hasIncompleteLinkRepair(
+  source: string,
+  repaired?: string,
+): boolean {
+  // Only an unclosed `[` gets the placeholder, so bracket-free replies skip the remend pass.
+  if (!source.includes("[")) return false;
+  const after = repaired ?? remend(source);
+  return (
+    after.split(INCOMPLETE_LINK_REPAIR).length >
+    source.split(INCOMPLETE_LINK_REPAIR).length
+  );
+}
+
+// Skips only remend's link pass, whose placeholder renders as "[blocked]"; every other repair still runs.
+export const LITERAL_LINK_REMEND = { links: false, images: false } as const;
+
+export function repairStreamingMarkdown(source: string): string {
+  const repaired = remend(source);
+  return hasIncompleteLinkRepair(source, repaired)
+    ? remend(source, LITERAL_LINK_REMEND)
+    : repaired;
+}
+
 // Marker facts the retained prefix carries into the tail repair.
 type RetainedContext = {
   multilineKatex: boolean;
@@ -977,12 +1069,26 @@ function repairContextPrefix(context: RetainedContext): string {
   );
 }
 
-function repairTail(tail: string, context: RetainedContext): string {
+function repairTail(
+  tail: string,
+  context: RetainedContext,
+  options?: typeof LITERAL_LINK_REMEND,
+): string {
   const prefix = repairContextPrefix(context);
   if (!prefix) {
-    return remend(tail);
+    return remend(tail, options);
   }
-  return remend(prefix + tail).slice(prefix.length);
+  return remend(prefix + tail, options).slice(prefix.length);
+}
+
+function repairTailKeepingLinks(
+  tail: string,
+  context: RetainedContext,
+  repaired = repairTail(tail, context),
+): string {
+  return hasIncompleteLinkRepair(tail, repaired)
+    ? repairTail(tail, context, LITERAL_LINK_REMEND)
+    : repaired;
 }
 
 // Where remend believes a fence is open. It toggles on any ``` run, wherever on the line that run
@@ -1349,7 +1455,7 @@ export class IncrementalMarkdownCache {
   private renderFullDocument(markdown: string): IncrementalMarkdownRender {
     this.resetIncrementalState(markdown);
     this.fullDocumentMode = true;
-    return this.render(remend(markdown));
+    return this.render(repairStreamingMarkdown(markdown));
   }
 
   // The text handed to the cache is not always an extension of the last one: `preprocessLaTeX`
@@ -1454,8 +1560,11 @@ export class IncrementalMarkdownCache {
 
     this.updateTail(markdown);
 
-    const repaired =
-      this.repairOpenFence() ?? repairTail(this.tail, this.context);
+    const repaired = repairTailKeepingLinks(
+      this.tail,
+      this.context,
+      this.repairOpenFence() ?? undefined,
+    );
 
     // globally scoped definitions must stay in the same rendered document as
     // their uses, so neither construct can retain an independently parsed prefix.
@@ -1474,7 +1583,6 @@ export class IncrementalMarkdownCache {
     ) {
       return this.renderFullDocument(markdown);
     }
-
     const blocks = parseMarkdownIntoBlocks(repaired);
 
     const candidateCount = Math.max(0, blocks.length - ROLLBACK_BLOCKS);
@@ -1507,7 +1615,7 @@ export class IncrementalMarkdownCache {
       committedText,
     );
     const nextTail = this.tail.slice(commit.length);
-    const nextMarkdown = repairTail(nextTail, nextContext);
+    const nextMarkdown = repairTailKeepingLinks(nextTail, nextContext);
 
     // A repeating reply can leave the tail unchanged once a block is retained.
     // Streamdown would then see the Markdown it already holds and skip the

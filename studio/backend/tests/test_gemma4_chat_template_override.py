@@ -100,6 +100,8 @@ def _detect_reasoning_flags():
         ("unsloth/gemma-4-E4B-it-GGUF", True),
         ("unsloth/gemma-4-31B-it-GGUF", True),
         ("unsloth/gemma-4-26B-A4B-it-GGUF", True),
+        ("unsloth/gemma-4-E4B-it-qat-GGUF", True),
+        ("unsloth/gemma-4-12B-it-qat-GGUF", True),
         ("UNSLOTH/GEMMA-4-E2B-IT-GGUF", True),  # case-insensitive
         ("gemma-4-E2B-it-GGUF", True),  # owner-less shorthand -> unsloth/
         ("gemma-4-31B-it-GGUF", True),  # owner-less shorthand -> unsloth/
@@ -125,7 +127,12 @@ def test_is_unsloth_gemma4_gguf(model_id, expected):
         ("unsloth/gemma-4-E2B-it-GGUF", True),
         ("unsloth/gemma-4-E4B-it-GGUF", True),
         ("UNSLOTH/GEMMA-4-E4B-IT-GGUF", True),
+        ("unsloth/gemma-4-E2B-it-qat-GGUF", True),
+        ("unsloth/gemma-4-E4B-it-qat-GGUF", True),
+        ("unsloth/gemma-4-E4B-it-qat-mobile-GGUF", True),
+        ("unsloth/gemma-4-E2B-it-qat-mobile-GGUF", True),
         ("unsloth/gemma-4-12b-it-GGUF", False),
+        ("unsloth/gemma-4-12B-it-qat-GGUF", False),
         ("unsloth/gemma-4-26B-A4B-it-GGUF", False),
         ("unsloth/gemma-4-31B-it-GGUF", False),
         ("unsloth/gemma-3-4b-it-GGUF", False),
@@ -140,6 +147,19 @@ def test_resolver_returns_edge_template_for_e2b_e4b():
         out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
         assert out == EDGE
         assert out != BUNDLED
+
+
+def test_resolver_routes_qat_repos_by_family():
+    # The QAT repos are named like the plain ones plus "-qat", and the edge
+    # template has to follow them: an E2B/E4B QAT model that gets the standard
+    # template is handed an empty thought block on thinking-off (issue #12708).
+    for mid in ("unsloth/gemma-4-E2B-it-qat-GGUF", "unsloth/gemma-4-E4B-it-qat-GGUF"):
+        out = resolve_effective_chat_template_override(model_identifier = mid, user_override = None)
+        assert out == EDGE
+    out = resolve_effective_chat_template_override(
+        model_identifier = "unsloth/gemma-4-12B-it-qat-GGUF", user_override = None
+    )
+    assert out == BUNDLED
 
 
 def test_resolver_handles_owner_less_shorthand():

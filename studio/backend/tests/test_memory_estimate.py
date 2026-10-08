@@ -1585,6 +1585,36 @@ class TestEstimateMemoryRoute:
         assert resp.n_ctx == 4096
 
 
+class TestInt8PrefillAvailabilityRoute:
+    @pytest.mark.parametrize(
+        "downloaded,takes_int8,answer",
+        [
+            (True, True, (True, None)),
+            (False, True, (False, "not_downloaded")),
+            (True, False, (False, "unsupported_zoo")),
+        ],
+    )
+    def test_the_answer(self, monkeypatch, tmp_path, downloaded, takes_int8, answer):
+        from core.inference import mlx_inference
+        from models.inference import Int8PrefillAvailabilityRequest
+
+        asked = []
+        zoo = _types.ModuleType("unsloth_zoo.mlx.inference")
+        zoo.nax_quantized_linear = (lambda m, int8_prefill = None: m) if takes_int8 else len
+        verdict = SimpleNamespace(available = True, reason = "")
+        zoo.int8_prefill_checkpoint_available = lambda path: asked.append(path) or verdict
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", zoo)
+        monkeypatch.setattr(mlx_inference, "_int8_prefill_checkpoint_cache", {})
+        model_dir = str(tmp_path) if downloaded else None
+        TestEstimateMemoryRoute._mlx_target(monkeypatch, model_dir)
+        request = Int8PrefillAvailabilityRequest(model_path = "org/model")
+        resp = asyncio.run(ri.int8_prefill_availability(request, current_subject = "test"))
+        assert (resp.available, resp.reason) == answer
+        if answer[0]:
+            assert mlx_inference.mlx_int8_prefill_checkpoint_status(model_dir) == (True, "")
+        assert asked == ([model_dir] if answer[0] else [])
+
+
 class TestParallelSlotResolution:
     """Blank Parallel Slots means the server default, not one.
 

@@ -631,6 +631,7 @@ def run_safetensors_tool_loop(
     mcp_image = None,
     bypass_permissions: bool = False,
     permission_mode: Optional[str] = None,
+    sandbox_level: Optional[str] = None,
     reasoning_prefilled: bool = False,
     continue_final_message: bool = False,
     markup = None,
@@ -640,6 +641,7 @@ def run_safetensors_tool_loop(
     generation_stats_holder: Optional[dict] = None,
     images_sink: Optional[list] = None,
     caller_image_indexes: "tuple[int, ...]" = (),
+    context_fitter: Optional[Callable[[list, list, list], dict]] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -668,11 +670,23 @@ def run_safetensors_tool_loop(
     # let the prompt carry a second full allowance. The route reserves the attachment's
     # slot by trimming replay to limit - 1 before interleaving it.
     caller_images = tuple(caller_image_indexes)
-    # The branch this request is on, before the loop appends anything. A GGUF-compacted
-    # thread keeps its archive across a switch to safetensors, so search_conversation is
-    # advertised here too and needs the same filtering: the stored rows are the whole
-    # DAG, and Retry leaves the replaced response in them.
-    request_branch = list(messages)
+    # The branch this request is on. A GGUF-compacted thread keeps its archive across a
+    # switch to safetensors, so search_conversation is advertised here too and needs the
+    # same filtering: the stored rows are the whole DAG, and Retry leaves the replaced
+    # response in them.
+    _live_branch = list(messages)
+    # ...and the replies and tool results the loop adds to it: a fit can evict this request's
+    # own earlier tool exchange into the archive, where the client's messages alone would
+    # refuse it. Not the loop's user turns: those are its own notices, and recall searches
+    # for the branch's last user turn, which has to stay the request.
+    _live_branch_ids = {id(message) for message in _live_branch}
+
+    def _extend_live_branch(current: list) -> list:
+        for message in current:
+            if id(message) not in _live_branch_ids and message.get("role") != "user":
+                _live_branch_ids.add(id(message))
+                _live_branch.append(message)
+        return _live_branch
 
     # Mirrors the GGUF loop: "full" and bypass_permissions are the same switch;
     # unset defaults to "auto", unknown falls back to the stricter "ask"; "off"
@@ -680,11 +694,20 @@ def run_safetensors_tool_loop(
     # no mode is already resolved to "ask" at the request layer, so it never
     # arrives here as an ambiguous unset.
     from core.inference.tool_stream_exec import stream_tool_execution
-    from state.tool_policy import account_tool_stream, normalize_tool_permissions
+    from state.tool_policy import (
+        account_tool_stream,
+        needs_tool_confirmation,
+        normalize_sandbox_level,
+        normalize_tool_permissions,
+        requires_os_isolation,
+        runs_without_os_sandbox,
+        tool_call_may_prompt,
+    )
 
     permission_mode, bypass_permissions = normalize_tool_permissions(
         permission_mode, bypass_permissions
     )
+    sandbox_level = normalize_sandbox_level(sandbox_level)
     stream_tool_execution = account_tool_stream(stream_tool_execution)
     from core.inference.skill_mentions import load_mentioned_skills
 
@@ -748,6 +771,8 @@ def run_safetensors_tool_loop(
     tool_controller = ToolLoopController(
         tools = (None if unrestricted_tools else _authorized),
         auto_heal_tool_calls = auto_heal_tool_calls,
+        session_id = session_id,
+        thread_id = thread_id,
     )
     # RAG: cap knowledge-base searches per assistant turn (controller-agnostic).
     kb_search_count = 0
@@ -801,6 +826,15 @@ def run_safetensors_tool_loop(
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
         _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
 
+        # Refit every iteration: tool results grow the prompt after the first turn. Given
+        # the prompt, this turn's tools and the live branch; returns `messages` and `events`.
+        if context_fitter is not None:
+            fit_result = context_fitter(
+                conversation, active_tools, _extend_live_branch(conversation)
+            )
+            conversation = list(fit_result.get("messages") or conversation)
+            yield from fit_result.get("events") or ()
+
         # This loop receives cumulative snapshots, so keep both whole-prefix scans
         # incremental: the stripper settles safe prefixes, the signal detector resumes
         # with enough overlap for a literal split across snapshots.
@@ -850,12 +884,11 @@ def run_safetensors_tool_loop(
         # as "running" before the user has approved it. Suppress the early card in that case. In auto mode render_html
         # is always safe and never prompts, so keep its early canvas card; mirrors the GGUF path's _confirm_gated
         # exemption.
-        from core.inference.tools import is_always_safe_tool
-
-        _provisional_confirm_gated = (
-            bool(confirm_tool_calls)
-            and not bypass_permissions
-            and not (permission_mode == "auto" and is_always_safe_tool("render_html"))
+        _provisional_confirm_gated = tool_call_may_prompt(
+            confirm_tool_calls = bool(confirm_tool_calls),
+            bypass_permissions = bypass_permissions,
+            permission_mode = permission_mode,
+            name = "render_html",
         )
 
         def _should_start_provisional_render_html(content: str) -> bool:
@@ -1490,22 +1523,30 @@ def run_safetensors_tool_loop(
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
             # Bypass wins here too, so a direct internal caller with both flags
-            # never prompts. "auto" pauses only high-risk calls; "off" never
-            # prompts (sandbox stays on).
-            from core.inference.tools import mcp_image_share, never_needs_approval
+            # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
+            # high-risk python/terminal call without OS isolation.
+            from core.inference.tools import mcp_image_share
 
-            needs_confirm = (
-                bool(confirm_tool_calls)
-                and not bypass_permissions
-                and permission_mode != "off"
-                and not never_needs_approval(decision.tool_name)
+            needs_confirm = needs_tool_confirmation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
+                sandbox_level = sandbox_level,
             )
-            if needs_confirm and permission_mode == "auto":
-                from core.inference.tools import is_high_risk_tool_call
-                needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             # Sending the user's image always asks, whatever the permission mode.
             image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
             needs_confirm = needs_confirm or image_share is not None
+            strict_isolation = requires_os_isolation(
+                confirm_tool_calls = bool(confirm_tool_calls),
+                bypass_permissions = bypass_permissions,
+                permission_mode = permission_mode,
+                name = decision.tool_name,
+                arguments = decision.arguments,
+                prompted = needs_confirm,
+                sandbox_level = sandbox_level,
+            )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()
@@ -1593,6 +1634,7 @@ def run_safetensors_tool_loop(
                     _output_callback,
                     _decision = decision,
                     _approved = _host_access_approved,
+                    _strict = strict_isolation,
                 ):
                     kwargs = dict(
                         cancel_event = cancel_event,
@@ -1602,8 +1644,15 @@ def run_safetensors_tool_loop(
                         rag_scope = rag_scope,
                         disable_sandbox = bypass_permissions,
                     )
+                    # Run unasked only because the OS sandbox was on: refuse if it is not any more.
+                    if _strict and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "required"
+                    elif runs_without_os_sandbox(
+                        _decision.tool_name, sandbox_level
+                    ) and _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = "software"
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
-                        kwargs["conversation_branch"] = request_branch
+                        kwargs["conversation_branch"] = _extend_live_branch(conversation)
                     if _approved and _accepts_kwarg(execute_tool, "host_access_approved"):
                         kwargs["host_access_approved"] = True
                     # And the room the model has left, as the GGUF loop does: without a

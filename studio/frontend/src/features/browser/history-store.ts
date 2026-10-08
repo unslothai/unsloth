@@ -4,6 +4,9 @@
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { hostOf } from "./address";
+import { forgetNativeDownloads } from "./native-downloads";
+import { useBrowserPrefsStore } from "./prefs-store";
 
 export type HistoryItem = { id: string; url: string; title: string; visitedAt: number };
 export type DownloadItem = {
@@ -13,6 +16,8 @@ export type DownloadItem = {
   size: number;
   contentType: string;
   downloadedAt: number;
+  /** Desktop app id for the saved file (native-downloads.ts). */
+  nativeId?: string;
 };
 
 const MAX_HISTORY = 1000;
@@ -23,6 +28,19 @@ export const MAX_TITLE_CHARS = 200;
 // The icons sites declare, by host: most sites name theirs in the page, not at /favicon.ico.
 const MAX_ICONS = 300;
 const PERSIST_DELAY_MS = 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Visits before this are past the kept period; 0 keeps them all. */
+/** Icons of hosts with a kept visit; the rest are history too. */
+function iconsFor(history: HistoryItem[], icons: Record<string, string>): Record<string, string> {
+  const hosts = new Set(history.map((visit) => hostOf(visit.url)));
+  return Object.fromEntries(Object.entries(icons).filter(([host]) => hosts.has(host)));
+}
+
+function retentionCutoff(): number {
+  const days = useBrowserPrefsStore.getState().historyRetentionDays;
+  return days > 0 ? Date.now() - days * DAY_MS : 0;
+}
 
 /** localStorage with batched writes, since history is one big JSON value; a full storage is ignored. */
 function deferredLocalStorage(): StateStorage {
@@ -69,6 +87,8 @@ interface BrowserHistoryState {
   removeDownload: (id: string) => void;
   clearHistory: () => void;
   clearDownloads: () => void;
+  /** Drops visits past the kept period (Settings > Browser). */
+  pruneHistory: () => void;
 }
 
 export const useBrowserHistoryStore = create<BrowserHistoryState>()(
@@ -80,6 +100,8 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
       recordIcon: (host, icon) =>
         set((state) => {
           if (!host || icon.length > MAX_URL_CHARS || state.icons[host] === icon) return state;
+          // Icons name the hosts visited, so they follow the history setting.
+          if (!useBrowserPrefsStore.getState().saveHistory) return state;
           const { [host]: _replaced, ...rest } = state.icons;
           const hosts = Object.keys(rest);
           for (const old of hosts.slice(0, Math.max(0, hosts.length + 1 - MAX_ICONS))) delete rest[old];
@@ -87,18 +109,26 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
         }),
       recordVisit: (url, fullTitle) =>
         set((state) => {
-          if (url.length > MAX_URL_CHARS) return state;
+          if (url.length > MAX_URL_CHARS || !useBrowserPrefsStore.getState().saveHistory) return state;
           const title = fullTitle.slice(0, MAX_TITLE_CHARS);
-          const [latest, ...rest] = state.history;
+          const cutoff = retentionCutoff();
+          const kept = cutoff ? state.history.filter((visit) => visit.visitedAt >= cutoff) : state.history;
+          const [latest, ...rest] = kept;
           // A reload or title update of the same page is one visit.
-          if (latest?.url === url) {
-            return { history: [{ ...latest, title: title || latest.title, visitedAt: Date.now() }, ...rest] };
-          }
-          const item = { id: newId(), url, title, visitedAt: Date.now() };
-          return { history: [item, ...state.history].slice(0, MAX_HISTORY) };
+          const history =
+            latest?.url === url
+              ? [{ ...latest, title: title || latest.title, visitedAt: Date.now() }, ...rest]
+              : [{ id: newId(), url, title, visitedAt: Date.now() }, ...kept].slice(0, MAX_HISTORY);
+          // Pruned against the new visit too: its icon was recorded just before it.
+          const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
+          return { history, icons };
         }),
       recordDownload: (item) =>
         set((state) => {
+          if (!useBrowserPrefsStore.getState().saveDownloadHistory) {
+            if (item.nativeId) forgetNativeDownloads([item.nativeId]);
+            return state;
+          }
           // A page picks these: bounded like a visit, keeping the download without an overlong address.
           const entry = {
             ...item,
@@ -108,13 +138,33 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
             id: newId(),
             downloadedAt: Date.now(),
           };
-          return { downloads: [entry, ...state.downloads].slice(0, MAX_DOWNLOADS) };
+          const downloads = [entry, ...state.downloads];
+          const dropped = downloads.slice(MAX_DOWNLOADS).flatMap((item) => (item.nativeId ? [item.nativeId] : []));
+          forgetNativeDownloads(dropped);
+          return { downloads: downloads.slice(0, MAX_DOWNLOADS) };
         }),
       removeVisit: (id) => set((state) => ({ history: state.history.filter((item) => item.id !== id) })),
       removeVisits: (ids) => set((state) => ({ history: state.history.filter((item) => !ids.has(item.id)) })),
-      removeDownload: (id) => set((state) => ({ downloads: state.downloads.filter((item) => item.id !== id) })),
+      removeDownload: (id) =>
+        set((state) => {
+          const nativeId = state.downloads.find((item) => item.id === id)?.nativeId;
+          if (nativeId) forgetNativeDownloads([nativeId]);
+          return { downloads: state.downloads.filter((item) => item.id !== id) };
+        }),
       clearHistory: () => set({ history: [], icons: {} }),
-      clearDownloads: () => set({ downloads: [] }),
+      clearDownloads: () =>
+        set((state) => {
+          // The app's registry is shared by every account; forget only this one's.
+          forgetNativeDownloads(state.downloads.flatMap((item) => (item.nativeId ? [item.nativeId] : [])));
+          return { downloads: [] };
+        }),
+      pruneHistory: () =>
+        set((state) => {
+          const cutoff = retentionCutoff();
+          if (!cutoff || state.history.every((visit) => visit.visitedAt >= cutoff)) return state;
+          const history = state.history.filter((visit) => visit.visitedAt >= cutoff);
+          return { history, icons: iconsFor(history, state.icons) };
+        }),
     }),
     {
       // Per account: a write still deferred at a switch lands under the account that made it.
@@ -124,3 +174,14 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
     },
   ),
 );
+
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+
+// Prune at startup (storage loads synchronously), hourly while open, and when retention shortens.
+useBrowserHistoryStore.getState().pruneHistory();
+if (typeof window !== "undefined" && typeof window.setInterval === "function") {
+  window.setInterval(() => useBrowserHistoryStore.getState().pruneHistory(), PRUNE_INTERVAL_MS);
+}
+useBrowserPrefsStore.subscribe((state, previous) => {
+  if (state.historyRetentionDays !== previous.historyRetentionDays) useBrowserHistoryStore.getState().pruneHistory();
+});

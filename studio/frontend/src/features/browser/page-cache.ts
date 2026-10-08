@@ -3,10 +3,29 @@
 
 import type { BrowserPage } from "./api";
 
+const MB = 1024 * 1024;
 const MAX_PAGES = 12;
 // Total and per-page budget: a fetched page can be 50 MB.
-const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
-const MAX_PAGE_BYTES = 8 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 32 * MB;
+const MAX_PAGE_BYTES = 8 * MB;
+
+/** Page and byte limits for a machine reporting `deviceMemory` GB; unknown keeps the defaults. */
+export function cacheLimits(deviceMemory: unknown): { maxPages: number; maxTotalBytes: number } {
+  if (typeof deviceMemory === "number" && Number.isFinite(deviceMemory) && deviceMemory > 0) {
+    if (deviceMemory <= 2) return { maxPages: 4, maxTotalBytes: 8 * MB };
+    if (deviceMemory <= 4) return { maxPages: 6, maxTotalBytes: 16 * MB };
+  }
+  return { maxPages: MAX_PAGES, maxTotalBytes: MAX_TOTAL_BYTES };
+}
+
+/** `navigator.deviceMemory`, which only Chromium reports (Chrome, Edge, WebView2). */
+export function reportedDeviceMemory(): unknown {
+  try {
+    return typeof navigator === "undefined" ? undefined : (navigator as { deviceMemory?: unknown }).deviceMemory;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Approximate memory held by a page. JS strings are UTF-16. */
 export function pageBytes(page: BrowserPage): number {

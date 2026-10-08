@@ -1,16 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type DocumentAnnotations, useChatArtifactsStore } from "@/features/chat";
+import type { DocumentAnnotations } from "@/features/chat";
 import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
-import { PageCache } from "./page-cache";
+import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
+import { defaultZoom } from "./prefs-store";
 
 export type BrowserEntry =
   | { kind: "newtab" }
   | { kind: "internal"; page: InternalPage }
-  | { kind: "web"; url: string; method?: "GET" | "POST"; body?: string }
+  | {
+      kind: "web";
+      url: string;
+      method?: "GET" | "POST";
+      body?: string;
+      /** The page that sent the tab here (link, form, script, refresh); a file here downloads on its behalf. */
+      from?: string;
+    }
   | {
       kind: "file";
       fileId: string;
@@ -18,6 +26,8 @@ export type BrowserEntry =
       contentType: string;
       /** Show as text even if named .html (text extracted from a document). */
       plainText?: boolean;
+      /** The tab's openKey while this entry shows, so Back restores it. */
+      openKey?: string;
     };
 
 export type InternalPage = "history" | "downloads" | "bookmarks";
@@ -30,10 +40,9 @@ export type ChatDock = "minimized" | "composer" | "expanded";
 
 export type RequestEdits = (prompt: string) => void;
 
-/** Resolves false when the composer refused them (it says why), so the marks stay. */
-export type SendAnnotations = (annotations: DocumentAnnotations) => Promise<boolean>;
-
-export type OpenInCanvas = (file: { title: string; code: string }) => void;
+/** Resolves false when the composer refused them (it says why), so the marks stay.
+ *  `files` (an annotation screenshot) go in the same message. */
+export type SendAnnotations = (annotations: DocumentAnnotations, files?: File[]) => Promise<boolean>;
 
 /** Stages a file in the chat's composer; false when it refused it (it says why). */
 export type AttachToChat = (file: File) => Promise<boolean>;
@@ -65,6 +74,8 @@ export type BrowserTab = {
   zoom: number;
   nativeHistory: { back: boolean; forward: boolean } | null;
   nativeError: string | null;
+  /** The proxied page failed to load, so an error shows instead of its frame. */
+  pageError?: boolean;
   /** The name the reader gave the tab; kept as it navigates. */
   customTitle: string | null;
   muted: boolean;
@@ -110,7 +121,12 @@ export function setNativeWebHistory(native: boolean): void {
 const MAX_HISTORY = 50;
 
 // Loaded pages by history entry, so back and forward skip the fetch. Reload drops only its own entry.
-const pageCache = new PageCache<BrowserEntry>();
+// Fewer on a low-memory machine.
+const cacheLimit = cacheLimits(reportedDeviceMemory());
+const pageCache = new PageCache<BrowserEntry>(cacheLimit.maxPages, cacheLimit.maxTotalBytes);
+
+// The entry each page-driven navigation left, while it is still the one before it.
+const sentFrom = new WeakMap<BrowserEntry, BrowserEntry>();
 
 const entryIds = new WeakMap<BrowserEntry, number>();
 let nextEntryId = 0;
@@ -155,7 +171,8 @@ function createTab(entry: BrowserEntry, openKey: string | null = null): BrowserT
     loading: false,
     reloadKey: 0,
     openKey,
-    zoom: 1,
+    // Files open fitted; the default zoom is for web pages.
+    zoom: entry.kind === "file" ? 1 : defaultZoom(),
     nativeHistory: null,
     nativeError: null,
     customTitle: null,
@@ -172,6 +189,8 @@ function copyTab(tab: BrowserTab): BrowserTab {
     ...createTab({ kind: "newtab" }),
     history: tab.history.map((entry) => {
       const copy = { ...entry };
+      // The original keeps its key; a copy going Back must not claim it.
+      if (copy.kind === "file") delete copy.openKey;
       // A form result is not sent again unasked just because the tab was copied.
       if (entry.kind === "web" && entry.method === "POST") sentPosts.add(copy);
       return copy;
@@ -189,8 +208,10 @@ export function currentEntry(tab: BrowserTab): BrowserEntry {
   return tab.history[tab.index] ?? { kind: "newtab" };
 }
 
-function webEntry(url: string, method?: "GET" | "POST", body?: string): BrowserEntry {
-  return method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
+function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string): BrowserEntry {
+  const entry: BrowserEntry =
+    method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
+  return from ? { ...entry, from } : entry;
 }
 
 // Pending file refreshes per tab, run in order, and the blobs they will compare.
@@ -245,7 +266,6 @@ type BrowserState = {
   /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
   requestEdits: RequestEdits | null;
   sendAnnotations: SendAnnotations | null;
-  openInCanvas: OpenInCanvas | null;
   attachToChat: AttachToChat | null;
   annotateTabId: string | null;
   setAnnotating: (tabId: string | null) => void;
@@ -271,14 +291,16 @@ type BrowserState = {
   closeTabsToRight: (tabId: string) => void;
   openUrl: (
     url: string,
-    options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string },
+    options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string; from?: string },
   ) => void;
   openFile: (input: OpenFileInput) => void;
   navigate: (
     tabId: string,
-    request: { url: string; method?: "GET" | "POST"; body?: string },
+    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string },
     options?: { replace?: boolean },
   ) => void;
+  /** A page-sent entry that became a download: back to that page and out of history, unless the tab moved on. */
+  leaveDownload: (tabId: string, entry: BrowserEntry) => void;
   goBack: (tabId: string) => void;
   goForward: (tabId: string) => void;
   reload: (tabId: string) => void;
@@ -291,7 +313,7 @@ type BrowserState = {
     patch: Partial<
       Pick<
         BrowserTab,
-        "title" | "favicon" | "documentType" | "displayUrl" | "loading" | "nativeHistory" | "nativeError"
+        "title" | "favicon" | "documentType" | "displayUrl" | "loading" | "nativeHistory" | "nativeError" | "pageError"
       >
     >,
   ) => void;
@@ -308,7 +330,26 @@ type BrowserState = {
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
   tabs.map((tab) => (tab.id === tabId ? update(tab) : tab));
 
+/** Zoom on entering `entry`, by opening it or going back or forward. A web page reached from a new
+ *  tab, a history page or an unzoomed file starts at the default; a file reached from an unzoomed
+ *  web page shows at 100%. A zoom the reader chose carries over, and Back/Forward (`traversal`)
+ *  skip the new tab rule, so a page keeps the zoom its new tab entry carried. */
+function zoomFor(tab: BrowserTab, entry: BrowserEntry, traversal = false): number {
+  const from = tab.history[tab.index];
+  if (!from) return tab.zoom;
+  const preferred = defaultZoom();
+  const at = (zoom: number) => Math.abs(tab.zoom - zoom) < 0.001;
+  if (entry.kind === "web") {
+    const unzoomedFile = from.kind === "file" && at(1);
+    const blank = !traversal && (from.kind === "newtab" || from.kind === "internal");
+    return blank || unzoomedFile ? preferred : tab.zoom;
+  }
+  if (entry.kind === "file" && from.kind === "web" && at(preferred)) return 1;
+  return tab.zoom;
+}
+
 function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): BrowserTab {
+  const zoom = zoomFor(tab, entry);
   const history = tab.history.slice(0, replace ? tab.index : tab.index + 1);
   history.push(entry);
   if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
@@ -323,6 +364,8 @@ function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): Brows
     loading: entry.kind === "web",
     openKey: null,
     nativeError: null,
+    pageError: false,
+    zoom,
   };
 }
 
@@ -330,23 +373,21 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
   const entry = tab.history[index] ?? { kind: "newtab" };
   return {
     ...tab,
+    zoom: zoomFor(tab, entry, true),
     index,
     title: entry.kind === "file" ? entry.name : "",
     favicon: null,
     documentType: null,
     displayUrl: null,
     loading: entry.kind === "web",
+    openKey: entry.kind === "file" ? (entry.openKey ?? null) : null,
     nativeError: null,
+    pageError: false,
   };
-}
-
-function showPanel(): void {
-  useChatArtifactsStore.getState().closeArtifactSurface();
 }
 
 export const useBrowserStore = create<BrowserState>((set, get) => {
   const openTab = (tab: BrowserTab, background = false, after?: string) => {
-    showPanel();
     set((state) => {
       const at = after ? state.tabs.findIndex((other) => other.id === after) : -1;
       const tabs = [...state.tabs];
@@ -362,7 +403,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
   const focusExisting = (openKey: string): boolean => {
     const existing = get().tabs.find((tab) => tab.openKey === openKey);
     if (!existing) return false;
-    showPanel();
     set((state) => ({ open: true, activeTabId: existing.id, openSequence: state.openSequence + 1 }));
     return true;
   };
@@ -380,7 +420,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     chatSide: "left",
     requestEdits: null,
     sendAnnotations: null,
-    openInCanvas: null,
     attachToChat: null,
     annotateTabId: null,
     setAnnotating: (annotateTabId) => set({ annotateTabId }),
@@ -397,7 +436,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         get().newTab();
         return;
       }
-      showPanel();
       set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
     },
     closePanel: () => set({ open: false, fullView: false, annotateTabId: null }),
@@ -417,7 +455,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     openPinned: (pinnedId, url, title) => {
       const shown = get().tabs.find((tab) => tab.pinnedId === pinnedId);
-      showPanel();
       if (shown) {
         set((state) => ({ open: true, activeTabId: shown.id, openSequence: state.openSequence + 1 }));
         return;
@@ -447,20 +484,19 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     openUrl: (url, options) => {
       if (!isWeb(url)) return;
       if (options?.method === "POST") {
-        openTab(createTab(webEntry(url, "POST", options.body ?? "")), options.background);
+        openTab(createTab(webEntry(url, "POST", options.body ?? "", options.from)), options.background);
         return;
       }
       const target = unwrapRedirect(url);
       const openKey = `url:${target}`;
       const { activeTabId } = get();
       if (options?.newTab === false && activeTabId) {
-        get().navigate(activeTabId, { url: target });
-        showPanel();
+        get().navigate(activeTabId, { url: target, from: options.from });
         set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
         return;
       }
       if (options?.newTab === undefined && focusExisting(openKey)) return;
-      openTab(createTab(webEntry(target), openKey), options?.background);
+      openTab(createTab(webEntry(target, undefined, undefined, options?.from), openKey), options?.background);
     },
     openFile: ({ blob, name, contentType, plainText, key }) => {
       const openKey = key ? `file:${key}` : null;
@@ -472,6 +508,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         name: name || "Untitled",
         contentType: contentType || blob.type,
         plainText,
+        ...(openKey ? { openKey } : {}),
       };
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
@@ -508,15 +545,24 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     navigate: (tabId, request, options) => {
       if (!isWeb(request.url)) return;
       set((state) => ({
-        tabs: patchTab(state.tabs, tabId, (tab) =>
-          pushEntry(
-            tab,
-            webEntry(request.url, request.method, request.body),
-            options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web"),
-          ),
-        ),
+        tabs: patchTab(state.tabs, tabId, (tab) => {
+          const replace = options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web");
+          const entry = webEntry(request.url, request.method, request.body, request.from);
+          if (request.from && !replace) sentFrom.set(entry, currentEntry(tab));
+          return pushEntry(tab, entry, replace);
+        }),
       }));
     },
+    leaveDownload: (tabId, entry) =>
+      set((state) => ({
+        tabs: patchTab(state.tabs, tabId, (tab) => {
+          const previous = tab.history[tab.index - 1];
+          if (currentEntry(tab) !== entry || !previous || sentFrom.get(entry) !== previous) return tab;
+          const history = tab.history.filter((candidate) => candidate !== entry);
+          pageCache.delete(entry);
+          return moveTo({ ...tab, history }, tab.index - 1);
+        }),
+      })),
     goBack: (tabId) =>
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => (tab.index > 0 ? moveTo(tab, tab.index - 1) : tab)),

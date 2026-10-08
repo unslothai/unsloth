@@ -135,6 +135,74 @@ def test_visible_rows_are_identical_with_and_without_include_hidden():
         assert row == widened[row["provider_type"]]
 
 
+def test_registry_default_hides_oauth_providers_from_legacy_clients():
+    """v0.1.701-beta sends a bare request and renders every row as an API-key form (#8722)."""
+    types = {entry["provider_type"] for entry in list_available_providers()}
+    assert "openai_codex" not in types
+
+
+@pytest.mark.parametrize(
+    "include_hidden, include_oauth", [(True, False), (False, True), (True, True)]
+)
+def test_oauth_aware_clients_get_oauth_providers(include_hidden, include_oauth):
+    """Released bundles v0.1.702-beta+ render OAuth but only send include_hidden."""
+    entries = {
+        entry["provider_type"]: entry
+        for entry in list_available_providers(
+            include_hidden = include_hidden, include_oauth = include_oauth
+        )
+    }
+    assert entries["openai_codex"]["auth_kind"] == "chatgpt_oauth"
+
+
+@pytest.mark.parametrize("include_hidden", [False, True])
+@pytest.mark.parametrize("include_oauth", [False, True])
+def test_registry_capabilities_preserve_api_key_rows_and_exclude_managed_providers(
+    include_hidden, include_oauth
+):
+    rows = list_available_providers(include_hidden = include_hidden, include_oauth = include_oauth)
+    api_key_rows = [row for row in rows if row["auth_kind"] == "api_key"]
+    assert api_key_rows == [
+        row
+        for row in list_available_providers(include_hidden = include_hidden)
+        if row["auth_kind"] == "api_key"
+    ]
+    assert all(not PROVIDER_REGISTRY[row["provider_type"]].get("managed") for row in rows)
+
+
+@pytest.mark.parametrize(
+    "query, expects_oauth, expects_hidden",
+    [
+        ("", False, False),
+        ("?include_hidden=true", True, True),
+        ("?include_oauth=false", False, False),
+        ("?include_oauth=true", True, False),
+        ("?include_hidden=true&include_oauth=true", True, True),
+    ],
+)
+def test_registry_endpoint_requires_oauth_client_capability(query, expects_oauth, expects_hidden):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes.providers import router
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    app.include_router(router, prefix = "/api/providers")
+    with TestClient(app) as client:
+        response = client.get(f"/api/providers/registry{query}")
+
+    assert response.status_code == 200
+    entries = {row["provider_type"]: row for row in response.json()}
+    assert ("openai_codex" in entries) is expects_oauth
+    if expects_oauth:
+        assert entries["openai_codex"]["auth_kind"] == "chatgpt_oauth"
+    for preset in SELF_HOSTED_PRESETS:
+        assert (preset in entries) is expects_hidden
+    assert all(not PROVIDER_REGISTRY[provider_type].get("managed") for provider_type in entries)
+
+
 def test_registry_rows_keep_every_pre_change_key():
     """Additive only. A cached bundle reads these keys off every row."""
     for entry in list_available_providers(include_hidden = True):
@@ -171,13 +239,11 @@ def test_registry_entry_schema_tolerates_a_pre_change_payload():
 # ── capability allowlist ─────────────────────────────────────────────
 
 
-def test_anthropic_is_not_studio_tools_capable():
-    """``_stream_anthropic`` never forwards caller function-tool schemas.
-
-    Advertising the capability would hand the loop a catalog the model never
-    sees, so every turn would look like a model that declined to call a tool.
-    """
-    assert provider_runs_local_tools("anthropic") is False
+def test_anthropic_is_studio_tools_capable():
+    assert provider_runs_local_tools("anthropic") is True
+    entry = next(row for row in list_available_providers() if row["provider_type"] == "anthropic")
+    assert entry["supports_studio_tools"] is True
+    assert entry["supports_tool_calling"] is True
 
 
 def test_openai_codex_keeps_the_capability_it_already_had():

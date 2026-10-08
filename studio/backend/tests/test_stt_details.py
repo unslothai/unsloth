@@ -182,3 +182,24 @@ def test_cjk_text_keeps_its_punctuation_through_alignment(split):
     # Qwen3-ASR's punctuated Chinese has no spaces; the aligner splits it into words.
     result = stt_details.normalize(_payload(_seq(split, 0.3), "你好，世界。"), "qwen3_asr", 16000)
     assert result["text"] == "你好，世界。" and result["segments"][0]["text"] == "你好，世界。"
+
+
+def test_spans_come_back_in_time_order_whatever_order_the_runtime_used():
+    """A diarized answer grouped per speaker left segments out of order, and the player's binary
+    search and paragraph merge both assume time order."""
+    payload = {
+        "text": "a b c",
+        "sample_rate": 16000,
+        "segments": [
+            {"start_sample": 80000, "end_sample": 96000, "text": "c"},
+            {"start_sample": 0, "end_sample": 16000, "text": "a"},
+            {"start_sample": 32000, "end_sample": 48000, "text": "b"},
+        ],
+        "words": [
+            {"start_sample": 32000, "end_sample": 48000, "word": "b"},
+            {"start_sample": 0, "end_sample": 16000, "word": "a"},
+        ],
+    }
+    result = stt_details.normalize(payload, "moss_transcribe_diarize", 16000)
+    assert [s["start"] for s in result["segments"]] == [0.0, 2.0, 5.0]
+    assert [w["word"] for w in result["words"]] == ["a", "b"]

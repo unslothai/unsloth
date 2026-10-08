@@ -111,6 +111,8 @@ import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
+  LITERAL_LINK_REMEND,
+  hasIncompleteLinkRepair,
   markdownRenderKey,
   parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
@@ -705,8 +707,7 @@ function StreamdownBlockContent(props: BlockProps) {
   const blockProps = useAnimationFreeBlockProps(props);
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) =>
-      (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
-      !state.loadedIsDiffusion,
+      state.collapseHtmlArtifacts && !state.loadedIsDiffusion,
   );
   const messageHasRenderableRenderHtmlTool = useContext(
     RenderHtmlToolPresenceContext,
@@ -753,7 +754,7 @@ function StreamdownBlockContent(props: BlockProps) {
   ) {
     return (
       <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
-        Loading canvas preview...
+        Loading HTML preview...
       </div>
     );
   }
@@ -1213,6 +1214,7 @@ function MarkdownTextRenderer({
               searchImages,
             ),
           ),
+          isStreaming,
         ),
         isStreaming,
       ),
@@ -1232,6 +1234,10 @@ function MarkdownTextRenderer({
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
+  const pendingLinkRepair = useMemo(
+    () => !isStreaming && hasIncompleteLinkRepair(processedText),
+    [isStreaming, processedText],
+  );
   const renderKey = markdownRenderKey(processedText);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
@@ -1249,6 +1255,7 @@ function MarkdownTextRenderer({
             key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}:${sandboxScopeKey}`}
             mode="streaming"
             parseIncompleteMarkdown={!incrementalRender}
+            remend={pendingLinkRepair ? LITERAL_LINK_REMEND : undefined}
             parseMarkdownIntoBlocksFn={
               incrementalRender?.parseMarkdownIntoBlocks ??
               parseMarkdownIntoRenderableBlocks

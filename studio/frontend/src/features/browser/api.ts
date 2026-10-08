@@ -12,15 +12,33 @@ export type BrowserPage =
       html: string;
       refresh: { delay: number; url: string } | null;
     }
-  | { kind: "raw"; url: string; blob: Blob; contentType: string; /** The server's download name. */ fileName?: string };
+  | { kind: "raw"; url: string; blob: Blob; contentType: string; /** the server's download name. */ fileName?: string };
 
 export type BrowserRequest = {
   url: string;
   method?: "GET" | "POST";
   body?: string;
-  /** Refuse bodies past this size (favicons); the backend's own cap otherwise. */
+  /** refuse bodies past this size (favicons); otherwise use the backend cap. */
   maxBytes?: number;
+  /** show the site's HTTP error page; tab loads only. */
+  errorPage?: boolean;
 };
+
+let annotateCode: Promise<string> | null = null;
+
+/** the page annotate code (`_ANNOTATE_JS`), cached after success so failed fetches can retry. */
+export function annotateScript(): Promise<string> {
+  annotateCode ??= authFetch("/api/browser/annotate.js")
+    .then((response) => {
+      if (!response.ok) throw new Error(`annotate code: ${response.status}`);
+      return response.text();
+    })
+    .catch((error: unknown) => {
+      annotateCode = null;
+      throw error;
+    });
+  return annotateCode;
+}
 
 export class BrowserFetchError extends Error {
   readonly botCheck: boolean;
@@ -31,7 +49,7 @@ export class BrowserFetchError extends Error {
   }
 }
 
-/** Fetch a page via the backend, which can load sites that refuse framing. */
+/** fetch through the backend for sites that refuse framing. */
 export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSignal): Promise<BrowserPage> {
   const response = await authFetch("/api/browser/fetch", {
     method: "POST",
@@ -41,6 +59,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
       method: request.method ?? "GET",
       body: request.body ?? null,
       max_bytes: request.maxBytes ?? null,
+      error_page: request.errorPage ?? false,
     }),
     signal,
   });

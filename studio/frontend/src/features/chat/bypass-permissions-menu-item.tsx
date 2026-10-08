@@ -31,7 +31,7 @@ export function BypassPermissionsMenuItem() {
         Tool permissions
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(330px*var(--ui-space-scale,1))]">
-        <PermissionMenuLabel learnMore />
+        <PermissionMenuLabel sandboxControls />
         <PermissionModeMenuItems
           // Defer past Radix's menu-close focus restoration, or the dropdown grabs focus back
           // and breaks the dialog's focus trap.

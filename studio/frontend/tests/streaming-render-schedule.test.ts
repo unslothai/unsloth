@@ -3,18 +3,85 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import remend from "remend";
 import { Streamdown, parseMarkdownIntoBlocks } from "streamdown";
 
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
   IncrementalMarkdownCache,
+  hasIncompleteLinkRepair,
   markdownRenderKey,
   markdownRenderScope,
   parseMarkdownIntoRenderableBlocks,
+  repairStreamingMarkdown,
   withoutStreamdownAnimationPlugin,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
+
+test("an unfinished link stays literal instead of showing Streamdown's blocked placeholder", () => {
+  const cache = new IncrementalMarkdownCache();
+  for (const source of [
+    "See [example",
+    "See [example](",
+    "See [example](https://exa",
+  ]) {
+    const render = cache.update(source);
+    assert.equal(render.markdown, source);
+    assert.equal(hasIncompleteLinkRepair(source), true);
+    const html = renderToStaticMarkup(
+      createElement(
+        Streamdown,
+        {
+          mode: "streaming",
+          parseIncompleteMarkdown: false,
+          parseMarkdownIntoBlocksFn: render.parseMarkdownIntoBlocks,
+        },
+        render.markdown,
+      ),
+    );
+    assert.doesNotMatch(html, /\[blocked\]|streamdown:incomplete-link/);
+    assert.match(html, /See \[example/);
+  }
+
+  const list = new IncrementalMarkdownCache().update("- >= 16 GB\n\nSee [foo");
+  assert.equal(list.markdown, "- \\>= 16 GB\n\nSee [foo");
+
+  const scoped = new IncrementalMarkdownCache();
+  const body = Array.from({ length: 8 }, (_, i) => `Paragraph ${i}.`).join(
+    "\n\n",
+  );
+  const head = `Read [docs][r] first.\n\n${body}\n\n`;
+  scoped.update(head);
+  const both = `${head}[r]: https://example.com\n\nSee [foo`;
+  const scopedRender = scoped.update(both);
+  assert.equal(
+    (scoped as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
+  assert.deepEqual(
+    scopedRender.parseMarkdownIntoBlocks(scopedRender.markdown),
+    parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(both)),
+  );
+
+  const complete = "See [example](https://example.com)";
+  assert.equal(cache.update(complete).markdown, complete);
+  assert.equal(hasIncompleteLinkRepair(complete), false);
+  assert.equal(
+    hasIncompleteLinkRepair("literal streamdown:incomplete-link"),
+    false,
+  );
+  const unsafe = "See [example](javascript:alert)";
+  const html = renderToStaticMarkup(
+    createElement(
+      Streamdown,
+      { mode: "streaming", parseIncompleteMarkdown: false },
+      unsafe,
+    ),
+  );
+  assert.match(html, /\[blocked\]/);
+});
 
 test("only Streamdown's animation transformer is removed", () => {
   const first = () => undefined;
@@ -133,7 +200,7 @@ test("incremental blocks match a full Streamdown split at every prefix", () => {
       const render = cache.update(input);
       assert.deepEqual(
         render.parseMarkdownIntoBlocks(render.markdown),
-        parseMarkdownIntoRenderableBlocks(remend(input)),
+        parseMarkdownIntoRenderableBlocks(repairStreamingMarkdown(input)),
         `block mismatch at prefix ${length} of ${JSON.stringify(source)}`,
       );
     }
@@ -545,6 +612,28 @@ test("a bracket-dense reply does not stall the scan", () => {
   assert.ok(median < 150, `scope took ${median.toFixed(1)}ms on a 100k bracket-dense reply`);
 });
 
+test("malformed inline-link titles do not rescan the remaining reply", () => {
+  const reply = `${"[x](/url (".repeat(20_000)}\` [1] \`\n\n[1]: /one\n`;
+  const started = performance.now();
+  markdownRenderScope(reply);
+  const elapsed = performance.now() - started;
+  assert.ok(
+    elapsed < 500,
+    `20k malformed inline links took ${elapsed.toFixed(1)}ms`,
+  );
+});
+
+test("unterminated HTML delimiters do not rescan the remaining reply", () => {
+  const reply = `${"<!--".repeat(20_000)}\` [1]\n\n[1]: /one\n`;
+  const started = performance.now();
+  assert.equal(markdownRenderScope(reply), "document");
+  const elapsed = performance.now() - started;
+  assert.ok(
+    elapsed < 500,
+    `20k unterminated HTML comments took ${elapsed.toFixed(1)}ms`,
+  );
+});
+
 // Scope decides what is committed, so it cannot follow the reply's line ending.
 // This label is 999 normalised, 1000 raw under CRLF.
 test("the render scope does not depend on the reply's line ending", () => {
@@ -911,6 +1000,24 @@ test("a reply dense with `]:` and no definition does not pay per occurrence", ()
   const invalidMedian = invalidRuns.sort((a, b) => a - b)[2]!;
   assert.ok(invalidMedian < 100,
     `500k of \`[]:\` cost ${invalidMedian.toFixed(1)}ms; invalid candidates are being rescanned`);
+});
+
+test("unclosed backtick runs of many widths do not rescan the paragraph", () => {
+  // widths 1..800 expose lazy-regex tail rescans; 100ms is well below the ~900ms regression.
+  let runs = "";
+  for (let width = 1; width <= 800; width += 1) {
+    runs += `${"`".repeat(width)}a`;
+  }
+  const reply = `See [1]. ${runs}\n\n[1]: https://x.test\n`;
+  for (let i = 0; i < 3; i += 1) markdownRenderScope(reply + " ");
+  const samples: number[] = [];
+  for (let i = 0; i < 5; i += 1) {
+    const t0 = performance.now();
+    assert.equal(markdownRenderScope(reply + " ".repeat(i)), "document");
+    samples.push(performance.now() - t0);
+  }
+  const median = samples.sort((a, b) => a - b)[2]!;
+  assert.ok(median < 100, `321k of backtick runs cost ${median.toFixed(1)}ms`);
 });
 
 test("a reference label past the old cap still resolves against its definition", () => {

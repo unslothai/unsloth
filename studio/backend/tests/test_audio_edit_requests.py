@@ -243,7 +243,11 @@ def test_status_fields_carry_the_edit_rules():
         fields = acb.model_info_fields(_model(family))
         assert fields["audio_edit"] == _RULES.get(family), family
         assert ("edit" in fields["audio_workflows"]) == (family in _RULES), family
-    assert acb.model_info_fields(_model("dots_tts"))["audio_workflows"] == ["speak", "edit"]
+    assert acb.model_info_fields(_model("dots_tts"))["audio_workflows"] == [
+        "speak",
+        "clone",
+        "edit",
+    ]
     assert acb.model_info_fields(_model("vevo2"))["audio_workflows"] == ["clone", "edit"]
 
 
@@ -281,6 +285,13 @@ def test_check_instructions():
         # Words that are not in the transcripts.
         (["Replace 'alien' with 'robot'."], EDITED, mismatch),
         (["Replace 'human' with 'cat'."], EDITED, mismatch),
+        (["Replace 'Cemo' with 'human'."],
+         ORIGINAL.replace("Cemo", "human").replace("a human voice", "a Cemo voice"), mismatch),
+        (["Replace 'human' with 'robot'."], EDITED, mismatch),
+        (["Delete 'Okay,'."], ORIGINAL.replace("Okay, I'm", "I'm Okay,"), mismatch),
+        (["Replace 'human' with 'robot'."], ORIGINAL.replace("human", "robot"), None),
+        (["Delete 'human'.", "Delete 'human'."], ORIGINAL.replace("a human voice", "a voice"), mismatch),
+        (["Delete 'human'.", "Insert 'robot' before 'human'."], ORIGINAL.replace("human", "robot"), mismatch),
     ):
         check = audio_edit.check_instructions(instructions, ORIGINAL, edited, 5, "FireRedAudio")
         assert check == problem, instructions
@@ -309,6 +320,11 @@ def test_request_problem_per_style():
         (firered, {"mode": "delivery", "speed": 1.0}, EDITED, ORIGINAL, "Pick a speed or a pitch change."),
         (firered, {"mode": "delivery", "pitch_steps": 3}, ORIGINAL, ORIGINAL, None),
         (firered, words, EDITED, ORIGINAL, no_change),
+        (dots, {"mode": "words", "markup": "<del>" + ORIGINAL + "</del>"}, " ", ORIGINAL, audio_edit.EMPTY_TARGET),
+        (vevo, words, "", ORIGINAL, audio_edit.EMPTY_TARGET),
+        (firered, {"mode": "words", "instructions": ["Delete 'a'."]}, "  ", ORIGINAL, audio_edit.EMPTY_TARGET),
+        (dots, {"mode": "words", "markup": ORIGINAL.replace("Cemo", '<sub targ="Cemo">Cemo</sub>')}, ORIGINAL, ORIGINAL, no_change),
+        (firered, {"mode": "words", "instructions": ["Replace 'Cemo' with 'Cemo'."]}, ORIGINAL, ORIGINAL, no_change),
     ):
         assert audio_edit.request_problem(rules, edit, text, reference, "DotTTS-Edit") == problem
 # fmt: on

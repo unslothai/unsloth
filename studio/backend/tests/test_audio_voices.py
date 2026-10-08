@@ -126,3 +126,26 @@ def test_deleting_a_voice_drops_its_prepared_copies():
     assert prepared.is_file() and prepared.name.startswith(f"v-{voice['id']}.")
     assert audio_voices.delete(voice["id"])
     assert not prepared.exists()
+
+
+def test_a_script_uploads_saves_a_voice_and_fetches_it_under_v1(client):
+    headers = {"Content-Type": "application/octet-stream"}
+    upload = client.post(
+        "/v1/audio/inputs", params = {"name": "me.wav"}, content = wav_bytes(2.0), headers = headers
+    )
+    assert upload.status_code == 201, upload.text
+    source = {"input_id": upload.json()["id"]}
+    assert client.get(upload.json()["url"]).content[:4] == b"RIFF"
+    created = client.post("/v1/audio/voices", json = {"source": source, "name": "Me"})
+    assert created.status_code == 201, created.text
+    voice = created.json()
+    (listed,) = client.get("/v1/audio/voices").json()["voices"]
+    renamed = client.patch(f"/v1/audio/voices/{voice['id']}", json = {"name": "Me 2"}).json()
+    for url in (upload.json()["url"], voice["url"], listed["url"], renamed["url"]):
+        assert url.startswith("/v1/audio/"), url
+    assert client.get(voice["url"]).content[:4] == b"RIFF"
+    assert client.get(VOICES).json()["voices"][0]["url"].startswith(VOICES)
+    assert client.delete(f"/v1/audio/inputs/{source['input_id']}").json() == {"removed": True}
+    missing = client.patch("/v1/audio/voices/" + "a" * 32, json = {"name": "x"})
+    assert missing.status_code == 404
+    assert missing.json()["error"]["message"] == "Voice not found."
