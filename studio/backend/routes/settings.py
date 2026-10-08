@@ -689,6 +689,8 @@ class SystemOneSettingsResponse(BaseModel):
     mcp_url: str
     # Runtime setting, what a text request to the configured model uses now, and why Auto chose PyTorch.
     backend: str = "auto"
+    # Whether "mlx" can be chosen as the runtime on this machine.
+    mlx_available: bool = False
     native_ctx: int = 16384
     effective_backend: Optional[str] = None
     loaded_backend: Optional[str] = None
@@ -1506,6 +1508,17 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
+def _decision_description(checkpoint, mlx: bool) -> str:
+    from core.systemone import catalog
+    if (
+        mlx
+        and catalog.MLX_COMPANIONS.get(checkpoint.name)
+        and catalog.CHECKPOINTS.get(checkpoint.name) == checkpoint
+    ):
+        return checkpoint.description.replace("llama.cpp only", "llama.cpp or MLX")
+    return checkpoint.description
+
+
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
     from core.systemone import laya_runtime
 
@@ -1518,8 +1531,8 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
         return {"llama_cpp_only": True}
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
-    # llama.cpp serves Clef without CUDA or ROCm.
-    if laya_runtime.native_ready(checkpoint):
+    # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
+    if laya_runtime.native_ready(checkpoint) or laya_runtime.mlx_ready(checkpoint):
         return {}
     return {"available": False, "unavailable_reason": reason}
 
@@ -1548,7 +1561,10 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     if runtime["error_model"] not in (None, model):
         error = None
     port = getattr(request.app.state, "server_port", None) or request.scope["server"][1]
+    # First: it waits for device detection, which the MLX answers below read without waiting.
+    gpu_available = systemone_settings.gpu_available()
     effective, fallback = laya_runtime.effective_backend(configured)
+    mlx_available = laya_runtime.mlx_available()
     if runtime["loaded_model"] == model and runtime["fallback_reason"]:
         fallback = runtime["fallback_reason"]
     return SystemOneSettingsResponse(
@@ -1556,16 +1572,16 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         enabled_locked = systemone_settings.enabled_locked(),
         model = model,
         model_locked = systemone_settings.model_locked(),
-        # llama.cpp defaults to the GPU when no device is stored; report where it actually runs.
+        # llama.cpp and MLX default to the GPU when no device is stored; report where they actually run.
         device = systemone_settings.clef_device()
-        if effective == "llama.cpp"
+        if effective in ("llama.cpp", "mlx")
         else systemone_settings.get_device(),
         device_locked = systemone_settings.device_locked(),
-        gpu_available = systemone_settings.gpu_available(),
+        gpu_available = gpu_available,
         models = [
             SystemOneModelOption(
                 name = c.name,
-                description = c.description,
+                description = _decision_description(c, mlx_available),
                 download_bytes = c.download_bytes,
                 label = c.label,
                 **_clef_availability(c, clef_reason),
@@ -1590,6 +1606,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         error = error,
         mcp_url = f"http://127.0.0.1:{port}{MCP_PATH}/",
         backend = systemone_settings.get_backend(),
+        mlx_available = mlx_available,
         native_ctx = systemone_settings.get_native_ctx(),
         effective_backend = effective,
         loaded_backend = runtime["loaded_backend"] if runtime["loaded_model"] else None,

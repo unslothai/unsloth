@@ -1167,6 +1167,8 @@ export const fr = {
     sandbox: {
       title: "Sandbox",
       description: "Indique si les appels d'outils Python et Terminal s'exécutent dans un bac à sable du système sur cet ordinateur.",
+      docs: "Documentation",
+      docsLabel: "Ouvrir la documentation du sandbox",
       toolsSection: "Cet ordinateur",
       refresh: "Actualiser",
       python: "Python",
@@ -2290,6 +2292,7 @@ export const fr = {
         "Impossible de charger toutes les quantifications. La commande utilisera la valeur de modèle disponible.",
       generatedCommand: "Commande générée",
       docs: "Documentation",
+      docsLabel: "Ouvrir la documentation de unsloth start",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2835,6 +2838,8 @@ export const fr = {
       revoking: "Révocation...",
       decisionApi: {
         title: "API de décision",
+        docs: "Documentation",
+        docsLabel: "Ouvrir la documentation de l'API de décision",
         description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",
@@ -2856,6 +2861,8 @@ export const fr = {
         backendAuto: "Automatique",
         backendDescription:
           "Automatique sert Clef via llama.cpp lorsque le modèle a une version GGUF, et se rabat sur PyTorch sinon. llama.cpp lit aussi les images.",
+        backendDescriptionMlx:
+          "Automatique sert le texte de Clef via MLX sur Apple Silicon, et via llama.cpp lorsque seule la version GGUF du modèle est chargée ou téléchargée. MLX ne lit que le texte ; llama.cpp lit aussi les images.",
         backendStatus: "Moteur d'exécution : {backend}",
         backendNone: "indisponible",
         mediaImages: "Lit le texte et les images.",

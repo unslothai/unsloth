@@ -158,9 +158,11 @@ def _config(base, dataset, **overrides):
 
 
 # The worker imports unsloth; CI installs unsloth_zoo only for the step that runs this file.
+# Apple Silicon trains with MLX, through unsloth_zoo's decision module.
+_WORKER = "unsloth_zoo.mlx.decision" if sys.platform == "darwin" else "unsloth_zoo"
 needs_worker = pytest.mark.skipif(
-    sys.platform == "darwin" or importlib.util.find_spec("unsloth_zoo") is None,
-    reason = "trains in a worker that imports unsloth (Apple Silicon trains with MLX)",
+    importlib.util.find_spec("unsloth_zoo") is None or importlib.util.find_spec(_WORKER) is None,
+    reason = "trains in a worker that imports unsloth",
 )
 
 
@@ -473,6 +475,26 @@ def _fake_output(
     if complete:
         (folder / "rl_agent_config.json").write_text("{}", encoding = "utf-8")
     return folder
+
+
+def test_mlx_runs_report_to_tensorboard_and_wandb(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from core.training.decision_trainer import _mlx_tracking_callback
+
+    # Built first: importing transformers looks for the real reporting packages.
+    callback, state, seen = _mlx_tracking_callback(["tensorboard", "wandb"]), SimpleNamespace(), []
+    state.global_step = 7
+    writer = SimpleNamespace(add_scalar = lambda *row: seen.append(row), close = lambda: None)
+    boards = SimpleNamespace(SummaryWriter = lambda log_dir: seen.append(log_dir) or writer)
+    monkeypatch.setitem(sys.modules, "tensorboardX", boards)
+    wandb = SimpleNamespace(log = lambda scalars, step: seen.append((scalars, step)))
+    monkeypatch.setitem(sys.modules, "wandb", wandb)
+    monkeypatch.setenv("TENSORBOARD_LOGGING_DIR", str(tmp_path))
+    callback.on_train_begin(None, state, None)
+    callback.on_log(None, state, None, logs = {"loss": 0.5, "eval_loss": 0.25, "note": "skipped"})
+    scalars = {"train/loss": 0.5, "eval/loss": 0.25}
+    assert seen == [str(tmp_path), ("train/loss", 0.5, 7), ("eval/loss", 0.25, 7), (scalars, 7)]
 
 
 def test_settings_accept_only_complete_owner_fine_tunes(studio_home, client, tmp_path):

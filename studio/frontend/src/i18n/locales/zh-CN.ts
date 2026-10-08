@@ -1161,6 +1161,8 @@ export const zhCN = {
     sandbox: {
       title: "沙盒",
       description: "Python 和终端工具调用是否在此计算机上的系统沙箱中运行。",
+      docs: "文档",
+      docsLabel: "打开沙盒文档",
       toolsSection: "此计算机",
       refresh: "刷新",
       python: "Python",
@@ -2227,6 +2229,7 @@ export const zhCN = {
         "无法加载全部量化版本。命令将使用可用的模型值。",
       generatedCommand: "生成的命令",
       docs: "文档",
+      docsLabel: "打开 unsloth start 文档",
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2739,6 +2742,8 @@ export const zhCN = {
       revoking: "撤销中...",
       decisionApi: {
         title: "决策 API",
+        docs: "文档",
+        docsLabel: "打开决策 API 文档",
         description: "使用本机模型或连接中的决策模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",
         enable: "处理请求",
         enableDescription: "提供 /v1/systemone。开启后会下载模型。",
@@ -2760,6 +2765,8 @@ export const zhCN = {
         backendAuto: "自动",
         backendDescription:
           "自动模式下，模型有 GGUF 版本时通过 llama.cpp 提供 Clef，否则回退到 PyTorch。llama.cpp 还能读取图片。",
+        backendDescriptionMlx:
+          "自动模式下，在 Apple Silicon 上通过 MLX 提供 Clef 文本；仅模型的 GGUF 版本已加载或已下载时通过 llama.cpp 提供。MLX 仅读取文本；llama.cpp 还能读取图片。",
         backendStatus: "运行时：{backend}",
         backendNone: "不可用",
         mediaImages: "可读取文本和图片。",

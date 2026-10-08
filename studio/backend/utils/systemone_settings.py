@@ -17,7 +17,7 @@ BACKEND_KEY = "systemone_backend"
 NATIVE_CTX_KEY = "systemone_native_ctx"
 DEFAULT_MODEL = "laya-multilingual"
 DEVICES = ("cpu", "gpu")
-BACKENDS = ("auto", "llama.cpp", "pytorch")
+BACKENDS = ("auto", "llama.cpp", "mlx", "pytorch")
 DEFAULT_NATIVE_CTX = 16384
 # -c / -b / -ub of the llama.cpp decision server; compute memory grows with it (~0.24 MiB GPU per token).
 NATIVE_CTX_RANGE = (512, 65536)
@@ -173,7 +173,7 @@ def validate(
         values[DEVICE_KEY] = device
     if backend is not None:
         if backend not in BACKENDS:
-            raise ValueError("Runtime must be auto, llama.cpp or pytorch.")
+            raise ValueError("Runtime must be auto, llama.cpp, mlx or pytorch.")
         values[BACKEND_KEY] = backend
     if native_ctx is not None:
         if not _valid_ctx(native_ctx):

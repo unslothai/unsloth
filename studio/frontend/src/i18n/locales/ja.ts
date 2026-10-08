@@ -1165,6 +1165,8 @@ export const ja = {
     sandbox: {
       title: "サンドボックス",
       description: "このコンピューターで Python とターミナルのツール呼び出しを OS サンドボックス内で実行するかどうか。",
+      docs: "ドキュメント",
+      docsLabel: "サンドボックスのドキュメントを開く",
       toolsSection: "このコンピューター",
       refresh: "更新",
       python: "Python",
@@ -2241,6 +2243,7 @@ export const ja = {
         "すべての量子化を読み込めませんでした。コマンドには取得できたモデル名を使用します。",
       generatedCommand: "生成されたコマンド",
       docs: "ドキュメント",
+      docsLabel: "unsloth start のドキュメントを開く",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2760,6 +2763,8 @@ export const ja = {
       revoking: "失効中...",
       decisionApi: {
         title: "判定 API",
+        docs: "ドキュメント",
+        docsLabel: "判定 API のドキュメントを開く",
         description: "このマシン上のモデル、または接続の判定モデルで、テキストに関するはい/いいえ・選択式・スコアの質問に答えます。TypeSafe SDK で使えます。",
         enable: "リクエストに応答",
         enableDescription: "/v1/systemone を提供します。オンにするとモデルをダウンロードします。",
@@ -2781,6 +2786,8 @@ export const ja = {
         backendAuto: "自動",
         backendDescription:
           "自動では、モデルに GGUF ビルドがあれば Clef を llama.cpp で提供し、なければ PyTorch に切り替えます。llama.cpp は画像も読み取れます。",
+        backendDescriptionMlx:
+          "自動では、Apple Silicon 上で Clef のテキストを MLX で提供し、モデルの GGUF ビルドだけが読み込み済みまたはダウンロード済みの場合は llama.cpp で提供します。MLX はテキストのみを読み取り、llama.cpp は画像も読み取れます。",
         backendStatus: "ランタイム: {backend}",
         backendNone: "利用不可",
         mediaImages: "テキストと画像を読み取ります。",

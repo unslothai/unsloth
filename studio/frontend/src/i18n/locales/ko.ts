@@ -1163,6 +1163,8 @@ export const ko = {
     sandbox: {
       title: "샌드박스",
       description: "이 컴퓨터에서 Python 및 터미널 도구 호출을 OS 샌드박스 안에서 실행할지 여부입니다.",
+      docs: "문서",
+      docsLabel: "샌드박스 문서 열기",
       toolsSection: "이 컴퓨터",
       refresh: "새로 고침",
       python: "Python",
@@ -2257,6 +2259,7 @@ export const ko = {
         "양자화 목록을 불러오지 못했습니다. 명령은 사용 가능한 모델 값을 사용합니다.",
       generatedCommand: "생성된 명령",
       docs: "문서",
+      docsLabel: "unsloth start 문서 열기",
       agentDocs: "{agent} 설정 문서 열기",
       copyGeneratedCommand: "생성된 명령 복사",
       automaticSettingsNote:
@@ -2780,6 +2783,8 @@ export const ko = {
       revoking: "폐기 중...",
       decisionApi: {
         title: "판단 API",
+        docs: "문서",
+        docsLabel: "판단 API 문서 열기",
         description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
         enable: "요청 처리",
         enableDescription: "/v1/systemone을 제공합니다. 켜면 모델을 다운로드합니다.",
@@ -2801,6 +2806,8 @@ export const ko = {
         backendAuto: "자동",
         backendDescription:
           "자동은 모델에 GGUF 빌드가 있으면 llama.cpp로 Clef를 제공하고, 없으면 PyTorch로 대체합니다. llama.cpp는 이미지도 읽습니다.",
+        backendDescriptionMlx:
+          "자동은 Apple Silicon에서 Clef 텍스트를 MLX로 제공하고, 모델의 GGUF 빌드만 로드되었거나 다운로드된 경우 llama.cpp로 제공합니다. MLX는 텍스트만 읽고, llama.cpp는 이미지도 읽습니다.",
         backendStatus: "런타임: {backend}",
         backendNone: "사용할 수 없음",
         mediaImages: "텍스트와 이미지를 읽습니다.",

@@ -1123,6 +1123,8 @@ export const it = {
     sandbox: {
       title: "Sandbox",
       description: "Indica se le chiamate agli strumenti Python e Terminale vengono eseguite in una sandbox del sistema su questo computer.",
+      docs: "Documentazione",
+      docsLabel: "Apri la documentazione della sandbox",
       toolsSection: "Questo computer",
       refresh: "Aggiorna",
       python: "Python",
@@ -2251,6 +2253,7 @@ export const it = {
         "Impossibile caricare tutte le quantizzazioni. Il comando userà il valore del modello disponibile.",
       generatedCommand: "Comando generato",
       docs: "Documentazione",
+      docsLabel: "Apri la documentazione di unsloth start",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2793,6 +2796,8 @@ export const it = {
       revoking: "Revoca in corso...",
       decisionApi: {
         title: "API decisionale",
+        docs: "Documentazione",
+        docsLabel: "Apri la documentazione dell'API decisionale",
         description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello su questo computer o un modello decisionale dalle Connessioni. Funziona con l'SDK di TypeSafe.",
         enable: "Rispondi alle richieste",
         enableDescription: "Gestisce /v1/systemone. Attivandolo si scarica il modello.",
@@ -2814,6 +2819,8 @@ export const it = {
         backendAuto: "Automatico",
         backendDescription:
           "Automatico serve Clef tramite llama.cpp quando il modello ha una build GGUF, altrimenti ripiega su PyTorch. llama.cpp legge anche le immagini.",
+        backendDescriptionMlx:
+          "Automatico serve il testo di Clef tramite MLX su Apple Silicon e tramite llama.cpp quando solo la build GGUF del modello è caricata o scaricata. MLX legge solo testo; llama.cpp legge anche le immagini.",
         backendStatus: "Runtime: {backend}",
         backendNone: "non disponibile",
         mediaImages: "Legge testo e immagini.",

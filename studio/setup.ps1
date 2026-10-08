@@ -186,6 +186,7 @@ $script:CudaToolkitReady = $false
 $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
 $script:CudaArch = $null
+$script:DriverMaxCuda = $null
 
 function Exit-SetupFailure {
     param(
@@ -1363,6 +1364,15 @@ function Write-CudaDriverToolkitMismatch {
     substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
 }
 
+# ggml's -compress-mode=size (toolkit >= 12.8) does not load on a driver below 12.4 (#12842).
+function Test-CudaDriverNeedsUncompressedFatbin {
+    param([string]$DriverMaxCuda)
+    if ($DriverMaxCuda -notmatch '^(\d+)\.(\d+)$') { return $false }
+    $major = [int]$Matches[1]
+    $minor = [int]$Matches[2]
+    return (($major -lt 12) -or (($major -eq 12) -and ($minor -lt 4)))
+}
+
 function Get-CudaComputeCapability {
     # $NvidiaSmiExe is an absolute path that survives Refresh-Environment. Not rediscovered
     # once detection rejected nvidia-smi: the driver library answered, and asking a wedged
@@ -2318,7 +2328,8 @@ function Invoke-BoundedPythonProbe {
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $PythonExe
-        $psi.Arguments = "-c `"$Code`""
+        # -I: the stale-venv probe runs before Enter-StudioVenv drops PYTHONPATH (#11980).
+        $psi.Arguments = "-I -c `"$Code`""
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false
@@ -5373,6 +5384,7 @@ if (-not $CudaArch) {
 $script:NvccPath = $NvccPath
 $script:CudaToolkitRoot = $CudaToolkitRoot
 $script:CudaArch = $CudaArch
+$script:DriverMaxCuda = $DriverMaxCuda
 $script:CudaToolkitReady = $true
 }
 
@@ -7725,9 +7737,11 @@ function Enter-StudioVenv {
         $env:VIRTUAL_ENV = $VenvDir
         $env:PATH = (Join-Path $VenvDir "Scripts") + ";" + $env:PATH
         Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
         return
     }
     . $ActivateScript
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 }
 Enter-StudioVenv
 Assert-VenvActivated -VenvDir $VenvDir
@@ -10554,6 +10568,9 @@ if ($LocalLlamaCppLinked) {
     # -- Step A: Clone or pull llama.cpp --
 
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
+    # --depth 1 makes llama.cpp stamp build 1 (#12798); set only once the tag is checked out.
+    $TagBuildNumber = if ($ResolvedSourceRef -match '^b(\d+)$') { $Matches[1] } else { $null }
+    $LlamaBuildNumber = $null
 
     # Denied must not read as "no checkout here": the fresh-clone branch ends in
     # a swap that recursively removes this tree and moves the temp one over it,
@@ -10624,6 +10641,7 @@ if ($LocalLlamaCppLinked) {
                     $FailedStep = "git checkout"
                 } else {
                     Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
+                    $LlamaBuildNumber = $TagBuildNumber
                 }
             }
         } else {
@@ -10729,6 +10747,8 @@ if ($LocalLlamaCppLinked) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
                 if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+            } elseif ($UseConcreteRef) {
+                $LlamaBuildNumber = $TagBuildNumber
             }
         }
         # Use temp dir for build; swap into $LlamaCppDir only after build succeeds
@@ -10759,6 +10779,9 @@ if ($LocalLlamaCppLinked) {
         $CmakeArgs += '-DLLAMA_BUILD_EXAMPLES=OFF'
         $CmakeArgs += '-DLLAMA_BUILD_SERVER=ON'
         $CmakeArgs += '-DGGML_NATIVE=ON'
+        if ($LlamaBuildNumber) {
+            $CmakeArgs += "-DLLAMA_BUILD_NUMBER=$LlamaBuildNumber"
+        }
         # HTTPS support via OpenSSL
         if ($OpenSslAvailable -and $OpenSslRoot) {
             $CmakeArgs += "-DOPENSSL_ROOT_DIR=$OpenSslRoot"
@@ -10777,6 +10800,10 @@ if ($LocalLlamaCppLinked) {
                 $CmakeArgs += '-DGGML_CUDA=OFF'
             } else {
                 $CmakeArgs += '-DGGML_CUDA=ON'
+                if (Test-CudaDriverNeedsUncompressedFatbin -DriverMaxCuda $script:DriverMaxCuda) {
+                    $CmakeArgs += '-DGGML_CUDA_COMPRESSION_MODE=none'
+                    substep "driver CUDA $script:DriverMaxCuda predates 12.4; building uncompressed CUDA kernels it can load." "Yellow"
+                }
                 # Accept a host MSVC newer than nvcc's whitelist, which would otherwise abort.
                 $nvccAllowFlag = '-allow-unsupported-compiler'
                 if ([string]::IsNullOrEmpty($env:NVCC_PREPEND_FLAGS)) {

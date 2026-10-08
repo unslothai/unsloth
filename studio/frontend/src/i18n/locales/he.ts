@@ -1245,6 +1245,8 @@ export const he = {
       title: "ארגז חול",
       description:
         "האם קריאות לכלי Python ו-Terminal רצות בתוך ארגז חול של מערכת ההפעלה במחשב זה.",
+      docs: "תיעוד",
+      docsLabel: "פתח את תיעוד ארגז החול",
       toolsSection: "מחשב זה",
       refresh: "רענון",
       python: "Python",
@@ -2359,6 +2361,7 @@ export const he = {
         "לא ניתן לטעון את כל הקוונטיזציות. הפקודה תשתמש בערך המודל הזמין.",
       generatedCommand: "פקודה שנוצרה",
       docs: "תיעוד",
+      docsLabel: "פתח את התיעוד של unsloth start",
       agentDocs: "פתח תיעוד הגדרה של {agent}",
       copyGeneratedCommand: "העתק פקודה שנוצרה",
       automaticSettingsNote:
@@ -2899,6 +2902,8 @@ export const he = {
       revoking: "מבטל...",
       decisionApi: {
         title: "ממשק API להחלטות",
+        docs: "תיעוד",
+        docsLabel: "פתח את התיעוד של ממשק ה-API להחלטות",
         description:
           "ענה על שאלות כן/לא, רב-ברירה ודירוג לגבי טקסט באמצעות מודל במחשב זה או מודל החלטות מ'חיבורים'. עובד עם TypeSafe SDK.",
         enable: "הגש בקשות",
@@ -2922,6 +2927,8 @@ export const he = {
         backendAuto: "אוטומטי",
         backendDescription:
           "במצב אוטומטי Clef מוגש דרך llama.cpp כשלמודל יש גרסת GGUF, ואחרת דרך PyTorch. llama.cpp קורא גם תמונות.",
+        backendDescriptionMlx:
+          "במצב אוטומטי טקסט של Clef מוגש דרך MLX ב-Apple Silicon, ודרך llama.cpp כשרק גרסת ה-GGUF של המודל טעונה או הורדה. MLX קורא טקסט בלבד; llama.cpp קורא גם תמונות.",
         backendStatus: "סביבת ריצה: {backend}",
         backendNone: "לא זמין",
         mediaImages: "קורא טקסט ותמונות.",

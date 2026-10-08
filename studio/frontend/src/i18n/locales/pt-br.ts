@@ -1165,6 +1165,8 @@ export const ptBR = {
     sandbox: {
       title: "Sandbox",
       description: "Indica se as chamadas de ferramentas de Python e Terminal rodam dentro de um sandbox do sistema neste computador.",
+      docs: "Documentação",
+      docsLabel: "Abrir a documentação do sandbox",
       toolsSection: "Este computador",
       refresh: "Atualizar",
       python: "Python",
@@ -2274,6 +2276,7 @@ export const ptBR = {
         "Não foi possível carregar todas as quantizações. O comando usará o valor de modelo disponível.",
       generatedCommand: "Comando gerado",
       docs: "Documentação",
+      docsLabel: "Abrir a documentação do unsloth start",
       agentDocs: "Abrir a documentação de configuração do {agent}",
       copyGeneratedCommand: "Copiar comando gerado",
       // English is the baseline until translated: the three-part sentence is assembled around an
@@ -2806,6 +2809,8 @@ export const ptBR = {
       revoking: "Revogando...",
       decisionApi: {
         title: "API de decisões",
+        docs: "Documentação",
+        docsLabel: "Abrir a documentação da API de decisões",
         description: "Responda a perguntas de sim/não, múltipla escolha e pontuação sobre texto com um modelo neste computador ou um modelo de decisões das Conexões. Funciona com o SDK da TypeSafe.",
         enable: "Atender solicitações",
         enableDescription: "Atende /v1/systemone. Ao ativar, o modelo é baixado.",
@@ -2827,6 +2832,8 @@ export const ptBR = {
         backendAuto: "Automático",
         backendDescription:
           "O automático serve o Clef pelo llama.cpp quando o modelo tem uma versão GGUF e recorre ao PyTorch caso contrário. O llama.cpp também lê imagens.",
+        backendDescriptionMlx:
+          "O automático serve o texto do Clef pelo MLX no Apple Silicon e pelo llama.cpp quando apenas a versão GGUF do modelo está carregada ou baixada. O MLX lê apenas texto; o llama.cpp também lê imagens.",
         backendStatus: "Runtime: {backend}",
         backendNone: "indisponível",
         mediaImages: "Lê texto e imagens.",

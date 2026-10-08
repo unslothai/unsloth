@@ -2054,6 +2054,10 @@ def linux_cuda_choice_from_release(
         selection_log.append(
             "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
         )
+        if driver_below_cuda_prebuilt_floor(host):
+            floor_message = cuda_driver_floor_message(host)
+            selection_log.append(f"linux_cuda_selection: {floor_message}")
+            log(floor_message)
         _warn_uncovered_cuda_host(
             host_sms,
             detected_runtime_lines,
@@ -3375,13 +3379,17 @@ def detected_windows_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
     return _core.detected_windows_runtime_lines(_OPS)
 
 
+driver_below_cuda_prebuilt_floor = _core.driver_below_cuda_prebuilt_floor
+cuda_driver_floor_message = _core.cuda_driver_floor_message
+
+
 def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
     if not host.driver_cuda_version:
         return []
     major, _minor = host.driver_cuda_version
     # cuda12 app bundles are toolkit-12.8 builds with bundled runtime libs; CUDA
-    # minor-version compatibility runs them on any 12.x driver, same as Linux.
-    if major < _MIN_CUDA_MAJOR:
+    # minor-version compatibility runs them on a 12.x driver from 12.4 on (#12842).
+    if major < _MIN_CUDA_MAJOR or driver_below_cuda_prebuilt_floor(host):
         return []
     return _cuda_runtime_lines_for_major(major)
 
@@ -3657,6 +3665,10 @@ def published_windows_cuda_attempts(
             "windows_cuda_selection: app-bundle runtime lines (major-gated)="
             + (",".join(ordered_lines) if ordered_lines else "none")
         )
+        if driver_below_cuda_prebuilt_floor(host):
+            floor_message = cuda_driver_floor_message(host)
+            selection_log.append(f"windows_cuda_selection: {floor_message}")
+            log(floor_message)
 
     host_sms = normalize_compute_caps(host.compute_caps)
     attempts: list[AssetChoice] = []
@@ -4202,6 +4214,19 @@ def resolve_release_asset_choice(
     )
     if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
         selection_host = masked_host or host
+        if (
+            driver_below_cuda_prebuilt_floor(selection_host)
+            and selection_host.driver_cuda_version[0] >= _MIN_CUDA_MAJOR
+        ):
+            # #12842: the Windows source fallback needs a toolkit this driver runs, which
+            # winget rarely offers, so setup would fail. CPU until the driver is updated.
+            cpu_choice = published_asset_choice_for_kind(release, "windows-cpu")
+            if cpu_choice is not None:
+                log(
+                    f"{cuda_driver_floor_message(selection_host)} Installing the CPU "
+                    "bundle for now."
+                )
+                return apply_approved_hashes([cpu_choice], checksums)
         torch_preference = detect_torch_cuda_runtime_preference(
             selection_host, gpu_hidden_by_mask = masked_host is not None
         )
@@ -7299,6 +7324,13 @@ def _fork_manifest_release_plans(
                 last_error = exc
                 if not allow_older_release_fallback:
                     raise
+                # #12842: the floor is the host's, so every older release fails alike.
+                if (
+                    (host.is_linux or host.is_windows)
+                    and host.has_physical_nvidia
+                    and driver_below_cuda_prebuilt_floor(host)
+                ):
+                    raise PrebuiltFallback(cuda_driver_floor_message(host)) from exc
                 log(
                     "published release skipped for install planning: "
                     f"{bundle.repo}@{bundle.release_tag} upstream_tag={resolved_tag} ({exc})"
@@ -9593,6 +9625,10 @@ def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
     """
     if not (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
         return True
+    # #12842: below the floor a CUDA prebuilt still answers --version but loads no kernel.
+    marker = load_prebuilt_metadata(install_dir) or {}
+    if marker_backend(marker) == "cuda" and driver_below_cuda_prebuilt_floor(host):
+        return False
     return _existing_install_runs(install_dir, host)
 
 
@@ -11144,9 +11180,15 @@ def select_backend_install(
             cpu_mechanism = cpu_mechanism,
             host = host,
         )
-    requested_tag, release_plans = resolve_simple_install_release_plans(
-        llama_tag, route.host, route.published_repo, route.published_release_tag
-    )
+    try:
+        requested_tag, release_plans = resolve_simple_install_release_plans(
+            llama_tag, route.host, route.published_repo, route.published_release_tag
+        )
+    except PrebuiltFallback as exc:
+        # #12842: a stored cuda choice must fall back to detection, not fail the update.
+        if route.backend == "cuda" and driver_below_cuda_prebuilt_floor(route.host):
+            raise BackendUnavailable(str(exc)) from exc
+        raise
     if route.rocm_fallback_host is not None:
         release_plans = _with_rocm_behind_vulkan(
             release_plans,
