@@ -3101,8 +3101,9 @@ html[data-chat-font] .aui-root {
 	[data-slot="popover-content"] {
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
 	}
-	/* Dark: glow in the darkest surface the menu touches, set per menu by
-	   lib/dropdown-surround.ts. .dropdown-surface marks bespoke dropdowns. */
+	/* Dark: an even glow in the darkest surface the menu sits on, the page
+	   unless a context below says otherwise. .dropdown-surface marks bespoke
+	   dropdowns. */
 	.dark [data-slot="dropdown-menu-content"],
 	.dark [data-slot="dropdown-menu-sub-content"],
 	.dark [data-slot="context-menu-content"],
@@ -3111,7 +3112,7 @@ html[data-chat-font] .aui-root {
 	.dark [data-slot="combobox-content"],
 	.dark [data-slot="popover-content"],
 	.dark .dropdown-surface {
-		box-shadow: 0 0 16px 0 var(--dropdown-surround-bg, var(--background)) !important;
+		box-shadow: 0 0 16px 0 var(--dropdown-glow, var(--background)) !important;
 	}
 	/* Sidebar and account menus stay flat in dark. */
 	.dark :is(.unsloth-plus-menu, .app-user-menu).sidebar-menu[data-slot],
@@ -3127,13 +3128,78 @@ html[data-chat-font] .aui-root {
 		background-color: var(--sidebar) !important;
 	}
 
-	/* Menus that would blend into their surface get the Hub menu tone.
-	   Defined on <html> so --accent can be reassigned without a cycle. */
+	/* Menus portal to <body>, so their context comes from what else is open there.
+	   Inside a card dialog or the model picker, menus glow in that surface, and
+	   stock ones, which match it, lift to the Hub menu tone. The tones resolve on
+	   <html> so --accent can be reassigned without a cycle. */
 	.dark {
 		--dropdown-lift-surface: color-mix(in srgb, var(--accent) 60%, var(--popover));
 		--dropdown-lift-accent: color-mix(in srgb, var(--foreground) 6%, var(--accent));
 	}
-	.dark [data-surround-blend] {
+	.dark
+		body:has(
+			> :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[data-state="open"]:is(
+					.dialog-soft-surface,
+					.settings-surface,
+					[class*="dark:bg-card"]
+				)
+		)
+		:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="select-content"],
+			[data-slot="combobox-content"],
+			[data-slot="popover-content"],
+			.dropdown-surface
+		) {
+		--dropdown-glow: var(--card);
+	}
+	/* After the dialog rule, so a picker inside a dialog takes the picker's colour. */
+	.dark
+		body:has(> [data-radix-popper-content-wrapper] > .unsloth-model-selector-menu[data-state="open"])
+		:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="select-content"],
+			[data-slot="combobox-content"],
+			[data-slot="popover-content"],
+			.dropdown-surface
+		):not(.unsloth-model-selector-menu) {
+		--dropdown-glow: var(--sidebar);
+	}
+	.dark
+		:is(
+			body:has(
+				> :is([data-slot="dialog-content"], [data-slot="alert-dialog-content"])[data-state="open"]:is(
+						.dialog-soft-surface,
+						.settings-surface,
+						[class*="dark:bg-card"]
+					)
+			),
+			body:has(> [data-radix-popper-content-wrapper] > .unsloth-model-selector-menu[data-state="open"])
+		)
+		:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="select-content"],
+			[data-slot="combobox-content"],
+			[data-slot="popover-content"],
+			.dropdown-surface
+		):not(
+			.unsloth-model-selector-menu,
+			.sidebar-menu,
+			.sidebar-more-menu,
+			.library-menu,
+			.library-actions-menu,
+			.browser-menu,
+			.hub-menu-instant
+		) {
 		--accent: var(--dropdown-lift-accent);
 		background-color: var(--dropdown-lift-surface) !important;
 	}
