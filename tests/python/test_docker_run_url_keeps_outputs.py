@@ -340,9 +340,153 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
 )
 @pytest.mark.parametrize(
     "command",
-    [("jupyter", "lab"), ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb")],
+    [
+        ("python", "/workspace/host/train.py"),
+        ("/usr/bin/python", "/workspace/host/train.py"),
+        ("python", "-u", "/workspace/host/train.py", "--data", "data/train.jsonl"),
+        ("python", "-uW", "ignore", "/workspace/host/train.py"),
+        ("python", "-uX", "dev", "/workspace/host/train.py"),
+        ("python", "-u", "/workspace/host/train"),
+        ("python", "-u", "/workspace/host/job"),
+        (
+            "python",
+            "-m",
+            "accelerate.commands.launch",
+            "--multi_gpu",
+            "/workspace/host/train.py",
+        ),
+        (
+            "python",
+            "-um",
+            "accelerate.commands.launch",
+            "--multi_gpu",
+            "/workspace/host/train.py",
+        ),
+        (
+            "python",
+            "-umaccelerate.commands.launch",
+            "--multi_gpu",
+            "/workspace/host/train.py",
+        ),
+        (
+            "python",
+            "-m",
+            "torch.distributed.launch",
+            "--nproc_per_node=2",
+            "/workspace/host/train.py",
+        ),
+        (
+            "python",
+            "-m",
+            "torch.distributed.launch",
+            "--use-env",
+            "/workspace/host/train.py",
+        ),
+        ("bash", "/workspace/host/train"),
+        ("bash", "--noprofile", "/workspace/host/train"),
+        ("bash", "+O", "extglob", "/workspace/host/train.sh"),
+        ("/workspace/host/train.sh",),
+        ("accelerate-launch", "/workspace/host/train.py"),
+        ("accelerate", "launch", "--multi_gpu", "/workspace/host/train.py"),
+        ("accelerate", "launch", "--multi-gpu", "/workspace/host/train.py"),
+        ("accelerate", "launch", "--multi_gpu", "/workspace/host/train"),
+        ("accelerate", "launch", "--no_python", "/workspace/host/train"),
+        ("deepspeed", "-H", "/workspace/host/hosts", "/workspace/host/train.py"),
+        (
+            "accelerate",
+            "launch",
+            "--config_file=/workspace/host/config.yaml",
+            "/workspace/host/train.py",
+        ),
+        (
+            "accelerate",
+            "launch",
+            "--config_file",
+            "configs/default.yaml",
+            "/workspace/host/train.py",
+        ),
+        (
+            "accelerate",
+            "launch",
+            "--multi_gpu",
+            "/workspace/host/train.py",
+            "--data",
+            "data/train.jsonl",
+        ),
+    ],
+)
+def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
+    if "/workspace/host/train" in command:
+        (tmp_path / "train").write_text("print('train')\n", encoding = "utf-8")
+    if "/workspace/host/job" in command:
+        (tmp_path / "job").mkdir()
+        (tmp_path / "job" / "__main__.py").write_text("print('job')\n", encoding = "utf-8")
+    argv = _run_sh_argv(tmp_path, *command)
+    image = argv.index("unsloth/unsloth:latest")
+    assert ["-w", "/workspace/host"] in [argv[i : i + 2] for i in range(image)]
+    assert argv[image + 1 :] == list(command)
+
+
+@pytest.mark.skipif(
+    os.name != "posix" or shutil.which("bash") is None, reason = "POSIX shell required"
+)
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("jupyter", "lab"),
+        ("cp", "/workspace/host/input.txt", "relative-output.txt"),
+        ("deepspeed", "-H", "/workspace/host/hosts", "/workspace/smoke_test.py"),
+        ("python", "-c", "print('ok')", "/workspace/host/input.py"),
+        ("python", "-uc", "print('ok')", "/workspace/host/input.py"),
+        ("python", "-m", "tool", "/workspace/host/input.py"),
+        ("python", "-m", "pytest", "--basetemp", "/workspace/host"),
+        ("python", "train.py", "--config", "/workspace/host/config.json"),
+        (
+            "accelerate",
+            "launch",
+            "--no_python",
+            "./train",
+            "--data",
+            "/workspace/host/data.json",
+        ),
+        (
+            "torchrun",
+            "--standalone",
+            "./train",
+            "--data",
+            "/workspace/host/data.json",
+        ),
+        ("accelerate", "launch", "-m", "package.train", "--data", "/workspace/host/data.json"),
+        ("accelerate", "launch", "train", "--data", "/workspace/host/data.json"),
+        ("accelerate", "config", "update", "--config_file", "/workspace/host/config.json"),
+        ("bash", "-c", "printf ok", "/workspace/host/input.sh"),
+        ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb"),
+        ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb", "--out", "/workspace/host/Llama.ipynb"),
+        ("python", "/workspace/smoke_test.py"),
+        ("python", "/workspace/smoke_test.py", "--out", "/workspace/host/result"),
+        (
+            "jupyter",
+            "nbconvert",
+            "--execute",
+            "unsloth-notebooks/nb/Llama.ipynb",
+            "--output-dir",
+            "/workspace/host",
+        ),
+        (
+            "jupyter",
+            "nbconvert",
+            "--output-dir",
+            "/workspace/host",
+            "--execute",
+            "unsloth-notebooks/nb/Llama.ipynb",
+        ),
+    ],
 )
 def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path, command):
+    if "/workspace/host/config.json" in command:
+        (tmp_path / "config.json").write_text("{}\n", encoding = "utf-8")
+    if "/workspace/host/data.json" in command:
+        (tmp_path / "data.json").write_text("{}\n", encoding = "utf-8")
     argv = _run_sh_argv(tmp_path, *command)
     flags = argv[: argv.index("unsloth/unsloth:latest")]
     assert "-w" not in flags

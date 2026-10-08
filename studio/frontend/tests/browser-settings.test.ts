@@ -675,3 +675,17 @@ test("a blocked site's blob: page can't download past the block", async () => {
   useDownloadSitesStore.getState().setSite("https://a.example", null);
   prefs.setAskBeforeDownloading(true);
 });
+
+test("video and audio tabs don't zoom; pages, images and documents do", async () => {
+  const { canZoom } = await import("../src/features/browser/zoom.ts");
+  const tab = (entry: object) =>
+    ({ id: "t", index: 0, history: [{ kind: "file", contentType: "", ...entry }], zoom: 1 }) as never;
+  assert.equal(canZoom(tab({ name: "clip.mp4" })), false);
+  assert.equal(canZoom(tab({ name: "clip", contentType: "video/webm" })), false);
+  assert.equal(canZoom(tab({ name: "song.mp3" })), false);
+  assert.equal(canZoom(tab({ name: "photo.png" })), true);
+  assert.equal(canZoom(tab({ name: "paper.pdf" })), true);
+  // A clip shown as its text is a text file.
+  assert.equal(canZoom(tab({ name: "clip.mp4", plainText: true })), true);
+  assert.equal(canZoom({ id: "t", index: 0, history: [{ kind: "web", url: "https://a.b/" }], zoom: 1 } as never), true);
+});

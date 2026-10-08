@@ -245,7 +245,7 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
         source = source_by_url.get(url)
         if source is None:
             return None
-        title = _citation_title(source, url)
+        title = re.sub(r"(\\*)\|", r"\1\1\\|", _citation_title(source, url))
         token = _placeholder("research-citation", len(placeholders))
         placeholders[token] = f"[{title}]({_escape_link_destination(url)})"
         return token

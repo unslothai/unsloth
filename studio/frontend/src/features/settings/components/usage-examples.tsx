@@ -887,30 +887,31 @@ export function UsageExamples({
               />
               <span className="text-ui-11 font-medium text-foreground">
                 {t("settings.apiKeys.secureHttps")}
+                {/* Only when not launched with --secure: the raw 0.0.0.0 port is
+                    still globally reachable, so point the user at --secure. */}
+                {secure ? null : (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      {/* Inline on the baseline, like a glyph after the label. */}
+                      <button
+                        type="button"
+                        className="ml-1.5 inline-flex align-baseline rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        aria-label={t("settings.apiKeys.secureHttpsHint")}
+                      >
+                        {/* Follows the UI font size, like the SettingsRow hint
+                            this matches. */}
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-[var(--ui-icon-size-hint)]"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+                      {t("settings.apiKeys.secureHttpsHint")}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
               </span>
-              {/* Only when not launched with --secure: the raw 0.0.0.0 port is
-                  still globally reachable, so point the user at --secure. */}
-              {secure ? null : (
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      aria-label={t("settings.apiKeys.secureHttpsHint")}
-                    >
-                      {/* Follows the UI font size, like the SettingsRow hint
-                          this matches. */}
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-[var(--ui-icon-size-sm)]"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
-                    {t("settings.apiKeys.secureHttpsHint")}
-                  </TooltipContent>
-                </Tooltip>
-              )}
             </div>
             <button
               type="button"
