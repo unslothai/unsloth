@@ -13,8 +13,9 @@ import { useTrainingConfigStore } from "@/features/training";
 import type { OffloadLayers, PrefetchDepth } from "@/features/training/types/config";
 import { useGpuDevices, useGpuInfo } from "@/hooks/use-gpu-info";
 import { useT } from "@/i18n";
-import type { ReactElement } from "react";
+import { type ReactElement, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { offloadCountFromInput } from "./offload-panel-layout";
 import { ParamsRow } from "./params-section-controls";
 
 type OffloadMode = "off" | "auto" | "layers";
@@ -40,11 +41,13 @@ export function OffloadLayersParams(): ReactElement {
       setPrefetchDepth: state.setPrefetchDepth,
     })),
   );
-  const mode = modeOf(store.offloadLayers);
   const gpu = useGpuInfo();
   const devices = useGpuDevices(true);
   // Same rule as the start payload: several training GPUs get one budget each.
   const cards = gpu.available && devices.length > 1 ? devices : [];
+  // The count box's text while it is being edited: clearing it to retype must not read as Off.
+  const [countDraft, setCountDraft] = useState<string | null>(null);
+  const mode = countDraft !== null ? "layers" : modeOf(store.offloadLayers);
 
   return (
     <>
@@ -57,6 +60,7 @@ export function OffloadLayersParams(): ReactElement {
             value={mode}
             onValueChange={(value) => {
               const next = value as OffloadMode;
+              setCountDraft(null);
               if (next === "off") store.setOffloadLayers(0);
               else if (next === "auto") store.setOffloadLayers("auto");
               // A count to start from; the user edits it next.
@@ -79,10 +83,14 @@ export function OffloadLayersParams(): ReactElement {
               min={1}
               step={1}
               aria-label={t("studio.params.offloadCount")}
-              value={store.offloadLayers === "auto" ? "" : store.offloadLayers || ""}
-              onChange={(e) =>
-                store.setOffloadLayers(Math.max(0, Math.floor(Number(e.target.value) || 0)))
-              }
+              value={countDraft ?? (store.offloadLayers === "auto" ? "" : store.offloadLayers || "")}
+              onChange={(e) => {
+                setCountDraft(e.target.value);
+                const count = offloadCountFromInput(e.target.value);
+                if (count !== null) store.setOffloadLayers(count);
+              }}
+              // An empty or zero box keeps the last count; Off is chosen from the select.
+              onBlur={() => setCountDraft(null)}
               className="w-20 font-mono"
             />
           )}
@@ -112,7 +120,7 @@ export function OffloadLayersParams(): ReactElement {
                   e.target.value === "" || !(gb > 0) ? null : gb,
                 );
               }}
-              className="w-28 font-mono"
+              className="w-36 font-mono placeholder:font-sans"
             />
           </ParamsRow>
         ))}
@@ -127,12 +135,13 @@ export function OffloadLayersParams(): ReactElement {
             min={1}
             step={0.5}
             placeholder={t("studio.params.offloadWholeCard")}
+            title={t("studio.params.offloadWholeCard")}
             value={store.offloadVramGb ?? ""}
             onChange={(e) => {
               const gb = Number(e.target.value);
               store.setOffloadVramGb(e.target.value === "" || !(gb > 0) ? null : gb);
             }}
-            className="w-28 font-mono"
+            className="w-36 font-mono placeholder:font-sans"
           />
         </ParamsRow>
       )}

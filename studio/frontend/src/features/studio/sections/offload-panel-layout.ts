@@ -61,3 +61,9 @@ export function groupLayersByCard<T extends { index: number }>(
   if (unplaced.length) groups.push({ card: null, layers: unplaced });
   return groups;
 }
+
+/** The layer count a Count box edit sets, or null to keep the current one (empty, zero, not a number). */
+export function offloadCountFromInput(text: string): number | null {
+  const count = Math.floor(Number(text));
+  return count > 0 ? count : null;
+}

@@ -16,6 +16,7 @@ from core.training.worker import (
     _apply_training_vram_budget,
     _device_budget_gb,
     _training_vram_budget_fraction,
+    _with_vram_budget_hint,
 )
 from models.training import TrainingStartRequest
 
@@ -346,3 +347,37 @@ def test_backend_keeps_the_last_offload_snapshot():
     # A later step without stats must not blank the panel.
     backend._handle_event({"type": "progress", "step": 2, "loss": 0.9})
     assert backend._progress.offload == snap
+
+
+# The planner's refusal for Qwen3-0.6B at a 1 GiB budget (unsloth_zoo DeviceMapInfeasible).
+_INFEASIBLE = (
+    "Even with 27 of 28 decoder layers in host RAM the model does not fit while keeping 0.78 GiB "
+    "free for training on cuda:0 (0.96 GiB free). Lower max_seq_length or the batch size, or add a GPU."
+)
+
+
+@pytest.mark.parametrize(
+    "message", [_INFEASIBLE, "GPU ran out of VRAM during training.", "CUDA out of memory."]
+)
+def test_a_run_that_does_not_fit_names_its_vram_budget(message):
+    hinted = _with_vram_budget_hint({"offload_vram_gb": 1.5}, message)
+    assert hinted.startswith(message) and "1.5 GiB VRAM budget" in hinted
+
+
+def test_budget_hint_stays_out_of_unrelated_or_unbudgeted_errors():
+    assert _with_vram_budget_hint({"offload_vram_gb": 4}, "Access denied") == "Access denied"
+    assert _with_vram_budget_hint({}, _INFEASIBLE) == _INFEASIBLE
+
+
+def test_every_worker_failure_path_carries_the_budget_hint():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    # Load, LoRA prepare (offload_layers = "auto" plans in get_peft_model) and training OOM.
+    assert src.count("_with_vram_budget_hint(") == 4
+
+
+def test_per_gpu_budgets_get_the_hint_too():
+    hinted = _with_vram_budget_hint({"offload_vram_gb_per_device": [None, 6, 8]}, _INFEASIBLE)
+    assert "per-GPU VRAM budgets (6, 8 GiB)" in hinted

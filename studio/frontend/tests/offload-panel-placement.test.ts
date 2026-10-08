@@ -10,7 +10,7 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { groupLayersByCard, layerPlacement, vramUsage } = await import(
+const { groupLayersByCard, layerPlacement, offloadCountFromInput, vramUsage } = await import(
   "../src/features/studio/sections/offload-panel-layout.ts"
 );
 
@@ -56,5 +56,10 @@ test("the VRAM bar reads peak use and draws a budget line only under 1", () => {
   const GIB = 1024 ** 3;
   assert.deepEqual(vramUsage(32 * GIB, 6 * GIB, 5 * GIB, 0.5), { used: 6 * GIB, budget: 16 * GIB, total: 32 * GIB });
   assert.deepEqual(vramUsage(32 * GIB, undefined, 5 * GIB, 1), { used: 5 * GIB, budget: null, total: 32 * GIB });
-  assert.deepEqual(vramUsage(undefined, undefined, undefined, undefined), { used: 0, budget: null, total: 0 });
+  assert.deepEqual(vramUsage(undefined, undefined, undefined, undefined), { used: 0, budget: null, total: 0 });});
+
+test("clearing the Count box keeps the last count instead of turning offload off", () => {
+  for (const text of ["", "0", "-3", "abc"]) assert.equal(offloadCountFromInput(text), null);
+  assert.equal(offloadCountFromInput("14"), 14);
+  assert.equal(offloadCountFromInput("6.7"), 6);
 });
