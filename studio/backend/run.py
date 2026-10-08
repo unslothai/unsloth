@@ -879,11 +879,9 @@ def _is_port_free(host: str, port: int) -> bool:
                 result = s.connect_ex(sockaddr)
                 if result == 0:
                     return False
-                # A listener whose accept backlog is full looks free here: Windows 11 drops the SYN (a timeout,
-                # like a free port) and Windows Server resets it (a refusal). So on Windows every failed connect
-                # is settled by the listener table; elsewhere only a non-refusal is.
-                refused = result in _CONNECT_REFUSED and sys.platform != "win32"
-                if not refused and _listener_collides(sockaddr[0], port):
+                # Windows drops the SYN to a listener whose accept backlog is full, so that connect times out
+                # exactly like one to a free port. Anything but a refusal is settled by the listener table.
+                if result not in _CONNECT_REFUSED and _listener_collides(sockaddr[0], port):
                     return False
         except OSError:
             continue

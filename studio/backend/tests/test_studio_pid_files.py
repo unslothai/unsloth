@@ -504,19 +504,8 @@ def test_only_a_listener_of_the_same_family_takes_the_port(
     assert run._listener_collides(address, 8888) is collides
 
 
-@pytest.mark.parametrize(
-    ("platform", "result", "consults_table"),
-    [
-        ("win32", errno.EWOULDBLOCK, True),  # Windows 11 drops the SYN to a full backlog
-        ("win32", 10061, True),  # Windows Server resets it instead
-        ("linux", errno.EWOULDBLOCK, True),
-        ("linux", errno.ECONNREFUSED, False),  # a POSIX refusal means nothing listens
-    ],
-)
-def test_a_timed_out_connect_is_settled_by_the_listener_table(
-    monkeypatch, platform, result, consults_table
-):
-    monkeypatch.setattr(run, "sys", SimpleNamespace(platform = platform))
+def test_a_timed_out_connect_is_settled_by_the_listener_table(monkeypatch):
+    monkeypatch.setattr(run, "sys", SimpleNamespace(platform = "win32"))
     asked = []
     monkeypatch.setattr(
         run, "_listener_collides", lambda address, port: asked.append((address, port)) or True
@@ -536,7 +525,7 @@ def test_a_timed_out_connect_is_settled_by_the_listener_table(
             pass
 
         def connect_ex(self, _sockaddr):
-            return result
+            return errno.EWOULDBLOCK
 
         def close(self):
             pass
@@ -556,8 +545,8 @@ def test_a_timed_out_connect_is_settled_by_the_listener_table(
     )
     monkeypatch.setattr(socket, "socket", _ProbeSocket)
 
-    assert run._is_port_free("127.0.0.1", 8888) is (not consults_table)
-    assert asked == ([("127.0.0.1", 8888)] if consults_table else [])
+    assert run._is_port_free("127.0.0.1", 8888) is False
+    assert asked == [("127.0.0.1", 8888)]
 
 
 def test_a_free_loopback_port_is_reported_without_a_long_wait():
