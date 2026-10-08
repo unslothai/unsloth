@@ -203,3 +203,16 @@ def test_weightless_hub_skeleton_does_not_hide_the_scan_folder_copy(roots):
     snapshot = _cache_repo(scan, ["Tiny-Probe-Q4_K_M.gguf"])
     rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO))
     assert rewritten.model_path == str(snapshot)
+
+
+def test_validate_reads_the_scan_folder_copy_offline(roots, monkeypatch):
+    # The chat flow validates before it loads; offline, a remote probe of the repo id fails.
+    import asyncio
+
+    from models.inference import ValidateModelRequest
+
+    _active, scan = roots
+    _cache_repo(scan, ["Tiny-Probe-Q4_K_M.gguf"])
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    result = asyncio.run(inf.validate_model(ValidateModelRequest(model_path = _REPO), None, "owner"))
+    assert result.valid and result.is_gguf

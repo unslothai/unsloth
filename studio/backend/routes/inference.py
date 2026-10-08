@@ -19622,6 +19622,8 @@ async def validate_model(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
+    # The chat flow validates before it loads, so both must read the same local copy.
+    request = await asyncio.to_thread(_as_local_scan_folder_request, request)
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
         _hf_offline_if_unreachable_for,
