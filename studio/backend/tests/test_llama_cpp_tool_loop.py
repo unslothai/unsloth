@@ -6617,8 +6617,7 @@ def test_mcp_images_are_not_sent_to_a_text_only_model(monkeypatch):
 
 
 def test_repeated_note_on_an_mcp_image_keeps_the_base64_out_of_the_tool_text(monkeypatch):
-    """#11358: the loop's note landed after the image array, so the array stopped parsing
-    and its base64 went to the model as tool text."""
+    """#11358: a note after the image array broke its parse and sent the base64 as text."""
     tool = "mcp__browser__screenshot"
     # A window-cut result: the repeat key ignores the arguments, so three distinct calls repeat.
     fitted = (
@@ -6645,7 +6644,6 @@ def test_repeated_note_on_an_mcp_image_keeps_the_base64_out_of_the_tool_text(mon
     assert len(tool_texts) == 3
     assert "returned exactly this 3 times" in tool_texts[-1]
     assert not any(_MCP_PNG_B64 in text for text in tool_texts)
-    # The card result is what the frontend saves and replays: the note sits ahead of the array.
     saved = [e["result"] for e in events if e.get("type") == "tool_end"][-1]
     assert saved.endswith("}]")
     assert saved.index("returned exactly this 3 times") < saved.index("__MCP_IMAGES__")

@@ -39,7 +39,6 @@ def _png() -> str:
 
 
 BASE64 = _png()
-# What _fit_result_to_room hands back for an MCP screenshot: a cut body, envelope kept whole.
 FITTED = (
     "page text\n\n... (truncated to 10 chars for the model; 99 chars total.)\n[1 image returned]"
     f"\n{SENTINEL}{json.dumps([{'data': BASE64, 'mimeType': 'image/png'}])}"
