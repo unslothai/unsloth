@@ -187,3 +187,34 @@ test("going Back to a keyed file restores its key, so its card finds the tab aga
   store.goBack(copy?.id ?? "");
   assert.equal(useBrowserStore.getState().tabs.find((candidate) => candidate.id === copy?.id)?.openKey, null);
 });
+
+test("a page's link that turns out to be a download leaves that page showing", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://a.example/page", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId ?? "";
+  const tab = () => useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId)!;
+  const page = currentEntry(tab());
+  store.navigate(tabId, { url: "https://cdn.example/setup.zip", from: "https://a.example/page" });
+  const file = currentEntry(tab());
+  assert.equal(file.kind === "web" && file.from, "https://a.example/page");
+  store.leaveDownload(tabId, file);
+  assert.equal(currentEntry(tab()), page);
+  assert.equal(tab().history.length, 1);
+  assert.equal(tab().history.includes(file), false);
+  store.navigate(tabId, { url: "https://a.example/wait" });
+  store.navigate(tabId, { url: "https://cdn.example/f.zip", from: "https://a.example/wait" }, { replace: true });
+  const replaced = currentEntry(tab());
+  store.leaveDownload(tabId, replaced);
+  assert.equal(currentEntry(tab()), replaced);
+  store.navigate(tabId, { url: "https://cdn.example/typed.zip" });
+  const typed = currentEntry(tab());
+  store.leaveDownload(tabId, typed);
+  assert.equal(currentEntry(tab()), typed);
+  store.navigate(tabId, { url: "https://cdn.example/g.zip", from: "https://cdn.example/typed.zip" });
+  const later = currentEntry(tab());
+  store.navigate(tabId, { url: "https://b.example/" });
+  store.leaveDownload(tabId, later);
+  const after = currentEntry(tab());
+  assert.equal(after.kind === "web" && after.url, "https://b.example/");
+  store.closeTab(tabId);
+});

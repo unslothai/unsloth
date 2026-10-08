@@ -153,6 +153,7 @@ import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import { resolveQwenThinkingParams } from "../utils/qwen-sampling-table";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
+import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import { defaultEngineGpuIds, ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   type CpuFallbackReason,
@@ -2231,6 +2232,13 @@ export function useChatModelRuntime() {
                   stateBeforeUnload.selectedGpuIndexKind,
                   targetIsDiffusion,
                 );
+          loadSplitRatio = reconcileTensorSplit(
+            loadSplitRatio,
+            pendingLoadConfig?.selectedGpuIds !== undefined
+              ? pendingLoadConfig.selectedGpuIds
+              : stateBeforeUnload.selectedGpuIds,
+            loadSelectedGpuIds,
+          );
           let loadSpeculativeType =
             pendingLoadConfig?.speculativeType != null
               ? normalizeSpeculativeType(pendingLoadConfig.speculativeType)
@@ -2554,7 +2562,11 @@ export function useChatModelRuntime() {
               loadSelectedGpuIds = stagedGpuIds;
               loadGpuLayers = pendingLoadConfig?.gpuLayers ?? GPU_LAYERS_AUTO;
               loadNCpuMoe = pendingLoadConfig?.nCpuMoe ?? 0;
-              loadSplitRatio = pendingLoadConfig?.tensorSplit ?? null;
+              loadSplitRatio = reconcileTensorSplit(
+                pendingLoadConfig?.tensorSplit,
+                pendingLoadConfig?.selectedGpuIds,
+                stagedGpuIds,
+              );
             }
 
             // The Context Length the USER set for this load, captured before the clamp below can stand in for

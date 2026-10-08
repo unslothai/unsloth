@@ -80,7 +80,9 @@ def test_embedding_model_controls_stack_on_the_narrowest_viewports():
         str(path.relative_to(REPO))
         for path in owners
         if not (
-            'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
+            # The quoted class string, whether it is the whole className or one argument of
+            # cn(...) beside a conditional class, which is how #12875 writes it.
+            '"max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
             in (source := path.read_text(encoding = "utf-8"))
             # The fixed width has to give way at the breakpoint: flex-1 for the
             # combobox, a full row for the picker trigger.

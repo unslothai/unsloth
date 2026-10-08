@@ -3578,7 +3578,8 @@ def _download_decision_checkpoint(event_queue: Any, config: dict) -> None:
     from utils.paths import is_local_path
 
     model_name = config["model_name"]
-    if is_local_path(model_name):
+    # An LLM that gets a new decision head downloads through FastModel's own loader in the trainer.
+    if is_local_path(model_name) or config.get("decision_layout") == "llm":
         return
     hf_token = _worker_hf_token(config)
     if hf_token:
@@ -3801,7 +3802,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
     if (
         not config.get("is_decision")
-        or config.get("decision_layout") == "clef"
+        or config.get("decision_layout") in ("clef", "llm")
         or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
     ):
         try:

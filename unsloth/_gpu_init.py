@@ -309,6 +309,7 @@ from .import_fixes import (
     fix_transformers5_image_processing_reexports,
     fix_transformers_composite_prefix_renaming,
     fix_transformers_fully_masked_rows,
+    fix_transformers_flash_attention_mrope_packed_sequence,
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_chunked_mask_block_sequence_ids,
@@ -371,6 +372,7 @@ fix_transformers5_bare_annotation_configs()
 # nothing. Ordered here, before anything imports a model, so a plain transformers.generate in the
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
+fix_transformers_flash_attention_mrope_packed_sequence()
 fix_transformers_chunked_mask_block_sequence_ids()
 fix_transformers_flex_mask_graph_breaks()
 # CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.

@@ -85,7 +85,7 @@ export function SttDownloadPrompt() {
       useVoiceSettingsStore.getState().setDictationEngine("model");
     }
     try {
-      await startSttDownload(
+      const download = await startSttDownload(
         request.model,
         hfApiToken(hfToken),
         undefined,
@@ -94,6 +94,7 @@ export function SttDownloadPrompt() {
       // progress uses the shared download panel; the model loads when the download finishes
       trackSttDownload(request.model, {
         ggufVariant: request.ggufVariant ?? null,
+        downloadId: download.download_id,
       });
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
