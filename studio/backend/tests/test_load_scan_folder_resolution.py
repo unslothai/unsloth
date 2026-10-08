@@ -10,6 +10,9 @@ import routes.inference as inf
 from models.inference import LoadRequest
 
 
+_SNAPSHOT = "C:/scan-folder/models--unsloth--Muse-Glimmer-30B-GGUF/snapshots/abc"
+
+
 def _request(**kwargs):
     kwargs.setdefault("model_path", "unsloth/Muse-Glimmer-30B-GGUF")
     return LoadRequest(**kwargs)
@@ -20,16 +23,12 @@ def test_repo_id_resolves_to_local_scan_folder_copy(monkeypatch):
 
     def fake_resolve(wanted, **kwargs):
         seen.append(wanted)
-        return (
-            "C:/scan-folder/models--x/snapshots/abc",
-            "Q4_K_XL",
-            "unsloth/Muse-Glimmer-30B-GGUF",
-        )
+        return (_SNAPSHOT, "Q4_K_XL", "unsloth/Muse-Glimmer-30B-GGUF")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fake_resolve)
     rewritten = inf._as_local_scan_folder_request(_request())
     assert seen == ["unsloth/Muse-Glimmer-30B-GGUF"]
-    assert rewritten.model_path == "C:/scan-folder/models--x/snapshots/abc"
+    assert rewritten.model_path == _SNAPSHOT
     assert rewritten.gguf_variant == "Q4_K_XL"
 
 
@@ -38,12 +37,12 @@ def test_pinned_variant_resolves_by_repo_and_quant(monkeypatch):
 
     def fake_resolve(wanted, **kwargs):
         seen.append(wanted)
-        return ("C:/models/snapshots/abc", "Q8_0", "loader")
+        return (_SNAPSHOT, "Q8_0", "loader")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fake_resolve)
     rewritten = inf._as_local_scan_folder_request(_request(gguf_variant = "Q8_0"))
     assert seen == ["unsloth/Muse-Glimmer-30B-GGUF:Q8_0"]
-    assert rewritten.model_path == "C:/models/snapshots/abc"
+    assert rewritten.model_path == _SNAPSHOT
     assert rewritten.gguf_variant == "Q8_0"
 
 
@@ -67,7 +66,7 @@ def test_resolved_variant_replaces_the_requested_one(monkeypatch):
 
     def fake_resolve(wanted, **kwargs):
         seen.append(wanted)
-        return ("C:/models/snapshots/abc", "Q4_K_XL", "loader")
+        return (_SNAPSHOT, "Q4_K_XL", "loader")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fake_resolve)
     rewritten = inf._as_local_scan_folder_request(_request(gguf_variant = "BF16"))
@@ -214,3 +213,37 @@ def test_validate_reads_the_scan_folder_copy_offline(roots, monkeypatch):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     result = asyncio.run(inf.validate_model(ValidateModelRequest(model_path = _REPO), None, "owner"))
     assert result.valid and result.is_gguf
+
+
+@pytest.mark.parametrize(
+    "hit",
+    [
+        ("C:/lmstudio/models/unsloth/Muse-Glimmer-30B-GGUF", "Q4_K_XL", "loader"),
+        (_SNAPSHOT, None, "loader"),
+        ("C:/scan-folder/models--unsloth--Other-GGUF/snapshots/abc", "Q4_K_XL", "loader"),
+    ],
+    ids = ["non_hf_layout", "non_gguf", "other_repo"],
+)
+def test_only_a_gguf_snapshot_of_the_requested_repo_is_taken(monkeypatch, hit):
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda wanted, **kwargs: hit)
+    request = _request()
+    assert inf._as_local_scan_folder_request(request) is request
+
+
+def test_scan_folder_nested_inside_the_hub_cache_still_loads_from_disk(roots, monkeypatch):
+    from storage import studio_db
+
+    active, _scan = roots
+    nested = active / "archive"
+    nested.mkdir()
+    connection = studio_db.get_connection()
+    with connection:
+        connection.execute(
+            "INSERT INTO scan_folders (path, created_at) VALUES (?, datetime('now'))",
+            (str(nested),),
+        )
+    connection.close()
+    resolver.invalidate_index()
+    snapshot = _cache_repo(nested, ["Tiny-Probe-Q4_K_M.gguf"])
+    rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO))
+    assert rewritten.model_path == str(snapshot)

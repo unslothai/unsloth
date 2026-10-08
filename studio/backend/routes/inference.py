@@ -8809,8 +8809,9 @@ def _as_ollama_manifest_request(request):
 
 
 def _as_local_scan_folder_request(request):
-    """*request* with a repo id that only a local root (e.g. a scan folder) holds rewritten to that path."""
+    """*request* with a repo id whose GGUF copy sits outside the active hub cache (e.g. a scan folder) rewritten to it."""
     from core.inference.local_model_resolver import _is_abs_path_id, resolve_local_gguf
+    from core.inference.model_ids import hf_cache_repo_id
 
     identifier = (request.model_path or "").strip()
     # Bare names mean unsloth/<name> remotely; a same-stemmed local file must not win them.
@@ -8831,14 +8832,18 @@ def _as_local_scan_folder_request(request):
         return request
     if resolved is None:
         return request
-    load_path, variant, _loader_id = resolved[:3]
-    if is_ollama_manifest_ref(str(load_path)):
+    load_path, variant = str(resolved[0]), resolved[1]
+    # GGUF snapshots of this very repo only: their path maps back to the repo id for status,
+    # unload and consent, which an LM Studio dir or a non-GGUF checkpoint would not.
+    if not variant or (hf_cache_repo_id(load_path) or "").lower() != identifier.lower():
         return request
-    # The active hub cache already loads by repo id without downloading; keep that identity.
+    # A repo directly in the active hub cache already loads by repo id without downloading.
     try:
-        from hub.utils.paths import path_is_same_or_child
+        from hub.utils.hf_cache_state import same_existing_path
         from routes.models import _resolve_hf_cache_dir
-        if path_is_same_or_child(Path(load_path), Path(_resolve_hf_cache_dir())):
+
+        repo_dir = next(p for p in Path(load_path).parents if p.name.startswith("models--"))
+        if same_existing_path(repo_dir.parent, Path(_resolve_hf_cache_dir())):
             return request
     except Exception:
         return request
