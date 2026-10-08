@@ -346,8 +346,7 @@ def list_mcp_servers(
 ):
     rows = mcp_servers_db.list_servers()
     if via_api_key or no_credential:
-        # Drop the row, not just its fields: `url` is the argv (carries credentials), `headers` is the subprocess
-        # env, and a blanked url would round-trip into update as a bogus command.
+        # url/headers hold argv/env secrets; blanking url allows bogus commands on update.
         rows = [row for row in rows if not is_stdio(row["url"])]
     return [_row_to_response(row, include_headers = not no_credential) for row in rows]
 

@@ -1029,22 +1029,14 @@ def _mcp_evidence(sources: list[dict]) -> str:
 
 
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
-    """A step that gathered no evidence failed, whether the tool errored or simply matched nothing.
-
-    Reporting an empty search as completed hid the one outcome the user needs to see: the report
-    was written without the evidence that step was supposed to supply.
-    """
+    """empty searches must report missing evidence even when the tool succeeds."""
     if rag_sources:
         return False
     return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
 
 
 def _preferred_step_error(current: str, candidate: str) -> str:
-    """The failure to report when several steps failed differently.
-
-    An engine failure tells the user to wait and retry, an empty sweep tells them to ask
-    something else, so a later "No results found." must not bury an earlier rate limit.
-    """
+    """engine errors need retries; empty searches need new queries, so preserve engine errors."""
     if not candidate:
         return current
     if is_tool_error(current) and not is_tool_error(candidate):
@@ -1391,7 +1383,6 @@ class ResearchSupervisor:
         raise LeaseLost()
 
     def _salvage_report(self, run_id: str, notice: str) -> str:
-        """The report a failed run had, under a notice, or "" if synthesis produced none."""
         draft = self._report_drafts.get(account_key(run_id))
         if draft is None or not draft.text:
             return ""
@@ -2406,9 +2397,9 @@ class ResearchSupervisor:
         max_steps = int(budgets["maxSteps"])
         max_sources = int(budgets["maxSources"])
         tool_timeout = int(budgets["toolTimeoutSeconds"])
-        # Absent for runs created before auto-scrape: default 0 keeps their behavior unchanged.
+        # default 0 preserves behavior for runs created before auto-scrape.
         max_auto_scrape = int(budgets.get("maxAutoScrape", 0))
-        # On a tiny context the prompt overhead alone fills the window, so fall back to snippet-only.
+        # prompt overhead fills tiny context windows, so use snippets alone.
         if max_auto_scrape > 0:
             loaded_ctx = _loaded_context_length(_run_inference_request(run))
             if loaded_ctx is not None and loaded_ctx < _AUTO_SCRAPE_MIN_CONTEXT_TOKENS:
@@ -2526,7 +2517,7 @@ class ResearchSupervisor:
             mcp_evidence = _mcp_evidence(
                 [item for item in accepted_rag_sources if item.get("kind") == "mcp"]
             )
-            # An unscraped search persists no excerpt, so a completed step can come back with nothing in it.
+            # unscraped searches save no excerpt, so completed steps may resume without evidence.
             if web_evidence or rag_evidence or mcp_evidence:
                 completed_steps += 1
             title = str(step.get("title") or "Recovered research step")
@@ -2779,8 +2770,7 @@ class ResearchSupervisor:
                     for source in accepted_rag_sources
                 )
             elif rag_sources:
-                # Chunks refused by the source cap have no catalog entry and the validator would strip every
-                # citation to them; gated on rag_sources so a text-only KB reply still passes through.
+                # uncataloged chunks lose citations; keep text-only replies when no chunks exist.
                 rag_result = ""
             rag_sources = accepted_rag_sources
             for source in mcp_sources:
@@ -2843,8 +2833,7 @@ class ResearchSupervisor:
                 fetched_urls.update(scraped_urls)
                 await self._check_active(run["id"])
                 if scraped_section:
-                    # Additive, not replace: see _merge_scraped_evidence for why replacing the snippets regressed
-                    # accuracy.
+                    # replacing snippets with scraped chunks reduced accuracy.
                     result = _merge_scraped_evidence(result, scraped_section)
             mcp_evidence = _mcp_evidence(
                 [source for source in rag_sources if source.get("kind") == "mcp"]

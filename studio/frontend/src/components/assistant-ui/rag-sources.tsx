@@ -13,7 +13,7 @@ export const DocumentSourcesGroup: FC<{
   sources: Citation[];
   label?: string;
 }> = ({ sources: all, label = "Document Sources" }) => {
-  // Map updates keep first-seen order, so dedup to best-scoring chunk per doc.
+  // Map keeps first-seen order while retaining each document's top score.
   const byDoc = new Map<string, Citation>();
   for (const c of all) {
     const key = c.documentId ?? c.filename;

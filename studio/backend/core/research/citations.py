@@ -18,8 +18,7 @@ from markdown_it.rules_inline.backticks import backtick
 from core.research.redaction import _escape_link_destination
 
 
-# Unrolled rather than (?:[^\[\]]+|\[[^\[\]]*\])* : that alternation backtracks catastrophically on
-# an unterminated "[Document:", and this runs on the event loop.
+# unrolling avoids catastrophic backtracking on unclosed [Document: that would block the event loop.
 _DOCUMENT_CITATION = re.compile(r"\[(?:Document|MCP):[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
 _MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)")
 _SOURCES_HEADING = re.compile(
@@ -340,7 +339,7 @@ def _validate_masked_sources(report: str, sources: list[dict], placeholders: dic
 
 
 def _validate_report_sources(report: str, sources: list[dict]) -> str:
-    """Canonicalize citations and remove model-authored source lists."""
+    """canonicalize citations and remove model-authored source lists."""
     placeholders: dict[str, str] = {}
     validated = _validate_masked_sources(_mask_code(report, placeholders), sources, placeholders)
     return _restore_placeholders(validated, placeholders)

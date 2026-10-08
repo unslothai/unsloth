@@ -4681,8 +4681,7 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
-            // Omitted when empty: CreateResearchRun forbids unknown fields, so an unconditional send 422s
-            // an older backend.
+            // omit empty fields: old backends reject unknown fields with 422.
             ...(researchQuestion ? { question: researchQuestion } : {}),
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
@@ -4699,8 +4698,7 @@ export function createOpenAIStreamAdapter(
           });
           researchRunId = createdRun.id;
           if (researchStopRequested) {
-            // Stopped while createResearchRun was in flight, so the handle had no id; replay it rather
-            // than follow a run the user ended.
+            // replay stop once creation supplies the missing run id.
             void cancelResearchRun(createdRun.id).catch(() => {});
             return;
           }

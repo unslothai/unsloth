@@ -13815,18 +13815,16 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 async def get_enabled_mcp_tools(
     include_stdio: bool = True, server_ids: set[str] | None = None
 ) -> list[dict]:
-    # Keep the SQLite-backed server list off the event loop.
+    # keep the SQLite-backed server list off the event loop.
     servers = await asyncio.to_thread(lambda: _enabled_mcp_servers(mcp_servers_db.list_servers()))
     if server_ids is not None:
         servers = [server for server in servers if server["id"] in server_ids]
-    # Never spawn stdio servers when stdio is disabled on this host.
     if not include_stdio or not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
         return []
 
-    # Skip servers still in their post-failure cool-off, otherwise a down server gets re-probed, and blocks the send
-    # for the full timeout, on every message.
+    # cool-off avoids blocking every send for the full probe timeout when a server is down.
     uncached = [
         s for s in servers if get_cached_tools(s["id"]) is None and not in_failure_cooloff(s["id"])
     ]
@@ -13933,7 +13931,7 @@ def execute_mcp_tool(name: str, arguments: dict, **kwargs) -> str:
 
 
 def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
-    """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
+    """cache only: callers must not spawn a stdio subprocess or block on a probe."""
     tools = get_cached_tools(server_id) or ()
     return next((t for t in tools if isinstance(t, dict) and t.get("name") == tool_name), None)
 

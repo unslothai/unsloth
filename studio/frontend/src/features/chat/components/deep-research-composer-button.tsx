@@ -39,7 +39,7 @@ import type {
   ResearchWebsitePolicy,
 } from "../types/research";
 
-// The field is in minutes; its ceiling is the seconds cap the backend enforces.
+// the backend caps seconds; this field takes minutes.
 const MAX_RESEARCH_MODEL_TIMEOUT_MINUTES = Math.floor(
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60,
 );
@@ -356,7 +356,7 @@ function DeepResearchWebsiteAccessContent({
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
   const [mcpDraft, setMcpDraft] = useState<ResearchMcpSource[]>(mcpSources);
   const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
-  // Unlimited has no minutes of its own, so turning the limit back on offers the default.
+  // re-enabling the limit from unlimited starts at the default.
   const [timeoutMinutes, setTimeoutMinutes] = useState(
     String(
       Math.ceil(
@@ -364,8 +364,7 @@ function DeepResearchWebsiteAccessContent({
       ),
     ),
   );
-  // The API accepts second-level values the minutes field cannot spell, so saving an untouched
-  // control must replay the stored seconds rather than the rounded minutes.
+  // preserve stored seconds when the rounded minutes field is untouched.
   const [timeoutEdited, setTimeoutEdited] = useState(false);
 
   return (
@@ -451,8 +450,7 @@ function DeepResearchWebsiteAccessContent({
             setPolicy(draft);
             setMcpSources(mcpDraft);
             const minutes = Number(timeoutMinutes);
-            // The max attribute does not stop a typed value reaching here, and falling through to the default
-            // would hand someone asking for a long run a short one.
+            // typed values bypass max; clamp to avoid a short default timeout.
             setModelTimeoutSeconds(
               unlimited
                 ? 0

@@ -2381,32 +2381,30 @@ type ChatRuntimeStore = {
   /** Whether the provider exposes server-side image generation (OpenAI Responses API).
    *  Local models never receive it. */
   supportsBuiltinImageGeneration: boolean;
-  /** Whether the provider exposes server-side web_fetch (Anthropic `web_fetch_*`). Gates the
-   *  composer's Fetch pill, independent of Search. */
+  /** Anthropic server-side web_fetch_* gates Fetch independently of Search. */
   supportsBuiltinWebFetch: boolean;
-  /** Mirrors the backend Settings switch "Keep multiple models loaded". */
+  /** mirrors the backend Settings switch "Keep multiple models loaded". */
   keepModelsLoaded: boolean;
   toolsEnabled: boolean;
-  /** Persisted Code preference. Use codeToolsOn() for the effective value. */
+  /** persisted Code preference; codeToolsOn() gives the effective value. */
   codeToolsEnabled: boolean;
-  /** Session-only: a manual Code-off under Full access, so the grant is not re-applied over it.
-   *  Cleared on entering or leaving the level. */
+  /** session-only Code opt-out under Full access; cleared on level changes. */
   codeToolsDeclinedUnderFullAccess: boolean;
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
   researchModelTimeoutSeconds: number;
   researchMcpSources: ResearchMcpSource[];
-  // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
+  // offers the Canvas toggle in the composer + menu; hidden by default.
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
-  // web_search also returns images the model can place inline; read by the backend per call.
+  // backend reads per call: web_search returns images for inline model output.
   searchImages: boolean;
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
   projectAttachmentTarget: ProjectAttachmentTarget;
-  /** Per-chat override of that default, so a pick in one chat does not redirect the rest. Session-only. */
+  /** session-only per-chat target override; leaves other chats unchanged. */
   projectAttachmentTargetByThread: Record<string, ProjectAttachmentTarget>;
   ragMode: RagMode;
   ragTopK: number;
@@ -4213,11 +4211,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
-  // Mirrors permissionMode (gate requested for ask/auto) so both controls agree on load.
+  // mirrors permissionMode so both controls agree on load.
   confirmToolCalls:
     INITIAL_PERMISSION_MODE === "ask" || INITIAL_PERMISSION_MODE === "auto",
-  // Never restore Bypass Permissions from storage: it disables the sandbox and the
-  // confirmation gate, so it needs the warning dialog each session.
+  // no stored bypass: sandbox and gate removal needs a warning each session.
   bypassPermissions: false,
   permissionMode: INITIAL_PERMISSION_MODE,
   sandboxLevel: loadSandboxLevel(),
