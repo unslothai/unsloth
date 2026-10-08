@@ -1083,8 +1083,7 @@ const StreamdownBlock = memo((props: BlockProps) => (
   </MarkdownBlockBoundary>
 ));
 StreamdownBlock.displayName = "StreamdownBlock";
-// Only the inline base64 wav the adapter writes; any other src (a remote URL, or a playlist type
-// such as audio/mpegurl that WebKit follows) would be fetched on render, like a remote image.
+// Only the adapter's inline wav: any other src (remote URL, WebKit-followed audio/mpegurl) fetches on render.
 const AUDIO_PLAYER_RE = /<audio-player\s+src="(data:audio\/wav;base64,[A-Za-z0-9+/=]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
