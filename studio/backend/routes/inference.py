@@ -18281,8 +18281,7 @@ async def _load_model_impl(
         # load_model calls, so the live backend state and the incoming request
         # compare against the same template text.
         effective_chat_template_override = resolve_effective_chat_template_override(
-            # Bundled templates are keyed by repo id, not by where its copy sits.
-            model_identifier = scan_folder_public_id or model_identifier,
+            model_identifier = model_identifier,
             user_override = request.chat_template_override,
         )
 
@@ -21943,8 +21942,7 @@ async def _slot_status(current_subject: str):
             # expose a genuine user override.
             _reported_chat_template_override = llama_backend.chat_template_override
             _auto_chat_template_override = resolve_effective_chat_template_override(
-                # Public id: a scan-folder copy runs from its snapshot path, templates key on the repo.
-                model_identifier = _display_model_id or _model_id,
+                model_identifier = _model_id,
                 user_override = None,
             )
             if (
