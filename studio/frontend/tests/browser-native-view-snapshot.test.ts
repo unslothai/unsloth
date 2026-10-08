@@ -334,6 +334,11 @@ test("a download that finished while its prompt was open doesn't keep spinning",
     });
     await frame();
     assert.deepEqual(g.nativeViewActivity, ["begin native:p1", "finish native:p1"]);
+    // No button on screen: it says it downloaded, and not then that it's downloading.
+    assert.deepEqual(g.nativeViewSeen, [
+      { level: "history", message: "d1" },
+      { level: "success", message: "browser.native.downloaded" },
+    ]);
   } finally {
     g.nativeViewApprove = false;
     g.nativeViewDecide = undefined;

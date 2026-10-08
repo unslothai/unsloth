@@ -28,11 +28,12 @@ const STUBS = {
   // globalThis.nativeViewDownloadsButton puts a Downloads button on screen; calls land in nativeViewActivity.
   "./download-activity": stub(`
     const buttons = () => (globalThis.nativeViewDownloadsButton ? 1 : 0);
+    const active = {};
     const log = (call, key) => void (globalThis.nativeViewActivity ??= []).push(call + " " + key);
-    export const useDownloadActivity = { getState: () => ({ buttons: buttons() }) };
-    export const beginDownload = (key) => log("begin", key);
-    export const abandonDownload = (key) => log("abandon", key);
-    export const finishDownload = (key) => (log("finish", key), buttons() > 0);
+    export const useDownloadActivity = { getState: () => ({ buttons: buttons(), active: { ...active } }) };
+    export const beginDownload = (key, name) => (log("begin", key), (active[key] = name));
+    export const abandonDownload = (key) => (log("abandon", key), delete active[key]);
+    export const finishDownload = (key) => (log("finish", key), delete active[key], buttons() > 0);
   `),
   // globalThis.nativeViewDecide runs inside the decide call, as the app's events can.
   "./native-downloads": stub(
