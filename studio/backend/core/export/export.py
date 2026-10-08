@@ -1949,8 +1949,7 @@ class ExportBackend:
         elif os.path.exists(os.path.join(default_dir, "convert_lora_to_gguf.py")):
             converter = os.path.join(default_dir, "convert_lora_to_gguf.py")
         else:
-            # Pinned to the installed binaries' revision (else the latest release), always
-            # fetched from the unslothai/llama.cpp release carrying it, never via git.
+            # The installed binaries' revision (else latest), from its unslothai/llama.cpp release.
             try:
                 repo, tag = _zoo_llama_cpp._resolve_converter_revision(default_dir)
             except Exception:
@@ -1961,7 +1960,6 @@ class ExportBackend:
                 if os.path.exists(os.path.join(source_dir, "convert_lora_to_gguf.py")):
                     converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
             elif tag:
-                # A bare upstream tag: reuse a fork tree already fetched for it.
                 cached = sorted(
                     glob.glob(f"{glob.escape(source_dir)}-{glob.escape(tag)}-mix-*"),
                     key = os.path.getmtime,

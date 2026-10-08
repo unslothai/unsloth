@@ -4265,8 +4265,8 @@ def resolve_release_asset_choice(
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:
-        # Prefer the published windows-arm64-cuda bundle, as x64 does; nothing from upstream ggml-org:
-        # a host it does not cover takes the ARM64 CPU bundle. The opt-out gates the WHOLE branch.
+        # A host the fork's windows-arm64-cuda bundle does not cover takes its ARM64 CPU bundle.
+        # The opt-out gates the WHOLE branch.
         if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
             torch_preference = detect_torch_cuda_runtime_preference(host)
             published_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
@@ -4364,9 +4364,7 @@ def ensure_converter_scripts(
 ) -> None:
     canonical = install_dir / "convert_hf_to_gguf.py"
     if not canonical.exists():
-        # Hydrated source tree should have placed this file already. Fall back to the
-        # published repo at the installed release tag (the fork's mix tags are pushed;
-        # its bare upstream bNNNN tags are not), never upstream ggml-org by default.
+        # Hydration normally placed it; else the fork at the installed mix tag (bare bNNNN tags are not pushed).
         source_repo = repo or DEFAULT_PUBLISHED_REPO
         ref = release_tag or llama_tag
         raw_base = (
@@ -10701,8 +10699,7 @@ def _route_to_vulkan_prebuilt(
     else:
         log("Intel GPU detected; installing the Vulkan llama.cpp prebuilt")
         persist_backend = None
-    # The fork publishes a linux-vulkan-arm64 bundle too, so Linux ARM64 stays on the fork;
-    # a release without one source-builds rather than taking upstream ggml-org's prebuilt.
+    # A fork release without a linux-vulkan-arm64 bundle source-builds; no upstream prebuilt.
     return host, published_repo, published_release_tag, persist_backend
 
 
