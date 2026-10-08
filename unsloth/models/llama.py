@@ -1293,8 +1293,7 @@ def LlamaModel_fast_forward(
         if output_attentions:
             all_self_attns += (layer_outputs[1],)
 
-    # The inference norms work in place, so a forward that still needs a backward (eval mode or
-    # after for_inference) takes the autograd-safe norm instead (#895).
+    # The inference norms write in place, which breaks a later backward (#895).
     if use_cache and not hidden_states.requires_grad:
         if IS_FALCON_H1:
             hidden_states = fast_rms_layernorm_inference(self.final_layernorm, hidden_states)
