@@ -2358,6 +2358,10 @@ def test_python_classifier(code, unsafe):
         ),
         ("import numpy as np\nnp.lib.npyio.NpzFile('a.npz', False, True)['x']", True),
         ("from numpy.lib.npyio import NpzFile\nNpzFile('a.npz')['x']", False),
+        (
+            "import numpy as np\nfmt = np.lib.format\nfmt.read_array(open('a.npy', 'rb'), True)",
+            True,
+        ),
     ],
 )
 def test_python_classifier_numpy_allow_pickle(code, unsafe):

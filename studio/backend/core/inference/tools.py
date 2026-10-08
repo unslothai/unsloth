@@ -6404,8 +6404,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
-            if isinstance(value, ast.Name) and value.id in numpy_aliases:
-                numpy_aliases.update(targets)  # np = numpy
+            if _in_numpy(value):
+                numpy_aliases.update(targets)  # np = numpy; fmt = np.lib.format
             if (_pos := _allow_pickle_position(value)) is not None:
                 pickle_fn_aliases.update(dict.fromkeys(targets, _pos))  # loader = np.load
                 pickle_fn_attr_aliases.update(
