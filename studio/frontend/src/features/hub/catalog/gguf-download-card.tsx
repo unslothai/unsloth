@@ -305,12 +305,23 @@ function GgufVariantSizeLabel({
 }
 
 /** Partial tag for a cached GGUF whose companions Run would still download. */
-function CompanionsPendingTag({ companionBytes }: { companionBytes: number }) {
+function CompanionsPendingTag({
+  companionBytes,
+  compact = false,
+}: {
+  companionBytes: number;
+  compact?: boolean;
+}) {
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>
         <span className="inline-flex">
-          <DotTag tone="warning" label="Partial" />
+          <DotTag
+            tone="warning"
+            label="Partial"
+            className={compact ? "max-sm:border-0 max-sm:px-0" : undefined}
+            labelClassName={compact ? "max-sm:sr-only" : undefined}
+          />
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" sideOffset={4}>
@@ -904,6 +915,10 @@ export function GgufDownloadCard({
   const selectedFootprint = selected
     ? ggufVariantFootprint(selected, companionBytesByKey)
     : null;
+  const selectedAwaitsCompanions = awaitsCompanions(
+    selected?.downloaded,
+    selectedFootprint,
+  );
   const updateAvailable =
     selected?.downloaded === true && selected.update_available === true;
   const selectedVariantKey = selectedQuant
@@ -1171,20 +1186,21 @@ export function GgufDownloadCard({
                     Select quantization
                   </span>
                 )}
-                {awaitsCompanions(selected?.downloaded, selectedFootprint) && (
+                {selectedAwaitsCompanions ? (
                   <CompanionsPendingTag
                     companionBytes={selectedFootprint?.companionBytes ?? 0}
+                    compact={true}
                   />
-                )}
-                {selected?.downloaded &&
-                  !awaitsCompanions(selected.downloaded, selectedFootprint) && (
-                  // Dot only on phones.
-                  <DotTag
-                    tone="success"
-                    label="On device"
-                    className="max-sm:border-0 max-sm:px-0"
-                    labelClassName="max-sm:sr-only"
-                  />
+                ) : (
+                  selected?.downloaded && (
+                    // Dot only on phones.
+                    <DotTag
+                      tone="success"
+                      label="On device"
+                      className="max-sm:border-0 max-sm:px-0"
+                      labelClassName="max-sm:sr-only"
+                    />
+                  )
                 )}
                 {selected && !selected.downloaded && selected.partial && (
                   <Tooltip>
