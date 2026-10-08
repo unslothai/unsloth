@@ -371,6 +371,7 @@
         {%- elif continues_into_next -%}
         {%- elif not (ns_tr_out.flag and not has_content and not next_nt.found) -%}
             {{- '<turn|>\n' -}}
+            {%- set ns.prev_message_type = None -%}
         {%- endif -%}
 
     {#- Track previous non-tool role for next iteration (avoids O(n) backward scan) -#}

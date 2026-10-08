@@ -323,6 +323,13 @@ def test_model_thinks_again_after_a_tool_result(tpl):
     assert _render_with(tpl, messages, enable_thinking = False).endswith("<tool_response|>")
 
 
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_closed_tool_turn_reopens_the_model_turn(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    messages[1]["content"] = "Let me check."
+    assert _render_with(tpl, messages, enable_thinking = True).endswith("Let me check.<turn|>\n<|turn>model\n")
+
+
 def test_enable_thinking_gates_think_token():
     assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking = True)
     assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)
