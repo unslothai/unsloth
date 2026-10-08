@@ -430,6 +430,9 @@ def test_optional_loader_returns_none_when_truly_absent(monkeypatch):
         raise ModuleNotFoundError(name)
 
     monkeypatch.setattr(importlib, "import_module", _always_fail)
+    # Truly absent: not left behind in sys.modules by an earlier real import either.
+    for name in ("unsloth_zoo.hf_xet_tuning", "unsloth_zoo.hf_xet_health"):
+        monkeypatch.delitem(sys.modules, name, raising = False)
     assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is None
     # A missing module means "no opinion", never a hard failure.
     assert shim.xet_env_overrides() == {}

@@ -203,15 +203,21 @@ def _load_optional(module_name: str) -> Any:
             return cached
         # Same rule as _load_shared: the retry's triton/bitsandbytes stubs stay in sys.modules for good.
         if _gpu_present():
-            import logging as _logging
+            import sys as _sys
 
-            _logging.getLogger(__name__).debug(
-                "%s unavailable (%s); not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT on a host with an accelerator",
-                module_name,
-                first_error,
-            )
-            _optional_modules[module_name] = None
-            return None
+            # A zoo __init__ that fails late has already run `from .hf_xet_tuning import ...`; that submodule finished
+            # executing and stays in sys.modules, so keep its RAM caps instead of dropping them with the package.
+            module = _sys.modules.get(module_name)
+            if module is None:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "%s unavailable (%s); not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT because this host has an "
+                    "accelerator and that path would stub out triton/bitsandbytes for the whole process.",
+                    module_name,
+                    first_error,
+                )
+            _optional_modules[module_name] = module
+            return module
         global _gpu_init_override_depth
         previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         ours = previous != "1"

@@ -394,6 +394,7 @@ def test_optional_loader_does_not_retry_under_light_gpu_init_on_an_accelerator_h
     real_triton = _types.ModuleType("triton")
     monkeypatch.setitem(sys.modules, "triton", real_triton)
     monkeypatch.setattr(shim, "_gpu_present", lambda: True)
+    monkeypatch.delitem(sys.modules, "unsloth_zoo.hf_xet_health", raising = False)
     shim._reset_optional_module_cache()
     attempts = []
 
@@ -410,6 +411,39 @@ def test_optional_loader_does_not_retry_under_light_gpu_init_on_an_accelerator_h
         assert shim.xet_health() is None
         assert attempts == [None], attempts
         assert sys.modules["triton"] is real_triton
+        assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
+    finally:
+        shim._reset_optional_module_cache()
+
+
+def test_optional_loader_keeps_a_submodule_a_late_zoo_init_failure_left_loaded(monkeypatch):
+    """unsloth_zoo's __init__ imports hf_xet_tuning before its GPU init, so a GPU host whose zoo import fails
+    late still has that submodule fully executed in sys.modules. Without the light retry, use it rather than
+    dropping the RAM caps; a submodule the failed import never reached still degrades to None."""
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+    monkeypatch.setattr(shim, "_gpu_present", lambda: True)
+    monkeypatch.delitem(sys.modules, "unsloth_zoo.hf_xet_health", raising = False)
+    survivor = _types.ModuleType("unsloth_zoo.hf_xet_tuning")
+    shim._reset_optional_module_cache()
+    attempts = []
+
+    def _late_failure(name):
+        attempts.append((name, os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")))
+        sys.modules["unsloth_zoo.hf_xet_tuning"] = survivor
+        raise RuntimeError("unsloth_zoo GPU init failed after importing hf_xet_tuning")
+
+    # setitem + delitem: start absent, and teardown restores whatever was there (or nothing) over the survivor.
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.hf_xet_tuning", None)
+    monkeypatch.delitem(sys.modules, "unsloth_zoo.hf_xet_tuning")
+    monkeypatch.setattr(importlib, "import_module", _late_failure)
+    try:
+        assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is survivor
+        assert shim._load_optional("unsloth_zoo.hf_xet_tuning") is survivor
+        assert shim._load_optional("unsloth_zoo.hf_xet_health") is None
+        assert attempts == [
+            ("unsloth_zoo.hf_xet_tuning", None),
+            ("unsloth_zoo.hf_xet_health", None),
+        ], attempts
         assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
     finally:
         shim._reset_optional_module_cache()
