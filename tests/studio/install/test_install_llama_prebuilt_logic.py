@@ -5227,6 +5227,26 @@ def test_release_listing_failure_keeps_a_complete_existing_install(tmp_path, mon
     assert (install_dir / "llama-server").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "Windows st_mode carries no POSIX mode bits")
+def test_an_offline_keep_repairs_a_non_executable_llama_fit_params(tmp_path, monkeypatch):
+    """#12901: an update that cannot reach the release keeps the tree, so it must repair the probe too."""
+
+    def boom(*args, **kwargs):
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_fork_manifest_release_plans", boom)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "detect_host", linux_host)
+
+    install_dir = _complete_existing_llama_install(tmp_path)
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    helper.write_bytes(b"probe\n")
+    helper.chmod(0o644)
+
+    install_prebuilt(install_dir, "latest", "unslothai/llama.cpp", "")
+
+    assert stat.S_IMODE(helper.stat().st_mode) == 0o755
+
+
 def test_release_listing_failure_does_not_keep_a_non_executable_install(tmp_path, monkeypatch):
     """Do not keep a tree that fails setup.sh's executable reuse gate."""
 

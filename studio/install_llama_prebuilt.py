@@ -11525,6 +11525,7 @@ def install_prebuilt(
         ):
             log("prebuilt update unavailable; keeping the existing complete install")
             log(f"prebuilt update reason: {exc}")
+            ensure_fit_params_executable(install_dir)
             return
         log(
             "prebuilt install failed; preserving the selected backend"
