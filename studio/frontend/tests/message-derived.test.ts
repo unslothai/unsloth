@@ -72,6 +72,30 @@ test("cached part values equal the uncached computations", () => {
   }
 });
 
+test("preceding text matches the uncached join on random part mixes, and is one string per index", () => {
+  let seed = 7;
+  const random = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed / 2147483648;
+  };
+  const kinds = ["text", "reasoning", "tool-call", "text"];
+  for (let round = 0; round < 300; round += 1) {
+    const mix = Array.from({ length: Math.floor(random() * 12) }, (_, i) => {
+      const type = kinds[Math.floor(random() * kinds.length)];
+      return random() < 0.1
+        ? { type }
+        : { type, text: random() < 0.2 ? "" : `${type} ${round} ${i}` };
+    });
+    for (let i = 0; i <= mix.length + 1; i += 1) {
+      assert.equal(
+        partsPrecedingText(mix, i),
+        precedingTextForMessagePart(mix, i),
+      );
+      assert.equal(partsPrecedingText(mix, i), partsPrecedingText(mix, i));
+    }
+  }
+});
+
 test("an appended part is a new array and is not served the old answer", () => {
   const streamed = [{ type: "text", text: "a" }];
   assert.equal(partsTextKey(streamed), '["a"]');

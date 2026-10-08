@@ -188,8 +188,8 @@ function buildMessages(
               metadata: {
                 custom: {
                   contextTruncation: {
-                    dropped_messages: index - 4,
-                    boundary_messages: index - 4,
+                    dropped_messages: Math.max(1, index - 4),
+                    boundary_messages: Math.max(1, index - 4),
                     fits: true,
                   },
                 },
@@ -405,7 +405,9 @@ const MEMORY_THREAD_LIST: unstable_RemoteThreadListAdapter = {
   unarchive: async () => {},
   delete: async () => {},
   initialize: async (threadId) => ({ remoteId: threadId, externalId: undefined }),
-  generateTitle: async () => new ReadableStream() as never,
+  // An empty stream that closes, so a title request settles instead of hanging.
+  generateTitle: async () =>
+    new ReadableStream({ start: (controller) => controller.close() }) as never,
   fetch: async (threadId) => ({
     status: "regular",
     remoteId: threadId,
@@ -420,17 +422,29 @@ function useSmokeLocalRuntime() {
   return useLocalRuntime(NEVER_RUNS, { adapters: { attachments: ATTACHMENTS } });
 }
 
-function useSmokeRuntime() {
-  return REMOTE
-    ? unstable_useRemoteThreadListRuntime({
-        runtimeHook: useSmokeLocalRuntime,
-        adapter: MEMORY_THREAD_LIST,
-      })
-    : useLocalRuntime(NEVER_RUNS);
+// One hook per component, so the choice between the two runtimes never changes hook order.
+function RemoteHarness(): ReactElement {
+  const runtime = unstable_useRemoteThreadListRuntime({
+    runtimeHook: useSmokeLocalRuntime,
+    adapter: MEMORY_THREAD_LIST,
+  });
+  return <HarnessBody runtime={runtime} />;
+}
+
+function LocalHarness(): ReactElement {
+  const runtime = useLocalRuntime(NEVER_RUNS);
+  return <HarnessBody runtime={runtime} />;
 }
 
 function Harness(): ReactElement {
-  const runtime = useSmokeRuntime();
+  return REMOTE ? <RemoteHarness /> : <LocalHarness />;
+}
+
+function HarnessBody({
+  runtime,
+}: {
+  runtime: ReturnType<typeof useLocalRuntime>;
+}): ReactElement {
   const [threadMounted, setThreadMounted] = useState(true);
   return (
     <TooltipProvider>

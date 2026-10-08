@@ -15,10 +15,7 @@
 // the revision: caching on its identity is exact, and a WeakMap lets an old revision go with it.
 
 import { isRenderableRenderHtmlToolPart } from "../../features/chat/artifacts/html-fences.ts";
-import {
-  precedingTextForMessagePart,
-  searchImagesSignature,
-} from "../../features/chat/search-images/search-images.ts";
+import { searchImagesSignature } from "../../features/chat/search-images/search-images.ts";
 import {
   type ContextTruncation,
   compactionBoundary,
@@ -69,9 +66,26 @@ export const partsSearchImagesSignature = memoOnArray(
   ) => searchImagesSignature(parts),
 );
 
-const precedingTextByIndex = memoOnArray(
-  (_parts: ReadonlyArray<{ type: string; text?: unknown }>) =>
-    new Map<number, string>(),
+// Every part's preceding text is a prefix of one string: the message's text parts joined as
+// answerTextFromParts joins them. Slices of it share its buffer, so the cache holds one copy of
+// the message's text however many parts ask, where a string per part held a quadratic amount.
+const precedingTextLayout = memoOnArray(
+  (parts: ReadonlyArray<{ type: string; text?: unknown }>) => {
+    const texts: string[] = [];
+    // ends[i]: where the text of the parts before part i ends in `joined`.
+    const ends: number[] = [];
+    let end = 0;
+    for (const part of parts) {
+      ends.push(end);
+      if (part.type === "text" && typeof part.text === "string") {
+        end += (texts.length > 0 ? 2 : 0) + part.text.length;
+        texts.push(part.text);
+      }
+    }
+    ends.push(end);
+    const joined = texts.join("\n\n");
+    return { joined, ends, slices: new Map<number, string>() };
+  },
 );
 
 /** precedingTextForMessagePart, computed once per parts array and index. */
@@ -79,11 +93,13 @@ export function partsPrecedingText(
   parts: ReadonlyArray<{ type: string; text?: unknown }>,
   partIndex: number,
 ): string {
-  const byIndex = precedingTextByIndex(parts);
-  let text = byIndex.get(partIndex);
+  const layout = precedingTextLayout(parts);
+  const index = Math.max(0, Math.min(partIndex, parts.length));
+  // One slice per index, so a selector compares the same string object on every write.
+  let text = layout.slices.get(index);
   if (text === undefined) {
-    text = precedingTextForMessagePart(parts, partIndex);
-    byIndex.set(partIndex, text);
+    text = layout.joined.slice(0, layout.ends[index]);
+    layout.slices.set(index, text);
   }
   return text;
 }
