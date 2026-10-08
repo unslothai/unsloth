@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""FastModel(fast_inference = True) on compute capability < 7 falls back to Unsloth inference, as
-FastLanguageModel does, instead of reaching zoo's "Your GPU is too old!". Sliced with `ast`:
-importing the loader needs a GPU.
-"""
+"""FastModel pre-Volta fast_inference fallback; sliced with `ast` because importing the loader needs a GPU."""
 
 import ast
 import types
@@ -16,7 +13,6 @@ LOADER_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "load
 
 
 def _fast_inference_blocks():
-    """FastModel.from_pretrained's pre-Volta gate and the `if fast_inference:` block after it (GB10)."""
     tree = ast.parse(LOADER_PATH.read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FastModel")
     fn = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained")
