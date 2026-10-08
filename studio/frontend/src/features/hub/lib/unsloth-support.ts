@@ -250,15 +250,17 @@ export function classifyUnslothSupport({
     library === "gguf" ||
     (modelId ? /(?:^|[-_.])gguf$/i.test(repoLeaf(modelId)) : false);
 
-  // Held until the task, library and format checks below have had their say.
-  let vllmReason: string | null = null;
   if (normalizedQuant && !isGguf) {
     if (Object.hasOwn(UNSUPPORTED_QUANT_METHODS, normalizedQuant)) {
       const reason = `Detected ${UNSUPPORTED_QUANT_METHODS[normalizedQuant]}.`;
-      if (!(vllmAvailable && VLLM_QUANT_METHODS.has(normalizedQuant))) {
-        return { status: "unsupported", reason };
+      // vLLM excuses the quantization only; any other rejection keeps today's answer.
+      if (vllmAvailable && VLLM_QUANT_METHODS.has(normalizedQuant)) {
+        const rest = classifyUnslothSupport({ modelId, pipelineTag, tags, libraryName, deviceType, vllmAvailable });
+        if (rest.status === "supported" || rest.supportedIn === "vllm") {
+          return { status: "unsupported", reason, supportedIn: "vllm" };
+        }
       }
-      vllmReason = reason;
+      return { status: "unsupported", reason };
     }
   }
 
@@ -288,13 +290,10 @@ export function classifyUnslothSupport({
   if (formatKey) {
     const label = FORMAT_TAG_LABEL[formatKey] ?? `${formatKey.toUpperCase()} weights`;
     const reason = `Detected ${label}.`;
-    if (!(vllmAvailable && VLLM_FORMAT_KEYS.has(formatKey))) {
-      return { status: "unsupported", reason };
+    if (vllmAvailable && VLLM_FORMAT_KEYS.has(formatKey)) {
+      return { status: "unsupported", reason, supportedIn: "vllm" };
     }
-    vllmReason ??= reason;
-  }
-  if (vllmReason) {
-    return { status: "unsupported", reason: vllmReason, supportedIn: "vllm" };
+    return { status: "unsupported", reason };
   }
   return { status: "supported", reason: null };
 }

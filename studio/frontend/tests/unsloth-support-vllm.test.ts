@@ -61,16 +61,19 @@ test("vLLM does not excuse any other reason a model cannot run in chat", () => {
       quantMethod,
     );
   }
-  // An image pipeline keeps routing to the Images page, even when compressed-tensors.
-  assert.equal(
-    classifyUnslothSupport({ ...NVFP4, pipelineTag: "text-to-image", vllmAvailable: true }).supportedIn,
-    "images",
-  );
-  // An MLX or ONNX-only repo stays rejected.
-  assert.deepEqual(
-    classifyUnslothSupport({ ...NVFP4, tags: ["onnx"], vllmAvailable: true }),
-    { status: "unsupported", reason: "Detected ONNX-format weights." },
-  );
+  // Anything else that rejects the repo (a task, a library, another format) keeps today's answer.
+  for (const extra of [
+    { pipelineTag: "text-to-image" },
+    { tags: ["onnx"] },
+    { tags: ["diffusers"] },
+    { modelId: "owner/model-exl2" },
+  ]) {
+    assert.deepEqual(
+      classifyUnslothSupport({ ...NVFP4, ...extra, vllmAvailable: true }),
+      classifyUnslothSupport({ ...NVFP4, ...extra }),
+      JSON.stringify(extra),
+    );
+  }
   // GGUF and plain checkpoints are untouched.
   assert.deepEqual(
     classifyUnslothSupport({ modelId: "unsloth/Qwen3.8-27B-GGUF", tags: ["gguf"], quantMethod: "compressed-tensors", deviceType: "cuda", vllmAvailable: true }),
