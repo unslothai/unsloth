@@ -960,7 +960,7 @@ def _st_load_preflight(model_name: str, token: str | bool | None = None) -> bool
 
         def _metadata():
             modules = _repo_json(model_name, "modules.json", token)
-            config_files = ["config.json"]
+            config_files = ["config.json"] if modules is None else []
             for module in modules or ():
                 ref = str((module or {}).get("type", ""))
                 if ref.rsplit(".", 1)[-1] != "Transformer":

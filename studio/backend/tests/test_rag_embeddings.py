@@ -788,7 +788,16 @@ def test_st_can_load_reads_modules_and_model_type(tmp_path, module_type, model_c
     )
 
 
-def test_st_can_load_reads_the_transformer_modules_config(tmp_path):
+@pytest.mark.parametrize(
+    "root_model_type,module_model_type,loadable",
+    [
+        ("bert", "no_such_model_type", False),
+        ("no_such_model_type", "bert", True),
+    ],
+)
+def test_st_can_load_reads_the_transformer_modules_config(
+    tmp_path, root_model_type, module_model_type, loadable
+):
     pytest.importorskip("sentence_transformers")
     pytest.importorskip("transformers")
     folder = tmp_path / "embedder"
@@ -806,10 +815,10 @@ def test_st_can_load_reads_the_transformer_modules_config(tmp_path):
             ]
         )
     )
-    (folder / "config.json").write_text(json.dumps({"model_type": "bert"}))
-    (module / "config.json").write_text(json.dumps({"model_type": "no_such_model_type"}))
+    (folder / "config.json").write_text(json.dumps({"model_type": root_model_type}))
+    (module / "config.json").write_text(json.dumps({"model_type": module_model_type}))
 
-    assert embeddings.sentence_transformers_can_load(str(folder)) is False
+    assert embeddings.sentence_transformers_can_load(str(folder)) is loadable
 
 
 def test_st_can_load_preserves_anonymous_hub_access(monkeypatch):
@@ -818,7 +827,7 @@ def test_st_can_load_preserves_anonymous_hub_access(monkeypatch):
 
     def _read(name, filename, token):
         seen.append((filename, token))
-        return [] if filename == "modules.json" else {}
+        return None if filename == "modules.json" else {}
 
     monkeypatch.setattr(embeddings, "_repo_json", _read)
 
