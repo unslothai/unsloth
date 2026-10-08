@@ -185,3 +185,10 @@ def test_real_mingit_runs_on_windows(monkeypatch, tmp_path):
         check = True,
     )
     assert git_tool.MINGIT_VERSION.rsplit(".", 1)[0] in out.stdout
+
+
+def test_bundled_git_uses_the_windows_certificate_store():
+    env = git_tool.with_git_on_path({"PATH": "x", "GIT_CONFIG_COUNT": "1"}, r"C:\s\mingit\cmd")
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert (env["GIT_CONFIG_KEY_1"], env["GIT_CONFIG_VALUE_1"]) == ("http.sslBackend", "schannel")
+    assert "GIT_CONFIG_COUNT" not in git_tool.with_git_on_path({"PATH": "x"}, None)

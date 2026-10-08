@@ -133,4 +133,12 @@ def with_git_on_path(env: dict, git_dir: Optional[str]) -> dict:
     env = dict(env)
     key = next((k for k in env if k.upper() == "PATH"), "PATH")
     env[key] = git_dir + os.pathsep + env.get(key, "")
+    # MinGit ships no installer config; schannel makes it trust the Windows certificate store.
+    try:
+        n = int(env.get("GIT_CONFIG_COUNT") or 0)
+    except ValueError:
+        n = 0
+    env[f"GIT_CONFIG_KEY_{n}"] = "http.sslBackend"
+    env[f"GIT_CONFIG_VALUE_{n}"] = "schannel"
+    env["GIT_CONFIG_COUNT"] = str(n + 1)
     return env
