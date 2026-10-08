@@ -6,7 +6,8 @@ load and LoRA path receives, and the live snapshot the training view polls."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -248,8 +249,21 @@ def _layer(device):
     return SimpleNamespace(parameters = lambda: iter([SimpleNamespace(device = torch.device(device))]))
 
 
+def _zoo_block_swap(monkeypatch):
+    # The Studio CPU job runs without unsloth_zoo installed.
+    try:
+        import unsloth_zoo.block_swap as module
+    except ImportError:
+        package = ModuleType("unsloth_zoo")
+        module = ModuleType("unsloth_zoo.block_swap")
+        package.block_swap = module
+        monkeypatch.setitem(sys.modules, "unsloth_zoo", package)
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.block_swap", module)
+    return module
+
+
 def test_snapshot_reports_every_card_and_each_layers_card(monkeypatch):
-    import unsloth_zoo.block_swap as zoo_block_swap
+    zoo_block_swap = _zoo_block_swap(monkeypatch)
     from core.training import trainer
 
     cuda = trainer.torch.cuda
@@ -304,7 +318,7 @@ def test_snapshot_reports_every_card_and_each_layers_card(monkeypatch):
 
 
 def test_layer_device_map_survives_a_zoo_without_find_decoder_layers(monkeypatch):
-    import unsloth_zoo.block_swap as zoo_block_swap
+    zoo_block_swap = _zoo_block_swap(monkeypatch)
 
     def boom(model):
         raise RuntimeError("no layers")
