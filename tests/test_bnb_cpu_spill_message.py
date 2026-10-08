@@ -59,12 +59,17 @@ def test_spill_points_at_offload_layers():
     assert info.value.__cause__ is original
 
 
-@pytest.mark.parametrize("offload_layers", ["auto", 4])
-def test_spill_with_offload_already_requested(offload_layers):
+def test_spill_with_offload_auto_already_requested():
     with pytest.raises(ValueError) as info:
-        raise_if_bnb_cpu_spill(_spill_error(), "m", offload_layers)
+        raise_if_bnb_cpu_spill(_spill_error(), "m", "auto")
     assert "offload_layers" not in str(info.value)
     assert "max_seq_length" in str(info.value)
+
+
+def test_spill_with_a_layer_count_suggests_more_layers():
+    with pytest.raises(ValueError) as info:
+        raise_if_bnb_cpu_spill(_spill_error(), "m", 4)
+    assert "Raise offload_layers" in str(info.value)
 
 
 def test_eight_bit_is_not_pointed_at_offload_layers():

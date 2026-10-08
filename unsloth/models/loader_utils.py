@@ -262,8 +262,10 @@ def raise_if_bnb_cpu_spill(
             "quantization_config to stream the layers the GPU cannot hold from host RAM, "
             "or load a smaller model."
         )
-    elif offload_layers:
+    elif offload_layers == "auto":
         hint = "Lower max_seq_length or the batch size, load a smaller model, or add a GPU."
+    elif offload_layers:
+        hint = 'Raise offload_layers or pass `offload_layers = "auto"`, load a smaller model, or add a GPU.'
     else:
         hint = (
             'Pass `offload_layers = "auto"` to from_pretrained to keep the decoder layers the GPU '
