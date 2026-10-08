@@ -56,24 +56,18 @@ export function SettingsRow({
           </span>
         ) : null}
         <div className="flex min-w-0 w-full max-w-lg flex-col gap-0.5">
-          {/* Flex only when hinted, so every other row's label renders exactly
-              as before. */}
-          <span
-            className={cn(
-              "text-sm font-medium text-foreground",
-              hint && "flex items-center gap-1.5",
-            )}
-          >
+          <span className="text-sm font-medium text-foreground">
             {label}
             {hint ? (
               <Tooltip>
                 <TooltipTrigger asChild={true}>
                   {/* Focusable and labelled, so keyboard users reach the
-                      text too. Matches the secure-HTTPS hint. */}
+                      text too. Matches the secure-HTTPS hint. Inline on the
+                      baseline, so it follows the label's last word like a glyph. */}
                   <button
                     type="button"
                     aria-label={hint}
-                    className="flex shrink-0 items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="ml-1.5 inline-flex align-baseline rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     {/* Sized off the token, not size-3.5: the label beside it is
                         scaled by the UI font size preference, and a fixed 14px
