@@ -851,7 +851,7 @@ export function DiffusionTrainPanel({
         toast.error("Give the dataset a folder name, e.g. my-style-photos.");
         return;
       }
-      const { files, imageCount, clipCount, skipped, collisions } = selectDatasetFiles(picked);
+      const { files, skipped, collisions } = selectDatasetFiles(picked);
       if (collisions.length > 0) {
         const { kind, first, second } = collisions[0];
         const more =
@@ -875,10 +875,6 @@ export function DiffusionTrainPanel({
         );
         return;
       }
-      // /diffusion/info only lists folders holding a trainable item, so say why the set will not appear
-      // yet rather than refusing a captions-first upload.
-      const newCaptionsOnly =
-        imageCount === 0 && clipCount === 0 && !(info?.datasets ?? []).some((d) => d.name === name);
       if (uploadInFlight.current) {
         toast.error("An upload is already running. Wait for it to finish, then try again.");
         return;
@@ -982,7 +978,8 @@ export function DiffusionTrainPanel({
               `${skipped === 1 ? "was" : "were"} neither an image, a clip, nor a caption.`,
           );
         }
-        if (newCaptionsOnly) {
+        const resultCaptionsOnly = res.image_count === 0 && (res.clip_count ?? 0) === 0;
+        if (resultCaptionsOnly) {
           setContinuationDatasetName(res.name);
           toast.info(
             `"${res.name}" holds captions but no images or clips yet, so it stays out of the ` +

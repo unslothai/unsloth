@@ -57,6 +57,10 @@ test("a captions-only set created in this form remains available for follow-up f
   assert.equal(isDatasetContinuation("captions-only", null), false);
   assert.match(source, /setContinuationDatasetName\(res\.name\)/);
   assert.match(source, /const createsDataset = uploadMode && !continuingUploadName;/);
+  assert.match(
+    source,
+    /const resultCaptionsOnly = res\.image_count === 0 && \(res\.clip_count \?\? 0\) === 0;/,
+  );
 });
 
 test("the new-set form waits for the set list before it uploads", () => {
