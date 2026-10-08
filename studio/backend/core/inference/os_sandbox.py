@@ -257,7 +257,6 @@ _NT_PATHS = os.name == "nt"
 
 
 def _entry_path(path: str) -> str:
-    # Git Bash's `> nul` leaves a real file a plain Win32 stat reports as the NUL device.
     return _extended_path(path) if _NT_PATHS else path
 
 

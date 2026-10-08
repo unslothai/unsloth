@@ -93,7 +93,6 @@ def test_a_reserved_name_directory_is_walked_and_witnessed(monkeypatch, tmp_path
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "simulates Windows stat on a POSIX filesystem")
 def test_a_real_device_node_beside_a_nul_file_still_refuses(monkeypatch, tmp_path):
-    """The extended spelling reaches what is on disk: a FIFO stays a FIFO."""
     workdir = tmp_path / "work"
     workdir.mkdir()
     (workdir / "nul").write_text("hi\n")
@@ -110,7 +109,6 @@ def test_a_real_device_node_beside_a_nul_file_still_refuses(monkeypatch, tmp_pat
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "simulates Windows stat on a POSIX filesystem")
 def test_an_outside_hard_link_named_nul_still_refuses(monkeypatch, tmp_path):
-    """The \\\\?\\ stat carries the real link count, so the hard-link check still sees the outside name."""
     outside = tmp_path / "outside.txt"
     outside.write_text("secret\n")
     workdir = tmp_path / "work"
@@ -123,7 +121,7 @@ def test_an_outside_hard_link_named_nul_still_refuses(monkeypatch, tmp_path):
 
 
 def _on_disk(path):
-    # tmp_path is absolute; built here, not with the helper under test, so main runs the same fixture.
+    # Not the helper under test, so main runs the same fixture.
     return _EXTENDED + path
 
 
