@@ -612,8 +612,9 @@ def engine(home, monkeypatch, tmp_path):
     done.set()
     state = SimpleNamespace(loaded = [], asked = [], error = None, cached = set())
 
-    def answer(state_, questions):
+    def answer(state_, questions, *images):
         state.asked.append(questions)
+        state.read = (state_, images)
         if state.error:
             raise state.error("no")
         answers = {name: {"type": "noul", "noul": 0.5} for name in questions}
@@ -690,7 +691,9 @@ def test_the_mlx_runtime_serves_only_through_the_engine(home, client, engine, mo
     assert laya_runtime.select(kev)[0].backend == "mlx"
     assert laya_runtime.mlx_ready(kev) and not laya_runtime.native_ready(kev)
     assert _post(client).headers["x-unsloth-decision-backend"] == "mlx"
-    with pytest.raises(laya_runtime.Unavailable, match = "Images are served only by llama.cpp"):
+    with pytest.raises(
+        laya_runtime.Unavailable, match = "MLX runtime does not read these images for kev-4b"
+    ):
         laya_runtime.select(kev, ["png"])
     (folder / "config.json").rename(folder / "adapter_config.json")
     (folder / "model.safetensors").rename(folder / "adapter_model.safetensors")
@@ -875,6 +878,66 @@ def test_images_in_the_state_route_like_the_images_field(home, monkeypatch):
         with pytest.raises(laya_runtime.Unavailable):
             laya_runtime._route(catalog.CHECKPOINTS["kev-4b"], state, {"q": {"type": "noul"}}, None)
         assert bool(seen[-1]) == routed
+
+
+def test_a_clef_with_its_vision_tower_reads_images_through_the_mlx_engine(
+    home, engine, monkeypatch
+):
+    served, folder = _clef_fine_tune(home, "clef_mlx_3"), home / "clef_mlx_3"
+    tuned, stock, kev = (
+        catalog.fine_tune(served),
+        catalog.CHECKPOINTS["clef-flash"],
+        catalog.CHECKPOINTS["kev-4b"],
+    )
+    zoo, image = sys.modules["unsloth_zoo.mlx.decision"], "data:image/png;base64,AA=="
+    vision = json.dumps({"vision_config": {}})
+
+    def reads(checkpoint):
+        try:
+            routed = laya_runtime.select(checkpoint, [image])[0].backend == "mlx"
+        except laya_runtime.Unavailable:
+            routed = False
+        assert routed == (laya_runtime.input_modalities(checkpoint) == ["text", "image"])
+        return routed
+
+    # An unsloth-zoo that reads no images, then one that does: a Clef needs its tower, and no other family reads them.
+    (folder / "config.json").write_text(vision, encoding = "utf-8")
+    (folder / "processor_config.json").write_text("{}", encoding = "utf-8")
+    assert not reads(tuned) and not reads(stock)
+    zoo.ClefModel = SimpleNamespace()
+    assert not reads(tuned) and not reads(stock)
+    zoo.ClefModel = SimpleNamespace(takes_images = True)
+    assert reads(tuned) and reads(stock) and not reads(kev)
+    (folder / "processor_config.json").rename(folder / "preprocessor_config.json")
+    assert reads(tuned)
+    (folder / "preprocessor_config.json").rename(folder / "p.json")
+    assert not reads(tuned)
+    (folder / "p.json").rename(folder / "processor_config.json")
+    (folder / "config.json").write_text("{}", encoding = "utf-8")
+    assert not reads(tuned)
+    (folder / "config.json").write_text(vision, encoding = "utf-8")
+    assert laya_runtime.select(tuned, [image], preference = "mlx")[0].backend == "mlx"
+    for refused in ((kev, [image], False), (tuned, None, True), (tuned, [image], True)):
+        with pytest.raises(
+            laya_runtime.Unavailable, match = "MLX runtime does not read these images"
+        ):
+            laya_runtime.select(refused[0], refused[1], preference = "mlx", state_images = refused[2])
+    (folder / "config.json").write_text("{}", encoding = "utf-8")
+    with pytest.raises(
+        laya_runtime.Unavailable, match = "does not read these images for clef-ft:clef_mlx_3"
+    ):
+        laya_runtime.select(tuned, [image], preference = "mlx")
+    (folder / "config.json").write_text(vision, encoding = "utf-8")
+    with monkeypatch.context() as patch:
+        patch.setattr(laya_runtime, "mlx_ready", lambda checkpoint: False)
+        assert laya_runtime.input_modalities(tuned) == ["text"]
+
+    # The engine gets the images beside the state; a request without them is asked as before.
+    questions = {"q": {"type": "noul", "instructions": "i"}}
+    assert laya_runtime._route(tuned, "s", questions, [image])["_backend"] == "mlx"
+    assert engine.read == ("s", ([image],))
+    assert laya_runtime._route(tuned, "s", questions, None)["_backend"] == "mlx"
+    assert engine.read == ("s", ())
 
 
 def test_auto_keeps_images_in_the_state_off_mlx(home, engine, monkeypatch):
