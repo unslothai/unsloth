@@ -980,7 +980,7 @@ function MediaMoreSubmenu<Id extends string>({
         title={tooltip}
         onPointerEnter={disabled ? undefined : onIntent}
         onFocus={disabled ? undefined : onIntent}
-        // click opens the page; hover and keyboard still open the workflows.
+        // click opens the page; hover or keyboard opens its workflows.
         onClick={(event) => {
           if (disabled) return;
           event.preventDefault();
@@ -2933,7 +2933,7 @@ export function AppSidebar() {
   // The Projects row repeats the section, so it only earns its place while the section is absent.
   const navRowPinned = (item: SidebarNavItemPref) =>
     sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing });
-  // Audio and Images step out of More while their page is open: a pin for the visit, never saved.
+  // audio and images are temporarily pinned while active without saving the preference.
   const { inline: inlineNavIds, overflow: overflowNavIds } = placeNavRows(
     sidebarNav.map((item) => ({ id: item.id, pinned: navRowPinned(item) })),
     navRows.audio.active ? "audio" : navRows.images.active ? "images" : null,
@@ -5716,7 +5716,7 @@ export function AppSidebar() {
                             },
                             contentProps: {
                               ...sidebarSubmenuOffsets,
-                              // Portaled outside the flyout, so the flyout's hover grace has to cover it too.
+                              // portaled outside the flyout, so its hover grace must include the submenu.
                               ...moreHover.content,
                             },
                           };
