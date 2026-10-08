@@ -69,8 +69,13 @@ test("a far transcript drops both viewport scroll listeners and resumes when nea
   );
   assert.match(
     observe,
-    /callback\(instance\.scrollElement\?\.scrollTop \?\? 0, false\);\s*stop = observeElementOffset\(instance, callback\);/,
+    /callback\(instance\.scrollElement\?\.scrollTop \?\? 0, false\);\s*stop = observeElementOffset\(instance,/,
     "resubscribing does not seed the current offset first",
+  );
+  // TanStack's debounced scroll-end callback survives unsubscribe; a stopped observer must not win.
+  assert.match(
+    observe,
+    /if \(current === generation\) callback\(offset, isScrolling\)/,
   );
 });
 

@@ -366,13 +366,18 @@ export function ReasoningTranscript({
     initialOffset: () => viewport()?.scrollTop ?? 0,
     observeElementOffset: (instance, callback) => {
       let stop: (() => void) | undefined;
+      let generation = 0;
       const follow = (on: boolean) => {
         stop?.();
         stop = undefined;
+        // TanStack's scroll-end debounce outlives its unsubscribe: drop a stopped one's call.
+        const current = ++generation;
         if (!on) return;
         // Seed the live offset, else TanStack keeps its initial zero or the one from before it left.
         callback(instance.scrollElement?.scrollTop ?? 0, false);
-        stop = observeElementOffset(instance, callback);
+        stop = observeElementOffset(instance, (offset, isScrolling) => {
+          if (current === generation) callback(offset, isScrolling);
+        });
       };
       followOffset.current = follow;
       follow(nearby.current);
@@ -531,7 +536,9 @@ export function ReasoningTranscript({
         stopJumpWatch = onViewportJump(scroll, () => {
           const box = element.getBoundingClientRect();
           const view = scroll.getBoundingClientRect();
+          // A zero box is a closed folded round (display: none): it stays asleep.
           if (
+            box.height > 0 &&
             box.bottom > view.top - view.height &&
             box.top < view.bottom + view.height
           )
