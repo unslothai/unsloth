@@ -1693,11 +1693,9 @@ export function DiffusionTrainPanel({
                     if (ex) void importExample(ex);
                     return;  // the controlled value stays put while the import runs
                   }
-                  if (
-                    v === UPLOAD_DATASET &&
-                    !continuingUploadName &&
-                    existingDatasetName(uploadName, occupiedDatasets)
-                  ) {
+                  // any explicit pick ends a continuation; "Add to it" is the way back in.
+                  setContinuationDatasetName(null);
+                  if (v === UPLOAD_DATASET && existingDatasetName(uploadName, occupiedDatasets)) {
                     setUploadName(freeDatasetName(occupiedDatasets));
                   }
                   setDataset(v);

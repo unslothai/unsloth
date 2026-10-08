@@ -240,10 +240,10 @@ export function datasetNamesForCreation(info: {
   return info?.dataset_names?.map((name) => ({ name })) ?? info?.datasets ?? [];
 }
 
+// exact spelling: the upload sends the typed name, and a case variant is a separate folder on a
+// case-sensitive filesystem.
 export function isDatasetContinuation(name: string, continuationName: string | null): boolean {
-  return (
-    continuationName !== null && name.trim().toLowerCase() === continuationName.toLowerCase()
-  );
+  return continuationName !== null && name.trim() === continuationName;
 }
 
 export function freeDatasetName(datasets: { name: string }[]): string {

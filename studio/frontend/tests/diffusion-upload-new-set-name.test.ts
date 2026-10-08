@@ -52,7 +52,8 @@ test("names of occupied but untrainable folders still reserve a new-set name", (
 
 test("a captions-only set created in this form remains available for follow-up files", () => {
   assert.equal(isDatasetContinuation("captions-only", "captions-only"), true);
-  assert.equal(isDatasetContinuation(" CAPTIONS-ONLY ", "captions-only"), true);
+  assert.equal(isDatasetContinuation(" captions-only ", "captions-only"), true);
+  assert.equal(isDatasetContinuation("CAPTIONS-ONLY", "captions-only"), false);
   assert.equal(isDatasetContinuation("another-set", "captions-only"), false);
   assert.equal(isDatasetContinuation("captions-only", null), false);
   assert.match(source, /setContinuationDatasetName\(res\.name\)/);
@@ -144,4 +145,11 @@ test("a taken folder that is not in the list can be continued from the new-set f
     newSet,
     /\{takenNameUnlisted && \([\s\S]*?setUploadName\(takenName\);\s+setContinuationDatasetName\(takenName\);[\s\S]*?Add to it/,
   );
+});
+
+test("picking any entry in the dataset list ends a continuation", () => {
+  const change = source.slice(source.indexOf("onValueChange={(v) => {"));
+  const body = change.slice(0, change.indexOf("setDataset(v);"));
+  assert.match(body, /setContinuationDatasetName\(null\);/);
+  assert.ok(body.indexOf("return;") < body.indexOf("setContinuationDatasetName(null)"));
 });
