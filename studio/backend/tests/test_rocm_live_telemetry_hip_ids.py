@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ROCm live telemetry must key each card's amd-smi row by its HIP id.
-
-The parent ids are HIP ordinals, while amd-smi filters ``metric`` rows by its own
-gpu id. ``amd-smi list -e`` maps one to the other, and the two disagree on hybrid
-iGPU hosts. These tests mock amd-smi, torch and the device; no AMD GPU is needed.
-"""
+"""ROCm live telemetry keys each amd-smi row by its HIP id (amd-smi, torch and the device are mocked)."""
 
 from __future__ import annotations
 
@@ -18,7 +13,6 @@ from utils.hardware.hardware import DeviceType
 
 
 def _metric(*gpus):
-    """amd-smi ``metric`` rows for (amd-smi gpu id, used MiB, total MiB)."""
     return [
         {
             "gpu": idx,
