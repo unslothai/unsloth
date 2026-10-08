@@ -26,7 +26,7 @@ from .utils import (
 
 _is_compiling = torch.compiler.is_compiling
 
-# Inductor before torch 2.11 miscompiles these Functions' traced backward (wrong LoRA gradients).
+# Inductor before torch 2.11 miscompiles traced backward passes and produces wrong LoRA gradients.
 TRACE_LORA_FUNCTIONS = Version(torch.__version__) >= Version("2.11.0")
 
 
@@ -232,7 +232,7 @@ class LoRA_MLP(torch.autograd.Function):
             None,
             None,
             None,
-        )  # _backward and _forward and inplace
+        )
 
 
 from .swiglu import swiglu_fg_kernel, swiglu_DWf_DW_dfg_kernel
@@ -648,7 +648,6 @@ class LoRA_W(torch.autograd.Function):
         d_A.addmm_(X.t(), y_dB, alpha = S, beta = 0)
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
-        # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W

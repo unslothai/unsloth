@@ -106,7 +106,6 @@ def test_qkv_o_mlp_match_peft(adapters):
         model,
     )
     if adapters > 1:
-        # The second adapter must be in the graph, not just the first.
         assert any(".b." in n for n in qkv) and any(".b." in n for n in mlp)
 
 
@@ -152,7 +151,7 @@ def test_fast_linear_forward_applies_dora_magnitude(q_len):
     block = get_peft_model(_Block(), cfg).to("cuda", torch.bfloat16).base_model.model
     X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
-        # A trained magnitude no longer equals the row norms DoRA starts from.
+        # a trained magnitude differs from the initial DoRA row norms
         block.q_proj.lora_magnitude_vector["default"].weight.mul_(1.5)
         torch.testing.assert_close(
             fast_linear_forward(block.q_proj, X), block.q_proj(X), rtol = 2e-2, atol = 2e-2
@@ -171,7 +170,7 @@ def test_fast_linear_forward_adds_lora_bias(q_len):
     block = get_peft_model(_Block(), cfg).to("cuda", torch.bfloat16).base_model.model
     X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
-        # A trained lora_B bias is no longer the zeros it starts from.
+        # a trained lora_B bias differs from its zero initialization
         block.q_proj.lora_B["default"].bias.normal_()
         torch.testing.assert_close(
             fast_linear_forward(block.q_proj, X), block.q_proj(X), rtol = 2e-2, atol = 2e-2
