@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Real logic, re-exported: only the barrel it normally comes from needs stubbing.
+export { EMBEDDING_TAGS } from "../../../src/features/hub/lib/hf-model-meta.ts";
 export { normalizeModelIdentity } from "../../../src/features/hub/lib/model-identity.ts";
 
 /** Minimal HF-token store. */

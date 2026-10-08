@@ -667,6 +667,67 @@ def hermes_model_dirs() -> list[Path]:
     )
 
 
+def _omlx_base_path() -> Path:
+    """oMLX's data root, resolved as its own ``resolve_default_base_path`` does:
+    ``OMLX_BASE_PATH`` > the macOS app's bootstrap file > ``~/.omlx``."""
+    env_value = os.environ.get("OMLX_BASE_PATH", "").strip()
+    if env_value:
+        return Path(env_value).expanduser()
+    bootstrap = Path.home() / "Library" / "Application Support" / "oMLX" / "base-path"
+    try:
+        raw = bootstrap.read_text(encoding = "utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        raw = ""
+    return Path(raw).expanduser() if raw else Path.home() / ".omlx"
+
+
+def _omlx_configured_dirs(base: Path) -> list[str]:
+    """``model.model_dirs``, else the legacy ``model.model_dir``, from oMLX's settings.json."""
+    settings_path = base / "settings.json"
+    if not settings_path.is_file():
+        return []
+    try:
+        settings = json.loads(settings_path.read_text(encoding = "utf-8-sig"))
+        model_settings = settings.get("model") or {}
+        configured = model_settings.get("model_dirs") or []
+        if isinstance(configured, str):
+            configured = [configured]
+        if not configured and model_settings.get("model_dir"):
+            configured = [model_settings["model_dir"]]
+        return [d for d in configured if isinstance(d, str) and d]
+    except Exception as exc:
+        logger.debug("Ignoring unreadable oMLX settings at %s: %s", settings_path, exc)
+        return []
+
+
+def omlx_model_dirs() -> list[Path]:
+    """Return oMLX model directories that exist on disk.
+
+    oMLX keeps the same ``publisher/model`` layout as LM Studio and can list LM Studio's
+    folder among its own roots; that one is dropped so it is not scanned twice. An HF cache
+    root stays: its ``models--*`` walk cannot see oMLX's flat folders beside those repos.
+    """
+    base = _omlx_base_path()
+    # oMLX applies OMLX_MODEL_DIR (comma-separated) over settings.json.
+    env_dirs = [d.strip() for d in os.environ.get("OMLX_MODEL_DIR", "").split(",") if d.strip()]
+    candidates: list[str | Path] = env_dirs or _omlx_configured_dirs(base) or [base / "models"]
+    lmstudio = set()
+    for path in lmstudio_model_dirs():
+        try:
+            lmstudio.add(str(path.resolve()))
+        except (OSError, RuntimeError, ValueError):
+            continue
+    out = []
+    for path in _existing_dirs(candidates, resolve = False):
+        try:
+            if str(path.resolve()) in lmstudio:
+                continue
+        except (OSError, RuntimeError, ValueError):
+            continue
+        out.append(path)
+    return out
+
+
 def well_known_model_dirs() -> list[Path]:
     """Return directories commonly used by other local LLM tools.
 

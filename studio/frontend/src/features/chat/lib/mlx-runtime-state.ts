@@ -14,17 +14,20 @@ type MlxRuntimeResponse = Pick<
   | "mlx_kv_quant_reason"
   | "chat_template_override_reason"
   | "mlx_kv_quant_note"
+  | "mlx_int8_prefill_requested"
 >;
 
-/** MLX KV-quantization state a load response establishes. A non-MLX response retires the verdict but
- *  omits mlxKvQuant: the setting is dormant there, not wrong, and a preset carrying it must survive
- *  the round-trip. */
+/** MLX runtime state a load response establishes (KV quantization, template verdict, int8 prefill). A
+ *  non-MLX response retires the verdicts but omits mlxKvQuant and mlxInt8Prefill: the settings are
+ *  dormant there, not wrong, and a preset carrying the width must survive the round-trip. */
 export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   mlxKvQuant?: MlxKvQuant | null;
   loadedMlxKvQuantRequested: MlxKvQuant | null;
   mlxKvQuantReason: string | null;
   chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
+  mlxInt8Prefill?: boolean;
+  loadedMlxInt8PrefillRequested: boolean;
 } {
   if (resp.is_mlx !== true) {
     return {
@@ -32,6 +35,7 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
       mlxKvQuantReason: null,
       chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
+      loadedMlxInt8PrefillRequested: false,
     };
   }
   const requested = normalizeMlxKvQuant(resp.mlx_kv_quant_requested);
@@ -41,5 +45,7 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
     mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
     chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
+    mlxInt8Prefill: resp.mlx_int8_prefill_requested === true,
+    loadedMlxInt8PrefillRequested: resp.mlx_int8_prefill_requested === true,
   };
 }

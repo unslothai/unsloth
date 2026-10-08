@@ -27,12 +27,18 @@ from pathlib import Path
 from typing import Any, Optional
 
 logger = get_logger(__name__)
-from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
+from core.inference.audio_errors import (
+    AUDIO_RUNTIME_ERROR_CODE,
+    AUDIO_UNSUPPORTED_CODE,
+    AudioBackendUnsupportedError,
+    AudioRuntimeError,
+)
 from core.inference.context_refusal import ContextBudgetExceeded
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
-# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 
 _ID_BYTES = 36
@@ -139,6 +145,7 @@ def narrow_load_reason(cmd: dict) -> Optional[str]:
 
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
@@ -733,6 +740,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")
+                load_kwargs["int8_prefill"] = bool(config.get("mlx_int8_prefill"))
                 load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
@@ -786,6 +794,19 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
+                        "audio_workflows",
+                        "audio_reference_text",
+                        "audio_required_inputs",
+                        "audio_clone",
+                        "audio_options_by_workflow",
+                        "audio_workflow_tasks",
+                        "audio_server_task",
+                        "audio_convert",
+                        "audio_convert_route",
+                        "audio_convert_rules",
+                        "audio_edit",
+                        "audio_music",
+                        "audio_cpp_backend",
                     )
                     if k in _entry
                 }
@@ -803,6 +824,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_kv_quant_eligibility",
                         "mlx_kv_quant_reason",
                         "mlx_kv_quant_note",
+                        "mlx_int8_prefill",
+                        "mlx_int8_prefill_requested",
+                        "mlx_int8_prefill_reason",
                         "chat_template_override_requested",
                         "chat_template_override_reason",
                     )
@@ -812,6 +836,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _tpl_info = _entry.get("chat_template_info")
+                _mapped_tpl = None
+                if isinstance(_tpl_info, dict) and not model_info["is_mlx"]:
+                    from core.inference.chat_template_helpers import mapped_chat_template
+                    _mapped_tpl = mapped_chat_template(
+                        _entry, getattr(backend, "active_model_name", None) or mc.identifier
+                    )
                 if isinstance(_tpl_info, dict):
                     model_info["chat_template_info"] = {
                         "has_template": bool(_tpl_info.get("has_template", False)),
@@ -823,6 +853,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "processor_template": _tpl_info.get("processor_template"),
                         "renders_image": _tpl_info.get("renders_image"),
                         "accepts_multiple_images": _tpl_info.get("accepts_multiple_images"),
+                        # The body a text render installs at generate time, when the model is mapped.
+                        "mapped_template": _mapped_tpl,
                     }
             except Exception as _tpl_exc:
                 logger.warning("chat_template_info forward failed: %s", _tpl_exc)
@@ -1288,6 +1320,37 @@ def _held_head_leaves_the_hold(batch: "_ResidentBatch", held: list) -> bool:
     return head.get("type") == "generate" and batch.unavailable_reason(head) is None
 
 
+class _MLXIdleWarmth:
+    def __init__(self):
+        self.enabled = os.environ.get("UNSLOTH_MLX_GPU_KEEP_WARM", "1").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        self.deadline = 0.0
+
+    def active(self):
+        self.deadline = time.monotonic() + 60.0
+
+    def clear(self):
+        self.deadline = 0.0
+
+    def timeout(self, loaded):
+        return 0.5 if self.enabled and loaded and time.monotonic() < self.deadline else 1.0
+
+    def tick(self, loaded):
+        if self.timeout(loaded) != 0.5:
+            return
+        try:
+            import mlx.core as mx
+
+            # Avoid the first-command stall after the GPU enters its idle power state.
+            mx.eval(mx.zeros((1,), dtype = mx.float32) + 1)
+        except Exception as exc:
+            self.enabled = False
+            logger.warning("MLX GPU keep-warm disabled after an idle tick failed: %s", exc)
+
+
 class _ResidentBatch:
     """The replies an MLX worker is decoding at once."""
 
@@ -1586,13 +1649,62 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
+def _audio_runtime(backend) -> dict:
+    fields = getattr(backend, "runtime_fields", None)
+    if not callable(fields):
+        return {}
+    try:
+        return {"audio_runtime": dict(fields())}
+    except Exception as exc:  # noqa: BLE001 - status detail, never fails the request
+        logger.debug("audio runtime fields unavailable: %s", exc)
+        return {}
+
+
 def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
-    """Handle TTS audio generation — returns WAV bytes + sample_rate."""
+    """Handle TTS audio generation — returns WAV bytes + sample_rate.
+
+    A separation returns the paths of the stems it wrote under the route's ``output_dir``
+    instead: hundreds of megabytes of audio never cross the queue."""
     request_id = cmd.get("request_id", "")
     try:
         logger.info("Starting audio generation for request_id=%s", request_id)
+        if cmd.get("workflow") == "separate":
+            separate = getattr(backend, "separate_audio", None)
+            if separate is None:
+                raise AudioBackendUnsupportedError("This model cannot separate audio.")
+            outputs = separate(
+                source_path = cmd["audio_inputs"]["source"],
+                output_dir = cmd["output_dir"],
+                options = cmd.get("audio_options"),
+                cancel_event = cancel_event,
+            )
+            _send_response(
+                resp_queue,
+                {
+                    "type": "audio_done",
+                    "request_id": request_id,
+                    "outputs": outputs,
+                    "sample_rate": 44100,
+                },
+            )
+            logger.info("Finished audio separation for request_id=%s", request_id)
+            return
         # Only audio.cpp models take per-model options; other backends never see the keyword.
         extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
+        # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
+        # workflow its backend has no keyword for.
+        params = inspect.signature(backend.generate_audio_response).parameters
+        takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+        for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert", "edit"):
+            if cmd.get(key) is None:
+                continue
+            if takes_any or key in params:
+                extra[key] = cmd[key]
+            elif key == "audio_inputs":
+                raise AudioRuntimeError("This model cannot clone a voice.", status = 400)
+        for key in ("music", "output_dir"):
+            if cmd.get(key) is not None:
+                extra[key] = cmd[key]
         wav_bytes, sample_rate = backend.generate_audio_response(
             text = cmd["text"],
             temperature = cmd.get("temperature", 0.6),
@@ -1610,33 +1722,39 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
-        _send_response(
-            resp_queue,
-            {
-                "type": "audio_done",
-                "request_id": request_id,
-                "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
-                "sample_rate": sample_rate,
-            },
-        )
+        done = {
+            "type": "audio_done",
+            "request_id": request_id,
+            "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
+            "sample_rate": sample_rate,
+            **_audio_runtime(backend),
+            "stats": getattr(backend, "last_generation_stats", None),
+        }
+        take_status_patch = getattr(backend, "take_status_patch", None)
+        status_patch = take_status_patch() if callable(take_status_patch) else None
+        if isinstance(status_patch, dict) and status_patch:
+            done["status_patch"] = status_patch
+        _send_response(resp_queue, done)
         logger.info("Finished audio generation for request_id=%s", request_id)
 
     except Exception as exc:
         logger.error("Audio generation error: %s", exc, exc_info = True)
-        _send_response(
-            resp_queue,
-            {
-                "type": "audio_error",
-                "request_id": request_id,
-                "error": str(exc),
-                # The route's own cancel event is not set when the worker's shared event is
-                # (an unload, a training admission, the GPU arbiter), so without this flag the
-                # orchestrator reports a cancellation as HTTP 500. Matching on the message text
-                # is what AudioGenerationCancelledError exists to avoid.
-                "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
+        response = {
+            "type": "audio_error",
+            "request_id": request_id,
+            "error": str(exc),
+            # Flag a shared-event cancel (unload, training, arbiter) so the orchestrator does not report HTTP 500.
+            "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
+            "stack": traceback.format_exc(limit = 20),
+            **_audio_runtime(backend),
+        }
+        if isinstance(exc, AudioRuntimeError):
+            response["code"] = AUDIO_RUNTIME_ERROR_CODE
+            response["status"] = exc.status
+        elif isinstance(exc, AudioBackendUnsupportedError):
+            response["code"] = AUDIO_UNSUPPORTED_CODE
+            response["hint"] = exc.hint
+        _send_response(resp_queue, response)
 
 
 def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
@@ -1944,6 +2062,7 @@ def run_inference_process(
 
         logger.info("MLX inference subprocess ready, entering command loop")
         batch = _ResidentBatch(backend, resp_queue)
+        warmth = _MLXIdleWarmth()
         deferred: list[dict] = []
         stops = _Stops(stop_ledger, resp_queue, batch, deferred)
         if stop_ledger is not None:
@@ -1952,6 +2071,8 @@ def run_inference_process(
             stops.answer()
             tearing_down = pending_teardowns is not None and pending_teardowns.any_in_flight()
             if not tearing_down:
+                if batch.rows_in_flight:
+                    warmth.active()
                 batch.step()
             from_deferred = False
             if _held_head_leaves_the_hold(batch, deferred):
@@ -1962,9 +2083,18 @@ def run_inference_process(
                     cmd = cmd_queue.get(
                         timeout = 0.0
                         if (batch.rows_in_flight or deferred) and not tearing_down
-                        else 1.0
+                        else warmth.timeout(getattr(backend, "active_model_name", None))
                     )
                 except _queue.Empty:
+                    if (
+                        not batch.rows_in_flight
+                        and not deferred
+                        and not (
+                            pending_teardowns is not None and pending_teardowns.any_in_flight()
+                        )
+                        and not (drain_event is not None and drain_event.is_set())
+                    ):
+                        warmth.tick(getattr(backend, "active_model_name", None))
                     continue
                 except (EOFError, OSError):
                     batch.close()
@@ -1972,6 +2102,8 @@ def run_inference_process(
             if cmd is None:
                 continue
             cmd_type = cmd.get("type", "")
+            if cmd_type in ("load", "unload", "reset", "cancel", "shutdown"):
+                warmth.clear()
             if pending_teardowns is not None and cmd_type in _TEARDOWN_COMMANDS:
                 pending_teardowns.taken()
             try:
@@ -2133,6 +2265,9 @@ def run_inference_process(
                 if cmd_type != "generate":
                     _payload["type"] = "error"
                 _send_response(resp_queue, _payload)
+            finally:
+                if cmd_type in ("generate", "generate_audio_input"):
+                    warmth.active()
         return
 
     # Windows Triton check, ahead of the torchao stub below, matching the training and export workers' gate-then-stub

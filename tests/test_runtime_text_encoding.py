@@ -60,19 +60,27 @@ REVIEWED_VENDORED_OFFENDERS = {
     "studio/backend/vendor/laya/agent.py:31: open()",
     "studio/backend/vendor/laya/agent.py:47: open()",
     "studio/backend/vendor/laya/agent.py:156: open()",
+    # Cloudflare's Clef loader (sha256 in unsloth/_vendor/clef/clef_manifest.json) reading
+    # joint_head_config.json, which json.dumps writes as ASCII, so every locale decodes it.
+    "unsloth/_vendor/clef/joint_schema_model.py:515: read_text()",
 }
+# keyed on path + expression, not line, so unrelated edits above it do not break the scan.
+REVIEWED_NON_FILE_OPEN = (
+    "studio/backend/core/inference/audio_inputs.py",
+    "stream.codec_context.open(strict=True)",
+)
 GUARDED_METHODS = {"read_text", "write_text"}
-# Path classes, so an unbound `Path.open(p)` shifts every argument one right.
+# path classes, so an unbound `Path.open(p)` shifts every argument one right.
 PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
-# Values that re-select the platform default when passed as the encoding.
+# values that re-select the platform default when passed as the encoding.
 PLATFORM_DEFAULT_ENCODINGS = (None, "locale")
-# Calls that return the platform default, so naming one pins nothing.
+# calls that return the platform default, so naming one pins nothing.
 PLATFORM_DEFAULT_CALLS = {"getdefaultencoding", "getencoding", "getpreferredencoding"}
-# Modules whose `open` IS the builtin: same signature, same platform default.
+# modules whose `open` is the builtin: same signature, same platform default.
 BUILTIN_OPEN_MODULES = {"builtins", "io"}
-# Take an encoding in "t" mode but default to "rb".
+# take an encoding in "t" mode but default to "rb".
 COMPRESSED_OPENERS = {"bz2": 3, "gzip": 3, "lzma": None}
-# Distinct from None so that "no mode argument at all" still means text.
+# distinct from None so that "no mode argument at all" still means text.
 UNKNOWN_MODE = object()
 
 
@@ -306,26 +314,28 @@ def _is_test_path(path: Path) -> bool:
     return path.name.startswith("test_") or path.name.endswith("_test.py")
 
 
-def _offenders_in(src: str, label: str = "<snippet>"):
-    tree = ast.parse(src, filename = label)
+def _is_reviewed_non_file_open(label: str, call: ast.Call) -> bool:
+    return (label, ast.unparse(call)) == REVIEWED_NON_FILE_OPEN
+
+
+def _offenders(tree: ast.Module, label: str):
     visible_at = _imports_at_each_call(tree)
     foreign = _foreign_names(tree)
     found = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = _offender(node, visible_at.get(id(node), {}), foreign)
-            if name is not None:
+            if name is not None and not _is_reviewed_non_file_open(label, node):
                 found.append((node.lineno, name))
     return found
 
 
-def _tracked_sources():
-    """Shipping *.py that git is actually tracking.
+def _offenders_in(src: str, label: str = "<snippet>"):
+    return _offenders(ast.parse(src, filename = label), label)
 
-    A walk also picks up whatever is lying in the checkout (a built `build/lib` copy,
-    a nested worktree, a vendored dep). None of those are ours to police, and a stale
-    artifact would fail this for everybody who has one.
-    """
+
+def _tracked_sources():
+    """scan tracked *.py files so untracked builds, worktrees, and dependencies cannot fail it."""
     listed = subprocess.run(
         ["git", "-C", str(REPO), "ls-files", "-z", "--", "*.py"],
         capture_output = True,
@@ -361,13 +371,7 @@ def test_shipping_code_names_an_encoding():
         except SyntaxError:
             continue
         rel = path.relative_to(REPO).as_posix()
-        visible_at = _imports_at_each_call(tree)
-        foreign = _foreign_names(tree)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                name = _offender(node, visible_at.get(id(node), {}), foreign)
-                if name is not None:
-                    offenders.append(f"{rel}:{node.lineno}: {name}")
+        offenders.extend(f"{rel}:{line}: {name}" for line, name in _offenders(tree, rel))
     if _loader_rebinds_open():
         stale = sorted(REVIEWED_VENDORED_OFFENDERS.difference(offenders))
         assert stale == [], (
@@ -424,6 +428,15 @@ def test_skips_foreign_openers_and_readers():
     assert not _offenders_in("import tarfile\nt = tarfile.open(p, 'r:gz')\n")
     # importlib.metadata Distribution.read_text takes a positional filename.
     assert not _offenders_in("s = dist.read_text('direct_url.json')\n")
+
+
+def test_skips_only_the_reviewed_pyav_codec_open():
+    pyav = "\n" * 263 + "stream.codec_context.open(strict = True)\n"
+    path = "studio/backend/core/inference/audio_inputs.py"
+    assert not _offenders_in(pyav, path)
+    assert not _offenders_in("\n" + pyav, path)
+    assert _offenders_in(pyav, "studio/backend/core/inference/other.py")
+    assert _offenders_in("\n" * 263 + "config.codec_context.open(strict = True)\n", path)
 
 
 def test_test_trees_are_out_of_scope():

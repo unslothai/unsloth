@@ -5,7 +5,10 @@ import { Button } from "@/components/ui/button";
 import { useChatRuntimeStore } from "@/features/chat";
 import { formatBytes, listCachedGguf, listCachedModels } from "@/features/hub";
 import { Spinner } from "@/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   DOWNLOAD_KIND,
   downloadManager,
@@ -15,7 +18,7 @@ import {
 } from "@/features/hub/download-manager";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import {
   EmbeddingModelBlockedError,
   type EmbeddingModelResolution,
@@ -25,6 +28,8 @@ import {
   updateEmbeddingModelSettings,
 } from "../api/embedding-model";
 import { useEmbeddingModelStore } from "../stores/embedding-model-store";
+import { useEmbeddingPinsStore } from "../stores/embedding-pins-store";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { EmbeddingModelPicker } from "./embedding-model-picker";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
@@ -65,6 +70,21 @@ export function DocumentsRagSection(): ReactElement {
   const [cachedRepos, setCachedRepos] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const pinnedModels = useEmbeddingPinsStore((s) => s.pinned);
+  const togglePin = useEmbeddingPinsStore((s) => s.togglePin);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
+
+  // "Change model" in the RAG menu lands here.
+  useEffect(() => {
+    if (scrollTarget !== "general-rag-embedding") return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("general-rag-embedding");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
 
   useEffect(() => {
     void useEmbeddingModelStore.getState().load();
@@ -331,10 +351,22 @@ export function DocumentsRagSection(): ReactElement {
             : t("settings.general.rag.onDevice")
           : "";
 
+  // On disk but not in memory: said under the picker, since Eject only shows once it loads.
+  const notLoaded = onDevice && !embeddingModel?.loaded && !downloading;
+  const statusHint =
+    onDevice && !downloading && !canDownload
+      ? t(
+          embeddingModel?.loaded
+            ? "settings.general.rag.loadedHint"
+            : "settings.general.rag.onDeviceHint",
+        )
+      : "";
+
   const unload = async () => {
     setIsSavingEmbeddingModel(true);
     try {
       await applyResidency(unloadEmbeddingModel);
+      toast.success(t("settings.general.rag.ejected"));
     } catch (error) {
       toast.error(t("settings.general.rag.unloadFailed"), {
         description: error instanceof Error ? error.message : undefined,
@@ -345,92 +377,122 @@ export function DocumentsRagSection(): ReactElement {
   };
 
   return (
-    <SettingsSection title={t("settings.general.rag.sectionTitle")}>
+    <SettingsSection ref={sectionRef} title={t("settings.general.rag.sectionTitle")}>
       <SettingsRow
         label={t("settings.general.rag.embeddingModel")}
-        description={t("settings.general.rag.embeddingModelDescription", {
+        // Long explanation behind the info icon; the row shows the model's status.
+        hint={`${t("settings.general.rag.embeddingModelDescription", {
           defaultModel: embeddingModel?.defaultEmbeddingModel ?? "",
-        })}
-        className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"
-        below={
-          <div className="flex flex-col items-end gap-1 max-[360px]:w-full">
-            {embeddingModelError ? (
-              <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
-                {embeddingModelError}
+        })} ${t("settings.general.rag.reindexWarning")}`}
+        description={
+          <span className="flex flex-col gap-1">
+            <span>{t("settings.general.rag.embeddingModelShort")}</span>
+            {statusText ? (
+              <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="flex min-w-0 items-center gap-1.5">
+                  {statusTone ? (
+                    <span
+                      className={cn(
+                        "size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full",
+                        statusTone === "pending"
+                          ? "animate-pulse bg-muted-foreground"
+                          : statusTone === "ready"
+                            ? "bg-status-success"
+                            : "bg-destructive",
+                      )}
+                    />
+                  ) : null}
+                  <span className="truncate">{statusText}</span>
+                  {statusHint ? <StatusHint text={statusHint} /> : null}
+                </span>
               </span>
             ) : null}
-            <div className="flex min-h-7 w-full items-center justify-between gap-3">
-              <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-                {statusTone ? (
-                  <span
-                    className={cn(
-                      "size-1.5 shrink-0 rounded-full",
-                      statusTone === "pending"
-                        ? "animate-pulse bg-current"
-                        : statusTone === "ready"
-                          ? "bg-emerald-500"
-                          : "bg-destructive",
-                    )}
-                  />
-                ) : null}
-                <span className="truncate">{statusText}</span>
-              </span>
-              {forceCandidate ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0 px-2.5 text-xs"
-                  disabled={isSavingEmbeddingModel}
-                  onClick={() => void applyEmbeddingModel(forceCandidate, true)}
-                >
-                  {t("settings.general.rag.saveAnyway")}
-                </Button>
-              ) : canDownload ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0 px-2.5 text-xs"
-                  disabled={downloading || isSavingEmbeddingModel}
-                  onClick={() => resolution && void startDownload(resolution)}
-                >
-                  {downloading ? <Spinner className="mr-1.5" /> : null}
-                  {t("settings.general.rag.download")}
-                </Button>
-              ) : null}
-              {/* Outside the chain above: saving a new model does not release the old one, so while Download shows the previous model can still be resident. */}
-              {embeddingModel?.backendLoaded ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 shrink-0 px-2.5 text-xs"
-                  disabled={isSavingEmbeddingModel}
-                  onClick={() => void unload()}
-                >
-                  {t("settings.general.rag.unload")}
-                </Button>
-              ) : null}
-            </div>
-            <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-muted-foreground">
-              {t("settings.general.rag.reindexWarning")}
+          </span>
+        }
+        // Bottom-aligned while Not loaded shows, so it sits level with the On device line.
+        className={cn(
+          "max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3",
+          notLoaded && "items-end",
+        )}
+        below={
+          embeddingModelError ? (
+            <span className="max-w-[calc(300px*var(--ui-space-scale,1))] text-right text-xs text-destructive">
+              {embeddingModelError}
             </span>
-          </div>
+          ) : undefined
         }
       >
-        {/* Sets the trigger's width, since its own w-full outranks the 260px
-            class: 300px, as wide as the notes below it. */}
-        <div className="w-[calc(300px*var(--ui-space-scale,1))] max-[360px]:w-full">
-          <EmbeddingModelPicker
-            value={embeddingModel?.embeddingModel ?? ""}
-            onSelect={(model) => void applyEmbeddingModel(model, false)}
-            defaultModel={embeddingModel?.defaultEmbeddingModel}
-            cachedModels={cachedRepos}
-            accessToken={hfToken || undefined}
-            disabled={!embeddingModel}
-            busy={isSavingEmbeddingModel}
-            className="w-[calc(260px*var(--ui-space-scale,1))] max-[360px]:w-full"
-          />
+        {/* Wraps the Download button above the picker when the panel is too narrow for both. */}
+        <div className="flex max-w-full flex-wrap items-start justify-end gap-2 max-[360px]:w-full">
+          {forceCandidate ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              disabled={isSavingEmbeddingModel}
+              onClick={() => void applyEmbeddingModel(forceCandidate, true)}
+            >
+              {t("settings.general.rag.saveAnyway")}
+            </Button>
+          ) : canDownload ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              disabled={downloading || isSavingEmbeddingModel}
+              onClick={() => resolution && void startDownload(resolution)}
+            >
+              {downloading ? <Spinner /> : null}
+              {t("settings.general.rag.download")}
+            </Button>
+          ) : null}
+          {/* Status sits in the picker's column, so it lines up under the model name. */}
+          <div className="flex max-w-full flex-col gap-1 max-[360px]:w-full">
+            <EmbeddingModelPicker
+              value={embeddingModel?.embeddingModel ?? ""}
+              onSelect={(model) => void applyEmbeddingModel(model, false)}
+              defaultModel={embeddingModel?.defaultEmbeddingModel}
+              cachedModels={cachedRepos}
+              pinnedModels={pinnedModels}
+              onTogglePin={togglePin}
+              accessToken={hfToken || undefined}
+              disabled={!embeddingModel}
+              busy={isSavingEmbeddingModel}
+              loaded={embeddingModel?.loaded}
+              // Any resident embedder, not just this one: switching does not release the old one.
+              onEject={embeddingModel?.backendLoaded ? () => void unload() : undefined}
+              className="w-[calc(260px*var(--ui-space-scale,1))] max-w-full max-[360px]:w-full"
+            />
+            {notLoaded ? (
+              <span className="flex items-center gap-1.5 px-3.5 text-xs leading-snug text-muted-foreground">
+                <span className="size-[calc(6px*var(--ui-space-scale,1))] shrink-0 rounded-full bg-muted-foreground" />
+                {t("settings.general.rag.notLoaded")}
+                <StatusHint text={t("settings.general.rag.notLoadedHint")} />
+              </span>
+            ) : null}
+          </div>
         </div>
       </SettingsRow>
     </SettingsSection>
+  );
+}
+
+/** Small info icon after a status, explaining what it means. */
+function StatusHint({ text }: { text: string }): ReactElement {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={text}
+          className="flex shrink-0 items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <HugeiconsIcon icon={InformationCircleIcon} className="size-[calc(10px*var(--ui-space-scale,1))]" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+        {text}
+      </TooltipContent>
+    </Tooltip>
   );
 }
