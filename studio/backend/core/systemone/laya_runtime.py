@@ -377,6 +377,7 @@ def select(
     images = None,
     questions = None,
     preference: str | None = None,
+    state_images: bool = False,
 ) -> tuple[Checkpoint, str | None]:
     """(what serves this request, why Auto did not pick llama.cpp); raises for what nothing here can serve.
 
@@ -389,8 +390,10 @@ def select(
     from .native_worker import request_gap
 
     if (preference or get_backend()) == MLX and checkpoint.layout in ("clef", GGUF):
-        return _select_mlx(checkpoint, images), None
-    if (mlx := _mlx_choice(checkpoint, images, questions, preference or get_backend())) is not None:
+        return _select_mlx(checkpoint, images or state_images), None
+    # Images in the state keep a request off MLX only: every other route reads them as before.
+    mlx = _mlx_choice(checkpoint, images or state_images, questions, preference or get_backend())
+    if mlx is not None:
         return mlx, None
     if checkpoint.layout == GGUF:
         return _select_gguf(checkpoint, questions, preference or get_backend()), None
@@ -2057,7 +2060,8 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
     if checkpoint.layout != "laya" and hardware.is_apple_silicon():
         # A request, unlike a settings read, waits for device detection, so the first one already knows of MLX.
         hardware.get_device()
-    target, reason = select(checkpoint, images, questions)
+    state_images = _state_has_images(state)
+    target, reason = select(checkpoint, images, questions, state_images = state_images)
     if checkpoint.layout != "laya":
         _fallback_reason = reason
     try:
@@ -2080,11 +2084,22 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
         # A llama-server that turned out not to serve decisions: Auto answers this request on PyTorch.
         if not _is_native(target) or get_backend() != "auto" or images:
             raise
-        retry, reason = select(checkpoint, images, questions)
+        retry, reason = select(checkpoint, images, questions, state_images = state_images)
         if retry == target:
             raise
         _fallback_reason = reason
         return _decide(retry, state, questions, None)
+
+
+def _state_has_images(state) -> bool:
+    """Image parts of a chat-message state, which llama.cpp reads and the MLX engine refuses (as unsloth-zoo scans them)."""
+    messages = state.get("messages") if isinstance(state, dict) else state
+    for message in messages if isinstance(messages, list) else []:
+        content = message.get("content") if isinstance(message, dict) else None
+        for part in content if isinstance(content, list) else []:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                return True
+    return False
 
 
 def _decide(
