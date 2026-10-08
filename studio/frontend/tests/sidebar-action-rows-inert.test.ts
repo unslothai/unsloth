@@ -113,6 +113,10 @@ test("the nav rows stay put while the chat list scrolls", async () => {
   const scroller = source.indexOf("<SidebarContent");
   assert.ok(nav > 0 && scroller > 0);
   assert.ok(nav < scroller, "nav group must sit above the list scroller, not inside it");
+  // Pinned rows plus an open workflow list outgrow a short window: the nav scrolls itself.
+  const navClasses = source.slice(nav, source.indexOf("<SidebarGroupContent>", nav));
+  assert.match(navClasses, /"min-h-0 max-h-\[50%\] overflow-y-auto overscroll-contain"/);
+  assert.match(navClasses, /group-data-\[collapsible=icon\]:shrink /);
 });
 
 test("the sidebar list measures its scroll rail", async () => {
