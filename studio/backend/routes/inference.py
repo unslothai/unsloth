@@ -8822,8 +8822,7 @@ def _as_local_scan_folder_request(request, owner_session: bool):
         or _is_abs_path_id(identifier)
     ):
         return request
-    # Only the owner's own session may read the owner's copies (as _refused_repo_cached_gguf);
-    # a native lease names one exact artifact.
+    # Owner session only (as _refused_repo_cached_gguf); a native lease names one exact artifact.
     if not owner_session or getattr(request, "native_path_lease", None):
         return request
     wanted = f"{identifier}:{request.gguf_variant}" if request.gguf_variant else identifier
@@ -8834,8 +8833,7 @@ def _as_local_scan_folder_request(request, owner_session: bool):
     if resolved is None:
         return request
     load_path, variant = str(resolved[0]), resolved[1]
-    # GGUF snapshots of this very repo only: their path maps back to the repo id for status,
-    # unload and consent, which an LM Studio dir or a non-GGUF checkpoint would not.
+    # Only a GGUF snapshot of this repo: its path maps back to the repo id (status, unload, consent).
     if not variant or (hf_cache_repo_id(load_path) or "").lower() != identifier.lower():
         return request
     # A repo directly in the active hub cache already loads by repo id without downloading.
