@@ -87,6 +87,28 @@ def test_configured_external_port_and_host_case(monkeypatch, authority):
     assert local_proxy_frontend_request(_scope(headers = headers))
 
 
+@pytest.mark.parametrize("configured_dot", [False, True])
+@pytest.mark.parametrize("host_dot", [False, True])
+@pytest.mark.parametrize("forwarded_dot", [False, True])
+def test_dns_root_dot_in_routing_headers(monkeypatch, configured_dot, host_dot, forwarded_dot):
+    origin = ORIGIN + ("." if configured_dot else "")
+    monkeypatch.setenv(PROXY_ORIGIN_ENV, origin)
+    headers = {
+        **PROXY_HEADERS,
+        "Host": HOST + ("." if host_dot else "") + ":443",
+        "X-Forwarded-Host": HOST + ("." if forwarded_dot else ""),
+        "Origin": origin,
+    }
+    assert local_proxy_frontend_request(_scope(headers = headers))
+
+
+@pytest.mark.parametrize("configured_dot", [False, True])
+def test_dns_root_dot_does_not_expand_browser_origin(monkeypatch, configured_dot):
+    monkeypatch.setenv(PROXY_ORIGIN_ENV, ORIGIN + ("." if configured_dot else ""))
+    headers = {**PROXY_HEADERS, "Origin": ORIGIN + ("" if configured_dot else ".")}
+    assert not local_proxy_frontend_request(_scope(headers = headers))
+
+
 @pytest.mark.parametrize(
     "server", [None, ("0.0.0.0", 8888), ("192.0.2.1", 8888), ("::", 8888), ("::1%lo0", 8888)]
 )
@@ -152,6 +174,11 @@ def test_duplicate_headers_are_rejected(monkeypatch, name):
         "https://studio.example\n.evil.example",
         "https://studio.example\\evil",
         "https://",
+        "https://studio.example..",
+        "https://studio..example",
+        "https://.studio.example",
+        "https://studio.-example",
+        "https://studio.example-",
     ],
 )
 def test_malformed_configuration_fails_closed(monkeypatch, value):

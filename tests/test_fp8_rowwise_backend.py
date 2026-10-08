@@ -6,9 +6,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+cuda_available = torch.cuda.is_available()
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+dev = "cuda" if cuda_available else "xpu" if xpu_available else "cpu"
+
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.get_device_capability() < (8, 9),
-    reason = "FP8 GEMMs need CUDA sm89+",
+    not ((cuda_available and torch.cuda.get_device_capability() >= (8, 9)) or xpu_available),
+    reason = "FP8 GEMMs need CUDA sm89+ or XPU",
 )
 
 
@@ -20,13 +24,13 @@ def F():
 
 
 def _rowwise_weight(N, K):
-    w = torch.randn(N, K, device = "cuda") * 0.02
+    w = torch.randn(N, K, device = dev) * 0.02
     scale = (w.abs().amax(1, keepdim = True) / 448).float()
     return (w / scale).to(torch.float8_e4m3fn), scale
 
 
 def _backends(F):
-    device = torch.device("cuda", torch.cuda.current_device())
+    device = torch.device(dev, 0)
     ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
     out = ["dequant"]
     if F._rowwise_gemm_works(
@@ -42,9 +46,9 @@ def _backends(F):
 
 
 def test_backend_is_one_that_runs_here(F):
-    backend = F._fp8_rowwise_backend(torch.device("cuda", torch.cuda.current_device()))
+    backend = F._fp8_rowwise_backend(torch.device(dev, 0))
     assert backend in ("fbgemm", "scaled_mm", "dequant")
-    X = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(64, 256, device = dev, dtype = torch.bfloat16)
     w, s = _rowwise_weight(512, 256)
     y = F.fp8_linear(X, w, s)
     ref = X.float() @ (w.float() * s).t()
@@ -58,16 +62,16 @@ def test_every_backend_matches_reference(F, backend):
         pytest.skip(f"{backend} is not usable on this GPU")
     torch.manual_seed(0)
     w, s = _rowwise_weight(768, 512)
-    X = torch.randn(2, 48, 512, device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    X = torch.randn(2, 48, 512, device = dev, dtype = torch.bfloat16, requires_grad = True)
     # FbgemmFp8Linear stores its bias in float32.
-    bias = torch.randn(768, device = "cuda", dtype = torch.float32)
+    bias = torch.randn(768, device = dev, dtype = torch.float32)
     y = F.FbgemmFp8Linear_matmul.apply(X, w, s, bias, backend)
     W = w.float() * s
     ref = X.detach().float() @ W.t() + bias.float()
     assert y.shape == (2, 48, 768) and y.dtype == torch.bfloat16
     assert ((y.float() - ref).norm() / ref.norm()) < 0.05
     y.float().sum().backward()
-    ref_dx = torch.ones(2, 48, 768, device = "cuda") @ W
+    ref_dx = torch.ones(2, 48, 768, device = dev) @ W
     assert ((X.grad.float() - ref_dx).norm() / ref_dx.norm()) < 0.01
     # Decode-sized calls take the dequant branch on the scaled_mm backend.
     assert (
@@ -80,10 +84,10 @@ def test_quantize_matches_fbgemm(F):
     if not hasattr(torch.ops.fbgemm, "quantize_fp8_per_row"):
         pytest.skip("FBGEMM not installed")
     torch.manual_seed(0)
-    x = torch.randn(256, 1024, device = "cuda", dtype = torch.bfloat16)
+    x = torch.randn(256, 1024, device = dev, dtype = torch.bfloat16)
     x[3] *= 1000
     x[5] = 0
-    for scale_ub in (None, torch.tensor([30.0], device = "cuda")):
+    for scale_ub in (None, torch.tensor([30.0], device = dev)):
         q_ref, s_ref = torch.ops.fbgemm.quantize_fp8_per_row(x, scale_ub = scale_ub)
         q, s = F._quantize_fp8_per_row(x, scale_ub)
         # FBGEMM's fast-math division can land 1 ulp lower, flipping exact rounding ties by one FP8 step.

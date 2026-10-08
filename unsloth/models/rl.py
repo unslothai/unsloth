@@ -256,9 +256,12 @@ def PatchRL(FastLanguageModel):
         else:
             labels = None
 
-        # Force logits during eval, but restore the user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
+        # Force logits only when they are kept (compute_metrics, predict): a loss-only eval stays on the
+        # fused CE path instead of materializing [bsz, seq, vocab] logits per batch (#1801). Restore the
+        # user's prior setting after so an explicit UNSLOTH_RETURN_LOGITS="1" is not silently turned off.
         _old_return_logits = os.environ.get("UNSLOTH_RETURN_LOGITS", "0")
-        os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
+        if not prediction_loss_only:
+            os.environ["UNSLOTH_RETURN_LOGITS"] = "1"
         try:
             with torch.no_grad():
                 if has_labels or loss_without_labels:
@@ -383,6 +386,10 @@ try:
     from unsloth.models._utils import _unsloth_reset_stray_compile_cache
 except Exception:
     def _unsloth_reset_stray_compile_cache(self): pass
+try:
+    from unsloth.models._utils import _unsloth_dataset_column_names
+except Exception:
+    def _unsloth_dataset_column_names(dataset): return dataset.column_names
 # Drops/renames config arguments the installed TRL no longer accepts, so a
 # script pinned to an older TRL keeps working after an upgrade. Falls back to
 # the historical raw passthrough so this can never break trainer construction.
@@ -2786,14 +2793,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"
             "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
-            "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"
+            "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in _unsloth_dataset_column_names(train_dataset):\n"
             "        data_collator = TransformersDataCollatorForLanguageModeling(\n"
             "            __tokenizer,\n"
             "            mlm = False,\n"
             "            mlm_probability = 0.0,\n"
             "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
             "        )\n"
-            "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"
+            "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in _unsloth_dataset_column_names(train_dataset):\n"
             "        data_collator = DataCollatorForSeq2Seq(\n"
             "            __tokenizer,\n"
             "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
@@ -3588,6 +3595,27 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
 
 
+# TRL 1.10+ rejects the list train_dataset the vision notebooks pass; Dataset.from_list is no fix (re-encodes images).
+# Only list / tuple: a torch IterableDataset would skip TRL's streaming handling (dispatch_batches, RepeatSampler).
+_LIST_TRAIN_DATASET_TRAINERS = frozenset(("sft_trainer", "grpo_trainer", "rloo_trainer"))
+_TRL_TRAIN_DATASET_TYPE_CHECK = re.compile(
+    r"(elif\s+not\s+isinstance\(\s*train_dataset\s*,\s*)\(?\s*(Dataset(?:\s*,\s*IterableDataset)?)\s*\)?(\s*\)\s*:)"
+)
+
+
+def _allow_list_train_dataset(function, source, trainer_file):
+    if trainer_file not in _LIST_TRAIN_DATASET_TRAINERS:
+        return source
+    if function == "__init__":
+        return _TRL_TRAIN_DATASET_TYPE_CHECK.sub(r"\1(\2, list, tuple)\3", source)
+    if function == "_reject_skip_prepare_without_labels":
+        return source.replace(
+            "cols = get_dataset_column_names(dataset)",
+            "cols = _unsloth_dataset_column_names(dataset)",
+        )
+    return source
+
+
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
@@ -3789,6 +3817,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         for edit_function in edit_functions:
             source = edit_function(function, source)
+        source = _allow_list_train_dataset(function, source, trainer_file)
 
         """
         import torch

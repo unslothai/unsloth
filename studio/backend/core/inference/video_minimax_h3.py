@@ -188,14 +188,28 @@ def h3_process_held_host_bytes() -> int:
 
 
 def h3_host_capacity_bytes() -> int:
-    """What the system can still hand out plus what this process already holds and the render reuses."""
+    """Usable host RAM (cgroup-capped) plus what this process already holds and the render reuses,
+    capped at the cgroup limit."""
     import psutil
-    return int(psutil.virtual_memory().available) + h3_process_held_host_bytes()
+    from utils import host_memory
+
+    available = int(psutil.virtual_memory().available)
+    budgets = host_memory.cgroup_memory_budgets()
+    headroom_mib = host_memory.cgroup_headroom_mib(budgets)
+    if headroom_mib is not None:
+        available = min(available, int(headroom_mib) << 20)
+    capacity = available + h3_process_held_host_bytes()
+    limit_mib = host_memory.cgroup_limit_mib(budgets)
+    if limit_mib is not None:
+        capacity = min(capacity, int(limit_mib) << 20)
+    return capacity
 
 
-# Host floor while the int8 conditioner streams too: measured ~66 GB process peak on a Colab G4 (12 / 16 / 24 GB
-# budgets), above the 64.5 GB component sum; 70 keeps ~4 GB of margin.
-H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB = 70.0
+# Streamed int8 conditioner + int8 / fp8 denoiser floor, measured as non-reclaimable memory (not RSS, which counts
+# mmap'd checkpoint pages the kernel reclaims under a limit): highest MemoryMax kill on main, 34 GiB, plus ~10% margin.
+H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB = 40.0
+# RSS-based floor for streamed sets larger than the measured one (not re-measured).
+H3_DIFFUSERS_HOST_RAM_STREAMED_RSS_GB = 70.0
 
 
 def estimate_h3_diffusers_host_ram_gb(
@@ -227,12 +241,28 @@ def estimate_h3_diffusers_host_ram_gb(
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
     text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
     transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
+    if (
+        text_encoder_streamed
+        and not transformer_streamed
+        and _within_measured_streamed_set(text_encoder, transformer)
+    ):
+        # Both stream from reclaimable page cache, so the component sum overstates the floor.
+        return H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB
     if transformer_streamed:
         transformer *= 2
     total = text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
     if text_encoder_streamed:
-        total = max(total, H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB)
+        total = max(total, H3_DIFFUSERS_HOST_RAM_STREAMED_RSS_GB)
     return total
+
+
+def _within_measured_streamed_set(text_encoder_gb: float, transformer_gb: float) -> bool:
+    """Whether a streamed load is no larger than the set ``H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB`` was measured on."""
+    from .video_minimax_h3_te import H3_TE_QUANT_RESIDENT_GB
+    return (
+        text_encoder_gb <= H3_TE_QUANT_RESIDENT_GB["int8"] + 1e-6
+        and transformer_gb <= max(H3_TRANSFORMER_PREQUANT_GB.values()) + 1e-6
+    )
 
 
 def h3_host_ram_shortfall(
@@ -266,7 +296,8 @@ def h3_host_ram_shortfall(
 # Picker units: total VRAM GiB, available RAM GiB. Each follows the kill switch of the behaviour it relies on:
 #   - VRAM (UNSLOTH_H3_TE_STREAM): the generate guard's floor for the page's default request, so the selected row
 #     renders it; 960x544 still renders on 12 GB when chosen. Without it, the catalog's 30.
-#   - RAM (UNSLOTH_DIFFUSION_PIN_ARENA): the single-copy host floor (64.5 GB, or 70 GB with the conditioner streamed).
+#   - RAM (UNSLOTH_DIFFUSION_PIN_ARENA): the single-copy host floor (64.5 GB, or the measured
+#     H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB with the conditioner streamed).
 #     Without it, the catalog's 80.
 H3_DIFFUSERS_FIT_TIERS_ENV = "UNSLOTH_H3_DIFFUSERS_WIDE_TIERS"
 H3_DIFFUSERS_CATALOG_TIER_GPU_GIB = 30.0
@@ -1349,6 +1380,8 @@ class MiniMaxH3NativeRuntime:
     # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
     selected_card: Optional[str] = None
     env: tuple[tuple[str, str], ...] = ()
+    # sd_cpp_cudnn.CudnnAttention; its env is already in ``env``.
+    cudnn: Any = None
     # H3NativeServerSlot, or None for one-shot sd-cli only.
     server_slot: Any = None
 

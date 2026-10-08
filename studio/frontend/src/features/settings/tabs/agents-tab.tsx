@@ -190,6 +190,12 @@ const SUPPORTED_AGENTS: AgentDetails[] = [
     docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
     logo: "deepseek",
   },
+  {
+    id: "vibe",
+    name: "Mistral Vibe",
+    docsUrl: "https://github.com/mistralai/mistral-vibe",
+    logo: "mistral",
+  },
 ];
 
 const FALLBACK_AGENT = SUPPORTED_AGENTS[0];
@@ -1262,12 +1268,25 @@ export function AgentsTab() {
     <div className="settings-page">
       {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.agents.title")}
-          className="text-xl font-semibold font-heading"
-        >
-          {t("settings.agents.title")}
-        </h1>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1
+            data-settings-label={t("settings.agents.title")}
+            className="text-xl font-semibold font-heading"
+          >
+            {t("settings.agents.title")}
+          </h1>
+          {/* title, not aria-label, so the accessible name stays the visible text. */}
+          <a
+            href={DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t("settings.agents.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("settings.agents.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </div>
         <p
           data-settings-label={t("settings.agents.description")}
           className="text-xs text-muted-foreground"
@@ -1280,8 +1299,7 @@ export function AgentsTab() {
         data-settings-label={t("settings.agents.intro")}
         className="text-sm text-muted-foreground leading-relaxed"
       >
-        {/* The chip is the docs entry point, so no separate link is needed.
-            No aria-label: it would replace the visible "unsloth start" as the
+        {/* No aria-label: it would replace the visible "unsloth start" as the
             accessible name, leaving voice control unable to target it. */}
         <a
           href={DOCS_URL}

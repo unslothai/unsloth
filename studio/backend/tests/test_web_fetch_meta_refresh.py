@@ -195,3 +195,23 @@ def test_meta_refresh_rechecks_website_policy(monkeypatch):
     )
     assert "Blocked: website access policy disallows other.example.org" in out
     assert requested == ["example.com/page"]
+
+
+def test_a_refresh_after_a_form_post_is_a_get(monkeypatch):
+    _serve(
+        monkeypatch,
+        {"example.com/form": _stub("0; url=/done"), "example.com/done": REAL},
+    )
+    opener = tools.urllib.request.build_opener()
+    serve = opener.open
+    bodies = []
+
+    def open_recording(req, timeout = None):
+        bodies.append(req.data)
+        return serve(req, timeout)
+
+    opener.open = open_recording
+    monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *a, **k: opener)
+    # Text mode follows refreshes itself; binary mode hands them back to the browser panel.
+    tools._fetch_url_raw("https://example.com/form", timeout = 5, post_data = b"q=1")
+    assert bodies == [b"q=1", None]

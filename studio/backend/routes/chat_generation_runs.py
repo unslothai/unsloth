@@ -240,6 +240,10 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     if (request.n or 1) != 1:
         raise HTTPException(status_code = 400, detail = "Durable chat runs require n=1")
     sanitized = request.model_dump(mode = "json", exclude_none = True)
+    if request.permission_mode == "off" and not request._off_confirm_opt_out:
+        # The validator forces confirm_tool_calls=False for "off"; persisted, the replay would read that as the
+        # caller's explicit opt-out and never arm the no-OS-sandbox confirm gate.
+        sanitized.pop("confirm_tool_calls", None)
     for field in _EXTERNAL_ROUTING_FIELDS:
         sanitized.pop(field, None)
     sanitized["stream"] = True

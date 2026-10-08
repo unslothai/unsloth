@@ -30,6 +30,7 @@ export type ContextUsageBarInput = {
   /** context_length_enforced as the load reported it; null where it does not answer. */
   contextEnforced?: boolean | null;
   contextBudget?: number | null;
+  estimated?: boolean;
 };
 
 /**
@@ -103,10 +104,39 @@ export function deriveContextUsageBar({
   contextUnboundedWhenBatched,
   parallelSlots,
   contextBudget,
+  estimated,
 }: ContextUsageBarInput): ContextUsageBarState | null {
   const limit = typeof total === "number" && total > 0 ? total : null;
   const usedTokens =
     typeof used === "number" && Number.isFinite(used) ? used : null;
+
+  // no per-turn rows and no limit advice: neither is known from a guess
+  if (estimated && usedTokens !== null && usedTokens > 0) {
+    const approx = `~${formatTokenCount(usedTokens)}`;
+    const approxFull = `~${formatTokenCountFull(usedTokens)}`;
+    if (limit === null) {
+      return {
+        face: `${approx} tokens`,
+        compactFace: approx,
+        label: `Estimated context usage: ${approx} tokens`,
+        totalRowName: "Estimated tokens",
+        totalRowValue: approxFull,
+        percent: null,
+        hasUsageDetails: false,
+        advice: "none",
+      };
+    }
+    return {
+      face: `${approx} / ${formatTokenCount(limit)}`,
+      compactFace: null,
+      label: `Estimated context usage: ${approx} of ${formatTokenCount(limit)} tokens`,
+      totalRowName: "Estimated total",
+      totalRowValue: `${approxFull} / ${formatTokenCountFull(limit)}`,
+      percent: Math.min((usedTokens / limit) * 100, 100),
+      hasUsageDetails: false,
+      advice: "none",
+    };
+  }
   const hasUsageDetails =
     promptTokens !== undefined ||
     completionTokens !== undefined ||

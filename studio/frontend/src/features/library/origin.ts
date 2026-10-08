@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isAudioWorkflowId } from "@/features/audio/workflows";
 import { useTrainingRuntimeStore } from "@/features/training";
 import type { TranslationKey } from "@/i18n";
 import { useNavigate } from "@tanstack/react-router";
@@ -58,9 +59,14 @@ export function useLibraryOrigin(): (item: LibraryItem) => LibraryOrigin | null 
       };
     }
     if (kind === "audio") {
+      const workflow = item.audio?.workflow;
       return {
         label: "library.preview.viewInAudio",
-        open: () => void navigate({ to: "/audio", search: { ...search, task: "text-to-speech" } }),
+        open: () =>
+          void navigate({
+            to: "/audio",
+            search: isAudioWorkflowId(workflow) ? { ...search, workflow } : search,
+          }),
       };
     }
     return null;

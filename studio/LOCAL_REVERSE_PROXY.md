@@ -52,6 +52,13 @@ port. Duplicate headers, comma-separated values and a mismatched browser
 `Origin` are rejected for frontend requests. A missing `Origin` is allowed,
 as it is normal for top-level navigation. These checks do not expand CORS.
 
+One optional DNS root dot is accepted in `Host` and `X-Forwarded-Host`, so a
+proxy forwarding `studio.example.ts.net.` still reaches the configured host.
+For the configured URL and the browser's `Origin`, the dotted and undotted
+spellings remain distinct: configure the exact spelling used in the browser.
+Empty labels, repeated trailing dots and labels starting or ending with a
+hyphen are rejected.
+
 For Tailscale Serve, replace the example origin with your device's HTTPS name
 and replace `8888` below if Studio uses a different port:
 

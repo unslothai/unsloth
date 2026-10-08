@@ -13,6 +13,7 @@ import {
   resolveInferenceCheckpointId,
   useChatRuntimeStore,
 } from "@/features/chat";
+import { audioPickSearch } from "@/features/audio/route-search";
 import { useHubInfiniteScroll } from "@/features/hub";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import {
@@ -23,6 +24,7 @@ import {
   loadScopedGpu,
   requestModelConfigHandoff,
 } from "@/features/model-picker";
+import { taskForMediaPick } from "@/features/model-picker/components/model-selector/audio-picker-policy";
 import { type NpuModel, type NpuPickerSource, useNpuStatus } from "@/features/npu";
 import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
@@ -101,6 +103,7 @@ import { residentModelIdMatches } from "./lib/model-identity";
 import {
   createHubModelConfigHandoff,
   type HubModelRunSelection,
+  hubAudioTask,
 } from "./lib/model-run-selection";
 import {
   type ModelTypeFilter,
@@ -472,7 +475,14 @@ export function ModelsPage() {
       } = {},
     ): Promise<void> => {
       const seq = ++residentStatusSeq.current;
-      const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
+      const selected = useChatRuntimeStore.getState().params.checkpoint;
+      const read = Promise.all([
+        getInferenceStatus(
+          undefined,
+          selected && !isExternalModelId(selected) ? selected : undefined,
+        ),
+        readIdleUnloadArmed(),
+      ])
         .then(([status, idleUnloadArmed]) => {
           if (seq !== residentStatusSeq.current)
             return supersedingRefresh(residentStatusSupersession.current, seq);
@@ -1503,7 +1513,7 @@ export function ModelsPage() {
   const handleRun = useCallback(
     async (
       selection: HubModelRunSelection,
-      mediaPage: ReturnType<typeof studioPageForTask>,
+      mediaPage: ReturnType<typeof studioPageForTask> | "audio",
     ) => {
       if (!selectedModel) return;
       if (mediaPage) {
@@ -1517,7 +1527,22 @@ export function ModelsPage() {
         }
         void navigate({
           to: `/${mediaPage}`,
-          search: diffusionRouteSearch(selectedModel.hubRepoId, selection),
+          search:
+            mediaPage === "audio"
+              ? audioPickSearch(selectedModel.hubRepoId, {
+                  ...selection,
+                  task: hubAudioTask(
+                    selectedModel,
+                    taskForMediaPick(
+                      selectedModel.pipelineTag,
+                      selectedModel.task,
+                    ),
+                  ),
+                  audioType: selectedModel.audioType,
+                  isGguf: selectedModel.isGguf,
+                  loadId: selectedModel.loadId,
+                })
+              : diffusionRouteSearch(selectedModel.hubRepoId, selection),
         });
         return;
       }

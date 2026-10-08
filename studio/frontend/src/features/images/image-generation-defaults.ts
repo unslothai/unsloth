@@ -29,6 +29,10 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image-21", steps: 25, guidance: 1 },
   { match: "qwen_image_21", steps: 25, guidance: 1 },
   { match: "qwenimage21", steps: 25, guidance: 1 },
+  // ComfyUI Image to Layers template, before the generic key.
+  { match: "qwen-image-layered", steps: 20, guidance: 2.5 },
+  { match: "qwen_image_layered", steps: 20, guidance: 2.5 },
+  { match: "qwenimagelayered", steps: 20, guidance: 2.5 },
   { match: "qwen-image-edit-2509", steps: 20, guidance: 4 },
   { match: "qwen-image-edit", steps: 40, guidance: 4 },
   { match: "qwen-image-2512", steps: 50, guidance: 4 },
@@ -59,6 +63,28 @@ export function defaultsFor(repoId: string): {
 /** A recognizable variant (Schnell vs Dev) keeps its own key; an explicit family keys only an opaque path. */
 export function defaultsKeyFor(repoId: string, familyOverride: unknown): string {
   return defaultsFor(repoId) !== DEFAULT_GEN ? repoId : (explicitFamily(familyOverride) ?? repoId);
+}
+
+/** The loaded model's recipe for a pick that got the fallback (its name named no family), else null. */
+export function loadedRecipeFor(
+  pickDefaults: { steps: number; guidance: number } | null | undefined,
+  residentKey: string,
+  reported?: { steps?: number; guidance?: number } | null,
+): { steps: number; guidance: number } | null {
+  if (pickDefaults !== DEFAULT_GEN) return null;
+  const resident = residentRecipeFor(residentKey, reported);
+  return resident.steps === DEFAULT_GEN.steps && resident.guidance === DEFAULT_GEN.guidance ? null : resident;
+}
+
+/** The resident model's recipe: the backend's own when it reports one, else the base-repo key's. */
+export function residentRecipeFor(
+  residentKey: string,
+  reported?: { steps?: number; guidance?: number } | null,
+): { steps: number; guidance: number } {
+  if (reported && typeof reported.steps === "number" && typeof reported.guidance === "number") {
+    return { steps: reported.steps, guidance: reported.guidance };
+  }
+  return defaultsFor(residentKey);
 }
 
 export function residentDefaultsKey(

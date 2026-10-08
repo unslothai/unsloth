@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports -- The picker barrel imports chat; this payload helper is import-free.
-import { llamaCppConfigPayload } from "@/features/model-picker/model-config/llama-cpp-config";
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { externalModelLabel } from "../lib/external-model-label";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
@@ -94,6 +92,7 @@ import {
   type McpImage,
   planMcpImageBound,
   mcpImagesEnvelope,
+  isImageToolName,
   splitMcpImages,
 } from "./mcp-images";
 import {
@@ -112,6 +111,11 @@ import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
+  providerCompactionConnectionKey,
+  providerCompactionForTarget,
+  providerCompactionPart,
+} from "../utils/provider-compaction";
+import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -119,7 +123,11 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
-import { ggufCompactionRequestFields } from "../utils/auto-compaction";
+import {
+  apiCompactionRequestFields,
+  ggufCompactionRequestFields,
+} from "../utils/auto-compaction";
+import { resolveModelCatalogEntry } from "../model-catalog";
 import {
   lengthIncompleteReason,
   lengthStopCause,
@@ -155,6 +163,7 @@ import {
   providerModelTakesMcpImages,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
+  toExternalBackendProviderType,
 } from "../external-providers";
 
 import {
@@ -185,6 +194,7 @@ import {
 } from "../tool-call-id";
 
 import { buildResearchInferenceRequest } from "../research-inference-request";
+import { customReasoningRequestFields } from "../custom-reasoning";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   buildExternalRoutingFields,
@@ -227,11 +237,9 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   GPU_LAYERS_AUTO,
-  managedGpuMemoryFields,
+  loadedGpuMemoryFields,
   reconcilePersistedGpuIds,
-  loadedLlamaCppConfigFields,
-  managedKvCacheFields,
-  managedSpeculativeSettings,
+  resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   persistGpuMemoryModeOnLoad,
   resolvePreserveThinkingOnLoad,
@@ -272,6 +280,7 @@ import type {
   OpenAIChatMessage,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
+  ProviderCompactionContentPart,
 } from "../types/api";
 import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -446,6 +455,8 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  // Studio tool loops: context after the turn; total_tokens re-counts earlier passes' completions.
+  context_tokens?: number;
   // cache_creation is Anthropic's cache-write count, cache_write_tokens OpenRouter's.
   prompt_tokens_details?: {
     cached_tokens?: number;
@@ -1151,7 +1162,7 @@ function serializeToolResultPart(
     // A client tool's own structured result that merely carries text and images among
     // OTHER fields is not that wrapper, and keeps its normal JSON serialization.
     (isMcpImageToolResult(result) &&
-      (isMcpToolName(tc.toolName) || isBareMcpImageWrapper(result))) ||
+      (isImageToolName(tc.toolName) || isBareMcpImageWrapper(result))) ||
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
   ) {
@@ -1161,10 +1172,10 @@ function serializeToolResultPart(
       ? stripSearchImageTokens(result.text)
       : result.text;
     content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
-    // Gated on the mcp__ id the backend stamps, not on shape alone: a client tool
+    // Gated on the image-producing tool name, not on shape alone: a client tool
     // is free to answer {text, images:[{data, mimeType}]}, and appending the
     // envelope would hand its bytes to the model as image input.
-    if (isMcpImageToolResult(result) && isMcpToolName(tc.toolName)) {
+    if (isMcpImageToolResult(result) && isImageToolName(tc.toolName)) {
       content += mcpImagesEnvelope(result.images);
     } else if (isMcpToolName(tc.toolName)) {
       const uiImages = mcpUiReplayImages(result, tc.toolName ?? "");
@@ -1274,6 +1285,63 @@ function setAssistantOpenAIResponsesReasoning(
       ? (message.extra_content as Record<string, unknown>)
       : {};
   message.extra_content = { ...extra, openai_responses_reasoning: reasoning };
+}
+
+function providerCompactionAssistant(
+  messages: SerializedMessage[],
+  afterToolCalls: number,
+): SerializedMessage | undefined {
+  const boundary =
+    Number.isInteger(afterToolCalls) && afterToolCalls >= 0
+      ? afterToolCalls
+      : 0;
+  let precedingToolCalls = 0;
+  let lastAssistant: SerializedMessage | undefined;
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    lastAssistant = message;
+    if (precedingToolCalls >= boundary) return message;
+    precedingToolCalls += message.tool_calls?.length ?? 0;
+  }
+  return lastAssistant;
+}
+
+/** The provider drops what came before its compaction, so it leads the subturn that produced it. */
+function withProviderCompaction(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+  target: {
+    providerType: string | undefined;
+    modelId: string | undefined;
+    connectionKey: string | undefined;
+  },
+): SerializedMessage[] {
+  const custom = (
+    message as { metadata?: { custom?: Record<string, unknown> } }
+  ).metadata?.custom;
+  const compaction = providerCompactionForTarget(
+    custom,
+    target.providerType,
+    target.modelId,
+    target.connectionKey,
+  );
+  const assistant = providerCompactionAssistant(
+    serialized,
+    typeof custom?.providerCompactionAfterToolCalls === "number"
+      ? custom.providerCompactionAfterToolCalls
+      : 0,
+  );
+  if (!compaction || !assistant) return serialized;
+  const content = assistant.content;
+  assistant.content = [
+    compaction,
+    ...(typeof content === "string"
+      ? content
+        ? [{ type: "text" as const, text: content }]
+        : []
+      : (content ?? [])),
+  ];
+  return serialized;
 }
 
 function attachAssistantThoughtSignature(
@@ -1420,6 +1488,8 @@ function serializeAssistantReplayMessages(
 
     if (part.type === "tool-call") {
       const toolPart = part as ToolCallMessagePart;
+      // Backend preload card is UI evidence, not a model function call.
+      if (toolPart.toolName === "studio_load_skill") continue;
       const toolCall = serializeAssistantToolCallPart(toolPart);
       if (!toolCall) continue;
 
@@ -1835,12 +1905,6 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-// The Canvas instructions createOpenAIStreamAdapter appends, so the recount prices the same text.
-export const CANVAS_TOOL_INSTRUCTION =
-  "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once.";
-export const CANVAS_FALLBACK_INSTRUCTION =
-  "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
-
 /** The MCP image bound applied to the run's own tool results, BEFORE they are
  *  serialized. Bounding the OpenAI history afterwards meant every result's image
  *  array was stringified into an envelope on the main thread and then parsed again
@@ -1874,7 +1938,7 @@ function boundMcpImageResults(
     const byExchange = new Map<number, Carrier[]>();
     toolParts.forEach(({ index, part }, k) => {
       const tc = part as { toolName?: string; result?: unknown };
-      if (!isMcpImageToolResult(tc.result) || !isMcpToolName(tc.toolName)) return;
+      if (!isMcpImageToolResult(tc.result) || !isImageToolName(tc.toolName)) return;
       const carrier = { message: m, part: index, images: tc.result.images };
       const batch = byExchange.get(exchanges[k]) ?? [];
       batch.push(carrier);
@@ -1946,7 +2010,7 @@ export async function buildLocalTokenCountHistory(
   studio_tool_history?: true;
 }> {
   const runtimeState = useChatRuntimeStore.getState();
-  const { params, artifactsEnabled, supportsTools } = runtimeState;
+  const { params } = runtimeState;
   const activeModel = runtimeState.models.find(
     (model) => model.id === runtimeState.params.checkpoint,
   );
@@ -1985,24 +2049,6 @@ export async function buildLocalTokenCountHistory(
       role: "system",
       content: combinedSystemPrompt,
     });
-  }
-
-  // Canvas appends one of these on every request, so a count without it reads low.
-  const canvasInstruction = artifactsEnabled
-    ? supportsTools
-      ? CANVAS_TOOL_INSTRUCTION
-      : CANVAS_FALLBACK_INSTRUCTION
-    : "";
-  if (canvasInstruction) {
-    const first = outboundMessages[0];
-    if (first && first.role === "system" && typeof first.content === "string") {
-      outboundMessages[0] = {
-        ...first,
-        content: `${first.content}\n\n${canvasInstruction}`,
-      };
-    } else {
-      outboundMessages.unshift({ role: "system", content: canvasInstruction });
-    }
   }
 
   return {
@@ -2056,7 +2102,6 @@ export async function buildLocalTokenCountExtras(
   const {
     supportsTools,
     toolsEnabled,
-    artifactsEnabled,
     mcpEnabledForChat,
     ragEnabled,
     ragSource,
@@ -2066,6 +2111,7 @@ export async function buildLocalTokenCountExtras(
     bypassPermissions,
     deepResearchEnabled,
     permissionMode,
+    sandboxLevel,
     maxToolCallsPerMessage,
     ragAutoInject,
     ragAutoInjectMinScore,
@@ -2082,6 +2128,7 @@ export async function buildLocalTokenCountExtras(
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }
@@ -2100,7 +2147,6 @@ export async function buildLocalTokenCountExtras(
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
-    !artifactsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
     !deepResearchEnabled &&
@@ -2111,6 +2157,7 @@ export async function buildLocalTokenCountExtras(
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }
@@ -2122,6 +2169,7 @@ export async function buildLocalTokenCountExtras(
     // Ask holds first-pass retrieval behind the gate, so the count prices a pending RAG
     // turn rather than declining one the completion never retrieves for.
     permission_mode: permissionMode,
+    sandbox_level: sandboxLevel,
     // Off suppresses the loop, and the relay renders no schemas or nudge: same zero.
     max_tool_calls_per_message: maxToolCallsPerMessage,
     // Full access swaps the python/terminal descriptions and adds a nudge
@@ -2130,8 +2178,7 @@ export async function buildLocalTokenCountExtras(
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
-      ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
-      ...(artifactsEnabled ? ["render_html"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
       // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
       ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
     ],
@@ -2218,7 +2265,7 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
-async function resolveChatInstructions(
+export async function resolveChatInstructions(
   threadId: string | undefined,
   systemPrompt: unknown,
   systemVariables: unknown,
@@ -2501,6 +2548,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedMlxKvQuantRequested",
   "mlxKvQuantReason",
   "mlxKvQuantNote",
+  "mlxInt8Prefill",
+  "loadedMlxInt8PrefillRequested",
   "loadedContextBudget",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
@@ -2650,6 +2699,7 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
+  "omlx",
   "hermes",
   "custom",
 ]);
@@ -3508,7 +3558,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // it disagrees with the launch.
               ...serverTuningLoadPayload(config),
               // Checked with the same arguments the load sends, or a list the backend refuses would pass this gate.
-              ...llamaCppConfigPayload(config.llamaCppConfig, { isDiffusion }),
               ...(resolvedExtraArgs !== undefined
                 ? { llama_extra_args: resolvedExtraArgs ?? [] }
                 : {}),
@@ -3548,6 +3597,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       chat_template_override: effectiveChatTemplateOverride,
       cache_type_kv: config.kvCacheDtype,
       mlx_kv_quant: config.mlxKvQuant ?? null,
+      mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
       reasoning_budget:
@@ -3573,7 +3623,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             ...serverTuningLoadPayload(config),
             // Remembered pass-through args: nothing is resident at startup to inherit them from.
             // Undefined predates the field; a cleared list is an explicit none.
-            ...llamaCppConfigPayload(config.llamaCppConfig, { isDiffusion }),
             ...(resolvedExtraArgs !== undefined
               ? { llama_extra_args: resolvedExtraArgs ?? [] }
               : {}),
@@ -3669,7 +3718,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-          ...managedKvCacheFields(loadResp),
+          kvCacheDtype: loadResp.cache_type_kv ?? null,
+          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(loadResp),
           // Click-time value, not the resolved backend echo (see performLoad).
           nParallel: committedSlots,
@@ -3705,7 +3755,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...committedServerTuningState(config, loadResp.is_diffusion ?? false),
           // What this launch is running, for a later rollback: the status applier cannot seed it while
           // the model-loading lease is held, and a failed switch would restore the wrong args.
-          ...loadedLlamaCppConfigFields(loadResp, config.llamaCppConfig),
           loadedLlamaExtraArgs:
             loadResp.requested_llama_extra_args !== undefined
               ? (loadResp.requested_llama_extra_args ?? [])
@@ -3717,7 +3766,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // loaded projector, and the next Apply would send it.
           disableVision: loadResp.disable_vision ?? false,
           loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
-          ...managedGpuMemoryFields(loadResp),
+          ...loadedGpuMemoryFields(loadResp),
           loadedCustomContextLength: keepCustomCtx,
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
@@ -3728,7 +3777,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           activeModelIsLocal: loadResp.is_local_model ?? false,
-          ...managedSpeculativeSettings(loadResp),
+          ...resolveLoadedSpeculativeSettings(loadResp),
         });
       } else {
         useChatRuntimeStore.setState({
@@ -3741,7 +3790,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-          ...managedKvCacheFields(loadResp),
+          kvCacheDtype: loadResp.cache_type_kv ?? null,
+          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(loadResp),
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
@@ -3759,9 +3809,6 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // Same reason, and the baseline must clear so a rollback to THIS model does not resend a
           // GGUF's arguments.
           loadedLlamaExtraArgs: null,
-          llamaCppConfig: undefined,
-          loadedLlamaCppConfig: null,
-          llamaCppConfigSummary: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           loadedDisableVision: loadResp.disable_vision ?? false,
@@ -3771,7 +3818,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU GGUF load left.
-          ...managedGpuMemoryFields(loadResp),
+          ...loadedGpuMemoryFields(loadResp),
           defaultChatTemplate: loadResp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
@@ -3783,7 +3830,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...loadedContextFields(loadResp),
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
-          ...managedSpeculativeSettings(loadResp),
+          ...resolveLoadedSpeculativeSettings(loadResp),
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
@@ -4086,7 +4133,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           preserveThinking: resolvePreserveThinkingOnLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
-          ...managedKvCacheFields(loadResp),
+          kvCacheDtype: loadResp.cache_type_kv ?? null,
+          loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
           ...mlxRuntimeStateFrom(loadResp),
           // The request above omits n_parallel: a staged override would read as applied and be re-sent
           // by the next Apply.
@@ -4110,9 +4158,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           disableVision: loadResp.disable_vision ?? false,
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
-          ...managedGpuMemoryFields(loadResp),
-          // The request omits llama_cpp_config, so a saved custom source may be what launched.
-          ...loadedLlamaCppConfigFields(loadResp, undefined),
+          ...loadedGpuMemoryFields(loadResp),
           // Drives the GPU Memory controls' diffusion gate; set on every load path so the gate cannot read stale.
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           defaultChatTemplate: loadResp.chat_template ?? null,
@@ -4120,7 +4166,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: loadResp.is_local_model ?? false,
-          ...managedSpeculativeSettings(loadResp),
+          ...resolveLoadedSpeculativeSettings(loadResp),
         });
         recordLastLocalModelLoad({
           id: DEFAULT_CHAT_MODEL_REPO,
@@ -4878,7 +4924,6 @@ export function createOpenAIStreamAdapter(
         supportsTools,
         toolsEnabled,
         imageToolsEnabled,
-        artifactsEnabled,
         mcpEnabledForChat,
         confirmToolCalls,
         bypassPermissions,
@@ -4925,6 +4970,12 @@ export function createOpenAIStreamAdapter(
       }
       const externalProvider =
         externalRouting.kind === "external" ? externalRouting.provider : null;
+      const providerCompactionTargetConnectionKey =
+        providerCompactionConnectionKey(
+          externalProvider?.id,
+          externalProvider?.baseUrl,
+          externalProvider?.apiType,
+        );
 
       const externalUsesStudioTools =
         providerModelSupportsStudioTools(
@@ -5051,7 +5102,18 @@ export function createOpenAIStreamAdapter(
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
       let outboundMessages = renderedMessages
-        .flatMap((message) => toOpenAIMessages(message, replayReasoning))
+        .flatMap((message) => {
+          const serialized = toOpenAIMessages(message, replayReasoning);
+          return isExternalRequest
+            ? withProviderCompaction(message, serialized, {
+                providerType: toExternalBackendProviderType(
+                  externalProvider?.providerType,
+                ),
+                modelId: externalSelection?.modelId,
+                connectionKey: providerCompactionTargetConnectionKey,
+              })
+            : serialized;
+        })
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -5102,11 +5164,26 @@ export function createOpenAIStreamAdapter(
         });
         throw new Error("A response that stopped mid-thought cannot be resumed here.");
       }
+      const continuationCompaction = continuation
+        ? providerCompactionForTarget(
+            continuation,
+            toExternalBackendProviderType(externalProvider?.providerType),
+            externalSelection?.modelId,
+            providerCompactionTargetConnectionKey,
+          )
+        : null;
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
-          content: continuation.partial,
+          content: continuationCompaction
+            ? [
+                continuationCompaction,
+                ...(continuation.partial
+                  ? [{ type: "text" as const, text: continuation.partial }]
+                  : []),
+              ]
+            : continuation.partial,
           ...(resumedThought ? { reasoning_content: resumedThought } : {}),
         });
         // The original assistant message is not in this branch, so without its signature the history
@@ -5231,26 +5308,8 @@ export function createOpenAIStreamAdapter(
         !queuedRunSettings && !continuation,
       );
       const videoBase64 = findLatestUserVideoBase64(survivingMessages);
-      const hasOutboundImage = Boolean(imageBase64);
 
-      // Canvas is independent of Search/Code: render_html stays local-only and mirrors the backend image-turn gate.
-      const renderHtmlToolEnabledForThisTurn = Boolean(
-        !isExternalRequest &&
-          supportsTools &&
-          artifactsEnabled &&
-          !hasOutboundImage,
-      );
-      const artifactInstruction = artifactsEnabled
-        ? renderHtmlToolEnabledForThisTurn
-          ? CANVAS_TOOL_INSTRUCTION
-          : CANVAS_FALLBACK_INSTRUCTION
-        : null;
-      const effectiveDisabledToolGuard =
-        disabledToolGuard && artifactsEnabled
-          ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
-          : disabledToolGuard;
-      addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
-      addSystemInstruction(outboundMessages, artifactInstruction);
+      addSystemInstruction(outboundMessages, disabledToolGuard);
 
       const blockAttachmentRun = (reason: string): never => {
         toast.error(reason);
@@ -5359,6 +5418,10 @@ export function createOpenAIStreamAdapter(
         activeNativePathToken: runtime.activeNativePathToken,
         checkpoint: params.checkpoint,
       });
+      // The backend's own report, for the same reason. An external id leaves it describing
+      // the local model still resident.
+      const isMlxForCompaction =
+        !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -5592,6 +5655,24 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let providerCompaction: ProviderCompactionContentPart | undefined =
+        continuationCompaction ?? undefined;
+      let providerCompactionAfterToolCalls: number | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionAfterToolCalls
+          : undefined;
+      let providerCompactionProviderType: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionProviderType
+          : undefined;
+      let providerCompactionModelId: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionModelId
+          : undefined;
+      let providerCompactionOriginConnectionKey: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionConnectionKey
+          : undefined;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5605,6 +5686,11 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
+        providerCompaction,
+        providerCompactionAfterToolCalls,
+        providerCompactionProviderType,
+        providerCompactionModelId,
+        providerCompactionConnectionKey: providerCompactionOriginConnectionKey,
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -5993,6 +6079,7 @@ export function createOpenAIStreamAdapter(
                 isReasoningProvider: externalProvider.isReasoningModel === true,
                 baseUrl: externalProvider.baseUrl ?? null,
                 apiType: externalProvider.apiType,
+                reasoningConfig: externalProvider.reasoningConfig,
               },
             )
           : {
@@ -6026,19 +6113,26 @@ export function createOpenAIStreamAdapter(
         reasoningEffortLevels,
       );
       const externalReasoningFields: ReasoningRequestFields =
-        externalReasoningCaps.supportsReasoning
-          ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
-            ? externalReasoningEnabled
-              ? { reasoning_effort: selectedExternalEffort }
-              : externalReasoningCaps.supportsReasoningOff
-                ? { reasoning_effort: "none" }
-                : { reasoning_effort: fallbackExternalEffort }
-            : {
-                thinking: {
-                  type: externalReasoningEnabled ? "enabled" : "disabled",
-                },
-              }
-          : {};
+        externalProvider?.providerType === "custom" &&
+        externalProvider.apiType !== "responses"
+          ? customReasoningRequestFields(
+              externalProvider.reasoningConfig,
+              externalReasoningEnabled,
+              selectedExternalEffort,
+            )
+          : externalReasoningCaps.supportsReasoning
+            ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
+              ? externalReasoningEnabled
+                ? { reasoning_effort: selectedExternalEffort }
+                : externalReasoningCaps.supportsReasoningOff
+                  ? { reasoning_effort: "none" }
+                  : { reasoning_effort: fallbackExternalEffort }
+              : {
+                  thinking: {
+                    type: externalReasoningEnabled ? "enabled" : "disabled",
+                  },
+                }
+            : {};
       const localReasoningFields: ReasoningRequestFields = supportsReasoning
         ? reasoningStyle === "enable_thinking_effort"
           ? // GLM-5.2-style gate plus level, e.g. high|max.
@@ -6246,7 +6340,7 @@ export function createOpenAIStreamAdapter(
             docs:
               supportsStudioToolsForThisTurn &&
               (ragEnabled || projectRagEnabled),
-            artifacts: renderHtmlToolEnabledForThisTurn,
+            artifacts: false,
             confirmToolCalls,
             bypassPermissions,
             permissionMode,
@@ -6452,7 +6546,8 @@ export function createOpenAIStreamAdapter(
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,
-                    ...(permissionMode === "auto"
+                    sandbox_level: runtime.sandboxLevel,
+                    ...(permissionMode === "auto" || permissionMode === "off"
                       ? {}
                       : { confirm_tool_calls: permissionMode === "ask" }),
                     bypass_permissions: bypassPermissions,
@@ -6540,6 +6635,13 @@ export function createOpenAIStreamAdapter(
                 },
                 { forceRefreshPublicKey },
               )),
+              ...apiCompactionRequestFields({
+                autoCompactEnabled: runtime.autoCompactEnabled,
+                contextLength: resolveModelCatalogEntry(
+                  externalProvider.providerType,
+                  externalModelId,
+                )?.contextLength,
+              }),
               // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               ...(openaiCodeExecContainerId
@@ -6591,6 +6693,7 @@ export function createOpenAIStreamAdapter(
             stream_options: { include_usage: true },
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
+              isMlx: isMlxForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
             }),
             temperature: params.temperature,
@@ -6630,9 +6733,12 @@ export function createOpenAIStreamAdapter(
               : {}),
             // Sent for every local chat, since `unsloth run --enable-tools` can open the tool loop with
             // no pill lit. "auto" OMITS confirm_tool_calls (an explicit true would force a stream and
-            // defeat the safe-only exception); "ask" sends true, off/full send false.
+            // defeat the safe-only exception); "off" omits it too, since an explicit false opts out of
+            // its risky-call prompt without an OS sandbox; "ask" sends true, full sends false.
+            // sandbox_level "low" runs Python/Terminal on software safeguards only; Full access overrides it.
             permission_mode: permissionMode,
-            ...(permissionMode === "auto"
+            sandbox_level: runtime.sandboxLevel,
+            ...(permissionMode === "auto" || permissionMode === "off"
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
             bypass_permissions: bypassPermissions,
@@ -6640,7 +6746,6 @@ export function createOpenAIStreamAdapter(
             ...(supportsTools &&
               (toolsEnabled ||
                 codeToolsEnabled ||
-                renderHtmlToolEnabledForThisTurn ||
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
@@ -6658,10 +6763,7 @@ export function createOpenAIStreamAdapter(
                       ? ["read_skill", "create_skill"]
                       : []),
                     ...(codeToolsEnabled
-                      ? ["python", "terminal", "edit_file"]
-                      : []),
-                    ...(renderHtmlToolEnabledForThisTurn
-                      ? ["render_html"]
+                      ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
@@ -6929,8 +7031,11 @@ export function createOpenAIStreamAdapter(
                       ? "It got long, so older turns were removed from the model's " +
                         "context. They are saved and searchable, and relevant parts are " +
                         "brought back automatically."
-                      : "The full conversation is still visible and saved. " +
-                        "Unsloth removed complete older turns from this request so the chat can continue.",
+                      : contextTruncation?.summarized
+                        ? "The full conversation is still visible and saved. " +
+                          "The provider summarized older turns so the chat can continue."
+                        : "The full conversation is still visible and saved. " +
+                          "Unsloth removed complete older turns from this request so the chat can continue.",
                     duration: 8000,
                   });
                 }
@@ -6975,7 +7080,7 @@ export function createOpenAIStreamAdapter(
               if (toolEvent !== undefined) {
                 // Unsloth's own tool events end the turn that asked for them; finish_reason alone is not
                 // enough, since a hosted tool runs INSIDE the turn and rides a whole chunk.
-                if (!chunk.choices) {
+                if (!chunk.choices && toolEvent.tool_name !== "studio_load_skill") {
                   endProviderTurn();
                 }
                 // Deep Research is an ordinary tool to every loop that runs it, so the handoff is read off the
@@ -7000,6 +7105,28 @@ export function createOpenAIStreamAdapter(
                     void updateStoredChatThreadEventually(resolvedThreadId, {
                       [field]: newContainerId,
                     }).catch(() => {});
+                  }
+                  continue;
+                }
+                if (toolEvent.type === "compaction_block") {
+                  const nextCompaction = providerCompactionPart(toolEvent);
+                  if (nextCompaction) {
+                    providerCompaction = nextCompaction;
+                    providerCompactionProviderType =
+                      toExternalBackendProviderType(
+                        externalProvider?.providerType,
+                      );
+                    providerCompactionModelId = externalSelection?.modelId;
+                    providerCompactionOriginConnectionKey =
+                      providerCompactionTargetConnectionKey;
+                    // Compaction items arrive before the provider content they introduce. Remember
+                    // how much of this stored run preceded it so replay does not put a later marker
+                    // ahead of earlier Studio tool rounds that the marker already summarizes.
+                    providerCompactionAfterToolCalls = toolCallParts.filter(
+                      (part) =>
+                        part.toolName !== "studio_load_skill" &&
+                        toolCallPartSurvivesOpenAIReplay(part),
+                    ).length;
                   }
                   continue;
                 }
@@ -8157,6 +8284,9 @@ export function createOpenAIStreamAdapter(
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
+            ...(typeof meta.usage.context_tokens === "number"
+              ? { contextTokens: meta.usage.context_tokens }
+              : {}),
             cachedTokens,
             cacheWriteTokens,
           };
@@ -8324,6 +8454,12 @@ export function createOpenAIStreamAdapter(
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
+              providerCompaction,
+              providerCompactionAfterToolCalls,
+              providerCompactionProviderType,
+              providerCompactionModelId,
+              providerCompactionConnectionKey:
+                providerCompactionOriginConnectionKey,
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8335,6 +8471,9 @@ export function createOpenAIStreamAdapter(
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
                     totalTokens: meta.usage.total_tokens,
+                    ...(typeof meta.usage.context_tokens === "number"
+                      ? { contextTokens: meta.usage.context_tokens }
+                      : {}),
                     cachedTokens,
                     cacheWriteTokens,
                     modelId: params.checkpoint,
@@ -8493,6 +8632,12 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
+                providerCompaction,
+                providerCompactionAfterToolCalls,
+                providerCompactionProviderType,
+                providerCompactionModelId,
+                providerCompactionConnectionKey:
+                  providerCompactionOriginConnectionKey,
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {

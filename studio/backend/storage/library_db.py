@@ -16,6 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from storage.studio_db import connect_studio_db
 from utils.paths import ensure_dir, studio_db_path
 
 _schema_lock = threading.Lock()
@@ -82,7 +83,7 @@ def get_connection() -> sqlite3.Connection:
     # One key for the check and the add, or a home reached through a link never finds its entry
     # and runs the schema again on every connection.
     schema_path = db_path.resolve()
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_studio_db(db_path)
     conn.row_factory = sqlite3.Row
     if schema_path not in _schema_ready:
         with _schema_lock:
@@ -351,6 +352,18 @@ def reconcile_entries(adopt: list[tuple[str, str]], stale: list[tuple[str, str]]
         conn.executemany(
             "DELETE FROM library_entries WHERE item_id = ? AND fingerprint = ?",
             stale,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def carry_fingerprint(item_id: str, old: Optional[str], new: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE library_entries SET fingerprint = ? WHERE item_id = ? AND fingerprint IS ?",
+            (new, item_id, old),
         )
         conn.commit()
     finally:

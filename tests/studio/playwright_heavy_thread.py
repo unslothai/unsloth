@@ -600,11 +600,45 @@ async (timeoutMs) => {
 }
 """
 
+# Delete is the last item of the reply's More menu (#12735 took it off the action bar). The menu is
+# opened and the item found BEFORE the clock starts, so the window still holds only what selecting
+# Delete costs: Radix closing the menu, and the message leaving the thread. Opening the menu is the
+# `menu` action's number already. The trigger opens on `pointerdown`, as MENU_JS explains; an item
+# selects on `click`.
 DELETE_JS = """
 async (timeoutMs) => {
   const api = window.__heavyThread;
-  const button = api.actionButton("Delete message");
-  if (!button) return null;
+  const trigger = api.actionButton("More");
+  if (!trigger) return null;
+  const content = () => document.querySelector(".aui-action-bar-more-content");
+  // The portal mounting is a change to body's children, so the lookup runs on that mutation and
+  // not once per frame while the menu is still on its way.
+  let menu = content();
+  const watcher = new MutationObserver(() => { menu = content(); });
+  watcher.observe(document.body, { childList: true, subtree: false });
+  const pointer = {
+    bubbles: true, cancelable: true, composed: true,
+    button: 0, pointerId: 1, pointerType: "mouse", isPrimary: true,
+  };
+  trigger.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, buttons: 1 }));
+  trigger.dispatchEvent(new PointerEvent("pointerup", { ...pointer, buttons: 0 }));
+  const opening = performance.now();
+  while (!menu && performance.now() - opening < timeoutMs) await window.__nextPaint();
+  watcher.disconnect();
+  const item = menu
+    ? Array.from(menu.querySelectorAll(".aui-action-bar-more-item")).find(
+        (candidate) => (candidate.textContent ?? "").trim() === "Delete",
+      )
+    : null;
+  if (!item) {
+    // A menu this action opened and could not use would sit over the next action.
+    if (menu) {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    }
+    return null;
+  }
   // The last assistant message. That is the cheapest delete on the React side -- one subtree
   // unmounts -- so this column under-measures reconciliation, though the export/rebuild/import
   // half is O(messages) wherever the target sits.
@@ -612,7 +646,7 @@ async (timeoutMs) => {
   const before = api.messageCount();
   window.__hv.begin();
   const started = performance.now();
-  button.click();
+  item.click();
   let ms = null;
   // isConnected on the captured node is O(1). Re-counting [data-role] every frame would put an
   // O(messages) query inside the window being timed, growing like the signal.

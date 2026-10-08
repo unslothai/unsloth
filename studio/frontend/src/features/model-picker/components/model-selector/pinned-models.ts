@@ -7,6 +7,8 @@
 
 import { create } from "zustand";
 
+import { mirrorPins, onPinsRestored } from "../../../../lib/pins-mirror.ts";
+
 const KEY = "unsloth_pinned_models";
 
 // Entries are stored as strings: "repoId" pins a whole (non-GGUF) repo, "repoId::quant" pins
@@ -76,10 +78,11 @@ function readPinned(): string[] {
 }
 
 function writePinned(pinned: string[]): void {
+  mirrorPins("pinned", pinned);
   try {
     localStorage.setItem(KEY, JSON.stringify(pinned));
   } catch {
-    // Ignore unavailable storage; pins stay session-only.
+    // Ignore unavailable storage; the server copy still has them.
   }
 }
 
@@ -194,6 +197,10 @@ export const usePinnedModelsStore = create<PinnedModelsState>((set) => ({
       return { pinned: base };
     }),
 }));
+
+onPinsRestored("pinned", () =>
+  usePinnedModelsStore.setState({ pinned: readPinned() }),
+);
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Startup self-heal for the pinned Diffusers main build.
+"""Startup self-heal for the pinned Diffusers main build, or the pinned release while
+diffusers-main.txt is commented out.
 
 Older installers can miss the pinned build during an update. Repair before importing the app:
 the build also upgrades huggingface_hub, which would otherwise mix new files with cached modules.
@@ -78,11 +79,58 @@ _ENV_ALLOWLIST = frozenset(
 )
 
 
-def _opted_out() -> bool:
+def _opted_out(main_active: bool = True) -> bool:
     if os.environ.get(DISABLE_ENV_VAR) == "1":
         return True
+    if not main_active:
+        return False
     value = (os.environ.get("UNSLOTH_DIFFUSERS_MAIN") or "").strip().lower()
     return value in ("0", "false", "no", "off")
+
+
+def _target(main_active: bool) -> str:
+    return "main build" if main_active else "release"
+
+
+def _main_pin_active() -> bool:
+    try:
+        text = _MAIN_PIN.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError):
+        return False
+    return any(
+        line.strip() and not line.strip().startswith("#") and "git+" in line
+        for line in text.splitlines()
+    )
+
+
+def _release_behind() -> bool:
+    """The installer's ``_diffusers_release_behind`` for an index install (the only kind repaired), metadata only."""
+    try:
+        from importlib.metadata import version
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        installed = version("diffusers")
+        text = (_MAIN_PIN.parent / "diffusers-pin.txt").read_text(encoding = "utf-8-sig")
+    except Exception:  # noqa: BLE001 - no diffusers or no pin file is the installer's job
+        return False
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        try:
+            requirement = Requirement(line) if line else None
+        except Exception:  # noqa: BLE001 - a line packaging cannot parse names no target
+            requirement = None
+        if requirement is None or requirement.name.lower() != "diffusers":
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate():
+            continue
+        for spec in requirement.specifier:
+            if spec.operator == "==":
+                try:
+                    return Version(installed) < Version(spec.version)
+                except Exception:  # noqa: BLE001 - an unparseable version is left alone
+                    return False
+    return False
 
 
 def _diffusers_is_an_index_install() -> bool:
@@ -148,24 +196,27 @@ INTERRUPTED_MESSAGE = (
 )
 
 
-def _record_failure() -> None:
+def _record_failure(main_active: bool = True) -> None:
     """Suppress startup retries until an explicit update clears the failure key."""
+    key = "diffusers_main_repair" if main_active else "diffusers_release_repair"
     try:
         from studio.install_manifest import update_manifest
-        update_manifest(diffusers_main_repair = "failed")
+        update_manifest(**{key: "failed"})
     except Exception as exc:  # noqa: BLE001 - unrecorded means the next start tries again
         logger.warning("diffusers self-heal could not record its failure: %s", exc)
 
 
-def _installer_would_skip() -> bool:
+def _installer_would_skip(main_active: bool = True) -> bool:
     """The installer's no-op gates: a start it would skip must not block or claim to install."""
-    if sys.version_info[:2] < _MAIN_MIN_PYTHON:
+    if main_active and sys.version_info[:2] < _MAIN_MIN_PYTHON:
         return True
     try:
         from studio.install_manifest import read_manifest
         manifest = read_manifest() or {}
     except Exception:  # noqa: BLE001 - an unreadable manifest is no record of a failed try
         return False
+    if not main_active:
+        return manifest.get("diffusers_release_repair") == "failed"
     step_results = manifest.get("step_results")
     update_failed = (
         isinstance(step_results, dict) and step_results.get("diffusers-main.txt") == "failed"
@@ -209,7 +260,11 @@ def _run_installer(flag: str, timeout: float) -> "tuple[int | None, str]":
     return proc.returncode, output or ""
 
 
-def _run_repair(echo: Callable[[str], None], prefetch: bool = True) -> bool:
+def _run_repair(
+    echo: Callable[[str], None],
+    prefetch: bool = True,
+    main_active: bool = True,
+) -> bool:
     started = time.monotonic()
     if prefetch:
         # The slow part (clone or download, then build) goes into uv's cache only, so stopping it
@@ -224,7 +279,7 @@ def _run_repair(echo: Callable[[str], None], prefetch: bool = True) -> bool:
             if _peer_holds_pass():
                 logger.warning("diffusers self-heal timed out while a peer's dependency pass ran")
                 raise PeerInstallInProgress(PEER_INSTALL_MESSAGE)
-            _record_failure()
+            _record_failure(main_active)
             echo(
                 f"  - the pinned Diffusers build took over {_REPAIR_TIMEOUT_S}s to download and "
                 "was stopped; run `unsloth studio update` to install it"
@@ -251,7 +306,7 @@ def _run_repair(echo: Callable[[str], None], prefetch: bool = True) -> bool:
         raise InstallInterrupted(INTERRUPTED_MESSAGE)
     if code == _INSTALLED:
         echo("  - installed the pinned Diffusers build")
-        logger.info("diffusers self-heal installed the pinned Diffusers main build")
+        logger.info("diffusers self-heal installed the pinned Diffusers %s", _target(main_active))
         return True
     if code != _NOTHING_TO_DO:
         echo(
@@ -276,10 +331,13 @@ def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: 
     Raise PeerInstallInProgress if a peer holds the install lock at timeout, and
     InstallInterrupted if our own install had to be stopped.
     """
-    if _opted_out() or not _MAIN_PIN.is_file() or not _INSTALLER.is_file():
+    main_active = _main_pin_active()
+    if _opted_out(main_active) or not _MAIN_PIN.is_file() or not _INSTALLER.is_file():
         return False
+    # Release mode: only an index install older than the pin; a user's checkout or git build is theirs.
+    candidate = _diffusers_is_an_index_install() and (main_active or _release_behind())
     # Check the lock too: an active install may have temporarily removed the metadata.
-    if _diffusers_is_an_index_install() and not _installer_would_skip():
+    if candidate and not _installer_would_skip(main_active):
         loaded = _loaded_replaceable_modules()
         if loaded:
             # An embedding host (a notebook kernel) imported them already; replacing the files
@@ -297,5 +355,9 @@ def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: 
         prefetch = False
     else:
         return False
-    logger.info("installing the pinned Diffusers main build. Set %s=1 to disable.", DISABLE_ENV_VAR)
-    return _run_repair(echo, prefetch = prefetch)
+    logger.info(
+        "installing the pinned Diffusers %s. Set %s=1 to disable.",
+        _target(main_active),
+        DISABLE_ENV_VAR,
+    )
+    return _run_repair(echo, prefetch = prefetch, main_active = main_active)

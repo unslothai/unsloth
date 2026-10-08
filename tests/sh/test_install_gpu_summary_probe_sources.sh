@@ -13,6 +13,13 @@ trap 'rm -rf "$WORK"' EXIT
     sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_amd_smi_hip_order()/,/^}/p'  "$INSTALL_SH"
+    for _fn in _amd_prefer_discrete_gfx _amd_gfx_is_shadowing_integrated _amd_gfx_has_wheel_route \
+               _amd_arch_index_family_for_gfx _amd_generic_tag_carries_gfx; do
+        sed -n "/^${_fn}()/,/^}/p" "$INSTALL_SH"
+    done
+    echo '_detect_rocm_version_tag() { echo rocm7.2; }'
+    echo 'substep() { :; }'
+    echo '_torch_index_pinned=${STUB_PINNED:-false}'
     echo ""
     # Extract the probe and selection block.
     awk '/^    _gpu_disp_gfx_all=""/ {on=1}
@@ -46,7 +53,8 @@ case "$1 $2" in
     # `list -e` carries HIP_ID and nothing else of interest; an older CLI rejects the
     # flag outright, which is the STUB_AMDSMI_E="" case.
     "list -e")  [ -z "${STUB_AMDSMI_E:-}" ] || cat "$STUB_AMDSMI_E" ;;
-    "list "*)   sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
+    "list "*)   [ -z "${STUB_AMDSMI_LIST:-}" ] || { cat "$STUB_AMDSMI_LIST"; exit 0; }
+                sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
     "static "*) cat "$STUB_AMDSMI" ;;
 esac
 STUB
@@ -63,6 +71,7 @@ summary() {
         STUB_ROCMINFO="$1" STUB_AMDSMI="$2" \
         ${STUB_AMDSMI_E:+STUB_AMDSMI_E="$STUB_AMDSMI_E"} \
         ${3:+HIP_VISIBLE_DEVICES="$3"} \
+        ${SUMMARY_ENV:-} \
         /bin/bash -c 'set -eu; . "$1"; printf "%s|%s\n" "$_gpu_disp_gfx" "$_gpu_disp_mkt"' _ "$WORK/block.sh"
 }
 
@@ -361,6 +370,61 @@ assert_eq "identical adapters still resolve without a map" \
     "gfx942|AMD Instinct MI300X" "$(summary "$WORK/empty" "$WORK/smi_two_same" 1)"
 assert_eq "one adapter resolves without a map" \
     "gfx1100|AMD Radeon RX 7900 XTX" "$(summary "$WORK/empty" "$WORK/smi_fixture" 0)"
+
+cat > "$WORK/roc_two_rev" <<'EOF'
+Agent 1
+*******
+  Name:                    AMD EPYC 7763 64-Core Processor
+  Marketing Name:          AMD EPYC 7763 64-Core Processor
+  Device Type:             CPU
+*******
+Agent 2
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon RX 7900 XTX
+  Device Type:             GPU
+*******
+Agent 3
+*******
+  Name:                    gfx90a
+  Marketing Name:          AMD Instinct MI210
+  Device Type:             GPU
+EOF
+
+echo "=== an unmasked iGPU listed first does not name the card ==="
+# The routing block installs for the discrete card here (#7776); the banner must agree.
+assert_eq "the discrete card and its own name are announced" \
+    "gfx1201|AMD Radeon AI PRO R9700" "$(summary "$WORK/roc_twins" "$WORK/empty")"
+assert_eq "a mask naming the iGPU is honoured" \
+    "gfx1036|AMD Radeon Graphics" "$(summary "$WORK/roc_twins" "$WORK/empty" 0)"
+
+echo "=== the banner reads the routing block's masks ==="
+assert_eq "CUDA_VISIBLE_DEVICES selects like HIP_VISIBLE_DEVICES" \
+    "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(SUMMARY_ENV=CUDA_VISIBLE_DEVICES=1 summary "$WORK/roc_two_gpus" "$WORK/empty")"
+# rocminfo already lists ROCr's survivors in mask order; indexing them by ROCr again
+# named the second survivor.
+assert_eq "an ROCr mask is not applied twice to rocminfo output" \
+    "gfx1100|AMD Radeon RX 7900 XTX" \
+    "$(SUMMARY_ENV=ROCR_VISIBLE_DEVICES=1,0 summary "$WORK/roc_two_rev" "$WORK/empty")"
+# amd-smi is not ROCr-filtered, so ROCr picks survivors and HIP indexes them.
+assert_eq "amd-smi: ROCr survivors, then HIP" "gfx90a|AMD Instinct MI210" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" SUMMARY_ENV=ROCR_VISIBLE_DEVICES=2,0 \
+        summary "$WORK/empty" "$WORK/smi_three" 1)"
+assert_eq "amd-smi: an ROCr mask alone still selects its card" "gfx1201|AMD Radeon AI PRO R9700" \
+    "$(STUB_AMDSMI_E="$WORK/smi_e_identity" SUMMARY_ENV=ROCR_VISIBLE_DEVICES=2 \
+        summary "$WORK/empty" "$WORK/smi_three")"
+
+# Older amd-smi: `static --asic` names no arch, `list` prints `GPU[N] : gfx...`.
+printf 'GPU: 0\n' > "$WORK/smi_no_asic"
+printf 'GPU[0] : gfx1036\nGPU[1] : gfx1201\n' > "$WORK/smi_list_gfx"
+assert_eq "amd-smi list-only arches: ROCr survivors, then HIP" "gfx1201|" \
+    "$(SUMMARY_ENV="ROCR_VISIBLE_DEVICES=1 STUB_AMDSMI_LIST=$WORK/smi_list_gfx" \
+        summary "$WORK/empty" "$WORK/smi_no_asic")"
+
+echo "=== a pinned index keeps the enumerated card ==="
+assert_eq "no discrete repick when routing was skipped" "gfx1036|AMD Radeon Graphics" \
+    "$(SUMMARY_ENV=STUB_PINNED=true summary "$WORK/roc_twins" "$WORK/empty")"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

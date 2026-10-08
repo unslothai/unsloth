@@ -116,6 +116,10 @@ def _install_lightweight_backend_stubs(monkeypatch):
     monkeypatch.setitem(sys.modules, "core", core_pkg)
     monkeypatch.setitem(sys.modules, "core.export", core_export)
     monkeypatch.setitem(sys.modules, "core.inference", core_inference)
+    core_export.q4nx = _load_module("core.export.q4nx", "core/export/q4nx.py", monkeypatch)
+    core_export.decision = _load_module(
+        "core.export.decision", "core/export/decision.py", monkeypatch
+    )
     _load_module(
         "core.inference.model_ids",
         "core/inference/model_ids.py",
@@ -184,6 +188,8 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_model_config._is_imatrix_path = lambda *args, **kwargs: False
     utils_model_config._is_mtp_drafter = lambda *args, **kwargs: False
     utils_model_config.is_audio_input_type = lambda *args, **kwargs: None
+    utils_model_config.is_decision_model = lambda *args, **kwargs: False
+    utils_model_config.decision_layout = lambda *args, **kwargs: None
     monkeypatch.setitem(
         sys.modules,
         "utils.models.model_config",
@@ -207,8 +213,10 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "ExportMergedModelRequest",
         "ExportBaseModelRequest",
         "ExportGGUFRequest",
+        "ConvertQ4NXRequest",
         "ExportLoRAAdapterRequest",
         "LlmCompressorExportProbeResponse",
+        "ExportDecisionInfoResponse",
     ):
         setattr(models_pkg, name, object)
     models_pkg.LocalModelInfo = _LocalModelInfo
@@ -226,6 +234,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     ):
         setattr(models_models, name, object)
     models_models.ModelType = str
+    models_models.LocalModelSource = str
     monkeypatch.setitem(sys.modules, "models.models", models_models)
 
     models_responses = types.ModuleType("models.responses")
@@ -288,6 +297,7 @@ def _install_export_backend_stubs(monkeypatch):
 
     utils_model_config = sys.modules["utils.models.model_config"]
     utils_model_config.detect_audio_type = lambda *args, **kwargs: None
+    utils_model_config.load_mlx_adapter_tokenizer = lambda tokenizer, *args, **kwargs: tokenizer
 
     utils_paths = sys.modules["utils.paths"]
     utils_paths.ensure_dir = lambda path: Path(path).mkdir(parents = True, exist_ok = True)

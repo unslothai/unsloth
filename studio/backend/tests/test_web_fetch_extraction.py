@@ -345,6 +345,27 @@ def test_visible_void_hr_still_renders():
     assert "---" in out
 
 
+@pytest.mark.parametrize(
+    "html, expected",
+    [
+        (
+            "<ul>\n<li>\n<p>First item</p>\n</li>\n<li>\n<p>Second item</p>\n</li>\n</ul>",
+            "* First item\n\n* Second item",
+        ),
+        ("<ol><li><p>One</p></li><li><div>Two</div></li></ol>", "1. One\n\n2. Two"),
+        ("<ul><li><p>a</p><ul><li><p>b</p></li></ul></li></ul>", "* a\n\n  * b"),
+        ("<ul><li></li><p>outside</p></ul>", "*\n\noutside"),
+    ],
+)
+def test_block_opening_list_item_stays_on_marker_line(html, expected):
+    assert html_to_markdown(html) == expected
+
+
+def test_empty_header_does_not_consume_the_list_marker():
+    html = "<ul><li><header></header><p>text text text</p></li></ul>"
+    assert html_to_markdown(html, main_content = True) == "* text text text"
+
+
 # ── html_to_markdown: main-content scoping ───────────────────────
 
 
@@ -1498,6 +1519,41 @@ def test_fetch_url_raw_overall_deadline_aborts_across_redirects(monkeypatch):
     assert err == "Failed to fetch URL: timed out."
     assert body == ""
     assert hops["n"] < 5
+
+
+def test_fetch_url_raw_host_headers_follow_each_hop(monkeypatch):
+    # A header chosen for unsloth.ai must not ride a redirect to another site.
+    import urllib.request
+    from urllib.error import HTTPError
+
+    import core.inference.tools as tools_mod
+
+    sent = []
+
+    class _Opener:
+        def open(
+            self,
+            req,
+            timeout = None,
+        ):
+            sent.append((req.get_header("Host"), req.get_header("X-unsloth-studio")))
+            raise HTTPError(
+                req.full_url, 302, "Found", {"Location": "https://example.com/next"}, None
+            )
+
+    monkeypatch.setattr(
+        tools_mod,
+        "_validate_and_resolve_host",
+        lambda host, port: (True, "", ["203.0.113.7"]),
+    )
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _Opener())
+
+    tools_mod._fetch_url_raw(
+        "https://unsloth.ai/",
+        host_headers = lambda host: {"X-Unsloth-Studio": "1"} if host == "unsloth.ai" else {},
+    )
+    assert sent[0] == ("unsloth.ai", "1")
+    assert sent[1] == ("example.com", None)
 
 
 def test_fetch_url_raw_cancel_event_aborts_before_network(monkeypatch):

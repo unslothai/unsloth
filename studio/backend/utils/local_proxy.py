@@ -39,11 +39,22 @@ def _https_origin(value: str) -> tuple[str, int] | None:
             host = str(ipaddress.IPv6Address(host))
         except ValueError:
             return None
-    elif not re.fullmatch(r"[a-z0-9]+(?:[a-z0-9.-]*[a-z0-9])?", host):
+    elif not re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.?",
+        host,
+    ):
         return None
     if port is not None and not 1 <= port <= 65535:
         return None
     return host, 443 if port is None else port
+
+
+def _proxy_authority(origin: tuple[str, int]) -> tuple[str, int]:
+    # DNS's optional root dot may be added/removed by the proxy. Normalize only
+    # routing authorities: browser Origin still has to match the configured URL
+    # spelling, because dotted and undotted domains are distinct web origins.
+    host, port = origin
+    return host.removesuffix("."), port
 
 
 def validate_local_proxy_origin() -> tuple[str, int] | None:
@@ -91,7 +102,8 @@ def local_proxy_frontend_request(scope) -> bool:
                 return False
             headers[name] = value.decode("latin-1")
     for name in (b"host", b"x-forwarded-host"):
-        if _https_origin("https://" + headers.get(name, "")) != expected:
+        authority = _https_origin("https://" + headers.get(name, ""))
+        if authority is None or _proxy_authority(authority) != _proxy_authority(expected):
             return False
     if headers.get(b"x-forwarded-proto") != "https":
         return False
