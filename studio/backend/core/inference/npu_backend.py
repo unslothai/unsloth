@@ -170,6 +170,14 @@ def _installer_module():
     return install_lemonade_prebuilt
 
 
+def _pinned_flm_version() -> Optional[str]:
+    """The FastFlowLM version the pins ask for, or None when they cannot be read."""
+    try:
+        return str(_installer_module().load_pins()["fastflowlm"]["version"]).lstrip("v")
+    except Exception:  # noqa: BLE001 -- an unreadable pin skips the check, never blocks Enable
+        return None
+
+
 def _npu_root() -> Path:
     from utils.paths.storage_roots import studio_root
     return studio_root() / "lemonade"
@@ -302,7 +310,33 @@ class LemonadeNpuBackend:
 
     def _upgrade_pending(self, binary: Optional[Path]) -> bool:
         """Whether the NPU was enabled, but a Studio update has since moved the runtime's pins."""
-        return binary is None and self._validated_install() is not None
+        validated = self._validated_install()
+        return binary is None and isinstance(validated, str) and bool(validated)
+
+    def _flm_version(self) -> Optional[str]:
+        """The installed FastFlowLM's version without a leading "v", or None if unreadable."""
+        binary = self._flm_binary()
+        if binary is None:
+            return None
+        env = child_env_without_native_path_secret()
+        env["FLM_MODEL_PATH"] = str(self._flm_model_dir)
+        env["FLM_DISABLE_UPDATE_CHECK"] = "1"
+        try:
+            completed = subprocess.run(
+                [str(binary), "version", "--json"],
+                capture_output = True,
+                stdin = subprocess.DEVNULL,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = env,
+                **windows_hidden_subprocess_kwargs(),
+            )
+            version = json.loads(completed.stdout).get("version")
+        except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+            return None
+        return str(version).lstrip("v") if version else None
 
     def status(self) -> dict[str, Any]:
         hardware = self.hardware()
@@ -396,6 +430,14 @@ class LemonadeNpuBackend:
                 )
                 if _failed(response):
                     raise NpuError(f"Installing FastFlowLM failed: {_error_message(response)}")
+                # lemond keeps the FastFlowLM it has when an update download fails, and still
+                # answers success; only the installed version tells the update did not happen.
+                expected, actual = _pinned_flm_version(), self._flm_version()
+                if expected and actual and actual != expected:
+                    raise NpuError(
+                        f"Updating FastFlowLM to v{expected} failed; v{actual} is still installed. "
+                        "Check the internet connection, then try again."
+                    )
                 self._state = "validating"
                 self._validation = self._validate()
                 if not self._validation.get("ready"):

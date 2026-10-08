@@ -80,9 +80,15 @@ jobs:
         run: |
           set -euo pipefail
           remote="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          push=true
           if git fetch --quiet --depth 1 "$remote" "refs/heads/${BRANCH}" 2>/dev/null \
             && git diff --quiet FETCH_HEAD -- "$PINS"; then
             echo "${BRANCH} already pins these releases."
+            push=false
+          fi
+          number="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          # Nothing new and its PR is open. Without a PR (a failed create), fall through to open one.
+          if [ "$push" = false ] && [ -n "$number" ]; then
             exit 0
           fi
           title="Studio: update Lemonade and FastFlowLM pins ($(paste -sd ';' "$RUNNER_TEMP/changes.txt" | sed 's/;/, /g'))"
@@ -99,10 +105,11 @@ jobs:
           } > "$RUNNER_TEMP/body.md"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH"
-          git commit --quiet -m "$title" -- "$PINS"
-          git push --force "$remote" "HEAD:refs/heads/${BRANCH}"
-          number="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ "$push" = true ]; then
+            git checkout -B "$BRANCH"
+            git commit --quiet -m "$title" -- "$PINS"
+            git push --force "$remote" "HEAD:refs/heads/${BRANCH}"
+          fi
           if [ -n "$number" ]; then
             gh pr edit "$number" --repo "$REPO" --title "$title" --body-file "$RUNNER_TEMP/body.md"
           else

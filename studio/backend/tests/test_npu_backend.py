@@ -537,6 +537,30 @@ def test_a_runtime_never_enabled_is_not_installed_behind_the_owners_back(tmp_pat
     assert installer.installs == 0
 
 
+@pytest.mark.parametrize("installed, ok", [("1.0.7", True), ("1.0.3", False)])
+def test_an_update_lemond_could_not_download_is_not_recorded_as_done(
+    npu, monkeypatch, installed, ok
+):
+    npu.installer.load_pins = lambda: {"fastflowlm": {"version": "v1.0.7"}}
+    monkeypatch.setenv("FAKE_FLM_VERSION", installed)
+    if ok:
+        assert npu.enable()["ready"] is True
+        return
+    with pytest.raises(nb.NpuError, match = r"v1\.0\.7 failed; v1\.0\.3 is still installed"):
+        npu.enable()
+    assert npu.status()["state"] == "failed"
+    assert nb.LemonadeNpuBackend(root = npu.root).status()["ready"] is False
+
+
+def test_a_marker_without_an_install_path_does_not_start_an_upgrade(tmp_path, monkeypatch):
+    installer = _PinsMoved(_binary(tmp_path))
+    monkeypatch.setattr(nb, "_installer_module", lambda: installer)
+    backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    backend.root.mkdir(parents = True)
+    (backend.root / "npu_validated.json").write_text('{"lemond": false}', encoding = "utf-8")
+    assert backend._upgrade_pending(None) is False
+
+
 def test_a_failed_replacement_leaves_nothing_on_the_npu(npu, monkeypatch):
     monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM", "gemma3-4b-FLM"]')
     monkeypatch.setenv("FAKE_LEMOND_LOAD_FAILS_FOR", "gemma3-4b-FLM")
