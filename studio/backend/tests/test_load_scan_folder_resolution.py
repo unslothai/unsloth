@@ -67,7 +67,6 @@ def test_resolved_variant_replaces_the_requested_one(monkeypatch):
 
     def fake_resolve(wanted, **kwargs):
         seen.append(wanted)
-        # A legacy alias (e.g. a retired quant label) resolves to the current on-disk quant.
         return ("C:/models/snapshots/abc", "Q4_K_XL", "loader")
 
     monkeypatch.setattr(resolver, "resolve_local_gguf", fake_resolve)
@@ -126,7 +125,7 @@ def test_native_path_lease_keeps_the_requested_id(monkeypatch):
     assert inf._as_local_scan_folder_request(original) is original
 
 
-# Real index from here on: no resolver mock, so source precedence and the hub-cache guard are exercised.
+# Real resolver index below (no mock).
 
 _REPO = "unsloth/Tiny-Probe-GGUF"
 
@@ -206,7 +205,6 @@ def test_weightless_hub_skeleton_does_not_hide_the_scan_folder_copy(roots):
 
 
 def test_validate_reads_the_scan_folder_copy_offline(roots, monkeypatch):
-    # The chat flow validates before it loads; offline, a remote probe of the repo id fails.
     import asyncio
 
     from models.inference import ValidateModelRequest

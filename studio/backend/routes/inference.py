@@ -8809,20 +8809,11 @@ def _as_ollama_manifest_request(request):
 
 
 def _as_local_scan_folder_request(request):
-    """*request* with a repo id a registered local root holds rewritten to that local path.
-
-    The picker lists scan-folder models under a repo-shaped id, which
-    ModelConfig.from_identifier classifies as remote, so /load would download the
-    repo into the hub cache even though complete weights are on disk. The
-    auto-switch resolver indexes exactly those roots (scan folders included), so
-    a positive hit is the weights the picker showed; a miss leaves the request
-    untouched for the existing remote path.
-    """
+    """*request* with a repo id that only a local root (e.g. a scan folder) holds rewritten to that path."""
     from core.inference.local_model_resolver import _is_abs_path_id, resolve_local_gguf
 
     identifier = (request.model_path or "").strip()
-    # Only org/name ids: a bare name goes remote as unsloth/<name>, and a same-stemmed
-    # local file must not win it.
+    # Bare names mean unsloth/<name> remotely; a same-stemmed local file must not win them.
     if (
         not identifier
         or "/" not in identifier
@@ -8830,24 +8821,20 @@ def _as_local_scan_folder_request(request):
         or _is_abs_path_id(identifier)
     ):
         return request
-    # Same boundary as the manifest rewrite above: a managed account's grant named
-    # the id, and a native lease names one exact artifact a swap must not trade away.
+    # Same boundary as _as_ollama_manifest_request: grants and leases name the exact id.
     if account_access.managed_account() or getattr(request, "native_path_lease", None):
         return request
     wanted = f"{identifier}:{request.gguf_variant}" if request.gguf_variant else identifier
     try:
         resolved = resolve_local_gguf(wanted)
     except Exception:
-        # The resolver is best-effort by contract; a load never fails on its bookkeeping.
         return request
     if resolved is None:
         return request
     load_path, variant, _loader_id = resolved[:3]
     if is_ollama_manifest_ref(str(load_path)):
-        # An Ollama tag reached by id: the manifest rewriter's lease handling owns it.
         return request
-    # The index also covers the active hub cache, which the remote path already reuses
-    # without downloading; rewriting that hit would only trade the repo id for a path.
+    # The active hub cache already loads by repo id without downloading; keep that identity.
     try:
         from hub.utils.paths import path_is_same_or_child
         from routes.models import _resolve_hf_cache_dir
@@ -19622,7 +19609,7 @@ async def validate_model(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     request = await asyncio.to_thread(_as_ollama_manifest_request, request)
-    # The chat flow validates before it loads, so both must read the same local copy.
+    # The chat flow validates before /load; offline the remote probe would refuse the id.
     request = await asyncio.to_thread(_as_local_scan_folder_request, request)
     from core.inference.llama_cpp import (
         LlamaServerNotFoundError,
