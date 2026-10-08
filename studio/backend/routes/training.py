@@ -3640,7 +3640,6 @@ def _reserved_diffusion_dataset_names() -> frozenset[str]:
         seed_uploads_root,
         unstructured_uploads_root,
     )
-
     return frozenset(
         path.name.casefold()
         for path in (
@@ -3879,14 +3878,16 @@ async def diffusion_training_info(current_subject: str = Depends(get_current_sub
             if summary.image_count > 0 or summary.clip_count > 0:
                 found.append(summary)
             elif child.name.casefold() not in reserved_names:
+                # captions-only, or emptied by deleting its last item (hidden .thumbs may remain).
                 try:
-                    has_captions = any(
-                        entry.is_file() and entry.suffix.lower() in _DIFFUSION_DATASET_TEXT_EXTS
-                        for entry in child.iterdir()
+                    visible = [e for e in child.iterdir() if not e.name.startswith(".")]
+                    continuable = not visible or any(
+                        e.is_file() and e.suffix.lower() in _DIFFUSION_DATASET_TEXT_EXTS
+                        for e in visible
                     )
                 except OSError:
-                    has_captions = False
-                if has_captions:
+                    continuable = False
+                if continuable:
                     continuations.append(child.name)
         families = [DiffusionTrainableFamily(**info) for info in _ui_trainable_families(found)]
         return DiffusionTrainingInfoResponse(

@@ -229,6 +229,18 @@ def test_info_still_skips_a_folder_holding_neither(client, ds_root):
     assert r.json()["continuation_dataset_names"] == ["captions-only"]
 
 
+def test_info_offers_an_emptied_dataset_folder_as_a_continuation(client, ds_root):
+    emptied = ds_root / "emptied"
+    (emptied / ".thumbs").mkdir(parents = True)
+    other = ds_root / "other-files"
+    other.mkdir()
+    (other / "notes.bin").write_bytes(b"x")
+
+    r = client.get("/api/train/diffusion/info")
+    assert r.status_code == 200, r.text
+    assert r.json()["continuation_dataset_names"] == ["emptied"]
+
+
 def test_info_never_offers_internal_dataset_folders_as_continuations(client, ds_root):
     for name in ("uploads", "recipes", "seed-uploads", "unstructured-uploads"):
         folder = ds_root / name
