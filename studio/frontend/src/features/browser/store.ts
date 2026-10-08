@@ -483,8 +483,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     closeChatPages: () => {
       for (const tab of get().tabs) {
-        const entry = currentEntry(tab);
-        if (entry.kind === "file" && entry.chatPage) get().closeTab(tab.id);
+        if (tab.history.some((entry) => entry.kind === "file" && entry.chatPage)) get().closeTab(tab.id);
       }
     },
     openUrl: (url, options) => {

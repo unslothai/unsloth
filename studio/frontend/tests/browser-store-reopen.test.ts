@@ -219,7 +219,7 @@ test("a page's link that turns out to be a download leaves that page showing", (
   store.closeTab(tabId);
 });
 
-test("leaving a chat closes the tabs showing its pages, and only those", () => {
+test("leaving a chat closes tabs containing its pages in history, and only those", () => {
   const store = useBrowserStore.getState();
   for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
   const html = (name: string, key: string) =>
@@ -238,7 +238,13 @@ test("leaving a chat closes the tabs showing its pages, and only those", () => {
     const entry = currentEntry(tab);
     return entry.kind === "file" ? entry.name : entry.kind === "web" ? entry.url : entry.kind;
   });
-  assert.deepEqual(shown, ["https://example.com/", "https://site.example/", "notes.txt"]);
+  assert.deepEqual(shown, ["https://site.example/", "notes.txt"]);
+  assert.equal(
+    useBrowserStore.getState().tabs.some((tab) =>
+      tab.history.some((entry) => entry.kind === "file" && entry.chatPage),
+    ),
+    false,
+  );
   assert.equal(useBrowserStore.getState().open, true);
   for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
   html("only.html", "a4");
