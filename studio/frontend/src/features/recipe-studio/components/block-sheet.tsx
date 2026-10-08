@@ -472,7 +472,7 @@ export function BlockSheet({
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search steps..."
-                className="corner-squircle h-9 pl-8"
+                className="h-9 pl-8"
                 aria-label="Search steps"
               />
             </div>
@@ -502,7 +502,7 @@ export function BlockSheet({
                         type="button"
                         size="sm"
                         variant="ghost"
-                        className="corner-squircle justify-start px-0 text-primary hover:bg-transparent hover:text-primary/80"
+                        className="justify-start px-0 text-primary hover:bg-transparent hover:text-primary/80"
                         onClick={() => onViewChange("seed")}
                       >
                         Start with source data

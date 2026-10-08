@@ -1013,7 +1013,7 @@ function GpuMemorySettings({
             {showSplit && splitIsCustom && (
               <button
                 type="button"
-                className="ml-auto shrink-0 rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground"
+                className="ml-auto shrink-0 rounded-full px-1 text-ui-12 text-muted-foreground hover:text-foreground"
                 onClick={() => update({ tensorSplit: null })}
               >
                 Reset split
@@ -1062,7 +1062,7 @@ function GpuMemorySettings({
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      className="rounded-full px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} earlier`}
                       disabled={position === 0}
                       onClick={() => moveGpu(d.index, -1)}
@@ -1071,7 +1071,7 @@ function GpuMemorySettings({
                     </button>
                     <button
                       type="button"
-                      className="rounded px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
+                      className="rounded-full px-1 text-ui-12 text-muted-foreground hover:text-foreground disabled:opacity-30"
                       aria-label={`Move GPU ${d.index} later`}
                       disabled={position >= orderedGpuIds.length - 1}
                       onClick={() => moveGpu(d.index, 1)}
@@ -2008,7 +2008,7 @@ function ExtraArgsRow({
       </div>
       {/* Grouped so the notes sit 4px under the field, as advice does elsewhere. */}
       <div className="space-y-1">
-        <div className="panel-text-surface h-20 w-full overflow-hidden corner-squircle">
+        <div className="panel-text-surface h-20 w-full overflow-hidden ">
           <textarea
             value={text}
             onChange={(event) => commit(event.target.value)}

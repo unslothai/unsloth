@@ -442,7 +442,7 @@ function ApiMonitorPanel({
                 entries.slice(0, VISIBLE_ENTRIES).map((entry) => (
                   <div
                     key={entry.id}
-                    className="flex h-9 min-w-0 items-center gap-2.5 rounded-[12px] px-3 transition-colors hover:bg-nav-surface-hover"
+                    className="flex h-9 min-w-0 items-center gap-2.5 rounded-full px-3 transition-colors hover:bg-nav-surface-hover"
                   >
                     <span
                       className={cn(

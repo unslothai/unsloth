@@ -338,7 +338,7 @@ function renderNodeBody(
               <Badge
                 key={providerName}
                 variant="secondary"
-                className="corner-squircle font-mono text-ui-11"
+                className="font-mono text-ui-11"
               >
                 {providerName}
               </Badge>
@@ -400,7 +400,7 @@ function RecipeGraphNodeBase({
 
     return (
       <BaseNode
-        className="corner-squircle relative w-full min-w-0 overflow-visible rounded-4xl border-border/60 shadow-sm"
+        className="relative w-full min-w-0 overflow-visible rounded-4xl border-border/60 shadow-sm"
         style={noteStyle}
       >
         <NodeResizer
@@ -466,7 +466,7 @@ function RecipeGraphNodeBase({
   return (
     <BaseNode
       className={cn(
-        "corner-squircle relative w-full min-w-0 overflow-visible rounded-4xl border-border/60 shadow-sm",
+        "relative w-full min-w-0 overflow-visible rounded-4xl border-border/60 shadow-sm",
         runtimeNodeTone,
         hasConnectionIssue &&
           runtimeState === "idle" &&
@@ -495,7 +495,7 @@ function RecipeGraphNodeBase({
         <div className="flex min-w-0 items-center gap-2">
           <div
             className={cn(
-              "corner-squircle flex size-7 items-center justify-center rounded-md border",
+              "flex size-7 items-center justify-center rounded-md border",
               iconTone,
             )}
           >

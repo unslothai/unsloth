@@ -348,7 +348,7 @@ export function KnowledgeBaseDialog({
                       type="button"
                       onClick={() => openDocuments(kb)}
                       title="Open to add or remove documents"
-                      className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="-my-1 -ml-2 flex min-w-0 flex-1 items-center gap-2 rounded-row px-2 py-1 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
                       <span className="block min-w-0 flex-1">
                         <span className="block truncate font-medium">

@@ -34,7 +34,7 @@ export const MessageMenuTime: FC<{ onShowDetails: () => void }> = ({
         <ActionBarMorePrimitive.Item
           onSelect={onShowDetails}
           aria-label="See response details"
-          className="group/menu-time flex w-fit max-w-full cursor-pointer items-center rounded-[11px] text-muted-foreground outline-none"
+          className="group/menu-time flex w-fit max-w-full cursor-pointer items-center rounded-row text-muted-foreground outline-none"
         >
           {date && (
             <time

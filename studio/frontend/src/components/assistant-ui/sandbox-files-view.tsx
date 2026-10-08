@@ -78,7 +78,7 @@ function SandboxFileRow({
         onClick={save}
         disabled={busy}
         title={`Save ${file.name}`}
-        className="flex items-center gap-2 rounded border border-border px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-60"
+        className="flex items-center gap-2 rounded-row border border-border px-2 py-1 text-xs text-foreground hover:bg-muted disabled:opacity-60"
       >
         <HugeiconsIcon icon={FileEmpty02Icon} className="size-3.5 shrink-0" />
         <span className="truncate font-mono">{file.name}</span>

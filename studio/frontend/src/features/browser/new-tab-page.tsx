@@ -165,7 +165,7 @@ function ToolButton({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-11 min-w-0 cursor-pointer items-center gap-3 rounded-xl bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="flex h-11 min-w-0 cursor-pointer items-center gap-3 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)] px-3.5 text-start text-ui-15 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <HugeiconsIcon
         icon={icon}

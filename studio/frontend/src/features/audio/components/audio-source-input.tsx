@@ -208,7 +208,7 @@ export function AudioSourceInput({
         if (file) void source.pickFile(file);
       }}
       className={cn(
-        "corner-squircle grid gap-3 rounded-4xl bg-card p-4 ring-1 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
+        "grid gap-3 rounded-4xl bg-card p-4 ring-1 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-ring",
         dragging
           ? "bg-accent ring-[color-mix(in_oklab,var(--foreground)_calc(40%*var(--contrast-edge-gain,1)),transparent)]"
           : "ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]",

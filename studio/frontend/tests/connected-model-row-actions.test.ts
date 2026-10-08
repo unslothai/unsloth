@@ -278,7 +278,7 @@ test("the connection's own settings hang off the group heading", () => {
   // The same box and glyph the row gutter's buttons use, so the columns line up.
   assert.match(
     pickers,
-    /const HEADING_ACTION_CLASS =\s*"flex size-5 shrink-0 items-center justify-center rounded-md/,
+    /const HEADING_ACTION_CLASS =\s*"flex size-5 shrink-0 items-center justify-center rounded-full/,
   );
   assert.match(
     pickers,

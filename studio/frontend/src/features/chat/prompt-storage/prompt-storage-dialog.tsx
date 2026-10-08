@@ -1343,7 +1343,7 @@ function ExportModal({
               {/* */}
               <label
                 className={cn(
-                  "flex w-full cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 transition-all",
+                  "flex w-full cursor-pointer items-center gap-3 rounded-row border px-4 py-3 transition-all",
                   scope === "single"
                     ? "border-ring-strong bg-primary/5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
@@ -1366,7 +1366,7 @@ function ExportModal({
               {/* */}
               <label
                 className={cn(
-                  "flex w-full cursor-pointer items-start gap-3 rounded-lg border px-4 py-3 transition-all",
+                  "flex w-full cursor-pointer items-start gap-3 rounded-row border px-4 py-3 transition-all",
                   scope === "training"
                     ? "border-ring-strong bg-primary/5"
                     : "border-border/60 hover:border-border hover:bg-muted/30",
@@ -1405,7 +1405,7 @@ function ExportModal({
                   <label
                     key={f}
                     className={cn(
-                      "select-none rounded-md px-6 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all",
+                      "select-none rounded-full px-6 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all",
                       disabled
                         ? "cursor-not-allowed opacity-40 text-muted-foreground"
                         : "cursor-pointer",
@@ -1502,7 +1502,7 @@ function RailRow({
       aria-current={selected ? "true" : undefined}
       onClick={onSelect}
       className={cn(
-        "w-full rounded-lg px-2.5 py-2 text-left transition-colors border",
+        "w-full rounded-row px-2.5 py-2 text-left transition-colors border",
         "focus-visible:ring-1 focus-visible:ring-ring outline-none",
         selected
           ? "bg-muted/70 border-border"
@@ -1719,7 +1719,7 @@ function PromptDetail({
           type="button"
           onClick={() => togglePinnedPrompt(entry.id)}
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
             isPinned
               ? "text-primary hover:bg-primary/10"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
@@ -1731,7 +1731,7 @@ function PromptDetail({
         <button
           type="button"
           onClick={() => onExport(exportValue)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -1740,7 +1740,7 @@ function PromptDetail({
           type="button"
           disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
           <Trash2Icon className="size-4" />
@@ -2063,7 +2063,7 @@ function PromptListDetail({
           type="button"
           onClick={() => togglePinnedList(entry.id)}
           className={cn(
-            "flex h-8 w-8 items-center justify-center rounded-lg transition-colors",
+            "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
             isPinned
               ? "text-primary hover:bg-primary/10"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
@@ -2075,7 +2075,7 @@ function PromptListDetail({
         <button
           type="button"
           onClick={() => onExport(exportValue)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           title="Export"
         >
           <HugeiconsIcon icon={Download01Icon} className="size-4" />
@@ -2084,7 +2084,7 @@ function PromptListDetail({
           type="button"
           disabled={pending}
           onClick={() => (dirty ? setConfirmingDelete(true) : void handleDelete())}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
           <Trash2Icon className="size-4" />
@@ -2667,7 +2667,7 @@ export function PromptStorageDialog({
                   if (activeTab === "prompts") setShowNewPrompt(true);
                   else setShowNewList(true);
                 }}
-                className="flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-dashed border-border/60 px-3 py-2 text-xs font-medium text-muted-foreground hover:border-border hover:bg-muted/50 hover:text-foreground transition-all"
+                className="flex shrink-0 items-center justify-center gap-1.5 rounded-row border border-dashed border-border/60 px-3 py-2 text-xs font-medium text-muted-foreground hover:border-border hover:bg-muted/50 hover:text-foreground transition-all"
               >
                 <PlusIcon className="size-3.5" />
                 {activeTab === "prompts" ? "New prompt" : "New prompt list"}

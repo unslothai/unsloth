@@ -90,7 +90,7 @@ export function ExpressionDialog({
         />
         <Textarea
           id={exprId}
-          className="corner-squircle nodrag"
+          className="nodrag"
           aria-invalid={invalidExprRefs.length > 0}
           placeholder="{{ category_1 }} - {{ subcategory_1 }}"
           value={config.expr}

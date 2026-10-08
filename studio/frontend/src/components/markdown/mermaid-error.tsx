@@ -22,7 +22,7 @@ export function MermaidError({
       <button
         type="button"
         onClick={retry}
-        className="mt-2 rounded border border-red-300 px-2 py-1 text-xs hover:bg-red-100"
+        className="mt-2 rounded-row border border-red-300 px-2 py-1 text-xs hover:bg-red-100"
       >
         Retry
       </button>

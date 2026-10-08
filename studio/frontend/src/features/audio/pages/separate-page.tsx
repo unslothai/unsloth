@@ -486,7 +486,7 @@ export function SeparateOutput({
         )}
       >
         {pendingRun ? (
-          <output className="corner-squircle grid w-full gap-1 rounded-4xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]">
+          <output className="grid w-full gap-1 rounded-4xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]">
             <span className="block truncate text-ui-13 font-medium text-foreground">
               {pendingRun.title}
             </span>
@@ -592,7 +592,7 @@ export function SeparateOutput({
                 <div
                   key={group.groupId}
                   className={cn(
-                    "group relative flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-muted",
+                    "group relative flex items-center gap-1 rounded-row pr-1 transition-colors hover:bg-muted",
                     current && "bg-muted",
                   )}
                 >

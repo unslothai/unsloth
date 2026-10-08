@@ -257,7 +257,6 @@ export function PublishExecutionDialog({
                 </label>
                 <Textarea
                   id="publish-description"
-                  className="corner-squircle"
                   value={description}
                   onChange={(event) => setDescription(event.target.value)}
                   disabled={publishing}
@@ -304,7 +303,7 @@ export function PublishExecutionDialog({
                 </p>
               </div>
 
-              <div className="corner-squircle flex items-start gap-3 rounded-2xl border border-border/60 bg-card/35 p-3">
+              <div className="flex items-start gap-3 rounded-2xl border border-border/60 bg-card/35 p-3">
                 <Switch
                   id="publish-private"
                   size="sm"

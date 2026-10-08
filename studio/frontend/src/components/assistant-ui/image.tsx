@@ -375,7 +375,7 @@ function RegenerateButton({
       disabled={isRegenerating}
       data-slot="image-regenerate"
       aria-label="Regenerate image"
-      className="inline-flex size-7 items-center justify-center rounded hover:bg-muted disabled:opacity-50"
+      className="inline-flex size-7 items-center justify-center rounded-full hover:bg-muted disabled:opacity-50"
     >
       <RefreshGlyph
         className={cn("size-4", isRegenerating && "animate-spin")}
@@ -395,7 +395,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
         onClick={() => downloadImagePart(part)}
         data-slot="image-download"
         aria-label="Download image"
-        className="inline-flex size-7 items-center justify-center rounded hover:bg-muted"
+        className="inline-flex size-7 items-center justify-center rounded-full hover:bg-muted"
       >
         <HugeiconsIcon icon={Download01Icon} className="size-4" />
       </button>
@@ -408,7 +408,7 @@ function ImageActions({ part, onRegenerate, className }: ImageActionsProps) {
         }}
         data-slot="image-copy"
         aria-label="Copy image"
-        className="inline-flex size-7 items-center justify-center rounded hover:bg-muted"
+        className="inline-flex size-7 items-center justify-center rounded-full hover:bg-muted"
       >
         <HugeiconsIcon icon={Copy01Icon} className="size-4" />
       </button>

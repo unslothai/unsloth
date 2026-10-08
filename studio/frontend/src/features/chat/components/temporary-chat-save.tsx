@@ -248,7 +248,7 @@ export function SaveTemporaryChatMenu({
         }}
       >
         <DialogContent
-          className="corner-squircle dialog-soft-surface sm:max-w-md"
+          className="dialog-soft-surface sm:max-w-md"
           showCloseButton={!saving}
         >
           <DialogHeader className="gap-3">

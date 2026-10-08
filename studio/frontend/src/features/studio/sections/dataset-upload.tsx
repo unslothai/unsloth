@@ -64,7 +64,7 @@ export function DatasetUploadField({ uploads }: { uploads: DatasetUploads }) {
         onDragOver={uploads.handleDatasetDragOver}
         onDragLeave={() => uploads.setIsDatasetDragOver(false)}
         className={cn(
-          "group relative flex h-9 w-full select-none items-center justify-center gap-2 rounded-[12px] border border-dashed px-3 text-center transition-colors",
+          "group relative flex h-9 w-full select-none items-center justify-center gap-2 rounded-full border border-dashed px-3 text-center transition-colors",
           "border-[color-mix(in_oklab,var(--foreground)_calc(15%*var(--contrast-edge-gain,1)),transparent)] dark:border-[rgb(255_255_255_/_calc(0.15*var(--contrast-edge-gain,1)))]",
           "hover:border-[color-mix(in_oklab,var(--foreground)_calc(30%*var(--contrast-edge-gain,1)),transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_calc(2%*var(--contrast-wash-gain,1)),transparent)] dark:hover:border-[rgb(255_255_255_/_calc(0.3*var(--contrast-edge-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.025*var(--contrast-wash-gain,1)))]",
           PICKER_FOCUS_VISIBLE_CLASS,

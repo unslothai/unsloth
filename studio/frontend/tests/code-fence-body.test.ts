@@ -288,7 +288,7 @@ test("a fence source is highlighted once per revision, not twice", () => {
 const TABLE_CONTROLS =
   '[data-streamdown="table-wrapper"] > div:first-child:not(:last-child)';
 const TABLE_BUTTON =
-  /height: calc\(var\(--spacing\) \* 8\);[\s\S]*border-radius: 10px;\s*color: var\(--color-chat-icon-fg\);/;
+  /height: calc\(var\(--spacing\) \* 8\);[\s\S]*border-radius: 9999px;\s*color: var\(--color-chat-icon-fg\);/;
 
 // Streamdown draws the table's buttons itself, 23px with no hover fill, beside these 32px ones.
 test("a table's toolbar buttons are drawn like the code block's", () => {

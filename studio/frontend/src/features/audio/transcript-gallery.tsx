@@ -283,7 +283,7 @@ export function TranscriptGallery({
           <div
             key={record.id}
             className={cn(
-              "group flex items-center rounded-md pr-1 transition-colors hover:bg-muted",
+              "group flex items-center rounded-row pr-1 transition-colors hover:bg-muted",
               currentId === record.id && "bg-muted",
             )}
           >

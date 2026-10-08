@@ -206,7 +206,7 @@ const TOOLBAR_BUTTON =
   "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
 
 const NAV_BUTTON =
-  "size-8 rounded-md text-foreground disabled:hover:text-foreground disabled:opacity-30";
+  "size-8 rounded-full text-foreground disabled:hover:text-foreground disabled:opacity-30";
 const NAV_ICON = "size-4.5";
 const ANNOTATE_BUTTON = "size-8 shrink-0 rounded-full p-0 text-foreground";
 // The dashed box sits up-left of the glyph's centre, so nudge it to look centred.
@@ -652,7 +652,7 @@ function TabStrip({
                     activateTab(tab.id);
                 }}
                 className={cn(
-                  "group/tab relative flex h-[calc(34px*var(--ui-space-scale,1))] min-w-[calc(88px*var(--ui-space-scale,1))] max-w-60 flex-1 basis-0 cursor-pointer touch-none select-none items-center gap-1.5 rounded-[10px] pl-2 pr-1.5 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  "group/tab relative flex h-[calc(34px*var(--ui-space-scale,1))] min-w-[calc(88px*var(--ui-space-scale,1))] max-w-60 flex-1 basis-0 cursor-pointer touch-none select-none items-center gap-1.5 rounded-full pl-2 pr-1.5 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                   active
                     ? "bg-card text-foreground dark:bg-accent"
                     : "text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
@@ -675,7 +675,7 @@ function TabStrip({
                       event.stopPropagation();
                       setTabMuted(tab, false);
                     }}
-                    className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
+                    className="flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground"
                   >
                     <HugeiconsIcon icon={VolumeMute02Icon} strokeWidth={1.75} className="size-3.5" />
                   </button>
@@ -688,7 +688,7 @@ function TabStrip({
                     closeTab(tab.id);
                   }}
                   className={cn(
-                    "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
+                    "flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
                     !active &&
                       "hidden group-hover/tab:flex group-focus-visible/tab:flex focus-visible:flex",
                   )}
@@ -772,7 +772,7 @@ function AddressBar({
         inputRef.current?.blur();
       }}
     >
-      <div className={cn("flex h-9 items-center gap-0.5 rounded-lg pl-1 pr-1 transition-colors", URLBAR)}>
+      <div className={cn("flex h-9 items-center gap-0.5 rounded-full pl-1 pr-1 transition-colors", URLBAR)}>
         {/* Icons step aside while typing and come back after. */}
         {editing ? null : (leading ?? <SiteIdentity address={address} tab={tab} />)}
         <div className="relative min-w-0 flex-1">
@@ -857,9 +857,9 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
   const verified = secure && pageVerified(tab);
   const label = t("browser.siteInfo.label");
   const row =
-    "flex w-full cursor-pointer items-center gap-2.5 rounded-[11px] px-3 py-2 text-start text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
+    "flex w-full cursor-pointer items-center gap-2.5 rounded-row px-3 py-2 text-start text-sm transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none";
   const iconButton =
-    "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+    "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   const padlock = secure ? PadlockIcon : PadlockOpenIcon;
   return (
     <>
@@ -876,7 +876,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
               <button
                 type="button"
                 aria-label={label}
-                className="flex h-7 w-[calc(26px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
+                className="flex h-7 w-[calc(26px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
               >
                 {secure ? (
                   <ShieldCheck strokeWidth={2} className="size-4" />
@@ -1208,7 +1208,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
                 ref={triggerRef}
                 type="button"
                 aria-label={t("browser.more")}
-                className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
+                className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
               >
                 <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
               </button>
@@ -1587,7 +1587,7 @@ function BrowserFileToolbar({
                         aria-label={t(`browser.file.${mode}`)}
                         onClick={() => setView({ mode })}
                         className={cn(
-                          "flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          "flex size-7 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                           view.mode === mode
                             ? "bg-background text-foreground shadow-sm dark:bg-card"
                             : "hover:text-foreground",
@@ -1640,7 +1640,7 @@ function BrowserFileToolbar({
                 aria-pressed={htmlPreview && view.consoleOpen}
                 onClick={toggleConsole}
                 className={cn(
-                  "flex h-8 min-w-8 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-md px-1.5 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "flex h-8 min-w-8 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-full px-1.5 text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   htmlPreview &&
                     view.consoleOpen &&
                     "bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]",

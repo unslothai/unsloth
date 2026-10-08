@@ -97,7 +97,7 @@ export function InlineModel(props: InlineModelProps): ReactElement {
         {isLinkedToLocal ? (
           <LocalRecipeModelSelector
             compact={true}
-            className="h-8 rounded-md text-xs"
+            className="h-8 rounded-full text-xs"
             value={
               modelConfig.model.trim().toLowerCase() === "local"
                 ? ""

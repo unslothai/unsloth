@@ -20,7 +20,7 @@ export const toggleVariants = cva(
         outline: "border-input hover:bg-muted border bg-transparent",
       },
       size: {
-        default: "h-9 min-w-9 rounded-[min(var(--radius-2xl),12px)] px-2.5",
+        default: "h-9 min-w-9 rounded-full px-2.5",
         sm: "h-8 min-w-8 px-3",
         lg: "h-10 min-w-10 px-2.5",
       },

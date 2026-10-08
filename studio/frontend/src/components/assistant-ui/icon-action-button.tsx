@@ -26,7 +26,7 @@ export function IconActionButton({
       <TooltipTrigger asChild={true}>
         <button
           type="button"
-          className="inline-flex items-center justify-center rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="inline-flex items-center justify-center rounded-row p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           aria-label={label}
           {...props}
         >

@@ -1121,7 +1121,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="mt-[calc((var(--studio-chat-control-height,33px)-30px*var(--ui-space-scale,1))/2)] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="mt-[calc((var(--studio-chat-control-height,33px)-30px*var(--ui-space-scale,1))/2)] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
@@ -1169,7 +1169,7 @@ export function ChatSettingsPanel({
                   {mtpUpdatable && llamaUpdateStatus?.llama.update_available && (
                     <Button
                       size="sm"
-                      className="corner-squircle mt-2 h-7 text-ui-12"
+                      className="mt-2 h-7 text-ui-12"
                       onClick={handleMtpUpdate}
                       disabled={llamaUpdating}
                       data-test-id="mtp-update-button"
@@ -1482,7 +1482,7 @@ export function ChatSettingsPanel({
           {/* Rounded wrapper clips overflowing text and the scrollbar. */}
           <div
             className={cn(
-              "panel-text-surface h-20 w-full overflow-hidden corner-squircle",
+              "panel-text-surface h-20 w-full overflow-hidden ",
               systemPromptOverflows && "cursor-pointer",
             )}
           >
@@ -1712,7 +1712,7 @@ export function ChatSettingsPanel({
           setSystemPromptEditorOpen(nextOpen);
         }}
       >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-3xl">
+        <DialogContent className="dialog-soft-surface sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Edit System Prompt</DialogTitle>
             <DialogDescription>
@@ -1784,7 +1784,7 @@ export function ChatSettingsPanel({
                   placeholder='{ "env": "staging", "version": "v2.3.1" }'
                   fieldSizing="fixed"
                   className={cn(
-                    "min-h-24 border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0",
+                    "min-h-24 border-0 font-mono text-xs leading-5 focus-visible:ring-0",
                     systemVariablesError &&
                       "ring-1 ring-destructive focus-visible:ring-destructive",
                   )}
@@ -1806,7 +1806,7 @@ export function ChatSettingsPanel({
             ) : null}
             {/* Squircle on the wrapper: Chrome leaves a scroll area's own
                 corners square. */}
-            <div className="corner-squircle overflow-hidden rounded-xl">
+            <div className="overflow-hidden rounded-xl">
               <Textarea
                 value={systemPromptDraft}
                 onChange={(event) => setSystemPromptDraft(event.target.value)}

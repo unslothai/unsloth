@@ -22,7 +22,7 @@ export function RecipeDialogContent({
       overlayPosition="absolute"
       overlayClassName="bg-transparent"
       className={cn(
-        "corner-squircle flex max-h-[min(calc(650px*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col overflow-hidden p-0 sm:max-w-2xl shadow-border",
+        "flex max-h-[min(calc(650px*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] flex-col overflow-hidden p-0 sm:max-w-2xl shadow-border",
         className,
       )}
       {...props}

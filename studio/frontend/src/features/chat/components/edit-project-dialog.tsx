@@ -111,7 +111,7 @@ export function EditProjectDialog({
       }}
     >
       <DialogContent
-        className="corner-squircle dialog-soft-surface gap-5 sm:max-w-lg"
+        className="dialog-soft-surface gap-5 sm:max-w-lg"
         {...nameImeHandlers}
         // Enter saves from the name field, which a multi-line instructions box cannot do; the
         // chord saves from either. The menus and confirmations inside portal out of here, so

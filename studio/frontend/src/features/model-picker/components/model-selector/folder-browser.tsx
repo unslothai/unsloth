@@ -154,7 +154,7 @@ export function FolderBrowser({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="corner-squircle dialog-soft-surface sm:max-w-md p-0 gap-0 [&_[data-slot=dialog-close]]:top-4"
+        className="dialog-soft-surface sm:max-w-md p-0 gap-0 [&_[data-slot=dialog-close]]:top-4"
         overlayClassName="bg-black/20 backdrop-blur-none"
         data-testid="folder-browser-dialog"
       >
@@ -174,7 +174,7 @@ export function FolderBrowser({
               <span key={c.value} className="flex items-center gap-0.5">
                 <button
                   type="button"
-                  className="rounded px-1 py-0.5 hover:bg-muted hover:text-foreground"
+                  className="rounded-row px-1 py-0.5 hover:bg-muted hover:text-foreground"
                   onClick={() => navigate(c.value, showHidden)}
                   disabled={loading}
                 >

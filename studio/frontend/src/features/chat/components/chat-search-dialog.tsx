@@ -467,7 +467,7 @@ export function ChatSearchDialog() {
             onKeyDown={(e) => {
               if (e.key === "Enter") e.stopPropagation();
             }}
-            className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="flex size-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
             aria-label={t("common.close")}
           >
             <HugeiconsIcon

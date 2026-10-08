@@ -696,7 +696,7 @@ export function RecipeStudioPage({
         {nodes.length === 0 && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4">
             <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-dashed border-border/70 bg-background/80 px-6 py-6 text-center shadow-border backdrop-blur-[1px]">
-              <div className="mx-auto flex size-12 items-center justify-center corner-squircle rounded-xl border border-border/70 bg-muted/40">
+              <div className="mx-auto flex size-12 items-center justify-center rounded-xl border border-border/70 bg-muted/40">
                 <HugeiconsIcon
                   icon={DocumentAttachmentIcon}
                   className="size-6 text-muted-foreground"
@@ -717,7 +717,6 @@ export function RecipeStudioPage({
               <div className="mt-5 flex flex-col justify-center gap-2 sm:flex-row">
                 <Button
                   type="button"
-                  className="corner-squircle"
                   onClick={openSourceBlockSheet}
                 >
                   <HugeiconsIcon
@@ -729,7 +728,6 @@ export function RecipeStudioPage({
                 <Button
                   type="button"
                   variant="outline"
-                  className="corner-squircle"
                   onClick={openRootBlockSheet}
                 >
                   <HugeiconsIcon icon={PlusSignIcon} className="size-4" />

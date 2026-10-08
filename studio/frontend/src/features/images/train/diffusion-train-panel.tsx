@@ -2013,7 +2013,7 @@ export function DiffusionTrainPanel({
                       key={r.job_id}
                       type="button"
                       onClick={() => void openPrevRun(r.job_id)}
-                      className="flex items-center justify-between gap-3 rounded-md px-1 py-2 text-left text-xs transition-colors hover:bg-muted/40"
+                      className="flex items-center justify-between gap-3 rounded-row px-1 py-2 text-left text-xs transition-colors hover:bg-muted/40"
                     >
                       <span className="min-w-0 truncate">
                         <span className="font-medium">

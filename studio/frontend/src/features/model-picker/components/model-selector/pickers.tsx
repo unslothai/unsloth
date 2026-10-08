@@ -492,7 +492,7 @@ function ListLabel({
               type="button"
               onClick={onToggle}
               aria-label={collapsed ? "Expand section" : "Collapse section"}
-              className="-mr-0.5 shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+              className="-mr-0.5 shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
             >
               {collapsed ? (
                 <ChevronRightIcon className="size-3" />
@@ -1051,7 +1051,7 @@ const ROW_ACTIONS_PINNED_CLASS = cn(ROW_ACTIONS_CLASS, "opacity-100");
 // Same box and glyph size as ModelLoadSettingsAction, so a heading's buttons sit in the same
 // column and hover the same size as the ones on the rows under it.
 const HEADING_ACTION_CLASS =
-  "flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
+  "flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground/80 transition hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]";
 
 /** A Connected group label. Wider than the On Device section labels, since nothing divides these
  *  groups but the gap, and foldable the same way. */
@@ -5877,7 +5877,7 @@ export function HubModelPicker({
           role="checkbox"
           aria-checked={fitOnDeviceOnly}
           onClick={() => setFitOnDeviceOnly(!fitOnDeviceOnly)}
-          className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[10px] px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+          className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-row px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
         >
           {/* --input is a hairline tuned for the page; on the menu surface this
               14px control needs an outline you can actually find. */}
@@ -6081,7 +6081,7 @@ export function HubModelPicker({
                     onEject?.(checkpoint);
                   }}
                   aria-label={`Eject ${entry.id}`}
-                  className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
+                  className="flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-[rgb(0_0_0_/_calc(0.05*var(--contrast-wash-gain,1)))] hover:text-red-500 dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))]"
                 >
                   <HugeiconsIcon
                     icon={RemoveCircleIcon}
@@ -7240,7 +7240,7 @@ export function HubModelPicker({
                                   type="button"
                                   onClick={scrollToOtherModels}
                                   aria-label="Go to other models"
-                                  className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                                  className="shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                                 >
                                   <HugeiconsIcon
                                     icon={Flag01Icon}
@@ -7263,7 +7263,7 @@ export function HubModelPicker({
                                   type="button"
                                   onClick={scrollToFineTuned}
                                   aria-label="Go to fine-tuned models"
-                                  className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                                  className="shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                                 >
                                   <HugeiconsIcon
                                     icon={TrainIcon}
@@ -7285,7 +7285,7 @@ export function HubModelPicker({
                                 type="button"
                                 onClick={scrollToCustomFolders}
                                 aria-label="Go to custom folders"
-                                className="shrink-0 rounded p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
+                                className="shrink-0 rounded-full p-1 text-muted-foreground/80 transition-colors hover:text-foreground"
                               >
                                 <HugeiconsIcon
                                   icon={Folder02Icon}
@@ -7524,7 +7524,7 @@ export function HubModelPicker({
                               type="button"
                               onClick={() => handleRemoveFolder(f.id)}
                               aria-label={`Remove folder ${f.path}`}
-                              className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                              className="shrink-0 rounded-row p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                             >
                               <HugeiconsIcon
                                 icon={Cancel01Icon}
@@ -7604,7 +7604,7 @@ export function HubModelPicker({
                             disabled={folderLoading}
                             aria-label="Browse for folder"
                             title="Browse folders on the server"
-                            className="flex h-6 shrink-0 items-center justify-center rounded border border-border px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                            className="flex h-6 shrink-0 items-center justify-center rounded-full border border-border px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
                           >
                             <HugeiconsIcon
                               icon={Search01Icon}
@@ -7617,7 +7617,7 @@ export function HubModelPicker({
                               void handleAddFolder();
                             }}
                             disabled={folderLoading || !folderInput.trim()}
-                            className="h-6 shrink-0 rounded border border-border px-1.5 text-ui-10 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
+                            className="h-6 shrink-0 rounded-full border border-border px-1.5 text-ui-10 text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                           >
                             Add
                           </button>
@@ -8477,7 +8477,7 @@ export function HubModelPicker({
             <button
               type="button"
               onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-row bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
               title={ejectsAll ? "Eject all models" : "Eject model"}
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />

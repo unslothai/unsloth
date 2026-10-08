@@ -78,7 +78,7 @@ export function LogDetails({
       onToggle={handleToggle}
       className="group mt-2 w-full max-w-sm text-left"
     >
-      <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+      <summary className="mx-auto flex w-fit cursor-pointer list-none items-center gap-1 rounded-row px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
         <span className="group-open:hidden">Show {label}</span>
         <span className="hidden group-open:inline">Hide {label}</span>
         <HugeiconsIcon

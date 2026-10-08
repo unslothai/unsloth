@@ -265,7 +265,7 @@
     );
     position: relative;
     overflow: hidden;
-    border-radius: 18px;
+    border-radius: 24px;
     background-color: color-mix(in srgb, var(--foreground) calc(2.5% * var(--contrast-wash-gain, 1)), transparent);
     border: 1px solid transparent;
     box-shadow: none;
@@ -449,7 +449,7 @@
     --hub-trending-muted-ink: rgb(255 255 255 / 0.68);
     isolation: isolate;
     border: 0;
-    border-radius: 18px;
+    border-radius: 24px;
     background-color: var(--hub-trending-surface);
     box-shadow: none;
     transition: background-color 160ms ease;
@@ -600,7 +600,7 @@
      column; the scroll pane (not the column) bounds it. */
   .hub-page .hub-result-row {
     border: 0;
-    border-radius: 14px;
+    border-radius: var(--radius-row);
     background-color: var(--card);
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
     transition:
@@ -610,7 +610,7 @@
   }
 
   .hub-page .hub-result-row.hub-result-card {
-    border-radius: 16px;
+    border-radius: 18px;
   }
 
   .hub-page .hub-result-row:hover {
@@ -855,7 +855,7 @@
     @apply bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))] ring-[rgb(255_255_255_/_calc(0.035*var(--contrast-edge-gain,1)))];
   }
   .hub-download-card {
-    @apply flex w-full flex-col gap-2 rounded-[22px] p-2;
+    @apply flex w-full flex-col gap-2 rounded-[26px] p-2;
     background-color: color-mix(in srgb, var(--foreground) calc(3% * var(--contrast-wash-gain, 1)), transparent);
     border: 1px solid color-mix(in srgb, var(--foreground) calc(5.5% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: none;
@@ -874,7 +874,7 @@
   }
 
   .hub-download-panel {
-    border-radius: 20px;
+    border-radius: 26px;
     background-color: var(--popover);
     border: 1px solid color-mix(in srgb, var(--foreground) calc(6% * var(--contrast-edge-gain, 1)), transparent);
     box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
@@ -1311,7 +1311,7 @@
     transform: translateY(-50%);
     align-items: center;
     justify-content: center;
-    border-radius: 8px;
+    border-radius: 9999px;
     color: var(--muted-foreground);
     opacity: 0;
     cursor: pointer;
@@ -1404,7 +1404,7 @@
     );
     position: relative;
     overflow: hidden;
-    border-radius: 24px;
+    border-radius: 32px;
     border: 1px solid transparent;
     background-color: var(--hub-hero-fill);
   }
@@ -1502,7 +1502,7 @@
   }
 
   .hub-page .hub-hero-panel {
-    border-radius: 18px;
+    border-radius: 24px;
     border: 1px solid transparent;
     background-color: color-mix(in srgb, var(--background) 72%, transparent);
   }

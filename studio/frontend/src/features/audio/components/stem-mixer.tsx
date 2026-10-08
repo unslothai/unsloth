@@ -122,7 +122,7 @@ export function StemMixer({
       tabIndex={0}
       aria-label="Stem mixer"
       onKeyDown={handleKeyDown}
-      className="@container corner-squircle grid gap-3 rounded-4xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="@container grid gap-3 rounded-4xl bg-card p-4 ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)] outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <output aria-live="polite" aria-atomic="true" className="sr-only">
         {status}

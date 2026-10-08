@@ -1080,7 +1080,7 @@ export function SeedDialog({
           )}
 
           {mode !== "unstructured" && mode !== "github_repo" && (
-            <div className="space-y-2 rounded-xl corner-squircle border border-border/60 p-3">
+            <div className="space-y-2 rounded-xl border border-border/60 p-3">
               <FieldLabel
                 label="Drop specific seed columns"
                 hint="Dropped columns stay usable in prompts/expressions but are omitted from final dataset."
@@ -1096,7 +1096,7 @@ export function SeedDialog({
                     return (
                       <label
                         key={columnName}
-                        className="flex cursor-pointer items-center gap-2 rounded-md border border-border/60 px-2 py-1.5 text-xs"
+                        className="flex cursor-pointer items-center gap-2 rounded-row border border-border/60 px-2 py-1.5 text-xs"
                       >
                         <Checkbox
                           checked={checked}
@@ -1324,8 +1324,8 @@ export function SeedDialog({
               <div className="text-xs text-muted-foreground">
                 Loaded columns: {previewColumns.join(", ") || "None"}
               </div>
-              <div className="max-h-[calc(360px*var(--ui-space-scale,1))] overflow-y-auto overflow-x-hidden scroll-rounded rounded-xl corner-squircle border border-border/60">
-                <Table className="corner-squircle min-w-max">
+              <div className="max-h-[calc(360px*var(--ui-space-scale,1))] overflow-y-auto overflow-x-hidden scroll-rounded rounded-xl border border-border/60">
+                <Table className="min-w-max">
                   <TableHeader>
                     <TableRow>
                       {previewColumns.map((col) => (

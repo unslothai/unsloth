@@ -68,7 +68,7 @@ function Chord({
     <span
       className={cn(
         // Width hugs the chord, so ⌘, and ⇧⌘O share a left edge.
-        "inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium tabular-nums",
+        "inline-flex h-7 items-center rounded-full px-2.5 text-xs font-medium tabular-nums",
         tone === "assigned" && "bg-muted text-foreground",
         tone === "unassigned" && "text-muted-foreground",
         tone === "recording" &&
@@ -109,7 +109,7 @@ function RowIconButton({
           aria-label={label}
           onClick={onClick}
           className={cn(
-            "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             className,
           )}
         >

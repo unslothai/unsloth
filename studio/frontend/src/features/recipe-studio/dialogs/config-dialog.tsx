@@ -78,7 +78,7 @@ export function ConfigDialog({
               className={readOnly ? "pointer-events-none min-w-0 opacity-75" : "min-w-0"}
             >
               {showDropToggle && (
-                <div className="mb-2 flex items-center corner-squircle justify-between gap-3 rounded-2xl border border-border/60 px-3 pt-2 pb-4">
+                <div className="mb-2 flex items-center justify-between gap-3 rounded-2xl border border-border/60 px-3 pt-2 pb-4">
                   <div className="min-w-0">
                     <p className="text-sm font-semibold">Keep out of final dataset</p>
                     <p className="break-words text-xs text-muted-foreground">

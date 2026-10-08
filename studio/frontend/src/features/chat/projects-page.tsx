@@ -776,7 +776,7 @@ export function ProjectsPage() {
                 <button
                   type="button"
                   onClick={() => openProject(project.id)}
-                  className="flex min-w-0 cursor-pointer items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex min-w-0 cursor-pointer items-center gap-3 rounded-row text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
                   <span className="mr-1 flex size-9 shrink-0 items-center justify-center rounded-[10px] bg-muted text-foreground/70 transition-colors group-hover/project-row:bg-primary/10 group-hover/project-row:text-primary">
                     <HugeiconsIcon
@@ -858,7 +858,7 @@ export function ProjectsPage() {
                     sideOffset={0}
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
+                    className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 p-2 font-heading rounded-[14px] border-0"
                   >
                     <ProjectMenuItems
                       project={project}
@@ -903,7 +903,7 @@ export function ProjectsPage() {
                         <button
                           type="button"
                           onClick={() => openChat(chat, project.id)}
-                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-row text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         >
                           <HugeiconsIcon
                             icon={MessageCircleIcon}
@@ -955,7 +955,7 @@ export function ProjectsPage() {
                               sideOffset={0}
                               onClick={(e) => e.stopPropagation()}
                               onKeyDown={(e) => e.stopPropagation()}
-                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 py-2 font-heading rounded-[14px] border-0"
+                              className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-52 p-2 font-heading rounded-[14px] border-0"
                             >
                               <DropdownMenuItem
                                 onSelect={() => {
@@ -1090,7 +1090,7 @@ export function ProjectsPage() {
           if (!open) setRenamingChat(null);
         }}
       >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+        <DialogContent className="dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Rename chat</DialogTitle>
           </DialogHeader>
@@ -1134,7 +1134,7 @@ export function ProjectsPage() {
           if (!open) setDeletingChat(null);
         }}
       >
-        <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
+        <DialogContent className="menu-flat-destructive dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Delete chat</DialogTitle>
           </DialogHeader>
@@ -1165,7 +1165,7 @@ export function ProjectsPage() {
 
       {/* Import destination picker */}
       <Dialog open={importFile !== null} onOpenChange={(open) => { if (!open) setImportFile(null); }}>
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+        <DialogContent className="dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Import chats</DialogTitle>
           </DialogHeader>
@@ -1209,7 +1209,7 @@ export function ProjectsPage() {
           if (!open) setDeleting(null);
         }}
       >
-        <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
+        <DialogContent className="menu-flat-destructive dialog-soft-surface sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Delete project</DialogTitle>
           </DialogHeader>

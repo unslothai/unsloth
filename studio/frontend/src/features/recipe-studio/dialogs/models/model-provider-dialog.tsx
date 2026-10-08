@@ -220,7 +220,7 @@ export function ModelProviderDialog({
                 />
                 <Textarea
                   id={extraHeadersId}
-                  className="corner-squircle nodrag"
+                  className="nodrag"
                   data-reload-snapshot-sensitive
                   placeholder='{"X-Header": "value"}'
                   value={config.extra_headers ?? ""}
@@ -237,7 +237,7 @@ export function ModelProviderDialog({
                 />
                 <Textarea
                   id={extraBodyId}
-                  className="corner-squircle nodrag"
+                  className="nodrag"
                   data-reload-snapshot-sensitive
                   placeholder='{"key": "value"}'
                   value={config.extra_body ?? ""}

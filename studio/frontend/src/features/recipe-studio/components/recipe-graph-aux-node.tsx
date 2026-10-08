@@ -132,13 +132,13 @@ function AuxNodeBase({
     const hasInvalidRefs =
       findInvalidJinjaReferences(value, availableRefs).length > 0;
     return (
-      <BaseNode className="corner-squircle w-full min-w-0 rounded-4xl border-border/60 bg-card shadow-sm">
+      <BaseNode className="w-full min-w-0 rounded-4xl border-border/60 bg-card shadow-sm">
         <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
           <BaseNodeHeaderTitle className="text-xs">{data.title}</BaseNodeHeaderTitle>
         </BaseNodeHeader>
         <BaseNodeContent className="gap-2 px-3 py-2">
           <Textarea
-            className="corner-squircle nodrag nowheel max-h-40 min-h-[calc(88px*var(--ui-space-scale,1))] w-full resize-none overflow-y-auto text-xs"
+            className="nodrag nowheel max-h-40 min-h-[calc(88px*var(--ui-space-scale,1))] w-full resize-none overflow-y-auto text-xs"
             aria-invalid={hasInvalidRefs}
             value={value}
             disabled={executionLocked}
@@ -195,7 +195,7 @@ function AuxNodeBase({
   };
 
   return (
-    <BaseNode className="corner-squircle w-full min-w-0 rounded-4xl border-border/60 bg-card shadow-sm">
+    <BaseNode className="w-full min-w-0 rounded-4xl border-border/60 bg-card shadow-sm">
       <BaseNodeHeader className="border-b border-border/50 px-3 py-2">
         <BaseNodeHeaderTitle className="text-xs">
           {score.name.trim() || `Scorer ${data.scoreIndex + 1}`}
@@ -220,7 +220,7 @@ function AuxNodeBase({
           onChange={(event) => updateScore({ name: event.target.value })}
         />
         <Textarea
-          className="corner-squircle nodrag nowheel max-h-32 min-h-[calc(56px*var(--ui-space-scale,1))] w-full resize-none overflow-y-auto text-xs"
+          className="nodrag nowheel max-h-32 min-h-[calc(56px*var(--ui-space-scale,1))] w-full resize-none overflow-y-auto text-xs"
           placeholder="Score description"
           value={score.description}
           disabled={executionLocked}

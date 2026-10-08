@@ -311,7 +311,7 @@ function HistoryRow({
               type="button"
               aria-label={t("browser.pages.pageActions", { title })}
               className={cn(
-                "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 HOVER_WASH,
                 OPEN_WASH,
                 "data-[state=open]:text-foreground",
@@ -366,7 +366,7 @@ function PageCrumbs({ current }: { current: string }) {
   const t = useT();
   const openSettings = (tab?: "browser") => useSettingsDialogStore.getState().openDialog(tab);
   const crumb =
-    "cursor-pointer rounded-md text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+    "cursor-pointer rounded-row text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
   return (
     <nav className="flex items-center gap-2 px-6 pt-4 text-ui-14" aria-label={current}>
       <button type="button" className={crumb} onClick={() => openSettings()}>
@@ -686,7 +686,7 @@ function useMissingDownloads(downloads: DownloadItem[]) {
 }
 
 const ROW_ACTION = cn(
-  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
   HOVER_WASH,
 );
 

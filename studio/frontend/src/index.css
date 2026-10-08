@@ -10,7 +10,6 @@
 @import "@fontsource-variable/space-grotesk";
 @import "@fontsource-variable/inter";
 @import "tw-shimmer";
-@plugin "@toolwind/corner-shape";
 @source "../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
@@ -267,7 +266,7 @@
 	--chart-3: oklch(0.7014 0.1193 197.5897);
 	--chart-4: oklch(0.6926 0.1112 346.5775);
 	--chart-5: oklch(0.7497 0.1003 85.0057);
-	--radius: 1.1rem;
+	--radius: 1.25rem;
 	/* White sidebar against the warm off-white page; the tone difference is
 	   the separator now that the right-edge divider is gone. */
 	--sidebar-base: #ffffff;
@@ -492,7 +491,7 @@
 	--sidebar-ring: #dfdfdf;
 	--destructive-foreground: oklch(1 0 0);
 	/* Match light's radius so every rounded-* element is the same in both themes. */
-	--radius: 1.1rem;
+	--radius: 1.25rem;
 	--font-sans: "Inter Variable", ui-sans-serif, sans-serif, system-ui;
 	--font-serif: Source Serif 4, serif;
 	--font-mono: JetBrains Mono, monospace;
@@ -1927,7 +1926,7 @@ html[data-chat-font] .aui-root {
 /* Settings search: brief highlight on the row a result jumped to. */
 .settings-search-hit {
 	animation: settings-search-hit 1.6s ease-out;
-	border-radius: 12px;
+	border-radius: var(--radius-row);
 }
 @keyframes settings-search-hit {
 	0%,
@@ -2052,9 +2051,11 @@ html[data-chat-font] .aui-root {
 	--radius-2xl: calc(var(--radius) + 8px);
 	--radius-3xl: calc(var(--radius) + 12px);
 	--radius-4xl: calc(var(--radius) + 16px);
+	/* Multi-line hover rows. One-line rows are pills (data-single-line, lib/row-shape.ts). */
+	--radius-row: 14px;
 	--font-mono: var(--font-mono);
 	--font-serif: var(--font-serif);
-	--radius: 1.1rem;
+	--radius: 1.25rem;
 	--tracking-tighter: 0em;
 	--tracking-tight: 0em;
 	--tracking-wide: calc(var(--tracking-normal) + 0.025em);
@@ -2349,7 +2350,7 @@ html[data-chat-font] .aui-root {
 	/* Pinned/Projects/Recents header actions. They sit in the label's flex row,
 	   not over a pill, so they reveal on the header's hover. */
 	.sidebar-header-action {
-		@apply inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md opacity-0 pointer-events-none outline-none transition-opacity duration-150;
+		@apply inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full opacity-0 pointer-events-none outline-none transition-opacity duration-150;
 		color: inherit;
 	}
 	.group\/sidebar-header:hover .sidebar-header-action,
@@ -2799,7 +2800,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.tooltip-compact {
-		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-white shadow-md;
+		@apply rounded-row border-transparent bg-black px-2.5 py-1.5 text-ui-11 font-medium leading-snug text-white shadow-md;
 	}
 
 	/* Queue hints must not block menu actions. */
@@ -2839,7 +2840,7 @@ html[data-chat-font] .aui-root {
 		height: calc(36px * var(--ui-space-scale, 1));
 		padding: 0 calc(0.75rem * var(--ui-space-scale, 1)) !important;
 		gap: calc(9.5px * var(--ui-space-scale, 1)) !important;
-		border-radius: 12px;
+		border-radius: 9999px;
 		font-weight: 500;
 		font-size: calc(0.9375rem * var(--ui-font-scale, 1));
 		line-height: calc(1.25rem * var(--ui-font-scale, 1));
@@ -3085,18 +3086,88 @@ html[data-chat-font] .aui-root {
 		margin-block: 2px;
 	}
 
-	/* List menus: one radius in both themes, slightly tighter than --radius-lg
-	   and matching the sidebar buttons. !important beats per-menu rounded-*. */
-	[data-slot="dropdown-menu-content"],
-	[data-slot="dropdown-menu-sub-content"],
-	[data-slot="select-content"],
-	[data-slot="combobox-content"] {
-		border-radius: 14px !important;
+	/* Cancel the end rows' 2px margins so a row sits equally inset on all sides. */
+	:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"]
+		)
+		> .overflow-y-auto {
+		margin-block: -2px;
+	}
+	:is([data-slot="menubar-content"], [data-slot="menubar-sub-content"])
+		> :is(
+			[role="menuitem"],
+			[role="menuitemcheckbox"],
+			[role="menuitemradio"]
+		):first-child {
+		margin-top: 0;
+	}
+	:is([data-slot="menubar-content"], [data-slot="menubar-sub-content"])
+		> :is(
+			[role="menuitem"],
+			[role="menuitemcheckbox"],
+			[role="menuitemradio"]
+		):last-child {
+		margin-bottom: 0;
 	}
 
-	/* Account menu: a touch rounder than standard list menus. */
+	/* List menus: half a 33px row + 4px gutter, concentric with the pill rows.
+	   !important beats per-menu rounded-*. */
+	[data-slot="dropdown-menu-content"],
+	[data-slot="dropdown-menu-sub-content"],
+	[data-slot="context-menu-content"],
+	[data-slot="context-menu-sub-content"],
+	[data-slot="menubar-content"],
+	[data-slot="menubar-sub-content"],
+	[data-slot="select-content"],
+	[data-slot="combobox-content"] {
+		border-radius: 21px !important;
+	}
+
+	/* Account menus: half a 36px row + 8px gutter. */
+	[data-slot="dropdown-menu-content"].app-user-menu {
+		border-radius: 26px !important;
+	}
 	[data-slot="dropdown-menu-content"].app-user-menu.menu-soft-surface-up {
-		border-radius: 18px !important;
+		border-radius: 28px !important;
+	}
+
+	/* Menu rows: soft corners; one-line rows become pills below. */
+	:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="menubar-content"],
+			[data-slot="menubar-sub-content"],
+			[data-slot="select-content"],
+			[data-slot="combobox-content"]
+		)
+		:is(
+			[role="menuitem"],
+			[role="menuitemcheckbox"],
+			[role="menuitemradio"],
+			[role="option"]
+		) {
+		border-radius: var(--radius-row);
+	}
+
+	/* One-line rows (marked by lib/row-shape.ts) are pills. */
+	[data-single-line] {
+		border-radius: 9999px !important;
+	}
+
+	/* Icon-only buttons are circles, except segmented groups with a squared side. */
+	[data-slot="button"][data-size^="icon"]:not(
+			[class*="rounded-none"],
+			[class*="rounded-l-"],
+			[class*="rounded-r-"],
+			[class*="rounded-s-"],
+			[class*="rounded-e-"]
+		) {
+		border-radius: 9999px;
 	}
 
 	/* Every dropdown/menu/select/popover: borderless, chatbox shadow in light,
@@ -3880,23 +3951,17 @@ html[data-chat-font] .aui-root {
 
 	/* Soft elevation; [data-slot] outranks the component ring-1, dropping the border. */
 	.unsloth-plus-menu[data-slot] {
-		/* Concentric with the item hover boxes: container radius =
-		   item radius (12px) + side gutter (9px), so the curves run parallel.
-		   !important beats the global 14px dropdown radius. */
-		border-radius: 21px !important;
-		padding-top: calc(0.5rem * var(--ui-space-scale, 1));
-		padding-bottom: calc(0.5rem * var(--ui-space-scale, 1));
-		/* Side gutter ~matches the 0.5rem top/bottom padding so the hover box
-		   sits evenly inset on all four sides. */
-		padding-left: calc(9px * var(--ui-space-scale, 1));
-		padding-right: calc(9px * var(--ui-space-scale, 1));
+		/* Half a 36px row + 9px gutter, concentric with the pill rows. */
+		border-radius: 27px !important;
+		/* Same gutter on all sides. */
+		padding: calc(9px * var(--ui-space-scale, 1));
 		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 	}
 
 	/* Width does not change the concentric radius; the MCP menu uses the same
 	   item radius + gutter, so it keeps the same container radius. */
 	.unsloth-plus-menu.mcp-menu[data-slot] {
-		border-radius: 22px !important;
+		border-radius: 27px !important;
 	}
 
 	/* One-line menus keep the standard menu shape (same radius as multi-line),
@@ -3979,9 +4044,8 @@ html[data-chat-font] .aui-root {
 		) {
 		@apply gap-3 pl-3 pr-3 py-2 text-ui-14;
 		cursor: pointer;
-		/* Pin hover-box radius so dark matches light (container radius minus the
-		   side gutter keeps the curves concentric). */
-		border-radius: 12px;
+		/* Same in both themes; container radius minus gutter. */
+		border-radius: var(--radius-row);
 	}
 
 	.unsloth-plus-menu :is(
@@ -3994,12 +4058,9 @@ html[data-chat-font] .aui-root {
 	/* A sidebar row's menu, one step down from the composer menus this shares a look with.
 	   It carries the most rows of any menu in the app and was running tall. */
 	.unsloth-plus-menu.sidebar-row-menu[data-slot] {
-		/* Concentric as above: item radius (10px) + side gutter (8px). */
-		border-radius: 18px !important;
-		padding-top: calc(0.375rem * var(--ui-space-scale, 1));
-		padding-bottom: calc(0.375rem * var(--ui-space-scale, 1));
-		padding-left: calc(8px * var(--ui-space-scale, 1));
-		padding-right: calc(8px * var(--ui-space-scale, 1));
+		/* Half a 32px row + 8px gutter. */
+		border-radius: 24px !important;
+		padding: calc(8px * var(--ui-space-scale, 1));
 		/* Retunes every .size-icon inside, sub-menus included. */
 		--icon-size: var(--ui-icon-size-sm);
 	}
@@ -4011,7 +4072,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="context-menu-sub-trigger"]
 		) {
 		@apply gap-2.5 pl-2.5 pr-2.5 py-1.5 text-ui-13;
-		border-radius: 10px;
+		border-radius: var(--radius-row);
 	}
 
 	/* A heading opens its group: more room above it than below, so it reads with the rows under it
@@ -4030,7 +4091,7 @@ html[data-chat-font] .aui-root {
 			[data-slot="dropdown-menu-radio-item"]
 		) {
 		@apply gap-2.5 pl-2.5 pr-9;
-		border-radius: 10px;
+		border-radius: var(--radius-row);
 	}
 
 	/* Tick rows hover like the rows beside them, not with the component's accent. */
@@ -4420,7 +4481,7 @@ html[data-chat-font] .aui-root {
 		width: calc(var(--spacing) * 8);
 		height: calc(var(--spacing) * 8);
 		padding: 0;
-		border-radius: 10px;
+		border-radius: 9999px;
 		color: var(--color-chat-icon-fg);
 	}
 
@@ -4883,7 +4944,8 @@ html[data-chat-font] .aui-root {
 	z-index: 60;
 	display: flex;
 	align-items: center;
-	border-radius: 10px;
+	/* Matches the one-line row it drags. */
+	border-radius: 9999px;
 	pointer-events: none;
 	will-change: transform;
 }
@@ -4892,7 +4954,7 @@ html[data-chat-font] .aui-root {
 	--row-ghost-surface: var(--sidebar);
 	display: flex;
 	align-items: center;
-	border-radius: 10px;
+	border-radius: var(--radius-row);
 	will-change: transform;
 }
 

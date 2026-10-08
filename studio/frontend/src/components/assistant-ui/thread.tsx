@@ -1901,7 +1901,7 @@ const ForkContinuationRule: FC = () => {
           className={cn(
             labelClass,
             // An answer link's colour, underlined on hover only.
-            "cursor-pointer rounded-sm text-primary underline decoration-transparent underline-offset-2 transition-colors hover:decoration-primary focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
+            "cursor-pointer rounded-row text-primary underline decoration-transparent underline-offset-2 transition-colors hover:decoration-primary focus-visible:outline-2 focus-visible:outline-ring focus-visible:outline-offset-2",
           )}
         >
           {label}
@@ -5514,7 +5514,7 @@ const Composer: FC<{
                   aria-expanded={isWritingExpanded}
                   aria-controls={inputId}
                   disabled={disabled}
-                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-md bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
+                  className="unsloth-composer-expand absolute -right-1 top-0 size-8 rounded-full bg-transparent text-muted-foreground hover:bg-transparent hover:text-muted-foreground dark:hover:bg-transparent aria-expanded:bg-transparent aria-expanded:text-muted-foreground"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={toggleWritingExpanded}
                 >
@@ -7409,7 +7409,7 @@ const MessageError: FC = () => {
           <ActionBarPrimitive.Reload asChild={true}>
             <button
               type="button"
-              className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
+              className="aui-message-error-retry inline-flex shrink-0 items-center gap-1.5 rounded-row border border-destructive/40 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-destructive/15"
             >
               <RefreshGlyph strokeWidth={1.75} className="size-3.5" />
               Retry
@@ -8371,7 +8371,7 @@ const DeleteMessageMenuItem: FC = () => {
     <ActionBarMorePrimitive.Item
       disabled={isRunning}
       onSelect={() => void handleDelete()}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm text-destructive outline-none hover:bg-destructive/10 focus:bg-destructive/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-row px-3 py-2 text-sm text-destructive outline-none hover:bg-destructive/10 focus:bg-destructive/10 data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
       <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
       Delete
@@ -8388,7 +8388,7 @@ const ForkMessageMenuItem: FC = () => {
     <ActionBarMorePrimitive.Item
       disabled={forkDisabled}
       onSelect={() => void forkMessage()}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-row px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
       <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-icon" />
       Fork in new chat
@@ -8510,7 +8510,7 @@ const ContinueResponseMenuItemForLastMessage: FC = () => {
       onSelect={() => {
         startContinuation();
       }}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-row px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
       <HugeiconsIcon icon={ContinueArrowIcon} strokeWidth={1.75} className="size-icon" />
       Continue response
@@ -8532,7 +8532,7 @@ const EditAssistantMessageMenuItem: FC = () => {
     <ActionBarMorePrimitive.Item
       disabled={isRunning || researchActive}
       onSelect={() => setEditingId(messageId)}
-      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-row px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
     >
       <HugeiconsIcon icon={EditResponseIcon} strokeWidth={1.75} className="size-icon" />
       Edit response
@@ -8659,7 +8659,7 @@ const AssistantActionBar: FC = () => {
                 asChild={true}
                 onExport={exportMessageMarkdown}
               >
-                <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+                <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-row px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
                   <HugeiconsIcon
                     icon={Download01Icon}
                     strokeWidth={1.75}
@@ -8711,7 +8711,7 @@ const AssistantActionBar: FC = () => {
                       );
                     })();
                   }}
-                  className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+                  className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-row px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
                 >
                   <HugeiconsIcon
                     icon={FolderAttachmentIcon}

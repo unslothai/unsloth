@@ -624,7 +624,7 @@ function modelLabel(
 
 // Plain text, not a pill: a pill inside a hovered row looked like a second row.
 const CHIP =
-  "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-sm text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
+  "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full text-left outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
 function ChatLocation({
   chat,
@@ -1079,7 +1079,7 @@ export function ChatRow({
           : actions.open(chat)
       }
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-row transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
         selected && "bg-muted dark:bg-muted/60",
       )}
@@ -1218,7 +1218,7 @@ function CardFooter({ meta, date, className }: { meta?: ReactNode; date: string;
 }
 
 const CARD_TITLE =
-  "block w-full rounded text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
+  "block w-full rounded-row text-left font-medium text-ui-14 leading-snug text-foreground outline-none [overflow-wrap:anywhere] focus-visible:ring-2 focus-visible:ring-ring";
 
 /** Group name and count in words; a bare number beside "Today" read as part of the name. */
 export function GroupHeading({
@@ -1276,7 +1276,7 @@ export function CollectionHeader({
         <button
           type="button"
           onClick={onParent}
-          className="rounded text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          className="rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
           {parent}
         </button>
@@ -1453,7 +1453,7 @@ export function ProjectRow({
     <div
       onClick={() => actions.viewProject(project.id)}
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-row transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
       )}
     >
@@ -1693,7 +1693,7 @@ export function SectionRow({
     <div
       onClick={() => actions.viewSection(section.id)}
       className={cn(
-        "group/chat relative flex cursor-pointer items-center gap-4 rounded-[14px] transition-colors hover:bg-muted dark:hover:bg-muted/60",
+        "group/chat relative flex cursor-pointer items-center gap-4 rounded-row transition-colors hover:bg-muted dark:hover:bg-muted/60",
         ROW_INSET,
       )}
     >

@@ -384,7 +384,7 @@ export function PickerShell({
                 data-picker-values={JSON.stringify([activeQuery])}
                 onClick={onUseThis}
                 className={cn(
-                  "mb-1 flex w-full items-center gap-2 rounded-[8px] border border-dashed border-primary/30 bg-primary/[0.04] px-2.5 py-2 text-left text-ui-12p5 transition-colors hover:bg-primary/[0.08]",
+                  "mb-1 flex w-full items-center gap-2 rounded-row border border-dashed border-primary/30 bg-primary/[0.04] px-2.5 py-2 text-left text-ui-12p5 transition-colors hover:bg-primary/[0.08]",
                   PICKER_OPTION_FOCUS_VISIBLE_CLASS,
                 )}
               >

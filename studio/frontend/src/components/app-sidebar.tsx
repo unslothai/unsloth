@@ -365,11 +365,10 @@ const PROJECT_CHAT_LIMIT = 4;
 const SIDEBAR_PROJECT_LIMIT = 5;
 
 // The shared radio item ticks on the right; these read as settings, so tick first.
-// A sidebar or account menu's side and top padding (.sidebar-row-menu in index.css, before the
-// UI scale), the 2px margin every menu row keeps, and the gap a submenu keeps from its menu.
+// Sidebar and account menu padding (.sidebar-row-menu in index.css, before UI scale), and the
+// gap a submenu keeps from its menu.
 const SIDEBAR_MENU_PAD_X = 8;
-const SIDEBAR_MENU_PAD_Y = 6;
-const MENU_ROW_MARGIN_PX = 2;
+const SIDEBAR_MENU_PAD_Y = 8;
 // px-2.5 and the 1px transparent border the account menu draws its edge with.
 const ACCOUNT_MENU_PAD_X = 11;
 const SUBMENU_GAP_PX = 6;
@@ -403,8 +402,7 @@ const DROP_INTO_CUE = `${DROP_CUE_CLASS} before:pointer-events-none before:absol
 // padding and leave the hover pill off centre.
 const MOVE_TO_MENU =
   "max-h-[var(--radix-dropdown-menu-content-available-height,var(--radix-context-menu-content-available-height))] overflow-y-auto";
-// A scroller keeps its rows' 2px margins (MENU_ROW_MARGIN_PX) from meeting the rows outside it,
-// which doubled the gap at both its ends; -my-0.5 gives that 2px back.
+// -my-0.5 cancels the rows' 2px margins, which doubled the gap at the scroller's ends.
 const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
 // Most projects, and most sections, a "Move to" lists: the most recent, so a long list stays light.
@@ -1383,12 +1381,12 @@ export function AppSidebar() {
   const uiSpaceScale = useUiSpaceScale();
   const sidebarSubmenuOffsets = {
     sideOffset: Math.round(SIDEBAR_MENU_PAD_X * uiSpaceScale + SUBMENU_GAP_PX),
-    alignOffset: -Math.round(SIDEBAR_MENU_PAD_Y * uiSpaceScale + MENU_ROW_MARGIN_PX),
+    alignOffset: -Math.round(SIDEBAR_MENU_PAD_Y * uiSpaceScale),
   };
   // The account menu pads its rows by a fixed amount, unscaled.
   const accountSubmenuOffsets = {
     sideOffset: ACCOUNT_MENU_PAD_X + SUBMENU_GAP_PX,
-    alignOffset: -Math.round(SIDEBAR_MENU_PAD_Y * uiSpaceScale + MENU_ROW_MARGIN_PX),
+    alignOffset: -Math.round(SIDEBAR_MENU_PAD_Y * uiSpaceScale),
   };
   const startSectionDrag = useSectionDrag({
     onDrop: (key, landing) => moveSection(key, landing.target, landing.edge),
@@ -5338,7 +5336,7 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
                       <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
@@ -5365,7 +5363,7 @@ export function AppSidebar() {
                       <button
                         type="button"
                         onClick={isMobile ? () => setOpenMobile(false) : togglePinned}
-                        className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                         aria-label={t("shell.aria.closeSidebar")}
                       >
                         <HugeiconsIcon icon={PanelLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -5855,7 +5853,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[calc(5px*var(--ui-space-scale,1))] rounded-[14px] pl-3 pr-7 text-ui-14p5 tracking-nav font-medium"
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[calc(5px*var(--ui-space-scale,1))] rounded-row pl-3 pr-7 text-ui-14p5 tracking-nav font-medium"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             // From Recipes/Export, jump to Train so the run's history opens.
@@ -5886,7 +5884,7 @@ export function AppSidebar() {
                           side="bottom"
                           align="end"
                           sideOffset={0}
-                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 py-2 font-heading rounded-full border-0"
+                          className="app-user-menu menu-soft-surface menu-flat-destructive ring-0 w-44 p-2 font-heading rounded-full border-0"
                           trigger={(triggerRef) => (
                             <button
                               ref={triggerRef}
@@ -5971,7 +5969,7 @@ export function AppSidebar() {
                     .openDialog("about", { scrollTarget: "about-updates" });
                   closeMobileIfOpen();
                 }}
-                className="flex h-[calc(44px*var(--ui-space-scale,1))] w-full items-center gap-[calc(9px*var(--ui-space-scale,1))] rounded-[14px] border border-border/60 bg-transparent px-2 py-[calc(3px*var(--ui-space-scale,1))] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:w-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
+                className="flex h-[calc(44px*var(--ui-space-scale,1))] w-full items-center gap-[calc(9px*var(--ui-space-scale,1))] rounded-full border border-border/60 bg-transparent px-2 py-[calc(3px*var(--ui-space-scale,1))] text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:h-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:w-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:rounded-full group-data-[collapsible=icon]:p-0"
               >
                 <span
                   aria-hidden="true"
@@ -6028,7 +6026,7 @@ export function AppSidebar() {
                   ref={triggerRef}
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn app-user-trigger !h-[calc(44px*var(--ui-space-scale,1))] -my-[calc(3px*var(--ui-space-scale,1))] gap-[calc(9px*var(--ui-space-scale,1))] pl-2 pr-[calc(45px*var(--ui-space-scale,1))] py-[calc(3px*var(--ui-space-scale,1))] rounded-[14px] group-data-[collapsible=icon]:!size-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
+                  className="sidebar-nav-btn app-user-trigger !h-[calc(44px*var(--ui-space-scale,1))] -my-[calc(3px*var(--ui-space-scale,1))] gap-[calc(9px*var(--ui-space-scale,1))] pl-2 pr-[calc(45px*var(--ui-space-scale,1))] py-[calc(3px*var(--ui-space-scale,1))] rounded-[18px] group-data-[collapsible=icon]:!size-[calc(34px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
                 >
                   <div className="flex shrink-0 items-center">
                     <UserAvatar
@@ -6193,7 +6191,7 @@ export function AppSidebar() {
               type="button"
               aria-label={t("shell.navigation.settings")}
               onClick={() => useSettingsDialogStore.getState().openDialog()}
-              className="absolute right-2 top-1/2 flex size-[calc(32px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
+              className="absolute right-2 top-1/2 flex size-[calc(32px*var(--ui-space-scale,1))] -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] hover:text-foreground dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-data-[collapsible=icon]:hidden"
             >
               <HugeiconsIcon
                 icon={Settings02Icon}
@@ -6223,7 +6221,7 @@ export function AppSidebar() {
         }
       }}
     >
-      <DialogContent className="menu-flat-destructive corner-squircle dialog-soft-surface sm:max-w-md">
+      <DialogContent className="menu-flat-destructive dialog-soft-surface sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
             {confirmingDelete?.kind === "run"
@@ -6323,7 +6321,7 @@ export function AppSidebar() {
       }}
     >
       <DialogContent
-        className="corner-squircle dialog-soft-surface sm:max-w-md"
+        className="dialog-soft-surface sm:max-w-md"
         // Radix handles Escape before the input; don't close on IME dismissal.
         onEscapeKeyDown={(event) => {
           if (event.isComposing || event.keyCode === 229) event.preventDefault();

@@ -67,7 +67,7 @@ export function SettingsRow({
                   <button
                     type="button"
                     aria-label={hint}
-                    className="ml-1.5 inline-flex align-baseline rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    className="ml-1.5 inline-flex align-baseline rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                   >
                     {/* Sized off the token, not size-3.5: the label beside it is
                         scaled by the UI font size preference, and a fixed 14px

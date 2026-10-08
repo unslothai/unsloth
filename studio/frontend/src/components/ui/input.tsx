@@ -132,7 +132,7 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
       {field}
       <span
         aria-hidden="true"
-        className="absolute top-1/2 right-2.5 flex h-[calc(21px*var(--ui-space-scale,1))] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-[5px] bg-[rgb(0_0_0_/_calc(0.07*var(--contrast-wash-gain,1)))] opacity-0 transition-opacity group-hover/number:opacity-100 group-focus-within/number:opacity-100 group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-0 dark:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
+        className="absolute top-1/2 right-2.5 flex h-[calc(21px*var(--ui-space-scale,1))] w-4 -translate-y-1/2 flex-col overflow-hidden rounded-full bg-[rgb(0_0_0_/_calc(0.07*var(--contrast-wash-gain,1)))] opacity-0 transition-opacity group-hover/number:opacity-100 group-focus-within/number:opacity-100 group-has-[input:disabled]/number:pointer-events-none group-has-[input:disabled]/number:opacity-0 dark:bg-[rgb(255_255_255_/_calc(0.12*var(--contrast-wash-gain,1)))]"
       >
         <StepperButton direction={1} />
         <StepperButton direction={-1} />

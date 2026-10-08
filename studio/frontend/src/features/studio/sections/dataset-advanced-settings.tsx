@@ -81,7 +81,7 @@ export function DatasetAdvancedSettings({
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger
         className={cn(
-          "flex w-full cursor-pointer items-center gap-1.5 rounded-sm text-xs text-muted-foreground",
+          "flex w-full cursor-pointer items-center gap-1.5 rounded-row text-xs text-muted-foreground",
           PICKER_FOCUS_VISIBLE_CLASS,
         )}
       >
@@ -104,7 +104,7 @@ export function DatasetAdvancedSettings({
                         type="button"
                         aria-label={t("studio.dataset.targetFormatTooltip")}
                         className={cn(
-                          "rounded-sm text-foreground/70 hover:text-foreground",
+                          "rounded-full text-foreground/70 hover:text-foreground",
                           PICKER_FOCUS_VISIBLE_CLASS,
                         )}
                       >
@@ -159,7 +159,7 @@ export function DatasetAdvancedSettings({
                       type="button"
                       aria-label={t("studio.dataset.trainSplitStartTooltip")}
                       className={cn(
-                        "rounded-sm text-foreground/70 hover:text-foreground",
+                        "rounded-full text-foreground/70 hover:text-foreground",
                         PICKER_FOCUS_VISIBLE_CLASS,
                       )}
                     >
@@ -195,7 +195,7 @@ export function DatasetAdvancedSettings({
                       type="button"
                       aria-label={t("studio.dataset.trainSplitEndTooltip")}
                       className={cn(
-                        "rounded-sm text-foreground/70 hover:text-foreground",
+                        "rounded-full text-foreground/70 hover:text-foreground",
                         PICKER_FOCUS_VISIBLE_CLASS,
                       )}
                     >
@@ -247,7 +247,7 @@ export function DatasetAdvancedSettings({
                     type="button"
                     aria-label={t("studio.dataset.streamingInfoAriaLabel")}
                     className={cn(
-                      "rounded-sm text-foreground/70 hover:text-foreground",
+                      "rounded-full text-foreground/70 hover:text-foreground",
                       PICKER_FOCUS_VISIBLE_CLASS,
                     )}
                   >

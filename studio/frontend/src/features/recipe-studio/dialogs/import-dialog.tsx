@@ -63,7 +63,7 @@ export function ImportDialog({
           />
           <Textarea
             id={payloadId}
-            className="corner-squircle nodrag min-h-[calc(220px*var(--ui-space-scale,1))] max-h-[calc(450px*var(--ui-space-scale,1))]"
+            className="nodrag min-h-[calc(220px*var(--ui-space-scale,1))] max-h-[calc(450px*var(--ui-space-scale,1))]"
             placeholder='{"recipe": { "columns": [] }}'
             value={value}
             onChange={(event) => setValue(event.target.value)}

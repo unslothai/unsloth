@@ -151,7 +151,7 @@ export function NewProjectDialog({
         close();
       }}
     >
-      <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-lg">
+      <DialogContent className="dialog-soft-surface gap-5 sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="text-ui-21">{title}</DialogTitle>
         </DialogHeader>

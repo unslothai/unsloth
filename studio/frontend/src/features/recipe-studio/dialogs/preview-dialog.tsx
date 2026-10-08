@@ -344,7 +344,7 @@ function RunDialogBody({
           <Button
             type="button"
             variant={kind === "preview" ? "default" : "outline"}
-            className="corner-squircle min-h-10 justify-center whitespace-normal px-3 text-center"
+            className="min-h-10 justify-center whitespace-normal px-3 text-center"
             aria-pressed={kind === "preview"}
             onClick={() => onKindChange("preview")}
           >
@@ -353,7 +353,7 @@ function RunDialogBody({
           <Button
             type="button"
             variant={kind === "full" ? "default" : "outline"}
-            className="corner-squircle min-h-10 justify-center whitespace-normal px-3 text-center"
+            className="min-h-10 justify-center whitespace-normal px-3 text-center"
             aria-pressed={kind === "full"}
             onClick={() => onKindChange("full")}
           >
@@ -678,7 +678,7 @@ function RunDialogBody({
           variant="outline"
           onClick={onClose}
           disabled={loading}
-          className="corner-squircle border-border/70 bg-card/70"
+          className="border-border/70 bg-card/70"
         >
           Cancel
         </Button>
@@ -687,7 +687,7 @@ function RunDialogBody({
           variant="outline"
           onClick={onValidate}
           disabled={loading || validateLoading}
-          className="corner-squircle border-border/70 bg-card/70"
+          className="border-border/70 bg-card/70"
         >
           <HugeiconsIcon icon={TestTube01Icon} className="size-3.5" />
           {validateLoading ? "Checking..." : "Check recipe"}
@@ -696,7 +696,6 @@ function RunDialogBody({
           type="button"
           onClick={onRun}
           disabled={loading || isFullRunNameMissing}
-          className="corner-squircle"
         >
           <HugeiconsIcon icon={CookBookIcon} className="size-3.5" />
           {loading ? "Starting..." : `Start ${kindLabel.toLowerCase()}`}
