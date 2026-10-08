@@ -39,12 +39,7 @@ def _decision_count(items: list) -> int:
 
 
 def _keep_best(model, warn: Callable[[str], None]):
-    """A callback that keeps the trainable weights from the evaluation with the lowest held-out loss.
-
-    On a few thousand rows the held-out loss bottoms out before the last epoch while the train loss
-    keeps falling, so the last step is not the one to save. The copy lives on the CPU; weights past
-    KEEP_BEST_MAX_BYTES (a full Clef fine-tune) are not copied and the last step is saved.
-    """
+    """Keeps a CPU copy of the trainable weights at the lowest held-out loss (none past KEEP_BEST_MAX_BYTES)."""
     from transformers import TrainerCallback
 
     class KeepBest(TrainerCallback):
@@ -78,7 +73,7 @@ def _keep_best(model, warn: Callable[[str], None]):
             self.weights = {n: p.detach().to("cpu", copy = True) for n, p in params}
 
         def restore(self, last_step: int) -> int:
-            """Puts the best weights back when the run ended on a worse step; returns the saved step."""
+            """Restores the best weights if the run ended on a worse step; returns the saved step."""
             if self.weights is None or self.step == last_step:
                 return last_step
             import torch
@@ -553,7 +548,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         raise _Stopped("Training cancelled")
     kept_step = trainer.state.global_step
     if keep_best is not None:
-        # Step-based evaluation can end between evaluations: score the last step before comparing.
+        # Step evaluation can stop short of the last step: score it before comparing.
         if keep_best.weights is not None and keep_best.evaluated != trainer.state.global_step:
             trainer.evaluate()
         kept_step = keep_best.restore(trainer.state.global_step)

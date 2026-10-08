@@ -870,7 +870,6 @@ def test_a_cpu_server_keeps_serving_during_training(home, client, stub):
     _put(client, enabled = True, model = "clef-flash", device = "cpu")
     home.training = True
     assert _post(client).status_code == 200
-    # A request only PyTorch can answer is refused under the CPU device, without ending the CPU server.
     gap = {"one": {"type": "score", "instructions": "x", "criteria": ["only"]}}
     refused = _post(client, questions = gap)
     assert refused.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in refused.text

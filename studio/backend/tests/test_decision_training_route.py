@@ -278,7 +278,6 @@ def test_a_cached_sibling_subfolder_does_not_stand_in_for_the_requested_one(hub_
 
     assert model_config.decision_layout(LAYA_REPO, subfolder = "multilingual") == "laya"
     assert model_config.decision_layout(LAYA_REPO) == "laya"
-    # Only multilingual is cached, so the English checkpoint is not a decision model the cache can serve.
     assert model_config.decision_layout(LAYA_REPO, subfolder = "typed-decisions") is None
 
 

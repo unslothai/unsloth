@@ -288,15 +288,11 @@ CLEF_NEEDS_GPU_SETTING = (
 
 
 def clef_unavailable_reason(wait: bool = True) -> str | None:
-    """Why PyTorch Clef cannot serve: no GPU on the machine, or the Decision API device set to CPU.
-
-    Training keeps to clef_unsupported_reason: the serving device setting has no say over a run.
-    """
+    """Why PyTorch Clef cannot serve: no GPU, or a CPU device chosen. Training uses clef_unsupported_reason."""
     if (reason := clef_unsupported_reason(wait)) is not None:
         return reason
     from utils.systemone_settings import device_chosen, get_device
 
-    # As for llama.cpp, an unset device means the GPU; only a stored or pinned CPU refuses.
     return None if not device_chosen() or get_device() == "gpu" else CLEF_NEEDS_GPU_SETTING
 
 

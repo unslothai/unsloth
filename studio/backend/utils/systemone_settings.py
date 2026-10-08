@@ -192,9 +192,7 @@ def validate(
     local = parse_connection(name) is None and not llama_cpp_only(name)
     if serving and local and (reason := runtime_unavailable_reason()):
         raise ValueError(reason)
-    # PyTorch Clef has no CPU path, so a Clef only PyTorch can serve and a CPU device are never stored
-    # together while serving; choosing one with the device unsaid moves the device to GPU with it.
-    # llama.cpp serves Clef on CPU, and without a GPU the hardware reason already marks Clef unavailable.
+    # PyTorch Clef has no CPU path: refuse a CPU device with it, or move an unsaid device to GPU.
     active = enabled if enabled is not None else get_enabled()
     if active and local:
         from core.systemone.catalog import clef_unsupported_reason

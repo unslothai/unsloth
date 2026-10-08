@@ -535,7 +535,6 @@ def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kin
 
 def test_clef_needs_the_decision_api_device_set_to_gpu(home, client, clef, monkeypatch):
     served = _clef_fine_tune(home, "clef_cpu_1")
-    # Unset, the device means the GPU for Clef; chosen as CPU, Clef models are listed as unavailable.
     models = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
     assert models[served]["available"] and models[served]["unavailable_reason"] is None
     assert _put(client, device = "cpu").status_code == 200
@@ -548,12 +547,11 @@ def test_clef_needs_the_decision_api_device_set_to_gpu(home, client, clef, monke
         for n, m in models.items()
         if n.startswith("laya") and not m["llama_cpp_only"]
     )
-    # Saying CPU out loud with a Clef model is refused.
     refused = _put(client, enabled = True, model = served, device = "cpu")
     assert refused.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in refused.text
     assert client.get("/api/settings/systemone").json()["device"] == "cpu"
 
-    # Picking the Clef model with the device unsaid (Use in Decision API) moves the device to GPU with it.
+    # Device unsaid (Use in Decision API): the device moves to GPU with the model.
     chosen = _put(client, enabled = True, model = served)
     assert chosen.status_code == 200 and chosen.json()["device"] == "gpu"
     assert _post(client).status_code == 200
@@ -563,12 +561,11 @@ def test_clef_needs_the_decision_api_device_set_to_gpu(home, client, clef, monke
         for m in models
         if not m["llama_cpp_only"]
     )
-    # Back to CPU while Clef is configured is refused too, so no request silently takes the GPU.
     back = _put(client, device = "cpu")
     assert back.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in back.text
     assert client.get("/api/settings/systemone").json()["device"] == "gpu"
 
-    # A device pinned by the environment bypasses the settings, so the runtime refuses on its own.
+    # An env-pinned device bypasses the settings, so the runtime refuses on its own.
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_DEVICE", "cpu")
     laya_runtime.unload()
     refused = _post(client)
@@ -580,13 +577,11 @@ def test_clef_needs_the_decision_api_device_set_to_gpu(home, client, clef, monke
 def test_clef_on_llama_cpp_keeps_a_cpu_device(home, client, clef, monkeypatch):
     from core.systemone import native_worker
 
-    # llama.cpp serves the stock Clef's GGUF on CPU, so a CPU device is neither refused nor moved to GPU.
     monkeypatch.setattr(native_worker, "resolve_binary", lambda: str(home / "llama-server"))
     kept = _put(client, enabled = True, model = "clef", device = "cpu")
     assert kept.status_code == 200 and kept.json()["device"] == "cpu"
     chosen = _put(client, enabled = True, model = "clef")
     assert chosen.status_code == 200 and chosen.json()["device"] == "cpu"
-    # Under the PyTorch runtime the same choice is refused.
     refused = _put(client, backend = "pytorch", device = "cpu")
     assert refused.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in refused.text
 

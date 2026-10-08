@@ -1127,8 +1127,7 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
         with torch.no_grad():
             theirs = released(batch)[0]
     except OutOfResources as exc:
-        # Cloudflare's float32 reference runs the gated-delta kernel with more shared memory than
-        # RDNA2's 64 KB (RX 6500 XT); every other check below still runs.
+        # The float32 gated-delta kernel needs more shared memory than RDNA2's 64 KB.
         theirs, no_reference = [], exc
     for row, z in enumerate(theirs):
         assert int(z.argmax()) == int(again[row, : len(z)].argmax()), (row, z, again[row, : len(z)])

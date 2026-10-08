@@ -278,8 +278,7 @@ def select(
     if reason is None:
         reason = request_gap(questions or {})
         if reason is None:
-            # Auto keeps a resident PyTorch Clef for text rather than reloading the model,
-            # unless the device setting has since moved it off the GPU.
+            # Auto keeps a resident PyTorch Clef unless the device setting moved off the GPU.
             from .catalog import clef_unavailable_reason
 
             resident = _loaded == checkpoint and _agent is not None
@@ -349,7 +348,7 @@ def effective_backend(checkpoint) -> tuple[str | None, str | None]:
 
 
 def native_ready(checkpoint, backend: str | None = None) -> bool:
-    """Whether llama.cpp could serve this Clef or GGUF entry here under the runtime setting (or `backend`)."""
+    """Whether llama.cpp could serve this Clef or GGUF entry under `backend` (default: the setting)."""
     if not isinstance(checkpoint, Checkpoint) or checkpoint.layout == "laya":
         return False
     from utils.systemone_settings import get_backend
@@ -1070,7 +1069,7 @@ def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
     from .catalog import clef_unavailable_reason
 
     native = _is_native(checkpoint)
-    # llama.cpp also serves Clef on CPU, Metal or Vulkan; the PyTorch worker needs CUDA or ROCm and the GPU device setting.
+    # llama.cpp also serves Clef on CPU, Metal or Vulkan; PyTorch needs CUDA/ROCm and the GPU setting.
     if not native and (reason := clef_unavailable_reason()) is not None:
         raise Unavailable(400, "api_usage_error", reason)
     if (native and not _native_gpu()) or not _training_active():

@@ -1556,7 +1556,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         enabled_locked = systemone_settings.enabled_locked(),
         model = model,
         model_locked = systemone_settings.model_locked(),
-        # Clef (either runtime) defaults to the GPU when no device is stored; report where it actually runs.
+        # Clef defaults to the GPU when no device is stored; report where it runs.
         device = systemone_settings.clef_device()
         if effective == "llama.cpp"
         else "gpu"
