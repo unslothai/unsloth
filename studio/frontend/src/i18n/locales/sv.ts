@@ -4383,6 +4383,7 @@ export const sv = {
       orpoHint: "Som DPO i ett pass med en SFT-term, så det fungerar från en basmodell.",
       grpoHint: "Generera flera svar per prompt och förstärk dem som dina belöningar ger högre poäng.",
       cptLocked: "Fortsatt förträning (Continued Pretraining) tränar alltid med SFT.",
+      modelLocked: "Inbäddnings- och ljudmodeller tränas endast med SFT.",
       macLocked: "Preferens- och RL-träning är ännu inte tillgänglig på Apple Silicon.",
     },
     dataset: {

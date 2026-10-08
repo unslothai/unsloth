@@ -76,7 +76,9 @@ export { rlChartKeys } from "./lib/rl-chart-keys";
 export {
   RL_REQUIRED_ROLES,
   RL_ROLES,
+  effectiveTrainingObjective,
   missingRlRoles,
+  rlObjectiveSupported,
   resolveRlMapping,
 } from "./lib/rl-roles";
 export type { RlObjective, RlRole } from "./lib/rl-roles";

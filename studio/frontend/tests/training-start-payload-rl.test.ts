@@ -9,12 +9,10 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 import type { TrainingConfigState } from "../src/features/training/types/config.ts";
 
 registerBundlerResolver();
-const { buildTrainingStartPayload } = await import(
-  "../src/features/training/api/mappers.ts"
-);
-const { initialTrainingConfigState } = await import(
-  "../src/features/training/stores/training-config-policy.ts"
-);
+const { buildTrainingStartPayload } =
+  await import("../src/features/training/api/mappers.ts");
+const { initialTrainingConfigState } =
+  await import("../src/features/training/stores/training-config-policy.ts");
 
 const BASE: TrainingConfigState = {
   ...initialTrainingConfigState,
@@ -108,4 +106,26 @@ test("CPT always trains as SFT even if a stale objective is persisted", () => {
   );
   assert.equal(payload.objective, "sft");
   assert.deepEqual(payload.grpo_rewards, []);
+});
+
+test("embedding and audio models always start as SFT", async () => {
+  const { effectiveTrainingObjective, rlObjectiveSupported } =
+    await import("../src/features/training/lib/rl-roles.ts");
+  for (const modelType of ["embeddings", "audio", "decision"]) {
+    const state = { modelType, trainingObjective: "grpo" as const };
+    assert.equal(rlObjectiveSupported(state), false, modelType);
+    assert.equal(effectiveTrainingObjective(state), "sft", modelType);
+  }
+  assert.equal(
+    effectiveTrainingObjective({ modelType: "text", trainingObjective: "dpo" }),
+    "dpo",
+  );
+  assert.equal(
+    effectiveTrainingObjective({
+      modelType: "text",
+      isEmbeddingModel: true,
+      trainingObjective: "dpo",
+    }),
+    "sft",
+  );
 });

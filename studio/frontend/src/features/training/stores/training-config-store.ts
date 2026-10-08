@@ -45,6 +45,7 @@ import {
   inferTrainingModelTypeFromFlags,
   resolveTrainingModelType,
 } from "../lib/model-type-capabilities";
+import { rlObjectiveSupported } from "../lib/rl-roles";
 import { runConfigDraftSelections } from "../lib/run-config-draft";
 import { parseRunConfigRlSettings } from "../lib/yaml-config";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
@@ -1640,8 +1641,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (state.trainingObjective === trainingObjective) return;
           // CPT is its own objective; the selector disables RL for it, this keeps the store honest.
           if (
-            (state.trainingMethod === "cpt" ||
-              state.modelType === "decision") &&
+            (state.trainingMethod === "cpt" || !rlObjectiveSupported(state)) &&
             trainingObjective !== "sft"
           ) {
             return;

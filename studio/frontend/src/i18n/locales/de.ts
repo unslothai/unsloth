@@ -4188,6 +4188,7 @@ export const de = {
       orpoHint: "Wie DPO in einem Durchgang mit SFT-Anteil, funktioniert also auch mit einem Basismodell.",
       grpoHint: "Mehrere Antworten pro Prompt erzeugen und die verstärken, die deine Belohnungen höher bewerten.",
       cptLocked: "Continued Pretraining trainiert immer mit SFT.",
+      modelLocked: "Embedding- und Audiomodelle trainieren nur mit SFT.",
       macLocked: "Präferenz- und RL-Training sind auf Apple Silicon noch nicht verfügbar.",
     },
     dataset: {

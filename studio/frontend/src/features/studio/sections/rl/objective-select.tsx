@@ -4,7 +4,10 @@
 import { SegmentedTabsList } from "@/components/segmented-tabs";
 import { Tabs } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  rlObjectiveSupported,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
 import type { TrainingObjective } from "@/types/training";
 import type { ReactElement } from "react";
@@ -22,11 +25,14 @@ export function ObjectiveSelect(): ReactElement {
   const trainingMethod = useTrainingConfigStore((s) => s.trainingMethod);
   const setObjective = useTrainingConfigStore((s) => s.setTrainingObjective);
   const isMac = usePlatformStore((s) => s.deviceType) === "mac";
+  const modelLocked = !useTrainingConfigStore(rlObjectiveSupported);
   // MLX has no RL trainer, and CPT is an objective of its own.
-  const rlLocked = isMac || trainingMethod === "cpt";
+  const rlLocked = isMac || trainingMethod === "cpt" || modelLocked;
   const lockedReason = isMac
     ? t("rl.objective.macLocked")
-    : t("rl.objective.cptLocked");
+    : modelLocked
+      ? t("rl.objective.modelLocked")
+      : t("rl.objective.cptLocked");
 
   return (
     <div className="flex flex-col gap-1.5">

@@ -245,7 +245,7 @@ test("a duplicated GRPO run keeps its objective, RL settings, rewards and column
   assert.equal(state.grpoNumGenerations, 8);
   assert.equal(state.grpoVariant, "gspo");
   assert.deepEqual(state.grpoRewards, [{ name: "exact-answer", weight: 2 }]);
-  const payload = buildTrainingStartPayload(state);
+  const payload = buildTrainingStartPayload(state, null);
   assert.equal(payload.objective, "grpo");
   assert.deepEqual(payload.custom_format_mapping, {
     question: "prompt",

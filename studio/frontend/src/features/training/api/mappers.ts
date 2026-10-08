@@ -5,6 +5,7 @@ import {
   isRawTextDatasetFormat,
   toBackendTrainingType,
 } from "../lib/training-methods";
+import { effectiveTrainingObjective } from "../lib/rl-roles";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
 
@@ -83,8 +84,7 @@ export function buildTrainingStartPayload(
       ? [config.uploadedFile]
       : [];
   const s3Config = buildS3PayloadConfig(config);
-  // Decision models train their own head; RL objectives do not apply.
-  const objective = isCpt || isDecision ? "sft" : config.trainingObjective;
+  const objective = isCpt ? "sft" : effectiveTrainingObjective(config);
   const isRl = objective !== "sft";
   // RL rows carry their own roles (prompt, answer, chosen, ...), not the chat-role mapping.
   const roleMapping = isRl ? config.rlRoleMapping : config.datasetManualMapping;

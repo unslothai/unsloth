@@ -4021,6 +4021,7 @@ export const zhCN = {
       orpoHint: "类似 DPO，但一次完成并带有 SFT 项，因此可从基础模型开始。",
       grpoHint: "为每个提示生成多个回答，并强化奖励得分更高的回答。",
       cptLocked: "继续预训练始终使用 SFT 训练。",
+      modelLocked: "嵌入模型和音频模型仅支持 SFT 训练。",
       macLocked: "偏好训练和强化学习暂不支持 Apple Silicon。",
     },
     dataset: {

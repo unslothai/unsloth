@@ -4,6 +4,28 @@
 import type { TrainingObjective } from "@/types/training";
 
 export type RlObjective = Exclude<TrainingObjective, "sft">;
+
+/** Decision, embedding and audio models train with SFT only; the backend refuses RL for them. */
+export function rlObjectiveSupported(s: {
+  modelType: string | null;
+  isEmbeddingModel?: boolean;
+}): boolean {
+  return (
+    !s.isEmbeddingModel &&
+    s.modelType !== "decision" &&
+    s.modelType !== "embeddings" &&
+    s.modelType !== "audio"
+  );
+}
+
+/** The objective a run will actually use. */
+export function effectiveTrainingObjective(s: {
+  modelType: string | null;
+  isEmbeddingModel?: boolean;
+  trainingObjective: TrainingObjective;
+}): TrainingObjective {
+  return rlObjectiveSupported(s) ? s.trainingObjective : "sft";
+}
 export type RlRole = "prompt" | "answer" | "chosen" | "rejected" | "system";
 
 // Mirrors RL_ROLES / _REQUIRED_ROLES / _AUTO_ROLE_NAMES in studio/backend/core/training/rl.py.

@@ -23,7 +23,10 @@ import {
   MLX_OPTIMIZER_OPTIONS,
   OPTIMIZER_OPTIONS,
 } from "@/config/training";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  effectiveTrainingObjective,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -118,8 +121,7 @@ export function TrainingHyperparametersSection({
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
   const objective = useTrainingConfigStore((s) =>
-    // Decision models train their own head; RL objectives do not apply.
-    s.modelType === "decision" ? "sft" : s.trainingObjective,
+    effectiveTrainingObjective(s),
   );
   // Picking an RL objective opens its settings; going back to SFT leaves a tab that no longer exists.
   const [tab, setTab] = useState<HyperparameterTab>(

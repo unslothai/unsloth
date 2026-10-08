@@ -4198,6 +4198,7 @@ export const en = {
       orpoHint: "Like DPO in one pass with an SFT term, so it works from a base model.",
       grpoHint: "Generate several answers per prompt and reinforce the ones your rewards score higher.",
       cptLocked: "Continued Pretraining always trains with SFT.",
+      modelLocked: "Embedding and audio models train with SFT only.",
       macLocked: "Preference and RL training are not available on Apple Silicon yet.",
     },
     dataset: {

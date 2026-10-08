@@ -4064,6 +4064,7 @@ export const ja = {
       orpoHint: "SFT 項を含む DPO を 1 回の学習で行うため、ベースモデルからでも使えます。",
       grpoHint: "プロンプトごとに複数の回答を生成し、報酬のスコアが高いものを強化します。",
       cptLocked: "継続事前学習は常に SFT で学習します。",
+      modelLocked: "埋め込みモデルと音声モデルは SFT でのみ学習します。",
       macLocked: "選好学習と RL は Apple Silicon ではまだ利用できません。",
     },
     dataset: {

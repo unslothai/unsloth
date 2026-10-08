@@ -29,6 +29,7 @@ import {
   TRAINING_METHOD_ORDER,
   isTrainingMethodSupportedOnDevice,
   useTrainingConfigStore,
+  effectiveTrainingObjective,
 } from "@/features/training";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -422,15 +423,15 @@ function ModelPanel() {
         </SetupField>
       ) : null}
       {isDecisionModel ? null : (
-      <div className="@md/train-section:col-span-2 @2xl/train-section:col-span-3">
-        <SetupField
-          label={t("rl.objective.label")}
-          hint={t("rl.objective.tooltip")}
-          badge={<NewBadge />}
-        >
-          <ObjectiveSelect />
-        </SetupField>
-      </div>
+        <div className="@md/train-section:col-span-2 @2xl/train-section:col-span-3">
+          <SetupField
+            label={t("rl.objective.label")}
+            hint={t("rl.objective.tooltip")}
+            badge={<NewBadge />}
+          >
+            <ObjectiveSelect />
+          </SetupField>
+        </div>
       )}
     </div>
   );
@@ -445,8 +446,7 @@ export function TrainingWizard({
 }) {
   const t = useT();
   const objective = useTrainingConfigStore((s) =>
-    // Decision models train their own head; RL objectives do not apply.
-    s.modelType === "decision" ? "sft" : s.trainingObjective,
+    effectiveTrainingObjective(s),
   );
   return (
     <div className="flex flex-col gap-6">

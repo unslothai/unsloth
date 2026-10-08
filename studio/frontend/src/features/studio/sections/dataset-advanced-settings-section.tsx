@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { usePlatformStore } from "@/config/env";
-import { useTrainingConfigStore } from "@/features/training";
+import {
+  effectiveTrainingObjective,
+  useTrainingConfigStore,
+} from "@/features/training";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect } from "react";
@@ -57,8 +60,7 @@ export function DatasetAdvancedSettingsSection() {
       setDatasetSliceStart: state.setDatasetSliceStart,
       setDatasetStreaming: state.setDatasetStreaming,
       trainOnCompletions: state.trainOnCompletions,
-      trainingObjective:
-        state.modelType === "decision" ? "sft" : state.trainingObjective,
+      trainingObjective: effectiveTrainingObjective(state),
     })),
   );
   const streamingBlockers = getDatasetStreamingBlockers({

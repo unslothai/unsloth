@@ -4199,6 +4199,7 @@ export const fr = {
       orpoHint: "Comme DPO en une seule passe avec un terme SFT, donc fonctionne depuis un modèle de base.",
       grpoHint: "Générer plusieurs réponses par prompt et renforcer celles que vos récompenses notent le mieux.",
       cptLocked: "Le pré-entraînement continu s'entraîne toujours avec SFT.",
+      modelLocked: "Les modèles d'embedding et audio s'entraînent uniquement avec SFT.",
       macLocked: "L'entraînement par préférences et RL n'est pas encore disponible sur Apple Silicon.",
     },
     dataset: {
