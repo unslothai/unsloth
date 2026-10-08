@@ -175,7 +175,6 @@ export function OffloadPanel({ isTrainingRunning }: { isTrainingRunning: boolean
   const waiting = busy > 0 ? (100 * (s.stall_ms ?? 0)) / busy : null;
   const vramTotal = s.vram_total_bytes ?? 0;
   const cards = s.vram_devices ?? [];
-  // One card renders exactly as before; several get a grid and a VRAM bar each.
   const multi = cards.length > 1;
   const ms = (v: number | null) => (v == null ? "--" : `${v.toFixed(1)} ms`);
 
