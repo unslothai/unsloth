@@ -130,6 +130,14 @@ test("a project chat keeps its pages when its new thread gains a URL", () => {
   const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
   // ProjectLanding shows a newly-created thread before its row changes the route to ?thread=.
   // Both representations use the same identity once the runtime has assigned the thread id.
-  assert.match(key, /view\.mode === "project"\s*\? activeThreadId\s*\? `single:\$\{activeThreadId\}`/);
+  assert.match(key, /view\.mode === "project"\s*\? projectChatShownId\s*\? `single:\$\{projectChatShownId\}`/);
   assert.match(key, /view\.threadId \?\? newChatShownId \?\? activeThreadId/);
+});
+
+test("leaving Chat and coming back keeps a new project chat's pages open", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const key = page.slice(page.indexOf("const projectChatBlankedRef"), page.indexOf("closeChatPages();"));
+  // RootLayout clears activeThreadId while Chat is hidden, so retain the first created thread by nonce.
+  assert.match(key, /projectChatRef\.current = \{\s*projectId: view\.projectId,\s*nonce: projectNewThreadNonce,\s*threadId: activeThreadId,/);
+  assert.match(key, /projectChat\.nonce === projectNewThreadNonce\s*\? projectChat\.threadId\s*:\s*null/);
 });

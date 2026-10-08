@@ -3402,12 +3402,40 @@ export function ChatPage({
   const newChat = newChatRef.current;
   const newChatShownId =
     newChat && view.mode === "single" && view.newThreadNonce === newChat.nonce ? newChat.threadId : null;
+  const projectChatBlankedRef = useRef<{ projectId: string; nonce: string } | null>(null);
+  if (view.mode === "project" && activeThreadId === null) {
+    projectChatBlankedRef.current = { projectId: view.projectId, nonce: projectNewThreadNonce };
+  }
+  const projectChatRef = useRef<{ projectId: string; nonce: string; threadId: string } | null>(null);
+  const projectChatBlanked = projectChatBlankedRef.current;
+  if (
+    view.mode === "project" &&
+    activeThreadId &&
+    projectChatBlanked?.projectId === view.projectId &&
+    projectChatBlanked.nonce === projectNewThreadNonce &&
+    (projectChatRef.current?.projectId !== view.projectId ||
+      projectChatRef.current.nonce !== projectNewThreadNonce)
+  ) {
+    projectChatRef.current = {
+      projectId: view.projectId,
+      nonce: projectNewThreadNonce,
+      threadId: activeThreadId,
+    };
+  }
+  const projectChat = projectChatRef.current;
+  const projectChatShownId =
+    projectChat &&
+    view.mode === "project" &&
+    projectChat.projectId === view.projectId &&
+    projectChat.nonce === projectNewThreadNonce
+      ? projectChat.threadId
+      : null;
   const shownChatKey =
     view.mode === "single"
       ? `single:${view.threadId ?? newChatShownId ?? activeThreadId ?? view.newThreadNonce ?? "new"}`
       : view.mode === "project"
-        ? activeThreadId
-          ? `single:${activeThreadId}`
+        ? projectChatShownId
+          ? `single:${projectChatShownId}`
           : `project:${view.projectId}:${projectNewThreadNonce}`
         : artifactViewKey;
   // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
