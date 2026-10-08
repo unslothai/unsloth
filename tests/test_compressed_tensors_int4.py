@@ -22,6 +22,7 @@ import copy
 import itertools
 import os
 import sys
+import types
 
 import pytest
 import torch
@@ -540,9 +541,20 @@ def test_adopt_swaps_plain_linears_and_leaves_routers_to_the_decompress_converte
 
 
 @needs_ct
-@pytest.mark.parametrize("group_size", [1, 16, 64])
-def test_adopt_leaves_a_linear_whose_scale_groups_disagree_with_group_size(tmp_path, group_size):
-    # The kernel indexes weight_scale by group_size, so a mismatch reads past the scales (#12955).
+@pytest.mark.parametrize(
+    "weights,scale_columns,adopted",
+    [
+        ({"group_size": 1}, 2, False),
+        ({"group_size": 16}, 2, False),
+        ({"group_size": 64}, 2, False),
+        ({"strategy": "channel", "group_size": None}, 1, True),
+        ({"strategy": "channel", "group_size": -1}, 1, True),
+    ],
+)
+def test_adopt_takes_a_linear_only_when_its_scale_groups_match_the_scheme(
+    tmp_path, weights, scale_columns, adopted
+):
+    # The kernel indexes weight_scale by group_size: a mismatch reads the wrong scales, or past them (#12955).
     from safetensors.torch import save_file
     from torch import nn
     from unsloth.models.compressed_tensors_bnb import (
@@ -558,15 +570,113 @@ def test_adopt_leaves_a_linear_whose_scale_groups_disagree_with_group_size(tmp_p
     save_file(
         {
             "proj.weight_packed": torch.zeros(16, 8, dtype = torch.int32),
-            "proj.weight_scale": torch.ones(16, 2, dtype = torch.float32),
+            "proj.weight_scale": torch.ones(16, scale_columns, dtype = torch.float32),
             "proj.weight_shape": torch.tensor([16, 64]),
         },
         path,
     )
-    ct_config = _build_quantization_config(_w4a16(weights = {"group_size": group_size}))
+    ct_config = _build_quantization_config(_w4a16(weights = weights))
     swapped, leftover = adopt_int4_packed_linears(model, ct_config, [path], torch.bfloat16)
-    assert swapped == [] and leftover == ["proj"]
-    assert type(model.proj) is nn.Linear
+    assert (swapped, leftover) == ((["proj"], []) if adopted else ([], ["proj"]))
+    assert (type(model.proj) is nn.Linear) is not adopted
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.parametrize("declared", [16, 64, None])
+def test_decompress_skips_the_kernel_when_scale_groups_disagree_with_group_size(declared):
+    from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
+    from unsloth.models.compressed_tensors_bnb import _decompress_one_triton
+
+    packed, ref, _ = _packed_layer(16, 128, 4, 32, True, False, torch.bfloat16)
+
+    def decode(group_size, scale = packed["weight_scale"]):
+        args = QuantizationArgs(
+            num_bits = 4,
+            type = "int",
+            strategy = "group" if group_size else "channel",
+            group_size = group_size,
+        )
+        return _decompress_one_triton(
+            QuantizationScheme(targets = ["Linear"], weights = args),
+            packed["weight_packed"],
+            scale,
+            packed["weight_shape"],
+            None,
+            None,
+            torch.bfloat16,
+        )
+
+    assert torch.equal(decode(32), ref)
+    assert decode(declared) is None
+    assert decode(32, packed["weight_scale"][:8]) is None
+
+
+def test_a_rejected_decompress_names_the_group_size_and_scale_shape_that_disagree():
+    from unsloth.models.compressed_tensors_bnb import _decompress_one
+
+    class Rejects:
+        @staticmethod
+        def decompress(state, scheme):
+            raise ValueError("shape")
+
+    packed = torch.zeros(16, 8, dtype = torch.int32)
+    shape = torch.tensor([16, 64])
+
+    def decode(group_size, scale_columns):
+        scheme = types.SimpleNamespace(weights = types.SimpleNamespace(group_size = group_size))
+        scale = torch.ones(16, scale_columns)
+        return _decompress_one(Rejects, scheme, packed, scale, shape, None, None, torch.bfloat16)
+
+    with pytest.raises(RuntimeError, match = r"group_size = 16 for a 16 x 64 .*\(16, 2\)"):
+        decode(16, 2)
+    # A consistent scale, or a channel scheme, keeps the decoder's own error.
+    for group_size, scale_columns in ((16, 4), (None, 2), (-1, 2)):
+        with pytest.raises(ValueError, match = "shape"):
+            decode(group_size, scale_columns)
+
+
+@needs_gpu
+@pytest.mark.skipif(
+    not (HAS_CT and HAS_CONVERTERS), reason = "needs compressed-tensors and the transformers 5 loader"
+)
+@pytest.mark.parametrize("declared", [16, 64])
+@pytest.mark.usefixtures("restore_llama_patches")
+def test_a_group_size_the_scales_contradict_loads_the_right_weights_or_fails_by_name(
+    declared, tmp_path, monkeypatch, caplog
+):
+    import json
+    import logging
+
+    from unsloth import FastLanguageModel
+    from test_compressed_tensors_bnb import (
+        _same_linear4bit,
+        _tokenizer_free_load,
+        _write_tiny_packed_llama,
+    )
+
+    monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_INT4", "packed")
+    packed_dir, bf16_dir = _write_tiny_packed_llama(str(tmp_path))
+    for d in (packed_dir, bf16_dir):
+        _tokenizer_free_load(d, str(tmp_path))
+    config_path = os.path.join(packed_dir, "config.json")
+    with open(config_path) as f:
+        config = json.load(f)
+    for group in config["quantization_config"]["config_groups"].values():
+        group["weights"]["group_size"] = declared  # the scales were written for 32
+    with open(config_path, "w") as f:
+        json.dump(config, f)
+    kw = dict(max_seq_length = 64, dtype = torch.bfloat16, load_in_4bit = True)
+    # transformers reports the per-layer conversion errors on its own, non-propagating logger.
+    monkeypatch.setattr(logging.getLogger("transformers"), "propagate", True)
+    try:
+        model_a, _ = FastLanguageModel.from_pretrained(packed_dir, **kw)
+    except RuntimeError:
+        # compressed-tensors 0.19+ rejects the mismatch instead of inferring the groups.
+        assert f"declares group_size = {declared}" in caplog.text
+        return
+    model_b, _ = FastLanguageModel.from_pretrained(bf16_dir, **kw)
+    assert _same_linear4bit(model_a, model_b) == 2 * 7
 
 
 @needs_gpu
