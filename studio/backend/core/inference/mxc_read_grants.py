@@ -415,12 +415,14 @@ def _revoke_recorded_root(record: dict, key: str) -> str:
         # Only inherited Windows permissions remain; none belong to Studio.
         record.pop(key)
         return "dropped"
+    # Read before revoking: a failed /remove:g may clear the root and still leave descendants.
+    never_landed = record[key].get("state") == "pending" and _root_untouched(key)
     ok, output = _revoke(key)
     if ok:
         record.pop(key)
         _scanned.pop(key, None)
         return "revoked"
-    if record[key].get("state") == "pending" and _root_untouched(key):
+    if never_landed:
         record.pop(key)
         return "dropped"
     logger.warning("Could not remove the persistent MXC read grant from %s: %s", key, output)

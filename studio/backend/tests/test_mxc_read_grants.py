@@ -270,6 +270,24 @@ def test_a_pending_grant_on_a_locked_folder_with_its_own_entry_still_refuses(hos
     assert _states() == {key: "pending"}
 
 
+def test_a_revoke_that_clears_the_root_but_fails_below_keeps_the_record(host, monkeypatch):
+    # The grant reached the root; /remove:g clears it there, then fails on a descendant.
+    venv = _runtime(host)
+    key = os.path.normcase(venv)
+    host.explicit.add(key)
+    mxc_read_grants._save_record(
+        {key: {"state": "pending", "identity": mxc_read_grants._identity(venv)}}
+    )
+
+    def partial_revoke(root):
+        host.explicit.discard(os.path.normcase(root))
+        return False, "Successfully processed 1 files; Failed processing 1 files"
+
+    monkeypatch.setattr(mxc_read_grants, "_revoke", partial_revoke)
+    assert mxc_read_grants.revoke_recorded() == ()
+    assert _states() == {key: "pending"}
+
+
 def test_a_grant_interrupted_by_a_crash_is_redone(host):
     venv = _runtime(host)
     host.granted.add(os.path.normcase(venv))  # the root ACE landed, the propagation may not have
