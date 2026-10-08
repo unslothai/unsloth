@@ -20954,7 +20954,7 @@ def sandbox_attachment_path(sha256: str, name: str) -> str:
         stem, ext = os.path.splitext(base)
         ext = ext if len(ext.encode()) <= 16 else ""
         room = _ATTACHMENT_NAME_BYTES - len(ext.encode())
-        # Stripped again so the basename the frontend sends back derives this same path.
+        # strip again so the basename the frontend sends back derives the same path.
         base = (stem.encode()[:room].decode("utf-8", "ignore").rstrip(" .") or "attachment") + ext
     if _RESERVED_NAME.fullmatch(base.split(".", 1)[0].rstrip(" ")):
         base = "_" + base
@@ -20964,24 +20964,34 @@ def sandbox_attachment_path(sha256: str, name: str) -> str:
 def materialize_sandbox_attachments(
     session_id: "str | None", attachments: "list[tuple[str, str]]"
 ) -> None:
-    """Copy chat attachment originals into the sandbox, leaving one already there so edits survive."""
+    """copy chat attachment originals into the sandbox, preserving existing copies so edits survive."""
     from core import chat_originals
     with _session_in_flight(session_id):
         workdir = _get_workdir(session_id)
-        for sha256, name in attachments:
-            source = chat_originals.originals_dir() / sha256
-            if not source.is_file():
-                continue
-            try:
-                _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
-            except (OSError, ValueError):
-                logger.warning(
-                    "could not copy attachment %s into the sandbox", sha256, exc_info = True
-                )
+        missing = [
+            (sha256, name, chat_originals.originals_dir() / sha256)
+            for sha256, name in attachments
+            if not os.path.lexists(os.path.join(workdir, sandbox_attachment_path(sha256, name)))
+        ]
+        missing = [entry for entry in missing if entry[2].is_file()]
+        if not missing:
+            return
+        # register the copy as a call so concurrent chats sharing the workdir cannot claim it.
+        token = _call_started(workdir)
+        try:
+            for sha256, name, source in missing:
+                try:
+                    _install_attachment_copy(workdir, sandbox_attachment_path(sha256, name), source)
+                except (OSError, ValueError):
+                    logger.warning(
+                        "could not copy attachment %s into the sandbox", sha256, exc_info = True
+                    )
+        finally:
+            _call_finished(token)
 
 
 def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
-    """The spill writer's discipline: no link followed, and `os.link` never replaces a name."""
+    """match the spill writer: follow no links; `os.link` never replaces existing names."""
     *dirs, name = relative.split("/")
     tmp = f".tmp-{uuid.uuid4().hex[:12]}"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -21823,8 +21833,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     # this walk runs twice per tool call.
     visited = 0
     hash_budget = 0 if _volume_timestamps_finely(workdir) else _MAX_SNAPSHOT_HASH_BYTES
-    # Walked, not listed: a script writing outputs/report.csv is ordinary, and a top-level listing saw only the
-    # directory and dropped it.
+    # walked to include nested outputs such as outputs/report.csv that a top-level listing drops.
     for base, dirs, names in os.walk(workdir):
         visited += 1
         if visited > _MAX_SNAPSHOT_DIRS:
@@ -21832,24 +21841,26 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
         # depth 0 is the workdir itself, whose files are one segment.
         relative = base[len(workdir) :].strip(os.sep)
         depth = len(_user_path_parts(relative.split(os.sep) if relative else []))
-        # Dot-directories stay out: .git, .cache and friends are where the noise lives. Dot-FILES are reported, since
-        # .gitignore is a real artifact.
+        # skip noisy dot directories except attachments; dot files like .gitignore remain valid artifacts.
         dirs[:] = (
             []
             if depth >= _MAX_SANDBOX_PATH_SEGMENTS - 1
-            else [d for d in dirs if not d.startswith(".") and _servable_segment(d)]
+            else [
+                d
+                for d in dirs
+                if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
+                and _servable_segment(d)
+            ]
         )
         for name in names:
-            # Only at the top: a tool that wrote archive/.unsloth_sandbox made an ordinary file, and dropping it hid
-            # it from every listing while still counting it as a reason to keep the sandbox.
+            # ignore internal markers only at the root; nested files with these names remain valid artifacts.
             if base == workdir and name in _INTERNAL_SANDBOX_FILES:
                 continue
             if not _servable_segment(name):
                 continue
             path = os.path.join(base, name)
             try:
-                # One lstat where isfile + islink + stat were three, on every file of every walk. A link is not a
-                # regular file to lstat, so this drops the same entries the pair did.
+                # one lstat replaces isfile, islink, and stat while rejecting the same non-regular entries.
                 stat = os.lstat(path)
                 if not S_ISREG(stat.st_mode):
                     continue
