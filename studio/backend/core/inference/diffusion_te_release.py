@@ -69,7 +69,10 @@ def release_wanted(plan: Any) -> tuple[bool, str]:
     if budget is None or required is None or not encoders:
         return False, "budget or text-encoder size unknown"
     if int(required) <= int(budget):
-        return False, f"weights and generation headroom ({required} MiB) fit the {budget} MiB budget"
+        return (
+            False,
+            f"weights and generation headroom ({required} MiB) fit the {budget} MiB budget",
+        )
     return True, (
         f"unified memory: weights and generation headroom ({required} MiB) exceed the {budget} MiB budget, "
         f"and the text encoders ({encoders} MiB) run once per prompt"
@@ -79,11 +82,9 @@ def release_wanted(plan: Any) -> tuple[bool, str]:
 def _snapshot_root() -> Path:
     try:
         from utils.paths.storage_roots import cache_root
-
         return Path(cache_root()) / _SNAPSHOT_DIR
     except Exception:  # noqa: BLE001 - no Studio home (tests, bare scripts): the system temp dir
         import tempfile
-
         return Path(tempfile.gettempdir()) / f"unsloth_{_SNAPSHOT_DIR}"
 
 
@@ -112,21 +113,28 @@ def _sweep_stale(root: Path) -> None:
 def _offload_hooked(module: Any) -> bool:
     """accelerate / diffusers offload hooks move weights themselves; never release under them."""
     for sub in module.modules():
-        if getattr(sub, "_hf_hook", None) is not None or getattr(sub, "_diffusers_hook", None) is not None:
+        if (
+            getattr(sub, "_hf_hook", None) is not None
+            or getattr(sub, "_diffusers_hook", None) is not None
+        ):
             return True
     return False
 
 
 def _plain_tensor(tensor: Any) -> bool:
     import torch
-
     return type(tensor) in (torch.Tensor, torch.nn.Parameter) and tensor.device.type != "meta"
 
 
 class TextEncoderReleaser:
     """Frees a pipeline's text-encoder weights during denoise and restores them, bit for bit, before they run again."""
 
-    def __init__(self, encoders: list[tuple[str, Any]], *, logger: Any = None) -> None:
+    def __init__(
+        self,
+        encoders: list[tuple[str, Any]],
+        *,
+        logger: Any = None,
+    ) -> None:
         self._encoders = encoders
         self._logger = logger
         self._lock = threading.RLock()
@@ -237,7 +245,6 @@ class TextEncoderReleaser:
     def release(self) -> int:
         """Free the encoders' large tensors; returns the bytes released (0 when already released or refused)."""
         import torch
-
         with self._lock:
             if self._released or not self._slots:
                 return 0
@@ -329,7 +336,6 @@ def _remove_dir(path: Optional[str]) -> None:
 
 def _empty_device_cache() -> None:
     import torch
-
     for backend in ("mps", "cuda"):
         module = getattr(torch, backend, None)
         try:
@@ -339,7 +345,12 @@ def _empty_device_cache() -> None:
             pass
 
 
-def maybe_install(pipe: Any, plan: Any, *, logger: Any = None) -> Optional[TextEncoderReleaser]:
+def maybe_install(
+    pipe: Any,
+    plan: Any,
+    *,
+    logger: Any = None,
+) -> Optional[TextEncoderReleaser]:
     """A releaser for ``pipe`` when ``plan`` calls for one (see ``release_wanted``), else None. Never raises."""
     try:
         wanted, reason = release_wanted(plan)
@@ -373,8 +384,6 @@ def maybe_install(pipe: Any, plan: Any, *, logger: Any = None) -> Optional[TextE
 def _is_module(value: Any) -> bool:
     try:
         import torch
-
         return isinstance(value, torch.nn.Module)
     except Exception:  # noqa: BLE001
         return False
-

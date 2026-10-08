@@ -170,7 +170,6 @@ def _int8_convrot_only(te_quant_mode: Optional[str], target: Any) -> bool:
     """Whether this pick can ONLY take the int8 ConvRot file (no fp8 fallback): Apple Silicon."""
     try:
         from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
-
         return (
             normalize_te_quant(te_quant_mode) == "int8"
             and int8_convrot_te_runs_on(target)

@@ -51,7 +51,12 @@ def _q21_family():
     return fam
 
 
-def _plan(memory: DeviceMemory, weights: int, encoders: int, headroom: int = 8 * GIB):
+def _plan(
+    memory: DeviceMemory,
+    weights: int,
+    encoders: int,
+    headroom: int = 8 * GIB,
+):
     return plan_diffusion_memory(
         target = _target("mps" if memory.memory_kind == "unified_memory" else "cuda"),
         device_memory = memory,
@@ -225,7 +230,10 @@ class _Encoder(torch.nn.Module):
         self.head.weight = self.embed.weight
 
     def forward(self, ids):
-        h = self.norm(self.proj(self.embed(ids)) + self.codes[: ids.shape[-1]].to(self.proj.weight.dtype).sum(-1, keepdim = True))
+        h = self.norm(
+            self.proj(self.embed(ids))
+            + self.codes[: ids.shape[-1]].to(self.proj.weight.dtype).sum(-1, keepdim = True)
+        )
         return self.head(h) + self.rotary.sum()
 
 
@@ -322,7 +330,11 @@ def test_tiny_qwen_image_21_pipeline_renders_the_same_with_release(snapshot_root
     device = _device()
     dtype = torch.float32
 
-    def render(pipe, prompt, releaser = None):
+    def render(
+        pipe,
+        prompt,
+        releaser = None,
+    ):
         def on_denoise():
             if releaser is not None:
                 releaser.release()
