@@ -34,6 +34,7 @@ import {
   useDownloadActivity,
 } from "./download-activity";
 import { formatSize, revealLabelKey } from "./download-format";
+import { isDangerousDownload } from "./download-safety";
 import { type DownloadItem, useBrowserHistoryStore } from "./history-store";
 import { nativeDownloadsExist, openNativeDownload, revealNativeDownload } from "./native-downloads";
 import { useBrowserStore } from "./store";
@@ -50,6 +51,8 @@ type Target = Pick<DownloadItem, "name" | "contentType" | "url" | "nativeId"> & 
 /** Open a download: the saved file on the desktop, this session's copy in a tab, else its page. */
 function openTarget(target: Target, onFailed: (name: string) => void): (() => void) | undefined {
   if (isTauri && target.nativeId) {
+    // The app refuses to open programs and scripts (browser_download_open); Show in folder still works.
+    if (isDangerousDownload(target.name)) return undefined;
     const id = target.nativeId;
     return () => void openNativeDownload(id).catch(() => onFailed(target.name));
   }
@@ -333,7 +336,8 @@ function DownloadingIcon() {
 }
 
 /** Toolbar Downloads button: a ring while files download, a notice when one finishes, recent downloads on click. */
-export function DownloadsButton({ className }: { className?: string }) {
+/** `visible`: false while its panel stays mounted off screen, so results go to a toast instead. */
+export function DownloadsButton({ className, visible = true }: { className?: string; visible?: boolean }) {
   const t = useT();
   const active = useDownloadActivity((state) => Object.keys(state.active).length > 0);
   const finished = useDownloadActivity((state) => state.finished);
@@ -344,13 +348,13 @@ export function DownloadsButton({ className }: { className?: string }) {
   const [seen, setSeen] = useState(finishedSequence);
   if (finishedSequence !== seen) {
     setSeen(finishedSequence);
-    if (finished && (mode !== "list" || !finished.historyId)) {
+    if (visible && finished && (mode !== "list" || !finished.historyId)) {
       setMode("finished");
       setHovered(false);
     }
   }
 
-  useEffect(() => mountDownloadsButton(), []);
+  useEffect(() => (visible ? mountDownloadsButton() : undefined), [visible]);
 
   const close = () => {
     setMode("closed");

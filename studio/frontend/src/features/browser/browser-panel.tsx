@@ -1050,12 +1050,12 @@ function webAddress(tab: BrowserTab | undefined): string | null {
   return entry?.kind === "web" ? (tab?.displayUrl ?? entry.url) : null;
 }
 
-function WebActions({ tab }: { tab: BrowserTab | undefined }) {
+function WebActions({ tab, visible }: { tab: BrowserTab | undefined; visible: boolean }) {
   return (
     <>
       <AnnotatePageButton tab={tab} />
       {/* Recent downloads and the one in flight; saving the page itself is in the menu. */}
-      <DownloadsButton className={NAV_BUTTON} />
+      <DownloadsButton className={NAV_BUTTON} visible={visible} />
     </>
   );
 }
@@ -1394,7 +1394,8 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
+/** `visible`: the panel's chat is shown (BrowserPanel `active`). */
+function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: boolean }) {
   const t = useT();
   const { goBack, goForward, reload } = useBrowserStore.getState();
   const native = nativePage(tab);
@@ -1453,7 +1454,7 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
         }
       />
       <div className="flex shrink-0 items-center gap-0.5">
-        <WebActions tab={tab} />
+        <WebActions tab={tab} visible={visible} />
         <PanelMenu tab={tab} />
       </div>
     </>
@@ -2216,7 +2217,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               <BrowserFileToolbar tab={activeTab} entry={activeEntry} />
             )
           ) : (
-            <WebToolbar tab={activeTab} />
+            <WebToolbar tab={activeTab} visible={active} />
           )}
         </div>
         {floatingFileControls ? null : <BookmarksBar tab={activeTab} />}

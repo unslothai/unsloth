@@ -575,6 +575,11 @@ test("an unrecorded result's bytes go with its notice, and one replaced on scree
   );
   const file = { blob: new Blob(["x"]), name: "a.bin", contentType: "" };
   const result = { name: "a.bin", size: 1, contentType: "", url: null, failed: false };
+  // No button on screen: an unrecorded copy has no way back, so it isn't kept; a recorded one is.
+  finishDownload("save:z", result, file);
+  assert.equal(keptDownloadFile("save:z"), null);
+  finishDownload("save:y", { ...result, historyId: "row-y" }, file);
+  assert.equal(keptDownloadFile("row-y"), file);
   const unmount = mountDownloadsButton();
   const toasts = ((globalThis as { __toasts?: { message: string; options?: { description?: string } }[] }).__toasts ??=
     []);

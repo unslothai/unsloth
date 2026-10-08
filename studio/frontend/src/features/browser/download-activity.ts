@@ -102,7 +102,8 @@ export function finishDownload(
   release(replaced);
   // Unrecorded, its native id was forgotten (history-store.ts), so it can't open or reveal.
   const nativeId = result.historyId ? result.nativeId : undefined;
-  if (file) keepFile(result.historyId ?? key, file);
+  // Only a history row or a notice on screen can reach the copy; with neither it would only sit in memory.
+  if (file && (result.historyId || buttons > 0)) keepFile(result.historyId ?? key, file);
   const active = { ...useDownloadActivity.getState().active };
   delete active[key];
   finishedOnButton = buttons > 0;
