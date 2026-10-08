@@ -4177,7 +4177,7 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
         _PREV_TORCH_VER=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_prev_tv" | head -n 1)
         break
     done
-    # _run_bounded the fallback: without version.py it hits `import torch`, which can wedge. -I: see _build_unsloth_torch_overrides.
+    # _run_bounded the fallback: without version.py it hits `import torch`, which can wedge.
     [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$(_run_bounded "$VENV_DIR/bin/python" -I -c \
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy, unless the caller asked for no copy at all, in which case this line would be contradicted by the "discarded" one _start_studio_venv_replacement prints a moment later. install.ps1 varies its twin the same way.
@@ -6206,7 +6206,6 @@ _installed_torch_version_for_tag() {
         done
         return
     fi
-    # -I: a PYTHONPATH torch would read as "cpu" here and trigger a torch reinstall on every run.
     "$_VENV_PY" -I -c "import torch; print(torch.__version__)" 2>/dev/null || true
 }
 
@@ -7793,11 +7792,11 @@ print(path if path.is_file() else '')
 
 _bootstrap_packaged_mlx_override
 
-# The install reads the venv's torch with -I, but `import torch` at runtime does not, so say once when PYTHONPATH exposes a different torch than the venv's. Advisory only: the install itself is unaffected.
+# -I hides a PYTHONPATH torch from the install but not from `import torch` at runtime: say so once.
 _TORCH_SHADOW_WARNED=false
 _warn_torch_shadowed() {
     [ -n "$1" ] && [ "$_TORCH_SHADOW_WARNED" = false ] || return 0
-    # From /: `-c` puts the cwd on sys.path, which a launched backend does not have.
+    # From /: `-c` adds the cwd to sys.path, which a launched backend does not.
     _wts_ambient=$(cd / && "$_VENV_PY" -c "
 from importlib.metadata import version
 print('torch==' + version('torch'))
@@ -7813,7 +7812,7 @@ print('torch==' + version('torch'))
 _build_unsloth_torch_overrides() {
     _UNSLOTH_TORCH_OVERRIDES=""
     [ "$SKIP_TORCH" = false ] || return 0
-    # -I (isolated): PYTHONPATH and the current directory sit ahead of the venv's site-packages, so an NGC / system torch exposed there was frozen instead of the venv's (#11980: torch==2.9.0a0+...nv25.9, on no index, made every resolve unsatisfiable).
+    # -I: a torch on PYTHONPATH or in the cwd was frozen instead of the venv's (#11980).
     _torch_trio_pins=$("$_VENV_PY" -I -c "
 from importlib.metadata import version, PackageNotFoundError
 for _p in ('torch', 'torchvision', 'torchaudio'):

@@ -7729,7 +7729,6 @@ function Enter-StudioVenv {
         return
     }
     . $ActivateScript
-    # The venv is the environment being set up: an inherited PYTHONPATH would answer its torch probes (#11980).
     Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 }
 Enter-StudioVenv

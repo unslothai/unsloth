@@ -7786,7 +7786,6 @@ exit 0
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
-            # -I: every caller asks about a venv's own torch, which PYTHONPATH must not answer (#11980).
             $psi.Arguments = "-I -c `"$Code`""
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
@@ -8126,7 +8125,6 @@ exit 0
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
             # Dist metadata, not "import torch": a broken DLL would drop the pin (as in install.sh).
-            # -I: PYTHONPATH must not decide which torch this venv is recorded as having (#11980).
             $psi.Arguments = '-I -c "import importlib.metadata as m; print(m.version(''torch''))"'
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
@@ -10904,7 +10902,7 @@ main()
     function New-UnslothTorchOverridesFile {
         param([string]$PythonExe)
         if ($SkipTorch) { return $null }
-        # -I: a torch on PYTHONPATH would otherwise be frozen in place of the venv's (#11980).
+        # -I: a torch on PYTHONPATH was frozen instead of the venv's (#11980).
         $pins = & $PythonExe -I -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
         $lines = @($pins | Where-Object { $_ -match '^torch' })
         if ($lines.Count -eq 0 -or $lines[0] -notmatch '^torch==') { return $null }

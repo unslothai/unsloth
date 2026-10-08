@@ -1,10 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# Issue #11980: a torch exposed on PYTHONPATH (NGC / DGX OS: 2.9.0a0+50eac811a6.nv25.9) was read
-# by the installer's venv probes ahead of the venv's own torch, so the trio override froze a
-# version on no index and every unsloth resolve failed. Drives the real install.sh functions
-# against a venv whose torch is shadowed, then checks every venv torch probe is isolated.
+# #11980: the installer's venv torch probes must ignore a torch on PYTHONPATH (NGC 2.9.0a0+...nv25.9).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,8 +31,7 @@ case "$FUNCS" in
     *) bad "could not extract the probe functions from install.sh"; echo "Results: $PASS passed, $FAIL failed"; exit 1 ;;
 esac
 
-# Runs the real builder with PYTHONPATH (and the cwd) pointing at the shadow; prints the frozen
-# overrides file, then the warnings, then the same again for a second call (once per run).
+# Real builder, cwd = shadow, PYTHONPATH=$1; called twice since the warning is once per run.
 run_builder() {
     (
         cd "$WORK/shadow"
@@ -63,8 +59,6 @@ OUT=$(run_builder "")
 assert_contains "cwd shadow only: venv torch is frozen" "$OUT" "torch==2.11.0+cu130"
 assert_eq "cwd shadow only: no PYTHONPATH warning" "" "$(printf '%s\n' "$OUT" | sed '/^SUBSTEP:/!d')"
 
-# Every probe that reads the venv's torch must be isolated, or PYTHONPATH decides the answer.
-# -I implies -s and -E and drops the script dir / cwd from sys.path; site-packages stays.
 _unisolated=$(grep -nE '(_VENV_PY"|VENV_DIR/bin/python") -c' "$INSTALL_SH" \
     | grep -E "import torch|version\(_p\)" || true)
 assert_eq "no venv torch probe in install.sh runs without -I" "" "$_unisolated"
@@ -74,7 +68,6 @@ for _probe in '_torch_trio_pins=$("$_VENV_PY" -I -c' \
     assert_contains "install.sh still carries: $_probe" "$(cat "$INSTALL_SH")" "$_probe"
 done
 
-# install.sh hands off to studio/setup.sh, whose install_python_stack.py probes torch in-process.
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 assert_contains "setup.sh drops PYTHONPATH once the venv is active (Colab no-venv keeps it)" \
     "$(cat "$SETUP_SH")" '[ "$_COLAB_NO_VENV" = true ] || unset PYTHONPATH'
