@@ -26431,11 +26431,15 @@ class LlamaCppBackend:
                             # headroom threshold as _select_gpus (#5106). Rank by the
                             # active pin fraction so the order matches the fit budget.
                             pin_fraction = _pin_fraction
+                            # Floor = the split reserve at the requested context, the most
+                            # _reserve_at below can ask: a card short of it must not hide an
+                            # iGPU that holds the model alone behind a failing prefix.
+                            _rank_floor_mib = (
+                                _pipeline_overhead_bytes + _cc_bytes(effective_ctx, 2) // 2
+                            ) / (1024 * 1024)
                             ranked = sorted(
                                 gpus,
-                                key = lambda g: _gpu_rank(
-                                    g, pin_fraction, _pipeline_overhead_bytes / (1024 * 1024)
-                                ),
+                                key = lambda g: _gpu_rank(g, pin_fraction, _rank_floor_mib),
                                 reverse = True,
                             )
                             # Skips _select_gpus, so apply its cap: count only cards
@@ -27933,6 +27937,8 @@ class LlamaCppBackend:
                         # A GPU-resident separate drafter spreads over every device;
                         # the split cannot price its per-card share, so leave it off.
                         and not _spill_inputs["separate_draft_on_gpu"]
+                        # A downgraded tensor request keeps every device in use.
+                        and _layer_min_gpus <= 1
                         and not _spill_inputs.get("env_mmproj_unsized")
                         # A host-resident cache or projector draws on the pool the iGPU
                         # reports, which the split cannot see: llama.cpp's split, as before.

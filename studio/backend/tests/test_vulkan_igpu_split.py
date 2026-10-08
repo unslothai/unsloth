@@ -163,6 +163,7 @@ def test_every_auto_placement_sort_ranks_discrete_first():
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "key = lambda g: _gpu_usable(" not in src
     assert src.count("key = lambda g: _gpu_rank(") == 3
+    assert "_gpu_rank(g, pin_fraction, _rank_floor_mib)" in src
 
 
 def test_device_zero_carries_the_one_time_reserve():
@@ -207,6 +208,7 @@ def test_an_inherited_projector_or_device_list_is_respected():
         "_kv_offload_from_args(extra_args, env)",
         "_extra_args_main_device(extra_args) is None",
         '"LLAMA_ARG_DEVICE"',
+        "_layer_min_gpus <= 1",
     ):
         assert needle in arm
 
