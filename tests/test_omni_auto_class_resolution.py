@@ -240,7 +240,6 @@ class _Routed(Exception):
 
 
 def _route(tmp_path, monkeypatch, config):
-    """The auto class FastModel.from_pretrained hands to FastBaseModel for a config-only checkpoint."""
     import json
     import unsloth.models.loader as loader
 
@@ -259,8 +258,7 @@ def _route(tmp_path, monkeypatch, config):
     "architecture", ["Qwen2_5OmniModel", "Qwen2_5OmniForConditionalGeneration"]
 )
 def test_qwen2_5_omni_routes_to_a_multimodal_class(tmp_path, monkeypatch, architecture):
-    """Qwen/Qwen2.5-Omni-3B and -7B name `Qwen2_5OmniModel`, which no auto class maps,
-    and nest vision under thinker_config: they were routed to AutoModelForCausalLM (#2325)."""
+    """Qwen/Qwen2.5-Omni-3B / -7B name `Qwen2_5OmniModel` and nest vision under thinker_config (#2325)."""
     config_class = getattr(transformers, "Qwen2_5OmniConfig", None)
     if config_class is None:
         pytest.skip("this transformers has no Qwen2.5-Omni")
