@@ -50,6 +50,7 @@ import { type ReactElement, useEffect, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
   type SystemOneBackend,
+  decisionRuntimeLabel,
   type SystemOneConnection,
   type SystemOneDevice,
   type SystemOneDownloadPlan,
@@ -123,7 +124,8 @@ export function DecisionApiSection(): ReactElement | null {
   }, [decisionTryRequested, settings]);
   const model = settings?.model ?? null;
   const backend = settings?.backend ?? "auto";
-  // llama.cpp serves a GGUF, PyTorch the safetensors: the download follows the runtime.
+  const mlxAvailable = settings?.mlxAvailable ?? false;
+  // llama.cpp serves a GGUF, MLX and PyTorch the safetensors: the download follows the runtime.
   const plan =
     planState?.model === model && planState?.backend === backend
       ? planState.plan
@@ -192,7 +194,8 @@ export function DecisionApiSection(): ReactElement | null {
     return () => {
       live = false;
     };
-  }, [enabled, model, backend, downloadDone]);
+    // MLX coming or going, as on a device change, changes what the runtime serves from.
+  }, [enabled, model, backend, mlxAvailable, downloadDone]);
 
   const modelLabel = (name: string) => {
     const connection = connections?.find((c) => c.name === name);
@@ -425,7 +428,7 @@ export function DecisionApiSection(): ReactElement | null {
   const remote = connections?.find((c) => c.name === settings.model);
   const knownModel = current !== undefined || isRemote;
   const longLabel = isRemote || current?.kind === "fine_tune";
-  // Laya is PyTorch only; Clef runs on either runtime, a GGUF-only model on llama.cpp only.
+  // Laya is PyTorch only; Clef runs on any runtime, a GGUF-only model on llama.cpp or MLX.
   const runtimeChoice =
     isClefDecisionModel(settings.model) ||
     settings.layout === "clef" ||
@@ -645,7 +648,11 @@ export function DecisionApiSection(): ReactElement | null {
           <>
             <SettingsRow
               label={t("settings.apiKeys.decisionApi.backend")}
-              description={t("settings.apiKeys.decisionApi.backendDescription")}
+              description={t(
+                settings.mlxAvailable
+                  ? "settings.apiKeys.decisionApi.backendDescriptionMlx"
+                  : "settings.apiKeys.decisionApi.backendDescription",
+              )}
             >
               <Select
                 value={backend}
@@ -665,6 +672,11 @@ export function DecisionApiSection(): ReactElement | null {
                     {t("settings.apiKeys.decisionApi.backendAuto")}
                   </SelectItem>
                   <SelectItem value="llama.cpp">llama.cpp</SelectItem>
+                  {settings.mlxAvailable || backend === "mlx" ? (
+                    <SelectItem value="mlx">
+                      {decisionRuntimeLabel("mlx")}
+                    </SelectItem>
+                  ) : null}
                   <SelectItem value="pytorch">PyTorch</SelectItem>
                 </SelectContent>
               </Select>
@@ -674,11 +686,12 @@ export function DecisionApiSection(): ReactElement | null {
               data-decision-backend
             >
               {t("settings.apiKeys.decisionApi.backendStatus", {
-                backend:
+                backend: decisionRuntimeLabel(
                   (settings.loadedModel === settings.model
                     ? settings.loadedBackend
                     : settings.effectiveBackend) ??
-                  t("settings.apiKeys.decisionApi.backendNone"),
+                    t("settings.apiKeys.decisionApi.backendNone"),
+                ),
               })}
               {settings.fallbackReason ? ` · ${settings.fallbackReason}` : ""}{" "}
               {t(

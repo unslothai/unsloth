@@ -2816,6 +2816,8 @@ export const ar = {
         backendAuto: "تلقائي",
         backendDescription:
           "يشغّل الوضع التلقائي Clef عبر llama.cpp عندما يتوفر للنموذج إصدار GGUF، ويعود إلى PyTorch في غير ذلك. يقرأ llama.cpp الصور أيضًا.",
+        backendDescriptionMlx:
+          "يشغّل الوضع التلقائي نصوص Clef عبر MLX على Apple Silicon، وعبر llama.cpp عندما يكون إصدار GGUF للنموذج وحده هو المحمّل أو المنزّل. يقرأ MLX النص فقط؛ ويقرأ llama.cpp الصور أيضًا.",
         backendStatus: "بيئة التشغيل: {backend}",
         backendNone: "غير متاحة",
         mediaImages: "يقرأ النصوص والصور.",

@@ -2860,6 +2860,8 @@ export const de = {
         backendAuto: "Automatisch",
         backendDescription:
           "Automatisch stellt Clef über llama.cpp bereit, wenn das Modell einen GGUF-Build hat, und weicht sonst auf PyTorch aus. llama.cpp liest auch Bilder.",
+        backendDescriptionMlx:
+          "Automatisch stellt Clef-Text auf Apple Silicon über MLX bereit und über llama.cpp, wenn nur der GGUF-Build des Modells geladen oder heruntergeladen ist. MLX liest nur Text; llama.cpp liest auch Bilder.",
         backendStatus: "Laufzeit: {backend}",
         backendNone: "nicht verfügbar",
         mediaImages: "Liest Text und Bilder.",
