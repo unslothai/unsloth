@@ -50,6 +50,7 @@ def studio(monkeypatch, tmp_path):
         mxc_runtime, "dacl_state_path", lambda: studio_home / "mxc-runtime" / "dacl-restore"
     )
     mxc_read_grants._scanned.clear()
+    mxc_read_grants._refused.clear()
     return base
 
 
@@ -97,16 +98,25 @@ def _record():
 
 
 def test_the_locked_folder_matches_the_store_python_acl(store_python):
-    # The fixture is only evidence if Windows really refuses this account a DACL change.
-    assert mxc_read_grants._can_change_permissions(store_python) is False
+    # The fixture is only evidence if Windows really refuses icacls here, as on the reporter's host.
     ok, output = mxc_read_grants._grant(store_python)
     assert not ok, output
+    assert mxc_read_grants._package_aces(store_python)[1] is False
 
 
-def test_a_store_python_folder_keeps_the_per_launch_grant_on_every_launch(store_python):
+def test_a_store_python_folder_keeps_the_per_launch_grant_on_every_launch(
+    store_python, monkeypatch
+):
+    calls = []
+    real_icacls = mxc_read_grants._icacls
+    monkeypatch.setattr(
+        mxc_read_grants, "_icacls", lambda *a: calls.append(a[1:]) or real_icacls(*a)
+    )
     for _ in range(3):
         assert mxc_read_grants.ensure([store_python]) == ()
     assert _record() == {}
+    # One refused grant per process; no rollback of a change that never happened.
+    assert [c[0] for c in calls] == ["/grant"]
 
 
 def test_a_stuck_pending_grant_from_an_older_studio_is_dropped(store_python):
@@ -125,7 +135,6 @@ def test_a_folder_studio_owns_is_still_granted_once_and_revoked(studio):
     (venv / "Lib" / "site-packages").mkdir(parents = True)
     (venv / "Lib" / "site-packages" / "six.py").write_text("")
     venv = str(venv)
-    assert mxc_read_grants._can_change_permissions(venv) is True
     assert mxc_read_grants.ensure([venv]) == (venv,)
     assert mxc_read_grants._package_aces(venv) == (True, True)
     assert {v["state"] for v in _record().values()} == {"complete"}

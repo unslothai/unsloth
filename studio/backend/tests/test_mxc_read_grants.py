@@ -29,12 +29,13 @@ class _Host:
         key = os.path.normcase(root)
         return key in self.granted, key in self.explicit
 
-    def changeable(self, root):
-        return os.path.normcase(root) not in self.locked
-
     def grant(self, root):
         self.calls.append(("grant", root))
-        if self.fail_grant or not self.changeable(root):
+        if os.path.normcase(root) in self.locked:
+            return False, "Successfully processed 0 files; Failed processing 1 files"
+        if self.fail_grant:
+            # The root entry landed and propagation below it failed.
+            self.explicit.add(os.path.normcase(root))
             return False, "Access is denied."
         self.granted.add(os.path.normcase(root))
         self.explicit.add(os.path.normcase(root))
@@ -42,7 +43,7 @@ class _Host:
 
     def revoke(self, root):
         self.calls.append(("revoke", root))
-        if self.fail_revoke or not self.changeable(root):
+        if self.fail_revoke or os.path.normcase(root) in self.locked:
             return False, "Access is denied."
         self.granted.discard(os.path.normcase(root))
         self.explicit.discard(os.path.normcase(root))
@@ -62,6 +63,7 @@ def _isolate(monkeypatch, tmp_path):
         mxc_runtime, "dacl_state_path", lambda: studio_home / "mxc-runtime" / "dacl-restore"
     )
     mxc_read_grants._scanned.clear()
+    mxc_read_grants._refused.clear()
     return studio_home
 
 
@@ -72,7 +74,6 @@ def host(monkeypatch, tmp_path):
     monkeypatch.setattr(mxc_read_grants, "_package_aces", fake.aces)
     monkeypatch.setattr(mxc_read_grants, "_grant", fake.grant)
     monkeypatch.setattr(mxc_read_grants, "_revoke", fake.revoke)
-    monkeypatch.setattr(mxc_read_grants, "_can_change_permissions", fake.changeable)
     return fake
 
 
@@ -232,16 +233,17 @@ def _store_python(host, tmp_path):
     return str(root)
 
 
-def test_a_folder_this_account_cannot_change_keeps_the_per_launch_grant(host, tmp_path):
+def test_a_folder_windows_refuses_keeps_the_per_launch_grant(host, tmp_path):
     # Store Python: TrustedInstaller owns the package, so icacls is denied on the root (#12941).
     root = _store_python(host, tmp_path)
-    for _ in range(2):
+    for _ in range(3):
         assert mxc_read_grants.ensure([root]) == ()
-    assert host.calls == []
+    # One attempt per process, no rollback of a change that never happened.
+    assert host.calls == [("grant", root)]
     assert _record() == {}
 
 
-def test_a_stuck_pending_grant_on_a_folder_this_account_cannot_change_is_dropped(host, tmp_path):
+def test_a_stuck_pending_grant_on_a_folder_windows_refuses_is_dropped(host, tmp_path):
     root = _store_python(host, tmp_path)
     key = os.path.normcase(root)
     pending = {key: {"state": "pending", "identity": mxc_read_grants._identity(root)}}
@@ -252,7 +254,7 @@ def test_a_stuck_pending_grant_on_a_folder_this_account_cannot_change_is_dropped
     mxc_read_grants._save_record(pending)
     assert mxc_read_grants.revoke_recorded() == ()
     assert _record() == {}
-    assert host.calls == []
+    assert host.calls == [("grant", root), ("revoke", key)]
 
 
 def test_a_pending_grant_on_a_locked_folder_with_its_own_entry_still_refuses(host, tmp_path):
@@ -560,7 +562,6 @@ def _grant_in_another_process(tmp_path, name, queue):
     studio_home = _isolate(monkeypatch, Path(tmp_path))
     monkeypatch.setattr(mxc_read_grants, "_package_aces", lambda _root: (False, False))
     monkeypatch.setattr(mxc_read_grants, "_grant", lambda _root: (True, "ok"))
-    monkeypatch.setattr(mxc_read_grants, "_can_change_permissions", lambda _root: True)
     root = studio_home / name
     root.mkdir()
     queue.put(mxc_read_grants.ensure([str(root)]))
