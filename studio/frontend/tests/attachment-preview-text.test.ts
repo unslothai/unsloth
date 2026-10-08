@@ -1558,6 +1558,68 @@ test("an html table keeps its columns when a cell is empty", async () => {
   );
 });
 
+test("a Word row keeps its columns past skipped grid cells, tabs and nested tables", async () => {
+  const ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const p = (text: string) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
+  const row = (cells: string, pr = "") => `<w:tr>${pr}${cells}</w:tr>`;
+  const nested = `<w:tbl>${row(`<w:tc>${p("Room")}</w:tc><w:tc>${p("4")}</w:tc>`)}</w:tbl>`;
+  const bytes = docxBytes(
+    `<w:document ${ns}><w:body><w:tbl>` +
+      row(`<w:tc>${p("Time")}</w:tc><w:tc>${p("Mon")}</w:tc><w:tc>${p("Tue")}</w:tc>`) +
+      row(`<w:tc>${p("Lab 3")}</w:tc><w:tc>${p("Lab 4")}</w:tc>`, '<w:trPr><w:gridBefore w:val="1"/></w:trPr>') +
+      row(`<w:tc>${p("Only Tue")}</w:tc>`, '<w:trPr><w:gridBefore w:val="2"/></w:trPr>') +
+      row(
+        `<w:tc>${p("10:00")}</w:tc>` +
+          `<w:tc><w:p><w:r><w:t>A</w:t><w:tab/><w:t>B</w:t></w:r></w:p></w:tc>` +
+          `<w:tc>${nested}<w:p/></w:tc>`,
+      ) +
+      "</w:tbl></w:body></w:document>",
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(writeDocxTableRows(bytes)) });
+    assert.equal(value, "Time\tMon\tTue\n\n\tLab 3\tLab 4\n\n\t\tOnly Tue\n\n10:00\tA B\tRoom 4 \n\n");
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("an html table keeps its columns under a rowspan and leaves code in a cell alone", async () => {
+  const cell = (tag: string, text = "", attributes: Record<string, string> = {}) =>
+    Object.assign(element(tag, ...(text ? [textNode(text)] : [])), {
+      getAttribute: (name: string) => attributes[name] ?? null,
+    });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "table",
+          element(
+            "tbody",
+            element("tr", cell("th", "Time"), cell("th", "Mon"), cell("th", "Tue"), cell("th", "Wed")),
+            element("tr", cell("td", "09:00"), cell("td", "Science", { rowspan: "2" }), cell("td", "Art"), cell("td", "PE")),
+            element("tr", cell("td", "10:00"), cell("td", "Maths"), cell("td", "French")),
+            element("tr", cell("td", "11:00"), cell("td", "Music", { colspan: "3" })),
+            element("tr", cell("td", "ship()"), Object.assign(element("td", element("pre", textNode("def ship():\n    return 1"))), {
+              getAttribute: () => null,
+            })),
+          ),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Time\tMon\tTue\tWed\n\n09:00\tScience\tArt\tPE\n\n10:00\t\tMaths\tFrench\n\n11:00\tMusic\t\t\n\nship()\n\ndef ship():\n    return 1",
+  );
+});
+
 /** A preview only colours what the filename says is source; extracted document text is prose whatever the file was called. */
 test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage("train.py", null), "python");

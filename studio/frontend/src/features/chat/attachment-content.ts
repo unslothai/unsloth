@@ -993,9 +993,11 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
       const t = doc.createElementNS(w, tag("t"));
       t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
       t.appendChild(doc.createTextNode(" "));
-      return run(t);
+      return t;
     };
     const tab = () => run(doc.createElementNS(w, tag("tab")));
+    const grid = (node: Element, pr: string, name: string) =>
+      Math.min(Number(childElements(node, w, pr).flatMap((e) => childElements(e, w, name))[0]?.getAttributeNS(w, "val")) || 0, 1000);
     const outermost = (p: Element, cell: Element) => {
       for (let node = p.parentNode; node && node !== cell; node = node.parentNode) {
         if ((node as Element).localName === "p") return false;
@@ -1006,7 +1008,8 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
     for (const table of Array.from(doc.getElementsByTagNameNS(w, "tbl")).reverse()) {
       for (const row of Array.from(table.getElementsByTagNameNS(w, "tr"))) {
         const cells = Array.from(row.getElementsByTagNameNS(w, "tc"));
-        if (cells.length < 2) {
+        const before = grid(row, "trPr", "gridBefore");
+        if (cells.length + before < 2) {
           for (const cell of cells) {
             for (const child of Array.from(cell.childNodes)) {
               if ((child as Element).localName !== "tcPr") table.parentNode?.insertBefore(child, table);
@@ -1015,18 +1018,22 @@ export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
           continue;
         }
         const line = doc.createElementNS(w, tag("p"));
+        for (let i = 0; i < before; i++) line.appendChild(tab());
         cells.forEach((cell, index) => {
           if (index) line.appendChild(tab());
+          // A tab inside a cell, a nested table's included, would read as the next column.
+          for (const t of Array.from(cell.getElementsByTagNameNS(w, "tab"))) {
+            if ((t.parentNode as Element | null)?.localName === "r") t.parentNode?.replaceChild(space(), t);
+          }
           Array.from(cell.getElementsByTagNameNS(w, "p"))
             .filter((p) => outermost(p, cell))
             .forEach((p, i) => {
-              if (i) line.appendChild(space());
+              if (i) line.appendChild(run(space()));
               for (const child of Array.from(p.childNodes)) {
                 if ((child as Element).localName !== "pPr") line.appendChild(child);
               }
             });
-          const span = childElements(cell, w, "tcPr").flatMap((pr) => childElements(pr, w, "gridSpan"))[0];
-          for (let i = 1; i < Math.min(Number(span?.getAttributeNS(w, "val")) || 1, 1000); i++) line.appendChild(tab());
+          for (let i = 1; i < (grid(cell, "tcPr", "gridSpan") || 1); i++) line.appendChild(tab());
         });
         table.parentNode?.insertBefore(line, table);
       }
@@ -1690,6 +1697,7 @@ export function extractHtmlAttachmentText(html: string): string {
 function collectHtmlBlockText(
   node: Node | null,
   preformatted?: string[],
+  rowSpans?: number[],
 ): string {
   if (!node) {
     return "";
@@ -1726,12 +1734,30 @@ function collectHtmlBlockText(
         child.nodeType === ELEMENT_NODE &&
         ["td", "th"].includes((child as Element).tagName.toLowerCase()),
     );
-    if (cells.length > 1) {
-      const row = cells
-        .map((cell) => {
-          const span = Math.min(Math.max(Number(cell.getAttribute("colspan")) || 1, 1), 1000);
-          return collectHtmlBlockText(cell).replace(/\s+/g, " ").trim() + "\t".repeat(span - 1);
-        })
+    const covered = rowSpans ?? [];
+    const slots: (Element | null)[] = [];
+    const skipCovered = () => {
+      while (covered[slots.length] > 0) {
+        covered[slots.length]--;
+        slots.push(null);
+      }
+    };
+    const span = (value: string | null) => Math.min(Math.max(Number(value) || 1, 1), 1000);
+    for (const cell of cells) {
+      skipCovered();
+      const rows = span(cell.getAttribute("rowspan"));
+      for (let i = 0; i < span(cell.getAttribute("colspan")); i++) {
+        covered[slots.length] = rows - 1;
+        slots.push(i ? null : cell);
+      }
+    }
+    for (let i = slots.length; i < covered.length; i++) {
+      if (covered[i] > 0) covered[i]--;
+    }
+    // Code keeps its own lines on the old path.
+    if (slots.length > 1 && !cells.some(containsPre)) {
+      const row = slots
+        .map((cell) => (cell ? collectHtmlBlockText(cell).replace(/\s+/g, " ").trim() : ""))
         .join("\t");
       if (!row.trim()) {
         return "\n";
@@ -1741,10 +1767,21 @@ function collectHtmlBlockText(
     }
   }
 
+  const groupSpans = HTML_ROW_GROUP_TAGS.has(tag) ? [] : rowSpans;
   const text = Array.from(element.childNodes)
-    .map((child) => collectHtmlBlockText(child, preformatted))
+    .map((child) => collectHtmlBlockText(child, preformatted, groupSpans))
     .join("");
   return HTML_BLOCK_TAGS.has(tag) ? `\n${text}\n` : text;
+}
+
+const HTML_ROW_GROUP_TAGS = new Set(["table", "thead", "tbody", "tfoot"]);
+
+function containsPre(node: Node): boolean {
+  return Array.from(node.childNodes).some(
+    (child) =>
+      child.nodeType === ELEMENT_NODE &&
+      ((child as Element).tagName.toLowerCase() === "pre" || containsPre(child)),
+  );
 }
 
 /** Collapses the spaces an extractor leaves between positioned runs while keeping the line breaks the source marked. */
