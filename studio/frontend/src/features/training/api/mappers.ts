@@ -5,6 +5,7 @@ import {
   isRawTextDatasetFormat,
   toBackendTrainingType,
 } from "../lib/training-methods";
+import type { SystemInfoResponse } from "@/hooks/use-system";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
 
@@ -69,11 +70,16 @@ export function offloadSupported(
   );
 }
 
-/** Whether this host can swap layers to system RAM: a discrete CUDA or ROCm card, the rule core's
- * install_block_swap applies (XPU, MLX and CPU have no swap path, and a unified-memory APU has no
- * separate pool to swap into). */
-export function offloadHardwareSupported(gpu: { backend: string; unifiedMemory: boolean }): boolean {
-  return (gpu.backend === "cuda" || gpu.backend === "rocm") && !gpu.unifiedMemory;
+/** Whether this host can swap layers to system RAM, by core's install_block_swap rule: a CUDA or
+ * ROCm backend with at least one card that is not a unified-memory APU (XPU, MLX and CPU have no
+ * swap path). True until `/api/system` answers; the backend refuses the same cases itself. */
+export function offloadHardwareSupported(
+  system: Pick<SystemInfoResponse, "status" | "device_backend" | "gpu"> | null | undefined,
+): boolean {
+  if (!system || system.status !== "ready") return true;
+  if (system.device_backend !== "cuda" && system.device_backend !== "rocm") return false;
+  const devices = system.gpu?.devices ?? [];
+  return devices.length === 0 || devices.some((device) => device.unified_memory !== true);
 }
 
 /** The offload fields, sent off whenever `offloadSupported` is false (the controls are hidden then). */
@@ -89,8 +95,9 @@ export function offloadPayload(
     | "offloadVramGb"
     | "prefetchDepth"
   >,
+  system: Parameters<typeof offloadHardwareSupported>[0] = null,
 ): Pick<TrainingStartRequest, "offload_layers" | "offload_vram_gb" | "prefetch_depth"> {
-  const layers = !offloadSupported(config)
+  const layers = !(offloadSupported(config) && offloadHardwareSupported(system))
     ? 0
     : config.offloadLayers === "auto"
       ? "auto"
@@ -113,6 +120,7 @@ export function offloadPayload(
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
   hfToken: string | null,
+  system: SystemInfoResponse | null = null,
 ): TrainingStartRequest {
   const isDecision = config.modelType === "decision";
   // Laya trains in 16-bit (LoRA or full); Clef and an LLM decision model also take QLoRA.
@@ -231,7 +239,7 @@ export function buildTrainingStartPayload(
     lora_dropout: config.loraDropout,
     target_modules: adapterMethod ? config.targetModules : [],
     gradient_checkpointing: config.gradientCheckpointing,
-    ...offloadPayload(config),
+    ...offloadPayload(config, system),
     use_rslora: loraVariants && config.loraVariant === "rslora",
     use_loftq: loraVariants && config.loraVariant === "loftq",
     use_dora: loraVariants && config.loraVariant === "dora",

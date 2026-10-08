@@ -71,12 +71,26 @@ test("a count above the backend limit is clamped instead of failing the start", 
   assert.equal(offloadPayload({ ...base, offloadLayers: 5000 }).offload_layers, 1024);
 });
 
-test("offload controls need a discrete CUDA or ROCm card", () => {
-  assert.equal(offloadHardwareSupported({ backend: "cuda", unifiedMemory: false }), true);
-  assert.equal(offloadHardwareSupported({ backend: "rocm", unifiedMemory: false }), true);
-  for (const backend of ["xpu", "mlx", "cpu", ""]) {
-    assert.equal(offloadHardwareSupported({ backend, unifiedMemory: false }), false);
+test("offload needs a CUDA or ROCm card that is not a unified-memory APU", () => {
+  const sys = (device_backend: string, unified: boolean[]) => ({
+    status: "ready" as const,
+    device_backend: device_backend as "cuda",
+    gpu: { available: true, devices: unified.map((u, index) => ({ index, unified_memory: u })) },
+  });
+  assert.equal(offloadHardwareSupported(sys("cuda", [false])), true);
+  assert.equal(offloadHardwareSupported(sys("rocm", [false])), true);
+  for (const backend of ["xpu", "mlx", "cpu"]) {
+    assert.equal(offloadHardwareSupported(sys(backend, [false])), false);
   }
-  // A ROCm APU (Strix Halo) has no separate pool to swap into.
-  assert.equal(offloadHardwareSupported({ backend: "rocm", unifiedMemory: true }), false);
+  // A ROCm APU alone (Strix Halo) has no separate pool; beside a discrete card it does.
+  assert.equal(offloadHardwareSupported(sys("rocm", [true])), false);
+  assert.equal(offloadHardwareSupported(sys("rocm", [true, false])), true);
+  // Unknown until /api/system answers.
+  assert.equal(offloadHardwareSupported(null), true);
+  assert.equal(offloadHardwareSupported({ ...sys("cpu", []), status: "pending" }), true);
+  // A hidden setting is sent off too, so a saved Count cannot fail the run.
+  const saved = { ...base, offloadLayers: 14 };
+  assert.equal(offloadPayload(saved, sys("xpu", [false])).offload_layers, 0);
+  assert.equal(offloadPayload(saved, sys("rocm", [true])).offload_layers, 0);
+  assert.equal(offloadPayload(saved, sys("cuda", [false])).offload_layers, 14);
 });
