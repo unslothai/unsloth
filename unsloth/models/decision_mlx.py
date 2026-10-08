@@ -538,6 +538,12 @@ def _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpoint
 def _load_clef(
     folder, max_seq_length, load_in_4bit, full_finetuning, token, gradient_checkpointing, name
 ):
+    if full_finetuning and (folder / _ADAPTER_CONFIG).is_file():
+        # As on torch: the adapters would be saved without the base weights the run trained.
+        raise ValueError(
+            f"Unsloth: {folder} holds LoRA adapters. Save it with save_pretrained_merged and "
+            "full finetune the merged folder instead."
+        )
     # A 4-bit decoder trains through LoRA adapters only.
     pipeline = _decision_zoo().load_decision_model(
         folder, token = token, load_in_4bit = bool(load_in_4bit) and not full_finetuning

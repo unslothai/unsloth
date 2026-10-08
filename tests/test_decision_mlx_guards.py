@@ -20,8 +20,7 @@ def decision_mlx(monkeypatch):
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    yield module
-    module._decision_zoo.cache_clear()
+    return module
 
 
 def test_an_install_without_torch_is_told_to_install_it(decision_mlx, monkeypatch):
@@ -34,3 +33,14 @@ def test_an_install_without_torch_is_told_to_install_it(decision_mlx, monkeypatc
     decision_mlx._decision_zoo.cache_clear()
     with pytest.raises(ImportError, match = "decision models on MLX need PyTorch"):
         decision_mlx._decision_zoo()
+
+
+def test_adapters_refuse_a_full_finetune_before_loading(decision_mlx, monkeypatch, tmp_path):
+    (tmp_path / "adapter_config.json").write_text("{}", encoding = "utf-8")
+
+    def never():
+        raise AssertionError("loaded before refusing")
+
+    monkeypatch.setattr(decision_mlx, "_decision_zoo", never)
+    with pytest.raises(ValueError, match = "save_pretrained_merged"):
+        decision_mlx._load_clef(tmp_path, None, False, True, None, False, {})
