@@ -1997,6 +1997,8 @@ export const hi = {
         label: "प्रदर्शन भाषा",
         description: "Unsloth द्वारा उपयोग की जाने वाली भाषा।",
         autoDetect: "स्वतः पहचान",
+        spellCheck: "वर्तनी जाँच",
+        spellCheckDescription: "टाइप करते समय गलत वर्तनी वाले शब्दों को रेखांकित करें।",
       },
       layout: {
         title: "लेआउट",

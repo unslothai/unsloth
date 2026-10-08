@@ -2078,6 +2078,8 @@ export const he = {
         label: "שפת תצוגה",
         description: "השפה שבשימוש ב-Unsloth.",
         autoDetect: "זיהוי אוטומטי",
+        spellCheck: "בדיקת איות",
+        spellCheckDescription: "סימון בקו תחתון של מילים עם שגיאות כתיב בזמן ההקלדה.",
       },
       layout: {
         title: "פריסה",

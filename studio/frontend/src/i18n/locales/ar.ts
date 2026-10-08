@@ -1994,6 +1994,8 @@ export const ar = {
         label: "لغة العرض",
         description: "اللغة التي يستخدمها Unsloth.",
         autoDetect: "اكتشاف تلقائي",
+        spellCheck: "التدقيق الإملائي",
+        spellCheckDescription: "وضع خط تحت الكلمات التي بها أخطاء إملائية أثناء الكتابة.",
       },
       layout: {
         title: "التخطيط",

@@ -2005,6 +2005,8 @@ export const ptBR = {
         label: "Idioma de exibição",
         description: "O idioma utilizado pelo Unsloth.",
         autoDetect: "Detecção automática",
+        spellCheck: "Verificação ortográfica",
+        spellCheckDescription: "Sublinhar palavras com erros de ortografia enquanto você digita.",
       },
       layout: {
         title: "Layout",

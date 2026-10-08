@@ -1999,6 +1999,8 @@ export const ru = {
         label: "Язык интерфейса",
         description: "Язык, используемый Unsloth.",
         autoDetect: "Автоопределение",
+        spellCheck: "Проверка орфографии",
+        spellCheckDescription: "Подчёркивать слова с ошибками при вводе.",
       },
       layout: {
         title: "Макет",

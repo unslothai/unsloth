@@ -1979,6 +1979,8 @@ export const it = {
         label: "Lingua dell'interfaccia",
         description: "La lingua usata da Unsloth.",
         autoDetect: "Rilevamento automatico",
+        spellCheck: "Controllo ortografico",
+        spellCheckDescription: "Sottolinea le parole errate mentre scrivi.",
       },
       layout: {
         title: "Layout",

@@ -2019,6 +2019,8 @@ export const fr = {
         label: "Langue d'affichage",
         description: "La langue utilisée par Unsloth.",
         autoDetect: "Détection automatique",
+        spellCheck: "Correcteur orthographique",
+        spellCheckDescription: "Souligner les mots mal orthographiés pendant la saisie.",
       },
       layout: {
         title: "Disposition",
