@@ -781,11 +781,14 @@ def _st_folder(tmp_path, module_type, model_config):
 def test_st_can_load_reads_modules_and_model_type(tmp_path, module_type, model_config, loadable):
     pytest.importorskip("sentence_transformers")
     pytest.importorskip("transformers")
-    assert embeddings._st_can_load(_st_folder(tmp_path, module_type, model_config)) is loadable
+    assert (
+        embeddings.sentence_transformers_can_load(_st_folder(tmp_path, module_type, model_config))
+        is loadable
+    )
 
 
 def test_st_can_load_without_the_files_keeps_the_plan(tmp_path):
-    assert embeddings._st_can_load(str(tmp_path)) is True
+    assert embeddings.sentence_transformers_can_load(str(tmp_path)) is True
 
 
 def test_st_can_load_gives_up_on_a_stalled_hub(monkeypatch):
@@ -794,7 +797,7 @@ def test_st_can_load_gives_up_on_a_stalled_hub(monkeypatch):
     monkeypatch.setattr(embeddings, "_repo_json", lambda *_: time.sleep(1))
 
     started = time.monotonic()
-    assert embeddings._st_can_load("org/stalled") is True
+    assert embeddings.sentence_transformers_can_load("org/stalled") is True
     assert time.monotonic() - started < 0.5
 
 
@@ -803,7 +806,9 @@ def test_model_st_cannot_open_is_planned_on_llama(monkeypatch):
     monkeypatch.setattr(embeddings, "_forced_backends", {})
     _shared_setup_4(monkeypatch)
     monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
-    monkeypatch.setattr(embeddings, "_st_can_load", lambda model: model != "org/st6-model")
+    monkeypatch.setattr(
+        embeddings, "sentence_transformers_can_load", lambda model: model != "org/st6-model"
+    )
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
 
     assert embeddings.resolved_backend_for_model("org/st6-model") == "llama-server"

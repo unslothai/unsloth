@@ -917,7 +917,7 @@ def _llama_server_runtime_available() -> bool:
 _ST_LOAD_PREFLIGHT_TIMEOUT_S = 5.0
 
 
-def _st_can_load(model_name: str) -> bool:
+def sentence_transformers_can_load(model_name: str) -> bool:
     """False when the installed sentence-transformers or transformers provably cannot open ``model_name``.
 
     Two ways to know before downloading the weights: ``modules.json`` names a Sentence Transformers class
@@ -972,7 +972,7 @@ def resolved_backend_for_model(model_name: str) -> str:
             # An ST plan for a model ST cannot open downloads weights that never load, and the pending marker it
             # sets keeps the llama fallback from fetching a GGUF. Under auto only: an explicit ST policy makes the
             # runtime ignore the backend this plan stores.
-            raw in _AUTO_ALIASES and not _st_can_load(model_name)
+            raw in _AUTO_ALIASES and not sentence_transformers_can_load(model_name)
         )
         if st_unusable:
             key = "llama-server"
