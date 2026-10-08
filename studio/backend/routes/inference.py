@@ -36133,7 +36133,6 @@ async def openai_list_models(
         data = local + linked
     if wanted & {"all", "decisions"}:
         from routes.systemone import decision_model_objects
-
         data += await asyncio.to_thread(decision_model_objects)
     return {"object": "list", "data": data}
 

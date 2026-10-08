@@ -1097,7 +1097,7 @@ export function ApiMonitorPage(): ReactElement {
                       </span>
                     </div>
                     <div className="relative">
-                      <pre className="whitespace-pre-wrap break-all rounded-lg border border-border/60 bg-muted/40 p-3 pr-10 font-mono text-ui-11 leading-relaxed text-foreground/90">
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words break-all scroll-rounded rounded-lg border border-border/60 bg-muted/40 p-3 pr-10 font-mono text-ui-11 leading-relaxed text-foreground/90">
                         {exampleRequest}
                       </pre>
                       <div className="absolute right-1.5 top-1.5">
