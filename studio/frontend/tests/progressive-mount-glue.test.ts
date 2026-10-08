@@ -56,7 +56,11 @@ test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Mess
   // Upstream renders MessageByIndexProvider -> RenderChildrenWithAccessor -> children; this row map
   // renders MessageByIndexProvider -> children. Switching between the two on convergence would
   // change the element type at that position, so React would unmount and rebuild every message.
-  assert.match(GLUE, /<MessageByIndexProvider key=\{index\} index=\{index\}>/);
+  // Each row is keyed by index on its gate provider (row-notification-gate.ts).
+  assert.match(
+    GLUE,
+    /<AuiProvider key=\{index\} value=\{gate\.row\(index\)\}>\s*<MessageByIndexProvider index=\{index\}>/,
+  );
   assert.doesNotMatch(
     GLUE,
     /<ThreadPrimitive\.Messages\b/,
@@ -309,12 +313,12 @@ test("the row map is memoized on the slot identity", () => {
   // identity; rebuilding 220 elements per Thread re-render hands back what the windowing collects.
   assert.match(
     GLUE,
-    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage, rowsAui\]\)/,
+    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage, gate\]\)/,
   );
-  // rowsAui is memoized on the client, so it adds no rebuild of its own.
+  // The gate is memoized on the client, so it adds no rebuild of its own.
   assert.match(
     GLUE,
-    /const rowsAui = useMemo\(\(\) => createComposerTextGatedClient\(aui\), \[aui\]\)/,
+    /const gate = useMemo\(\(\) => createRowNotificationGate\(aui\), \[aui\]\)/,
   );
   assert.match(GLUE, /prev\.renderMessage === next\.renderMessage/);
   assert.match(THREAD, /const renderThreadMessage = proplessSlot\(/);

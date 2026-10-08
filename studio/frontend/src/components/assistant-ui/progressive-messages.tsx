@@ -34,7 +34,7 @@ import {
   useState,
 } from "react";
 
-import { createComposerTextGatedClient } from "@/components/assistant-ui/composer-text-gate";
+import { createRowNotificationGate } from "@/components/assistant-ui/row-notification-gate";
 import {
   type AnchorSample,
   type MountWindow,
@@ -533,9 +533,10 @@ export const ProgressiveMessages: FC<{
   ({ renderMessage, resetKey, viewportRef }) => {
     const count = useAuiState(({ thread }) => thread.messages.length);
     const mountWindow = useProgressiveMountWindow(count, resetKey, viewportRef);
-    // The rows subscribe through a client that ignores composer keystrokes. See composer-text-gate.ts.
+    // Each row subscribes through a client that hears only what can change it: no keystroke, and a
+    // streamed token only on the last rows. See row-notification-gate.ts.
     const aui = useAui();
-    const rowsAui = useMemo(() => createComposerTextGatedClient(aui), [aui]);
+    const gate = useMemo(() => createRowNotificationGate(aui), [aui]);
 
     return useMemo(() => {
       if (count === 0) return null;
@@ -553,13 +554,13 @@ export const ProgressiveMessages: FC<{
       const rows: ReactElement[] = [];
       for (let index = first; index < count; index += 1) {
         rows.push(
-          <MessageByIndexProvider key={index} index={index}>
-            {message}
-          </MessageByIndexProvider>,
+          <AuiProvider key={index} value={gate.row(index)}>
+            <MessageByIndexProvider index={index}>{message}</MessageByIndexProvider>
+          </AuiProvider>,
         );
       }
-      return <AuiProvider value={rowsAui}>{rows}</AuiProvider>;
-    }, [count, mountWindow, renderMessage, rowsAui]);
+      return <>{rows}</>;
+    }, [count, mountWindow, renderMessage, gate]);
   },
   (prev, next) =>
     prev.resetKey === next.resetKey &&
