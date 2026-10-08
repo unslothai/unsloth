@@ -11,6 +11,7 @@ from collections import deque
 import fnmatch
 import functools
 import hashlib
+from html.parser import HTMLParser
 import json
 import http.client
 import os
@@ -15084,7 +15085,6 @@ _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
 _MAX_FETCH_BYTES = 512 * 1024
 # News pages inline up to ~2.5 MB of styles and scripts in <head>, so HTML gets _MAX_FETCH_BYTES past its end.
 _MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
-_BODY_TAG_RE = re.compile(rb"<body[\s/>]|</head\s*>", re.IGNORECASE)
 # "%" is safe so an already-encoded URL is not re-encoded into %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
@@ -15772,6 +15772,115 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
             continue
 
 
+class _HTMLBodyLocator(HTMLParser):
+    """locate the explicit or implied document body without matching markup inside head content."""
+
+    _HEAD_ELEMENTS = frozenset(
+        {
+            "base",
+            "basefont",
+            "bgsound",
+            "link",
+            "meta",
+            "noframes",
+            "noscript",
+            "script",
+            "style",
+            "template",
+            "title",
+        }
+    )
+    _HEAD_TEXT_ELEMENTS = frozenset({"noframes", "noscript", "script", "style", "title"})
+
+    def __init__(self):
+        super().__init__(convert_charrefs = False)
+        self.body_at = None
+        self._line_starts = [0]
+        self._fed = 0
+        self._head_text_depth = 0
+        self._template_depth = 0
+
+    def feed_bytes(self, data):
+        start = self._fed
+        self._line_starts.extend(start + i + 1 for i, value in enumerate(data) if value == 10)
+        self._fed += len(data)
+        self.feed(data.decode("latin-1"))
+
+    def _offset(self):
+        line, column = self.getpos()
+        return self._line_starts[line - 1] + column
+
+    def _mark_body(self):
+        if self.body_at is None:
+            self.body_at = self._offset()
+
+    def handle_starttag(self, tag, attrs):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth += 1
+            return
+        if tag == "template":
+            self._template_depth = 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth += 1
+            return
+        if tag in ("html", "head"):
+            return
+        if tag == "body":
+            self._mark_body()
+            return
+        if tag in self._HEAD_ELEMENTS:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth = 1
+            return
+        self._mark_body()
+
+    def handle_startendtag(self, tag, attrs):
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and tag not in self._HEAD_ELEMENTS
+            and tag not in ("html", "head")
+        ):
+            self._mark_body()
+
+    def handle_endtag(self, tag):
+        if self.body_at is not None:
+            return
+        if self._template_depth:
+            if tag == "template":
+                self._template_depth -= 1
+            return
+        if self._head_text_depth:
+            if tag in self._HEAD_TEXT_ELEMENTS:
+                self._head_text_depth -= 1
+            return
+        if tag == "head":
+            self._mark_body()
+
+    def handle_data(self, data):
+        if self._offset() == 0 and data.startswith(codecs.BOM_UTF8.decode("latin-1")):
+            data = data[len(codecs.BOM_UTF8) :]
+        if (
+            self.body_at is None
+            and not self._template_depth
+            and not self._head_text_depth
+            and data.strip()
+        ):
+            self._mark_body()
+
+    def handle_entityref(self, name):
+        if self.body_at is None and not self._template_depth and not self._head_text_depth:
+            self._mark_body()
+
+    handle_charref = handle_entityref
+
+
 def _read_capped_body(
     resp,
     max_bytes,
@@ -15789,6 +15898,7 @@ def _read_capped_body(
     chunks = []
     remaining = max_bytes
     body_at = None
+    body_locator = _HTMLBodyLocator() if body_window is not None else None
     while remaining > 0:
         budget_error = _fetch_budget_exceeded(deadline, cancel_event)
         if budget_error is not None:
@@ -15807,13 +15917,15 @@ def _read_capped_body(
             break
         chunks.append(chunk)
         remaining -= len(chunk)
-        if body_window is not None and body_at is None:
+        if body_locator is not None and body_at is None:
             got = max_bytes - remaining
-            seen = b"".join(chunks[-2:])
-            match = _BODY_TAG_RE.search(seen)
-            if match:
-                body_at = got - len(seen) + match.start()
-                remaining = min(remaining, body_at + body_window - got)
+            try:
+                body_locator.feed_bytes(chunk)
+            except Exception:
+                body_locator = None
+            if body_locator is not None and body_locator.body_at is not None:
+                body_at = body_locator.body_at
+                remaining = max(0, min(remaining, body_at + body_window - got))
     budget_error = _fetch_budget_exceeded(deadline, cancel_event)
     if budget_error is not None:
         try:
@@ -16077,10 +16189,10 @@ def _fetch_url_raw(
                     meta_out["cache_control"] = resp.headers.get("Cache-Control")
                     meta_out["age"] = resp.headers.get("Age")
                 return http_error, raw_bytes, content_type
-            if not declared_pdf and len(raw_bytes) == read_limit and _has_pdf_magic(raw_bytes):
+            if not declared_pdf and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
                     resp,
-                    _MAX_PDF_FETCH_BYTES - read_limit + 1,
+                    _MAX_PDF_FETCH_BYTES - len(raw_bytes) + 1,
                     timeout,
                     deadline,
                     cancel_event,

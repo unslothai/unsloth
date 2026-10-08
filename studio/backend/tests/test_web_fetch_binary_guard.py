@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import codecs
+import random
 import sys
 import time
 from email.message import Message
@@ -155,6 +156,20 @@ def test_mislabeled_pdf_is_read_past_text_download_cap(monkeypatch):
     monkeypatch.setattr(tools, "_MAX_PDF_FETCH_BYTES", len(body) + 100)
     out = _fetch_with(monkeypatch, body, "text/plain")
     assert "Cross-reference data was fetched" in out
+
+
+def test_html_labeled_pdf_with_body_bytes_is_read_to_eof(monkeypatch):
+    pymupdf = pytest.importorskip("pymupdf")
+    doc = pymupdf.open()
+    payload = b"<body>" + random.Random(0).randbytes(1024 * 1024)
+    doc.embfile_add("blob.bin", payload, ufilename = "blob.bin")
+    page = doc.new_page()
+    page.insert_text((40, 40), "PDF body-window marker")
+    body = doc.tobytes(deflate = False, use_objstms = 0, compression_effort = 0)
+    doc.close()
+
+    out = _fetch_with(monkeypatch, body, "text/html")
+    assert "PDF body-window marker" in out
 
 
 def test_pdf_extraction_caps_pages_and_intermediate_text(monkeypatch):
@@ -415,6 +430,52 @@ def test_article_after_a_large_inline_head_is_read(monkeypatch):
     out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
     assert "Brightline files for bankruptcy" in out
     assert "Chapter 11 protection" in out
+
+
+def test_article_after_a_utf8_bom_and_large_inline_head_is_read(monkeypatch):
+    html = (
+        codecs.BOM_UTF8
+        + b"<html><head><style>"
+        + b"x" * (768 * 1024)
+        + b"</style></head><body><article><h1>BOM article body</h1></article></body></html>"
+    )
+    out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
+    assert "BOM article body" in out
+
+
+def test_body_text_inside_head_script_does_not_end_the_read(monkeypatch):
+    html = (
+        b'<html><head><script>const example = "<body>";</script><style>'
+        + b"x" * (768 * 1024)
+        + b"</style></head><body><article><h1>Actual article body</h1></article></body></html>"
+    )
+    out = _fetch_with(monkeypatch, html, "text/html; charset=utf-8")
+    assert "Actual article body" in out
+
+
+def test_bodyless_html_keeps_the_old_slow_link_budget(monkeypatch):
+    html = (
+        b"<html><head><title>t</title></head><main><h1>Bodyless page marker</h1></main>"
+        + b"x" * (2 * 1024 * 1024)
+    )
+    clock = {"time": 1000.0}
+    monkeypatch.setattr(tools.time, "monotonic", lambda: clock["time"])
+    resp = _FakeResp(html, "text/html")
+    read = resp.read
+
+    def slow_read(n = None):
+        chunk = read(n)
+        clock["time"] += len(chunk) / (64 * 1024)
+        return chunk
+
+    resp.read = slow_read
+    monkeypatch.setattr(
+        tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["93.184.216.34"])
+    )
+    monkeypatch.setattr(tools.urllib.request, "build_opener", lambda *a, **k: _FakeOpener(resp))
+    out = tools._fetch_page_text("https://example.com/thing", timeout = 30)
+    assert "Bodyless page marker" in out
+    assert resp._pos <= tools._MAX_FETCH_BYTES + 65536
 
 
 @pytest.mark.parametrize(
