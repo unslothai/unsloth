@@ -254,3 +254,24 @@ def test_scan_folder_nested_inside_the_hub_cache_still_loads_from_disk(roots, mo
     snapshot = _cache_repo(nested, ["Tiny-Probe-Q4_K_M.gguf"])
     rewritten = inf._as_local_scan_folder_request(_request(model_path = _REPO), True)
     assert rewritten.model_path == str(snapshot)
+
+
+def test_a_rewritten_load_keeps_repo_keyed_chat_templates(roots, monkeypatch):
+    import asyncio
+
+    _active, scan = roots
+    _cache_repo(scan, ["Tiny-Probe-Q4_K_M.gguf"])
+    monkeypatch.setattr(inf, "_owner_session", lambda fastapi_request: True)
+    seen = []
+
+    class _Stop(BaseException):
+        pass
+
+    def _record(*, model_identifier, user_override):
+        seen.append(model_identifier)
+        raise _Stop
+
+    monkeypatch.setattr(inf, "resolve_effective_chat_template_override", _record)
+    with pytest.raises(_Stop):
+        asyncio.run(inf._load_model_impl(_request(model_path = _REPO), None, "owner"))
+    assert seen == [_REPO]

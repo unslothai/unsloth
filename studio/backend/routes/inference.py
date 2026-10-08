@@ -18281,7 +18281,8 @@ async def _load_model_impl(
         # load_model calls, so the live backend state and the incoming request
         # compare against the same template text.
         effective_chat_template_override = resolve_effective_chat_template_override(
-            model_identifier = model_identifier,
+            # Bundled templates are keyed by repo id, not by where its copy sits.
+            model_identifier = scan_folder_public_id or model_identifier,
             user_override = request.chat_template_override,
         )
 
