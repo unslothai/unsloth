@@ -3,6 +3,7 @@
 
 /** desktop web pages use per-tab native views for bot checks; native views cover the DOM, so overlays use snapshots. */
 
+import { useChatRuntimeStore } from "@/features/chat";
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
@@ -118,15 +119,22 @@ function listenOnce(): void {
   );
 }
 
+// Downloads asked for beside a temporary chat: they land later, often after the chat is gone.
+const temporaryDownloads = new Set<string>();
+const downloadKey = (tabId: string, url: string) => `${tabId}\n${url}`;
+
 /** Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
   const { id, url, site, name } = event;
   const entry = tab ? currentEntry(tab) : null;
+  const key = downloadKey(event.tabId, url);
+  if (useChatRuntimeStore.getState().incognito || (entry?.kind === "web" && entry.temporary)) temporaryDownloads.add(key);
   // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
   const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
   const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
   void decided
     .then(async (allow) => {
+      if (!allow) temporaryDownloads.delete(key);
       await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
       if (allow) toast(t("browser.native.downloading", { name }));
     })
@@ -209,14 +217,18 @@ function onNativeEvent(event: NativeEvent): void {
 function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
   if (!event.done) {
     toast(t("browser.native.downloading", { name: event.name }));
-  } else if (event.success) {
-    useBrowserHistoryStore.getState().recordDownload({
+    return;
+  }
+  const temporary = temporaryDownloads.delete(downloadKey(event.tabId, event.url));
+  if (event.success) {
+    const item = {
       name: event.name,
       url: event.url,
       size: event.size ?? 0,
       contentType: "",
       nativeId: event.downloadId ?? undefined,
-    });
+    };
+    useBrowserHistoryStore.getState().recordDownload(item, temporary);
     if (event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
     else toast.success(t("browser.native.downloaded", { name: event.name }));
   } else {

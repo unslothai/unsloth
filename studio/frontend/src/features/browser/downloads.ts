@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useChatRuntimeStore } from "@/features/chat";
 import { getLocale, translate } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib/native-files";
@@ -59,6 +60,8 @@ function approved(url: string | null, name: string, site?: string): Promise<bool
 
 /** Website files wait for approval first. `target`: a location already picked, null for none; omitted, the dialog opens when Settings asks. */
 export async function saveBrowserDownload(download: BrowserDownload, target?: SaveHandle | null): Promise<void> {
+  // Taken now: approval and the save dialog can outlast the temporary chat.
+  const temporary = useChatRuntimeStore.getState().incognito;
   if (target === undefined) {
     if (!(await approved(download.url, download.name, download.site))) return;
     // A save dialog needs a fresh click; a late approval waits for a click on Save instead.
@@ -67,16 +70,20 @@ export async function saveBrowserDownload(download: BrowserDownload, target?: Sa
       toast(translate("browser.downloadPrompt.ready", { name: safeDownloadName(download.name) }, locale), {
         action: {
           label: translate("browser.downloadPrompt.save", {}, locale),
-          onClick: () => void writeDownload(download, undefined),
+          onClick: () => void writeDownload(download, undefined, temporary),
         },
       });
       return;
     }
   }
-  await writeDownload(download, target);
+  await writeDownload(download, target, temporary);
 }
 
-async function writeDownload(download: BrowserDownload, target: SaveHandle | null | undefined): Promise<void> {
+async function writeDownload(
+  download: BrowserDownload,
+  target: SaveHandle | null | undefined,
+  temporary: boolean,
+): Promise<void> {
   const { blob, contentType, url } = download;
   const name = safeDownloadName(download.name);
   let saved: SavedNativeDownload | null = null;
@@ -100,13 +107,8 @@ async function writeDownload(download: BrowserDownload, target: SaveHandle | nul
     if (!isDownloadCancelled(error)) toast.error(error instanceof Error ? error.message : String(error));
     return;
   }
-  useBrowserHistoryStore.getState().recordDownload({
-    name: saved?.name || picked?.name || name,
-    url,
-    size: blob.size,
-    contentType,
-    nativeId: saved?.id,
-  });
+  const item = { name: saved?.name || picked?.name || name, url, size: blob.size, contentType, nativeId: saved?.id };
+  useBrowserHistoryStore.getState().recordDownload(item, temporary);
   if (saved?.marked === false) {
     toast.warning(translate("browser.native.notMarked", { name: saved.name || name }, getLocale()));
   }

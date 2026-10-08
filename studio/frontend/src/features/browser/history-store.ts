@@ -86,7 +86,7 @@ interface BrowserHistoryState {
   icons: Record<string, string>;
   recordVisit: (url: string, title: string, temporary?: boolean) => void;
   recordIcon: (host: string, icon: string, temporary?: boolean) => void;
-  recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">) => void;
+  recordDownload: (item: Omit<DownloadItem, "id" | "downloadedAt">, temporary?: boolean) => void;
   removeVisit: (id: string) => void;
   removeVisits: (ids: ReadonlySet<string>) => void;
   removeDownload: (id: string) => void;
@@ -128,9 +128,9 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
           return { history, icons };
         }),
-      recordDownload: (item) =>
+      recordDownload: (item, temporary = false) =>
         set((state) => {
-          if (!useBrowserPrefsStore.getState().saveDownloadHistory || useChatRuntimeStore.getState().incognito) {
+          if (!useBrowserPrefsStore.getState().saveDownloadHistory || temporary || useChatRuntimeStore.getState().incognito) {
             if (item.nativeId) forgetNativeDownloads([item.nativeId]);
             return state;
           }

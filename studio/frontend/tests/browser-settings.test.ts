@@ -94,6 +94,37 @@ test("files downloaded beside a temporary chat are not listed", () => {
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
 });
 
+test("a download begun beside a temporary chat stays unlisted when it is saved after the chat turns normal", async () => {
+  const { saveBrowserDownload } = await import("../src/features/browser/downloads.ts");
+  const history = useBrowserHistoryStore.getState();
+  history.clearDownloads();
+  const prefs = useBrowserPrefsStore.getState();
+  prefs.setAskWhereToSave(true);
+  prefs.setAskBeforeDownloading(false);
+  const g = globalThis as { showSaveFilePicker?: unknown; __toasts?: { options?: { action?: { onClick: () => void } } }[] };
+  const written: Blob[] = [];
+  g.showSaveFilePicker = async ({ suggestedName }: { suggestedName: string }) => ({
+    name: suggestedName,
+    createWritable: async () => ({ write: async (data: Blob) => void written.push(data), close: async () => {} }),
+  });
+  Object.defineProperty(globalThis, "navigator", { value: { userActivation: { isActive: false } }, configurable: true });
+  g.__toasts = [];
+  try {
+    useChatRuntimeStore.getState().setIncognito(true);
+    await saveBrowserDownload({ blob: new Blob(["x"]), name: "late.zip", contentType: "application/zip", url: "https://a.example/late.zip" });
+    useChatRuntimeStore.getState().setIncognito(false);
+    g.__toasts.at(-1)!.options!.action!.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(written.length, 1);
+    assert.deepEqual(useBrowserHistoryStore.getState().downloads, []);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    prefs.setAskWhereToSave(false);
+    prefs.setAskBeforeDownloading(true);
+    delete g.showSaveFilePicker;
+  }
+});
+
 test("shortening how long history is kept drops older visits at once", () => {
   const now = Date.now();
   useBrowserPrefsStore.getState().setHistoryRetentionDays(0);
