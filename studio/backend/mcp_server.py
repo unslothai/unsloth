@@ -90,7 +90,6 @@ def _reference_absolute_paths(value: Any) -> Any:
         from hub.utils.host_paths import cache_reference, redact_paths_in_text
         if posixpath.isabs(value) or ntpath.isabs(value):
             return cache_reference(value) or ""
-        # Free text such as resume_blocked_reason quotes paths inside an OS error.
         return redact_paths_in_text(value)
     return value
 
