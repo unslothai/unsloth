@@ -291,6 +291,33 @@ function FinishedNotice({ finished, onDone }: { finished: FinishedDownload; onDo
   );
 }
 
+/** The download glyph while a file downloads: its arrow inside a spinning ring, the tray bar below. */
+function DownloadingIcon() {
+  return (
+    <svg
+      aria-hidden={true}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="size-5"
+    >
+      <path d="M12 13.5V6M15.25 10.5c0 0-2.4 3.25-3.25 3.25s-3.25-3.25-3.25-3.25" />
+      <path d="M6.5 21.5h11" />
+      <circle cx="12" cy="10" r="8.5" strokeOpacity={0.25} />
+      <circle
+        cx="12"
+        cy="10"
+        r="8.5"
+        strokeDasharray="17 36.4"
+        className="animate-spin [animation-duration:1.4s] [transform-box:view-box] [transform-origin:12px_10px]"
+      />
+    </svg>
+  );
+}
+
 /** Toolbar Downloads button: a ring while files download, a notice when one finishes, recent downloads on click. */
 export function DownloadsButton({ className }: { className?: string }) {
   const t = useT();
@@ -334,28 +361,13 @@ export function DownloadsButton({ className }: { className?: string }) {
                 aria-label={label}
                 aria-expanded={mode !== "closed"}
                 onClick={() => (mode === "list" ? close() : setMode("list"))}
-                className={cn(className, "relative", lit && "text-primary hover:text-primary")}
+                className={cn(className, lit && "text-primary hover:text-primary")}
               >
-                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
                 {active ? (
-                  <svg
-                    aria-hidden={true}
-                    viewBox="0 0 32 32"
-                    className="pointer-events-none absolute inset-0 m-auto size-[calc(100%-2px)] animate-spin [animation-duration:1.4s]"
-                  >
-                    <circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" strokeOpacity={0.18} strokeWidth={2} />
-                    <circle
-                      cx="16"
-                      cy="16"
-                      r="14"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                      strokeLinecap="round"
-                      strokeDasharray="22 66"
-                    />
-                  </svg>
-                ) : null}
+                  <DownloadingIcon />
+                ) : (
+                  <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
+                )}
               </button>
             </TooltipTrigger>
             <TooltipContent side="bottom" className="tooltip-compact">
