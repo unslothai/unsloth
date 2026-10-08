@@ -1938,6 +1938,7 @@ def _dead_foreign_voice(monkeypatch):
 
     monkeypatch.setattr(arb, "_owner", arb.CHAT)
     monkeypatch.setattr(arb, "_owner_account", "account-a")
+
     class Voice:
         _process = SimpleNamespace(poll = lambda: 1)
         is_loaded = True
