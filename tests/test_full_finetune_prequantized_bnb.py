@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
 
 from unsloth.models.loader_utils import _dequantize_bitsandbytes_for_full_finetuning
 
@@ -72,7 +73,7 @@ def test_other_quant_methods_and_on_the_fly_configs_are_left_alone():
 
 
 @pytest.mark.skipif(
-    not torch.cuda.is_available() or importlib.util.find_spec("bitsandbytes") is None,
+    not has_real_cuda() or importlib.util.find_spec("bitsandbytes") is None,
     reason = "needs CUDA and bitsandbytes",
 )
 def test_full_finetune_a_local_bnb_4bit_folder(tmp_path):
