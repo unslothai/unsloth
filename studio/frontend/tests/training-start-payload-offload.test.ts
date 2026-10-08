@@ -110,6 +110,7 @@ test("offload goes out off wherever the run cannot offload", () => {
   for (const blocked of [
     { gradientCheckpointing: "none" as const },
     { isEmbeddingModel: true },
+    { isAudioModel: true },
     { modelType: "decision" as const },
     { modelType: "embeddings" as const },
   ]) {

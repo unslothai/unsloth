@@ -15,6 +15,7 @@ NAMES = (
     "_training_reserve_bytes",
     "_auto_block_swap_indices",
     "install_block_swap",
+    "auto_plan_depth",
     "_attach_block_swap",
     "trim_config_for_block_swap",
 )
@@ -771,3 +772,23 @@ def test_old_zoo_without_auto_depth_gets_the_default_depth():
     ns, calls = _load()
     ns["_new_block_swap"](_Layers([0, 1, 2]), 2, "auto", placement = "spread")
     assert calls[-1][2] == 2
+
+
+def test_old_zoo_plans_auto_depth_at_the_two_slots_it_builds():
+    # A zoo without stats() builds "auto" as depth 2, so the plan must reserve 2, not 1.
+    ns, calls = _load(auto_pick = ([5, 7], 0))
+    planned = []
+    ns["auto_swap_indices"] = lambda layers, reserve, depth: planned.append(depth) or ([5, 7], 0)
+    model = types.SimpleNamespace(
+        layers = _Layers(list(range(8))),
+        config = types.SimpleNamespace(),
+        parameters = lambda: [],
+        max_seq_length = 128,
+    )
+    ns["install_block_swap"](model, "auto", prefetch_depth = "auto")
+    assert planned == [2] and calls[-1][2] == 2
+
+
+def test_load_time_auto_plan_uses_the_same_depth_rule():
+    src = open(os.path.join(HERE, "unsloth", "models", "loader_utils.py"), encoding = "utf-8").read()
+    assert 'options["prefetch_depth"] = auto_plan_depth(options["prefetch_depth"])' in src

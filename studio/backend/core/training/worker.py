@@ -4274,10 +4274,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
     # and two runs on one card can each take their share.
     # ── 2b. Training VRAM budget ──
-    # Only "auto" sizes to a budget, and decision / embedding runs never offload.
+    # Only "auto" sizes to a budget, and only LoRA runs outside decision / embedding offload.
     if (
         (config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"))
         and config.get("offload_layers") == "auto"
+        and config.get("use_lora", True)
         and not config.get("is_decision")
         and not config.get("is_embedding")
     ):

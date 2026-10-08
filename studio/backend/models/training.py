@@ -113,6 +113,10 @@ def _resolve_inventory_handle(value: str) -> str:
     return resolve_inventory_handle(value)
 
 
+# The strings trainer.normalize_gradient_checkpointing turns into False.
+_CHECKPOINTING_OFF = ("false", "0", "no", "none", "off")
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
@@ -686,7 +690,7 @@ class TrainingStartRequest(BaseModel):
         if (
             self.offload_layers
             and self.training_type != "Full Finetuning"
-            and self.gradient_checkpointing.strip().lower() in ("none", "false")
+            and self.gradient_checkpointing.strip().lower() in _CHECKPOINTING_OFF
         ):
             raise ValueError(
                 "offload_layers needs gradient checkpointing: set gradient_checkpointing to "
