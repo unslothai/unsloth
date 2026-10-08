@@ -367,6 +367,7 @@ class UnslothTrainer:
         self._prefetch_depth = 2
         self._gpu_ids = None
         self._offload_layer_devices = None
+        self._offload_plan_shape = {}
         # True until a probe says otherwise, so a path that never probes cannot trip the inconclusive-detection guard.
         self._audio_type_known = True
         self._is_dataset_audio = False
@@ -581,7 +582,11 @@ class UnslothTrainer:
             return {}
         return {
             "offload_layers": self._offload_layers,
-            "device_map_planner_kwargs": {"prefetch_depth": self._prefetch_depth},
+            # Auto plans at load; without the run's batch and rank it sizes for batch 1, rank 16.
+            "device_map_planner_kwargs": {
+                "prefetch_depth": self._prefetch_depth,
+                **self._offload_plan_shape,
+            },
         }
 
     def _offload_peft_kwargs(self) -> dict:
@@ -992,6 +997,7 @@ class UnslothTrainer:
         on_model_resolved: Optional[Callable[[str], None]] = None,
         offload_layers: Union[int, str] = 0,
         prefetch_depth: Union[int, str] = 2,
+        offload_plan_shape: Optional[dict] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         # Offloading streams frozen base weights, so it has nothing to do in a full finetune.
@@ -999,6 +1005,7 @@ class UnslothTrainer:
         self._prefetch_depth = prefetch_depth or 2
         # Physical ids behind each torch ordinal, so the panel names cards as the settings do.
         self._gpu_ids = list(gpu_ids) if gpu_ids else None
+        self._offload_plan_shape = {k: v for k, v in (offload_plan_shape or {}).items() if v}
         self.load_in_4bit = load_in_4bit
         self.trust_remote_code = trust_remote_code
         # The loader installs the checkpointing implementation; a full finetune never reinstalls it.
@@ -1400,6 +1407,7 @@ class UnslothTrainer:
                     on_model_resolved = on_model_resolved,
                     offload_layers = offload_layers,
                     prefetch_depth = prefetch_depth,
+                    offload_plan_shape = offload_plan_shape,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()

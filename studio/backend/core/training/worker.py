@@ -1704,6 +1704,11 @@ def _device_budget_gb(
         return None
 
 
+def _offload_plan_shape(config: dict) -> dict:
+    """The per-device batch and LoRA rank an Auto offload plan sizes its training reserve for."""
+    return {"batch_size": config.get("batch_size"), "lora_rank": config.get("lora_r")}
+
+
 def _with_vram_budget_hint(config: dict, message: str) -> str:
     """Point a run that does not fit at its own VRAM budget, the one cause the generic advice omits."""
     budget = config.get("offload_vram_gb")
@@ -4278,7 +4283,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if (
         (config.get("offload_vram_gb") or config.get("offload_vram_gb_per_device"))
         and config.get("offload_layers") == "auto"
-        and config.get("use_lora", True)
+        and config.get("training_type", "LoRA/QLoRA") in ("LoRA/QLoRA", "Continued Pretraining")
         and not config.get("is_decision")
         and not config.get("is_embedding")
     ):
@@ -4571,6 +4576,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 offload_layers = config.get("offload_layers", 0),
                 prefetch_depth = config.get("prefetch_depth", 2),
+                offload_plan_shape = _offload_plan_shape(config),
             )
             fallback_error = (
                 _model_cache_fallback_error(config, trainer.model_load_error)
@@ -4639,6 +4645,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                         offload_layers = config.get("offload_layers", 0),
                         prefetch_depth = config.get("prefetch_depth", 2),
+                        offload_plan_shape = _offload_plan_shape(config),
                     )
         finally:
             _load_watchdog_stop.set()

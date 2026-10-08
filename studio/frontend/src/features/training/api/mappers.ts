@@ -69,6 +69,13 @@ export function offloadSupported(
   );
 }
 
+/** Whether this host can swap layers to system RAM: a discrete CUDA or ROCm card, the rule core's
+ * install_block_swap applies (XPU, MLX and CPU have no swap path, and a unified-memory APU has no
+ * separate pool to swap into). */
+export function offloadHardwareSupported(gpu: { backend: string; unifiedMemory: boolean }): boolean {
+  return (gpu.backend === "cuda" || gpu.backend === "rocm") && !gpu.unifiedMemory;
+}
+
 /** The offload fields, sent off whenever `offloadSupported` is false (the controls are hidden then).
  * `gpuIndices` are the GPUs training can see; with more than one, the budget goes out per card. */
 export function offloadPayload(

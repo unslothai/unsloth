@@ -11,9 +11,13 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { offloadPayload, offloadSupported, perDeviceBudgetPayload, trainingGpuIndices } = await import(
-  "../src/features/training/api/mappers.ts"
-);
+const {
+  offloadHardwareSupported,
+  offloadPayload,
+  offloadSupported,
+  perDeviceBudgetPayload,
+  trainingGpuIndices,
+} = await import("../src/features/training/api/mappers.ts");
 const { initialTrainingConfigState } = await import(
   "../src/features/training/stores/training-config-policy.ts"
 );
@@ -123,4 +127,14 @@ test("offload goes out off wherever the run cannot offload", () => {
 
 test("a count above the backend limit is clamped instead of failing the start", () => {
   assert.equal(offloadPayload({ ...base, offloadLayers: 5000 }).offload_layers, 1024);
+});
+
+test("offload controls need a discrete CUDA or ROCm card", () => {
+  assert.equal(offloadHardwareSupported({ backend: "cuda", unifiedMemory: false }), true);
+  assert.equal(offloadHardwareSupported({ backend: "rocm", unifiedMemory: false }), true);
+  for (const backend of ["xpu", "mlx", "cpu", ""]) {
+    assert.equal(offloadHardwareSupported({ backend, unifiedMemory: false }), false);
+  }
+  // A ROCm APU (Strix Halo) has no separate pool to swap into.
+  assert.equal(offloadHardwareSupported({ backend: "rocm", unifiedMemory: true }), false);
 });

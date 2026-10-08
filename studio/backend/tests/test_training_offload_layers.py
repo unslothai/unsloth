@@ -194,6 +194,7 @@ def _trainer(
 
     t = UnslothTrainer.__new__(UnslothTrainer)
     t._offload_layers, t._prefetch_depth, t.model = offload_layers, prefetch_depth, model
+    t._offload_plan_shape = {}
     return t
 
 
@@ -406,7 +407,7 @@ def test_worker_applies_the_budget_only_where_auto_offload_sizes_to_it():
         'config.get("offload_layers") == "auto"',
         'config.get("is_decision")',
         'config.get("is_embedding")',
-        'config.get("use_lora", True)',
+        'config.get("training_type", "LoRA/QLoRA") in ("LoRA/QLoRA", "Continued Pretraining")',
     ):
         assert needle in gate
     # The budget lands before the decision / embedding branches return, so the gate has to.
@@ -439,3 +440,23 @@ def test_disabled_checkpointing_aliases_match_the_trainer():
         and getattr(node.body[0].value, "value", None) is False
     )
     assert set(off) == set(_CHECKPOINTING_OFF)
+
+
+def test_auto_plans_at_load_for_the_runs_batch_and_rank():
+    from core.training.worker import _offload_plan_shape
+
+    trainer = _trainer("auto")
+    trainer._offload_plan_shape = _offload_plan_shape({"batch_size": 4, "lora_r": 64})
+    assert trainer._offload_load_kwargs()["device_map_planner_kwargs"] == {
+        "prefetch_depth": 2,
+        "batch_size": 4,
+        "lora_rank": 64,
+    }
+
+
+def test_every_worker_load_passes_the_plan_shape():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    assert src.count("offload_plan_shape = _offload_plan_shape(config),") == 2
