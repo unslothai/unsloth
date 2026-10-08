@@ -146,6 +146,24 @@ test("a streamed token reaches the last two rows only", () => {
   rows.release();
 });
 
+test("a rebuilt messages array holding the same messages reaches no row", () => {
+  const fake = fakeClient();
+  const rows = subscribeRows(fake, 4);
+  fake.publish({
+    thread: { messages: [...(fake.thread().messages as unknown[])] },
+  });
+  assert.deepEqual(rows.heard, [0, 0, 0, 0]);
+  rows.release();
+});
+
+test("a non-empty queue change reaches every row", () => {
+  const fake = fakeClient();
+  const rows = subscribeRows(fake, 2);
+  fake.publish({ composer: { ...fake.composer(), queue: [{ id: "q" }] } });
+  assert.deepEqual(rows.heard, [1, 1]);
+  rows.release();
+});
+
 test("a changed message reaches its own row, the one before it and every later row", () => {
   const fake = fakeClient();
   const rows = subscribeRows(fake, 4);
