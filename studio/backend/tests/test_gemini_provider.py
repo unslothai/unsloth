@@ -414,7 +414,6 @@ def test_gemini25_flash_effort_levels_map_to_budgets(monkeypatch):
 
 
 def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
-    """Gemini 3 Flash thinkingLevel ladder: minimal/low/medium/high."""
     cases = {
         "minimal": "minimal",
         "low": "low",
@@ -433,9 +432,7 @@ def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
 
 
 def test_gemini3_pro_passes_medium_through(monkeypatch):
-    """Gemini 3.1+ Pro accepts thinkingLevel="medium" per
-    https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro;
-    forward as-is (medium is the documented mid-tier on Gemini 3.1)."""
+    """https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro"""
     for model in (
         "gemini-3.1-pro-preview",
         "gemini-pro-latest",
@@ -450,7 +447,7 @@ def test_gemini3_pro_passes_medium_through(monkeypatch):
 
 
 def test_gemini3_pro_minimal_effort_coerces_to_low(monkeypatch):
-    """Gemini 3 Pro rejects thinkingLevel="minimal"; coerce to "low"."""
+    """Gemini 3 Pro rejects thinkingLevel="minimal", so use "low"."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3.1-pro-preview",
@@ -461,7 +458,6 @@ def test_gemini3_pro_minimal_effort_coerces_to_low(monkeypatch):
 
 
 def test_gemini3_flash_effort_none_maps_to_minimal(monkeypatch):
-    """reasoning_effort='none' on Gemini 3 Flash -> thinkingLevel=minimal."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3.5-flash",
@@ -472,8 +468,7 @@ def test_gemini3_flash_effort_none_maps_to_minimal(monkeypatch):
 
 
 def test_thinking_default_omits_thinking_config(monkeypatch):
-    """When neither knob is supplied, thinkingConfig is omitted (Google's
-    server-side default applies)."""
+    """Google's server-side default applies when neither thinking knob is supplied."""
     captured = _capture_body(monkeypatch, model = "gemini-3.5-flash")
     gc = captured["body"]["generationConfig"]
     assert "thinkingConfig" not in gc, gc
@@ -528,9 +523,6 @@ def test_thought_parts_stream_as_reasoning_not_answer(monkeypatch):
 
 
 def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
-    """`nano-banana-pro-preview` aliases the Pro image model; must set
-    responseModalities=[TEXT,IMAGE] when the Images pill is on
-    (enabled_tools includes "image_generation")."""
     captured = _capture_body(
         monkeypatch,
         model = "nano-banana-pro-preview",
@@ -541,11 +533,7 @@ def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
 
 
 def test_image_capable_model_without_image_pill_stays_text_only(monkeypatch):
-    """When the Images pill is off (no image_generation in enabled_tools), an
-    image-capable model id (gemini-2.5-flash-image) must force
-    responseModalities=["TEXT"]. Google's image models default to text+image
-    when responseModalities is omitted, so omitting it would silently bill
-    image output the UI says is disabled."""
+    """Forcing TEXT avoids billed images because Google image models default to text and image."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
@@ -2924,10 +2912,7 @@ def test_function_schema_anyof_null_variant_flattens_to_nullable(monkeypatch):
 
 
 def test_legacy_gemini3_pro_medium_coerced_to_high(monkeypatch):
-    """Round 17: legacy `gemini-3-pro*` (incl. `-preview`, shut down
-    2026-03-09) only accepted low/high. 3.1+ Pro added medium. The backend
-    must coerce medium → high for the legacy model so stale UI state doesn't
-    400 the request."""
+    """Legacy Gemini 3 Pro accepted only low/high, so stale medium state must map to high."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3-pro-preview",
@@ -2940,8 +2925,6 @@ def test_legacy_gemini3_pro_medium_coerced_to_high(monkeypatch):
 
 
 def test_gemini_3_1_pro_medium_passes_through(monkeypatch):
-    """Round 17 regression: 3.1+ Pro accepts medium; coercion must NOT apply
-    when the model id is gemini-3.1-pro*."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3.1-pro-preview",
@@ -2954,10 +2937,7 @@ def test_gemini_3_1_pro_medium_passes_through(monkeypatch):
 
 
 def test_tool_calls_extra_content_stripped_for_non_native_gemini():
-    """Round 17: per-tool-call `extra_content` (Gemini thoughtSignature
-    carrier) must not leak through `_build_external_messages` to
-    non-native-Gemini providers; OpenAI / Anthropic / custom Gemini OAI-compat
-    gateways would 400 on the unknown key."""
+    """Strip Gemini thought signatures because non-native providers reject `extra_content`."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 

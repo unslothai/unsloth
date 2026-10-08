@@ -260,8 +260,7 @@ def test_gemma_on_gemini_toggles_with_thinking_level_not_budget():
     assert "thinkingConfig" not in body.get("generationConfig", {})
 
 
-# Wire proof for older Claude models, run against a mocked Anthropic stream rather than the live API. Anthropic documents
-# adaptive thinking as a 400 on Claude 4.5 and earlier, and budget_tokens as the only thinking mode there:
+# Claude 4.5 and earlier reject adaptive thinking and require budget_tokens.
 # https://platform.claude.com/docs/en/build-with-claude/extended-thinking
 @pytest.mark.parametrize(
     "model,effort,budget",

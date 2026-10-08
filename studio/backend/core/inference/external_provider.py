@@ -4591,8 +4591,7 @@ class ExternalProviderClient:
             }
             thinking_budget: Optional[int] = None
             if effort_lc == "none" or enable_thinking is False:
-                # Pro-tier 2.5 rejects budget=0 (400 "only works in thinking mode"), so coerce to a small positive
-                # value.
+                # Gemini 2.5 Pro rejects zero, so use a small positive budget.
                 thinking_budget = 128 if _is_pro_thinking_only else 0
             elif effort_lc in _EFFORT_TO_BUDGET:
                 thinking_budget = _EFFORT_TO_BUDGET[effort_lc]
@@ -4612,8 +4611,7 @@ class ExternalProviderClient:
         if gen_config:
             body["generationConfig"] = gen_config
 
-        # Hosted tools: googleSearch (grounding) and codeExecution. Image-mode rejects codeExecution; only Gemini 3
-        # image models accept googleSearch.
+        # Image models reject codeExecution; only Gemini 3 image models accept googleSearch.
         def _gemini_image_model_allows_google_search(_m: str) -> bool:
             return (
                 _m.startswith("gemini-3-pro-image")
@@ -5110,8 +5108,7 @@ class ExternalProviderClient:
                                 for part in parts:
                                     if not isinstance(part, dict):
                                         continue
-                                    # Text delta. Stow part-level `thoughtSignature` on the delta so Gemini 3 turns
-                                    # needing an exact signature echo round-trip cleanly.
+                                    # Preserve thoughtSignature for Gemini 3's exact follow-up echo.
                                     text = part.get("text")
                                     _part_extra = _gemini_part_extra(part)
                                     if isinstance(text, str) and text:
@@ -5133,8 +5130,7 @@ class ExternalProviderClient:
                                             "inlineData",
                                         )
                                     ):
-                                        # Empty-content part carrying a thoughtSignature: emit an empty delta to
-                                        # preserve the signature.
+                                        # Emit an empty delta when a signature has no payload.
                                         yield _text_chunk(
                                             "",
                                             extra_content = _part_extra,
