@@ -766,9 +766,9 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
         ? isStreaming
         : NEW_TOKEN_RE.test(text[next + 1])) &&
       next - offset - 1 <= MAX_VARIABLE_PROSE_SPAN &&
+      !inRawText(offset) &&
       (proseBudget -= next - offset - 1) >= 0 &&
-      VARIABLE_PROSE_RE.test(text.slice(offset + 1, next)) &&
-      !inRawText(offset)
+      VARIABLE_PROSE_RE.test(text.slice(offset + 1, next))
     ) {
       return VARIABLE_DOLLAR;
     }

@@ -21,3 +21,8 @@ test("short variable spans and math are unchanged", () => {
   assert.equal(preprocessLaTeX("Set $HOME/bin before $PATH and run it."), "Set &#36;HOME/bin before $PATH and run it.");
   assert.equal(preprocessLaTeX("Energy $E = mc^2$ holds."), "Energy $E = mc^2$ holds.");
 });
+
+test("dollar spans inside raw-text elements do not use up the budget", () => {
+  const style = `<style>${`$${"A".repeat(127)}$x `.repeat(70)}</style>\n\n`;
+  assert.ok(preprocessLaTeX(`${style}Set $HOME/bin before $PATH and run it.`).endsWith("Set &#36;HOME/bin before $PATH and run it."));
+});

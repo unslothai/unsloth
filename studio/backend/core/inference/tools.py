@@ -6387,6 +6387,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
+            if isinstance(value, ast.Name) and value.id in numpy_aliases:
+                numpy_aliases.update(targets)  # np = numpy
             if _is_numpy_load(value):
                 load_fn_aliases.update(targets)  # loader = np.load
                 load_fn_attr_aliases.update(attr_targets)  # box.reader = np.load
@@ -6538,6 +6540,8 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 )
             ) + [(p, d) for p, d in zip(_a.kwonlyargs, _a.kw_defaults) if d is not None]
             for _param, _default in _defaulted:
+                if _is_numpy_load(_default):
+                    load_fn_aliases.add(_param.arg)  # def f(loader=np.load)
                 if isinstance(_default, ast.Name):
                     _did = _default.id
                     if _did in open_aliases:
@@ -6713,6 +6717,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 # through a user-defined helper. A benign callable argument (run(len)) is unaffected.
                 if any(_passed_write_callable(a) for a in node.args) or any(
                     _passed_write_callable(kw.value) for kw in node.keywords
+                ):
+                    return True
+                # numpy.load handed to a helper can be called there with allow_pickle positionally (read(np.load)).
+                if any(_is_numpy_load(a) for a in node.args) or any(
+                    _is_numpy_load(kw.value) for kw in node.keywords
                 ):
                     return True
                 if isinstance(func, ast.Name):
