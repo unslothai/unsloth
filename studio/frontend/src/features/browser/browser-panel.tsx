@@ -2461,6 +2461,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               key={`${activeTab.id}:${activeEntry.fileId}`}
               page={pageElement}
               fileName={activeEntry.name}
+              zoom={activeTab.zoom}
             />
           ) : null}
           {activeTab && activeEntry && (pageAnnotating === "frame" || pageAnnotating === "native") ? (
@@ -2480,6 +2481,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               page={pageElement}
               fileName={tabTitle(activeTab, activeEntry)}
               url={webAddress(activeTab) ?? undefined}
+              zoom={activeTab.zoom}
             />
           ) : null}
         </div>
