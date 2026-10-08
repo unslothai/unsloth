@@ -467,6 +467,7 @@ export const it = {
     queueingHintShared: "La coda viene mantenuta.",
   },
   common: {
+    duplicate: "Duplica",
     cancel: "Annulla",
     close: "Chiudi",
     delete: "Elimina",
@@ -3513,6 +3514,11 @@ export const it = {
       configTooLarge:
         "La configurazione dell'addestramento è troppo grande (massimo 1 MiB).",
       failedToSaveConfig: "Salvataggio della configurazione non riuscito",
+      duplicateFailed: "Impossibile duplicare il run",
+      duplicateDraftChanged:
+        "Le impostazioni dell'addestramento sono cambiate durante il caricamento. Riprova a duplicare il run.",
+      duplicateNoModel:
+        "Questo run non ha una configurazione del modello salvata.",
       startTraining: "Avvia l'addestramento",
       starting: "Avvio...",
       loadingModel: "Caricamento del modello...",

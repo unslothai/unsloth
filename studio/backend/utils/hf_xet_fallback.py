@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -56,6 +57,7 @@ def _gpu_present() -> bool:
 
     Only torch is consulted (already imported by the time any download helper runs), and any
     failure answers False so a genuinely torch-less host keeps the light-init retry below.
+    MPS does not count: unsloth_zoo's full init rejects it, so the light path is the only one there.
     """
     try:
         import torch
@@ -63,7 +65,6 @@ def _gpu_present() -> bool:
         return False
     for probe in (
         lambda: torch.cuda.is_available(),
-        lambda: torch.backends.mps.is_available(),
         lambda: torch.xpu.is_available(),
     ):
         try:
@@ -108,7 +109,7 @@ def _load_shared() -> bool:
             _shared_import_error = exc
             import os as _os
 
-            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take its MLX/CPU path,
+            # ...but NOT on a CUDA/XPU host (see _gpu_present). That flag makes unsloth_zoo take its MLX/CPU path,
             # injecting triton and bitsandbytes STUBS into sys.modules for the process. On a working GPU box those stubs
             # raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
             if _gpu_present():
@@ -201,6 +202,25 @@ def _load_optional(module_name: str) -> Any:
         cached = _optional_modules.get(module_name, _UNTRIED)
         if cached is not _UNTRIED:
             return cached
+        # Same rule as _load_shared: the retry's triton/bitsandbytes stubs stay in sys.modules for good.
+        if _gpu_present():
+            import sys as _sys
+
+            # A zoo __init__ failing late leaves the submodules it already ran (hf_xet_tuning) in sys.modules.
+            module = _sys.modules.get(module_name)
+            # Still executing in another thread: never memoise a half-built module.
+            if getattr(getattr(module, "__spec__", None), "_initializing", False):
+                module = None
+            if module is None:
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "%s unavailable (%s); not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT because this host has an "
+                    "accelerator and that path would stub out triton/bitsandbytes for the whole process.",
+                    module_name,
+                    first_error,
+                )
+            _optional_modules[module_name] = module
+            return module
         global _gpu_init_override_depth
         previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         ours = previous != "1"
@@ -227,9 +247,33 @@ def _load_optional(module_name: str) -> Any:
         return module
 
 
+@dataclass(frozen = True)
+class _EnvXetHealth:
+    use_xet: bool
+    reason: str
+    source: str = "forced"
+
+    def __bool__(self) -> bool:
+        return self.use_xet
+
+
+def _env_xet_health() -> Any:
+    """The env checks atop ``unsloth_zoo.hf_xet_health.xet_health``, for when that module cannot load: without
+    them Auto picks Xet and the worker gets ``HF_HUB_DISABLE_XET=0`` over the operator's ``1``."""
+
+    def _on(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+    if _on("UNSLOTH_DISABLE_XET") or _on("UNSLOTH_STABLE_DOWNLOADS") or _on("HF_HUB_DISABLE_XET"):
+        return _EnvXetHealth(False, "Xet disabled by environment")
+    if _on("UNSLOTH_FORCE_XET"):
+        return _EnvXetHealth(True, "Xet forced by environment")
+    return None
+
+
 def _xet_health_from(module: Any, **kwargs: Any) -> Any:
     if module is None:
-        return None
+        return _env_xet_health()
     try:
         return module.xet_health(**kwargs)
     except Exception as exc:  # noqa: BLE001

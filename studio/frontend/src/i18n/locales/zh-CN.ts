@@ -506,6 +506,7 @@ export const zhCN = {
     },
   },
   common: {
+    duplicate: "创建副本",
     cancel: "取消",
     close: "关闭",
     delete: "删除",
@@ -3314,6 +3315,9 @@ export const zhCN = {
       readMore: "了解更多",
     },
     training: {
+      duplicateFailed: "创建运行副本失败",
+      duplicateDraftChanged: "加载期间训练设置已发生变化，请重新创建副本。",
+      duplicateNoModel: "此运行没有已保存的模型配置。",
       startTraining: "开始训练",
       starting: "启动中...",
       loadingModel: "正在加载模型...",

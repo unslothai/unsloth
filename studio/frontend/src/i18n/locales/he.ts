@@ -584,6 +584,7 @@ export const he = {
     },
   },
   common: {
+    duplicate: "שכפול",
     cancel: "ביטול",
     close: "סגירה",
     delete: "מחיקה",
@@ -3496,6 +3497,9 @@ export const he = {
       readMore: "קרא עוד",
     },
     training: {
+      duplicateFailed: "שכפול ההרצה נכשל",
+      duplicateDraftChanged: "הגדרות האימון השתנו במהלך הטעינה. נסה לשכפל שוב.",
+      duplicateNoModel: "להרצה זו אין תצורת מודל שמורה.",
       startTraining: "התחל אימון",
       starting: "מתחיל...",
       loadingModel: "טוען מודל...",

@@ -510,6 +510,7 @@ export const ptBR = {
     },
   },
   common: {
+    duplicate: "Duplicar",
     cancel: "Cancelar",
     close: "Fechar",
     delete: "Excluir",
@@ -3422,6 +3423,11 @@ export const ptBR = {
       readMore: "Leia mais",
     },
     training: {
+      duplicateFailed: "Não foi possível duplicar a execução",
+      duplicateDraftChanged:
+        "As configurações de treinamento mudaram durante o carregamento. Tente duplicar novamente.",
+      duplicateNoModel:
+        "Esta execução não tem uma configuração de modelo salva.",
       startTraining: "Iniciar Treinamento",
       starting: "Iniciando...",
       loadingModel: "Carregando modelo...",
