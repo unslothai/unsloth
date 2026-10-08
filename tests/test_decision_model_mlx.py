@@ -4,10 +4,15 @@
 import ast
 import json
 import os
+import platform
+import sys
 from pathlib import Path
 
 import pytest
 
+# Before any unsloth_zoo import: without torch off Apple Silicon it raises a plain ImportError.
+if sys.platform != "darwin" or platform.machine() != "arm64":
+    pytest.skip("the MLX backend", allow_module_level = True)
 pytest.importorskip("unsloth_zoo.mlx.decision")
 torch = pytest.importorskip("torch")
 
