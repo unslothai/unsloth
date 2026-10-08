@@ -727,6 +727,18 @@ def test_the_mlx_engine_asks_by_id_and_reports_what_it_refuses(home, client, eng
     assert len(engine.asked) == asked + 2
 
 
+def test_an_mlx_encoder_refuses_a_state_past_its_window(home, client, engine, tmp_path):
+    encoder = tmp_path / "julia-1" / "encoder"
+    encoder.mkdir(parents = True)
+    (encoder / "config.json").write_text('{"max_position_embeddings": 64}', encoding = "utf-8")
+    assert _put(client, enabled = True, model = "julia-1").status_code == 200
+    body = {"model": "default", "questions": {"urgent": {"type": "noul"}}}
+    # 64 positions less [cls], two [sep] and the question head (0 in this stand-in model).
+    for state, status in (("w" * 61, 200), ("w" * 62, 422)):
+        assert client.post("/v1/systemone", json = {**body, "state": state}).status_code == status
+    assert len(engine.asked) == 1
+
+
 def test_an_mlx_decoder_waits_for_the_gpu(home, client, engine, monkeypatch):
     from core.inference import gpu_arbiter
 
