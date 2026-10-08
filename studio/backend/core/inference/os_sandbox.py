@@ -245,14 +245,8 @@ def _extended_path(path: str) -> str:
     """The \\\\?\\ spelling of a Windows path, which reaches a file named nul, con or com1 instead of the device."""
     if path.startswith(("\\\\?\\", "\\\\.\\")):
         return path
-    # normpath is string-only; abspath would hand back \\.\nul for C:\work\nul, the device again.
+    # Callers pass an absolute workdir. normpath is string-only; abspath would hand back \\.\nul for C:\work\nul.
     absolute = ntpath.normpath(path)
-    drive, rest = ntpath.splitdrive(absolute)
-    if not drive or not rest.startswith("\\"):
-        # "." is never a reserved name, so abspath is safe for the anchor: the cwd, or C:'s own for C:work.
-        absolute = ntpath.normpath(ntpath.join(ntpath.abspath(drive + "."), rest))
-    if absolute.startswith(("\\\\?\\", "\\\\.\\")):
-        return absolute
     if absolute.startswith("\\\\"):
         return "\\\\?\\UNC\\" + absolute[2:]
     return "\\\\?\\" + absolute

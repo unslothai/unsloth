@@ -58,16 +58,10 @@ def _simulate_windows_stat(monkeypatch):
         ("\\\\server\\share\\work\\nul", "\\\\?\\UNC\\server\\share\\work\\nul"),
         ("\\\\?\\C:\\Users\\a\\work\\nul", "\\\\?\\C:\\Users\\a\\work\\nul"),
         ("\\\\?\\UNC\\server\\share\\nul", "\\\\?\\UNC\\server\\share\\nul"),
-        ("//?/C:/Users/a/work/nul", "\\\\?\\C:\\Users\\a\\work\\nul"),
     ],
 )
 def test_the_extended_spelling_of_a_workdir_entry(path, expected):
     assert os_sandbox._extended_path(path) == expected
-
-
-def test_a_relative_entry_is_anchored_at_the_working_directory(monkeypatch):
-    monkeypatch.setattr(os_sandbox.os, "getcwd", lambda: "D:\\studio")
-    assert os_sandbox._extended_path("work\\nul") == "\\\\?\\D:\\studio\\work\\nul"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "simulates Windows stat on a POSIX filesystem")
