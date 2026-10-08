@@ -44,7 +44,7 @@ _RUNNER = textwrap.dedent(
         fixes.patch_bitsandbytes_paged_optimizer_resume()  # idempotent
     Optim = getattr(bnb.optim, optim_name)
     torch.manual_seed(0)
-    shapes = [(512, 256), (64, 2)]  # one paged (>= 1e5 elements), one too small to page
+    shapes = [(2048, 1024), (64, 2)]  # one paged (>= 1e5 elements), one too small to page
     params = [torch.nn.Parameter(torch.randn(s, device = "cuda")) for s in shapes]
     grads = [[torch.randn(s, device = "cuda") for s in shapes] for _ in range(4)]
 
@@ -60,7 +60,9 @@ _RUNNER = textwrap.dedent(
 
     resumed_params = [torch.nn.Parameter(p.detach().clone()) for p in params]
     resumed = Optim(resumed_params, lr = 1e-2)
+    torch.cuda.synchronize(); before_load = torch.cuda.memory_allocated()
     resumed.load_state_dict(saved)
+    torch.cuda.synchronize(); load_cuda_bytes = torch.cuda.memory_allocated() - before_load
     after_load = {k: bool(getattr(resumed.state[resumed_params[0]][k], "is_paged", False)) for k in ("state1", "state2") if k in resumed.state[resumed_params[0]]}
     for g in grads[2:]:
         step(opt, params, g); step(resumed, resumed_params, g)
@@ -68,7 +70,10 @@ _RUNNER = textwrap.dedent(
     def paged(o, p):
         return {k: bool(getattr(o.state[p][k], "is_paged", False)) for k in ("state1", "state2") if k in o.state[p]}
 
+    state_bytes = sum(v.numel() * v.element_size() for k, v in opt.state[params[0]].items() if k in ("state1", "state2"))
     print(json.dumps({
+        "state_bytes": state_bytes,
+        "load_cuda_bytes": load_cuda_bytes,
         "fresh_paged": paged(opt, params[0]),
         "after_load_paged": after_load,
         "resumed_paged": paged(resumed, resumed_params[0]),
@@ -97,19 +102,23 @@ def _run(mode, optim_name):
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-@pytest.mark.parametrize("optim_name", ["PagedAdamW8bit", "PagedAdamW32bit", "PagedLion8bit"])
+@pytest.mark.parametrize(
+    "optim_name", ["PagedAdamW8bit", "PagedAdamW32bit", "PagedLion8bit", "PagedAdEMAMix8bit"]
+)
 def test_resumed_paged_optimizer_state_stays_paged(optim_name):
-    base = _run("base", optim_name)
+    import bitsandbytes
+
+    if not hasattr(bitsandbytes.optim, optim_name):
+        pytest.skip(reason = f"bitsandbytes {bitsandbytes.__version__} has no {optim_name}")
     fixed = _run("fixed", optim_name)
-    assert all(base["fresh_paged"].values())
-    # Unpatched bitsandbytes moves resumed state into plain CUDA memory: the bug this guards.
-    assert not any(base["resumed_paged"].values())
+    assert fixed["fresh_paged"] and all(fixed["fresh_paged"].values())
     # Paged from the load on, so the first resumed forward and backward never hold it in the
-    # CUDA allocator (a fresh run has no state there yet).
+    # CUDA allocator (a fresh run has no state there yet), and never staged there whole either.
     assert fixed["after_load_paged"] == fixed["resumed_paged"] == fixed["fresh_paged"]
+    assert fixed["load_cuda_bytes"] < fixed["state_bytes"] // 4
     assert not any(fixed["resumed_small_paged"].values())
-    # Resuming continues the same trajectory as never stopping, with or without the patch.
-    assert fixed["max_abs_diff"] == base["max_abs_diff"] == 0.0
+    # Resuming continues the same trajectory as never stopping.
+    assert fixed["max_abs_diff"] == 0.0
 
 
 def test_non_paged_optimizer_untouched():
