@@ -28,10 +28,16 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from core.inference.tools import _USER_AGENTS, _fetch_url_raw, _normalize_url_scheme
+from core.inference.tools import (
+    _USER_AGENTS,
+    _WHATWG_CHARSET_CODECS,
+    _fetch_url_raw,
+    _normalize_url_scheme,
+    _sniff_meta_charset,
+)
 from loggers import get_logger
 
-# Same embedders as the canvas shell.
+# same embedders as the canvas shell.
 from routes.inference import _ARTIFACT_PREVIEW_FRAME_ANCESTORS as _FRAME_ANCESTORS
 
 logger = get_logger(__name__)
@@ -68,8 +74,6 @@ _CONTENT_ATTR_RE = re.compile(
 _REFRESH_RE = re.compile(
     r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(?:url\s*=\s*)?['\"]?([^'\"]*)['\"]?)?", re.IGNORECASE
 )
-_META_CHARSET_RE = re.compile(rb"""<meta[^<>]+charset\s*=\s*["']?([\w:.-]+)""", re.IGNORECASE)
-
 # The sandbox's opaque origin fails CORS module loads: self-contained modules are inlined, ones with imports keep src.
 _MODULE_SCRIPT_RE = re.compile(r"<script\b" + _TAG_BODY + r"\s*</script\s*>", re.IGNORECASE)
 # One start-tag attribute; quoted values are skipped whole so a name inside a value isn't matched.
@@ -1100,7 +1104,7 @@ class BrowserFetchRequest(BaseModel):
     url: str = Field(..., min_length = 1, max_length = 8192)
     method: Literal["GET", "POST"] = "GET"
     body: Optional[str] = Field(default = None, max_length = 1024 * 1024)
-    # Smaller cap for favicons, so an icon can't be 50 MB.
+    # favicon callers can lower the 50 MB fetch cap.
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
 
 
@@ -1111,34 +1115,47 @@ _BOMS = (
 )
 
 
-# Browsers read these labels as windows-1252 (WHATWG Encoding), which fills 0x80-0x9F with quotes and dashes.
-_WINDOWS_1252_LABELS = frozenset(
-    "ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 iso88591 "
-    "iso_8859-1 iso_8859-1:1987 l1 latin1 latin-1 us-ascii windows-1252 x-cp1252".split()
-)
+# headers may name UTF-16; meta labels map it to UTF-8 through the shared table.
+_HEADER_CODECS = {
+    **_WHATWG_CHARSET_CODECS,
+    **dict.fromkeys(
+        "csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le".split(), "utf-16"
+    ),
+    "unicodefffe": "utf-16-be",
+    "utf-16be": "utf-16-be",
+    "latin-1": "cp1252",
+}
 
 
-def _codec(label: str) -> str:
-    label = label.strip().lower()
-    return "cp1252" if label in _WINDOWS_1252_LABELS else label
+def _codec(label: Optional[str], table: dict = _HEADER_CODECS) -> Optional[str]:
+    return table.get(label.strip().lower()) if label else None
+
+
+def _raw_codec(label: Optional[str]) -> Optional[str]:
+    codec = _codec(label)
+    if codec or not label:
+        return codec
+    try:
+        return codecs.lookup(label).name
+    except (LookupError, ValueError):
+        return None
 
 
 def _decode_html(raw: bytes, charset: Optional[str]) -> str:
-    # A byte order mark wins over any declared charset, as in browsers.
+    # byte order marks override declared charsets, matching browsers.
     for bom, codec in _BOMS:
         if raw.startswith(bom):
             return raw.decode(codec, errors = "replace")
-    candidates = [_codec(charset)] if charset else []
-    sniffed = _META_CHARSET_RE.search(raw[:4096])
-    if sniffed:
-        candidates.append(_codec(sniffed.group(1).decode("ascii", "ignore")))
-    candidates.append("utf-8")
-    for candidate in candidates:
-        try:
-            return raw.decode(candidate)
-        except (LookupError, UnicodeDecodeError):
-            continue
-    # Unlabelled and not UTF-8: windows-1252, as browsers default to.
+    labelled = _codec(charset)
+    if labelled is None:
+        labelled = _sniff_meta_charset(raw[:4096], "text/html")
+    if labelled:
+        return raw.decode(labelled, errors = "replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    # browsers use U+FFFD for bad bytes in labelled pages and windows-1252 for unlabelled pages.
     return raw.decode("cp1252", errors = "replace")
 
 
@@ -1149,7 +1166,7 @@ def _attr(match: "re.Match[str] | None") -> Optional[str]:
 
 
 def _join(base: str, href: str) -> Optional[str]:
-    """``urljoin``, or None for an address it cannot parse (``http://[bad``)."""
+    """return None when ``urljoin`` cannot parse an address such as ``http://[bad``."""
     try:
         return urljoin(base, href.strip())
     except ValueError:
@@ -1481,15 +1498,15 @@ def _build_response(
             media_type = "application/json",
             headers = {KIND_HEADER: "html"},
         )
-    charset = meta.get("charset")
+    codec = _raw_codec(meta.get("charset"))
     textual = content_type.startswith("text/") or content_type.endswith(
         ("json", "xml", "javascript")
     )
-    if textual and charset and charset.lower().replace("_", "-") not in ("utf-8", "utf8"):
-        # Text in another encoding goes out as UTF-8, the encoding the response is labelled with.
+    if textual and codec and codec != "utf-8":
+        # transcode text to UTF-8 to match the response label.
         try:
-            body = body.decode(_codec(charset), errors = "replace").encode("utf-8")
-        except LookupError:
+            body = body.decode(codec, errors = "replace").encode("utf-8")
+        except (LookupError, UnicodeError, ValueError):
             pass
     return Response(
         content = body,
@@ -1497,7 +1514,7 @@ def _build_response(
         headers = {
             KIND_HEADER: "raw",
             URL_HEADER: quote(final_url, safe = ":/?#[]@!$&'()*+,;=%~"),
-            # Never rendered on Studio's origin.
+            # never rendered on Studio's origin
             "Content-Security-Policy": "sandbox",
             **({NAME_HEADER: quote(name, safe = "")} if (name := _attachment_name(meta)) else {}),
         },

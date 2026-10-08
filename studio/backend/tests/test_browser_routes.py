@@ -219,6 +219,98 @@ def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
     assert response.headers["content-type"] == "text/csv; charset=utf-8"
 
 
+@pytest.mark.parametrize(
+    "text, label, encoding",
+    [("a,😀\n", "utf-32", "utf-32"), ("a,Ç\n", "ibm437", "cp437")],
+)
+def test_raw_text_is_transcoded_from_non_whatwg_charsets(monkeypatch, text, label, encoding):
+    _fetch(
+        monkeypatch,
+        (None, text.encode(encoding), "text/plain"),
+        {"url": "https://example.com/x.txt", "charset": label},
+    )
+    response = _call(url = "https://example.com/x.txt")
+    assert response.body == text.encode("utf-8")
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    "text, label, encoding",
+    [
+        ("<p>朱镕基 中央广播电视总台</p>", "gb2312", "gbk"),
+        ("<p>丸数字①の日本語</p>", "shift_jis", "cp932"),
+        ("<p>똠방각하 한국어</p>", "euc-kr", "cp949"),
+        ("<p>廣東話嘅中文</p>", "big5", "big5hkscs"),
+    ],
+)
+def test_a_page_decodes_as_browsers_read_its_label(monkeypatch, text, label, encoding):
+    page = f"<html><meta charset={label}>{text}</html>"
+    _fetch(
+        monkeypatch,
+        (None, page.encode(encoding), "text/html"),
+        {"url": "https://example.com/", "charset": label},
+    )
+    assert text in json.loads(_call().body)["html"]
+    assert browser_mod._decode_html(page.encode(encoding), None) == page
+
+
+def test_a_stray_byte_does_not_garble_a_labelled_page(monkeypatch):
+    body = "<p>नमस्ते दुनिया</p><p>हिन्दी ".encode("utf-8") + b"\xff" + " पाठ</p>".encode("utf-8")
+    _fetch(
+        monkeypatch, (None, body, "text/html"), {"url": "https://example.com/", "charset": "utf-8"}
+    )
+    html = json.loads(_call().body)["html"]
+    assert "<p>नमस्ते दुनिया</p><p>हिन्दी \ufffd पाठ</p>" in html
+    assert html.count("\ufffd") == 1
+
+
+def test_a_malformed_header_charset_does_not_fall_through_to_meta_or_utf8(monkeypatch):
+    body = b"<html><meta charset=utf-8><p>\xc2\x81</p></html>"
+    _fetch(
+        monkeypatch,
+        (None, body, "text/html"),
+        {"url": "https://example.com/", "charset": "shift_jis"},
+    )
+    html = json.loads(_call().body)["html"]
+    assert "<p>\uff82\ufffd</p>" in html
+    assert "\x81" not in html
+
+
+def test_a_commented_meta_charset_is_ignored(monkeypatch):
+    body = b"<!-- <meta charset=shift_jis> --><p>caf\xc3\xa9</p>"
+    _fetch(
+        monkeypatch,
+        (None, body, "text/html"),
+        {"url": "https://example.com/", "charset": None},
+    )
+    assert "<p>café</p>" in json.loads(_call().body)["html"]
+
+
+@pytest.mark.parametrize(
+    "body, charset",
+    [
+        (b"<html><p>caf\xc3\xa9</p></html>", "undefined"),
+        (b"<html><meta charset=undefined><p>caf\xc3\xa9</p></html>", None),
+    ],
+)
+def test_a_page_with_an_undecodable_charset_still_renders(monkeypatch, body, charset):
+    _fetch(
+        monkeypatch, (None, body, "text/html"), {"url": "https://example.com/", "charset": charset}
+    )
+    assert "<p>café</p>" in json.loads(_call().body)["html"]
+
+
+@pytest.mark.parametrize("charset", ["undefined", "idna"])
+def test_text_with_an_undecodable_charset_passes_through(monkeypatch, charset):
+    body = "a,café\n".encode("utf-8")
+    _fetch(
+        monkeypatch,
+        (None, body, "text/csv"),
+        {"url": "https://example.com/c.csv", "charset": charset},
+    )
+    assert _call(url = "https://example.com/c.csv").body == body
+
+
 def test_other_bodies_pass_through_untouched(monkeypatch):
     pdf = b"%PDF-1.7\n..."
     _fetch(monkeypatch, (None, pdf, "application/pdf"), {"url": "https://example.com/p.pdf"})
