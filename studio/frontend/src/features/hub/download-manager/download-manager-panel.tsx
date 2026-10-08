@@ -98,6 +98,7 @@ function isRequiredAssetJob(job: ManagedDownload): boolean {
   return !isModelFile;
 }
 
+// Only staged media picks set checkpoint=false; other scoped jobs (Decision API model) carry no flag.
 const REQUIRED_ASSET_NOTE =
   "Required to run this model. Downloaded once, shared across compatible variants.";
 
@@ -202,7 +203,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
         <div className="truncate text-ui-10p5 text-muted-foreground">
           {job.presentation.filename}
         </div>
-      ) : isRequiredAssetJob(job) ? (
+      ) : isRequiredAssetJob(job) && job.checkpoint === false ? (
         <div className="text-ui-10p5 text-muted-foreground">
           {REQUIRED_ASSET_NOTE}
         </div>

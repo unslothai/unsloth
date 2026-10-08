@@ -13,7 +13,10 @@ test("companion rows in the downloads panel say they are a one-time requirement"
     "features/hub/download-manager/download-manager-panel.tsx",
   );
   assert.match(panel, /Downloaded once, shared across compatible variants/);
-  assert.match(panel, /: isRequiredAssetJob\(job\) \? \(/);
+  assert.match(
+    panel,
+    /: isRequiredAssetJob\(job\) && job\.checkpoint === false \? \(/,
+  );
   assert.match(panel, /isRequiredAssetJob\(job\)\s*\? assetLabel\(/);
   assert.match(
     panel,
