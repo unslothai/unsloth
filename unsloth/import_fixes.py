@@ -4904,6 +4904,38 @@ def patch_enable_input_require_grads():
             return _RequireGrad.apply(output, anchor)
         output.requires_grad_(True)
 
+    def make_inputs_embeds_require_grads(module, args, kwargs):
+        # Passing inputs_embeds skips the embedding hook, so reentrant checkpointing
+        # gave the adapters no gradient (#2178). An alias leaves the caller's tensor alone.
+        inputs_embeds = kwargs.get("inputs_embeds")
+        if (
+            not isinstance(inputs_embeds, torch.Tensor)
+            or inputs_embeds.requires_grad
+            or not torch.is_grad_enabled()
+            or not inputs_embeds.is_floating_point()
+        ):
+            return None
+        if torch.compiler.is_compiling():
+            inputs_embeds = _RequireGrad.apply(inputs_embeds, anchor)
+        else:
+            inputs_embeds = inputs_embeds.detach().requires_grad_(True)
+        return args, {**kwargs, "inputs_embeds": inputs_embeds}
+
+    def register_inputs_embeds_hooks(model):
+        # Replace, not stack: a repeat enable keeps one hook, and disable can remove it.
+        handles = []
+        for module in model.modules():
+            if not isinstance(module, PreTrainedModel):
+                continue
+            for key, hook in list(module._forward_pre_hooks.items()):
+                if getattr(hook, "__name__", None) == make_inputs_embeds_require_grads.__name__:
+                    del module._forward_pre_hooks[key]
+                    module._forward_pre_hooks_with_kwargs.pop(key, None)
+            handles.append(
+                module.register_forward_pre_hook(make_inputs_embeds_require_grads, with_kwargs = True)
+            )
+        return handles
+
     # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
     # wraps keeps inspect.getsource on transformers' source for later source checks.
     original = PreTrainedModel.enable_input_require_grads
@@ -4913,6 +4945,9 @@ def patch_enable_input_require_grads():
         def _patched_single_enable_input_require_grads(self):
             self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
                 make_inputs_require_grads
+            )
+            self._require_grads_hooks = [self._require_grads_hook] + register_inputs_embeds_hooks(
+                self
             )
 
         PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
@@ -4957,7 +4992,7 @@ def patch_enable_input_require_grads():
             seen_modules.add(embedding_id)
             hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
 
-        self._require_grads_hooks = hooks
+        self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
             self._require_grads_hook = hooks[0]
 
