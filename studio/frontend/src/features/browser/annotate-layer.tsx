@@ -202,8 +202,17 @@ function boxOf(ranges: Range[], origin: DOMRect): Box | null {
 
 /** Effective CSS zoom at the content; 1 where the browser can't report it. */
 function zoomAt(ranges: Range[]): number {
-  const node = ranges[0]?.startContainer;
-  const element = node instanceof Element ? node : node?.parentElement;
+  const range = ranges[0];
+  if (!range) return 1;
+  const node = range.startContainer;
+  // A selected node (an image) can carry its own zoom; its range starts at the parent.
+  const selected = node.childNodes[range.startOffset];
+  const element =
+    selected instanceof Element && range.endContainer === node && range.endOffset === range.startOffset + 1
+      ? selected
+      : node instanceof Element
+        ? node
+        : node.parentElement;
   return element?.currentCSSZoom ?? 1;
 }
 
