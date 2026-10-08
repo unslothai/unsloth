@@ -7519,31 +7519,34 @@ def disable_torchcodec_if_broken():
     their existing except ImportError handlers cleanly.
     """
     mismatch_hint = _torchcodec_version_mismatch_hint()
-    if mismatch_hint is not None:
+
+    def _warn_mismatch():
+        if mismatch_hint is None:
+            return
         try:
             import warnings
-            warnings.warn(mismatch_hint, stacklevel = 2)
+            warnings.warn(mismatch_hint, stacklevel = 3)
         except Exception:
             # Warning filters promoted to errors (PYTHONWARNINGS=error, pytest -W error) must not abort the
             # disable fallback below.
             pass
+
     try:
         import importlib.util
         if importlib.util.find_spec("torchcodec") is None:
+            _warn_mismatch()
             return  # absent or already disabled
 
         # RuntimeError on dlopen failure, OSError on chained libavutil.so misses, and a damaged or
         # version-skewed wheel can raise anything else; the package is present, so every shape is "broken".
         from torchcodec.decoders import AudioDecoder
     except Exception as load_error:
-        if mismatch_hint is None:
+        remedy_hint = mismatch_hint
+        if remedy_hint is None:
             # Versions agree, so the load failed for another reason. A mismatched accelerator
             # build is the one this can still name, and the one pinning the index repairs.
             try:
-                provenance_hint = _torchcodec_provenance_hint()
-                if provenance_hint is not None:
-                    import warnings
-                    warnings.warn(provenance_hint, stacklevel = 2)
+                remedy_hint = _torchcodec_provenance_hint()
             except Exception:
                 pass  # a diagnostic must never abort the disable fallback below
         # transformers: flip the flag (<5) and/or rebind the lru_cache'd func (>=5).
@@ -7594,9 +7597,15 @@ def disable_torchcodec_if_broken():
                 if decodes
                 else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)"
             )
-            warnings.warn(f"Unsloth: torchcodec is installed but {note}; {tail}.", stacklevel = 2)
+            # One warning per broken codec; the version remedy rides along.
+            remedy = f" {remedy_hint}" if remedy_hint is not None else ""
+            warnings.warn(
+                f"Unsloth: torchcodec is installed but {note}; {tail}.{remedy}", stacklevel = 2
+            )
         except Exception:
             pass  # a report must never abort the disable fallback above
+    else:
+        _warn_mismatch()
 
 
 def _audio_av_open(av, source):

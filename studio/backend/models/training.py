@@ -1218,25 +1218,27 @@ class DiffusionTrainableFamily(BaseModel):
     # When set, a LoRA trained on this family previews on this repo instead of the training base (Krea
     # trains on Raw, runs on Turbo).
     deploy_base: Optional[str] = None
-    # Variant-specific training-base to inference-base pairs, including public mirror ids.
+    # maps each training base, including public mirrors, to its inference base.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
-    # Per-checkpoint facts that overlay the family-level params/VRAM guidance.
+    # overlays checkpoint-specific parameter and VRAM guidance on family defaults.
     base_specs: Dict[str, dict] = Field(default_factory = dict)
 
 
 class DiffusionTrainingInfoResponse(BaseModel):
-    """Where diffusion training reads/writes on this Unsloth, plus usable datasets and the
-    trainable model families (so the UI can offer a base picker with realistic guidance)."""
+    """lists paths, usable datasets, and UI-facing trainable families for this Unsloth instance."""
 
     datasets_root: str
     outputs_root: str
     datasets: List[DiffusionDatasetSummary]
+    # includes every occupied folder name, even captions-only folders.
+    dataset_names: List[str] = Field(default_factory = list)
+    # occupied, unlisted folders that this upload form may safely continue.
+    continuation_dataset_names: List[str] = Field(default_factory = list)
     families: List[DiffusionTrainableFamily] = Field(default_factory = list)
 
 
 class DiffusionDatasetUploadResponse(BaseModel):
-    """Result of uploading images/clips/captions into a named dataset folder. Counts are
-    for the whole folder after the upload, so repeat uploads show the running total."""
+    """counts cover the whole folder after the upload, including earlier uploads."""
 
     name: str
     path: str

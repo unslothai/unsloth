@@ -18,6 +18,8 @@ import os
 import types
 from typing import Any, Optional
 
+from .diffusion_device import float64_device
+
 WIDE_TILES_ENV = "UNSLOTH_DIFFUSION_VAE_WIDE_TILES"
 
 TILE_LATENTS = 32
@@ -67,11 +69,12 @@ def axis_weights(
     shared edge, linear over the next ``ramp``. Overlaps >= 16 put every pixel >= 8 latents inside some tile, so a
     margin under 8 keeps the sum positive."""
     size = min(tile, length) * scale
-    pos = (torch.arange(size, dtype = torch.float64, device = device) + 0.5) / scale
-    total = torch.zeros(length * scale, dtype = torch.float64, device = device)
+    build = float64_device(device)
+    pos = (torch.arange(size, dtype = torch.float64, device = build) + 0.5) / scale
+    total = torch.zeros(length * scale, dtype = torch.float64, device = build)
     weights = []
     for s in starts:
-        w = torch.ones(size, dtype = torch.float64, device = device)
+        w = torch.ones(size, dtype = torch.float64, device = build)
         if s > 0:
             w = torch.minimum(w, ((pos - margin) / ramp).clamp(0, 1))
         if s + tile < length:
@@ -80,7 +83,10 @@ def axis_weights(
         weights.append(w)
     if float(total.min()) <= 0.0:
         raise ValueError(f"tiles {starts} leave pixels without weight on a {length}-latent axis")
-    return [(w / total[s * scale : s * scale + size]).float() for w, s in zip(weights, starts)]
+    return [
+        (w / total[s * scale : s * scale + size]).float().to(device)
+        for w, s in zip(weights, starts)
+    ]
 
 
 def _decode_tile(vae: Any, z: Any) -> Any:

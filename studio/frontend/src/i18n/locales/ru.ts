@@ -510,6 +510,7 @@ export const ru = {
     },
   },
   common: {
+    duplicate: "Дублировать",
     cancel: "Отмена",
     close: "Закрыть",
     delete: "Удалить",
@@ -3441,6 +3442,10 @@ export const ru = {
       readMore: "Подробнее",
     },
     training: {
+      duplicateFailed: "Не удалось дублировать запуск",
+      duplicateDraftChanged:
+        "Настройки обучения изменились во время загрузки. Попробуйте дублировать ещё раз.",
+      duplicateNoModel: "У этого запуска нет сохранённой конфигурации модели.",
       startTraining: "Начать обучение",
       starting: "Запуск...",
       loadingModel: "Загрузка модели...",

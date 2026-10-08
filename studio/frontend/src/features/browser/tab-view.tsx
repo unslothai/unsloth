@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { useChatRuntimeStore } from "@/features/chat";
 import { requestFind } from "@/features/find-in-page";
 import { zoomScopeFromChord } from "@/features/interface-zoom";
 import { useT } from "@/i18n";
@@ -70,6 +71,13 @@ function pageAddress(tab: BrowserTab | undefined): string | undefined {
   return tab && entry?.kind === "web" ? (tab.displayUrl ?? entry.url) : undefined;
 }
 
+// Per tab, whether its current load began beside a temporary chat: a reload keeps its entry.
+const temporaryLoads = new Map<string, boolean>();
+
+function loadTemporary(tabId: string, entry: BrowserEntry): boolean {
+  return (entry.kind === "web" && entry.temporary === true) || temporaryLoads.get(tabId) === true;
+}
+
 function useFrameMessages(tabId: string, origin: string | null) {
   const t = useT();
   return useCallback(
@@ -102,7 +110,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           const favicon = safeFavicon(message.favicon);
           // Kept by site, so Recents, History and Suggested show it once the tab is gone.
           if (favicon && tab && entry?.kind === "web") {
-            useBrowserHistoryStore.getState().recordIcon(hostOf(tab.displayUrl ?? entry.url), favicon);
+            useBrowserHistoryStore.getState().recordIcon(hostOf(tab.displayUrl ?? entry.url), favicon, loadTemporary(tabId, entry));
           }
           if (favicon && entry) {
             void proxiedFavicon(favicon).then((icon) => {
@@ -112,7 +120,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           }
           // POST results can't be revisited, so they stay out of history.
           if (tab && entry?.kind === "web" && entry.method !== "POST") {
-            useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title);
+            useBrowserHistoryStore.getState().recordVisit(tab.displayUrl ?? entry.url, message.title, loadTemporary(tabId, entry));
           }
           break;
         }
@@ -247,6 +255,7 @@ function WebPage({
   const reload = useBrowserStore((store) => store.reload);
 
   useEffect(() => {
+    temporaryLoads.set(tab.id, entry.temporary === true || useChatRuntimeStore.getState().incognito);
     const show = (page: BrowserPage) => {
       if (page.kind === "raw") {
         const name = page.fileName ?? fileNameFromUrl(page.url);
@@ -259,7 +268,7 @@ function WebPage({
           documentType: page.contentType,
           pageError: false,
         });
-        if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name);
+        if (method !== "POST") useBrowserHistoryStore.getState().recordVisit(page.url, name, loadTemporary(tab.id, entry));
       } else {
         fitZoomToPage(tab.id, false);
         updateTab(tab.id, {
@@ -294,7 +303,7 @@ function WebPage({
           const name = page.fileName ?? fileNameFromUrl(page.url);
           if (!canShowFile(name, page.contentType)) {
             // use the sender or requested address, not the redirect target, so another site's permission cannot apply.
-            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url });
+            void saveBrowserDownload({ blob: page.blob, name, contentType: page.contentType, url: page.url, site: entry.from ?? url, temporary: loadTemporary(tab.id, entry) || undefined });
             if (entry.kind === "web" && entry.from) useBrowserStore.getState().leaveDownload(tab.id, entry);
           }
         }
