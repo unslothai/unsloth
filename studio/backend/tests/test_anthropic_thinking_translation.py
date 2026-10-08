@@ -511,6 +511,19 @@ def test_thinking_off_omits_disable_on_fable_5(monkeypatch):
     assert "thinking" not in body
 
 
+@pytest.mark.parametrize("off", ({"enable_thinking": False}, {"reasoning_effort": "none"}))
+def test_thinking_off_on_sonnet_5_5_sends_between_tools(monkeypatch, off):
+    body = _capture_body(monkeypatch, model = "claude-sonnet-5-5", **off)
+    assert body["thinking"] == {"type": "between_tools"}
+    assert "output_config" not in body
+
+
+@pytest.mark.parametrize("off", ({"enable_thinking": False}, {"reasoning_effort": "none"}))
+def test_thinking_off_omits_disable_on_opus_5_5(monkeypatch, off):
+    body = _capture_body(monkeypatch, model = "claude-opus-5-5", **off)
+    assert "thinking" not in body
+
+
 @pytest.mark.parametrize(
     ("model", "web", "code", "compaction", "fast"),
     (

@@ -65,6 +65,15 @@ test("Fable 5 thinks always, so no off switch is offered", () => {
   assert.ok(![...caps.reasoningEffortLevels].includes("none"));
 });
 
+test("Opus 5.5 cannot turn thinking off, Sonnet 5.5 can", () => {
+  const opus = getExternalReasoningCapabilities("anthropic", "claude-opus-5-5");
+  assert.equal(opus.supportsReasoning, true);
+  assert.equal(opus.supportsReasoningOff, false);
+  assert.ok(![...opus.reasoningEffortLevels].includes("none"));
+  const sonnet = getExternalReasoningCapabilities("anthropic", "claude-sonnet-5-5");
+  assert.equal(sonnet.supportsReasoningOff, true);
+});
+
 test("fast mode is offered on Opus 5 / 4.8 and nowhere else", () => {
   for (const model of ["claude-opus-5", "claude-opus-4-8-2026-02-01"]) {
     assert.equal(providerSupportsFastMode("anthropic", model), true, model);
