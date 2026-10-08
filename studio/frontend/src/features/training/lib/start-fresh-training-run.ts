@@ -32,7 +32,7 @@ import {
 import { checkDecisionDatasetColumns } from "./decision-dataset";
 import { shouldUseVisionDatasetCheck } from "./fresh-dataset-check";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
-import { missingRlRoles } from "./rl-roles";
+import { effectiveTrainingObjective, missingRlRoles } from "./rl-roles";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import { createTrainingStartInputIdentity } from "./training-start-inputs";
@@ -336,8 +336,7 @@ export async function startFreshTrainingRun(): Promise<boolean> {
 }
 
 type AttemptHfTokenResult =
-  | { ready: false }
-  | { ready: true; token: string | null };
+  { ready: false } | { ready: true; token: string | null };
 
 async function prepareAttemptHfToken(
   attempt: FreshTrainingStartAttempt,
@@ -406,7 +405,7 @@ async function prepareSelectedDataset(
   if (hasIncompatibleTrainingModalities(attempt.config)) {
     return attempt.cancel();
   }
-  const objective = attempt.config.trainingObjective;
+  const objective = effectiveTrainingObjective(attempt.config);
   if (objective !== "sft" && attempt.config.trainingMethod !== "cpt") {
     // RL reads Column roles, not the chat-role mapping.
     const missing = missingRlRoles(

@@ -4415,6 +4415,13 @@ class UnslothTrainer:
                     if rl_tokenizer is self.tokenizer:
                         self.tokenizer = templated
                     rl_tokenizer = templated
+                # GRPO renders prompts through processing_class, which is the processor restored below.
+                if (
+                    rl_tokenizer is not self.tokenizer
+                    and not getattr(self.tokenizer, "chat_template", None)
+                    and getattr(rl_tokenizer, "chat_template", None)
+                ):
+                    self.tokenizer.chat_template = rl_tokenizer.chat_template
                 logger.info(f"Configuring {objective.upper()} trainer\n")
                 self.trainer = build_rl_trainer(
                     objective,
