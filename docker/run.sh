@@ -453,12 +453,12 @@ if [[ $# -gt 0 ]]; then
                     for (( _i=1; _i < ${#_args[@]}; _i++ )); do
                         case "${_args[$_i]}" in
                             -c | -s) break ;;
-                            -O | -o | --init-file | --rcfile) _i=$((_i + 1)) ;;
+                            -O | +O | -o | +o | --init-file | --rcfile) _i=$((_i + 1)) ;;
                             --)
                                 _script="${_args[$((_i + 1))]:-}"
                                 break
                                 ;;
-                            -*) ;;
+                            -* | +*) ;;
                             *) _script="${_args[$_i]}"; break ;;
                         esac
                     done
@@ -472,12 +472,17 @@ if [[ $# -gt 0 ]]; then
                 _prev=""
                 for (( _i=_scan_from; _i < ${#_args[@]}; _i++ )); do
                     _arg="${_args[$_i]}"
+                    _arg_case="$_arg"
+                    if [[ "$_arg_case" == --* ]]; then
+                        _arg_case="${_arg_case#--}"
+                        _arg_case="--${_arg_case//-/_}"
+                    fi
                     if [[ "$_prev" == -* ]]; then
                         _prev=""
                         continue
                     fi
-                    case "$_arg" in
-                        -m | -q | --bind_cores_to_rank | --cpu | --debug | --downcast_bf16 | --dynamo_use_dynamic | --dynamo_use_fullgraph | --dynamo_use_regional_compilation | --enable_cpu_affinity | --elastic_training | --force_multi | --fp8_use_autocast_during_eval | --module | --multi_gpu | --no-python | --no_local_rank | --no_python | --no_ssh | --no_ssh_check | --no_tpu_cluster | --quiet | --run-path | --run_path | --same_network | --save_pid | --standalone | --tpu | --tpu_cluster | --tpu_use_sudo | --use_cpu | --use_deepspeed | --use_fsdp | --use_megatron_lm | --use_mps_device | --use_parallelism_config | --use_tp | --use_xpu | --virtual-local-rank | --virtual_local_rank)
+                    case "$_arg_case" in
+                        -m | -q | --bind_cores_to_rank | --cpu | --debug | --downcast_bf16 | --dynamo_use_dynamic | --dynamo_use_fullgraph | --dynamo_use_regional_compilation | --enable_cpu_affinity | --elastic_training | --force_multi | --fp8_use_autocast_during_eval | --module | --multi_gpu | --no_local_rank | --no_python | --no_ssh | --no_ssh_check | --no_tpu_cluster | --quiet | --run_path | --same_network | --save_pid | --standalone | --tpu | --tpu_cluster | --tpu_use_sudo | --use_cpu | --use_deepspeed | --use_fsdp | --use_megatron_lm | --use_mps_device | --use_parallelism_config | --use_tp | --use_xpu | --virtual_local_rank)
                             _prev=""
                             continue
                             ;;
