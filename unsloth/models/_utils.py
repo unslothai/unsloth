@@ -297,6 +297,34 @@ def _patch_transformers_trainer_data_parallel():
     return True
 
 
+def _keep_unsloth_models_off_data_parallel(model, args):
+    """One GPU for an Unsloth LoRA model under any Trainer, as the TRL trainers already do.
+    Returns True when it changed `args`.
+
+    `_wrap_model` alone is too late and too narrow: Trainer.__init__ has already sized the
+    batch as `per_device_train_batch_size * n_gpu`, `training_step` still averages and divides
+    by `n_gpu`, and a wrapper that holds the model inside (SentenceTransformer) never shows
+    the marker at the top. On Kaggle T4x2 that sent Whisper's Seq2SeqTrainer into
+    `'int' object has no attribute 'mean'` and EmbeddingGemma into nn.DataParallel."""
+    try:
+        if args is None or model is None or not hasattr(model, "modules"):
+            return False
+        if getattr(args, "n_gpu", 1) <= 1 or getattr(model, "is_loaded_in_8bit", False):
+            return False
+        from transformers.training_args import ParallelMode
+
+        if getattr(args, "parallel_mode", None) != ParallelMode.NOT_DISTRIBUTED:
+            return False
+        if not any(
+            getattr(module, "_unsloth_disable_data_parallel", False) for module in model.modules()
+        ):
+            return False
+        args._n_gpu = 1
+        return True
+    except Exception:
+        return False
+
+
 def _mark_unsloth_disable_data_parallel(model, disable = True):
     if disable:
         _patch_transformers_trainer_data_parallel()
@@ -5121,7 +5149,16 @@ def patch_gradient_accumulation_fix(Trainer):
                     apply_accepts_loss_kwargs_fix(model)
                 except Exception:
                     pass
+            training_args = kwargs.get("args")
+            if training_args is None and len(args) > 1:
+                training_args = args[1]
+            _keep_unsloth_models_off_data_parallel(model, training_args)
             _original_trainer_init(self, *args, **kwargs)
+            # Args the Trainer built itself: fix them now and the batch size it cached from them.
+            if _keep_unsloth_models_off_data_parallel(
+                getattr(self, "model", None), getattr(self, "args", None)
+            ):
+                self._train_batch_size = self.args.train_batch_size
             try:
                 accelerator = getattr(self, "accelerator", None)
                 if (
