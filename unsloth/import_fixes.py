@@ -2770,17 +2770,10 @@ def _bnb_deserialize_ops_without_reverse():
 
 
 def fix_transformers_bnb_prequantized_save():
-    """Let `save_pretrained` write a model loaded from a pre-quantized bitsandbytes checkpoint.
-
-    On transformers 5.x such a load attaches a `WeightConverter` running `Bnb4bitDeserialize`
-    (or `Bnb8bitDeserialize`) to `model._weight_conversions`, and `save_pretrained` reverses
-    every attached converter. Neither op has a `reverse_op`, so saving the base model, or a
-    `merged_4bit_forced` merge, raises a bare `NotImplementedError` (measured 5.2.0 to 5.17.0;
-    upstream attempt transformers PR #45743 closed unmerged). The quantized modules already emit
-    the checkpoint layout (`weight`, `weight.absmax`, ..., `weight.quant_state.bitsandbytes__nf4`)
-    from their own state_dict, so the converter is skipped on save, which writes what 4.57.6 did.
-    Probe-gated on `reverse_op` raising, so a transformers that implements it is left alone.
-    """
+    """transformers 5.x: `save_pretrained` reverses the `Bnb{4,8}bitDeserialize` converter a
+    pre-quantized load attaches, and neither op has a `reverse_op` (NotImplementedError, #638;
+    upstream PR #45743 closed unmerged). Quantized modules already emit the checkpoint layout,
+    so skip that converter on save. Probe-gated on `reverse_op` raising."""
     broken_ops = _bnb_deserialize_ops_without_reverse()
     if not broken_ops:
         return

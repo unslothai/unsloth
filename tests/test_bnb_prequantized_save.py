@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""save_pretrained on a model loaded from a pre-quantized bitsandbytes checkpoint.
-
-transformers 5.x attaches a `WeightConverter` running `Bnb4bitDeserialize` to
-`model._weight_conversions` on such a load, and `save_pretrained` reverses it through
-`revert_weight_conversion`; the op has no `reverse_op`, so the save raises
-`NotImplementedError` (unslothai/unsloth#638 thread: merged_4bit_forced and plain
-save_pretrained of a bnb-4bit model). Real transformers objects throughout.
-"""
+"""save_pretrained after a pre-quantized bitsandbytes load on transformers 5.x (#638)."""
 
 import os
 
