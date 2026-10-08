@@ -200,3 +200,18 @@ def test_joining_a_resident_with_no_sharer_record_keeps_its_loader(monkeypatch, 
 def test_the_installation_owner_sees_the_resident_so_its_mismatch_still_replaces(strict, accounts):
     with pytest.raises(ReachedReplacement):
         load(accounts["unsloth"])
+
+
+def test_repeating_the_load_that_joined_joins_again(strict, accounts):
+    # Now a sharer, so status shows the resident, but its saved settings still differ.
+    assert load(accounts["alice"]).status == "already_loaded"
+    assert load(accounts["alice"]).status == "already_loaded"
+    assert not strict.unloaded and strict.adopted == []
+
+
+def test_inherited_extras_do_not_join_a_resident_with_extras(strict, accounts):
+    strict.requested_extra_args = ["--lora", "/bob/workspace/adapter.gguf"]
+    strict.extra_args = list(strict.requested_extra_args)
+    with pytest.raises(ReachedReplacement):
+        load(accounts["alice"])
+    assert accounts["alice"].account_id not in access._resident_sharers["chat"]

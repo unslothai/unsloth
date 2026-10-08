@@ -376,6 +376,21 @@ def resident_hidden(modality: str | None = None, reference: str | None = None) -
     return False
 
 
+def joins_resident_runtime(modality: str, reference: str | None = None) -> bool:
+    """A managed caller that did not load the resident: its ordinary load names the model, not a runtime.
+
+    A hidden caller never saw the resident's settings, and a sharer's saved settings can still
+    differ, so repeating the load that joined must join again rather than replace (#12365).
+    """
+    if resident_hidden(modality, reference):
+        return True
+    if not managed_account() or not resident_shared_with(modality, current_account_id()):
+        return False
+    from core.inference import gpu_arbiter
+
+    return gpu_arbiter.owner_account() != current_account_id()
+
+
 def hidden_resident_response():
     return JSONResponse(content = {"loaded": True, "yours": False})
 

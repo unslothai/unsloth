@@ -18277,13 +18277,15 @@ async def _load_model_impl(
                 == gguf_companion_state
                 and (
                     llama_backend.adopt_load_intent_if_matched(intent)
-                    # Status hid this resident from the caller (#12365), so a capacity or
-                    # placement mismatch is its defaults, not a reconfiguration: join at the
-                    # resident's runtime, adopting nothing. Apply (force_reload) and different
-                    # components (template, extras, vision, drafter) still replace.
+                    # Another managed account's load (#12365): a capacity or placement
+                    # mismatch is its defaults, not a reconfiguration, so join at the resident's
+                    # runtime, adopting nothing. Apply (force_reload) and different components
+                    # (template, extras, vision, drafter) still replace.
                     or (
                         replacing
-                        and account_access.resident_hidden("chat", llama_backend.model_identifier)
+                        and account_access.joins_resident_runtime(
+                            "chat", llama_backend.model_identifier
+                        )
                         and llama_backend.components_match_intent(intent)
                     )
                 )

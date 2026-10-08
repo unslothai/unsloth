@@ -32674,6 +32674,9 @@ class LlamaCppBackend:
         if intent.force_reload or not self.matches_load_source(intent):
             return False
         requested = self.requested_extra_args
+        # Inherited extras would carry the resident's adapters and drafters unnamed by the caller.
+        if intent.extra_args_inherited and requested:
+            return False
         extras = requested if intent.extra_args_inherited else intent.extra_args
         if tuple(extras or ()) != tuple(requested or ()):
             return False
