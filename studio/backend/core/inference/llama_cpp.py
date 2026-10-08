@@ -25410,6 +25410,8 @@ class LlamaCppBackend:
                         if mtp_overhead_fn is None:
                             return 0
                         if slots is None:
+                            if ubatch:
+                                return mtp_overhead_fn(ctx, _n_ubatch = ubatch)
                             return mtp_overhead_fn(ctx)
                         return mtp_overhead_fn(
                             ctx, _np = slots, _n_ubatch = ubatch if ubatch else _effective_ubatch
@@ -27442,7 +27444,16 @@ class LlamaCppBackend:
                         # Checkpoints are split into host_only_bytes below.
                         kv_cache_bytes = _kv_bytes(effective_ctx, 0),
                         kv_sized = self._can_estimate_kv(),
-                        mtp_bytes = _mtp_bytes(effective_ctx),
+                        # The expert-spill raise comes after mtp_overhead_fn bound its
+                        # micro-batch, so price the drafter at the raised one.
+                        mtp_bytes = _mtp_bytes(
+                            effective_ctx,
+                            ubatch = (
+                                _effective_ubatch
+                                if self._moe_spill_batch_restore is not None
+                                else None
+                            ),
+                        ),
                         # _flat_mtp_engages whole: its other arm, _mtp_kv_unsized,
                         # prices weights but NO draft KV, and the placement covers that
                         # gap with a flat cushion this footprint has no term for --

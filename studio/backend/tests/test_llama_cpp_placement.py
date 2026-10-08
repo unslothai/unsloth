@@ -4181,6 +4181,44 @@ def test_the_spill_planner_is_priced_at_the_raised_micro_batch(
     assert pinned["compute_buffer_flat"] == 512 * 400 * 1024
 
 
+def test_the_load_mode_fit_prices_the_drafter_at_the_raised_micro_batch(
+    tmp_path, _discrete_linux_host
+):
+    """The drafter's reserve grows with the micro-batch, so the RAM fit that picks
+    the load mode must charge it at the raised value, as the placement does."""
+    backend, gguf = _moe_backend(tmp_path, **_SPILLED)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend._resolve_launch_mtp_path = lambda **_k: "/fake/mtp.gguf"
+    priced = []
+    estimate = LlamaCppBackend._estimate_mtp_overhead_bytes
+
+    def price(self, ctx, **kwargs):
+        value = estimate(self, ctx, **kwargs)
+        priced.append((kwargs.get("n_ubatch"), value))
+        return value
+
+    charged = []
+    fit = LlamaCppBackend._fit_derived_load_mode
+
+    def load_mode(self, **kwargs):
+        charged.append((kwargs.get("mtp_bytes"), priced[-1]))
+        return fit(self, **kwargs)
+
+    backend._estimate_mtp_overhead_bytes = price.__get__(backend)
+    backend._fit_derived_load_mode = load_mode.__get__(backend)
+    cmd = _launch(
+        backend, gguf, mtp_draft_path = "/fake/mtp.gguf", speculative_type = "mtp", n_ctx = 131072
+    )["cmd"]
+
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    mtp_bytes, (n_ubatch, value) = charged[-1]
+    assert mtp_bytes > 0 and mtp_bytes == value
+    assert n_ubatch == 2048
+
+
 def test_the_cpu_replay_hands_back_the_default_micro_batch():
     backend = LlamaCppBackend()
     argv = ["llama-server", "-m", "x.gguf", "--ubatch-size", "2048", "--jinja"]
