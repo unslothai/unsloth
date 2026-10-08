@@ -412,8 +412,10 @@ export function LanAccessSection() {
     status?.configuredPort ?? null,
   );
   const stopAction = status?.state === "online";
+  // a start binds the saved choice, so an unsaved one would expose the addresses just unticked
   const actionDisabled =
-    busy !== null || (stopAction ? !status?.canStop : !status?.canStart);
+    busy !== null ||
+    (stopAction ? !status?.canStop : !status?.canStart || addressesDirty);
   const actionLabel =
     busy === "start"
       ? "Starting…"
@@ -547,7 +549,7 @@ export function LanAccessSection() {
           <>
             <SettingsRow
               label="Addresses"
-              description="Automatic uses every address this machine has, public ones included. Choose uses only the addresses you tick, such as a Tailscale address. Stop LAN access before changing it."
+              description="Automatic uses every address this machine has, public ones included. Choose uses only the addresses you tick, such as a Tailscale address. Stop LAN access before changing it, and save before starting."
               below={
                 <span
                   id={addressErrorId}
