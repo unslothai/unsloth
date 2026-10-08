@@ -607,6 +607,17 @@ class _LlamaStreamCancelled(Exception):
     __slots__ = ()
 
 
+# vulkan-hpp formats DeviceLostError as "vk::Queue::submit: ErrorDeviceLost".
+_GPU_DEVICE_LOST_MARKERS = ("ErrorDeviceLost", "VK_ERROR_DEVICE_LOST")
+_DEVICE_LOST_LOG_GRACE_S = 2.0
+
+
+def _is_gpu_device_lost(exc: BaseException) -> bool:
+    """True when llama-server reported a lost GPU device (500 body or SSE error, #11453)."""
+    text = str(exc)
+    return any(marker in text for marker in _GPU_DEVICE_LOST_MARKERS)
+
+
 class _CombinedCancelEvent:
     __slots__ = ("_events",)
 
@@ -17892,8 +17903,10 @@ class LlamaCppBackend:
         startup_len: Optional[int] = None
         log_bytes = 0
         levelled = to_info = False
+        proc = self._process
+        device_lost_seen = False
         try:
-            for line in self._process.stdout:
+            for line in proc.stdout:
                 line = line.rstrip()
                 if line:
                     lines = self._stdout_lines
@@ -17918,6 +17931,14 @@ class LlamaCppBackend:
                     if level is not None:
                         levelled = True
                         to_info = level.group(1) in "WE" or (ready and level.group(1) == "I")
+                        # E lines only: unprefixed lines can be a request dump with user text.
+                        if (
+                            not device_lost_seen
+                            and level.group(1) == "E"
+                            and any(marker in line for marker in _GPU_DEVICE_LOST_MARKERS)
+                        ):
+                            device_lost_seen = True
+                            self._retire_device_lost_server_soon(proc)
                     elif not levelled:
                         to_info = ready or _llama_line_is_warning_or_error(line, line_lower)
                     try:
@@ -21067,6 +21088,10 @@ class LlamaCppBackend:
         if blocked is not None:
             return code_integrity_user_message(binary or "the llama.cpp runtime", blocked)
 
+        cuda_image_error = LlamaCppBackend._cuda_kernel_image_error(output)
+        if cuda_image_error is not None:
+            return LlamaCppBackend._cuda_kernel_image_message(cuda_image_error, binary, log_path)
+
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
         # prebuilt links libgomp.so.1, which a stock container does not ship.
@@ -22332,6 +22357,72 @@ class LlamaCppBackend:
         # reprint it are not consistent about that.
         text = (output or "").lower()
         return any(marker in text for marker in cls._KERNEL_IMAGE_INVALID_MARKERS)
+
+    # #12842. A HIP build prints "ROCm error:", so the #7624 crash never matches. Every
+    # kernel fails alike, so no fit, flash-attn, slot or drafter retry can help.
+    _CUDA_KERNEL_IMAGE_RE = re.compile(
+        r"\bCUDA error: (device kernel image is invalid|no kernel image is available for execution)",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _cuda_kernel_image_error(cls, output: str) -> Optional[str]:
+        """The CUDA kernel-image error text in ``output`` (lowercased), or None."""
+        match = cls._CUDA_KERNEL_IMAGE_RE.search(output or "")
+        return match.group(1).lower() if match else None
+
+    @staticmethod
+    def _cuda_install_driver_version(binary: Optional[str]) -> Optional[tuple[int, int]]:
+        """The driver CUDA version the installer recorded for the managed install that
+        owns ``binary`` (UNSLOTH_PREBUILT_INFO.json host_profile), or None."""
+        try:
+            from utils.llama_cpp_update import _llama_install_root
+
+            root = _llama_install_root(binary) if binary else None
+            if root is None:
+                return None
+            marker = json.loads((root / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
+            driver = (marker.get("host_profile") or {}).get("driver_cuda_version")
+            if isinstance(driver, list) and len(driver) == 2:
+                return (int(driver[0]), int(driver[1]))
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _cuda_kernel_image_message(
+        cls,
+        error: str,
+        binary: Optional[str],
+        log_path: "Optional[Path | str]" = None,
+    ) -> str:
+        remedy = cls._runtime_remedy(binary)
+        log_hint = f" Full log: {log_path}" if log_path else ""
+        if error == "no kernel image is available for execution":
+            return (
+                'llama-server could not load its CUDA kernels ("no kernel image is available '
+                "for execution\"): this llama.cpp CUDA build has no kernels for this GPU's "
+                "architecture. This is not the GGUF file and not out of memory. "
+                f"{remedy[0].upper()}{remedy[1:]}, or use the CPU or Vulkan backend.{log_hint}"
+            )
+        driver = cls._cuda_install_driver_version(binary)
+        if driver is not None and driver >= (12, 4):
+            return (
+                'llama-server could not load its CUDA kernels ("device kernel image is '
+                f'invalid") although this NVIDIA driver supports CUDA {driver[0]}.{driver[1]}: '
+                "the llama.cpp CUDA libraries look damaged or mismatched. This is not the "
+                f"GGUF file and not out of memory. {remedy[0].upper()}{remedy[1:]}.{log_hint}"
+            )
+        driver_text = (
+            f" (this NVIDIA driver supports CUDA {driver[0]}.{driver[1]})" if driver else ""
+        )
+        return (
+            'llama-server could not load its CUDA kernels ("device kernel image is '
+            'invalid"): the NVIDIA driver is most likely too old for this llama.cpp CUDA '
+            f"build{driver_text}, which needs CUDA 12.4 or newer. This is not the GGUF file "
+            "and not out of memory. Update the NVIDIA driver to R550 or newer (CUDA 12.4+), "
+            f"or {remedy}.{log_hint}"
+        )
 
     @classmethod
     def _arch_crash_retry_gpu_ids(cls, selected, enumerated) -> list[int]:
@@ -30173,6 +30264,9 @@ class LlamaCppBackend:
                         _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
                             "\n".join(self._stdout_lines)
                         )
+                        _capability_crash = _capability_crash or (
+                            self._cuda_kernel_image_error("\n".join(self._stdout_lines)) is not None
+                        )
                         if (
                             not _did_rocm_retry
                             and _startup_crashed
@@ -31163,6 +31257,27 @@ class LlamaCppBackend:
                             target_unknown = _cache_target_unknown,
                         )
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
+
+                # #12842: after the #7624 respawn every rung below keeps the same kernels.
+                if not healthy and not _load_cancelled():
+                    # Whole buffer: a Linux abort appends a debugger backtrace.
+                    _cuda_image_out = "\n".join(self._stdout_lines)
+                    if self._cuda_kernel_image_error(_cuda_image_out) is not None:
+                        _proc_snap_ki = self._process  # snapshot: re-reading races the teardown
+                        _ki_rc = _proc_snap_ki.poll() if _proc_snap_ki is not None else None
+                        self._kill_process()
+                        _raise_terminal_load_failure(
+                            self._classify_llama_start_failure(
+                                _cuda_image_out,
+                                gguf_path,
+                                self._model_identifier,
+                                _ki_rc,
+                                binary,
+                                self._llama_log_path,
+                                (self._api_key,),
+                                self._extra_args,
+                            )
+                        )
 
                 # Studio adds --kv-unified itself above one slot, so nothing the user
                 # changes reaches it: retry at one slot, context intact. It aborts, so
@@ -35727,6 +35842,52 @@ class LlamaCppBackend:
                     return False
                 return started
 
+    def _retire_device_lost_server(self, served_by) -> None:
+        """Kill the llama-server that hit a lost GPU device, if it is still current (#11453).
+
+        It survives VK_ERROR_DEVICE_LOST but fails every later request; a dead child is
+        what _respawn_if_dead already recovers.
+        """
+        with self._respawn_lock:
+            if (
+                served_by is None
+                or served_by is not self._process
+                or served_by.poll() is not None
+                or self._cancel_event.is_set()
+            ):
+                return
+            # Else the MTP watchdog reads this kill as an MTP crash.
+            self._stop_mtp_crash_watchdog()
+            try:
+                served_by.kill()
+                served_by.wait(timeout = 10)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        try:
+            logger.warning(
+                f"llama-server for '{self._model_identifier}' lost its GPU device "
+                "(the graphics driver reset it); restarted it. On Intel Arc with "
+                "Vulkan, GGML_VK_DISABLE_COOPMAT=1 may avoid the reset."
+            )
+        except Exception:
+            # The logger raises once stdout is closed; recovery must not.
+            pass
+
+    def _retire_device_lost_server_soon(self, served_by) -> None:
+        """Retire after a device loss in the server log, for the passthrough routes.
+
+        The grace lets a chat request that hit the same error retire and retry first.
+        """
+
+        def _retire():
+            time.sleep(_DEVICE_LOST_LOG_GRACE_S)
+            self._retire_device_lost_server(served_by)
+
+        try:
+            threading.Thread(target = _retire, daemon = True, name = "llama-device-lost").start()
+        except RuntimeError:
+            pass
+
     @contextlib.contextmanager
     def _open_chat_stream_with_respawn_retry(
         self,
@@ -35752,12 +35913,26 @@ class LlamaCppBackend:
         """
         for attempt in range(2):
             response_opened = False
+            served_by = getattr(self, "_process", None)
             try:
                 url = f"{self.base_url}/v1/chat/completions"
                 with self._open_stream(url, payload, cancel_event) as opened:
                     response_opened = True
                     yield opened
                     return
+            except RuntimeError as exc:
+                if not _is_gpu_device_lost(exc):
+                    raise
+                # Retry only before the 200; once opened the consumer may have emitted output.
+                self._retire_device_lost_server(served_by)
+                if response_opened or attempt > 0 or not self._respawn_if_dead():
+                    raise
+                logger.warning(
+                    "llama-server lost its GPU device; restarted it and retrying the generation"
+                )
+                if on_respawn is not None:
+                    on_respawn()
+                continue
             except (httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 if response_opened:
                     raise
@@ -36027,6 +36202,7 @@ class LlamaCppBackend:
         _apply_seeded_llama_request(payload, seed)
         payload["stream_options"] = {"include_usage": True}
 
+        served_by = getattr(self, "_process", None)
         url = f"{self.base_url}/v1/chat/completions"
         cumulative = ""
         in_thinking = False
@@ -36034,6 +36210,55 @@ class LlamaCppBackend:
         _metadata_usage = None
         _metadata_timings = None
         _metadata_finish_reason = None
+
+        def _replay_on_replacement_server():
+            context_overflow_ = retry_context_overflow
+            max_tokens_ = retry_max_tokens
+            if (
+                retry_preflight_context_length is not None
+                and retry_preflight_context_length != self._effective_context_length
+            ):
+                # Refit the compacted prompt against the replacement server's window;
+                # any event now reports only additional evictions.
+                context_overflow_ = context_overflow
+                if max_tokens is None:
+                    max_tokens_ = None
+            yield from self.generate_chat_completion(
+                retry_messages,
+                image_b64 = retry_image_b64,
+                temperature = temperature,
+                top_p = top_p,
+                top_k = top_k,
+                min_p = min_p,
+                max_tokens = max_tokens_,
+                repetition_penalty = repetition_penalty,
+                presence_penalty = presence_penalty,
+                frequency_penalty = frequency_penalty,
+                logit_bias = logit_bias,
+                stop = stop,
+                cancel_event = cancel_event,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
+                seed = seed,
+                promote_reasoning_only = promote_reasoning_only,
+                perf_callback = perf_callback,
+                reasoning_provenance = reasoning_provenance,
+                context_overflow = context_overflow_,
+                context_policy = context_policy,
+                compaction_headroom_ratio = compaction_headroom_ratio,
+                # The retry refits for the replacement window and can evict more than
+                # the first attempt did. Without the thread those extra turns are
+                # archived nowhere and no reserve or boundary applies, on the one path
+                # that deliberately compacts again.
+                thread_id = thread_id,
+                # The retry refits, so it must be told the same about this request's
+                # tools as the first attempt was.
+                tools_withheld = tools_withheld,
+                thinking_budget_tokens = thinking_budget_tokens,
+                _allow_respawn_retry = False,
+            )
 
         try:
             with self._open_stream(url, payload, cancel_event) as (
@@ -36189,56 +36414,21 @@ class LlamaCppBackend:
                 logger.warning(
                     "llama-server was unreachable; respawned it and retrying the generation"
                 )
-                if (
-                    retry_preflight_context_length is not None
-                    and retry_preflight_context_length != self._effective_context_length
-                ):
-                    # Refit the compacted prompt against the replacement server's window;
-                    # any event now reports only additional evictions.
-                    retry_context_overflow = context_overflow
-                    if max_tokens is None:
-                        retry_max_tokens = None
-                yield from self.generate_chat_completion(
-                    retry_messages,
-                    image_b64 = retry_image_b64,
-                    temperature = temperature,
-                    top_p = top_p,
-                    top_k = top_k,
-                    min_p = min_p,
-                    max_tokens = retry_max_tokens,
-                    repetition_penalty = repetition_penalty,
-                    presence_penalty = presence_penalty,
-                    frequency_penalty = frequency_penalty,
-                    logit_bias = logit_bias,
-                    stop = stop,
-                    cancel_event = cancel_event,
-                    enable_thinking = enable_thinking,
-                    reasoning_effort = reasoning_effort,
-                    preserve_thinking = preserve_thinking,
-                    continue_final_message = continue_final_message,
-                    seed = seed,
-                    promote_reasoning_only = promote_reasoning_only,
-                    perf_callback = perf_callback,
-                    reasoning_provenance = reasoning_provenance,
-                    context_overflow = retry_context_overflow,
-                    context_policy = context_policy,
-                    compaction_headroom_ratio = compaction_headroom_ratio,
-                    # The retry refits for the replacement window and can evict more than
-                    # the first attempt did. Without the thread those extra turns are
-                    # archived nowhere and no reserve or boundary applies, on the one path
-                    # that deliberately compacts again.
-                    thread_id = thread_id,
-                    # The retry refits, so it must be told the same about this request's
-                    # tools as the first attempt was.
-                    tools_withheld = tools_withheld,
-                    thinking_budget_tokens = thinking_budget_tokens,
-                    _allow_respawn_retry = False,
-                )
+                yield from _replay_on_replacement_server()
                 return
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
             if cancel_event is not None and cancel_event.is_set():
                 return
+            if _is_gpu_device_lost(e):
+                self._retire_device_lost_server(served_by)
+                if _allow_respawn_retry and not cumulative and self._respawn_if_dead():
+                    logger.warning(
+                        "llama-server lost its GPU device; restarted it and retrying the generation"
+                    )
+                    yield from _replay_on_replacement_server()
+                    return
+                raise
             # Died mid-generation: recover MTP, re-raise unchanged for this request.
             self._maybe_recover_from_mtp_crash(e)
             raise

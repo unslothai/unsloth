@@ -9,6 +9,7 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
+import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
 import { TerminalIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { isToolCallRunning, toolArgText } from "./tool-arg-text";
@@ -134,12 +135,7 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   // Collapse the card once the model resumes streaming prose after the tool
   // call (mirrors WebSearchToolUI) so it doesn't crowd the final answer.
   const hasText = useAuiState(({ message }) =>
-    message.content.some(
-      (p) =>
-        p.type === "text" &&
-        "text" in p &&
-        (p as { text: string }).text.length > 0,
-    ),
+    partsHaveNonEmptyText(message.content),
   );
   // Ask permission gates every local tool call, and what is being approved
   // lives inside the content while Allow/Deny render outside it.
