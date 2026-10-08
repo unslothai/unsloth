@@ -43,11 +43,12 @@ test("with download history off, downloads are not listed", () => {
   const history = useBrowserHistoryStore.getState();
   history.clearDownloads();
   useBrowserPrefsStore.getState().setSaveDownloadHistory(false);
-  history.recordDownload(download);
+  assert.equal(history.recordDownload(download), undefined);
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 0);
   useBrowserPrefsStore.getState().setSaveDownloadHistory(true);
-  history.recordDownload(download);
+  const id = history.recordDownload(download);
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+  assert.equal(useBrowserHistoryStore.getState().downloads[0].id, id);
 });
 
 test("shortening how long history is kept drops older visits at once", () => {
@@ -545,6 +546,94 @@ test("a blocked site's blob: page can't download past the block", async () => {
   prefs.setAskBeforeDownloading(true);
 });
 
+test("the download prompt offers Remember only for files a remembered answer can cover", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/features/browser/download-approval.tsx", import.meta.url), "utf8");
+  // A file that runs code asks whatever was remembered (approveDownload), so its prompt has no checkbox.
+  assert.match(source, /\{request\?\.origin && !request\.dangerous \? \(\s*<label/);
+});
+
+test("a finished download links to its history row, and an unrecorded one drops its forgotten native id", async () => {
+  const { finishDownload, keptDownloadFile, mountDownloadsButton, useDownloadActivity } = await import(
+    "../src/features/browser/download-activity.ts"
+  );
+  const file = { blob: new Blob(["x"]), name: "x".repeat(300), contentType: "text/plain" };
+  const result = { name: file.name, size: 1, contentType: "text/plain", url: null, failed: false };
+  const unmount = mountDownloadsButton();
+  try {
+    // A name past the history row's limit still links: the row's id comes from recordDownload.
+    finishDownload("save:1", { ...result, nativeId: "n1", historyId: "row1" }, file);
+    assert.equal(useDownloadActivity.getState().finished?.historyId, "row1");
+    assert.equal(useDownloadActivity.getState().finished?.nativeId, "n1");
+    assert.equal(keptDownloadFile("row1"), file);
+    // History off: the app forgot the native id, so Open and Show in folder can't use it.
+    finishDownload("save:2", { ...result, nativeId: "n2" });
+    assert.equal(useDownloadActivity.getState().finished?.nativeId, undefined);
+  } finally {
+    useDownloadActivity.getState().dismissFinished();
+    unmount();
+  }
+  // No button on screen: the caller toasts it, so nothing holds the result.
+  finishDownload("save:3", result);
+  assert.equal(useDownloadActivity.getState().finished, null);
+});
+
+test("a long download name keeps its extension, and a kept copy goes with its history row", async () => {
+  const { finishDownload, keptDownloadFile } = await import("../src/features/browser/download-activity.ts");
+  const { isDangerousDownload } = await import("../src/features/browser/download-safety.ts");
+  const history = useBrowserHistoryStore.getState();
+  history.clearDownloads();
+  const id = history.recordDownload({ ...download, name: `${"a".repeat(210)}.exe` });
+  const row = useBrowserHistoryStore.getState().downloads[0];
+  assert.equal(row.name.length, 200);
+  assert.ok(row.name.endsWith(".exe"));
+  assert.ok(isDangerousDownload(row.name));
+  const file = { blob: new Blob(["x"]), name: row.name, contentType: "" };
+  finishDownload("save:row", { name: row.name, size: 1, contentType: "", url: null, historyId: id, failed: false }, file);
+  assert.equal(keptDownloadFile(id), file);
+  useBrowserHistoryStore.getState().removeDownload(id as string);
+  assert.equal(keptDownloadFile(id), null);
+});
+
+test("an unrecorded result's bytes go with its notice, and one replaced on screen is toasted", async () => {
+  const { finishDownload, keptDownloadFile, mountDownloadsButton, useDownloadActivity } = await import(
+    "../src/features/browser/download-activity.ts"
+  );
+  const file = { blob: new Blob(["x"]), name: "a.bin", contentType: "" };
+  const result = { name: "a.bin", size: 1, contentType: "", url: null, failed: false };
+  // No button on screen: an unrecorded copy has no way back, so it isn't kept; a recorded one is.
+  finishDownload("save:z", result, file);
+  assert.equal(keptDownloadFile("save:z"), null);
+  finishDownload("save:y", { ...result, historyId: "row-y" }, file);
+  assert.equal(keptDownloadFile("row-y"), file);
+  const unmount = mountDownloadsButton();
+  const toasts = ((globalThis as { __toasts?: { message: string; options?: { description?: string } }[] }).__toasts ??=
+    []);
+  toasts.length = 0;
+  try {
+    finishDownload("save:a", result, file);
+    assert.equal(keptDownloadFile("save:a"), file);
+    useDownloadActivity.getState().dismissFinished();
+    assert.equal(keptDownloadFile("save:a"), null);
+    // A failure the list never shows, replaced before it was dismissed: toasted, not lost.
+    finishDownload("native:p1", { ...result, name: "lost.zip", failed: true });
+    finishDownload("save:b", result, file);
+    assert.deepEqual(
+      toasts.map((item) => [item.message, item.options?.description]),
+      [["browser.downloads.failed", "lost.zip"]],
+    );
+    assert.equal(keptDownloadFile("save:b"), file);
+    // A recorded result replaced on screen stays in the list, so no toast.
+    finishDownload("save:c", { ...result, historyId: "row-c" });
+    finishDownload("save:d", { ...result, historyId: "row-d" });
+    assert.equal(toasts.length, 2);
+    assert.equal(keptDownloadFile("save:b"), null);
+  } finally {
+    useDownloadActivity.getState().dismissFinished();
+    unmount();
+  }
+});
+
 test("video and audio tabs don't zoom; pages, images and documents do", async () => {
   const { canZoom } = await import("../src/features/browser/zoom.ts");
   const tab = (entry: object) =>
@@ -557,4 +646,36 @@ test("video and audio tabs don't zoom; pages, images and documents do", async ()
   // A clip shown as its text is a text file.
   assert.equal(canZoom(tab({ name: "clip.mp4", plainText: true })), true);
   assert.equal(canZoom({ id: "t", index: 0, history: [{ kind: "web", url: "https://a.b/" }], zoom: 1 } as never), true);
+});
+
+test("closing the last Downloads button dismisses its result, but a button swapped in keeps it", async () => {
+  const { finishDownload, keptDownloadFile, mountDownloadsButton, useDownloadActivity } = await import(
+    "../src/features/browser/download-activity.ts"
+  );
+  const file = { blob: new Blob(["x"]), name: "a.bin", contentType: "" };
+  const result = { name: "a.bin", size: 1, contentType: "", url: null, failed: false };
+  // A tab change: one button goes and another comes in the same commit.
+  const first = mountDownloadsButton();
+  finishDownload("save:swap", result, file);
+  first();
+  const second = mountDownloadsButton();
+  await Promise.resolve();
+  assert.equal(useDownloadActivity.getState().finished?.key, "save:swap");
+  assert.equal(keptDownloadFile("save:swap"), file);
+  // The panel closes: no button is back, so the unrecorded copy goes.
+  second();
+  await Promise.resolve();
+  assert.equal(useDownloadActivity.getState().finished, null);
+  assert.equal(keptDownloadFile("save:swap"), null);
+});
+
+test("file toolbars keep a Downloads button registered, and a hidden panel closes its popover", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (file: string) => readFileSync(new URL(`../src/features/browser/${file}`, import.meta.url), "utf8");
+  // Mounted only once a save began, it would register after a quick save had already finished.
+  const panel = read("browser-panel.tsx");
+  assert.equal(panel.match(/<DownloadsButton [^>]*visible=\{visible\} idleHidden=\{true\} \/>/g)?.length, 3);
+  assert.doesNotMatch(panel, /BusyDownloadsButton/);
+  // The popover is portaled out of the panel, so it would stay up over the next page.
+  assert.match(read("downloads-button.tsx"), /if \(!visible && mode !== "closed"\) \{\s*setMode\("closed"\);/);
 });

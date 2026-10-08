@@ -104,6 +104,7 @@ import { OtherSurfaceError, canPrintFrames, printPage, screenshotPage } from "./
 import { canScreenshot } from "./screenshot-support";
 import { stageEditsPrompt } from "./stage-edits";
 import { type BrowserDownload, saveBrowserDownload, saveNeedsClick } from "./downloads";
+import { DownloadsButton } from "./downloads-button";
 import { BROWSER_FIND_TARGET, registerBrowserFind } from "./find";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { SiteFavicon } from "./site-favicon";
@@ -1051,20 +1052,12 @@ function webAddress(tab: BrowserTab | undefined): string | null {
   return entry?.kind === "web" ? (tab?.displayUrl ?? entry.url) : null;
 }
 
-function WebActions({ tab }: { tab: BrowserTab | undefined }) {
-  const t = useT();
-  const download = tabDownload(tab);
+function WebActions({ tab, visible }: { tab: BrowserTab | undefined; visible: boolean }) {
   return (
     <>
       <AnnotatePageButton tab={tab} />
-      <IconButton
-        label={t("browser.download")}
-        disabled={!download}
-        onClick={() => download && void saveBrowserDownload(download)}
-        className={NAV_BUTTON}
-      >
-        <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
-      </IconButton>
+      {/* Recent downloads and the one in flight; saving the page itself is in the menu. */}
+      <DownloadsButton className={NAV_BUTTON} visible={visible} />
     </>
   );
 }
@@ -1184,6 +1177,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
   const device = useBrowserStore((state) => state.device);
   const [clearOpen, setClearOpen] = useState(false);
   const webUrl = webAddress(tab);
+  const pageSave = fileTab ? undefined : tabDownload(tab);
   const bookmarked = useBookmarkFor(webUrl) !== undefined;
   const toolbarMode = useBrowserPrefsStore((state) => state.bookmarksToolbar);
   // The star's editor opens as the menu closes; focus going back to the menu button would shut it.
@@ -1271,6 +1265,12 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
           </DropdownMenuItem>
           <DropdownMenuItem disabled={!webUrl} onSelect={() => webUrl && openExternalLink(webUrl)}>
             {t("browser.openExternal")}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!pageSave}
+            onSelect={() => pageSave && void saveBrowserDownload(pageSave)}
+          >
+            {t("browser.downloads.savePage")}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           </>
@@ -1396,7 +1396,8 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
+/** `visible`: the panel's chat is shown (BrowserPanel `active`). */
+function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: boolean }) {
   const t = useT();
   const { goBack, goForward, reload } = useBrowserStore.getState();
   const native = nativePage(tab);
@@ -1455,7 +1456,7 @@ function WebToolbar({ tab }: { tab: BrowserTab | undefined }) {
         }
       />
       <div className="flex shrink-0 items-center gap-0.5">
-        <WebActions tab={tab} />
+        <WebActions tab={tab} visible={visible} />
         <PanelMenu tab={tab} />
       </div>
     </>
@@ -1475,7 +1476,8 @@ function isVideoEntry(entry: Extract<BrowserEntry, { kind: "file" }>): boolean {
 function BrowserFileToolbar({
   tab,
   entry,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
+  visible,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
   const navigate = useNavigate();
   const requestEdits = useBrowserStore((state) => state.requestEdits);
@@ -1673,6 +1675,7 @@ function BrowserFileToolbar({
         >
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
         </IconButton>
+        <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
@@ -1737,7 +1740,8 @@ function BrowserFileToolbar({
 function FloatingFileToolbar({
   tab,
   entry,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
+  visible,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
   const navigate = useNavigate();
   const requestEdits = useBrowserStore((state) => state.requestEdits);
@@ -2058,6 +2062,7 @@ function FloatingFileToolbar({
         onClick={() => download && void saveBrowserDownload(download)}
         className="size-9"
       />
+      <DownloadsButton className={cn(PILL, "size-9")} visible={visible} idleHidden={true} />
     </>
   );
 }
@@ -2080,7 +2085,8 @@ function SplitChevron() {
 function VideoFileToolbar({
   tab,
   entry,
-}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }> }) {
+  visible,
+}: { tab: BrowserTab; entry: Extract<BrowserEntry, { kind: "file" }>; visible: boolean }) {
   const t = useT();
   const navigate = useNavigate();
   const download = tabDownload(tab);
@@ -2227,6 +2233,7 @@ function VideoFileToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      <DownloadsButton className={NAV_BUTTON} visible={visible} idleHidden={true} />
       <PanelMenu tab={tab} />
     </>
   );
@@ -2387,14 +2394,14 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         >
           {activeTab && activeEntry?.kind === "file" ? (
             floatingFileControls ? (
-              <FloatingFileToolbar tab={activeTab} entry={activeEntry} />
+              <FloatingFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             ) : isVideoEntry(activeEntry) ? (
-              <VideoFileToolbar tab={activeTab} entry={activeEntry} />
+              <VideoFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             ) : (
-              <BrowserFileToolbar tab={activeTab} entry={activeEntry} />
+              <BrowserFileToolbar tab={activeTab} entry={activeEntry} visible={active} />
             )
           ) : (
-            <WebToolbar tab={activeTab} />
+            <WebToolbar tab={activeTab} visible={active} />
           )}
         </div>
         {floatingFileControls || (activeEntry?.kind === "file" && isVideoEntry(activeEntry)) ? null : (
