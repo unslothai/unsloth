@@ -1131,6 +1131,16 @@ def _codec(label: Optional[str], table: dict = _HEADER_CODECS) -> Optional[str]:
     return table.get(label.strip().lower()) if label else None
 
 
+def _raw_codec(label: Optional[str]) -> Optional[str]:
+    codec = _codec(label)
+    if codec or not label:
+        return codec
+    try:
+        return codecs.lookup(label).name
+    except (LookupError, ValueError):
+        return None
+
+
 def _decode_html(raw: bytes, charset: Optional[str]) -> str:
     # byte order marks override declared charsets, matching browsers.
     for bom, codec in _BOMS:
@@ -1488,13 +1498,16 @@ def _build_response(
             media_type = "application/json",
             headers = {KIND_HEADER: "html"},
         )
-    codec = _codec(meta.get("charset"))
+    codec = _raw_codec(meta.get("charset"))
     textual = content_type.startswith("text/") or content_type.endswith(
         ("json", "xml", "javascript")
     )
     if textual and codec and codec != "utf-8":
         # transcode text to UTF-8 to match the response label.
-        body = body.decode(codec, errors = "replace").encode("utf-8")
+        try:
+            body = body.decode(codec, errors = "replace").encode("utf-8")
+        except (LookupError, UnicodeError, ValueError):
+            pass
     return Response(
         content = body,
         media_type = content_type or "application/octet-stream",

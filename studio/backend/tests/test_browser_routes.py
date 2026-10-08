@@ -221,6 +221,21 @@ def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
 
 @pytest.mark.parametrize(
     "text, label, encoding",
+    [("a,😀\n", "utf-32", "utf-32"), ("a,Ç\n", "ibm437", "cp437")],
+)
+def test_raw_text_is_transcoded_from_non_whatwg_charsets(monkeypatch, text, label, encoding):
+    _fetch(
+        monkeypatch,
+        (None, text.encode(encoding), "text/plain"),
+        {"url": "https://example.com/x.txt", "charset": label},
+    )
+    response = _call(url = "https://example.com/x.txt")
+    assert response.body == text.encode("utf-8")
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    "text, label, encoding",
     [
         ("<p>朱镕基 中央广播电视总台</p>", "gb2312", "gbk"),
         ("<p>丸数字①の日本語</p>", "shift_jis", "cp932"),
