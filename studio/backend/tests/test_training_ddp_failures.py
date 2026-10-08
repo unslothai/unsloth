@@ -157,7 +157,8 @@ def test_embedding_worker_imports_only_used_unsloth_symbols():
     source = Path(__file__).parents[1] / "core" / "training" / "worker.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     worker = next(
-        node for node in tree.body
+        node
+        for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_run_embedding_training"
     )
     imports = [
