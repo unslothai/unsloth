@@ -117,3 +117,10 @@ test("leaving Chat and coming back keeps a new chat's pages open", () => {
   const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
   assert.match(key, /view\.threadId \?\? newChatShownId \?\? activeThreadId/);
 });
+
+test("a new chat started inside a project closes the previous project chat's pages", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
+  // The URL stays ?project=, so the project's chat nonce tells its chats apart.
+  assert.match(key, /`project:\$\{view\.projectId\}:\$\{projectNewThreadNonce\}`/);
+});
