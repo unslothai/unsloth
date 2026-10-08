@@ -133,10 +133,10 @@ function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }
   const key = downloadKey(event.tabId, url);
   void decided
     .then(async (allow) => {
+      // Begun before deciding: a file that finished while the prompt was open lands at once.
+      if (allow) beginDownload(key, name);
       await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
-      if (!allow) return;
-      beginDownload(key, name);
-      if (useDownloadActivity.getState().buttons === 0) toast(t("browser.native.downloading", { name }));
+      if (allow && useDownloadActivity.getState().buttons === 0) toast(t("browser.native.downloading", { name }));
     })
     .catch(() => abandonDownload(key));
 }

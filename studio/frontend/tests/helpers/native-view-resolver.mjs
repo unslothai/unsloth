@@ -34,7 +34,10 @@ const STUBS = {
     export const abandonDownload = (key) => log("abandon", key);
     export const finishDownload = (key) => (log("finish", key), buttons() > 0);
   `),
-  "./native-downloads": stub("export const decideNativeDownload = async () => {};"),
+  // globalThis.nativeViewDecide runs inside the decide call, as the app's events can.
+  "./native-downloads": stub(
+    "export const decideNativeDownload = async (...args) => { globalThis.nativeViewDecide?.(...args); };",
+  ),
   "./download-approval-queue": stub(
     "export const approveDownload = async () => Boolean(globalThis.nativeViewApprove); export const downloadSiteOf = () => '';",
   ),

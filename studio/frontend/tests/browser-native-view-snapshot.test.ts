@@ -274,6 +274,43 @@ test("an approved download runs on the Downloads button until it lands or its sa
   }
 });
 
+test("a download that finished while its prompt was open doesn't keep spinning", async () => {
+  const stop = startNativeViews();
+  const g = globalThis as {
+    nativeViewListener?: (event: { payload: unknown }) => void;
+    nativeViewSeen?: unknown;
+    nativeViewActivity?: string[];
+    nativeViewApprove?: boolean;
+    nativeViewDecide?: () => void;
+  };
+  g.nativeViewApprove = true;
+  try {
+    useBrowserStore.getState().openUrl("https://example.org/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const url = "https://example.org/big.zip";
+    g.nativeViewSeen = [];
+    g.nativeViewActivity = [];
+    // Already in staging, so the app delivers it before the decide call returns.
+    g.nativeViewDecide = () =>
+      g.nativeViewListener?.({
+        payload: {
+          kind: "download", tabId, url, name: "big.zip", path: null, size: 3,
+          done: true, success: true, downloadId: "d1", marked: true,
+        },
+      });
+    g.nativeViewListener?.({
+      payload: { kind: "downloadPrompt", tabId, url, site: "https://example.org/", name: "big.zip", id: "p1" },
+    });
+    await frame();
+    assert.deepEqual(g.nativeViewActivity, [`begin native:${tabId}:${url}`, `finish native:${tabId}:${url}`]);
+  } finally {
+    g.nativeViewApprove = false;
+    g.nativeViewDecide = undefined;
+    stop();
+  }
+});
+
 test("with a Downloads button on screen, a download shows there, not as a toast", async () => {
   const stop = startNativeViews();
   const g = globalThis as {
