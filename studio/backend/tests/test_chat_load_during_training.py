@@ -1667,14 +1667,29 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 gguf_variant = None,
             )
 
-            def _estimate(loads, **kw):
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            def _caps(mtp_token = "draft-mtp"):
+                return patch.object(
+                    LlamaCppBackend,
+                    "probe_server_capabilities",
+                    classmethod(
+                        lambda cls, binary = None: {"supports_dflash": True, "mtp_token": mtp_token}
+                    ),
+                )
+
+            def _estimate(
+                loads,
+                mtp_token = "draft-mtp",
+                **kw,
+            ):
                 with (
                     patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
                     patch.object(self.route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
                     patch.object(
                         llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _p: loads
                     ),
-                    self._dflash_capable(),
+                    _caps(mtp_token),
                 ):
                     return self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto", **kw)
 
@@ -1684,7 +1699,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                     patch.object(
                         llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _p: True
                     ),
-                    self._dflash_capable(),
+                    _caps(),
                 ):
                     return self.route._gguf_resident_file_gb(cfg, speculative_type = "auto", **kw)
 
@@ -1694,10 +1709,12 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             tensor_extras = _estimate(True, llama_extra_args = ["-sm", "tensor"])
             layer = _estimate(True)
             unloadable = _estimate(False, tensor_parallel = True)
+            no_mtp_binary = _estimate(True, mtp_token = None, tensor_parallel = True)
         self.assertAlmostEqual(tensor, 7000 / (1024**3), places = 9)
         self.assertAlmostEqual(tensor_extras, 7000 / (1024**3), places = 9)
         self.assertAlmostEqual(layer, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(unloadable, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(no_mtp_binary, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(resident_tensor, 7000 / (1024**3), places = 9)
         self.assertAlmostEqual(resident_layer, 5000 / (1024**3), places = 9)
 

@@ -13232,7 +13232,11 @@ def _estimate_gguf_required_gb(
                 and Path(_tp_mtp).is_file()
                 and _mtp_drafter_loads_standalone(str(_tp_mtp))
             ):
-                _auto_dflash = False
+                try:
+                    if LlamaCppBackend.probe_server_capabilities().get("mtp_token"):
+                        _auto_dflash = False
+                except Exception:
+                    pass
         _dflash_capable = True
         if _forced_dflash or _auto_dflash:
             try:
