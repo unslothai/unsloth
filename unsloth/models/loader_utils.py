@@ -559,9 +559,8 @@ def resolve_unsloth_device_map(
         explicit_reserve,
         activation_share = 0.2,
     ):
-        """First allowed card if weights + headroom + load transient leave `activation_share` of it
-        free (about Gemma 3n E4B fp32 on a T4), and any reserve the caller passed, else None, as
-        for a planner without sizes."""
+        """First allowed card if weights + headroom + load transient leave `activation_share` (about
+        Gemma 3n E4B fp32 on a T4) and any passed reserve free; None for a planner without sizes."""
         try:
             budgets = plan.raw_budgets
             first = min(budgets)
@@ -570,7 +569,7 @@ def resolve_unsloth_device_map(
             need = int(plan.total_weight_bytes) + int(plan.headroom_bytes) + int(transient)
             free = budget * activation_share
             if explicit_reserve:
-                # The planner treats a passed reserve as a hard constraint; so must the collapse.
+                # A passed reserve is a hard constraint to the planner.
                 free = max(free, int(plan.activation_reserve_by_device.get(first, 0)))
         except Exception:
             return None
