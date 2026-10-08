@@ -9167,17 +9167,17 @@ class LlamaCppBackend:
             return None
         igpu_room = {i: max(0.0, room[i]) for i in igpus}
         igpu_total = sum(igpu_room.values())
-        given = 0
-        for k, i in enumerate(igpus):
-            if k == len(igpus) - 1:
-                counts[i] = left - given
-            else:
-                counts[i] = (
-                    round(left * igpu_room[i] / igpu_total)
-                    if igpu_total > 0
-                    else left // len(igpus)
-                )
-                given += counts[i]
+        exact = {
+            i: (left * igpu_room[i] / igpu_total if igpu_total > 0 else left / len(igpus))
+            for i in igpus
+        }
+        for i in igpus:
+            counts[i] = int(exact[i])
+        # Largest remainder: non-negative counts summing to exactly `left`.
+        for i in sorted(igpus, key = lambda d: exact[d] - counts[d], reverse = True)[
+            : left - sum(counts[i] for i in igpus)
+        ]:
+            counts[i] += 1
         # The runs llama.cpp will really cut, in device order: each must fit its room.
         start = 0
         for i in gpu_indices:
@@ -9242,13 +9242,19 @@ class LlamaCppBackend:
             blk.spillable_bytes + blk.resident_bytes + w * kv_scale
             for blk, w in zip(layout.blocks, kv_weights)
         ]
-        # The output layer rides index n_layer (the last device's run); an engaged
-        # draft's trailing blocks land there too.
-        layer_bytes.append(
-            layout.lm_head_bytes
-            + layout.other_resident_bytes
-            + (layout.excluded_block_bytes if spill_inputs.get("mtp_will_engage") else 0)
+        # Trailing nextn/MTP blocks still occupy rows in llama.cpp's split
+        # (n_layer_all + 1); their tensors exist only when a draft engages.
+        n_mtp = int(self._nextn_predict_layers or 0) if layout.has_excluded_blocks else 0
+        if layout.has_excluded_blocks and n_mtp <= 0:
+            return None
+        mtp_row = (
+            layout.excluded_block_bytes / n_mtp
+            if n_mtp and spill_inputs.get("mtp_will_engage")
+            else 0.0
         )
+        layer_bytes.extend([mtp_row] * n_mtp)
+        # The output layer rides the last row (the last device's run).
+        layer_bytes.append(layout.lm_head_bytes + layout.other_resident_bytes)
         reserve = (
             spill_inputs["compute_buffer_flat"]
             + spill_inputs["soft_overhead"]

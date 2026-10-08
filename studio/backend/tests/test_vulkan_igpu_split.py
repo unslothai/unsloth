@@ -211,3 +211,20 @@ def test_the_launch_records_what_it_emitted():
 def test_an_igpu_run_that_overflows_its_room_leaves_the_split_off():
     # The pooled fit passes (10 of 10), but the 9 MiB layer would land on the 1 MiB iGPU.
     assert split([DGPU, IGPU], {DGPU: 9.0, IGPU: 1.0}, SHARED, [1.0, 9.0]) is None
+
+
+def test_few_rows_over_many_igpus_never_go_negative():
+    shares = split(
+        [0, 1, 2, 3, 4],
+        {0: 3.0, 1: 30.0, 2: 30.0, 3: 30.0, 4: 10.0},
+        {1, 2, 3, 4},
+        [1.0] * 5,
+    )
+    assert shares is not None and min(shares) >= 0 and sum(shares) == 5
+    assert shares[0] == 2.5  # three rows on the card
+
+
+def test_trailing_mtp_rows_keep_their_place_in_the_split():
+    src = inspect.getsource(LlamaCppBackend._mixed_pin_split)
+    assert "self._nextn_predict_layers" in src
+    assert "layer_bytes.extend([mtp_row] * n_mtp)" in src
