@@ -60,8 +60,12 @@ def normalize_reward_name(name: str) -> str:
 
 
 def _user_root() -> Path:
-    from utils.paths import workspace_root
-    return workspace_root() / _MANAGED_DIR
+    # account_path refuses a library swapped for a link out of the account's workspace.
+    from utils.paths.storage_roots import account_path
+    try:
+        return account_path(_MANAGED_DIR)
+    except ValueError as exc:
+        raise RewardError("The reward library is a link outside this account's workspace.") from exc
 
 
 def _split_markdown(raw: str) -> tuple[dict, dict]:
@@ -262,7 +266,10 @@ def render_reward_markdown(spec: dict) -> str:
 
 
 def _roots() -> tuple[tuple[str, Path], ...]:
-    return (("user", _user_root()), ("bundled", _BUNDLED_ROOT))
+    try:
+        return (("user", _user_root()), ("bundled", _BUNDLED_ROOT))
+    except RewardError:
+        return (("bundled", _BUNDLED_ROOT),)
 
 
 def _read_root(source: str, root: Path) -> list[dict]:

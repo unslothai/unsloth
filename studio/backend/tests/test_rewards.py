@@ -234,3 +234,25 @@ def test_import_refuses_to_write_through_a_linked_reward(user_root, tmp_path):
     with pytest.raises(rewards.RewardError, match = "link"):
         rewards.import_reward(_md("linked", "type: regex\npattern: x"), overwrite = True)
     assert not (outside / "REWARD.md").exists()
+
+
+def test_a_linked_library_cannot_delete_outside_the_account(tmp_path, monkeypatch):
+    from utils import paths
+    from utils.paths import storage_roots
+
+    account = tmp_path / "accounts" / "a1"
+    account.mkdir(parents = True)
+    outside = tmp_path / "elsewhere"
+    (outside / "victim").mkdir(parents = True)
+    (outside / "victim" / "REWARD.md").write_text("keep", encoding = "utf-8")
+    (account / "rewards").symlink_to(outside, target_is_directory = True)
+    monkeypatch.setattr(storage_roots, "is_owner_context", lambda: False)
+    monkeypatch.setattr(storage_roots, "workspace_root", lambda: account)
+    monkeypatch.setattr(paths, "workspace_root", lambda: account)
+    monkeypatch.setattr(storage_roots, "project_workspaces_root", lambda: tmp_path / "projects")
+    monkeypatch.setattr(storage_roots, "tmp_root", lambda: tmp_path / "tmp")
+
+    with pytest.raises(rewards.RewardError):
+        rewards.delete_reward("victim")
+    assert (outside / "victim" / "REWARD.md").read_text(encoding = "utf-8") == "keep"
+    assert all(r["source"] == "bundled" for r in rewards.list_rewards())
