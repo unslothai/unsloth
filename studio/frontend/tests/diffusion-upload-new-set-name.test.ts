@@ -64,23 +64,35 @@ test("a captions-only set created in this form remains available for follow-up f
 });
 
 test("the new-set form waits for the set list before it uploads", () => {
-  assert.match(source, /const namesLoading = uploadMode && info === null && !infoLoadFailed;/);
-  assert.match(source, /const namesUnavailable = uploadMode && info === null && infoLoadFailed;/);
+  assert.match(
+    source,
+    /uploadMode && \(infoLoadState === "idle" \|\| infoLoadState === "loading"\)/,
+  );
+  assert.match(source, /const namesUnavailable = uploadMode && infoLoadState === "failed";/);
 });
 
-test("a failed initial set-list request can be retried without enabling uploads", () => {
+test("a failed initial or stale set-list request can be retried without enabling uploads", () => {
   const refresh = source.slice(
     source.indexOf("const refreshInfo"),
     source.indexOf("// On first activation"),
   );
-  assert.match(refresh, /setInfoLoadFailed\(false\)/);
-  assert.match(refresh, /catch \{\s+setInfoLoadFailed\(true\)/);
+  assert.match(refresh, /setInfoLoadState\("loading"\)/);
+  assert.match(refresh, /setInfoLoadState\("loaded"\)/);
+  assert.match(refresh, /catch \{\s+setInfoLoadState\("failed"\)/);
 
   const form = source.slice(source.indexOf("{uploadMode ? ("));
   const newSet = form.slice(0, form.indexOf(") : ("));
   assert.match(newSet, /\{namesUnavailable && \(/);
   assert.match(newSet, /onClick=\{\(\) => void refreshInfo\(\)\}/);
   assert.match(newSet, />\s*Retry\s*<\/Button>/);
+});
+
+test("the initial upload form replaces an occupied default name after inventory loads", () => {
+  assert.match(
+    source,
+    /setUploadName\(\(current\) =>\s+existingDatasetName\(current, occupiedDatasets\)\s+\? freeDatasetName\(occupiedDatasets\)\s+: current/,
+  );
+  assert.match(source, /\[uploadMode, continuingUploadName, occupiedDatasets\]/);
 });
 
 test("the new-set form does not upload into a set that already exists", () => {

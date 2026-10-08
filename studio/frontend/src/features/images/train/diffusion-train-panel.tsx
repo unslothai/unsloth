@@ -402,7 +402,9 @@ export function DiffusionTrainPanel({
   }) => void;
 }) {
   const [info, setInfo] = useState<DiffusionTrainingInfo | null>(null);
-  const [infoLoadFailed, setInfoLoadFailed] = useState(false);
+  const [infoLoadState, setInfoLoadState] = useState<
+    "idle" | "loading" | "loaded" | "failed"
+  >("idle");
   const families = useMemo(() => mergeFamilies(info?.families), [info?.families]);
 
   const setFamilyName = onFamilyNameChange;
@@ -543,13 +545,14 @@ export function DiffusionTrainPanel({
   const [resumingJobId, setResumingJobId] = useState<string | null>(null);
 
   const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
-    setInfoLoadFailed(false);
+    setInfoLoadState("loading");
     try {
       const i = await getDiffusionTrainingInfo();
       setInfo(i);
+      setInfoLoadState("loaded");
       return i;
     } catch {
-      setInfoLoadFailed(true);
+      setInfoLoadState("failed");
       return null;
     }
   }, []);
@@ -770,13 +773,22 @@ export function DiffusionTrainPanel({
     dataset !== UPLOAD_DATASET ? info?.datasets.find((d) => d.name === dataset) : undefined;
   // A deleted dataset leaves a name that no longer resolves; fall back to the upload form.
   const uploadMode = dataset === UPLOAD_DATASET || (info !== null && !selectedDataset);
-  const namesLoading = uploadMode && info === null && !infoLoadFailed;
-  const namesUnavailable = uploadMode && info === null && infoLoadFailed;
-  const occupiedDatasets = datasetNamesForCreation(info);
+  const namesLoading =
+    uploadMode && (infoLoadState === "idle" || infoLoadState === "loading");
+  const namesUnavailable = uploadMode && infoLoadState === "failed";
+  const occupiedDatasets = useMemo(() => datasetNamesForCreation(info), [info]);
   const continuingUploadName = isDatasetContinuation(uploadName, continuationDatasetName);
   const createsDataset = uploadMode && !continuingUploadName;
   const takenName = createsDataset ? existingDatasetName(uploadName, occupiedDatasets) : null;
   const takenNameMessage = `A set named "${takenName}" already exists. Pick it in the list above to add to it, or choose another name.`;
+  useEffect(() => {
+    if (!uploadMode || continuingUploadName) return;
+    setUploadName((current) =>
+      existingDatasetName(current, occupiedDatasets)
+        ? freeDatasetName(occupiedDatasets)
+        : current,
+    );
+  }, [uploadMode, continuingUploadName, occupiedDatasets]);
   // Trainable items in the picked dataset, images and clips alike. caption_count is the folder
   // total over both kinds, so every ratio must be against this and not image_count.
   const selectedItemCount = selectedDataset ? datasetItemCount(selectedDataset) : 0;
