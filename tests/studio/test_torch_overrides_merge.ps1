@@ -184,7 +184,6 @@ try {
         ($src -match 'SetAccessRuleProtection\(\$true, \$false\)') -and ($src -match 'Set-Acl -LiteralPath \$f')
     )
 
-    # #11980: a real venv whose torch is shadowed by PYTHONPATH must freeze its own torch.
     Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
     # `python` first on Windows: `python3` there can be the Microsoft Store alias stub.
     $pyNames = if ($onWindows) { @("python", "python3") } else { @("python3", "python") }
