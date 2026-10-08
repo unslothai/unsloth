@@ -1045,6 +1045,12 @@ pub(crate) fn download_finished<R: Runtime>(
     }
 }
 
+fn close_view<R: Runtime>(page: &Webview<R>) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    crate::browser_context_downloads::forget(page);
+    page.close()
+}
+
 fn create_view<R: Runtime>(
     caller: &Webview<R>,
     tab_id: &str,
@@ -1643,7 +1649,7 @@ pub fn browser_view_close<R: Runtime>(
         }
     }
     if let Ok(page) = view(webview.app_handle(), &tab_id) {
-        page.close().map_err(|error| error.to_string())?;
+        close_view(&page).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -1666,7 +1672,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
             set_shown(&state, &mut inner, None);
         }
         for page in browser_views(&app) {
-            let _ = page.close();
+            let _ = close_view(&page);
         }
     }
     let live = if closing {
@@ -1700,7 +1706,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
     };
     let result = clear_profile(&page).await;
     if hidden {
-        let _ = page.close();
+        let _ = close_view(&page);
     }
     result
 }

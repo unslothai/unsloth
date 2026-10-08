@@ -100,6 +100,14 @@ pub(crate) fn watch<R: Runtime>(webview: &Webview<R>, tab: &str) {
     });
 }
 
+/// Drop a closing view's entry; runs before the close. Its downloads still settle via `ACTIVE`.
+pub(crate) fn forget<R: Runtime>(webview: &Webview<R>) {
+    let _ = webview.with_webview(|platform| {
+        let view = platform.inner() as usize;
+        VIEWS.with(|views| views.borrow_mut().remove(&view));
+    });
+}
+
 fn key<T>(object: &T) -> usize {
     object as *const T as usize
 }
