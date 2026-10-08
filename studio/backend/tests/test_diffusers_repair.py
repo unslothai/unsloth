@@ -488,6 +488,20 @@ def test_a_release_behind_the_pin_is_prefetched_then_repaired(monkeypatch, env):
     assert flags == ["--prefetch-diffusers-main", "--repair-diffusers-main"]
 
 
+@pytest.mark.parametrize(
+    "direct_url",
+    [
+        {"url": "file:///src/diffusers", "dir_info": {"editable": True}},
+        {"url": "https://github.com/huggingface/diffusers", "vcs_info": {"vcs": "git"}},
+    ],
+)
+def test_release_mode_never_replaces_a_build_the_user_put_there(monkeypatch, direct_url):
+    _release_mode(monkeypatch, "0.40.0")
+    _installed_diffusers(monkeypatch, direct_url)
+    monkeypatch.setattr(dr, "_run_installer", lambda *a, **k: pytest.fail("started a repair"))
+    assert dr.repair_diffusers_before_imports() is False
+
+
 def test_a_timed_out_release_prefetch_records_the_release_key(monkeypatch):
     """Or every start repeats a download this host cannot finish."""
     _release_mode(monkeypatch, "0.40.0")

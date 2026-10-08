@@ -11330,8 +11330,9 @@ def _diffusers_main_needs_dependency_pass() -> bool:
     """
     req = REQ_ROOT / "diffusers-main.txt"
     if not req.is_file() or not _diffusers_main_active(req):
-        # Nothing pinned from git: only a release older than diffusers-pin.txt needs the pass.
-        return _diffusers_release_behind()
+        # Nothing pinned from git: a release older than diffusers-pin.txt needs the pass, and so does
+        # a missing or damaged one, which the git route's residency check used to catch on the way.
+        return _diffusers_release_behind() or not _payload_recorded_intact("diffusers")
     if not _diffusers_main_requested():
         # Opted out while the build is still resident: 11b puts the release back.
         return _diffusers_main_resident(req)

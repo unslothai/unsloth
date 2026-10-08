@@ -1023,7 +1023,17 @@ def _release_module(
         "_installed_distribution_version",
         lambda dist: installed if dist == "diffusers" else None,
     )
+    monkeypatch.setattr(module, "_payload_recorded_intact", lambda dist: installed is not None)
     return module
+
+
+def test_a_missing_or_damaged_release_still_forces_the_pass(monkeypatch):
+    module = _release_module(monkeypatch, "install_python_stack_release_damaged", "0.41.0")
+    assert module._diffusers_main_needs_dependency_pass() is False
+    monkeypatch.setattr(module, "_payload_recorded_intact", lambda dist: False)
+    assert module._diffusers_main_needs_dependency_pass() is True
+    module = _release_module(monkeypatch, "install_python_stack_release_missing", None)
+    assert module._diffusers_main_needs_dependency_pass() is True
 
 
 def test_the_shipped_main_step_skips_without_installing(monkeypatch):

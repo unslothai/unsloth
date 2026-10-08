@@ -339,9 +339,10 @@ def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: 
     main_active = _main_pin_active()
     if _opted_out(main_active) or not _MAIN_PIN.is_file() or not _INSTALLER.is_file():
         return False
-    # With nothing pinned from git the target is the release: only an install older than it (an
-    # update that skipped the dependency pass) is repaired, and a healthy one starts nothing.
-    candidate = _diffusers_is_an_index_install() if main_active else _release_behind()
+    # With nothing pinned from git the target is the release: only an index install older than it
+    # (an update that skipped the dependency pass) is repaired, so a healthy one starts nothing and a
+    # build the user put there (a checkout, a git or zip install) is never replaced.
+    candidate = _diffusers_is_an_index_install() and (main_active or _release_behind())
     # Check the lock too: an active install may have temporarily removed the metadata.
     if candidate and not _installer_would_skip(main_active):
         loaded = _loaded_replaceable_modules()

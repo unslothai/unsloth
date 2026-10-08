@@ -11,8 +11,8 @@
 #
 # A pinned commit of Diffusers main, for models whose support has merged upstream but has not
 # reached a release yet. The last one was Qwen-Image-2.1: it merged on 2026-09-18, four weeks after
-# 0.40.0 was cut, so 0.41.0 is the first release that can carry it and there is nothing on PyPI
-# that works. Without this file the only way to run it is to break the release pin by hand.
+# 0.40.0 was cut, and until 0.41.0 shipped (2026-10-06) nothing on PyPI could run it. Without this
+# file the only way to run such a model is to break the release pin by hand.
 #
 # Why this is a SEPARATE file rather than an edit to diffusers-pin.txt, even though both now run on
 # every install. That file is the single source of truth for the release everything is built
