@@ -2046,6 +2046,23 @@ def _amd_smi_ids_for_hip_ids(hip_ids: Optional[list[int]]) -> Optional[list[int]
     return [hip_to_smi[hip_id] for hip_id in hip_ids]
 
 
+def _smi_visible_utilization(parent_visible_spec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """SMI visible-GPU utilization keyed by the parent's ids. amd-smi filters by its own gpu ids, not HIP's, so translate when the mapping is readable."""
+    ids = parent_visible_spec["numeric_ids"]
+    smi_ids = _amd_smi_ids_for_hip_ids(ids) if IS_ROCM and ids else None
+    result = _smi_query(
+        "get_visible_gpu_utilization",
+        ids if smi_ids is None else smi_ids,
+        parent_cuda_visible_devices = parent_visible_spec["raw"],
+    )
+    if result is not None and smi_ids is not None and smi_ids != ids:
+        hip_by_smi = dict(zip(smi_ids, ids))
+        for device in result.get("devices", []):
+            device["index"] = hip_by_smi.get(device.get("index"), device.get("index"))
+        result["parent_visible_gpu_ids"] = list(ids)
+    return result
+
+
 def _free_in_torch_scope(total_bytes: int, used_gb: float) -> int:
     """Driver used-memory turned into free bytes, in torch's allocatable scope. Subtract from torch's total, never the driver's: NVIDIA's total also spans a reserved framebuffer torch can never hand out (726 MiB on a B200), so driver_total - used reports a full card as free. Clamped both ends, since the parsers accept signed values and a negative used would advertise more free than the card has."""
     return min(total_bytes, max(0, total_bytes - round(used_gb * (1024**3))))
@@ -3792,11 +3809,7 @@ def get_gpu_utilization() -> Dict[str, Any]:
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
-        result = _smi_query(
-            "get_visible_gpu_utilization",
-            parent_visible_spec["numeric_ids"],
-            parent_cuda_visible_devices = parent_visible_spec["raw"],
-        )
+        result = _smi_visible_utilization(parent_visible_spec)
         if result is not None and "devices" in result:
             devices = result["devices"]
             numeric_ids = parent_visible_spec.get("numeric_ids")
@@ -4409,11 +4422,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
-        result = _smi_query(
-            "get_visible_gpu_utilization",
-            parent_visible_spec["numeric_ids"],
-            parent_cuda_visible_devices = parent_visible_spec["raw"],
-        )
+        result = _smi_visible_utilization(parent_visible_spec)
         if result is not None:
             result["backend"] = _backend_label(device)
             numeric_ids = parent_visible_spec.get("numeric_ids")
