@@ -368,7 +368,6 @@ OWNER_PATHS = [
         "/diffusion-accelerator-fallback": ("GET", "DELETE"),
         "/coding-agents": ("GET",),
         "/openai-auto-switch": ("GET", "PUT"),
-        "/openai-auto-switch/overrides": ("GET", "PUT"),
         "/embedding-model": ("GET", "PUT", "DELETE"),
         "/embedding-model/resolve": ("GET",),
         "/embedding-model/unload": ("POST",),
@@ -456,6 +455,90 @@ def test_owner_setting_keeps_200_and_single_account_policy_is_inert(client, monk
     owner = client.get("/settings/llama-cpp-path", headers = {"x-test-account": "unsloth"})
     assert owner.status_code == 200
     assert client.get("/settings/llama-cpp-path").status_code == 403
+
+
+@pytest.fixture
+def fresh_override_cache(monkeypatch):
+    from utils import openai_auto_switch_settings
+    monkeypatch.setattr(openai_auto_switch_settings, "_cache", {})
+
+
+def test_managed_account_saves_its_own_model_overrides(client, fresh_override_cache):
+    from utils.openai_auto_switch_settings import MODEL_OVERRIDES_SETTING_KEY
+
+    saved = client.put(
+        "/settings/openai-auto-switch/overrides",
+        json = {"model_id": "org/model:Q4_K_M", "max_seq_length": 8192},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["overrides"]["org/model:Q4_K_M"]["max_seq_length"] == 8192
+    alice = client.get("/settings/openai-auto-switch/overrides")
+    assert alice.status_code == 200 and "org/model:Q4_K_M" in alice.json()["overrides"]
+    bob = client.get("/settings/openai-auto-switch/overrides", headers = {"x-test-account": "bob"})
+    assert bob.status_code == 200 and bob.json()["overrides"] == {}
+    assert run_as(OWNER, studio_db.get_app_setting, MODEL_OVERRIDES_SETTING_KEY, None) is None
+
+
+def test_managed_load_uses_its_own_override_then_the_owners(fresh_override_cache):
+    from utils.openai_auto_switch_settings import resolve_override_for_load, set_model_override
+
+    run_as(OWNER, set_model_override, "org/model", max_seq_length = 4096)
+    # Never configured by Alice: the owner's settings apply, as they did before she could save any.
+    assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
+    run_as(ALICE, set_model_override, "org/model", max_seq_length = 16384)
+    assert run_as(ALICE, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 16384
+    assert run_as(BOB, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
+    assert run_as(OWNER, resolve_override_for_load, "org/model")[1]["max_seq_length"] == 4096
+    assert run_as(BOB, resolve_override_for_load, "org/other") == (None, {})
+
+
+def test_pinned_models_are_per_account(client):
+    empty = client.get("/settings/pinned-models")
+    assert empty.status_code == 200 and empty.json() == {
+        "pinned": None,
+        "connected": None,
+        "embedding": None,
+    }
+    saved = client.put(
+        "/settings/pinned-models", json = {"pinned": ["org/a::Q4_K_M", "org/b", "org/b"]}
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json() == {
+        "pinned": ["org/a::Q4_K_M", "org/b"],
+        "connected": None,
+        "embedding": None,
+    }
+    both = client.put("/settings/pinned-models", json = {"connected": ["external::c1::gpt"]}).json()
+    assert both == {
+        "pinned": ["org/a::Q4_K_M", "org/b"],
+        "connected": ["external::c1::gpt"],
+        "embedding": None,
+    }
+    embed = client.put(
+        "/settings/pinned-models", json = {"embedding": ["unsloth/bge-m3", "unsloth/bge-m3"]}
+    ).json()
+    assert embed["embedding"] == ["unsloth/bge-m3"] and embed["connected"] == ["external::c1::gpt"]
+    cleared = client.put("/settings/pinned-models", json = {"pinned": []}).json()
+    assert cleared["pinned"] == [] and cleared["connected"] == ["external::c1::gpt"]
+    bob = client.get("/settings/pinned-models", headers = {"x-test-account": "bob"}).json()
+    assert bob == {"pinned": None, "connected": None, "embedding": None}
+    assert (
+        run_as(OWNER, studio_db.get_app_setting, settings.PINNED_MODELS_SETTING_KEY, None) is None
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"pinned": ["x"], "extra": 1},
+        {"pinned": [""]},
+        {"pinned": ["x"] * (settings.MAX_PINNED_MODELS + 1)},
+        {"connected": [1]},
+        {"embedding": [""]},
+    ],
+)
+def test_pinned_models_rejects_bad_payloads(client, body):
+    assert client.put("/settings/pinned-models", json = body).status_code == 422
 
 
 def test_managed_last_model_key_survives_username_rename(client):

@@ -7,7 +7,7 @@ import { UserMessageTime } from "./user-message-time";
 
 /** Use the message's full width, independently of the bubble's 80% limit. */
 export const UserMessageFooter: FC<PropsWithChildren> = ({ children }) => (
-  <div className="aui-user-message-footer mt-1 -mr-[var(--icon-btn-inset)] flex min-h-8 w-full min-w-0 flex-wrap items-center justify-end gap-y-1">
+  <div className="aui-user-message-footer mt-1 flex min-h-8 w-full min-w-0 flex-wrap items-center justify-end gap-y-1">
     {children}
   </div>
 );

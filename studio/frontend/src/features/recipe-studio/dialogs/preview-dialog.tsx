@@ -10,7 +10,6 @@ import {
 } from "@/components/ui/collapsible";
 import {
   Dialog,
-  DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -30,6 +29,7 @@ import { type ReactElement, type ReactNode, useState } from "react";
 import type { RecipeExecutionKind } from "../execution-types";
 import type { RecipeRunSettings } from "../stores/recipe-executions";
 import { FieldLabel } from "./shared/field-label";
+import { RecipeDialogContent } from "./shared/recipe-dialog-content";
 
 type RunDialogProps = {
   open: boolean;
@@ -716,19 +716,16 @@ export function RunDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
+      <RecipeDialogContent
         container={container}
-        position="absolute"
-        overlayPosition="absolute"
-        overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[min(calc(650px*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] overflow-y-auto overflow-x-hidden border-border/70 bg-background/95 sm:max-w-2xl shadow-border backdrop-blur-xl"
+        className="border-border/70 bg-background/95 backdrop-blur-xl"
       >
         <RunDialogBody
           key={draftKey}
           {...contentProps}
           onClose={() => onOpenChange(false)}
         />
-      </DialogContent>
+      </RecipeDialogContent>
     </Dialog>
   );
 }

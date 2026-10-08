@@ -6,7 +6,6 @@ import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
 import type * as React from "react";
 
 import { Button } from "@/components/ui/button";
-import { useScrollOverflowRef } from "@/lib/scroll-overflow";
 import { cn } from "@/lib/utils";
 
 function AlertDialog({
@@ -55,7 +54,6 @@ function AlertDialogContent({
   size = "default",
   overlayClassName,
   onOverlayClick,
-  ref,
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Content> & {
   size?: "default" | "sm";
@@ -63,13 +61,10 @@ function AlertDialogContent({
   /** Alert dialogs ignore outside clicks; set this to cancel on backdrop click. */
   onOverlayClick?: () => void;
 }) {
-  // Clipped to its radius in Firefox only while it overflows, like DialogContent.
-  const contentRef = useScrollOverflowRef(ref);
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay className={overlayClassName} onClick={onOverlayClick} />
       <AlertDialogPrimitive.Content
-        ref={contentRef}
         data-slot="alert-dialog-content"
         data-size={size}
         className={cn(

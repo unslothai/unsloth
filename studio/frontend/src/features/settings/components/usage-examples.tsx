@@ -166,11 +166,20 @@ const DOC_LINKS = [
     label: "DeepSeek Harness",
     href: "https://github.com/deepseek-ai/deepseek-harness",
   },
+  { label: "Mistral Vibe", href: "https://github.com/mistralai/mistral-vibe" },
 ];
 
 // Fallback until the backend's installed-CLI check resolves. Mirrors CODING_AGENTS in
 // studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS (see ../api/coding-agents.ts).
-const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes", "dsh"];
+const DEFAULT_AGENTS = [
+  "claude",
+  "codex",
+  "openclaw",
+  "opencode",
+  "hermes",
+  "dsh",
+  "vibe",
+];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
 // stops being compatible) rather than lingering on a stale choice.
@@ -182,6 +191,7 @@ const AGENT_LABELS: Record<string, string> = {
   opencode: "OpenCode",
   hermes: "Hermes",
   dsh: "DeepSeek Harness",
+  vibe: "Mistral Vibe",
 };
 
 const j = (s: string): string => JSON.stringify(s);
@@ -1095,30 +1105,31 @@ export function UsageExamples({
               />
               <span className="text-ui-11 font-medium text-foreground">
                 {t("settings.apiKeys.secureHttps")}
+                {/* Only when not launched with --secure: the raw 0.0.0.0 port is
+                    still globally reachable, so point the user at --secure. */}
+                {secure ? null : (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      {/* Inline on the baseline, like a glyph after the label. */}
+                      <button
+                        type="button"
+                        className="ml-1.5 inline-flex align-baseline rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                        aria-label={t("settings.apiKeys.secureHttpsHint")}
+                      >
+                        {/* Follows the UI font size, like the SettingsRow hint
+                            this matches. */}
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-[var(--ui-icon-size-hint)]"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
+                      {t("settings.apiKeys.secureHttpsHint")}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
               </span>
-              {/* Only when not launched with --secure: the raw 0.0.0.0 port is
-                  still globally reachable, so point the user at --secure. */}
-              {secure ? null : (
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      className="flex items-center rounded text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      aria-label={t("settings.apiKeys.secureHttpsHint")}
-                    >
-                      {/* Follows the UI font size, like the SettingsRow hint
-                          this matches. */}
-                      <HugeiconsIcon
-                        icon={InformationCircleIcon}
-                        className="size-[var(--ui-icon-size-sm)]"
-                      />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent className="max-w-[calc(260px*var(--ui-space-scale,1))] text-ui-11 leading-snug">
-                    {t("settings.apiKeys.secureHttpsHint")}
-                  </TooltipContent>
-                </Tooltip>
-              )}
             </div>
             <button
               type="button"

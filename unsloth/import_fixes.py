@@ -33,6 +33,7 @@ import sysconfig
 import threading
 import functools
 import inspect
+import types
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -1697,6 +1698,159 @@ def fix_transformers5_image_processing_reexports():
         logger.info(f"Unsloth: Failed patching get_class_in_module ({e})")
 
 
+_UNTRUSTED_CONFIG_PATCH_FLAG = "_unsloth_patched_untrusted_config_fields"
+# to_dict never writes these, so a config.json carrying them was crafted (CVE-2026-4372).
+_INTERNAL_IMPLEMENTATION_KEYS = (
+    "_attn_implementation_internal",
+    "_experts_implementation_internal",
+)
+
+
+def _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue):
+    if not isinstance(config_dict, dict):
+        return config_dict
+    cleaned = None
+    for key, value in config_dict.items():
+        drop = (strip_internal and key in _INTERNAL_IMPLEMENTATION_KEYS) or (
+            strip_lightglue
+            and key == "trust_remote_code"
+            and config_dict.get("model_type") == "lightglue"
+        )
+        new_value = _strip_untrusted_config_fields(value, strip_internal, strip_lightglue)
+        if drop or new_value is not value:
+            if cleaned is None:
+                cleaned = dict(config_dict)
+            if drop:
+                cleaned.pop(key, None)
+            else:
+                cleaned[key] = new_value
+    return config_dict if cleaned is None else cleaned
+
+
+def fix_transformers_untrusted_config_fields():
+    """Drop config.json fields that run repo code without trust_remote_code: a Hub kernel named by
+    `_attn_implementation_internal` (CVE-2026-4372, < 5.3.0) and LightGlue's nested `trust_remote_code`
+    (CVE-2026-5241, < 5.5.0). Keyword arguments apply after from_dict, so explicit ones still work."""
+    try:
+        import transformers
+
+        # PEP 440 order: Version() ranks 5.3.0rc1 above 5.3.0, which would skip the fix on an rc.
+        version = TrueVersion(transformers.__version__)
+        strip_internal = version < TrueVersion("5.3.0")
+        strip_lightglue = version < TrueVersion("5.5.0")
+        if not (strip_internal or strip_lightglue):
+            return
+        from transformers.configuration_utils import PretrainedConfig
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the untrusted config field fix ({e})")
+        return
+
+    def clean(cls, config_dict):
+        config_dict = _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue)
+        # The class being built decides, not the model_type the file claims.
+        if (
+            strip_lightglue
+            and getattr(cls, "model_type", None) == "lightglue"
+            and isinstance(config_dict, dict)
+            and "trust_remote_code" in config_dict
+        ):
+            config_dict = {k: v for k, v in config_dict.items() if k != "trust_remote_code"}
+        return config_dict
+
+    def wrap_from_dict(original):
+        @functools.wraps(original)
+        def from_dict(cls, config_dict, *args, **kwargs):
+            return original(cls, clean(cls, config_dict), *args, **kwargs)
+
+        return from_dict
+
+    def wrap_json_reader(original):
+        # from_json_file builds cls(**dict) without from_dict, so its reader is cleaned too.
+        @functools.wraps(original)
+        def _dict_from_json_file(cls, *args, **kwargs):
+            return clean(cls, original(cls, *args, **kwargs))
+
+        return _dict_from_json_file
+
+    for name, wrap in (("from_dict", wrap_from_dict), ("_dict_from_json_file", wrap_json_reader)):
+        current = PretrainedConfig.__dict__.get(name)
+        if not isinstance(current, classmethod) or getattr(
+            current.__func__, _UNTRUSTED_CONFIG_PATCH_FLAG, False
+        ):
+            continue
+        wrapped = wrap(current.__func__)
+        setattr(wrapped, _UNTRUSTED_CONFIG_PATCH_FLAG, True)
+        try:
+            setattr(PretrainedConfig, name, classmethod(wrapped))
+        except Exception as e:
+            logger.info(f"Unsloth: Failed patching PretrainedConfig.{name} ({e})")
+
+
+_CHAT_TEMPLATE_NAME_PATCH_FLAG = "_unsloth_patched_chat_template_names"
+
+
+def _chat_template_name_escapes(template_name):
+    # Upstream's check (#46191), plus drive prefixes: Windows `C:evil` lands on another drive.
+    if os.path.splitdrive(template_name)[0]:
+        return True
+    base = os.path.abspath(os.path.join(os.sep, "unsloth_chat_templates"))
+    target = os.path.normpath(os.path.join(base, f"{template_name}.jinja"))
+    return os.path.dirname(target) != base
+
+
+def _check_chat_template_names(obj, kwargs):
+    chat_template = getattr(obj, "chat_template", None)
+    # Regardless of save_jinja_files: processor save_pretrained ignores it.
+    if not isinstance(chat_template, dict):
+        return
+    for template_name in chat_template:
+        if template_name != "default" and _chat_template_name_escapes(str(template_name)):
+            raise ValueError(f"Invalid chat template name: {template_name!r}")
+
+
+def fix_transformers_chat_template_path_traversal():
+    """CVE-2026-9856 (< 5.10.0): a repo-supplied chat template name like `../../x` is written outside
+    the save directory; raise upstream's ValueError before anything is written."""
+    try:
+        import transformers
+        if TrueVersion(transformers.__version__) >= TrueVersion("5.10.0"):
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the chat template name fix ({e})")
+        return
+    targets = []
+    try:
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+        targets.append(PreTrainedTokenizerBase)
+    except Exception:
+        pass
+    try:
+        from transformers.processing_utils import ProcessorMixin
+        targets.append(ProcessorMixin)
+    except Exception:
+        pass
+
+    def wrap(original):
+        @functools.wraps(original)
+        def checked(self, *args, **kwargs):
+            _check_chat_template_names(self, kwargs)
+            return original(self, *args, **kwargs)
+
+        setattr(checked, _CHAT_TEMPLATE_NAME_PATCH_FLAG, True)
+        return checked
+
+    # save_chat_templates is public too, and writes the same files.
+    for target in targets:
+        for name in ("save_pretrained", "save_chat_templates"):
+            original = target.__dict__.get(name)
+            if original is None or getattr(original, _CHAT_TEMPLATE_NAME_PATCH_FLAG, False):
+                continue
+            try:
+                setattr(target, name, wrap(original))
+            except Exception as e:
+                logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
+
+
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
@@ -1894,6 +2048,49 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_PACKED_SEQUENCE_PATCH_FLAG = "_unsloth_patched_is_packed_sequence"
+
+
+def _mrope_position_ids_read_as_packed(is_packed_sequence):
+    """Does `_is_packed_sequence` call Qwen3.5's `(3, 1, L)` mRoPE ids packed (transformers#44910)?"""
+    try:
+        import torch
+        positions = torch.arange(4, device = "cpu").view(1, 1, 4).expand(3, 1, 4)
+        return bool(is_packed_sequence(positions, batch_size = 1))
+    except Exception:
+        return False
+
+
+def fix_transformers_flash_attention_mrope_packed_sequence():
+    """Stop transformers 5.3 turning Qwen3.5's `(3, 1, L)` mRoPE ids into out-of-bounds
+    `cu_seqlens = [0, L, 2L, 3L]`: packed ids are flattened 2D `(1, total)`, never more dims.
+    """
+    try:
+        from transformers import modeling_flash_attention_utils as fa_utils
+    except Exception:
+        return
+    current = getattr(fa_utils, "_is_packed_sequence", None)
+    if current is None or getattr(current, _PACKED_SEQUENCE_PATCH_FLAG, False):
+        return
+    original = getattr(current, "__wrapped__", current)
+    if not _mrope_position_ids_read_as_packed(original):
+        return
+
+    @functools.wraps(original)
+    def _is_packed_sequence(position_ids, batch_size):
+        if position_ids is not None and position_ids.dim() > 2:
+            return False
+        return original(position_ids, batch_size)
+
+    _is_packed_sequence.__wrapped__ = original
+    setattr(_is_packed_sequence, _PACKED_SEQUENCE_PATCH_FLAG, True)
+    fa_utils._is_packed_sequence = _is_packed_sequence
+    logger.info(
+        "Unsloth: Patching transformers `_is_packed_sequence` so flash attention never "
+        "reads mRoPE position ids as packed sequences (transformers#44910)"
+    )
+
+
 _CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
 _BLOCK_SEQUENCE_IDS = "block_sequence_ids"
 
@@ -2038,6 +2235,113 @@ def fix_transformers_chunked_mask_block_sequence_ids():
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching create_chunked_causal_mask ({e})")
+
+
+_FLEX_MASK_PATCH_FLAG = "_unsloth_patched_flex_mask_graph_breaks"
+
+
+def _is_dynamo_compiling():
+    import torch
+    is_compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+    return bool(is_compiling()) if callable(is_compiling) else False
+
+
+def _flex_mask_reads_padding_values(masking_utils, flex_attention_mask):
+    """True if building from a meta mask fails (values read) while no mask succeeds."""
+    import torch
+
+    try:
+        if "q_length" not in inspect.signature(flex_attention_mask).parameters:
+            return False
+    except (TypeError, ValueError):
+        return False
+    builder = masking_utils.create_block_mask
+    masking_utils.create_block_mask = lambda *args, **kwargs: None
+    kwargs = dict(batch_size = 1, q_length = 2, kv_length = 2, device = "meta")
+    try:
+        try:
+            flex_attention_mask(attention_mask = None, **kwargs)
+        except Exception:
+            return False
+        try:
+            mask = torch.ones((1, 2), dtype = torch.bool, device = "meta")
+            flex_attention_mask(attention_mask = mask, **kwargs)
+        except Exception:
+            return True
+        return False
+    finally:
+        masking_utils.create_block_mask = builder
+
+
+def fix_transformers_flex_mask_graph_breaks():
+    """While dynamo traces, always apply the padding mask (all-ones gives an equal BlockMask) instead
+    of branching on `fast_all`, and drop `_compile`, whose deprecation warnings.warn breaks the graph."""
+    try:
+        from transformers import masking_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the flex mask graph break fix ({e})")
+        return
+    interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
+    builder = getattr(masking_utils, "create_block_mask", None)
+    if interface is None or builder is None:
+        return
+    try:
+        if not getattr(builder, _FLEX_MASK_PATCH_FLAG, False):
+
+            @functools.wraps(builder)
+            def create_block_mask(
+                *args,
+                _original = builder,
+                **kwargs,
+            ):
+                if _is_dynamo_compiling():
+                    kwargs.pop("_compile", None)
+                return _original(*args, **kwargs)
+
+            setattr(create_block_mask, _FLEX_MASK_PATCH_FLAG, True)
+            masking_utils.create_block_mask = create_block_mask
+
+        current = interface["flex_attention"]
+        if getattr(current, _FLEX_MASK_PATCH_FLAG, False):
+            return
+        # Before torch 2.6 the padded branch also pads the mask to the 128 block size.
+        if not getattr(masking_utils, "_is_torch_greater_or_equal_than_2_6", False):
+            return
+        if not _flex_mask_reads_padding_values(masking_utils, current):
+            return
+        original = current
+
+        @functools.wraps(original)
+        def flex_attention_mask(*args, **kwargs):
+            attention_mask = kwargs.get("attention_mask")
+            if (
+                args
+                or attention_mask is None
+                or "kv_length" not in kwargs
+                or not _is_dynamo_compiling()
+            ):
+                return original(*args, **kwargs)
+            padding_mask = masking_utils.prepare_padding_mask(
+                attention_mask, kwargs["kv_length"], kwargs.get("kv_offset", 0)
+            )
+            kwargs["mask_function"] = masking_utils.and_masks(
+                kwargs.get("mask_function", masking_utils.causal_mask_function),
+                masking_utils.padding_mask_function(padding_mask),
+            )
+            kwargs["attention_mask"] = None
+            return original(**kwargs)
+
+        flex_attention_mask.__wrapped__ = original
+        setattr(flex_attention_mask, _FLEX_MASK_PATCH_FLAG, True)
+        interface.register("flex_attention", flex_attention_mask)
+        if getattr(masking_utils, "flex_attention_mask", None) is original:
+            masking_utils.flex_attention_mask = flex_attention_mask
+        logger.info(
+            "Unsloth: Patching transformers `flex_attention_mask` so a compiled mask "
+            "builds without graph breaks"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching flex_attention_mask ({e})")
 
 
 _COMPOSITE_PREFIX_RENAMING_FLAG = "_unsloth_patched_composite_prefix_renaming"
@@ -4730,6 +5034,162 @@ def patch_unsafe_trainer_rng_load():
     logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
 
 
+_PT2_UNSAFE_LOAD_ENV = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD"
+# torch.export's .pt2 readers: their weights_only=False loads unpickle archive bytes.
+_PT2_LOADER_MODULES = frozenset(
+    (
+        "torch._export.serde.serialize",
+        "torch.export.pt2_archive._package",
+    )
+)
+
+
+def _pt2_unsafe_load_allowed():
+    return os.environ.get(_PT2_UNSAFE_LOAD_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _pt2_unsafe_load_error(what):
+    import pickle
+    return pickle.UnpicklingError(
+        f"Unsloth: refused to {what} inside a torch.export .pt2 archive. Unpickling it can run "
+        f"arbitrary code (CVE-2026-4538). If you trust this file, set {_PT2_UNSAFE_LOAD_ENV}=1 "
+        "and load it again."
+    )
+
+
+def _pt2_loader_caller(frame):
+    # A few frames up: other torch.load wrappers (the rng guard, later patches) sit in between.
+    hops = 0
+    while frame is not None and hops < 8:
+        name = frame.f_globals.get("__name__", "")
+        if name in _PT2_LOADER_MODULES:
+            return name
+        frame = frame.f_back
+        hops += 1
+    return ""
+
+
+class _Pt2PickleModule(types.ModuleType):
+    """Stands in for `pickle` inside torch.export.pt2_archive._package: loads is refused."""
+
+    def __init__(self, real):
+        super().__init__(real.__name__)
+        self._unsloth_pt2_real_pickle = real
+
+    def __getattr__(self, name):
+        return getattr(self._unsloth_pt2_real_pickle, name)
+
+    def loads(self, *args, **kwargs):
+        if _pt2_unsafe_load_allowed():
+            return self._unsloth_pt2_real_pickle.loads(*args, **kwargs)
+        raise _pt2_unsafe_load_error("unpickle an opaque object")
+
+
+_PT2_PACKAGE_MODULE = "torch.export.pt2_archive._package"
+_PT2_FINDER_SENTINEL = "_unsloth_pt2_package_finder"
+
+
+def _install_pt2_pickle_proxy(package):
+    real_pickle = getattr(package, "pickle", None)
+    # Marker, not isinstance: a reloaded import_fixes defines a new _Pt2PickleModule class.
+    already = hasattr(real_pickle, "_unsloth_pt2_real_pickle")
+    if isinstance(real_pickle, types.ModuleType) and not already:
+        package.pickle = _Pt2PickleModule(real_pickle)
+        return True
+    return False
+
+
+class _Pt2PackageLoader(importlib.abc.Loader):
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create_module = getattr(self._loader, "create_module", None)
+        return None if create_module is None else create_module(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        _install_pt2_pickle_proxy(module)
+
+    def __getattr__(self, name):
+        return getattr(self._loader, name)
+
+
+class _Pt2PackageFinder(importlib.abc.MetaPathFinder):
+    """Installs the pickle stand-in right after torch.export.pt2_archive._package first runs."""
+
+    def __init__(self):
+        setattr(self, _PT2_FINDER_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _PT2_PACKAGE_MODULE:
+            return None
+        for finder in sys.meta_path:
+            if finder is self or getattr(finder, _PT2_FINDER_SENTINEL, False):
+                continue
+            find_spec = getattr(finder, "find_spec", None)
+            try:
+                spec = find_spec(fullname, path, target) if find_spec is not None else None
+            except Exception:
+                spec = None
+            if spec is not None:
+                if spec.loader is not None and hasattr(spec.loader, "exec_module"):
+                    spec.loader = _Pt2PackageLoader(spec.loader)
+                return spec
+        return None
+
+
+def patch_torch_export_pt2_unsafe_load():
+    """CVE-2026-4538 (pytorch/pytorch#176791 never merged): torch.export.load unpickles .pt2
+    payloads with weights_only=False. Those loads become weights_only=True and the bare
+    pickle.loads for opaque constants is refused; tensors and ordinary exported programs still
+    load. UNSLOTH_ALLOW_UNSAFE_PT2_LOAD=1 restores torch's behaviour."""
+    try:
+        import torch
+    except Exception:
+        return
+    patched = False
+    load = torch.load
+    if not getattr(load, "_unsloth_pt2_guard", False):
+
+        @functools.wraps(load)
+        def _pt2_guarded_torch_load(*args, **kwargs):
+            if kwargs.get("weights_only") is not False or _pt2_unsafe_load_allowed():
+                return load(*args, **kwargs)
+            if _pt2_loader_caller(sys._getframe(1)) not in _PT2_LOADER_MODULES:
+                return load(*args, **kwargs)
+            kwargs["weights_only"] = True
+            try:
+                return load(*args, **kwargs)
+            except Exception as error:
+                raise _pt2_unsafe_load_error("unpickle a non-tensor payload") from error
+
+        _pt2_guarded_torch_load._unsloth_pt2_guard = True
+        # Carry the rng guard's markers so patch_unsafe_trainer_rng_load stays idempotent.
+        for attribute in ("_unsloth_rng_guard", "_unsloth_rng_flag"):
+            if hasattr(load, attribute):
+                setattr(_pt2_guarded_torch_load, attribute, getattr(load, attribute))
+        torch.load = _pt2_guarded_torch_load
+        patched = True
+
+    # Opaque constants bypass torch.load: patch _package now, or lazily so import stays cheap.
+    package = sys.modules.get(_PT2_PACKAGE_MODULE)
+    if package is not None:
+        patched = _install_pt2_pickle_proxy(package) or patched
+    elif not any(getattr(finder, _PT2_FINDER_SENTINEL, False) for finder in sys.meta_path):
+        sys.meta_path.insert(0, _Pt2PackageFinder())
+        patched = True
+    if patched:
+        logger.info("Unsloth: Hardened torch.export .pt2 loading (CVE-2026-4538).")
+
+
 def _is_custom_torch_build(raw_version_str):
     """Check if a raw version string indicates a custom or source build.
 
@@ -5451,8 +5911,20 @@ def patch_torch_missing_attribute_error():
     if getattr(original, "__unsloth_patched__", False):
         return True
 
+    # torch's stacklevel=2 would name this wrapper; catch_warnings + replay is process-global, so warn here.
+    deprecated_attrs = torch.__dict__.get("_deprecated_attrs", {})
+
     @functools.wraps(original)
     def __getattr__(name):
+        replacement = deprecated_attrs.get(name)
+        if replacement is not None:
+            warnings.warn(
+                f"'{name}' is deprecated, please use "
+                f"'{replacement.__module__}.{replacement.__name__}()'",
+                UserWarning,
+                stacklevel = 2,
+            )
+            return replacement()
         try:
             return original(name)
         except AttributeError as exception:
@@ -6636,6 +7108,96 @@ def fix_cudnn_sdpa_d256_masked_backward():
     logger.info(
         "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
         f"(devices {sorted(sm100_devices)})"
+    )
+
+
+def _rocm_windows_broken_sdpa_backends():
+    """Fused SDPA backends ("flash", "mem_efficient") failing on this process's Windows ROCm GPU.
+
+    torch 2.11.0+rocm7.14.1 on gfx1151 fails every fused call (hipErrorInvalidValue), raised only
+    by the next checked launch, so each probe ends in one and is compared against math.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        # Some AMD wheels tag only __version__, so torch.version.hip alone misses them.
+        is_rocm = bool(getattr(torch.version, "hip", None)) or _is_rocm_torch_build()
+        if not is_rocm or not torch.cuda.is_available():
+            return []
+    except Exception:
+        return []
+
+    def attend(device, backend):
+        g = torch.Generator(device = device).manual_seed(0)
+        q, k, v = (
+            torch.randn(1, 2, 16, 64, device = device, dtype = dtype, generator = g) for _ in range(3)
+        )
+        q.requires_grad_(True)
+        with sdpa_kernel([backend]):
+            out = F.scaled_dot_product_attention(q, k, v, is_causal = True)
+            out = out.float()  # checked launch: a failed attention launch raises here
+            out.sum().backward()
+        dq = q.grad.float()
+        dq.sum().item()
+        return torch.cat([out.detach().flatten(), dq.flatten()])
+
+    # Only this process's device: probing every visible GPU would open a HIP context on each.
+    device = torch.device("cuda", torch.cuda.current_device())
+    try:
+        from .device_type import arch_lacks_bf16
+        arch = torch.cuda.get_device_properties(device).gcnArchName
+    except Exception:
+        arch_lacks_bf16, arch = (lambda _: True), None
+    # gfx10 claims bf16 it lacks (device_type.arch_lacks_bf16); fp16 is safe everywhere.
+    dtype = torch.float16 if arch_lacks_bf16(arch) else torch.bfloat16
+    broken = []
+    # An import under inference_mode would leave nothing to backpropagate through.
+    with torch.inference_mode(False), torch.enable_grad():
+        try:
+            reference = attend(device, SDPBackend.MATH)
+        except Exception:
+            return []  # math fails too: nothing to learn about the fused kernels
+        for name, backend in (
+            ("flash", SDPBackend.FLASH_ATTENTION),
+            ("mem_efficient", SDPBackend.EFFICIENT_ATTENTION),
+        ):
+            try:
+                ok = torch.allclose(attend(device, backend), reference, atol = 2e-2, rtol = 2e-2)
+            except Exception as e:
+                ok = "No available kernel" in str(e)
+            if not ok:
+                broken.append(name)
+    return broken
+
+
+def fix_rocm_windows_fused_sdpa():
+    """Turn off fused SDPA backends that fail on this Windows ROCm GPU, so attention uses math.
+
+    Probe-gated, so it is a no-op once the kernels work. UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 opts out.
+    """
+    if os.environ.get("UNSLOTH_ALLOW_ROCM_FUSED_SDPA", "0") == "1":
+        return
+    broken = _rocm_windows_broken_sdpa_backends()
+    if not broken:
+        return
+    try:
+        import torch
+        if "flash" in broken:
+            torch.backends.cuda.enable_flash_sdp(False)
+        if "mem_efficient" in broken:
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Windows ROCm SDPA fix ({e})")
+        return
+    names = " or ".join("flash" if b == "flash" else "memory-efficient" for b in broken)
+    fallback = "the math kernel" if len(broken) == 2 else "the remaining kernels"
+    logger.warning(
+        f"Unsloth: this Windows ROCm torch cannot run {names} attention; using {fallback} "
+        "instead (set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep them)."
     )
 
 
@@ -9915,10 +10477,11 @@ def fix_peft_stale_torchao_import_error():
     return patched
 
 
-# Matches both spellings a torchao removal produces: the class name, and the module that used to
-# define it. Only these two, so a torchao that is BROKEN rather than newer still raises.
+# The spellings a torchao removal produces (class, its old module, the whole ``torchao.dtypes`` package on main).
+# Only these, so a BROKEN torchao still raises.
 _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
-    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor",
+    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor"
+    r"|no module named '?torchao\.dtypes'?(?![.\w])",
     re.IGNORECASE | re.DOTALL,
 )
 
