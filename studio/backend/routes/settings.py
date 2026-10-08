@@ -3243,13 +3243,12 @@ def _sentence_transformers_fallback_allowed(model: str) -> bool:
 
 
 def _sentence_transformers_can_load(model: str) -> bool:
-    """Whether the installed sentence-transformers can open ``model``. Inside the resolution's time budget, and
-    True when that is spent or the answer cannot be had, unless an earlier check already proved it cannot."""
+    """Whether the installed sentence-transformers can open ``model``, within the resolution's budget."""
     try:
         from core.rag import embeddings
     except Exception:  # noqa: BLE001 - unimportable embedder: no proof either way
         return True
-    # Before the budget: the plan's backend check may have proved this already, and a timeout must not undo it.
+    # Before the budget, so a timeout cannot undo the plan's earlier proof.
     if embeddings.sentence_transformers_known_unloadable(model):
         return False
     try:

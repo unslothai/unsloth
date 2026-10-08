@@ -916,9 +916,7 @@ def _llama_server_runtime_available() -> bool:
 
 
 _ST_LOAD_PREFLIGHT_TIMEOUT_S = 5.0
-# Models proven unloadable inside one Settings resolution, so a later check there that cannot finish does not
-# undo the proof. Only that long: a local folder can be fixed, a repo republished, and the next caller may not
-# be allowed to read what this one read.
+# Proofs last one Settings resolution: a folder can be fixed, a repo republished, or the next caller lack access.
 _st_unloadable_proofs: ContextVar[set[str] | None] = ContextVar(
     "st-unloadable-proofs", default = None
 )
@@ -942,14 +940,9 @@ def sentence_transformers_known_unloadable(model_name: str) -> bool:
 
 
 def sentence_transformers_can_load(model_name: str) -> bool:
-    """False when the installed sentence-transformers or transformers provably cannot open ``model_name``.
-
-    Two ways to know before downloading the weights: ``modules.json`` names a Sentence Transformers class
-    this version does not have (embeddinggemma-2 was saved by 6.x and names ``sentence_transformers.base``
-    modules, which 5.x lacks), or ``config.json`` names a ``model_type`` this transformers does not know.
-    True when either file cannot be read, so an unreachable repo keeps the plan it had. A proof from earlier
-    in the same ``st_load_proof_scope`` is returned without reading anything.
-    """
+    """False when ``modules.json`` names a sentence_transformers class this install lacks (embeddinggemma-2 names
+    6.x ``sentence_transformers.base`` modules) or ``config.json`` a ``model_type`` transformers does not know.
+    True when either file cannot be read, so an unreachable repo keeps its plan."""
     if sentence_transformers_known_unloadable(model_name):
         return False
     if _st_load_preflight(model_name):
@@ -1001,13 +994,11 @@ def resolved_backend_for_model(model_name: str) -> str:
     raw = _raw_backend()
     forced = _forced_backends.get(model_name)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
-    # Without a real llama binary ST is the only possible plan, and its eventual error is more useful than a
-    # fabricated GGUF destination. The binary check is a stat, so it runs before the Hub preflight.
+    # Without a llama binary ST is the only plan; its error beats a fabricated GGUF destination. Stat before Hub.
     if key in _ST_ALIASES and _llama_server_runtime_available():
         st_unusable = not sentence_transformers_runtime_available() or (
-            # An ST plan for a model ST cannot open downloads weights that never load, and the pending marker it
-            # sets keeps the llama fallback from fetching a GGUF. Under auto only: an explicit ST policy makes the
-            # runtime ignore the backend this plan stores.
+            # An ST plan for it never loads, and its pending marker blocks the llama fallback's GGUF.
+            # Auto only: an explicit ST policy ignores the stored backend.
             raw in _AUTO_ALIASES and not sentence_transformers_can_load(model_name)
         )
         if st_unusable:
