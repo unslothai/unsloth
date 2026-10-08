@@ -412,8 +412,11 @@ if [[ $# -gt 0 ]]; then
             _scan_from=1
             case "$_runner" in
                 accelerate)
-                    _runner=launcher
-                    [[ "${_args[1]:-}" == launch ]] && _scan_from=2
+                    _runner=""
+                    if [[ "${_args[1]:-}" == launch ]]; then
+                        _runner=launcher
+                        _scan_from=2
+                    fi
                     ;;
                 accelerate-launch | torchrun | deepspeed) _runner=launcher ;;
                 python | python[0-9]* | pypy | pypy[0-9]*)
@@ -470,6 +473,10 @@ if [[ $# -gt 0 ]]; then
                 for (( _i=_scan_from; _i < ${#_args[@]}; _i++ )); do
                     _arg="${_args[$_i]}"
                     case "$_arg" in
+                        -m | -q | --bind_cores_to_rank | --cpu | --debug | --dynamo_use_dynamic | --dynamo_use_fullgraph | --dynamo_use_regional_compilation | --enable_cpu_affinity | --elastic_training | --force_multi | --module | --multi_gpu | --no-python | --no_local_rank | --no_python | --no_ssh | --no_ssh_check | --no_tpu_cluster | --quiet | --run-path | --run_path | --same_network | --save_pid | --standalone | --tpu | --tpu_cluster | --use_cpu | --use_deepspeed | --use_fsdp | --use_megatron_lm | --use_mps_device | --use_parallelism_config | --use_tp | --use_xpu | --virtual-local-rank | --virtual_local_rank)
+                            _prev=""
+                            continue
+                            ;;
                         -*=*)
                             _prev=""
                             continue

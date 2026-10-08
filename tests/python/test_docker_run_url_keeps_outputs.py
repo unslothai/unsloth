@@ -416,6 +416,22 @@ def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
         ("python", "-m", "tool", "/workspace/host/input.py"),
         ("python", "-m", "pytest", "--basetemp", "/workspace/host"),
         ("python", "train.py", "--config", "/workspace/host/config.json"),
+        (
+            "accelerate",
+            "launch",
+            "--no_python",
+            "./train",
+            "--data",
+            "/workspace/host/data.json",
+        ),
+        (
+            "torchrun",
+            "--standalone",
+            "./train",
+            "--data",
+            "/workspace/host/data.json",
+        ),
+        ("accelerate", "config", "update", "--config_file", "/workspace/host/config.json"),
         ("bash", "-c", "printf ok", "/workspace/host/input.sh"),
         ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb"),
         ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb", "--out", "/workspace/host/Llama.ipynb"),
@@ -442,6 +458,8 @@ def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
 def test_run_sh_leaves_other_commands_in_the_image_workdir(tmp_path, command):
     if "/workspace/host/config.json" in command:
         (tmp_path / "config.json").write_text("{}\n", encoding = "utf-8")
+    if "/workspace/host/data.json" in command:
+        (tmp_path / "data.json").write_text("{}\n", encoding = "utf-8")
     argv = _run_sh_argv(tmp_path, *command)
     flags = argv[: argv.index("unsloth/unsloth:latest")]
     assert "-w" not in flags
