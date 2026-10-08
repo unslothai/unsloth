@@ -28,7 +28,8 @@ import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow } from "./params-section-controls";
 import { OffloadLayersParams } from "./training-offload-params";
-import { offloadSupported } from "@/features/training/api/mappers";
+import { offloadHardwareSupported, offloadSupported } from "@/features/training/api/mappers";
+import { useGpuInfo } from "@/hooks/use-gpu-info";
 
 const VISION_IMAGE_SIZE_PRESETS = [256, 384, 512, 768, 1024, 1536, 2048];
 
@@ -116,6 +117,7 @@ function TrainOnCompletionsOption({
 export function TrainingMemoryParams(): ReactElement {
   const t = useT();
   const isMac = usePlatformStore((state) => state.deviceType === "mac");
+  const gpu = useGpuInfo();
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       selectedModel: state.selectedModel,
@@ -247,8 +249,9 @@ export function TrainingMemoryParams(): ReactElement {
           </SelectContent>
         </Select>
       </ParamsRow>
-      {/* MLX has its own path. */}
-      {!isMac && offloadSupported(store) && <OffloadLayersParams />}
+      {!isMac && offloadHardwareSupported(gpu) && offloadSupported(store) && (
+        <OffloadLayersParams />
+      )}
       {showPacking && (
         <PackingOption
           isMac={isMac}
