@@ -121,6 +121,7 @@ _DDGS_RESET_MARKERS = (
     "h2 connection driver error",
     "server disconnected",
     "broken pipe",
+    "forcibly closed",  # Windows WSAECONNRESET (10054)
 )
 _DDGS_HTTP1_RETRY_LOCK = threading.Lock()
 
@@ -17070,15 +17071,19 @@ def _install_ddgs_http1_retry() -> None:
 def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) -> None:
     orig_init, orig_request = cls.__init__, cls.request
 
+    @functools.wraps(orig_init)
     def __init__(self, *args, **kwargs):
         orig_init(self, *args, **kwargs)
         try:
             bound = signature.bind(self, *args, **kwargs)
             bound.apply_defaults()
-            self._unsloth_http1_config = bound.arguments
+            config = dict(bound.arguments)
+            config.pop("self", None)  # no client -> config -> client cycle
+            self._unsloth_http1_config = config
         except TypeError:
             pass
 
+    @functools.wraps(orig_request)
     def request(self, *args, **kwargs):
         start = time.monotonic()
         try:
@@ -17107,12 +17112,11 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
                 "follow_redirects": follow_redirects,
             }
             try:
-                resp = _ddgs_http1_replay(args, kwargs, replay)
+                return wrap(_ddgs_http1_replay(args, kwargs, replay))
             except Exception as retry_exc:
                 raise ddgs_exception(
                     f"{exc}; HTTP/1.1 retry failed: {type(retry_exc).__name__}: {retry_exc}"
                 ) from retry_exc
-            return wrap(resp)
 
     cls.__init__, cls.request = __init__, request
     cls._unsloth_http1_retry = True

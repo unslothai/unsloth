@@ -166,6 +166,11 @@ def test_reset_detection():
             "RequestError: error sending request > stream closed because of a broken pipe"
         )
     )
+    assert tools._is_connection_reset(
+        FakeDDGSException(
+            "ReadError: [WinError 10054] An existing connection was forcibly closed by the remote host"
+        )
+    )
     for message in (
         "ConnectError: [Errno -2] Name or service not known",
         "ConnectError: [Errno 111] Connection refused",
@@ -208,6 +213,7 @@ def test_other_failures_are_not_replayed(fake_ddgs, cls_name):
 def test_primp_reset_replays_once_with_constructor_settings(fake_ddgs):
     fake_ddgs.state["error"] = RESET
     client = fake_ddgs.HttpClient("socks5://p:1", 4, verify = False)
+    assert "self" not in client._unsloth_http1_config
     resp = client.request("POST", "https://x/", data = {"q": "weather"})
     assert (resp.status_code, resp.text) == (200, "ok")
     assert fake_ddgs.state["calls"] == 1
