@@ -103,13 +103,22 @@ def test_load_and_lora_kwargs_follow_the_setting():
     assert t._offload_peft_kwargs() == {"offload_layers": "auto", "prefetch_depth": "auto"}
 
 
+def test_a_fixed_count_on_several_gpus_waits_for_peft():
+    # Core refuses a count at load on a multi-GPU map; get_peft_model installs it there.
+    for device_map in ("unsloth_balanced", "balanced"):
+        assert _trainer(8, 2)._offload_load_kwargs(device_map) == {}
+        assert _trainer("auto", 2)._offload_load_kwargs(device_map)["offload_layers"] == "auto"
+        assert _trainer(8, 2)._offload_peft_kwargs() == {"offload_layers": 8, "prefetch_depth": 2}
+    assert _trainer(8, 2)._offload_load_kwargs("sequential")["offload_layers"] == 8
+
+
 def test_every_offload_capable_load_path_passes_the_kwargs():
     import inspect
     from core.training import trainer
 
     src = inspect.getsource(trainer.UnslothTrainer.load_model)
     # Text, Orpheus (snac), audio VLM and vision; the codec / Whisper paths have no decoder stack to stream.
-    assert src.count("**self._offload_load_kwargs()") == 4
+    assert src.count("**self._offload_load_kwargs(device_map)") == 4
     peft = inspect.getsource(trainer.UnslothTrainer.prepare_model_for_training)
     assert peft.count("**self._offload_peft_kwargs()") == 3
 
