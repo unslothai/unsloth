@@ -105,27 +105,9 @@ class TestClassification:
         )
         assert "NVIDIA driver" not in msg
 
-    def test_driver_note_from_the_install_marker(self, tmp_path, monkeypatch):
-        (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
-            json.dumps({"toolkit_line": "12.8", "host_profile": {"driver_cuda_version": [12, 2]}}),
-            encoding = "utf-8",
-        )
-        import utils.llama_cpp_update as update
-
-        monkeypatch.setattr(update, "_llama_install_root", lambda _binary: tmp_path)
-        note = LlamaCppBackend._cuda_build_driver_note(str(tmp_path / "llama-server"))
-        assert "CUDA 12.2" in note and "CUDA 12.8" in note
-
-    @pytest.mark.parametrize(
-        "marker",
-        [
-            None,
-            "not json",
-            {"toolkit_line": "12.8"},
-            {"host_profile": {"driver_cuda_version": [12, 2]}},
-        ],
-    )
-    def test_driver_note_is_empty_when_unknown(self, tmp_path, monkeypatch, marker):
+    @staticmethod
+    def _marker(tmp_path, monkeypatch, marker):
+        # The shape write_prebuilt_metadata produces: runtime_line, bundle_profile, host_profile.
         if marker is not None:
             (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
                 marker if isinstance(marker, str) else json.dumps(marker), encoding = "utf-8"
@@ -133,7 +115,43 @@ class TestClassification:
         import utils.llama_cpp_update as update
 
         monkeypatch.setattr(update, "_llama_install_root", lambda _binary: tmp_path)
-        assert LlamaCppBackend._cuda_build_driver_note(str(tmp_path / "llama-server")) == ""
+        return str(tmp_path / "llama-server")
+
+    def test_driver_version_from_the_install_marker(self, tmp_path, monkeypatch):
+        binary = self._marker(
+            tmp_path,
+            monkeypatch,
+            {
+                "runtime_line": "cuda12",
+                "bundle_profile": "cuda12-older",
+                "host_profile": {"driver_cuda_version": [12, 2]},
+            },
+        )
+        assert LlamaCppBackend._cuda_install_driver_version(binary) == (12, 2)
+        msg = LlamaCppBackend._cuda_kernel_image_message(
+            "device kernel image is invalid", binary, "/logs/llama.log"
+        )
+        assert "supports CUDA 12.2" in msg and "R550" in msg
+        assert msg.endswith("Full log: /logs/llama.log")
+
+    def test_new_driver_blames_the_build_not_the_driver(self, tmp_path, monkeypatch):
+        binary = self._marker(
+            tmp_path, monkeypatch, {"host_profile": {"driver_cuda_version": [13, 0]}}
+        )
+        msg = LlamaCppBackend._cuda_kernel_image_message("device kernel image is invalid", binary)
+        assert "supports CUDA 13.0" in msg
+        assert "damaged or mismatched" in msg
+        assert "R550" not in msg
+
+    @pytest.mark.parametrize(
+        "marker",
+        [None, "not json", {"runtime_line": "cuda12"}, {"host_profile": {}}],
+    )
+    def test_driver_version_unknown(self, tmp_path, monkeypatch, marker):
+        binary = self._marker(tmp_path, monkeypatch, marker)
+        assert LlamaCppBackend._cuda_install_driver_version(binary) is None
+        msg = LlamaCppBackend._cuda_kernel_image_message("device kernel image is invalid", binary)
+        assert "most likely too old" in msg and "supports CUDA" not in msg
 
 
 # ── The load path: one spawn, terminal error ─────────────────────────

@@ -27,7 +27,27 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 SETUP_SH_TEXT = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
 SETUP_PS1_TEXT = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
-BASH = shutil.which("bash")
+
+def _usable_bash():
+    # On Windows a bare which() can find System32's WSL bash.exe with no distro behind it.
+    exe = shutil.which("bash")
+    if exe is None:
+        return None
+    try:
+        probe = subprocess.run(
+            [exe, "-c", "printf ok"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            errors = "replace",
+            timeout = 60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return exe if probe.stdout.strip() == "ok" else None
+
+
+BASH = _usable_bash()
 PWSH = shutil.which("pwsh")
 
 # (driver CUDA version as the scripts parse it, needs uncompressed kernels)
@@ -66,6 +86,7 @@ def test_setup_sh_decision(tmp_path, driver, expected):
     script.write_text(
         _sh_function("_cuda_version_gt") + _sh_function("_cuda_driver_needs_uncompressed_fatbin"),
         encoding = "utf-8",
+        newline = "\n",  # bash cannot parse a CRLF fragment, the Windows default
     )
     result = subprocess.run(
         [

@@ -2055,8 +2055,9 @@ def linux_cuda_choice_from_release(
             "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
         )
         if driver_below_cuda_prebuilt_floor(host):
-            selection_log.append(f"linux_cuda_selection: {cuda_driver_floor_message(host)}")
-            log(cuda_driver_floor_message(host))
+            floor_message = cuda_driver_floor_message(host)
+            selection_log.append(f"linux_cuda_selection: {floor_message}")
+            log(floor_message)
         _warn_uncovered_cuda_host(
             host_sms,
             detected_runtime_lines,
@@ -3666,8 +3667,9 @@ def published_windows_cuda_attempts(
             + (",".join(ordered_lines) if ordered_lines else "none")
         )
         if driver_below_cuda_prebuilt_floor(host):
-            selection_log.append(f"windows_cuda_selection: {cuda_driver_floor_message(host)}")
-            log(cuda_driver_floor_message(host))
+            floor_message = cuda_driver_floor_message(host)
+            selection_log.append(f"windows_cuda_selection: {floor_message}")
+            log(floor_message)
 
     host_sms = normalize_compute_caps(host.compute_caps)
     attempts: list[AssetChoice] = []
@@ -7310,6 +7312,14 @@ def _fork_manifest_release_plans(
                 last_error = exc
                 if not allow_older_release_fallback:
                     raise
+                # The driver floor belongs to the host, not this release: every older
+                # release fails alike, so walking back only spends API calls (#12842).
+                if (
+                    (host.is_linux or host.is_windows)
+                    and host.has_physical_nvidia
+                    and driver_below_cuda_prebuilt_floor(host)
+                ):
+                    raise PrebuiltFallback(cuda_driver_floor_message(host)) from exc
                 log(
                     "published release skipped for install planning: "
                     f"{bundle.repo}@{bundle.release_tag} upstream_tag={resolved_tag} ({exc})"

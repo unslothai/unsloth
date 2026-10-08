@@ -21067,7 +21067,7 @@ class LlamaCppBackend:
         # send the user after the wrong cause (#12842).
         cuda_image_error = LlamaCppBackend._cuda_kernel_image_error(output)
         if cuda_image_error is not None:
-            return LlamaCppBackend._cuda_kernel_image_message(cuda_image_error, binary)
+            return LlamaCppBackend._cuda_kernel_image_message(cuda_image_error, binary, log_path)
 
         # The dynamic loader kills llama-server before main(), so nothing below
         # matches and the fallback blames the file or memory instead. The Linux
@@ -22353,44 +22353,57 @@ class LlamaCppBackend:
         return match.group(1).lower() if match else None
 
     @staticmethod
-    def _cuda_build_driver_note(binary: Optional[str]) -> str:
-        """The driver's and the build's CUDA versions from the managed install's
-        marker, as a parenthetical, or "" when either side is unknown."""
+    def _cuda_install_driver_version(binary: Optional[str]) -> Optional[tuple[int, int]]:
+        """The driver CUDA version the installer recorded for the managed install that
+        owns ``binary`` (UNSLOTH_PREBUILT_INFO.json host_profile), or None."""
         try:
             from utils.llama_cpp_update import _llama_install_root
 
             root = _llama_install_root(binary) if binary else None
             if root is None:
-                return ""
+                return None
             marker = json.loads((root / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8"))
-            profile = marker.get("host_profile") or {}
-            driver = profile.get("driver_cuda_version")
-            toolkit = marker.get("toolkit_line")
-            if not (isinstance(driver, list) and len(driver) == 2 and toolkit):
-                return ""
-            return (
-                f" (this NVIDIA driver supports CUDA {int(driver[0])}.{int(driver[1])}; "
-                f"this llama.cpp was built with CUDA {str(toolkit)[:16]})"
-            )
+            driver = (marker.get("host_profile") or {}).get("driver_cuda_version")
+            if isinstance(driver, list) and len(driver) == 2:
+                return (int(driver[0]), int(driver[1]))
         except Exception:
-            return ""
+            pass
+        return None
 
     @classmethod
-    def _cuda_kernel_image_message(cls, error: str, binary: Optional[str]) -> str:
+    def _cuda_kernel_image_message(
+        cls,
+        error: str,
+        binary: Optional[str],
+        log_path: "Optional[Path | str]" = None,
+    ) -> str:
         remedy = cls._runtime_remedy(binary)
-        if error == "device kernel image is invalid":
+        log_hint = f" Full log: {log_path}" if log_path else ""
+        if error == "no kernel image is available for execution":
+            return (
+                'llama-server could not load its CUDA kernels ("no kernel image is available '
+                "for execution\"): this llama.cpp CUDA build has no kernels for this GPU's "
+                "architecture. This is not the GGUF file and not out of memory. "
+                f"{remedy[0].upper()}{remedy[1:]}, or use the CPU or Vulkan backend.{log_hint}"
+            )
+        driver = cls._cuda_install_driver_version(binary)
+        if driver is not None and driver >= (12, 4):
+            # A driver new enough for compressed kernels: the build itself is broken.
             return (
                 'llama-server could not load its CUDA kernels ("device kernel image is '
-                'invalid"): the NVIDIA driver is too old for this llama.cpp CUDA build'
-                f"{cls._cuda_build_driver_note(binary)}. This is not the GGUF file and not "
-                "out of memory. Update the NVIDIA driver to R550 or newer (CUDA 12.4+), "
-                f"or {remedy}."
+                f'invalid") although this NVIDIA driver supports CUDA {driver[0]}.{driver[1]}: '
+                "the llama.cpp CUDA libraries look damaged or mismatched. This is not the "
+                f"GGUF file and not out of memory. {remedy[0].upper()}{remedy[1:]}.{log_hint}"
             )
+        driver_text = (
+            f" (this NVIDIA driver supports CUDA {driver[0]}.{driver[1]})" if driver else ""
+        )
         return (
-            'llama-server could not load its CUDA kernels ("no kernel image is available '
-            "for execution\"): this llama.cpp CUDA build has no kernels for this GPU's "
-            "architecture. This is not the GGUF file and not out of memory. "
-            f"{remedy[0].upper()}{remedy[1:]}, or use the CPU or Vulkan backend."
+            'llama-server could not load its CUDA kernels ("device kernel image is '
+            'invalid"): the NVIDIA driver is most likely too old for this llama.cpp CUDA '
+            f"build{driver_text}, which needs CUDA 12.4 or newer. This is not the GGUF file "
+            "and not out of memory. Update the NVIDIA driver to R550 or newer (CUDA 12.4+), "
+            f"or {remedy}.{log_hint}"
         )
 
     @classmethod
@@ -30201,7 +30214,7 @@ class LlamaCppBackend:
                             _tensor_capability_crash
                             or self._is_kv_unified_refused("\n".join(self._stdout_lines))
                             # #12842: no placement loads a kernel the driver cannot.
-                            or self._cuda_kernel_image_error("\n".join(self._stdout_lines[-80:]))
+                            or self._cuda_kernel_image_error("\n".join(self._stdout_lines))
                             is not None
                         )
                         if (
@@ -31200,7 +31213,8 @@ class LlamaCppBackend:
                 # every rung below (one slot, flash-attn off, no drafter, CPU projector)
                 # keeps the same kernels, so stop here with the real cause.
                 if not healthy and not _load_cancelled():
-                    _cuda_image_out = "\n".join(self._stdout_lines[-80:])
+                    # Whole buffer: a Linux abort can append a long debugger backtrace.
+                    _cuda_image_out = "\n".join(self._stdout_lines)
                     if self._cuda_kernel_image_error(_cuda_image_out) is not None:
                         _proc_snap_ki = self._process  # snapshot: re-reading races the teardown
                         _ki_rc = _proc_snap_ki.poll() if _proc_snap_ki is not None else None

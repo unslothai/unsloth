@@ -186,3 +186,22 @@ def test_a_cuda13_driver_keeps_cuda13_first_then_cuda12():
 
 def test_an_unknown_driver_is_not_gated_by_the_floor():
     assert m.driver_below_cuda_prebuilt_floor(host("Windows", None)) is False
+
+
+@pytest.mark.parametrize("system", ["Windows", "Linux"])
+def test_a_driver_below_the_floor_stops_the_release_walk(monkeypatch, system):
+    # Every older release fails the same host-wide floor; walking back through them only
+    # spends GitHub API calls (one upstream asset listing per release on Windows).
+    walked = []
+
+    def releases(*_args, **_kwargs):
+        for _ in range(20):
+            walked.append(1)
+            yield type("Resolved", (), {"bundle": RELEASE, "checksums": None})()
+
+    monkeypatch.setattr(m, "iter_resolved_published_releases", releases)
+    monkeypatch.setattr(m, "apply_approved_hashes", lambda attempts, _checksums: attempts)
+    monkeypatch.setattr(m, "github_release_assets", lambda _repo, _tag: {})
+    with pytest.raises(m.PrebuiltFallback, match = "older than the CUDA 12.4"):
+        m._fork_manifest_release_plans("latest", host(system, (12, 2)), "unslothai/llama.cpp", "")
+    assert len(walked) == 1
