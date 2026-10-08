@@ -16321,6 +16321,17 @@ class LlamaCppBackend:
         usable_count = sum(1 for idx, free_mib in ranked if _usable(idx, free_mib) > overhead_mib)
         min_gpus = max(1, min(min_gpus, usable_count or 1))
 
+        # A discrete card another model runs on, too small alone, must not pull a
+        # card that holds this model by itself into a shared pin.
+        if (
+            min_gpus <= 1
+            and ranked[0][0] in shared
+            and _usable(ranked[0][0], ranked[0][1]) < model_size_mib
+        ):
+            for idx, free_mib in ranked:
+                if idx not in shared and _usable(idx, free_mib) >= model_size_mib:
+                    return [idx], False
+
         # Try 1 GPU at the usable-VRAM threshold (only when one device is allowed).
         if min_gpus <= 1 and _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
             for idx, free_mib in ranked:

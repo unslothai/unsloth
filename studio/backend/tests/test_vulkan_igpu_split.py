@@ -209,3 +209,15 @@ def test_an_inherited_projector_or_device_list_is_respected():
         '"LLAMA_ARG_DEVICE"',
     ):
         assert needle in arm
+
+
+def test_a_busy_card_too_small_alone_does_not_pull_in_the_igpu():
+    # Another model runs on the card; the iGPU holds this one alone, so it goes there.
+    picked, use_fit = LlamaCppBackend._select_gpus(
+        12000 * MIB,
+        GPUS,
+        usable_fraction = 0.9,
+        shared = frozenset({DGPU}),
+        shared_gpu_ids = SHARED,
+    )
+    assert (picked, use_fit) == ([IGPU], False)
