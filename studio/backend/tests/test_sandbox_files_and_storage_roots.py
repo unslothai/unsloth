@@ -3368,7 +3368,7 @@ def test_an_attachment_copied_in_during_a_call_is_not_claimed_by_it(tmp_path, mo
 
 
 def test_sandbox_attachment_paths_match_the_frontend():
-    """Same table as sandbox-attachments.test.ts: the client notes these paths to the model."""
+    """same table as sandbox-attachments.test.ts because the client notes these paths to the model."""
     from core.inference.tools import sandbox_attachment_path
 
     sha = "ab" * 32
