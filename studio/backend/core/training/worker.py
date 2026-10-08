@@ -1657,6 +1657,15 @@ def _offload_plan_shape(config: dict) -> dict:
     return {"batch_size": config.get("batch_size"), "lora_rank": config.get("lora_r")}
 
 
+def _visible_gpu_count() -> int:
+    """GPUs the load spreads over when no ids were resolved (a UUID / MIG mask is inherited as is)."""
+    try:
+        import torch
+        return torch.cuda.device_count() if torch.cuda.is_available() else 0
+    except Exception:
+        return 0
+
+
 def _with_vram_budget_hint(config: dict, message: str) -> str:
     """Point a run that does not fit at its own VRAM budget, the one cause the generic advice omits."""
     budget = config.get("offload_vram_gb")
@@ -4232,7 +4241,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # a cap would OOM either step, so those runs offload Auto uncapped.
     _budget_unsupported = (
         _wants_budget
-        and len(gpu_ids or []) > 1
+        and (len(gpu_ids) if gpu_ids else _visible_gpu_count()) > 1
         and bool(config.get("is_dataset_image") or config.get("is_dataset_audio"))
     )
 

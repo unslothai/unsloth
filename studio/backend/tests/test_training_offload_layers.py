@@ -6,6 +6,7 @@ load and LoRA path receives, and the live snapshot the training view polls."""
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -248,7 +249,7 @@ def test_multi_gpu_vision_and_audio_runs_skip_the_budget():
     )
     gate = src[src.index("_budget_unsupported = ") :][:300]
     for needle in (
-        "len(gpu_ids or []) > 1",
+        "(len(gpu_ids) if gpu_ids else _visible_gpu_count()) > 1",
         'config.get("is_dataset_image")',
         'config.get("is_dataset_audio")',
     ):
@@ -260,6 +261,17 @@ def test_multi_gpu_vision_and_audio_runs_skip_the_budget():
         < src.index("elif _wants_budget:")
         < src.index("set_per_process_memory_fraction(_b_fraction")
     )
+
+
+def test_an_inherited_mask_counts_its_visible_gpus(monkeypatch):
+    # UUID / MIG masks resolve no ids, yet the load still spreads over every visible card.
+    from core.training import worker
+
+    cuda = SimpleNamespace(is_available = lambda: True, device_count = lambda: 2)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda = cuda))
+    assert worker._visible_gpu_count() == 2
+    cuda.is_available = lambda: False
+    assert worker._visible_gpu_count() == 0
 
 
 def test_disabled_checkpointing_aliases_match_the_trainer():
