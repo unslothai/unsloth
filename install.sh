@@ -7797,7 +7797,7 @@ _TORCH_SHADOW_WARNED=false
 _warn_torch_shadowed() {
     [ -n "$1" ] && [ "$_TORCH_SHADOW_WARNED" = false ] || return 0
     # From /: `-c` adds the cwd to sys.path, which a launched backend does not.
-    _wts_ambient=$(cd / && "$_VENV_PY" -c "
+    _wts_ambient=$(cd / && _run_bounded "$_VENV_PY" -c "
 from importlib.metadata import version
 print('torch==' + version('torch'))
 " 2>/dev/null | sed -n 's/^torch==//p' | head -n 1) || _wts_ambient=""

@@ -25,7 +25,7 @@ fake_dist "$SP" torchaudio 2.11.0+cu130
 mkdir -p "$WORK/shadow"
 fake_dist "$WORK/shadow" torch 2.9.0a0+50eac811a6.nv25.9
 
-FUNCS=$(sed -n '/^_TORCH_SHADOW_WARNED=false$/p; /^_warn_torch_shadowed() {/,/^}/p; /^_build_unsloth_torch_overrides() {/,/^}/p' "$INSTALL_SH")
+FUNCS=$(sed -n '/^_run_bounded() {/,/^}/p; /^_TORCH_SHADOW_WARNED=false$/p; /^_warn_torch_shadowed() {/,/^}/p; /^_build_unsloth_torch_overrides() {/,/^}/p' "$INSTALL_SH")
 case "$FUNCS" in
     *_warn_torch_shadowed*_build_unsloth_torch_overrides*) ok "extracted the probe functions from install.sh" ;;
     *) bad "could not extract the probe functions from install.sh"; echo "Results: $PASS passed, $FAIL failed"; exit 1 ;;
