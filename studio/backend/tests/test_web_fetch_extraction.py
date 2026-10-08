@@ -746,11 +746,13 @@ def test_dropping_site_link_urls_leaves_code_samples_alone(monkeypatch):
         f"<p>Guide paragraph {i} with enough words to run long.</p>" for i in range(400)
     )
     page = (
-        '<html><body><main><p>See <a href="#install">Install</a>.</p>'
-        f"<pre>[Install](#install)</pre>{filler}</main></body></html>"
+        '<html><body><main><p>See <a href="#install">Install</a> or <a href="#usage">Usage</a>.</p>'
+        "<pre>[Install](#install)</pre><p>Inline <code>[Usage](#usage)</code>.</p>"
+        f"{filler}</main></body></html>"
     )
     out = _page_text(monkeypatch, "https://docs.example.com/guide", page, "text/html")
-    assert out.startswith("See Install.\n\n```\n[Install](#install)\n```")
+    assert "```\n[Install](#install)\n```" in out
+    assert "Inline `[Usage](#usage)`." in out
 
 
 def test_dropping_site_link_urls_keeps_the_same_article(monkeypatch):

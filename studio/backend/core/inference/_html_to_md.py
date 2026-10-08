@@ -282,6 +282,7 @@ class SiteLinks:
     def __init__(self, page_url: str):
         self._host = urlsplit(page_url).hostname
         self._found: dict[str, str] = {}
+        self._samples: list[str] = []
 
     def note(self, link: str, text: str, href: str) -> None:
         try:
@@ -291,49 +292,58 @@ class SiteLinks:
         if parts.scheme in ("", "http", "https") and parts.hostname in (None, self._host):
             self._found[link] = text
 
+    def note_text(self, data: str) -> None:
+        self._samples.append(data)
+
     def strip(self, markdown: str) -> str:
+        # A link that also appears as page text (a Markdown sample) cannot be told apart, so it keeps its URL.
+        samples = {
+            line[start:end]
+            for sample in self._samples
+            for line in sample.split("\n")
+            for start, end in _link_spans(line)
+        }
         out: list[str] = []
-        fence = 0
         for line in markdown.split("\n"):
-            moved = _fence_state(line, fence)
-            if moved == fence and not fence and "](" in line:
-                line = self._strip_line(line)
-            fence = moved
-            out.append(line)
+            parts: list[str] = []
+            last = 0
+            for start, end in _link_spans(line):
+                link = line[start:end]
+                if link in self._found and link not in samples:
+                    parts += (line[last:start], self._found[link])
+                    last = end
+            out.append("".join(parts) + line[last:])
         return "\n".join(out)
 
-    def _strip_line(self, line: str) -> str:
-        parts: list[str] = []
-        opens: list[int] = []
-        last, i, n = 0, 0, len(line)
-        while i < n:
-            char = line[i]
-            if char == "\\":
-                i += 2
-                continue
-            if char == "[":
-                opens.append(i)
-            elif char == "]" and opens:
-                start = opens.pop()
-                if i + 1 < n and line[i + 1] == "(":
-                    j, depth = i + 2, 1
-                    while j < n and depth:
-                        if line[j] == "\\":
-                            j += 2
-                            continue
-                        depth += (line[j] == "(") - (line[j] == ")")
-                        j += 1
-                    if not depth:
-                        text = self._found.get(line[start:j])
-                        if text is not None:
-                            parts.append(line[last:start])
-                            parts.append(text)
-                            last = j
-                        i = j
+
+def _link_spans(line: str):
+    """Start and end of each ``[text](destination)`` in *line*, scanned like `_visible_len`."""
+    if "](" not in line:
+        return
+    opens: list[int] = []
+    i, n = 0, len(line)
+    while i < n:
+        char = line[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char == "[":
+            opens.append(i)
+        elif char == "]" and opens:
+            start = opens.pop()
+            if i + 1 < n and line[i + 1] == "(":
+                j, depth = i + 2, 1
+                while j < n and depth:
+                    if line[j] == "\\":
+                        j += 2
                         continue
-            i += 1
-        parts.append(line[last:])
-        return "".join(parts)
+                    depth += (line[j] == "(") - (line[j] == ")")
+                    j += 1
+                if not depth:
+                    yield start, j
+                    i = j
+                    continue
+        i += 1
 
 
 class _MarkdownRenderer(HTMLParser):
@@ -933,6 +943,8 @@ class _MarkdownRenderer(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._text_suppressed():
             return
+        if self._site_links is not None and "](" in data:
+            self._site_links.note_text(data)
         if self._in_pre:
             self._count_header_text(data)
             self._pre_parts.append(data)
