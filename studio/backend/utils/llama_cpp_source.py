@@ -68,7 +68,11 @@ def _matching_fork_tag(upstream_tag: str) -> Optional[str]:
             return None
         for release in releases:
             tag = release.get("tag_name") or ""
-            if not release.get("draft") and tag.startswith(prefix):
+            if (
+                not release.get("draft")
+                and not release.get("prerelease")
+                and tag.startswith(prefix)
+            ):
                 return tag
     return None
 
@@ -91,10 +95,8 @@ def resolve_fork_release(repo: Optional[str], tag: Optional[str]) -> tuple[str, 
                 raise
     if checksums is None:
         if tag:
-            try:
-                fork_tag = _matching_fork_tag(tag.split("-mix-")[0])
-            except Exception:
-                fork_tag = None
+            # A failed lookup raises: falling back to latest would drop the installed revision.
+            fork_tag = _matching_fork_tag(tag.split("-mix-")[0])
         checksums = _fetch_json(_asset_url(fork_tag, SHA256_ASSET_NAME))
     if not isinstance(checksums, dict):
         raise RuntimeError(f"{SHA256_ASSET_NAME} from {FORK_REPO} is not a JSON object")

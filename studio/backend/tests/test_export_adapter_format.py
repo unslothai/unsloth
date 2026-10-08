@@ -551,3 +551,52 @@ def test_gguf_converter_reuses_tree_from_previous_exporter_offline(
     _fake_github(monkeypatch, {})
     backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
     assert calls[-1][0][1] == str(old / "convert_lora_to_gguf.py")
+
+
+def test_gguf_converter_lookup_failure_keeps_the_revision(monkeypatch, tmp_path):
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = lambda d: (
+        "ggml-org/llama.cpp",
+        "b9000",
+    )
+    urls = _fake_github(monkeypatch, {"/releases?": None})
+    with pytest.raises(RuntimeError, match = "converter sources"):
+        backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert not any("/latest/" in u for u in urls)
+    assert calls == []
+
+
+def test_gguf_converter_skips_prerelease_when_mapping_upstream_tag(monkeypatch):
+    from utils import llama_cpp_source
+    _fake_github(
+        monkeypatch,
+        {
+            "&page=1": [
+                {"tag_name": "b9000-mix-pre", "draft": False, "prerelease": True},
+                {"tag_name": "b9000-mix-rel", "draft": False, "prerelease": False},
+            ]
+        },
+    )
+    assert llama_cpp_source._matching_fork_tag("b9000") == "b9000-mix-rel"
+
+
+def test_gguf_converter_offline_without_revision_reuses_newest_fork_tree(monkeypatch, tmp_path):
+    import os
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    zoo = sys.modules["unsloth_zoo.llama_cpp"]
+    zoo._resolve_converter_revision = lambda d: (None, None)
+    zoo._converter_network_allowed = lambda: False
+    trees = []
+    for i, tag in enumerate(["b8000-mix-old", "b9000-mix-new"]):
+        tree = tmp_path / "home" / f"llama.cpp-source-{tag}"
+        (tree / "gguf-py").mkdir(parents = True)
+        (tree / "convert_lora_to_gguf.py").write_text("")
+        os.utime(tree, (1000 + i, 1000 + i))
+        trees.append(tree)
+    _fake_github(monkeypatch, {})
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(trees[-1] / "convert_lora_to_gguf.py")

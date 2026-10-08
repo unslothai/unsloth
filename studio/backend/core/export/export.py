@@ -1977,6 +1977,17 @@ class ExportBackend:
                 os.path.join(legacy, "convert_lora_to_gguf.py")
             ):
                 converter = os.path.join(legacy, "convert_lora_to_gguf.py")
+            if converter is None and not tag:
+                # No revision known (offline, no marker): the newest tree any exporter left.
+                trees = [
+                    d
+                    for d in glob.glob(f"{glob.escape(base_source_dir)}-*")
+                    if os.path.isfile(os.path.join(d, "convert_lora_to_gguf.py"))
+                ]
+                if trees:
+                    converter = os.path.join(
+                        max(trees, key = os.path.getmtime), "convert_lora_to_gguf.py"
+                    )
         if converter is None:
             if not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
                 raise RuntimeError(
