@@ -10,19 +10,31 @@ type ReplayableMessagePart = {
   type: string;
   text?: unknown;
   _google_thought_signature?: unknown;
+  _google_thought_parts?: unknown;
 };
 
-export function pinGeminiPartThoughtSignature<T extends { type: string }>(
+export function appendGeminiThoughtReplayPart(
+  parts: GeminiThoughtReplayPart[],
+  text: string,
+  thoughtSignature: string,
+): void {
+  const latestPart = parts.at(-1);
+  if (latestPart?.thoughtSignature === thoughtSignature) {
+    latestPart.text += text;
+    return;
+  }
+  parts.push({ text, thoughtSignature });
+}
+
+export function pinGeminiTextThoughtSignature<T extends { type: string }>(
   parts: T[],
   thoughtSignature: string | undefined,
-  belongsToThought: boolean,
 ): T[] {
   if (!thoughtSignature || parts.length === 0) {
     return parts;
   }
-  const targetType = belongsToThought ? "reasoning" : "text";
   for (let index = parts.length - 1; index >= 0; index -= 1) {
-    if (parts[index].type !== targetType) {
+    if (parts[index].type !== "text") {
       continue;
     }
     parts[index] = {
@@ -34,20 +46,61 @@ export function pinGeminiPartThoughtSignature<T extends { type: string }>(
   return parts;
 }
 
-export function geminiThoughtReplayPart(
+export function pinGeminiThoughtReplayParts<T extends { type: string }>(
+  parts: T[],
+  thoughtParts: GeminiThoughtReplayPart[],
+): T[] {
+  if (thoughtParts.length === 0) {
+    return parts;
+  }
+  let targetIndex = -1;
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    if (parts[index].type === "reasoning") {
+      targetIndex = index;
+      break;
+    }
+    if (targetIndex === -1 && parts[index].type === "text") {
+      targetIndex = index;
+    }
+  }
+  const replayMetadata = thoughtParts.map((part) => ({ ...part }));
+  if (targetIndex === -1) {
+    parts.push({
+      type: "reasoning",
+      text: "",
+      _google_thought_parts: replayMetadata,
+    } as unknown as T);
+    return parts;
+  }
+  parts[targetIndex] = {
+    ...parts[targetIndex],
+    _google_thought_parts: replayMetadata,
+  } as T;
+  return parts;
+}
+
+export function geminiThoughtReplayParts(
   part: ReplayableMessagePart,
-): GeminiThoughtReplayPart | null {
-  if (part.type !== "reasoning") {
-    return null;
+): GeminiThoughtReplayPart[] {
+  if (!Array.isArray(part._google_thought_parts)) {
+    return [];
   }
-  const signature = part._google_thought_signature;
-  if (typeof signature !== "string" || !signature) {
-    return null;
-  }
-  return {
-    text: typeof part.text === "string" ? part.text : "",
-    thoughtSignature: signature,
-  };
+  return part._google_thought_parts.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    return typeof record.text === "string" &&
+      typeof record.thoughtSignature === "string" &&
+      record.thoughtSignature
+      ? [
+          {
+            text: record.text,
+            thoughtSignature: record.thoughtSignature,
+          },
+        ]
+      : [];
+  });
 }
 
 export function withGeminiThoughtReplayParts(

@@ -2087,8 +2087,12 @@ def test_assistant_signed_thought_replays_before_answer(monkeypatch):
                         "thought_parts": [
                             {
                                 "text": "consider the clues",
-                                "thought_signature": "SIG-THOUGHT",
-                            }
+                                "thought_signature": "SIG-THOUGHT-1",
+                            },
+                            {
+                                "text": "check the conclusion",
+                                "thought_signature": "SIG-THOUGHT-2",
+                            },
                         ]
                     }
                 },
@@ -2100,9 +2104,14 @@ def test_assistant_signed_thought_replays_before_answer(monkeypatch):
     assert parts[0] == {
         "text": "consider the clues",
         "thought": True,
-        "thoughtSignature": "SIG-THOUGHT",
+        "thoughtSignature": "SIG-THOUGHT-1",
     }
-    assert parts[1] == {"text": "the answer"}
+    assert parts[1] == {
+        "text": "check the conclusion",
+        "thought": True,
+        "thoughtSignature": "SIG-THOUGHT-2",
+    }
+    assert parts[2] == {"text": "the answer"}
 
 
 def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):

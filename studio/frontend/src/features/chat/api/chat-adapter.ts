@@ -179,8 +179,10 @@ import {
 } from "../codex-reasoning";
 import {
   type GeminiThoughtReplayPart,
-  geminiThoughtReplayPart,
-  pinGeminiPartThoughtSignature,
+  appendGeminiThoughtReplayPart,
+  geminiThoughtReplayParts,
+  pinGeminiTextThoughtSignature,
+  pinGeminiThoughtReplayParts,
   withGeminiThoughtReplayParts,
 } from "../gemini-thought-replay";
 
@@ -1491,13 +1493,12 @@ function serializeAssistantReplayMessages(
   };
 
   for (const part of message.content ?? []) {
+    pendingGeminiThoughtParts.push(...geminiThoughtReplayParts(part));
     if (part.type === "reasoning") {
       if (pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
       pendingReasoningParts.push(part.text);
-      const replayPart = geminiThoughtReplayPart(part);
-      if (replayPart) pendingGeminiThoughtParts.push(replayPart);
       continue;
     }
 
@@ -6020,8 +6021,9 @@ export function createOpenAIStreamAdapter(
           toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
           () => `${backendToolCallId}:${crypto.randomUUID()}`,
         );
-      let latestGeminiThoughtSignature: string | undefined;
       let latestGeminiTextSignature: string | undefined;
+      let pendingGeminiThoughtText = "";
+      const geminiThoughtParts: GeminiThoughtReplayPart[] = [];
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -6064,15 +6066,10 @@ export function createOpenAIStreamAdapter(
         }
         assembled.push(...runs[boundaries.length]);
 
-        pinGeminiPartThoughtSignature(
-          assembled,
-          latestGeminiThoughtSignature,
-          true,
-        );
-        return pinGeminiPartThoughtSignature(
+        pinGeminiThoughtReplayParts(assembled, geminiThoughtParts);
+        return pinGeminiTextThoughtSignature(
           assembled,
           latestGeminiTextSignature,
-          false,
         );
       };
 
@@ -7600,6 +7597,7 @@ export function createOpenAIStreamAdapter(
               // Replay state reaches the message only through a yield, so a Stop while the gate holds one
               // persists a turn that cannot replay. Pace previews, never state.
               let replayStateChanged = false;
+              let geminiThoughtSignature: string | undefined;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<
                   string,
@@ -7612,8 +7610,7 @@ export function createOpenAIStreamAdapter(
                   if (typeof sig === "string" && sig) {
                     const belongsToThought = googleRecord.thought === true;
                     if (belongsToThought) {
-                      replayStateChanged ||= sig !== latestGeminiThoughtSignature;
-                      latestGeminiThoughtSignature = sig;
+                      geminiThoughtSignature = sig;
                     } else {
                       replayStateChanged ||= sig !== latestGeminiTextSignature;
                       latestGeminiTextSignature = sig;
@@ -7674,6 +7671,16 @@ export function createOpenAIStreamAdapter(
               const reasoning =
                 (typeof rawReasoning === "string" ? rawReasoning : "") +
                 reasoningFromDetails;
+              pendingGeminiThoughtText += reasoning;
+              if (geminiThoughtSignature) {
+                appendGeminiThoughtReplayPart(
+                  geminiThoughtParts,
+                  pendingGeminiThoughtText,
+                  geminiThoughtSignature,
+                );
+                pendingGeminiThoughtText = "";
+                replayStateChanged = true;
+              }
               // OpenAI delta.tool_calls streams fragments by index; accumulate into one part. extra_content
               // carries the Gemini 3 thoughtSignature.
               const rawDeltaToolCalls = (

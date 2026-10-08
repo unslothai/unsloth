@@ -5,38 +5,45 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  geminiThoughtReplayPart,
-  pinGeminiPartThoughtSignature,
+  type GeminiThoughtReplayPart,
+  appendGeminiThoughtReplayPart,
+  geminiThoughtReplayParts,
+  pinGeminiTextThoughtSignature,
+  pinGeminiThoughtReplayParts,
   withGeminiThoughtReplayParts,
 } from "../src/features/chat/gemini-thought-replay.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-const READ_REPLAY_PART = /geminiThoughtReplayPart\(part\)/;
+const READ_REPLAY_PARTS = /geminiThoughtReplayParts\(part\)/;
 const WRITE_REPLAY_PARTS = /withGeminiThoughtReplayParts\(/;
-const PIN_THOUGHT_SIGNATURE =
-  /pinGeminiPartThoughtSignature\([\s\S]*latestGeminiThoughtSignature,[\s\S]*true,[\s\S]*\)/;
+const PIN_THOUGHT_PARTS = /pinGeminiThoughtReplayParts\(/;
+const CAPTURE_THOUGHT_PARTS = /appendGeminiThoughtReplayPart\(/;
 const PIN_TEXT_SIGNATURE =
-  /pinGeminiPartThoughtSignature\([\s\S]*latestGeminiTextSignature,[\s\S]*false,[\s\S]*\)/;
+  /pinGeminiTextThoughtSignature\([\s\S]*latestGeminiTextSignature,[\s\S]*\)/;
 
-test("a signed thought stays on the reasoning part", () => {
+test("every signed thought stays separate from signed answer text", () => {
   const parts: Array<{
     type: string;
     text: string;
     _google_thought_signature?: string;
+    _google_thought_parts?: GeminiThoughtReplayPart[];
   }> = [
-    { type: "reasoning", text: "consider the clues" },
+    { type: "reasoning", text: "first thoughtsecond thought" },
     { type: "text", text: "the answer" },
   ];
+  const thoughtParts: GeminiThoughtReplayPart[] = [];
+  appendGeminiThoughtReplayPart(thoughtParts, "first ", "SIG-THOUGHT-1");
+  appendGeminiThoughtReplayPart(thoughtParts, "thought", "SIG-THOUGHT-1");
+  appendGeminiThoughtReplayPart(thoughtParts, "second thought", "SIG-THOUGHT-2");
 
-  pinGeminiPartThoughtSignature(parts, "SIG-THOUGHT", true);
-  pinGeminiPartThoughtSignature(parts, "SIG-ANSWER", false);
+  pinGeminiThoughtReplayParts(parts, thoughtParts);
+  pinGeminiTextThoughtSignature(parts, "SIG-ANSWER");
 
-  assert.equal(parts[0]._google_thought_signature, "SIG-THOUGHT");
   assert.equal(parts[1]._google_thought_signature, "SIG-ANSWER");
-  assert.deepEqual(geminiThoughtReplayPart(parts[0]), {
-    text: "consider the clues",
-    thoughtSignature: "SIG-THOUGHT",
-  });
+  assert.deepEqual(geminiThoughtReplayParts(parts[0]), [
+    { text: "first thought", thoughtSignature: "SIG-THOUGHT-1" },
+    { text: "second thought", thoughtSignature: "SIG-THOUGHT-2" },
+  ]);
 });
 
 test("signed thoughts use a separate replay envelope from signed answer text", () => {
@@ -57,8 +64,9 @@ test("signed thoughts use a separate replay envelope from signed answer text", (
 
 test("the chat adapter retains thought and answer signatures independently", () => {
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, READ_REPLAY_PART);
+  assert.match(adapter, READ_REPLAY_PARTS);
   assert.match(adapter, WRITE_REPLAY_PARTS);
-  assert.match(adapter, PIN_THOUGHT_SIGNATURE);
+  assert.match(adapter, PIN_THOUGHT_PARTS);
+  assert.match(adapter, CAPTURE_THOUGHT_PARTS);
   assert.match(adapter, PIN_TEXT_SIGNATURE);
 });
