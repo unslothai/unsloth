@@ -2054,6 +2054,9 @@ def linux_cuda_choice_from_release(
         selection_log.append(
             "linux_cuda_selection: no Linux CUDA runtime line satisfied both runtime libraries and driver compatibility"
         )
+        if driver_below_cuda_prebuilt_floor(host):
+            selection_log.append(f"linux_cuda_selection: {cuda_driver_floor_message(host)}")
+            log(cuda_driver_floor_message(host))
         _warn_uncovered_cuda_host(
             host_sms,
             detected_runtime_lines,
@@ -3375,13 +3378,18 @@ def detected_windows_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
     return _core.detected_windows_runtime_lines(_OPS)
 
 
+driver_below_cuda_prebuilt_floor = _core.driver_below_cuda_prebuilt_floor
+cuda_driver_floor_message = _core.cuda_driver_floor_message
+
+
 def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
     if not host.driver_cuda_version:
         return []
     major, _minor = host.driver_cuda_version
     # cuda12 app bundles are toolkit-12.8 builds with bundled runtime libs; CUDA
-    # minor-version compatibility runs them on any 12.x driver, same as Linux.
-    if major < _MIN_CUDA_MAJOR:
+    # minor-version compatibility runs them on a 12.x driver, same as Linux, but only
+    # from 12.4 on: their compressed device code does not load on an older one (#12842).
+    if major < _MIN_CUDA_MAJOR or driver_below_cuda_prebuilt_floor(host):
         return []
     return _cuda_runtime_lines_for_major(major)
 
@@ -3657,6 +3665,9 @@ def published_windows_cuda_attempts(
             "windows_cuda_selection: app-bundle runtime lines (major-gated)="
             + (",".join(ordered_lines) if ordered_lines else "none")
         )
+        if driver_below_cuda_prebuilt_floor(host):
+            selection_log.append(f"windows_cuda_selection: {cuda_driver_floor_message(host)}")
+            log(cuda_driver_floor_message(host))
 
     host_sms = normalize_compute_caps(host.compute_caps)
     attempts: list[AssetChoice] = []
