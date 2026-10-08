@@ -342,7 +342,10 @@ def test_run_sh_starts_unsloth_run_in_the_mounted_host_dir(tmp_path):
     "command",
     [
         ("python", "/workspace/host/train.py"),
+        ("/usr/bin/python", "/workspace/host/train.py"),
         ("python", "-u", "/workspace/host/train.py", "--data", "data/train.jsonl"),
+        ("bash", "/workspace/host/train"),
+        ("/workspace/host/train.sh",),
         ("accelerate", "launch", "--multi_gpu", "/workspace/host/train.py"),
         (
             "accelerate",
@@ -368,6 +371,8 @@ def test_run_sh_starts_a_host_script_in_the_mounted_host_dir(tmp_path, command):
     "command",
     [
         ("jupyter", "lab"),
+        ("cp", "/workspace/host/input.txt", "relative-output.txt"),
+        ("python", "-m", "pytest", "--basetemp", "/workspace/host"),
         ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb"),
         ("unsloth-run", "unsloth-notebooks/nb/Llama.ipynb", "--out", "/workspace/host/Llama.ipynb"),
         ("python", "/workspace/smoke_test.py"),
