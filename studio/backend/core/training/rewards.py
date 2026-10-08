@@ -75,7 +75,6 @@ def _split_markdown(raw: str) -> tuple[dict, dict]:
     head, body = parts[0][3:], parts[1]
     try:
         meta = yaml.safe_load(head) or {}
-        # A Python body is code, not YAML: refuse it before trying to parse it.
         if isinstance(meta, dict) and meta.get("kind") == "python":
             raise RewardError("Python rewards are not supported yet; only rule rewards can run.")
         rule = yaml.safe_load(body.lstrip("-\n")) or {}

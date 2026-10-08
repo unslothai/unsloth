@@ -173,7 +173,6 @@ export function RlDatasetRoles({
     void Promise.resolve().then(loadColumns);
   }, [loadColumns]);
 
-  // Drop roles from another objective and fill the rest from column names.
   useEffect(() => {
     if (!columns) {
       return;
