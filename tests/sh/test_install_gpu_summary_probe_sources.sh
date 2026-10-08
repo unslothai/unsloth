@@ -19,6 +19,7 @@ trap 'rm -rf "$WORK"' EXIT
     done
     echo '_detect_rocm_version_tag() { echo rocm7.2; }'
     echo 'substep() { :; }'
+    echo '_torch_index_pinned=${STUB_PINNED:-false}'
     echo ""
     # Extract the probe and selection block.
     awk '/^    _gpu_disp_gfx_all=""/ {on=1}
@@ -52,7 +53,8 @@ case "$1 $2" in
     # `list -e` carries HIP_ID and nothing else of interest; an older CLI rejects the
     # flag outright, which is the STUB_AMDSMI_E="" case.
     "list -e")  [ -z "${STUB_AMDSMI_E:-}" ] || cat "$STUB_AMDSMI_E" ;;
-    "list "*)   sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
+    "list "*)   [ -z "${STUB_AMDSMI_LIST:-}" ] || { cat "$STUB_AMDSMI_LIST"; exit 0; }
+                sed -n 's/^\(GPU: [0-9]*\).*/\1  BDF: 0000:03:00.0  UUID: aaaa-bbbb  KFD_ID: 1/p' "$STUB_AMDSMI" ;;
     "static "*) cat "$STUB_AMDSMI" ;;
 esac
 STUB
@@ -412,6 +414,17 @@ assert_eq "amd-smi: ROCr survivors, then HIP" "gfx90a|AMD Instinct MI210" \
 assert_eq "amd-smi: an ROCr mask alone still selects its card" "gfx1201|AMD Radeon AI PRO R9700" \
     "$(STUB_AMDSMI_E="$WORK/smi_e_identity" SUMMARY_ENV=ROCR_VISIBLE_DEVICES=2 \
         summary "$WORK/empty" "$WORK/smi_three")"
+
+# Older amd-smi: `static --asic` names no arch, `list` prints `GPU[N] : gfx...`.
+printf 'GPU: 0\n' > "$WORK/smi_no_asic"
+printf 'GPU[0] : gfx1036\nGPU[1] : gfx1201\n' > "$WORK/smi_list_gfx"
+assert_eq "amd-smi list-only arches: ROCr survivors, then HIP" "gfx1201|" \
+    "$(SUMMARY_ENV="ROCR_VISIBLE_DEVICES=1 STUB_AMDSMI_LIST=$WORK/smi_list_gfx" \
+        summary "$WORK/empty" "$WORK/smi_no_asic")"
+
+echo "=== a pinned index keeps the enumerated card ==="
+assert_eq "no discrete repick when routing was skipped" "gfx1036|AMD Radeon Graphics" \
+    "$(SUMMARY_ENV=STUB_PINNED=true summary "$WORK/roc_twins" "$WORK/empty")"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
