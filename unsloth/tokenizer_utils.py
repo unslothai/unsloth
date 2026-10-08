@@ -471,8 +471,13 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
     kwargs = {}
     for arg in args:
         kwargs[arg] = getattr(slow_tokenizer, arg, None)
-    kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = True)
-    fast_tokenizer = FastTokenizer(**kwargs)
+    # Remote-code slow tokenizers (e.g. Teuken's SPTokenizer, no vocab_file) can't always be converted:
+    # keep the slow one, as the vocab / tokenization mismatch checks below already do.
+    try:
+        kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = True)
+        fast_tokenizer = FastTokenizer(**kwargs)
+    except Exception:
+        return slow_tokenizer
 
     sorted_slow_tokenizer = get_sorted_dict(slow_tokenizer.get_vocab())
     sorted_fast_tokenizer = get_sorted_dict(fast_tokenizer.get_vocab())
