@@ -95,7 +95,7 @@ def test_train_calibrate_save_and_serve(checkpoint, tmp_path, full):
     assert report["skipped"] == 0 and len(train) + len(held) == 360
     base = FastDecisionModel.evaluate(model, tokenizer, held)
     args = TrainingArguments(
-        str(tmp_path / "run"), learning_rate = 1e-3 if full else 5e-3, warmup_ratio = 0.1, **ARGS
+        str(tmp_path / "run"), learning_rate = 1e-3 if full else 5e-3, warmup_steps = 8, **ARGS
     )
     trainer = DecisionTrainer(model, args, train, held, head_learning_rate = 5e-3)
     trainer.train()
