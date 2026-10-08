@@ -73,3 +73,30 @@ test("preview and objective selector show the objective the run will use", async
     /const objective = rlLocked \? "sft" : selected;/,
   );
 });
+
+test("a start whose detected modality rules out RL cancels instead of training SFT", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(
+    new URL(
+      "../src/features/training/lib/start-fresh-training-run.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const detect = src.indexOf(
+    "if (!applyDetectedDatasetModality(attempt, isImage, isAudio))",
+  );
+  const before = src.lastIndexOf(
+    "const requestedObjective = effectiveTrainingObjective(attempt.config);",
+    detect,
+  );
+  const cancel = src.indexOf(
+    'return attempt.cancel(translate("rl.objective.modelLocked"));',
+    detect,
+  );
+  assert.ok(before > 0 && before < detect, "objective read before detection");
+  assert.ok(cancel > detect, "cancel after detection");
+  assert.ok(
+    cancel < src.indexOf("prepareSelectedDataset(attempt, hfToken)", detect),
+  );
+});

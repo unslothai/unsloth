@@ -7,12 +7,10 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { parseYamlRlSettings, serializeConfigToYaml } = await import(
-  "../src/features/training/lib/yaml-config.ts"
-);
-const { DEFAULT_HYPERPARAMS, DEFAULT_RL_SETTINGS } = await import(
-  "../src/config/training.ts"
-);
+const { parseYamlRlSettings, serializeConfigToYaml } =
+  await import("../src/features/training/lib/yaml-config.ts");
+const { DEFAULT_HYPERPARAMS, DEFAULT_RL_SETTINGS } =
+  await import("../src/config/training.ts");
 
 const base = { ...DEFAULT_HYPERPARAMS, ...DEFAULT_RL_SETTINGS };
 
@@ -76,5 +74,19 @@ test("an unknown objective or wrong-typed fields don't get applied", () => {
       "rl:\n  objective: grpo\n  variant: nope\n  num_generations: lots\n  rewards: [{weight: 1}, {name: x}]\n",
     ),
     { trainingObjective: "grpo", grpoRewards: [{ name: "x", weight: 1 }] },
+  );
+});
+
+test("fractional generation counts and token limits are dropped", () => {
+  const out = parseYamlRlSettings(
+    "rl:\n  objective: grpo\n  num_generations: 2.5\n  max_prompt_length: 100.5\n  max_completion_length: 64.2\n",
+  );
+  assert.equal(out.grpoNumGenerations, undefined);
+  assert.equal(out.rlMaxPromptLength, undefined);
+  assert.equal(out.grpoMaxCompletionLength, undefined);
+  assert.equal(
+    parseYamlRlSettings("rl:\n  objective: grpo\n  num_generations: 6\n")
+      .grpoNumGenerations,
+    6,
   );
 });

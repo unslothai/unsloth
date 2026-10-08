@@ -217,7 +217,11 @@ function parseRlSection(rl: unknown): YamlRlSettings {
       : undefined;
   };
   set("rlBeta", inRange(r.beta, 0, 10));
-  set("rlMaxPromptLength", inRange(r.max_prompt_length, 16, Infinity));
+  const intInRange = (v: unknown, lo: number, hi: number) => {
+    const n = inRange(v, lo, hi);
+    return n == null || Number.isInteger(n) ? n : undefined;
+  };
+  set("rlMaxPromptLength", intInRange(r.max_prompt_length, 16, Infinity));
   if (objective !== "grpo") {
     return out;
   }
@@ -225,17 +229,10 @@ function parseRlSection(rl: unknown): YamlRlSettings {
     "grpoVariant",
     GRPO_VARIANTS.find((v) => v === r.variant),
   );
-  set(
-    "grpoNumGenerations",
-    isNum(r.num_generations) &&
-      r.num_generations >= 2 &&
-      r.num_generations <= 16
-      ? r.num_generations
-      : undefined,
-  );
+  set("grpoNumGenerations", intInRange(r.num_generations, 2, 16) ?? undefined);
   set(
     "grpoMaxCompletionLength",
-    inRange(r.max_completion_length, 16, Infinity),
+    intInRange(r.max_completion_length, 16, Infinity),
   );
   set(
     "grpoTemperature",

@@ -401,8 +401,16 @@ async function prepareSelectedDataset(
     (isImage || isAudio) &&
     attempt.config.datasetSource === "huggingface" &&
     attempt.config.datasetKnownCached;
+  const requestedObjective = effectiveTrainingObjective(attempt.config);
   if (!applyDetectedDatasetModality(attempt, isImage, isAudio)) {
     return false;
+  }
+  // A modality found only now can rule out the chosen RL objective: stop, never train SFT instead.
+  if (
+    requestedObjective !== "sft" &&
+    effectiveTrainingObjective(attempt.config) === "sft"
+  ) {
+    return attempt.cancel(translate("rl.objective.modelLocked"));
   }
   if (recheckCachedDataset || recheckDetectedVisionDataset) {
     return prepareSelectedDataset(attempt, hfToken);
