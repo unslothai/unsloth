@@ -3218,11 +3218,7 @@ def test_auto_fetches_dflash_when_the_repo_ships_no_dspark_sidecar(monkeypatch):
     assert seen["dflash_fetched"] is True
 
 
-# ── #11308: Auto keeps tensor split instead of a DFlash drafter that aborts it ──
-#
-# DFlash2 + --split-mode tensor asserts at startup on every shipped llama.cpp
-# (ggml-org/llama.cpp#27819), and the route then retries on layer split, so Auto
-# promoting the sidecar silently cost the user's tensor split and its MTP drafter.
+# #11308: DFlash2 + --split-mode tensor aborts at startup, so Auto keeps tensor split with MTP.
 
 _MTP = "/cache/snap/MTP/mtp-model-Q4_0.gguf"
 
@@ -3260,7 +3256,6 @@ def test_auto_skips_dflash_under_tensor_split_from_env(monkeypatch):
 
 
 def test_auto_keeps_dflash_under_tensor_split_when_the_mtp_sidecar_cannot_load(monkeypatch):
-    """An MTP sidecar the loader would drop is no alternative, so DFlash stays."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
         supports_dspark = False,
@@ -3275,8 +3270,6 @@ def test_auto_keeps_dflash_under_tensor_split_when_the_mtp_sidecar_cannot_load(m
 
 
 def test_auto_keeps_dflash_under_tensor_split_without_an_mtp_drafter(monkeypatch):
-    """No MTP to fall back to: DFlash on layer split still beats tensor with no
-    drafter, so Auto keeps its old choice."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
         supports_dspark = False,
@@ -3289,7 +3282,6 @@ def test_auto_keeps_dflash_under_tensor_split_without_an_mtp_drafter(monkeypatch
 
 
 def test_auto_does_not_promote_a_local_dflash_sidecar_under_tensor_split(monkeypatch, tmp_path):
-    """The reported shape: dflash-*.gguf next to local weights, -sm tensor in extras."""
     model = tmp_path / "Qwen3.8-27B-UD-Q6_K_XL.gguf"
     model.write_bytes(b"GGUF")
     sidecar = tmp_path / "dflash-Qwen3.8-27B-Q8_0.gguf"
@@ -3308,14 +3300,12 @@ def test_auto_does_not_promote_a_local_dflash_sidecar_under_tensor_split(monkeyp
     tensor = _dflash_fetch_during_auto_load(monkeypatch, extra_args = ["-sm", "tensor"], **kwargs)
     assert tensor["dflash_promoted"] is False
     assert any("keeping tensor split" in m for m in tensor["log"])
-    # Control: the same load without tensor split still promotes DFlash.
     layer = _dflash_fetch_during_auto_load(monkeypatch, **kwargs)
     assert layer["dflash_promoted"] is True
 
 
 @pytest.mark.parametrize("extra_args", [None, ["-sm", "layer"]])
 def test_auto_still_uses_dflash_without_tensor_split(monkeypatch, extra_args):
-    """A --split-mode layer in extras overrides the toggle, so DFlash stays."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
         supports_dspark = False,
@@ -3330,7 +3320,6 @@ def test_auto_still_uses_dflash_without_tensor_split(monkeypatch, extra_args):
 
 
 def test_explicit_dflash_still_fetches_under_tensor_split(monkeypatch):
-    """Only Auto stands down; an explicit DFlash request is the user's call."""
     seen = _dflash_fetch_during_auto_load(
         monkeypatch,
         supports_dspark = False,

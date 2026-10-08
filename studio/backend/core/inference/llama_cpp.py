@@ -23990,15 +23990,9 @@ class LlamaCppBackend:
             # The canonical mode drives which drafter is downloaded, sized and
             # launched, so resolve it once before either branch can use it.
             _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
-            # #11308: DFlash2's candidate selector runs top_k over a vocab-split
-            # lm_head under --split-mode tensor, which aborts at startup on every
-            # shipped llama.cpp (ggml-org/llama.cpp#27819). Promoting a sidecar
-            # there crashes the load and the route retries on layer split, which
-            # loses to MTP on tensor split (57 vs 40 tok/s on 2x R9700). So when
-            # Auto has an MTP sidecar it can launch, it neither fetches nor
-            # promotes DFlash under tensor. Without one, DFlash on layer split
-            # still beats tensor with no drafter, so that path is unchanged, as is
-            # an explicit "dflash" request. _estimate_gguf_required_gb mirrors this.
+            # #11308: DFlash2 + --split-mode tensor aborts at startup (ggml-org/llama.cpp#27819) and the
+            # route falls back to layer split, so Auto prefers a loadable MTP sidecar on tensor instead.
+            # _estimate_gguf_required_gb mirrors this.
             _auto_tensor_split = _spec_canon == "auto" and _effective_tensor_parallel(
                 extra_args, tensor_parallel
             )

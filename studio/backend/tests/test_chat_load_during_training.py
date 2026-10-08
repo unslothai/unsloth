@@ -1645,8 +1645,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         )
 
     def test_auto_prices_the_mtp_sidecar_under_tensor_split(self):
-        """#11308: under tensor split Auto launches a loadable MTP sidecar instead of
-        DFlash, so the estimate charges the MTP file, not the DFlash one."""
+        """#11308: Auto on tensor split launches the loadable MTP sidecar, so it is the one charged."""
         import tempfile
 
         import core.inference.llama_cpp as llama_cpp_module
