@@ -44,10 +44,13 @@ def _tokenizer():
 
 def _prompt(monkeypatch, messages, **kwargs):
     try:
-        from core.inference.inference import InferenceBackend
+        from core.inference import inference
     except (ImportError, RuntimeError) as exc:
         pytest.skip(f"full inference backend unavailable ({type(exc).__name__}: {exc})")
-    backend = InferenceBackend.__new__(InferenceBackend)
+    # Another file on this worker may have bound the module to a stubbed unsloth.
+    if getattr(inference.get_chat_template, "__module__", None) != "unsloth.chat_templates":
+        pytest.skip("inference module is bound to a stubbed unsloth.chat_templates")
+    backend = inference.InferenceBackend.__new__(inference.InferenceBackend)
     backend.active_model_name = MODEL
     backend.models = {MODEL: {"tokenizer": _tokenizer(), "is_vision": False}}
     prompts = []
@@ -62,6 +65,7 @@ def _prompt(monkeypatch, messages, **kwargs):
             messages = messages, system_prompt = "Be brief.", **kwargs
         )
     )
+    assert isinstance(prompts[0], str)
     return prompts[0]
 
 
