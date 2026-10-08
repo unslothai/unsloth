@@ -262,6 +262,20 @@ export const en = {
       tablet: "Tablet",
       close: "Hide device toolbar",
     },
+    downloads: {
+      title: "Downloads",
+      inProgressLabel: "Downloading",
+      inProgress: "Downloading…",
+      complete: "Download complete",
+      failed: "Download failed",
+      downloaded: "Downloaded",
+      missing: "File moved or deleted",
+      open: "Open",
+      openFailed: "Couldn't open {name}.",
+      copyLink: "Copy download link",
+      showAll: "Show all",
+      savePage: "Save page as…",
+    },
     file: {
       openIn: "Open in",
       newChat: "New chat",
@@ -571,6 +585,7 @@ export const en = {
     },
   },
   common: {
+    duplicate: "Duplicate",
     cancel: "Cancel",
     close: "Close",
     delete: "Delete",
@@ -3445,6 +3460,10 @@ export const en = {
       readMore: "Read more",
     },
     training: {
+      duplicateFailed: "Could not duplicate run",
+      duplicateDraftChanged:
+        "Training settings changed while loading. Try duplicating again.",
+      duplicateNoModel: "This run has no saved model configuration.",
       startTraining: "Start Training",
       starting: "Starting...",
       loadingModel: "Loading model...",

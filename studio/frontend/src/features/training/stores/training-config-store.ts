@@ -45,6 +45,8 @@ import {
   inferTrainingModelTypeFromFlags,
   resolveTrainingModelType,
 } from "../lib/model-type-capabilities";
+import { runConfigDraftSelections } from "../lib/run-config-draft";
+import { parseRunConfigRlSettings } from "../lib/yaml-config";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import type {
   DatasetCacheReferenceOptions,
@@ -218,6 +220,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         options?: {
           applyTrainingDefaults?: boolean;
           keepModelSubfolder?: boolean;
+          fillMethodProvenance?: boolean;
         },
       ) => {
         const applyTrainingDefaults = options?.applyTrainingDefaults ?? true;
@@ -556,6 +559,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               shouldApplyTrainingDefaults && !isDecision && objective !== "sft"
                 ? { learningRate: RL_LEARNING_RATES[objective] }
                 : {};
+            // Fill a copied CPT run's missing history, but preserve values captured by
+            // any method transition the user made while this request was pending.
+            const fallbackProvenanceRefresh = options?.fillMethodProvenance
+              ? {
+                  modelAdapterLearningRate,
+                  ...(requestState.trainingMethod === "cpt" &&
+                  _trainingMethodEditGeneration === trainingMethodEditGeneration
+                    ? cptProvenanceRefresh
+                    : {}),
+                }
+              : cptFallbackProvenanceRefresh;
+
             const nextStreamingState = {
               ...get(),
               ...patch,
@@ -595,11 +610,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                       ...cptProvenanceRefresh,
                     },
                   }
-                : Object.keys(cptFallbackProvenanceRefresh).length > 0
+                : Object.keys(fallbackProvenanceRefresh).length > 0
                   ? {
                       trainingMethodProvenance: {
                         ...get().trainingMethodProvenance,
-                        ...cptFallbackProvenanceRefresh,
+                        ...fallbackProvenanceRefresh,
                       },
                     }
                   : {}),
@@ -1668,6 +1683,43 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setGrpoEpsilonHigh: (grpoEpsilonHigh) =>
           setUserEdit({ grpoEpsilonHigh }),
         setGrpoRewards: (grpoRewards) => setUserEdit({ grpoRewards }),
+        restoreRunConfig: (config) => {
+          const selections = runConfigDraftSelections(config);
+          const hyperparameters = mapBackendModelConfigToTrainingPatch({
+            training: config,
+            lora: config,
+            logging: config,
+          });
+          _datasetCheckController?.abort();
+          get().reset();
+          _trainingMethodEditGeneration += 1;
+          _trainOnCompletionsManuallySet = true;
+          _trainOnCompletionsExplicitModel = selections.selectedModel;
+          setUserEdit({ ...hyperparameters, ...selections });
+          // RL runs keep their roles in custom_format_mapping, which selections read as chat roles.
+          const { trainingObjective, ...rl } = parseRunConfigRlSettings(config);
+          if (
+            trainingObjective !== "sft" &&
+            selections.modelType !== "decision" &&
+            get().trainingMethod !== "cpt"
+          ) {
+            setUserEdit({
+              ...rl,
+              trainingObjective,
+              rlRoleMapping: get().datasetManualMapping,
+              datasetManualMapping: {},
+              trainOnCompletions: false,
+              packing: false,
+              datasetStreaming: false,
+            });
+          }
+          // Fetch capabilities without replacing the saved recipe.
+          loadAndApplyModelDefaults(selections.selectedModel, {
+            applyTrainingDefaults: false,
+            keepModelSubfolder: true,
+            fillMethodProvenance: true,
+          });
+        },
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;

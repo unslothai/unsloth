@@ -149,7 +149,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { ArrowRightIcon, ChevronDown, Moon } from "lucide-react";
+import { ArrowRightIcon, ChevronDown, Copy, Moon } from "lucide-react";
 import { ForkIcon } from "@/lib/fork-icon";
 import {
   Link,
@@ -260,6 +260,7 @@ import {
   isTrainingStartPending,
   removeTrainingUnloadGuard,
   renameTrainingRun,
+  useDuplicateTrainingRun,
   useTrainingCompletionWatch,
   useTrainingHistorySidebarItems,
   useTrainingRuntimeStore,
@@ -2684,6 +2685,10 @@ export function AppSidebar() {
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
+  const {
+    duplicate: duplicateTrainingRun,
+    disabled: duplicateTrainingRunDisabled,
+  } = useDuplicateTrainingRun();
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
   // Running or starting up. Drives the Train spinner + New Chat / Return to Chat swap.
   const trainingInProgress = useTrainingRuntimeStore(isTrainingStartPending);
@@ -5901,6 +5906,16 @@ export function AppSidebar() {
                             </button>
                           )}
                         >
+                          <DropdownMenuItem
+                            disabled={duplicateTrainingRunDisabled}
+                            onSelect={() => {
+                              void duplicateTrainingRun(run.id);
+                              closeMobileIfOpen();
+                            }}
+                          >
+                            <Copy className="size-icon" />
+                            <span>{t("common.duplicate")}</span>
+                          </DropdownMenuItem>
                           <DropdownMenuItem onSelect={() => openRenameRun(run)}>
                             <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                             <span>{t("common.rename")}</span>

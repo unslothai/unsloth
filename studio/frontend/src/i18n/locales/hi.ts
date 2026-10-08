@@ -511,6 +511,7 @@ export const hi = {
     },
   },
   common: {
+    duplicate: "डुप्लिकेट करें",
     cancel: "रद्द करें",
     close: "बंद करें",
     delete: "हटाएँ",
@@ -3404,6 +3405,10 @@ export const hi = {
       readMore: "और पढ़ें",
     },
     training: {
+      duplicateFailed: "रन डुप्लिकेट करने में विफल",
+      duplicateDraftChanged:
+        "लोड करते समय ट्रेनिंग सेटिंग्स बदल गईं। फिर से डुप्लिकेट करने का प्रयास करें।",
+      duplicateNoModel: "इस रन में कोई सहेजा गया मॉडल कॉन्फ़िगरेशन नहीं है।",
       startTraining: "ट्रेनिंग शुरू करें",
       starting: "शुरू हो रहा है...",
       loadingModel: "मॉडल लोड हो रहा है...",

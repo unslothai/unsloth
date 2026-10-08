@@ -27,8 +27,7 @@ export interface ModelCacheReferenceOptions {
   modelFormat?: ModelInventoryFormat | null;
 }
 
-export interface TrainingModelSelectionOptions
-  extends ModelCacheReferenceOptions {
+export interface TrainingModelSelectionOptions extends ModelCacheReferenceOptions {
   isEmbedding?: boolean | null;
   isAudio?: boolean | null;
   isVision?: boolean | null;
@@ -301,6 +300,7 @@ export interface TrainingConfigActions {
   setGrpoMaskTruncatedCompletions: (value: boolean) => void;
   setGrpoEpsilonHigh: (value: number | null) => void;
   setGrpoRewards: (value: GrpoRewardSelection[]) => void;
+  restoreRunConfig: (config: Record<string, unknown>) => void;
   reset: () => void;
   resetToModelDefaults: () => void;
   applyConfigPatch: (config: BackendModelConfig) => void;

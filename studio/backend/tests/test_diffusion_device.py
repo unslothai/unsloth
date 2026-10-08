@@ -351,6 +351,15 @@ def test_only_mps_lacks_float64(monkeypatch):
     assert dd.diffusion_device_target_from_torch_device("mps", FP32).supports_float64 is False
 
 
+def test_float64_is_built_on_the_device_unless_it_lacks_it():
+    for device in ("cuda", "cuda:1", "xpu", "cpu", "meta"):
+        assert dd.float64_device(device) is device
+    # Callers pass torch.device objects, which only stringify to the device name.
+    mps = type("Device", (), {"__str__": lambda self: "mps:0"})()
+    for device in ("mps", "mps:0", mps):
+        assert dd.float64_device(device) == "cpu"
+
+
 class _RopeModule:
     def __init__(self, double_precision = True):
         self.double_precision = double_precision
