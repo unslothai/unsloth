@@ -3286,14 +3286,18 @@ def apply_chat_template_for_generation(
         split = _split_parallel_tool_calls(normalized)
         if split is not normalized:
             candidates.append(split)
-        repaired = _repair_orphan_tool_results(split)
-        if repaired is not split:
-            candidates.append(repaired)
         for candidate in candidates:
             try:
                 return _render_with_fallback(candidate)
             except Exception:
                 continue
+        # Built only once every other candidate failed, so a history one of them renders pays nothing for it.
+        repaired = _repair_orphan_tool_results(split)
+        if repaired is not split:
+            try:
+                return _render_with_fallback(repaired)
+            except Exception:
+                pass
         raise
 
 

@@ -423,6 +423,20 @@ def test_render_succeeds_on_single_call_template_with_parallel_calls():
     assert result == "RENDERED"
 
 
+def test_orphan_repair_is_not_built_when_an_earlier_fallback_renders(monkeypatch):
+    # Llama 3.x refuses parallel calls on every such request; the split renders it, so the orphan scan must not run.
+    import core.inference.chat_template_helpers as helpers
+
+    def _must_not_run(messages):
+        raise AssertionError("orphan repair built although the split rendered")
+
+    monkeypatch.setattr(helpers, "_repair_orphan_tool_results", _must_not_run, raising = False)
+    assert (
+        apply_chat_template_for_generation(_SingleToolCallTokenizer(), _parallel_conv())
+        == "RENDERED"
+    )
+
+
 def test_string_arguments_and_parallel_calls_are_repaired_together():
     conv = _parallel_conv()
     for call in conv[1]["tool_calls"]:
