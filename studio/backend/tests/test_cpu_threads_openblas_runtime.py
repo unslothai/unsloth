@@ -237,3 +237,21 @@ def test_a_mapping_env_stays_pure(fake_windows, monkeypatch):
     configure_cpu_threads({})
 
     assert sys.meta_path == before
+
+
+# Spawned workers inherit OPENBLAS_NUM_THREADS but never re-run run.py when Desktop starts the backend through
+# the CLI, so each long-lived worker module installs the cap itself, at import, before its first torch import.
+@pytest.mark.parametrize("worker", ["core/training/worker.py", "core/inference/worker.py"])
+def test_long_lived_workers_install_the_cap_at_import(worker):
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse((Path(__file__).resolve().parent.parent / worker).read_text(encoding = "utf-8"))
+    calls = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and getattr(node.value.func, "id", None) == "install_openblas_runtime_cap"
+    ]
+    assert len(calls) == 1

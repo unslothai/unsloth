@@ -36,7 +36,8 @@ from core.inference.audio_errors import (
 from core.inference.context_refusal import ContextBudgetExceeded
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
-# Fresh spawned interpreter: re-apply the process-wide network injections.
+# Fresh spawned interpreter: re-apply the process-wide network injections and CPU thread caps.
+from utils.cpu_threads import install_openblas_runtime_cap
 from utils.native_tls import activate_native_tls
 from utils.happy_eyeballs import activate_happy_eyeballs
 
@@ -146,6 +147,8 @@ def narrow_load_reason(cmd: dict) -> Optional[str]:
 
 activate_native_tls()
 activate_happy_eyeballs()
+# The env cap is inherited, but Windows ROCm's OpenBLAS ignores it (#12942); a Desktop launch never re-runs run.py here.
+install_openblas_runtime_cap()
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
 _SHARE_OBJECT_ERROR_SIZE = -1
