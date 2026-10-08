@@ -64,17 +64,26 @@ def test_other_compile_switches_the_user_set_are_kept():
 
 
 def test_worker_threads_see_the_disable_too():
-    """torch >= 2.12 config writes are ContextVar-local; autograd's backward threads must see it."""
+    """torch >= 2.12 config writes are ContextVar-local; autograd's backward threads must see it.
+
+    A fresh interpreter running only the helper (sliced with `ast`): importing unsloth needs a GPU,
+    and _gpu_init's later config-mirroring patch would make this pass without the fix.
+    """
+    import ast
     import subprocess
     import sys
+    from pathlib import Path
 
+    source = Path(device_type.__file__).read_text(encoding = "utf-8")
+    helper = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "apply_pre_volta_compile_workaround"
+    )
     code = (
-        "import threading, torch._dynamo\n"
-        "from unsloth import device_type\n"
-        "from torch.utils._config_module import ConfigModule\n"
-        # The workaround runs at import, before _gpu_init mirrors config writes across threads.
-        "ConfigModule.__setattr__ = getattr(ConfigModule.__setattr__, '__wrapped__', ConfigModule.__setattr__)\n"
-        "assert device_type.apply_pre_volta_compile_workaround(6, {})\n"
+        "import os, threading, torch._dynamo\n"
+        + ast.unparse(helper)
+        + "\nassert apply_pre_volta_compile_workaround(6, {})\n"
         "seen = []\n"
         "t = threading.Thread(target = lambda: seen.append(torch._dynamo.config.disable))\n"
         "t.start(); t.join()\n"
