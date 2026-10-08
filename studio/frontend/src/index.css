@@ -3354,8 +3354,7 @@ html[data-chat-font] .aui-root {
 	.dark :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]) {
 		background-color: color-mix(in srgb, var(--accent) 60%, var(--card));
 	}
-	/* Classic and Minimal dark set --primary to near the resting ink, so an
-	   active pill would look the same as an off one: dim the off ones (#12025). */
+	/* Classic and Minimal dark --primary is near the resting ink: dim off pills (#12025). */
 	:root:is([data-palette="classic"], [data-palette="minimal"]).dark
 		:is(.composer-pill-btn, .unsloth-thinking-pill)[data-active="false"] {
 		color: color-mix(in oklab, var(--foreground) 60%, transparent);

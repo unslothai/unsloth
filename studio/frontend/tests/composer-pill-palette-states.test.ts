@@ -7,8 +7,7 @@ import test from "node:test";
 import { COLOR_THEME_IDS } from "../src/features/settings/lib/color-themes.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-// Dark composer pills rest at full ink and turn var(--primary) when on, so a dark
-// palette whose primary sits next to the ink needs its off pills dimmed (#12025).
+// Dark pills rest at full ink and turn --primary when on (#12025).
 
 const CSS = readSrc("index.css");
 const TOKEN = /(--[\w-]+):\s*([^;]+);/g;
@@ -49,7 +48,6 @@ function oklab(hex: string): number[] {
 
 const base = darkTokens(".dark");
 
-/** OKLab distance between a dark palette's on ink (--primary) and its resting ink. */
 function onOffDistance(id: string): number {
   const own =
     id === "standard" ? base : darkTokens(`:root[data-palette="${id}"].dark`);
