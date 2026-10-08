@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
-# LoRA+ (arXiv 2402.12354) via `UnslothTrainingArguments(loraplus_lr_ratio = ...)`:
-# lora_B trains at learning_rate * ratio, everything else as before.
 
 from types import MethodType, SimpleNamespace
 
@@ -152,7 +149,6 @@ def test_a_loraplus_checkpoint_resumes_with_its_learning_rates():
 
 
 def test_a_legacy_checkpoint_is_refused_not_misread_under_loraplus():
-    # The pre-split two-group layout has no LoRA+ group; torch's own size check must decide.
     torch = pytest.importorskip("torch")
     model = _peft_model(torch, torch.nn, embeddings = True)
     trainable = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
