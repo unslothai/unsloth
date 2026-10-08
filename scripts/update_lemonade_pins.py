@@ -4,12 +4,7 @@
 
 """Move studio/lemonade_prebuilt_pins.json to the latest stable Lemonade and FastFlowLM releases.
 
-Every asset is downloaded and hashed here, and must match the digest GitHub publishes for it
-when there is one, so a pin only ever names bytes this script has seen. Re-running against
-the same releases changes nothing.
-
-Exit codes: 0 = pins current (or updated with --write); 1 = --check found a newer release;
-2 = error.
+Exit codes: 0 = current (or updated with --write); 1 = --check found a newer release; 2 = error.
 """
 
 from __future__ import annotations
@@ -37,14 +32,14 @@ def _lemonade_assets(version: str) -> dict[str, str]:
 
 
 def _fastflowlm_assets(version: str) -> dict[str, str]:
-    # The names lemond builds for its /v1/install download, from the bare version.
+    # The names lemond builds for its /v1/install download.
     return {
         "linux-x64": f"fastflowlm_{version}_linux.tar.gz",
         "windows-x64": f"fastflowlm_{version}_windows_amd64.zip",
     }
 
 
-# section -> (asset names for a bare version, whether the pin keeps the tag's "v", whether it records sizes)
+# section -> (asset names, pin keeps the tag's "v", pin records sizes)
 _SECTIONS: dict[str, tuple[Callable[[str], dict[str, str]], bool, bool]] = {
     "lemonade": (_lemonade_assets, False, True),
     "fastflowlm": (_fastflowlm_assets, True, False),
@@ -88,7 +83,6 @@ def version_key(version: str) -> tuple[int, ...]:
 def updated_section(
     name: str, section: dict, release: dict, hasher: Callable[[str], tuple[str, int]]
 ) -> Optional[dict]:
-    """The section moved to ``release``, or None when the pin is already that new."""
     tag = str(release["tag_name"])
     bare = tag[1:] if tag.startswith("v") else tag
     asset_names, keep_v, with_size = _SECTIONS[name]
@@ -121,7 +115,6 @@ def update_pins(
     hasher: Optional[Callable[[str], tuple[str, int]]] = None,
     only: Optional[str] = None,
 ) -> tuple[dict, list[str]]:
-    """New pins and one line per section that moved; the input is not modified."""
     releases = releases or fetch_latest_release
     hasher = hasher or hash_asset
     result = json.loads(json.dumps(pins))

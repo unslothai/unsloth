@@ -171,7 +171,6 @@ def _installer_module():
 
 
 def _pinned_flm_version() -> Optional[str]:
-    """The FastFlowLM version the pins ask for, or None when they cannot be read."""
     try:
         return str(_installer_module().load_pins()["fastflowlm"]["version"]).lstrip("v")
     except Exception:  # noqa: BLE001 -- an unreadable pin skips the check, never blocks Enable
@@ -314,7 +313,6 @@ class LemonadeNpuBackend:
         return binary is None and isinstance(validated, str) and bool(validated)
 
     def _flm_version(self) -> Optional[str]:
-        """The installed FastFlowLM's version without a leading "v", or None if unreadable."""
         binary = self._flm_binary()
         if binary is None:
             return None
@@ -430,8 +428,7 @@ class LemonadeNpuBackend:
                 )
                 if _failed(response):
                     raise NpuError(f"Installing FastFlowLM failed: {_error_message(response)}")
-                # lemond keeps the FastFlowLM it has when an update download fails, and still
-                # answers success; only the installed version tells the update did not happen.
+                # lemond keeps the old FastFlowLM and answers success when an update download fails.
                 expected, actual = _pinned_flm_version(), self._flm_version()
                 if expected and actual and actual != expected:
                     raise NpuError(

@@ -461,8 +461,6 @@ def test_readiness_survives_a_restart_only_after_validation(npu, monkeypatch):
 
 
 class _PinsMoved(_Installer):
-    """A Studio update moved the pins: the old install no longer matches until install runs."""
-
     def __init__(self, binary: Path) -> None:
         super().__init__(binary)
         self.current = False
@@ -493,7 +491,6 @@ def _move_the_pins(npu, monkeypatch) -> nb.LemonadeNpuBackend:
 def test_an_enabled_npu_upgrades_on_first_use_after_the_pins_move(npu, monkeypatch):
     restarted = _move_the_pins(npu, monkeypatch)
     try:
-        # Still enabled, so the model list loads instead of asking to enable again.
         status = restarted.status()
         assert status["ready"] is True and status["runtime_installed"] is True
         installs_before = len([r for r in _requests(restarted) if r["path"] == "/v1/install"])
@@ -502,7 +499,6 @@ def test_an_enabled_npu_upgrades_on_first_use_after_the_pins_move(npu, monkeypat
         installs = [r for r in _requests(restarted) if r["path"] == "/v1/install"]
         assert len(installs) == installs_before + 1
         assert restarted.status()["ready"] is True
-        # Upgraded once: later calls reuse the running, current runtime.
         restarted.catalog()
         assert restarted.installer.installs == 1
     finally:
