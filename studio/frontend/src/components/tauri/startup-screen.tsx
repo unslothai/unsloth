@@ -198,21 +198,13 @@ function InstallErrorContent({
   onRetryInstall: () => void;
   onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
 }) {
-  if (diskFull && error) {
-    return (
-      <DiskFullInstallDialog
-        error={error}
-        onRetryInstall={onRetryInstall}
-        onCopyDiagnostics={onCopyDiagnostics}
-      />
-    );
-  }
-
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        <p className="text-sm font-medium text-destructive">Setup ran into a problem</p>
+        <p className="text-sm font-medium text-destructive">
+          {diskFull ? "Not enough disk space" : "Setup ran into a problem"}
+        </p>
         {error && (
           <p className="max-w-xs text-center text-xs text-muted-foreground">{error}</p>
         )}
@@ -220,39 +212,6 @@ function InstallErrorContent({
           <Button size="hero" onClick={onRetryInstall}>Try Again</Button>
         </DiagnosticsCopyActions>
       </div>
-    </>
-  );
-}
-
-function DiskFullInstallDialog({
-  error,
-  onRetryInstall,
-  onCopyDiagnostics,
-}: {
-  error: string;
-  onRetryInstall: () => void;
-  onCopyDiagnostics: () => Promise<CopySupportDiagnosticsResult>;
-}) {
-  return (
-    <>
-      <Logo />
-      <div
-        role="dialog"
-        aria-labelledby="disk-full-title"
-        aria-describedby="disk-full-body"
-        className="mt-8 w-full max-w-md rounded-xl border border-border/60 bg-muted/20 p-5 text-left"
-      >
-        <p id="disk-full-title" className="text-sm font-medium text-destructive">
-          Not enough disk space
-        </p>
-        <p className="mt-2 break-words text-xs text-muted-foreground">{error}</p>
-        <p id="disk-full-body" className="mt-3 text-xs text-muted-foreground">
-          Free some space, then try the install again.
-        </p>
-      </div>
-      <DiagnosticsCopyActions onCopyDiagnostics={onCopyDiagnostics}>
-        <Button size="hero" onClick={onRetryInstall}>Try Again</Button>
-      </DiagnosticsCopyActions>
     </>
   );
 }
