@@ -2803,10 +2803,8 @@ function Test-SetupConsoleHeadless {
     return (-not [Environment]::UserInteractive) -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected
 }
 
-# A failed prebuilt download is not consent to a machine-wide, multi-GB toolchain. Explicit
-# source-build requests (FORCE_COMPILE, a PR, a custom source) never reach this. No prompt:
-# installers must not grow questions (#8040). Headless runs outside Unsloth Desktop (CI, a
-# piped log) keep installing; a person at a terminal or in Desktop opts in by env var.
+# A failed prebuilt is not consent to a multi-GB toolchain. No prompt (#8040): headless runs
+# outside Desktop keep installing; a terminal or Desktop opts in via UNSLOTH_INSTALL_BUILD_TOOLS.
 function Test-LlamaBuildToolsInstallAllowed {
     $opt = "$env:UNSLOTH_INSTALL_BUILD_TOOLS".Trim().ToLowerInvariant()
     if ($opt -in @("1", "true", "yes")) { return $true }
@@ -11081,7 +11079,6 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
         [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
         [Console]::Out.Flush()
     } elseif ($script:LlamaBuildToolsDeclined) {
-        # The user said no to the toolchain; failing the install would punish the answer.
         step "llama.cpp" "unavailable; GGUF inference is disabled until the build tools are installed" "Yellow"
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
