@@ -15068,35 +15068,31 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     return built
 
 
-_MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
+_MAX_PAGE_CHARS = 16000  # fetched page cap after HTML-to-Markdown conversion
 
-# Share of the loaded window one fetched page may claim. The same window also has to hold the system prompt, the
-# carried-forward block, the user's turn, the call itself and room to answer, so a third is already generous.
+# one page may use 35% of the window, leaving room for prompts, context, calls, and answers.
 _PAGE_CONTEXT_SHARE = 0.35
-# Below this a page is too clipped to answer from, so the fetch is not worth making small. Half, when the room has to
-# be converted to characters with no way to check the answer: see `_dense_char_limit`, the conversion charges ASCII an
-# English four characters per token and the dense ASCII these tools print runs nearer two.
+# unmeasurable token budgets are halved because dense ASCII can cost twice the English estimate.
 _UNMEASURED_ROOM_MARGIN = 0.5
 
 _MIN_PAGE_CHARS = 2000
-# A percent-escape is one non-ASCII byte written in ASCII, and tokenises like one.
+# a percent escape is one non-ASCII byte in ASCII and tokenizes like one.
 _HEX_PAIR_RE = re.compile(r"[0-9A-Fa-f]{2}")
-# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections stripped during conversion.
+# raw cap exceeds _MAX_PAGE_CHARS because conversion strips large SSR <head> sections.
 _MAX_FETCH_BYTES = 512 * 1024
-# News pages inline up to ~2.5 MB of styles and scripts in <head>, so HTML gets _MAX_FETCH_BYTES past its end.
+# news pages can inline about 2.5 MB in <head>, so reserve _MAX_FETCH_BYTES beyond its end.
 _MAX_HTML_FETCH_BYTES = 8 * 1024 * 1024
-# "%" is safe so an already-encoded URL is not re-encoded into %25.
+# keep % safe to avoid encoding existing escapes as %25.
 _IRI_PATH_SAFE = "/%:@!$&'()*+,;="
 _IRI_QUERY_SAFE = "/%:@!$&'()*+,;=?"
-# PDF cross-reference data lives at EOF, so extraction needs the whole body.
+# PDF cross-reference data at EOF requires the whole body.
 _MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
 _MAX_WEB_PDF_PAGES = 50
-# Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs). Binary when they exceed 12.5%, after
-# allowing 16 minor encoding glitches.
+# binary threshold excludes whitespace and ESC; allow 16 glitches or 12.5%, whichever is larger.
 _BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
 _MIN_BINARY_CHARS = 16
 _BINARY_CHAR_DIVISOR = 8
-# Common binary signatures that can otherwise look text-heavy when mislabeled.
+# signatures catch mislabeled binaries that pass text heuristics.
 _PDF_MAGIC = b"%PDF-"
 _BINARY_MAGIC = (
     _PDF_MAGIC,
@@ -15758,7 +15754,7 @@ def _resolve_with_budget(hostname, port, deadline, cancel_event):
     def _resolve():
         try:
             result.put(_validate_and_resolve_host(hostname, port))
-        except Exception as exc:  # defensive: never let the worker die silently
+        except Exception as exc:  # prevent the resolver thread from failing silently
             result.put((False, f"Failed to resolve host: {exc}", []))
 
     threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
@@ -15890,10 +15886,10 @@ def _read_capped_body(
     body_window = None,
 ):
     """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
-    # HTTPError wraps the socket; tighten its deadline when present, while chunk checks bound test doubles without one
+    # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
-    # use read1 because buffered read(n) can keep receiving until n bytes arrive and bypass the budget check
+    # read1 avoids buffered read(n) waiting for n bytes past the budget
     read = getattr(resp, "read1", None) or resp.read
     chunks = []
     remaining = max_bytes
@@ -15937,8 +15933,7 @@ def _read_capped_body(
 
 
 _DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
-# ASCII-only because str.isdigit() is True for digits int() refuses, and capped at 5 digits so the range check never
-# converts an unbounded integer.
+# ASCII-only: str.isdigit() accepts digits int() rejects; five digits bounds integer conversion
 _PORT_RE = re.compile(r"[0-9]{1,5}")
 
 
@@ -16146,7 +16141,7 @@ def _fetch_url_raw(
                         return hop_error, "", ""
                     continue
 
-            # get_content_type() defaults missing headers to "text/plain" per RFC 2045; use "" to distinguish them.
+            # get_content_type() maps absent headers to text/plain per RFC 2045; "" marks absence.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
             else:
@@ -16206,7 +16201,7 @@ def _fetch_url_raw(
             if not refresh_url:
                 break
             current_url = refresh_url
-            # A refresh is a new GET, like a browser's.
+            # a refresh starts a new GET like a browser.
             pending_post = None
             hop_error, current_host, pinned_ips = _redirect_hop(
                 current_url,
