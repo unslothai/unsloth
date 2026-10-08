@@ -4215,7 +4215,10 @@ def resolve_release_asset_choice(
     )
     if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
         selection_host = masked_host or host
-        if driver_below_cuda_prebuilt_floor(selection_host):
+        if (
+            driver_below_cuda_prebuilt_floor(selection_host)
+            and selection_host.driver_cuda_version[0] >= _MIN_CUDA_MAJOR
+        ):
             # #12842: no CUDA prebuilt loads on this driver, and the source build it would
             # fall back to needs a toolkit the driver can run, which winget rarely offers,
             # so setup would fail. The CPU bundle keeps GGUF inference working until the

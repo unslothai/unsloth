@@ -246,3 +246,7 @@ class TestWindowsBelowTheFloorGetsTheCpuBundle:
     def test_a_driver_from_the_floor_keeps_cuda(self, monkeypatch, driver):
         choices = self._choices(monkeypatch, driver)
         assert choices and all(c.install_kind == "windows-cuda" for c in choices)
+
+    def test_a_cuda_11_driver_keeps_its_old_route(self, monkeypatch):
+        # Below CUDA 12 nothing changes: no prebuilt, so setup source-builds as before.
+        assert self._choices(monkeypatch, (11, 8)) == []
