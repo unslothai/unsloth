@@ -17,6 +17,7 @@ __all__ = [
 import torch
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
 import copyreg
+import functools
 import importlib
 import importlib.util
 import collections
@@ -152,6 +153,30 @@ def _patch_resume_from_checkpoint_memory(trainer_class):
     trainer_class.train = _unsloth_train_with_resume_guard
 
 
+def _generation_target(unwrapped_model):
+    # TRL PPO unwraps a PolicyAndValueWrapper, which has no generate(); it generates through .policy.
+    if hasattr(unwrapped_model, "generate"):
+        return unwrapped_model
+    return getattr(unwrapped_model, "policy", unwrapped_model)
+
+
+@contextmanager
+def _hide_unsupported_gradient_checkpointing(model):
+    # TRL < 0.26 PPO's PolicyAndValueWrapper reports is_gradient_checkpointing but lacks the
+    # gradient_checkpointing_disable() TRL's unwrap then calls; for_inference / for_training toggle it.
+    wrapper = getattr(model, "module", model)
+    hide = getattr(wrapper, "is_gradient_checkpointing", False) is True and not hasattr(
+        wrapper, "gradient_checkpointing_disable"
+    )
+    if hide:
+        wrapper.is_gradient_checkpointing = False
+    try:
+        yield
+    finally:
+        if hide:
+            wrapper.is_gradient_checkpointing = True
+
+
 def PatchRL(FastLanguageModel):
     try:
         from trl.models.utils import unwrap_model_for_generation
@@ -201,11 +226,15 @@ def PatchRL(FastLanguageModel):
             ),
             False,
         )
-        with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
+        with (
+            _hide_unsupported_gradient_checkpointing(model),
+            unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model,
+        ):
             FastLanguageModel.for_inference(model)
 
+            generator = _generation_target(unwrapped_model)
             # .clone is required because inference_mode is forced here; no_grad would have been the better choice.
-            original_generate = unwrapped_model.generate
+            original_generate = generator.generate
 
             def generate_with_clone(*args, **kwargs):
                 out = original_generate(*args, **kwargs)
@@ -213,12 +242,12 @@ def PatchRL(FastLanguageModel):
                     return out.clone()
                 return out
 
-            unwrapped_model.generate = generate_with_clone
+            generator.generate = generate_with_clone
 
             try:
                 yield unwrapped_model
             finally:
-                unwrapped_model.generate = original_generate
+                generator.generate = original_generate
                 FastLanguageModel.for_training(
                     model,
                     use_gradient_checkpointing = use_gradient_checkpointing,
@@ -737,6 +766,49 @@ def _wrap_full_eval_keeps_trainable_dtype(trainer_cls):
             return wrapped
 
         setattr(trainer_cls, loop_name, _make(original, loop_name))
+
+
+# Sampling filters that reshape the distribution PPO samples rollouts from.
+_PPO_ROLLOUT_FILTER_KEYS = (
+    "top_p",
+    "min_p",
+    "typical_p",
+    "epsilon_cutoff",
+    "eta_cutoff",
+    "repetition_penalty",
+    "no_repeat_ngram_size",
+)
+
+
+def _wrap_ppo_full_distribution_rollouts(trainer_cls):
+    # PPO's KL and ratio read rollout logprobs off generate's scores. transformers swaps every field of
+    # TRL's GenerationConfig left at its global default (top_p = 1.0) for the model's own default
+    # (Qwen3 Instruct: top_p = 0.8), so the scores come from a truncated distribution and bias both.
+    if not hasattr(trainer_cls, "train"):
+        return
+    original = trainer_cls.train
+    if getattr(original, "_unsloth_ppo_rollouts_wrapped", False):
+        return
+
+    def wrapped(self, *args, **kwargs):
+        generation_config = getattr(getattr(self, "policy_model", None), "generation_config", None)
+        saved = {}
+        if generation_config is not None:
+            from transformers import GenerationConfig
+            defaults = GenerationConfig()
+            for key in _PPO_ROLLOUT_FILTER_KEYS:
+                if hasattr(generation_config, key) and hasattr(defaults, key):
+                    saved[key] = getattr(generation_config, key)
+                    setattr(generation_config, key, getattr(defaults, key))
+        try:
+            return original(self, *args, **kwargs)
+        finally:
+            for key, value in saved.items():
+                setattr(generation_config, key, value)
+
+    functools.update_wrapper(wrapped, original)
+    wrapped._unsloth_ppo_rollouts_wrapped = True
+    trainer_cls.train = wrapped
 
 
 def _wrap_grpo_generate_and_score(trainer_cls):
@@ -3580,6 +3652,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             _wrap_grpo_ddp_gradient_sync(getattr(created_module, f"Unsloth{RLTrainer_name}"))
         except Exception as e:
             logger.info(f"Unsloth: Could not wrap GRPO DDP gradient sync for {RLTrainer_name}: {e}")
+    if trainer_file == "ppo_trainer":
+        try:
+            _wrap_ppo_full_distribution_rollouts(
+                getattr(created_module, f"Unsloth{RLTrainer_name}")
+            )
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap PPO rollouts for {RLTrainer_name}: {e}")
     if trainer_file == "gkd_trainer" and "_unsloth_trl_compute_loss" in RLTrainer_source:
         try:
             _wrap_grpo_hidden_states_fallback(
