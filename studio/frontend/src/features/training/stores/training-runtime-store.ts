@@ -218,6 +218,23 @@ function rlMetricHistoryFromStatus(
   return points;
 }
 
+/** Status polls can trail SSE: add the steps a poll has, keep the ones already shown. */
+function mergeRlHistory(
+  current: RlMetricPoint[],
+  incoming: RlMetricPoint[] | null,
+): RlMetricPoint[] {
+  if (!incoming?.length) return current;
+  const byStep = new Map(current.map((p) => [p.step, p]));
+  let added = false;
+  for (const point of incoming) {
+    if (!byStep.has(point.step)) {
+      byStep.set(point.step, point);
+      added = true;
+    }
+  }
+  return added ? [...byStep.values()].sort((a, b) => a.step - b.step) : current;
+}
+
 function upsertRlPoint(
   history: RlMetricPoint[],
   step: number,
@@ -225,7 +242,10 @@ function upsertRlPoint(
 ): RlMetricPoint[] {
   const last = history[history.length - 1];
   if (last && last.step === step) {
-    return [...history.slice(0, -1), { step, values: { ...last.values, ...values } }];
+    return [
+      ...history.slice(0, -1),
+      { step, values: { ...last.values, ...values } },
+    ];
   }
   if (last && last.step > step) return history;
   return [...history, { step, values }];
@@ -519,8 +539,10 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
                 metricHistory.evalLossHistory,
               )
             : runtimeState.evalLossHistory,
-          rlMetricHistory:
-            rlMetricHistoryFromStatus(payload) ?? runtimeState.rlMetricHistory,
+          rlMetricHistory: mergeRlHistory(
+            runtimeState.rlMetricHistory,
+            rlMetricHistoryFromStatus(payload),
+          ),
         };
       }),
 
@@ -620,7 +642,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
               : state.currentEpoch,
           elapsedSeconds: payload.elapsed_seconds,
           etaSeconds: payload.eta_seconds,
-          sessionStartStep: payload.session_start_step ?? state.sessionStartStep,
+          sessionStartStep:
+            payload.session_start_step ?? state.sessionStartStep,
           currentGradNorm,
           currentNumTokens: payload.num_tokens,
           firstStepReceived: state.firstStepReceived || step > 0,

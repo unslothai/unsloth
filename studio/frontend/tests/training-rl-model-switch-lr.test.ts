@@ -66,3 +66,18 @@ test("a text model with GRPO selected gets the GRPO learning rate", async () => 
   const s = await selectWithGrpoStored("unsloth/Qwen3-0.6B", false);
   assert.notEqual(s.learningRate, MODEL_LR);
 });
+
+test("picking another dataset or subset drops the RL column roles", () => {
+  setAuthFetchHandler(() => Response.json({}));
+  const store = useTrainingConfigStore.getState();
+  for (const change of [
+    () => store.setDataset("org/other-preferences"),
+    () => store.setDatasetSubset("other"),
+  ]) {
+    useTrainingConfigStore.setState({
+      rlRoleMapping: { a: "chosen", b: "rejected" },
+    });
+    change();
+    assert.deepEqual(useTrainingConfigStore.getState().rlRoleMapping, {});
+  }
+});
