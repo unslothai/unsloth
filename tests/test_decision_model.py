@@ -13,6 +13,12 @@ from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 
+import unsloth
+
+# The torch backend: on Apple Silicon unsloth serves decision models from decision_mlx instead.
+if unsloth._IS_MLX:
+    pytest.skip("the torch backend", allow_module_level = True)
+
 from transformers import TrainerCallback, TrainingArguments
 
 from unsloth import DecisionTrainer, FastDecisionModel
