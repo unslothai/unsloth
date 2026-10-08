@@ -294,6 +294,11 @@ CLEF_RECIPE = {}
 
 @functools.lru_cache(maxsize = None)
 def _decision_zoo():
+    # The vendored Laya and Clef code scores with torch, which unsloth-zoo leaves out on Apple Silicon.
+    if importlib.util.find_spec("torch") is None:
+        raise ImportError(
+            "Unsloth: decision models on MLX need PyTorch. Install it with `pip install torch`."
+        )
     try:
         from unsloth_zoo.mlx import decision
         from unsloth_zoo.mlx.trainer import MLXDecisionTrainer
