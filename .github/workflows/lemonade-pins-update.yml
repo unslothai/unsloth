@@ -44,6 +44,8 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # A manual run from another branch must not base the update PR on it.
+          ref: ${{ github.event.repository.default_branch || 'main' }}
           persist-credentials: false
 
       - name: Move the pins to the latest stable releases
@@ -65,6 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          BASE: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           set -euo pipefail
           remote="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
@@ -101,5 +104,5 @@ jobs:
           if [ -n "$number" ]; then
             gh pr edit "$number" --repo "$REPO" --title "$title" --body-file "$RUNNER_TEMP/body.md"
           else
-            gh pr create --repo "$REPO" --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+            gh pr create --repo "$REPO" --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"
           fi
