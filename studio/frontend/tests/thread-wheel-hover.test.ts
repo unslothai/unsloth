@@ -73,7 +73,7 @@ function attach(...ids: string[]) {
   };
 }
 
-// The browser moves `:hover` whether or not the event reaches assistant-ui.
+// the browser updates `:hover` even when the event does not reach assistant-ui.
 const enter = (m: Message, buttons = 0) => {
   m.hover = true;
   const event = new MouseEvent("mouseenter");

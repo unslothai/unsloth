@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Holds message hover still while a wheel scroll moves the thread: every boundary crossed would
- * write assistant-ui's `isHovering` and re-run each thread selector (#12025); settling moves it once.
- * Not `pointer-events: none`: that moves Chromium's scroll hit-testing onto the main thread.
- * Wheel only, without a button held, so follow-to-bottom and selection drags keep their events.
- */
+/** suppresses wheel-scroll hover churn while preserving Chromium hit-testing and drags (#12025). */
 
-// Chromium keeps animating a smooth wheel scroll for about 200ms after the last wheel event.
+// Chromium smooth-scroll animation can outlast the final wheel event by about 200ms.
 const WHEEL_TAIL_MS = 300;
 const SETTLE_MS = 150;
 const MESSAGE = "[data-message-id]";
@@ -37,7 +32,7 @@ export function attachWheelHoverSuppression(viewport: HTMLElement): () => void {
   };
   const onWheel = (event: WheelEvent) => {
     wheelAt = event.buttons ? Number.NEGATIVE_INFINITY : event.timeStamp;
-    // Mounting under a still pointer hovers via `:hover`, no mouseenter; the wheel precedes the scroll.
+    // mounting under a still pointer sets `:hover` without mouseenter; wheel fires before scroll.
     if (timer === undefined) {
       hovered = viewport.querySelector(`${MESSAGE}:hover`);
     }
