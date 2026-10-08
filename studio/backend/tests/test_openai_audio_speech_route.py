@@ -2041,3 +2041,30 @@ def test_a_rejected_voice_load_leaves_no_chat_claim_behind(monkeypatch, outcome)
     assert rejected.value.status_code == (400 if outcome == "csm" else 500)
     assert voice._process is None
     assert arb.current_owner() is None
+
+
+def test_status_reaping_holds_the_voice_load_lock(monkeypatch):
+    """/voice/status checked the lock and then tore the dead server down off-loop, so a load that
+    took the lock in between was cancelled by a status poll. The reap now holds the lock."""
+    arb, voice = _dead_foreign_voice(monkeypatch)
+    started, finish = threading.Event(), threading.Event()
+
+    def _slow_unload():
+        started.set()
+        finish.wait(5)
+        voice._process = None
+        return True
+
+    voice.unload_model = _slow_unload
+
+    async def _run():
+        status = asyncio.create_task(routes_module.voice_slot_status("s"))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        held = routes_module._voice_load_lock().locked()
+        finish.set()
+        await status
+        return held
+
+    assert asyncio.run(_run()) is True
+    assert arb.current_owner() is None

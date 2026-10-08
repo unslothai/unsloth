@@ -21602,9 +21602,12 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
 async def voice_slot_status(current_subject: str = Depends(get_current_subject)):
     """Return the current state of the voice slot."""
     voice_backend = get_voice_llama_backend()
-    # Not under the load lock: a load holding it owns the slot's lifecycle.
-    if not _voice_load_lock().locked():
-        await _reap_dead_voice_slot(voice_backend)
+    # Skipped while a load holds the lock (it owns the slot); otherwise taken for the reap, so a
+    # load arriving mid-teardown waits instead of being cancelled. acquire() does not yield here.
+    lock = _voice_load_lock()
+    if not lock.locked():
+        async with lock:
+            await _reap_dead_voice_slot(voice_backend)
     # The slot is chat-owned GPU use: another account's resident is not described, as the
     # chat status does (a local voice's identifier is its absolute path).
     if voice_backend.is_active and account_access.resident_hidden("chat"):
