@@ -5441,6 +5441,17 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         prune_install_staging_root(install_dir)
 
 
+def ensure_fit_params_executable(install_dir: Path) -> None:
+    """The guarded extractor leaves the optional Metal probe 0644 (#12901); reuse paths repair old installs."""
+    helper = install_dir / "build" / "bin" / "llama-fit-params"
+    try:
+        if helper.is_file() and not helper.is_symlink():
+            if stat.S_IMODE(helper.stat().st_mode) & 0o111 != 0o111:
+                os.chmod(helper, 0o755)
+    except OSError:
+        pass
+
+
 def install_from_archives(
     choice: AssetChoice, host: HostInfo, install_dir: Path, work_dir: Path
 ) -> tuple[Path, Path]:
@@ -5527,6 +5538,7 @@ def install_from_archives(
         raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
+    ensure_fit_params_executable(install_dir)
 
     root_server = install_dir / "llama-server"
     root_quantize = install_dir / "llama-quantize"
@@ -11309,6 +11321,7 @@ def install_prebuilt(
                 # honour; a request read back off the marker retries when something moves.
                 backend_request_mandatory = backend_mandatory,
             ):
+                ensure_fit_params_executable(install_dir)
                 return
             # A request detection had to replace; kept so the marker records the CHOICE.
             unhonoured_request: str | None = None
@@ -11345,6 +11358,7 @@ def install_prebuilt(
                 plan: InstallReleasePlan, reused: AssetChoice, used_fallback: bool
             ) -> None:
                 """Update selection fields when the existing bundle is reused."""
+                ensure_fit_params_executable(install_dir)
                 sync_marker_selection(
                     install_dir,
                     choice = reused,
@@ -11511,6 +11525,7 @@ def install_prebuilt(
         ):
             log("prebuilt update unavailable; keeping the existing complete install")
             log(f"prebuilt update reason: {exc}")
+            ensure_fit_params_executable(install_dir)
             return
         log(
             "prebuilt install failed; preserving the selected backend"

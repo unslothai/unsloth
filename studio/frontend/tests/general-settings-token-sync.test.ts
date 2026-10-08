@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -13,6 +14,18 @@ import {
 const tabUrl = new URL(
   "../src/features/settings/tabs/general-tab.tsx",
   import.meta.url,
+);
+
+// Every update-banner preference the tab can import, read off the module itself: #12893 added
+// the audio.cpp banner to the tab after this test pinned three names, and every case failed on
+// the missing export. Setters are no-ops and readers say the banner is hidden.
+const updateBannerPrefStub = Object.fromEntries(
+  [
+    ...readFileSync(
+      new URL("../src/hooks/use-llama-update-pref.ts", import.meta.url),
+      "utf8",
+    ).matchAll(/^export function (\w+)/gm),
+  ].map(([, name]) => [name, name.startsWith("set") ? () => undefined : () => false]),
 );
 
 type EffectSlot = {
@@ -132,12 +145,7 @@ function generalTab(initialToken: string) {
       emitTrainingRunsChanged: noop,
       TRAINING_UI_PREFERENCE_KEYS: [],
     },
-    "@/hooks/use-llama-update-pref": {
-      setShowLlamaUpdateBanner: noop,
-      setShowWhisperUpdateBanner: noop,
-      useShowLlamaUpdateBanner: () => false,
-      useShowWhisperUpdateBanner: () => false,
-    },
+    "@/hooks/use-llama-update-pref": updateBannerPrefStub,
     "@/hooks": {
       useHfTokenValidation: () => ({
         isValid: false,

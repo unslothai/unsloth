@@ -3,6 +3,7 @@
 
 /** desktop web pages use per-tab native views for bot checks; native views cover the DOM, so overlays use snapshots. */
 
+import { useChatRuntimeStore } from "@/features/chat";
 import { getLocale, translate } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import type { InterpolationValues } from "@/i18n";
@@ -10,7 +11,8 @@ import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { BROWSER_PAGE_INSET_VAR, CHAT_SETTINGS_INSET_VAR } from "@/lib/toast-offset";
 import { hostOf } from "./address";
-import { approveDownload, downloadSiteOf } from "./download-approval-queue";
+import { approveChosenDownload, approveDownload, downloadSiteOf } from "./download-approval-queue";
+import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } from "./download-activity";
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
@@ -52,8 +54,11 @@ type NativeEvent =
       downloadId: string | null;
       /** False when the file couldn't be marked as downloaded from the internet; null where nothing marks. */
       marked?: boolean | null;
+      /** The downloadPrompt `id` it was asked under; null when refused before asking. */
+      promptId?: string | null;
     }
-  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string };
+  | { kind: "downloadPrompt"; tabId: string; url: string; site: string; name: string; id: string; saveAs: boolean }
+  | { kind: "downloadCancelled"; tabId: string; url: string; promptId: string };
 
 type Bounds = { x: number; y: number; width: number; height: number; viewportWidth: number };
 
@@ -93,7 +98,7 @@ function keepReachedPage(tabId: string): void {
   const tab = store.tabs.find((candidate) => candidate.id === tabId);
   const shown = pages.get(tabId);
   if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
-  store.navigate(tabId, { url: shown.url }, { replace: false });
+  store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: false });
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
 }
 
@@ -104,6 +109,9 @@ function closeView(tabId: string): void {
   zooms.delete(tabId);
   icons.delete(tabId);
   pages.delete(tabId);
+  temporaryPages.delete(tabId);
+  pageEntries.delete(tabId);
+  loadingPages.delete(tabId);
   recency = recency.filter((id) => id !== tabId);
   void call("browser_view_close", { tabId }).catch(() => undefined);
 }
@@ -118,20 +126,61 @@ function listenOnce(): void {
   );
 }
 
+// Prompts asked for beside a temporary chat: their downloads land later, often after the chat is gone.
+const temporaryDownloads = new Set<string>();
+
+// Per tab, whether its page began loading beside a temporary chat: in-page navigation makes no new entry.
+// A page's first load is its entry's, which may start long after the entry was made (a background tab).
+const temporaryPages = new Map<string, boolean>();
+const pageEntries = new Map<string, BrowserEntry>();
+// Tabs mid-load: a redirect starts again within the same navigation, which keeps its state.
+const loadingPages = new Set<string>();
+
+function notePageStart(tabId: string, entry: Extract<BrowserEntry, { kind: "web" }>): void {
+  const fresh = pageEntries.get(tabId) !== entry;
+  pageEntries.set(tabId, entry);
+  const kept = fresh ? entry.temporary === true : loadingPages.has(tabId) && temporaryPages.get(tabId) === true;
+  temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito || kept);
+}
+
+function pageTemporary(tabId: string, entry: BrowserEntry): boolean {
+  return temporaryPages.get(tabId) ?? (entry.kind === "web" && entry.temporary === true);
+}
+
+/** One running download in the Downloads button, from approval until it ends. */
+const downloadKey = (promptId: string) => `native:${promptId}`;
+
 /** Always answered: an unanswered download would sit in staging until the app quits. */
 function onDownloadPrompt(event: Extract<NativeEvent, { kind: "downloadPrompt" }>, tab: BrowserTab | undefined): void {
-  const { id, url, site, name } = event;
+  const { id, url, site, name, saveAs } = event;
   const entry = tab ? currentEntry(tab) : null;
+  if (useChatRuntimeStore.getState().incognito || (tab && entry && pageTemporary(tab.id, entry))) temporaryDownloads.add(id);
   // The site asking is the page that started it, taken then (a later site's answer must not cover it); blob: counts as its creator. With no web origin yet, the opener or the address asked for.
   const asking = downloadSiteOf(site) ? site : entry?.kind === "web" ? entry.from || entry.url : "";
-  const decided = entry?.kind === "web" ? approveDownload(url, name, asking) : Promise.resolve(false);
+  // Picked from the context menu: the save dialog is the prompt, whatever the site's remembered answer.
+  const decided =
+    entry?.kind !== "web"
+      ? Promise.resolve(false)
+      : saveAs
+        ? approveChosenDownload(url, name)
+        : approveDownload(url, name, asking);
+  const key = downloadKey(id);
   void decided
     .then(async (allow) => {
-      await decideNativeDownload(id, allow, useBrowserPrefsStore.getState().askWhereToSave);
-      if (allow) toast(t("browser.native.downloading", { name }));
+      if (!allow) temporaryDownloads.delete(id);
+      // Begun before deciding: a file that finished while the prompt was open lands at once.
+      if (allow) beginDownload(key, name);
+      await decideNativeDownload(id, allow, saveAs || useBrowserPrefsStore.getState().askWhereToSave);
+      // Still running: one that landed during the decide call has already said so.
+      const { active, buttons } = useDownloadActivity.getState();
+      if (allow && buttons === 0 && key in active) toast(t("browser.native.downloading", { name }));
     })
-    .catch(() => undefined);
+    .catch(() => {
+      temporaryDownloads.delete(id);
+      abandonDownload(key);
+    });
 }
+
 
 function onNativeEvent(event: NativeEvent): void {
   const store = useBrowserStore.getState();
@@ -140,24 +189,37 @@ function onNativeEvent(event: NativeEvent): void {
     onDownloadPrompt(event, tab);
     return;
   }
+  if (event.kind === "downloadCancelled") {
+    temporaryDownloads.delete(event.promptId);
+    abandonDownload(downloadKey(event.promptId));
+    return;
+  }
   // A download outlives its page: it often lands after the tab closed or moved on, and still belongs in history.
   if (event.kind === "download") {
     if (openedTabs.has(event.tabId)) onDownload(event);
     return;
   }
-  if (!tab || currentEntry(tab).kind !== "web") return;
+  if (!tab) return;
+  const entry = currentEntry(tab);
+  if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
+  if ((event.kind === "load" && event.loading) || event.kind === "url") notePageStart(tab.id, entry);
+  if (event.kind === "load") {
+    if (event.loading) loadingPages.add(tab.id);
+    else loadingPages.delete(tab.id);
+  }
+  const temporary = pageTemporary(tab.id, entry);
   switch (event.kind) {
     case "load":
       store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
       page(tab.id).url = event.url;
       remember(tab.id, event.url);
-      if (!event.loading) history.recordVisit(event.url, tab.title);
+      if (!event.loading) history.recordVisit(event.url, tab.title, temporary);
       break;
     case "title":
       store.updateTab(tab.id, { title: event.title });
       page(tab.id).title = event.title;
-      history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title);
+      history.recordVisit(tab.displayUrl ?? currentEntryUrl(tab), event.title, temporary);
       break;
     case "url":
       store.updateTab(tab.id, { displayUrl: event.url, ...leftOpenedPage(tab, event.url) });
@@ -204,22 +266,26 @@ function onNativeEvent(event: NativeEvent): void {
   }
 }
 
+/** Shown on the toolbar's Downloads button; toasts only when none is on screen. */
 function onDownload(event: Extract<NativeEvent, { kind: "download" }>): void {
-  if (!event.done) {
-    toast(t("browser.native.downloading", { name: event.name }));
-  } else if (event.success) {
-    useBrowserHistoryStore.getState().recordDownload({
-      name: event.name,
-      url: event.url,
-      size: event.size ?? 0,
-      contentType: "",
-      nativeId: event.downloadId ?? undefined,
-    });
-    if (event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
-    else toast.success(t("browser.native.downloaded", { name: event.name }));
-  } else {
-    toast.error(t("browser.native.downloadFailed", { name: event.name }));
-  }
+  // Refused before asking, it never ran: there's nothing to end, only a result to show.
+  const key = event.promptId ? downloadKey(event.promptId) : `native:${event.tabId}:${event.url}`;
+  if (!event.done) return;
+  const temporary = event.promptId ? temporaryDownloads.delete(event.promptId) : false;
+  const item = { name: event.name, url: event.url, size: event.size ?? 0, contentType: "", nativeId: event.downloadId ?? undefined };
+  const historyId = event.success ? useBrowserHistoryStore.getState().recordDownload(item, temporary) : undefined;
+  const shown = finishDownload(key, {
+    name: event.name,
+    size: event.size ?? 0,
+    contentType: "",
+    url: event.url,
+    nativeId: event.downloadId ?? undefined,
+    historyId,
+    failed: !event.success,
+  });
+  if (event.success && event.marked === false) toast.warning(t("browser.native.notMarked", { name: event.name }));
+  else if (!shown && event.success) toast.success(t("browser.native.downloaded", { name: event.name }));
+  else if (!shown) toast.error(t("browser.native.downloadFailed", { name: event.name }));
 }
 
 // Pages can ask in a loop: one prompt on screen, replaced at most once a second.
@@ -543,6 +609,9 @@ onNativeViewsClosed(() => {
   zooms.clear();
   icons.clear();
   pages.clear();
+  temporaryPages.clear();
+  pageEntries.clear();
+  loadingPages.clear();
   resume.clear();
   recency = [];
   epoch += 1;

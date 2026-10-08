@@ -9,7 +9,12 @@ import {
 import type { DecisionResponse } from "../lib/decision-request";
 
 export type SystemOneDevice = "cpu" | "gpu";
-export type SystemOneBackend = "auto" | "llama.cpp" | "pytorch";
+export type SystemOneBackend = "auto" | "llama.cpp" | "mlx" | "pytorch";
+
+/** The runtime name as the settings page shows it. */
+export function decisionRuntimeLabel(backend: string): string {
+  return backend === "mlx" ? "MLX" : backend;
+}
 
 export type SystemOneModel = {
   name: string;
@@ -38,11 +43,13 @@ export type SystemOneSettings = {
   error: string | null;
   mcpUrl: string;
   backend: SystemOneBackend;
+  mlxAvailable: boolean;
   nativeCtx: number;
   effectiveBackend: string | null;
   loadedBackend: string | null;
   fallbackReason: string | null;
   inputModalities: string[];
+  layout: string | null;
 };
 
 export type SystemOneConnection = {
@@ -115,6 +122,8 @@ type ApiSystemOneSettings = {
   mcp_url: string;
   backend?: SystemOneBackend;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_available?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
   native_ctx?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   effective_backend?: string | null;
@@ -124,6 +133,7 @@ type ApiSystemOneSettings = {
   fallback_reason?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   input_modalities?: string[];
+  layout?: string | null;
 };
 
 type ApiSystemOneDownloadPlan = {
@@ -194,11 +204,13 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
     error: settings.error,
     mcpUrl: settings.mcp_url,
     backend: settings.backend ?? "auto",
+    mlxAvailable: settings.mlx_available ?? false,
     nativeCtx: settings.native_ctx ?? 16384,
     effectiveBackend: settings.effective_backend ?? null,
     loadedBackend: settings.loaded_backend ?? null,
     fallbackReason: settings.fallback_reason ?? null,
     inputModalities: settings.input_modalities ?? ["text"],
+    layout: settings.layout ?? null,
   };
 }
 

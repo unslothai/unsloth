@@ -2318,7 +2318,8 @@ function Invoke-BoundedPythonProbe {
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $PythonExe
-        $psi.Arguments = "-c `"$Code`""
+        # -I: the stale-venv probe runs before Enter-StudioVenv drops PYTHONPATH (#11980).
+        $psi.Arguments = "-I -c `"$Code`""
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false
@@ -7725,9 +7726,11 @@ function Enter-StudioVenv {
         $env:VIRTUAL_ENV = $VenvDir
         $env:PATH = (Join-Path $VenvDir "Scripts") + ";" + $env:PATH
         Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+        Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
         return
     }
     . $ActivateScript
+    Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 }
 Enter-StudioVenv
 Assert-VenvActivated -VenvDir $VenvDir
@@ -10554,6 +10557,9 @@ if ($LocalLlamaCppLinked) {
     # -- Step A: Clone or pull llama.cpp --
 
     $UseConcreteRef = ($ResolvedSourceRef -ne "latest" -and -not [string]::IsNullOrWhiteSpace($ResolvedSourceRef))
+    # --depth 1 makes llama.cpp stamp build 1 (#12798); set only once the tag is checked out.
+    $TagBuildNumber = if ($ResolvedSourceRef -match '^b(\d+)$') { $Matches[1] } else { $null }
+    $LlamaBuildNumber = $null
 
     # Denied must not read as "no checkout here": the fresh-clone branch ends in
     # a swap that recursively removes this tree and moves the temp one over it,
@@ -10624,6 +10630,7 @@ if ($LocalLlamaCppLinked) {
                     $FailedStep = "git checkout"
                 } else {
                     Invoke-SetupCommand -AlwaysQuiet { git -C $LlamaCppDir clean -fdx } | Out-Null
+                    $LlamaBuildNumber = $TagBuildNumber
                 }
             }
         } else {
@@ -10729,6 +10736,8 @@ if ($LocalLlamaCppLinked) {
                 $BuildOk = $false
                 $FailedStep = "git clone"
                 if (Test-Path -LiteralPath $buildTmp) { Remove-Item -LiteralPath $buildTmp -Recurse -Force }
+            } elseif ($UseConcreteRef) {
+                $LlamaBuildNumber = $TagBuildNumber
             }
         }
         # Use temp dir for build; swap into $LlamaCppDir only after build succeeds
@@ -10759,6 +10768,9 @@ if ($LocalLlamaCppLinked) {
         $CmakeArgs += '-DLLAMA_BUILD_EXAMPLES=OFF'
         $CmakeArgs += '-DLLAMA_BUILD_SERVER=ON'
         $CmakeArgs += '-DGGML_NATIVE=ON'
+        if ($LlamaBuildNumber) {
+            $CmakeArgs += "-DLLAMA_BUILD_NUMBER=$LlamaBuildNumber"
+        }
         # HTTPS support via OpenSSL
         if ($OpenSslAvailable -and $OpenSslRoot) {
             $CmakeArgs += "-DOPENSSL_ROOT_DIR=$OpenSslRoot"

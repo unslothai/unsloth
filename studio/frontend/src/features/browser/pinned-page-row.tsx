@@ -32,7 +32,8 @@ import {
   usePinnedTab,
 } from "./tab-menu";
 
-const MENU = "unsloth-plus-menu sidebar-row-menu sidebar-menu w-60";
+const SURFACE = "unsloth-plus-menu sidebar-row-menu sidebar-menu";
+const MENU = `${SURFACE} w-60`;
 // As a chat row's: the pin and the kebab show on hover, and while the menu is open.
 const ACTION =
   "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pointer-events-auto";
@@ -158,12 +159,12 @@ export function PinnedPageRow({
               </button>
             )}
           >
-            <TabMenuItems P={DROPDOWN_TAB_MENU} tab={tab} pinned={page} onRename={startRename} />
+            <TabMenuItems P={DROPDOWN_TAB_MENU} tab={tab} pinned={page} subClassName={SURFACE} onRename={startRename} />
           </NonModalDropdownMenu>
         </SidebarMenuItem>
       </ContextMenuTrigger>
       <ContextMenuContent className={MENU} onCloseAutoFocus={keepMenuFocus}>
-        <TabMenuItems P={CONTEXT_TAB_MENU} tab={tab} pinned={page} onRename={startRename} />
+        <TabMenuItems P={CONTEXT_TAB_MENU} tab={tab} pinned={page} subClassName={SURFACE} onRename={startRename} />
       </ContextMenuContent>
     </ContextMenu>
   );

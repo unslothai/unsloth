@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import Any
 
 ENABLED_KEY = "systemone_enabled"
@@ -16,7 +17,7 @@ BACKEND_KEY = "systemone_backend"
 NATIVE_CTX_KEY = "systemone_native_ctx"
 DEFAULT_MODEL = "laya-multilingual"
 DEVICES = ("cpu", "gpu")
-BACKENDS = ("auto", "llama.cpp", "pytorch")
+BACKENDS = ("auto", "llama.cpp", "mlx", "pytorch")
 DEFAULT_NATIVE_CTX = 16384
 # -c / -b / -ub of the llama.cpp decision server; compute memory grows with it (~0.24 MiB GPU per token).
 NATIVE_CTX_RANGE = (512, 65536)
@@ -67,6 +68,12 @@ def runtime_unavailable_reason() -> str | None:
     except Exception:
         pass
     return None
+
+
+def llama_cpp_only(name: Any) -> bool:
+    """A GGUF-only catalog entry: llama.cpp serves it without PyTorch."""
+    from core.systemone.catalog import CHECKPOINTS
+    return getattr(CHECKPOINTS.get(name), "layout", None) == "gguf"
 
 
 def get_enabled() -> bool:
@@ -166,7 +173,7 @@ def validate(
         values[DEVICE_KEY] = device
     if backend is not None:
         if backend not in BACKENDS:
-            raise ValueError("Runtime must be auto, llama.cpp or pytorch.")
+            raise ValueError("Runtime must be auto, llama.cpp, mlx or pytorch.")
         values[BACKEND_KEY] = backend
     if native_ctx is not None:
         if not _valid_ctx(native_ctx):
@@ -174,7 +181,8 @@ def validate(
             raise ValueError(f"The llama.cpp context must be {low} to {high} tokens.")
         values[NATIVE_CTX_KEY] = native_ctx
     serving = enabled if enabled is not None else model is not None and get_enabled()
-    local = parse_connection(get_model() if model is None else model) is None
+    name = get_model() if model is None else model
+    local = parse_connection(name) is None and not llama_cpp_only(name)
     if serving and local and (reason := runtime_unavailable_reason()):
         raise ValueError(reason)
     return values
@@ -189,6 +197,44 @@ def save(values: dict[str, Any]) -> None:
 def gpu_available() -> bool:
     try:
         from utils.hardware.hardware import DeviceType, get_device as detected_device
-        return detected_device() in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX)
+        if detected_device() in (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX):
+            return True
+    except Exception:
+        pass
+    if runtime_unavailable_reason() is None:
+        return False
+    return _llama_cpp_has_gpu()
+
+
+_LLAMA_GPU_CACHE: list = []  # [(monotonic time, (binary, mtime), answer)]
+
+
+def _llama_cpp_has_gpu() -> bool:
+    """Without torch the detector reports CPU: ask the installed llama-server for its GPUs.
+
+    Cached 60 s per binary path and mtime, so a switched or reinstalled build is probed again.
+    """
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        from core.systemone.native_worker import resolve_binary
+
+        binary = resolve_binary()
+        if not binary:
+            return False
+        key = (binary, os.stat(binary).st_mtime_ns)
+        if (
+            _LLAMA_GPU_CACHE
+            and _LLAMA_GPU_CACHE[0][1] == key
+            and time.monotonic() - _LLAMA_GPU_CACHE[0][0] < 60
+        ):
+            return _LLAMA_GPU_CACHE[0][2]
+        # The binary's own devices: a CPU-only build exposes none even with a GPU present.
+        answer = bool(
+            LlamaCppBackend._enumerated_gpu_devices(
+                binary, LlamaCppBackend._llama_server_env_for_binary(binary)
+            )
+        )
     except Exception:
         return False
+    _LLAMA_GPU_CACHE[:] = [(time.monotonic(), key, answer)]
+    return answer

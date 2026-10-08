@@ -601,6 +601,7 @@ export const sv = {
     },
   },
   common: {
+    duplicate: "Duplicera",
     cancel: "Avbryt",
     close: "Stäng",
     delete: "Ta bort",
@@ -1272,6 +1273,8 @@ export const sv = {
       title: "Sandlåda",
       description:
         "Om verktygsanrop för Python och Terminal körs i en OS-sandlåda på den här datorn.",
+      docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen för sandlådan",
       toolsSection: "Den här datorn",
       refresh: "Uppdatera",
       python: "Python",
@@ -2436,6 +2439,7 @@ export const sv = {
         "Det gick inte att läsa in alla kvantiseringar. Kommandot använder det tillgängliga modellvärdet.",
       generatedCommand: "Genererat kommando",
       docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen för unsloth start",
       agentDocs: "Öppna installationsdokumentation för {agent}",
       copyGeneratedCommand: "Kopiera genererat kommando",
       automaticSettingsNote:
@@ -2997,6 +3001,8 @@ export const sv = {
       revoking: "Återkallar ...",
       decisionApi: {
         title: "Decision API",
+        docs: "Dokumentation",
+        docsLabel: "Öppna dokumentationen för Decision API",
         description:
           "Besvara ja/nej-frågor, flervalsfrågor och poängfrågor om text med en modell på denna dator eller en beslutsmodell från Anslutningar. Fungerar med TypeSafe SDK.",
         enable: "Hantera begäranden",
@@ -3017,6 +3023,16 @@ export const sv = {
           "GPU svarar snabbare men håller sitt minne reserverat tills omstart.",
         deviceCpu: "CPU",
         deviceGpu: "GPU",
+        backend: "Körmiljö",
+        backendAuto: "Automatisk",
+        backendDescription:
+          "Automatisk kör Clef via llama.cpp när modellen har en GGUF-version och faller annars tillbaka på PyTorch. llama.cpp läser också bilder.",
+        backendDescriptionMlx:
+          "Automatisk kör Clef-text via MLX på Apple Silicon och via llama.cpp när bara modellens GGUF-version är laddad eller nedladdad. MLX läser bara text; llama.cpp läser också bilder.",
+        backendStatus: "Körmiljö: {backend}",
+        backendNone: "inte tillgänglig",
+        mediaImages: "Läser text och bilder.",
+        mediaText: "Läser bara text.",
         checking: "Kontrollerar …",
         notDownloaded: "Inte hämtad · {size}",
         downloading: "Hämtar …",
@@ -3159,6 +3175,11 @@ export const sv = {
       methodLabel: "Metod",
       methodTooltip:
         "Hur modellen tränas. LoRA och QLoRA uppdaterar små adaptrar i stället för varje vikt.",
+      trainAsLabel: "Träna som",
+      trainAsTooltip:
+        "En språkmodell skriver text. En beslutsmodell väljer ett av alternativen du ger den, med en sannolikhet, och körs i Decision API.",
+      trainAsLanguage: "Språkmodell",
+      trainAsDecision: "Beslutsmodell",
       datasetLabel: "Datauppsättning",
       datasetTooltip: "Träningsdata som används för att finjustera modellen.",
       hfTokenDescription:
@@ -3602,6 +3623,11 @@ export const sv = {
       readMore: "Läs mer",
     },
     training: {
+      duplicateFailed: "Det gick inte att duplicera körningen",
+      duplicateDraftChanged:
+        "Träningsinställningarna ändrades under inläsningen. Försök duplicera igen.",
+      duplicateNoModel:
+        "Den här körningen har ingen sparad modellkonfiguration.",
       startTraining: "Starta träning",
       starting: "Startar ...",
       loadingModel: "Läser in modell ...",
@@ -4348,6 +4374,18 @@ export const sv = {
       readVideoFailed: "Det gick inte att läsa videon ({status}).",
       openFileFailed: "Det gick inte att öppna filen",
     },
+  },
+  exportDecision: {
+    title: "Beslutsmodell",
+    description:
+      "{layout}-beslutsmodeller exporteras till GGUF för llama.cpp:s beslutsserver. Välj en eller flera kvantiseringar.",
+    adapterNote: "Den här kontrollpunkten innehåller LoRA-adaptrar; de slås samman före konverteringen.",
+    notEligibleTitle: "GGUF-export är inte tillgänglig",
+    ggufOnly: "Beslutsmodeller exporteras bara till GGUF",
+    existing: "Redan exporterad: {quantizations}",
+    outputNote: "GGUF-filer sparas i körningsmappen: {path}",
+    methodLabel: "GGUF för beslutsmodell",
+    outputLabel: "Besluts-GGUF ({quantizations})",
   },
   decisions: {
     title: "Testa ett beslut",
