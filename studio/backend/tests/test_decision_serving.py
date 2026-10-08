@@ -679,7 +679,7 @@ def test_the_mlx_runtime_serves_only_through_the_engine(home, client, engine, mo
     settings = client.get("/api/settings/systemone").json()
     assert settings["mlx_available"] and settings["effective_backend"] == "mlx"
     described = {m["name"]: "llama.cpp or MLX" in m["description"] for m in settings["models"]}
-    assert described["kev-4b"] and not described["kev-0.8b"]
+    assert described["kev-9b"] and not described["laya-gguf"]
     assert _post(client, served).headers["x-unsloth-decision-backend"] == "mlx"
     tuned = catalog.fine_tune(served)
     # Unlike Auto, a downloaded GGUF does not take the request.

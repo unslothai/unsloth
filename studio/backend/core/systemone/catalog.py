@@ -314,6 +314,16 @@ MLX_COMPANIONS = {
             "chat_template.jinja",
         ),
     ),
+    "kev-0.8b": MlxCompanion(
+        "kev",
+        "jaredpalmer/kev-0.8b",
+        "bf75a6a8848ea6960ff2ed108d9ed44c2941174f",
+        (*_ADAPTER_FILES, "head.pt", "training_config.json"),
+        45_445_663,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-0.8B-Base", "dc7cdfe2ee4154fa7e30f5b51ca41bfa40174e68", 1, 1_769_897_109
+        ),
+    ),
     "kev-4b": MlxCompanion(
         "kev",
         "jaredpalmer/kev-4b",
@@ -322,6 +332,16 @@ MLX_COMPANIONS = {
         135_176_939,
         base = _qwen_base(
             "Qwen/Qwen3.5-4B-Base", "1001bb4d826a52d1f399e183466143f4da7b741b", 2, 9_342_808_116
+        ),
+    ),
+    "kev-9b": MlxCompanion(
+        "kev",
+        "jaredpalmer/kev-9b",
+        "db029f08b290afd9fee4aa4bbcd9ae48602d1eb0",
+        (*_ADAPTER_FILES, "head.pt", "training_config.json"),
+        181_576_197,
+        base = _qwen_base(
+            "Qwen/Qwen3.5-9B-Base", "68c46c4b3498877f3ef123c856ecfde50c39f404", 4, 19_329_294_358
         ),
     ),
     "bespoke-nimble-9b-v3": MlxCompanion(
