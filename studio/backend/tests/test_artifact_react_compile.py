@@ -324,7 +324,10 @@ def test_each_event_loop_gets_its_own_slots(monkeypatch):
 
     async def burst(tag):
         return await asyncio.gather(
-            *(rp.compile_react_preview_async(f"{tag}{i}", "tsx") for i in range(rp.MAX_CONCURRENT + 2))
+            *(
+                rp.compile_react_preview_async(f"{tag}{i}", "tsx")
+                for i in range(rp.MAX_CONCURRENT + 2)
+            )
         )
 
     for tag in ("first", "second"):
