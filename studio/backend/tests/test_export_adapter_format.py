@@ -624,3 +624,74 @@ def test_gguf_converter_reads_legacy_upstream_named_source_archive(monkeypatch, 
     assert calls[-1][0][1] == str(
         tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
     )
+
+
+def test_gguf_converter_online_bare_tag_ignores_an_unrelated_mix_cache(monkeypatch, tmp_path):
+    import hashlib
+    import sys
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    sys.modules["unsloth_zoo.llama_cpp"]._resolve_converter_revision = lambda d: (
+        "ggml-org/llama.cpp",
+        "b9000",
+    )
+    stale = tmp_path / "home" / "llama.cpp-source-b9000-mix-pre"
+    (stale / "gguf-py").mkdir(parents = True)
+    (stale / "convert_lora_to_gguf.py").write_text("")
+    tag = "b9000-mix-rel"
+    tarball = _fork_source_tarball(tag)
+    _fake_github(
+        monkeypatch,
+        {
+            "&page=1": [{"tag_name": tag, "draft": False}],
+            f"/download/{tag}/llama-prebuilt-sha256.json": {
+                "release_tag": tag,
+                "artifacts": {
+                    f"llama.cpp-source-{tag}.tar.gz": {
+                        "sha256": hashlib.sha256(tarball).hexdigest()
+                    }
+                },
+            },
+            f"/llama.cpp-source-{tag}.tar.gz": tarball,
+        },
+    )
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
+
+
+def test_source_artifact_accepts_abbreviated_commit():
+    from utils import llama_cpp_source
+    name, digest = llama_cpp_source.source_artifact(
+        {
+            "source_commit": "abc1234",
+            "artifacts": {"llama.cpp-source-commit-abc1234.tar.gz": {"sha256": "a" * 64}},
+        },
+        "b9000-mix-abc",
+    )
+    assert name == "llama.cpp-source-commit-abc1234.tar.gz"
+
+
+def test_safe_extract_without_data_filter_drops_links(monkeypatch, tmp_path):
+    import io
+    import tarfile
+
+    from utils import llama_cpp_source
+
+    archive = tmp_path / "a.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        link = tarfile.TarInfo("root/a")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "."
+        tar.addfile(link)
+        data = b"x"
+        info = tarfile.TarInfo("root/convert_lora_to_gguf.py")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    monkeypatch.delattr(tarfile, "data_filter", raising = False)
+    out = tmp_path / "out"
+    out.mkdir()
+    llama_cpp_source.safe_extract_tar(archive, out)
+    assert (out / "root" / "convert_lora_to_gguf.py").is_file()
+    assert not (out / "root" / "a").exists() and not (out / "root" / "a").is_symlink()

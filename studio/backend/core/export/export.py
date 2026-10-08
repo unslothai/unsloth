@@ -1960,7 +1960,8 @@ class ExportBackend:
                 source_dir = f"{source_dir}-{tag}"
                 if os.path.exists(os.path.join(source_dir, "convert_lora_to_gguf.py")):
                     converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
-            elif tag:
+            elif tag and not getattr(_zoo_llama_cpp, "_converter_network_allowed", lambda: True)():
+                # Offline only: online, the download path resolves the stable mix release first.
                 cached = sorted(
                     glob.glob(f"{glob.escape(source_dir)}-{glob.escape(tag)}-mix-*"),
                     key = os.path.getmtime,

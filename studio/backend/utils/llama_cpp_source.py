@@ -116,7 +116,7 @@ def source_artifact(checksums: dict, release_tag: str) -> tuple[str, str]:
     artifacts = checksums.get("artifacts") or {}
     names = [source_asset_name(release_tag)]
     commit = checksums.get("source_commit")
-    if isinstance(commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", commit):
+    if isinstance(commit, str) and re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
         names.append(f"llama.cpp-source-commit-{commit.lower()}.tar.gz")
     upstream = checksums.get("upstream_tag")
     if isinstance(upstream, str) and upstream and upstream != release_tag:
@@ -148,8 +148,8 @@ def safe_extract_tar(archive: Path, destination: Path) -> None:
                     raise RuntimeError(f"link escapes the llama.cpp source archive: {member.name}")
         if hasattr(tarfile, "data_filter"):
             tar.extractall(destination, members = members, filter = "data")
-        else:  # Python < 3.11.4; every member was checked above.
-            tar.extractall(destination, members = members)
+        else:  # Python < 3.11.4: links could chain out mid-extraction; the converter needs none.
+            tar.extractall(destination, members = [m for m in members if m.isfile() or m.isdir()])
 
 
 def download_converter_source(repo: Optional[str], tag: Optional[str], parent: Path) -> Path:
