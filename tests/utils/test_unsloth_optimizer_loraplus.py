@@ -170,6 +170,11 @@ def test_a_legacy_checkpoint_is_refused_not_misread_under_loraplus():
 
 
 def test_training_arguments_store_and_validate_the_ratio():
+    pytest.importorskip("torch")
+    if UnslothTrainingArguments.__module__ != "unsloth.trainer":
+        pytest.skip(
+            "MLX maps loraplus_lr_ratio onto lora_plus_ratio (test_mlx_public_trainer_api.py)"
+        )
     args = UnslothTrainingArguments(output_dir = "/tmp/unsloth-loraplus-test", loraplus_lr_ratio = 16)
     assert args.loraplus_lr_ratio == 16
     assert (
