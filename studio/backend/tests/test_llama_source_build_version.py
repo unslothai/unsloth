@@ -155,6 +155,9 @@ def _status(monkeypatch, exe: str) -> dict:
         "asset": "app-b11408-mix-1e24fc5-linux-x64-cuda13.tar.gz",
         "install_kind": "linux-cuda",
     }
+    # A pinned server path or llama.cpp dir on the host makes the tree unmanaged.
+    for var in ("LLAMA_SERVER_PATH", "UNSLOTH_LLAMA_CPP_PATH"):
+        monkeypatch.delenv(var, raising = False)
     monkeypatch.setattr(upd, "_find_binary", lambda: exe)
     monkeypatch.setattr(upd, "_resolve_prebuilt_for_host", lambda **_: dict(res))
     monkeypatch.setattr(upd, "latest_release_assets", lambda *a, **k: {res["asset"]: 1})
