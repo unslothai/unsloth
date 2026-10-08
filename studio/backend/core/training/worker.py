@@ -4215,7 +4215,13 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # and two runs on one card can each take their share.
     # ── 2b. Training VRAM budget ──
     _budget_gb = config.get("offload_vram_gb")
-    if _budget_gb:
+    # Only "auto" sizes to a budget, and decision / embedding runs never offload.
+    if (
+        _budget_gb
+        and config.get("offload_layers") == "auto"
+        and not config.get("is_decision")
+        and not config.get("is_embedding")
+    ):
         try:
             import torch as _torch_budget
             if _torch_budget.cuda.is_available():

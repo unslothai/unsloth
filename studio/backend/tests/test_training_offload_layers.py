@@ -194,3 +194,34 @@ def test_every_worker_failure_path_carries_the_budget_hint():
     )
     # Load, LoRA prepare (offload_layers = "auto" plans in get_peft_model) and training OOM.
     assert src.count("_with_vram_budget_hint(") == 4
+
+
+@pytest.mark.parametrize("checkpointing", ["none", "False"])
+@pytest.mark.parametrize("offload", [14, "auto"])
+def test_offload_without_checkpointing_is_refused_up_front(checkpointing, offload):
+    with pytest.raises(ValidationError, match = "needs gradient checkpointing"):
+        _request(offload_layers = offload, gradient_checkpointing = checkpointing)
+
+
+def test_offload_with_checkpointing_or_off_is_accepted():
+    _request(offload_layers = "auto", gradient_checkpointing = "unsloth")
+    _request(offload_layers = 0, gradient_checkpointing = "none")
+
+
+def test_worker_applies_the_budget_only_where_auto_offload_sizes_to_it():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
+        encoding = "utf-8"
+    )
+    gate = src[src.index("# ── 2b. Training VRAM budget ──") :][:900]
+    for needle in (
+        'config.get("offload_layers") == "auto"',
+        'config.get("is_decision")',
+        'config.get("is_embedding")',
+    ):
+        assert needle in gate
+    # The budget lands before the decision / embedding branches return, so the gate has to.
+    assert src.index("# ── 2b. Training VRAM budget ──") < src.index(
+        'if config.get("is_decision", False):'
+    )
