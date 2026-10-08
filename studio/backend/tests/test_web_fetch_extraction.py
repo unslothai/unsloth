@@ -755,6 +755,25 @@ def test_dropping_site_link_urls_leaves_code_samples_alone(monkeypatch):
     assert "Inline `[Usage](#usage)`." in out
 
 
+def test_dropping_site_link_urls_only_rewrites_links_emitted_by_renderer(monkeypatch):
+    filler = "".join(
+        f"<p>Guide paragraph {i} with enough words to run long.</p>" for i in range(400)
+    )
+    page = (
+        "<html><body><main>"
+        "<p>Literal Markdown: [Install](#install).</p>"
+        '<p>Inline code: <code><a href="#install">Install</a></code>.</p>'
+        '<p>Actual link: <a href="#install">Install</a>.</p>'
+        f"{filler}</main></body></html>"
+    )
+    out = _page_text(monkeypatch, "https://docs.example.com/guide", page, "text/html")
+    assert out.startswith(
+        "Literal Markdown: [Install](#install).\n\n"
+        "Inline code: `[Install](#install)`.\n\n"
+        "Actual link: Install."
+    )
+
+
 def test_dropping_site_link_urls_keeps_the_same_article(monkeypatch):
     linked = "".join(
         f'<p>Story one fact {i} see <a href="/topics/a-very-long-topic-slug-number-{i}">topic {i}</a>.</p>'
