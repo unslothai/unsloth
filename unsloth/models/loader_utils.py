@@ -2724,6 +2724,39 @@ def _decompress_compressed_tensors_model(model):
     return True
 
 
+def _dequantize_bitsandbytes_for_full_finetuning(
+    model,
+    dtype = None,
+    model_name = "",
+):
+    """Full finetuning marks every weight trainable, which the uint8 / int8 weights of a pre-quantized bitsandbytes checkpoint (a local `-bnb-4bit` folder, which the name mapper cannot redirect) reject (#2613)."""
+    quantizer = getattr(model, "hf_quantizer", None)
+    method = getattr(getattr(quantizer, "quantization_config", None), "quant_method", None)
+    if str(getattr(method, "value", method)).lower() != "bitsandbytes":
+        return False
+    print(
+        f"Unsloth: `{model_name}` is a pre-quantized bitsandbytes checkpoint, so full finetuning "
+        "dequantizes it to 16bit. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    # transformers < 5 has no dtype argument; prepare_model_for_training casts the weights anyway.
+    if "dtype" in inspect.signature(model.dequantize).parameters:
+        model.dequantize(dtype = dtype)
+    else:
+        model.dequantize()
+    # transformers 5 keeps the load's bnb deserialize converter, whose missing reverse op makes save_pretrained raise NotImplementedError.
+    conversions = getattr(model, "_weight_conversions", None)
+    if isinstance(conversions, list):
+        model._weight_conversions = [
+            conversion
+            for conversion in conversions
+            if not any(
+                getattr(op, "hf_quantizer", None) is quantizer
+                for op in getattr(conversion, "operations", None) or ()
+            )
+        ]
+    return True
+
+
 def _prepare_compressed_tensors_model(model, full_finetuning = False):
     # Routed FP8 / NVFP4 weights are frozen, so full finetuning always takes the decompressed bf16 weights.
     if full_finetuning:
