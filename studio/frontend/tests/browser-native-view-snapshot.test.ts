@@ -283,3 +283,30 @@ test("a native page and its downloads begun beside a temporary chat stay tempora
     stop();
   }
 });
+
+test("a native page begun beside a normal chat is kept in history though its tab opened beside a temporary chat", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const stop = startNativeViews();
+  const g = globalThis as { nativeViewListener?: (event: { payload: unknown }) => void; nativeViewVisits?: unknown };
+  try {
+    useChatRuntimeStore.getState().setIncognito(true);
+    useBrowserStore.getState().openUrl("https://example.net/", { newTab: true });
+    useChatRuntimeStore.getState().setIncognito(false);
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const visits: { url: string; temporary: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    load("https://example.net/", false);
+    load("https://example.net/next", true);
+    load("https://example.net/next", false);
+    assert.deepEqual(visits, [
+      { url: "https://example.net/", temporary: true },
+      { url: "https://example.net/next", temporary: false },
+    ]);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});

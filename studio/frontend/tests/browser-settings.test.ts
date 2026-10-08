@@ -83,6 +83,19 @@ test("with download history off, downloads are not listed", () => {
   assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
 });
 
+test("a navigation asked for as temporary stays temporary in a normal chat", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://example.com/", { newTab: true });
+  const tabId = useBrowserStore.getState().activeTabId!;
+  store.navigate(tabId, { url: "https://example.com/reached", temporary: true });
+  const entry = currentEntry(useBrowserStore.getState().tabs.find((item) => item.id === tabId)!);
+  assert.equal(entry.kind === "web" && entry.temporary, true);
+  store.navigate(tabId, { url: "https://example.com/after" });
+  const after = currentEntry(useBrowserStore.getState().tabs.find((item) => item.id === tabId)!);
+  assert.equal(after.kind === "web" && after.temporary, undefined);
+  store.closeTab(tabId);
+});
+
 test("files downloaded beside a temporary chat are not listed", () => {
   const history = useBrowserHistoryStore.getState();
   history.clearDownloads();

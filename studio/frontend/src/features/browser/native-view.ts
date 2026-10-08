@@ -94,7 +94,7 @@ function keepReachedPage(tabId: string): void {
   const tab = store.tabs.find((candidate) => candidate.id === tabId);
   const shown = pages.get(tabId);
   if (!tab || !shown?.url || currentEntry(tab).kind !== "web" || shown.url === currentEntryUrl(tab)) return;
-  store.navigate(tabId, { url: shown.url }, { replace: false });
+  store.navigate(tabId, { url: shown.url, temporary: temporaryPages.get(tabId) }, { replace: false });
   store.updateTab(tabId, { title: shown.title, favicon: shown.favicon, loading: false });
 }
 
@@ -105,6 +105,7 @@ function closeView(tabId: string): void {
   zooms.delete(tabId);
   icons.delete(tabId);
   pages.delete(tabId);
+  temporaryPages.delete(tabId);
   recency = recency.filter((id) => id !== tabId);
   void call("browser_view_close", { tabId }).catch(() => undefined);
 }
@@ -130,12 +131,11 @@ function takeTemporaryDownload(key: string): boolean {
   return count > 0;
 }
 
-// Tabs whose page began loading beside a temporary chat: in-page navigation makes no new entry.
-const temporaryPages = new Set<string>();
+// Per tab, whether its page began loading beside a temporary chat: in-page navigation makes no new entry.
+const temporaryPages = new Map<string, boolean>();
 
 function notePageStart(tabId: string): void {
-  if (useChatRuntimeStore.getState().incognito) temporaryPages.add(tabId);
-  else temporaryPages.delete(tabId);
+  temporaryPages.set(tabId, useChatRuntimeStore.getState().incognito);
 }
 
 /** Always answered: an unanswered download would sit in staging until the app quits. */
@@ -175,7 +175,7 @@ function onNativeEvent(event: NativeEvent): void {
   if (entry.kind !== "web") return;
   const history = useBrowserHistoryStore.getState();
   if ((event.kind === "load" && event.loading) || event.kind === "url") notePageStart(tab.id);
-  const temporary = entry.temporary === true || temporaryPages.has(tab.id);
+  const temporary = temporaryPages.get(tab.id) ?? entry.temporary === true;
   switch (event.kind) {
     case "load":
       store.updateTab(tab.id, { loading: event.loading, displayUrl: event.url, ...leftOpenedPage(tab, event.url) });

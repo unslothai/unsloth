@@ -210,10 +210,10 @@ export function currentEntry(tab: BrowserTab): BrowserEntry {
   return tab.history[tab.index] ?? { kind: "newtab" };
 }
 
-function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string): BrowserEntry {
+function webEntry(url: string, method?: "GET" | "POST", body?: string, from?: string, temporary = false): BrowserEntry {
   const entry: Extract<BrowserEntry, { kind: "web" }> =
     method === "POST" ? { kind: "web", url, method, body } : { kind: "web", url: unwrapRedirect(url) };
-  if (useChatRuntimeStore.getState().incognito) entry.temporary = true;
+  if (temporary || useChatRuntimeStore.getState().incognito) entry.temporary = true;
   return from ? { ...entry, from } : entry;
 }
 
@@ -299,7 +299,7 @@ type BrowserState = {
   openFile: (input: OpenFileInput) => void;
   navigate: (
     tabId: string,
-    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string },
+    request: { url: string; method?: "GET" | "POST"; body?: string; from?: string; temporary?: boolean },
     options?: { replace?: boolean },
   ) => void;
   /** A page-sent entry that became a download: back to that page and out of history, unless the tab moved on. */
@@ -550,7 +550,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => {
           const replace = options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web");
-          const entry = webEntry(request.url, request.method, request.body, request.from);
+          const entry = webEntry(request.url, request.method, request.body, request.from, request.temporary);
           if (request.from && !replace) sentFrom.set(entry, currentEntry(tab));
           return pushEntry(tab, entry, replace);
         }),
