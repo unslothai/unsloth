@@ -455,7 +455,7 @@ def test_sync_removes_documents_in_a_dot_directory(rag_home, stub_embeddings, al
 
     notes.rename(source / ".obsidian")
     if already_indexed:
-        # Reproduce a mapping left by the scanner before dot directories were excluded.
+        # reproduce a mapping created before dot directories were excluded.
         folder_sync._rename_mapping(folder["id"], "notes/note.txt", ".obsidian/note.txt")
     result = _run(folder["id"])
     assert result["status"] == "completed"
