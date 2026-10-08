@@ -2142,6 +2142,22 @@ def test_table_spans_do_not_multiply_the_page_size():
         assert len(html_to_markdown(html)) < 3 * len(html)
 
 
+def test_table_spans_stop_at_row_groups_tables_and_long_cells():
+    def rows(html):
+        return html_to_markdown(f"<body>{html}</body>").splitlines()
+
+    covered_row = "<table><tr><th>A</th><th>B</th></tr><tr><td rowspan=2>a</td><td rowspan=2>b</td></tr><tr></tr><tr><td>c</td><td>d</td></tr></table>"
+    assert rows(covered_row)[-3:] == ["| a | b |", "| a | b |", "| c | d |"]
+    footer = "<table><thead><tr><th>Item</th><th>Qty</th></tr></thead><tbody><tr><td>x</td><td rowspan=2>5</td></tr></tbody><tfoot><tr><td>Total</td><td>5</td></tr></tfoot></table>"
+    assert rows(footer)[-1] == "| Total | 5 |"
+    nested = "<table><tr><td>T1</td><td><table><tr><td rowspan=2>GK</td><td>P1</td></tr></table></td></tr><tr><td>T2</td><td>S2</td></tr></table>"
+    assert rows(nested)[-1] == "| T2 | S2 |"
+    to_group_end = "<table><tr><th>G</th><th>N</th></tr><tbody><tr><th rowspan=0>g</th><td>1</td></tr><tr><td>2</td></tr></tbody><tbody><tr><td>h</td><td>3</td></tr></tbody></table>"
+    assert rows(to_group_end)[-3:] == ["| g | 1 |", "| g | 2 |", "| h | 3 |"]
+    sidebar = "<table><tr><td rowspan=5>" + "Article body text. " * 120 + "</td><td>Home</td></tr>" + "<tr><td>Link</td></tr>" * 4 + "</table>"
+    assert html_to_markdown(sidebar).count("Article body text.") == 120
+
+
 def test_truncated_header_and_blockquote_keep_source_order():
     out = html_to_markdown("<body><main><header><h1>Title</h1><blockquote>Quote", main_content = True)
     assert out.index("Title") < out.index("Quote")
