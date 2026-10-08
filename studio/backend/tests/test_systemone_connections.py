@@ -516,7 +516,9 @@ def test_studio_lists_its_decision_models_only_when_asked(monkeypatch, studio):
         )
         return [model["id"] for model in listed["data"]]
 
-    assert ids("decisions") == ["default"]
+    # Without torch only the GGUF-only entries, which llama.cpp serves, stay listed.
+    gguf_only = [n for n in catalog.CHECKPOINTS if systemone_settings.llama_cpp_only(n)]
+    assert gguf_only and ids("decisions") == ["default", *gguf_only]
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
     laya = ["default", *catalog.CHECKPOINTS]
     assert ids() == ["unsloth/Qwen3-0.6B"]

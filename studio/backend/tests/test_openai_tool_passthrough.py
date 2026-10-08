@@ -3437,6 +3437,32 @@ class TestOpenAICompatibilityHelpers:
         assert usage["completion_tokens"] == 7
         assert usage["total_tokens"] == 7
 
+    def test_stream_usage_chunk_forwards_tool_loop_context_tokens(self):
+        payload = SimpleNamespace(stream_options = {"include_usage": True})
+        tool_loop = {
+            "prompt_tokens": 140,
+            "completion_tokens": 40,
+            "total_tokens": 180,
+            "context_tokens": 150,
+        }
+        line = _openai_stream_usage_chunk(payload, "c", 1, "m", tool_loop, None)
+        usage = json.loads(line.removeprefix("data: "))["usage"]
+        assert usage["total_tokens"] == 180
+        assert usage["context_tokens"] == 150
+
+        single = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        line = _openai_stream_usage_chunk(payload, "c", 1, "m", single, None)
+        assert "context_tokens" not in json.loads(line.removeprefix("data: "))["usage"]
+
+    def test_non_streaming_usage_omits_unset_context_tokens(self):
+        from models.inference import CompletionUsage
+
+        assert "context_tokens" not in json.loads(CompletionUsage(total_tokens = 5).model_dump_json())
+        assert "context_tokens" not in CompletionUsage(total_tokens = 5).model_dump()
+        assert (
+            json.loads(CompletionUsage(context_tokens = 4).model_dump_json())["context_tokens"] == 4
+        )
+
     def test_completion_stream_monitor_reads_usage_before_client_strip(self, monkeypatch):
         import routes.inference as inf_mod
 

@@ -455,7 +455,12 @@ def _is_gguf_companion_only_dir(path: Path) -> bool:
         return False
 
 
-def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
+def _scan_models_dir(
+    models_dir: Path,
+    *,
+    limit: int | None = None,
+    loose_files: bool = False,
+) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
@@ -543,9 +548,21 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                     ),
                 )
 
+    # Several loose checkpoints: one row per file (the folder rescue below needs exactly one).
+    from core.inference.diffusion import resolve_local_single_file
+    from hub.utils.comfy_models import loose_diffusion_checkpoints
+
+    sole = resolve_local_single_file(str(models_dir)) if not (found or loose_files) else None
+    loose = [] if sole is not None else loose_diffusion_checkpoints(models_dir)
+
     # A scan folder can also point at a BARE single-file checkpoint dir (one loose .safetensors,
     # no configs): both checks reject it, but resolve_local_single_file loads it.
-    if not found and (limit is None or limit > 0) and _has_non_gguf_weights(models_dir):
+    if (
+        not found
+        and not loose
+        and (limit is None or limit > 0)
+        and _has_non_gguf_weights(models_dir)
+    ):
         try:
             updated_at = models_dir.stat().st_mtime
         except OSError:
@@ -557,6 +574,24 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 path = str(models_dir),
                 source = "models_dir",
                 model_format = _dir_model_format(models_dir),
+                updated_at = updated_at,
+            ),
+        )
+
+    for checkpoint in loose:
+        if limit is not None and len(found) >= limit:
+            break
+        try:
+            updated_at = checkpoint.stat().st_mtime
+        except OSError:
+            continue
+        found.append(
+            LocalModelInfo(
+                id = str(checkpoint),
+                display_name = checkpoint.stem,
+                path = str(checkpoint),
+                source = "models_dir",
+                model_format = None,
                 updated_at = updated_at,
             ),
         )
@@ -870,6 +905,36 @@ def _scan_nested_compat_rows(
     return found
 
 
+def _with_comfy_compat_rows(
+    folder_path: Path, existing: List[LocalModelInfo], *, limit: int
+) -> List[LocalModelInfo]:
+    """``existing`` plus a ComfyUI root's denoiser-folder rows, minus the role folders themselves
+    (the ``publisher/model`` scan lists them as models; they are containers)."""
+    from hub.utils.comfy_models import comfy_dit_scan_roots, comfy_role_dirs
+
+    role_dirs = comfy_role_dirs(folder_path)
+    if role_dirs:
+        existing = [
+            m for m in existing if os.path.normcase(os.path.realpath(m.path)) not in role_dirs
+        ]
+    seen = {(m.path, m.model_format) for m in existing}
+    found: List[LocalModelInfo] = []
+    roots = comfy_dit_scan_roots(folder_path)
+    scanned = {os.path.normcase(str(root)) for root in roots}
+    for root in roots:
+        if len(existing) + len(found) >= limit:
+            break
+        for row in _scan_models_dir(
+            root, limit = limit - len(existing) - len(found), loose_files = True
+        ):
+            key = (row.path, row.model_format)
+            if key in seen or os.path.normcase(row.path) in scanned:
+                continue
+            seen.add(key)
+            found.append(row)
+    return existing + found
+
+
 def _merge_scan_folder_row(
     m: LocalModelInfo, configured_cache_roots: tuple[Path, ...]
 ) -> LocalModelInfo:
@@ -1045,6 +1110,7 @@ def collect_local_models(
                 _generic += _scan_nested_compat_rows(
                     folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
                 )
+            _generic = _with_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
             custom_models = []
             for model in _generic:
                 path = Path(model.path)
@@ -2384,12 +2450,15 @@ async def get_model_config(
     hf_token: Optional[str] = Query(None),
     prefer_local_cache: bool = False,
     local_path: Optional[str] = None,
+    as_decision: bool = False,
     header_hf_token: Optional[str] = Depends(get_hf_token),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Get configuration for a specific model (wraps load_model_defaults)."""
+    """Get configuration for a specific model (wraps load_model_defaults).
+
+    ``as_decision`` asks for a text or vision LLM as a decision model: a fresh Clef head on it."""
     # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
     # it back here, where it would otherwise read as a Hugging Face id.
     from core.inference.npu_backend import is_npu_model_path
@@ -2520,6 +2589,15 @@ async def get_model_config(
                         max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
                 except Exception:
                     pass
+
+            if (
+                as_decision
+                and not is_decision
+                and not (is_embedding or is_lora or audio_type is not None)
+            ):
+                from utils.models.model_config import load_llm_decision_defaults
+                is_decision, layout = True, "llm"
+                config_dict = load_llm_decision_defaults()
 
             logger.info(
                 f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, audio_type_known={audio_type_definitive}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
@@ -5740,7 +5818,7 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir)
+        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
 
         models = [
             ModelCheckpoints(

@@ -26,7 +26,7 @@ None and the caller falls back to the dense download + cast. Inert with nothing 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Optional
 
 # Reuse the DiT module's operator allowlist for local paths: one env var, one policy.
@@ -129,6 +129,9 @@ TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 # measured encoder rather than under-stating any: an under-estimate is the expensive direction, since it lets an
 # oversized load through to the OS killer.
 TE_PREQUANT_BUDGET_SCALE = 0.65
+# The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
+# 17,534,339,488 for the dense encoder, 0.533, rounded up.
+TE_INT8_CONVROT_BUDGET_SCALE = 0.56
 
 
 def te_prequant_budget_scale(
@@ -156,7 +159,24 @@ def te_prequant_budget_scale(
         )
     except Exception:  # noqa: BLE001 -- an unresolvable pre-cast just means the dense encoder
         return 1.0
-    return TE_PREQUANT_BUDGET_SCALE if sources else 1.0
+    if not sources:
+        return 1.0
+    if _int8_convrot_only(te_quant_mode, target):
+        return TE_INT8_CONVROT_BUDGET_SCALE
+    return TE_PREQUANT_BUDGET_SCALE
+
+
+def _int8_convrot_only(te_quant_mode: Optional[str], target: Any) -> bool:
+    """Whether this pick can ONLY take the int8 ConvRot file (no fp8 fallback): Apple Silicon."""
+    try:
+        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
+        return (
+            normalize_te_quant(te_quant_mode) == "int8"
+            and int8_convrot_te_runs_on(target)
+            and not te_quant_supported(target, TE_QUANT_FP8)
+        )
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # Bases whose text-encoder weights are VERIFIED byte-identical (every shard LFS sha256 compared on 2026-07-18), so one
@@ -224,6 +244,15 @@ class TePrequantSource:
     # Names to try after ``filename``, in order, when the repo does not carry it. Only the "repo"
     # kind uses this: a local path either exists or it does not.
     fallback_filenames: tuple = ()
+
+
+def int8_convrot_te_runs_on(target: Any) -> bool:
+    """MPS runs the int8 ConvRot encoder without fp8: plain tensors, a Hadamard matmul and ``F.linear``."""
+    return getattr(target, "device", None) == "mps"
+
+
+def _is_fp8_te_name(name: Optional[str]) -> bool:
+    return bool(name) and "fp8" in str(name).lower()
 
 
 def te_prequant_repo_stem(repo_id: str, component: str, scheme: str) -> str:
@@ -398,12 +427,17 @@ def te_prequant_sources(
         denied = getattr(precision, "_te_family_denied", None)
         if callable(denied) and denied(family, mode):
             return {}
-        # int8 dequantizes to bf16 per call (no torchao) and falls back to the fp8 file: it needs what fp8 needs.
-        if not te_quant_supported(target, TE_QUANT_FP8):
+        # int8 falls back to the fp8 file, so it needs fp8; MPS runs the int8 file alone and drops the fp8 names.
+        fp8_runs = te_quant_supported(target, TE_QUANT_FP8)
+        if not fp8_runs and not (mode == "int8" and int8_convrot_te_runs_on(target)):
             return {}
         sources: dict[str, TePrequantSource] = {}
         for component in components:
             source = resolve_te_prequant_source(fam, component, mode)
+            if source is not None and not fp8_runs:
+                if source.kind == "repo" and _is_fp8_te_name(source.filename):
+                    continue
+                source = replace(source, fallback_filenames = ())
             if source is not None:
                 sources[component] = source
         return sources
@@ -651,6 +685,44 @@ def load_prequant_text_encoder(
         return None
 
 
+def supplied_component_pipe_kwargs(
+    base: str,
+    *,
+    dtype: Any,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    family: Optional[str] = None,
+    logger: Any = None,
+) -> dict[str, Any]:
+    """Supplied text-encoder / VAE modules by component. Never swallows a failure: the base repo's weights for
+    these components were not downloaded, so there is nothing to fall back to."""
+    from .diffusion_comfy_components import active_component_overrides, load_override_modules
+
+    overrides = active_component_overrides()
+    if overrides is None or not overrides.files:
+        return {}
+    from utils.hf_cache_settings import active_hf_hub_cache
+
+    return load_override_modules(
+        overrides,
+        base = base,
+        dtype = dtype,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        family = family,
+        cache_dir = active_hf_hub_cache(),
+        logger = logger if logger is not None else _module_logger(),
+    )
+
+
+def _module_logger() -> Any:
+    try:
+        from loggers import get_logger
+        return get_logger(__name__)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def te_prequant_pipe_kwargs(
     fam: Any,
     base: str,
@@ -662,6 +734,41 @@ def te_prequant_pipe_kwargs(
     logger: Any = None,
     local_files_only: bool = False,
 ) -> dict[str, Any]:
+    supplied = supplied_component_pipe_kwargs(
+        base,
+        dtype = dtype,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        family = getattr(fam, "name", None),
+        logger = logger,
+    )
+    injected = _te_prequant_pipe_kwargs(
+        fam,
+        base,
+        te_quant_mode = te_quant_mode,
+        target = target,
+        dtype = dtype,
+        hf_token = hf_token,
+        logger = logger,
+        local_files_only = local_files_only,
+        skip_components = tuple(supplied),
+    )
+    injected.update(supplied)
+    return injected
+
+
+def _te_prequant_pipe_kwargs(
+    fam: Any,
+    base: str,
+    *,
+    te_quant_mode: Optional[str],
+    target: Any,
+    dtype: Any,
+    hf_token: Optional[str] = None,
+    logger: Any = None,
+    local_files_only: bool = False,
+    skip_components: tuple = (),
+) -> dict[str, Any]:
     """Component overrides for pipeline assembly: ``{<component>: <pre-cast encoder>}``
     for every ``TE_PREQUANT_COMPONENTS`` attr the family hosts a pre-cast checkpoint for
     (e.g. flux.1 hosts its T5-XXL as ``text_encoder_2``); ``{}`` when none resolve
@@ -672,7 +779,7 @@ def te_prequant_pipe_kwargs(
     The later ``quantize_text_encoders`` call re-applies the cast idempotently and keeps
     status reporting truthful."""
     try:
-        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant
+        from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
         from .diffusion_text_encoder_trim import family_trims_lm_head
 
         sources = te_prequant_sources_for_base(
@@ -685,6 +792,8 @@ def te_prequant_pipe_kwargs(
         mode = normalize_te_quant(te_quant_mode) or TE_QUANT_FP8
         injected: dict[str, Any] = {}
         for component, source in sources.items():
+            if component in skip_components:
+                continue
             trim = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None))
             encoder = load_prequant_text_encoder(
                 base,
@@ -705,6 +814,7 @@ def te_prequant_pipe_kwargs(
                 and mode == "int8"
                 and source.kind == "repo"
                 and fp8_names
+                and te_quant_supported(target, TE_QUANT_FP8)
                 and _held_locally(source.location, source.filename, hf_token)
             ):
                 # The int8 file resolved but was refused: the plan dropped the dense shards, so take the fp8 names.

@@ -2408,6 +2408,7 @@ def _venv_t5_is_valid() -> bool:
 
 def _install_to_dir(pkg: str, target_dir: str) -> bool:
     """Install a single package into *target_dir*, preferring uv then pip."""
+    pkg = _install_source(pkg)
     # Try uv first (faster) if on PATH -- do NOT install uv at runtime.
     if shutil.which("uv"):
         result = subprocess.run(
@@ -3325,12 +3326,44 @@ def _venv_t5_latest_packages(version: str, extra_packages: tuple[str, ...] = ())
     """Package set for the latest sidecar; mirrors the fixed .venv_t5_* sidecars.
     *extra_packages* carries dep-compat shadows (e.g. a newer tokenizers) computed by
     utils.transformers_latest before install."""
-    return (
+    base = (
         f"transformers=={version}",
         "huggingface_hub==1.8.0",
         "hf_xet==1.4.2",
         "tiktoken",
-    ) + tuple(extra_packages)
+    )
+    overridden = {_pin_spec_name(p) for p in extra_packages}
+    return tuple(p for p in base if _pin_spec_name(p) not in overridden) + tuple(extra_packages)
+
+
+def _pin_spec_name(spec: str) -> str:
+    # PEP 503 name normalization, so huggingface_hub and huggingface-hub collide.
+    return re.sub(r"[-_.]+", "-", re.split(r"[<>=!~ @;\[]", spec, maxsplit = 1)[0]).lower()
+
+
+# PyPI never hosts a transformers .devN build, so a dev pin means main (the zip needs no git).
+_TRANSFORMERS_MAIN_ARCHIVE = (
+    "transformers @ https://github.com/huggingface/transformers/archive/{ref}.zip"
+)
+# The main commit the consented install checked; installs are serialized by the swap reservation.
+_main_archive_commit: str | None = None
+
+
+@contextlib.contextmanager
+def transformers_main_at(commit: str):
+    """Install transformers main from *commit* (not the moving branch) inside this block."""
+    global _main_archive_commit
+    previous, _main_archive_commit = _main_archive_commit, commit
+    try:
+        yield
+    finally:
+        _main_archive_commit = previous
+
+
+def _install_source(pkg: str) -> str:
+    if re.fullmatch(r"transformers==[0-9.]+\.dev[0-9]+", pkg):
+        return _TRANSFORMERS_MAIN_ARCHIVE.format(ref = _main_archive_commit or "refs/heads/main")
+    return pkg
 
 
 # Single reservation for ANY .venv_t5_latest replacement (consented install or lazy
@@ -3615,6 +3648,14 @@ def _ensure_venv_t5_latest_exists() -> bool:
     # the sidecar whichever we take: it cannot see sub-file damage itself, and a mapping
     # cached before the damage keeps it off the scanning path. A successful repair clears it.
     _request_latest_repair()
+    if ".dev" in version:
+        # A rebuild would install main code nobody consented to; broken -> the dialog offers it again.
+        logger.warning(
+            ".venv_t5_latest (transformers %s from main) is incomplete; load the model again "
+            "to reinstall it.",
+            version,
+        )
+        return False
     if _env_offline():
         logger.warning(
             ".venv_t5_latest (transformers %s) is incomplete and offline mode is set; "
@@ -3682,6 +3723,8 @@ def ensure_latest_transformers_venv(
     pin = _latest_pin_data()
     if (
         pin is not None
+        # A consented main install always rebuilds: main gains architectures without a .devN bump.
+        and _main_archive_commit is None
         and pin["version"] == version
         and tuple(pin["packages"]) == packages
         and _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages)

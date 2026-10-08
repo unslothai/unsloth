@@ -2025,3 +2025,31 @@ test("reloading one of several stays in its own slot; a new pick with the settin
   assert.doesNotMatch(USE_CHAT_MODEL_RUNTIME, /replacesOneOfSeveral/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /const touchesOnlySelected =\s*forceReload &&/);
 });
+
+
+test("a remembered split matches the resident without relying on another model's store ratio", () => {
+  const config = {
+    ...BLANK,
+    gpuMemoryMode: "manual" as const,
+    gpuLayers: 66,
+    selectedGpuIds: [1, 2, 0],
+    selectedGpuIndexKind: "physical" as const,
+    tensorSplit: [30, 20, 16],
+  };
+  const running = {
+    ...DEFAULTS,
+    gpu_memory_mode: "manual" as const,
+    gpu_layers: 66,
+    gpu_ids: [1, 2, 0],
+    requested_gpu_ids: [1, 2, 0],
+    tensor_split: [30, 20, 16],
+  };
+  assert.equal(matches(running, config), true);
+  assert.equal(matches({ ...running, tensor_split: [22, 22, 22] }, config), false);
+  assert.equal(matches(running, { ...config, tensorSplit: null }), false);
+  assert.equal(matches(
+    { ...running, gpu_ids: null, requested_gpu_ids: null, tensor_split: null },
+    config,
+    { ...STANDING, reconcileGpuIds: () => null },
+  ), true);
+});
