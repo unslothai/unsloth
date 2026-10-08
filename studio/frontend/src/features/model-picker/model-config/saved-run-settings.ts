@@ -5,8 +5,11 @@ import { useSyncExternalStore } from "react";
 import { syncModelOverride } from "../api/model-overrides";
 import type { ModelPickTarget } from "../components/model-selector/types";
 import {
+  type ModelConfigDraftSnapshot,
+  isModelConfigDraftEdited,
   modelConfigDraftKey,
   readModelConfigDraft,
+  replaceModelConfigDraft,
   setModelConfigDraftRemember,
 } from "./model-config-draft";
 import { modelStorageKey } from "./model-identity";
@@ -129,6 +132,31 @@ export function useHasSavedRunSettings(
   );
 }
 
+// `atReset`: the draft as the reset left it. One opened after the reset seeded defaults, and left
+// as is its next load would forget the restored record again.
+function restoreDraftAfterUndo(
+  draftKey: string,
+  atReset: ModelConfigDraftSnapshot | null,
+  snapshot: PerModelConfig,
+): void {
+  const draft = readModelConfigDraft(draftKey);
+  if (!draft || (atReset && !atReset.savedRemember)) {
+    return;
+  }
+  if (
+    !atReset &&
+    draft.appliedLiveSignature === "none" &&
+    !isModelConfigDraftEdited(draftKey)
+  ) {
+    replaceModelConfigDraft(draftKey, snapshot, {
+      remember: true,
+      savedRemember: true,
+    });
+    return;
+  }
+  setModelConfigDraftRemember(draftKey, true, true);
+}
+
 /** Drops a model's saved run settings here and on the server, like the panel's Forget. Returns an
  *  undo that puts them back, or null when there was nothing to forget or the delete failed. */
 export function forgetRunSettings(
@@ -160,9 +188,7 @@ export function forgetRunSettings(
     if (mirrored) {
       syncModelOverride(id, variant, snapshot);
     }
-    if (draft?.savedRemember) {
-      setModelConfigDraftRemember(draftKey, true, true);
-    }
+    restoreDraftAfterUndo(draftKey, draft ?? null, snapshot);
     return true;
   };
 }

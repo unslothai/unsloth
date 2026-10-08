@@ -158,6 +158,39 @@ test("forget marks a mounted editor's draft unsaved, and undo marks it saved aga
   }
 });
 
+test("undo restores an editor opened after the reset, so its next load keeps the settings", async () => {
+  store.clear();
+  const {
+    isModelConfigDraftEdited,
+    modelConfigDraftKey,
+    primeModelConfigDraft,
+    readModelConfigDraft,
+    retainModelConfigDraft,
+  } = await import(
+    "../src/features/model-picker/model-config/model-config-draft.ts"
+  );
+  setAuthFetchHandler(() => new Response("{}", { status: 200 }));
+  const key = modelConfigDraftKey(REPO, QUANT);
+  let release: (() => void) | null = null;
+  try {
+    savePerModelConfig(REPO, QUANT, tuned());
+    const undo = forgetRunSettings(ggufTarget());
+    assert.ok(undo);
+    // The panel opens inside the toast's window and seeds from what is stored now: defaults.
+    release = retainModelConfigDraft(key);
+    primeModelConfigDraft(key, resolveInitialConfig(REPO, QUANT), "none");
+    assert.equal(readModelConfigDraft(key)?.remember, false);
+    assert.equal(undo(), true);
+    assert.equal(readModelConfigDraft(key)?.remember, true);
+    assert.equal(readModelConfigDraft(key)?.savedRemember, true);
+    assert.equal(readModelConfigDraft(key)?.config.kvCacheDtype, "q8_0");
+    assert.equal(isModelConfigDraftEdited(key), false);
+  } finally {
+    release?.();
+    setAuthFetchHandler(null);
+  }
+});
+
 test("an undo before the forget's response keeps the restored record", async () => {
   store.clear();
   const pending: { release?: () => void } = {};
