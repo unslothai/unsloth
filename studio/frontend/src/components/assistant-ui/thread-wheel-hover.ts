@@ -43,6 +43,11 @@ export function attachWheelHoverSuppression(viewport: HTMLElement): () => void {
   };
   const onWheel = (event: WheelEvent) => {
     wheelAt = event.buttons ? Number.NEGATIVE_INFINITY : event.timeStamp;
+    // A message mounted under a still pointer takes its hover from `:hover`, with no mouseenter
+    // to record. The wheel lands before the scroll moves anything, so `:hover` is still that one.
+    if (timer === undefined) {
+      hovered = viewport.querySelector(`${MESSAGE}:hover`);
+    }
   };
   const onScroll = (event: Event) => {
     if (event.timeStamp - wheelAt > WHEEL_TAIL_MS) return;

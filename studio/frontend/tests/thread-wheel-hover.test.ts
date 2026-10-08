@@ -75,8 +75,15 @@ function attach(...ids: string[]) {
   };
 }
 
-const enter = (m: Message) => thread.boundary(new MouseEvent("mouseenter"), m);
-const leave = (m: Message) => thread.boundary(new MouseEvent("mouseleave"), m);
+// The browser moves `:hover` whether or not the event reaches assistant-ui.
+const enter = (m: Message) => {
+  m.hover = true;
+  thread.boundary(new MouseEvent("mouseenter"), m);
+};
+const leave = (m: Message) => {
+  m.hover = false;
+  thread.boundary(new MouseEvent("mouseleave"), m);
+};
 
 test("a wheel scroll holds message hover events, then moves hover once it settles", () => {
   mock.timers.enable({ apis: ["setTimeout"] });
@@ -96,7 +103,6 @@ test("a wheel scroll holds message hover events, then moves hover once it settle
     thread.fire("scroll");
     mock.timers.tick(100);
     assert.deepEqual([a.got, b.got, c.got], [["mouseenter"], [], []]);
-    c.hover = true;
     mock.timers.tick(100);
     assert.deepEqual(
       [a.got, b.got, c.got],
@@ -119,11 +125,31 @@ test("hover that has not moved by the time the scroll settles is left alone", ()
       messages: [a],
     } = attach("a", "b");
     enter(a);
-    a.hover = true;
     thread.fire("wheel", { buttons: 0 });
     thread.fire("scroll");
     mock.timers.tick(200);
     assert.deepEqual(a.got, ["mouseenter"]);
+    detach();
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test("a message hovered from mount, with no mouseenter, still loses hover after the scroll", () => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    const {
+      detach,
+      messages: [a, b],
+    } = attach("a", "b");
+    // assistant-ui reads `:hover` on mount and marks it hovered without any event.
+    a.hover = true;
+    thread.fire("wheel", { buttons: 0 });
+    thread.fire("scroll");
+    leave(a);
+    enter(b);
+    mock.timers.tick(200);
+    assert.deepEqual([a.got, b.got], [["mouseleave"], ["mouseenter"]]);
     detach();
   } finally {
     mock.timers.reset();
@@ -158,7 +184,8 @@ test("detaching mid-scroll settles hover and stops listening", () => {
     enter(a);
     thread.fire("wheel", { buttons: 0 });
     thread.fire("scroll");
-    b.hover = true;
+    leave(a);
+    enter(b);
     detach();
     assert.deepEqual(
       [a.got, b.got],
