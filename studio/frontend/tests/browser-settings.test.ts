@@ -647,3 +647,24 @@ test("video and audio tabs don't zoom; pages, images and documents do", async ()
   assert.equal(canZoom(tab({ name: "clip.mp4", plainText: true })), true);
   assert.equal(canZoom({ id: "t", index: 0, history: [{ kind: "web", url: "https://a.b/" }], zoom: 1 } as never), true);
 });
+
+test("closing the last Downloads button dismisses its result, but a button swapped in keeps it", async () => {
+  const { finishDownload, keptDownloadFile, mountDownloadsButton, useDownloadActivity } = await import(
+    "../src/features/browser/download-activity.ts"
+  );
+  const file = { blob: new Blob(["x"]), name: "a.bin", contentType: "" };
+  const result = { name: "a.bin", size: 1, contentType: "", url: null, failed: false };
+  // A tab change: one button goes and another comes in the same commit.
+  const first = mountDownloadsButton();
+  finishDownload("save:swap", result, file);
+  first();
+  const second = mountDownloadsButton();
+  await Promise.resolve();
+  assert.equal(useDownloadActivity.getState().finished?.key, "save:swap");
+  assert.equal(keptDownloadFile("save:swap"), file);
+  // The panel closes: no button is back, so the unrecorded copy goes.
+  second();
+  await Promise.resolve();
+  assert.equal(useDownloadActivity.getState().finished, null);
+  assert.equal(keptDownloadFile("save:swap"), null);
+});

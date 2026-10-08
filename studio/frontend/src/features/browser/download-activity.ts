@@ -91,7 +91,15 @@ function keepFile(id: string, file: { blob: Blob; name: string; contentType: str
 
 export function mountDownloadsButton(): () => void {
   useDownloadActivity.setState((state) => ({ buttons: state.buttons + 1 }));
-  return () => useDownloadActivity.setState((state) => ({ buttons: state.buttons - 1 }));
+  return () => {
+    useDownloadActivity.setState((state) => ({ buttons: state.buttons - 1 }));
+    // With the last button its notice and timer go too. A tab change swaps buttons in one commit,
+    // so only once none came back.
+    queueMicrotask(() => {
+      const { buttons, dismissFinished } = useDownloadActivity.getState();
+      if (buttons === 0) dismissFinished();
+    });
+  };
 }
 
 /** Marks a download as running under `key`; the button spins until it ends. */
