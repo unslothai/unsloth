@@ -2,11 +2,8 @@
 # no other requirements file may name diffusers, and a test in
 # tests/studio/install/test_diffusers_pin.py enforces that.
 #
-# Diffusers 0.41.0 is the first release containing Qwen-Image-2.1 (QwenImage21Pipeline and
-# its single-file transformer); 0.40.0 added the MiniMax-H3 and MiniMax Music 3 modular
-# pipelines. Keep the exact release pin so installs are reproducible without a source build
-# from GitHub. While this release carries every family Studio ships, diffusers-main.txt stays
-# commented out and the git route is never taken.
+# 0.41.0 is the first release with Qwen-Image-2.1 (0.40.0: MiniMax-H3 / Music 3). Exact pin, so
+# installs are reproducible without a source build from GitHub.
 #
 # Why it is installed from its own file, in its own step: base.txt is applied near the
 # start of the dependency pass. This step runs late, after every other requirements file,
