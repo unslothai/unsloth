@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+#
+# Opens a pull request when Lemonade or FastFlowLM publishes a newer stable release.
+#
+# Studio's AMD NPU runtime installs exactly the versions and SHA-256 digests in
+# studio/lemonade_prebuilt_pins.json, and a FastFlowLM version decides which NPU
+# models Studio can list (Qwen3.8 27B needs FastFlowLM 1.0.7). Nothing told us
+# when those pins fell behind, so new models never reached Studio. This checks
+# daily, hashes the new release assets, and opens (or refreshes) one PR on the
+# ci/lemonade-pins branch. A human still reviews and merges it: the pins stay
+# a tested, checksummed choice, never "whatever is latest". Studio installs
+# that already enabled the NPU upgrade on first use after the update ships.
+#
+# Re-runs are idempotent: no newer release, or an open PR that already pins
+# it, means no push. Pull requests opened with GITHUB_TOKEN do not start other
+# workflows; close and reopen the PR to run CI on it.
+
+name: Lemonade and FastFlowLM pin update
+
+on:
+  schedule:
+    - cron: '41 7 * * *'   # 07:41 UTC daily, off the cron rush
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  update-pins:
+    name: pin the latest Lemonade and FastFlowLM releases
+    if: github.repository == 'unslothai/unsloth'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      BRANCH: ci/lemonade-pins
+      PINS: studio/lemonade_prebuilt_pins.json
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        with:
+          egress-policy: block
+          disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Move the pins to the latest stable releases
+        id: update
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/update_lemonade_pins.py --write | tee "$RUNNER_TEMP/changes.txt"
+          if git diff --quiet -- "$PINS"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or refresh the pin update pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          if git fetch --quiet --depth 1 "$remote" "refs/heads/${BRANCH}" 2>/dev/null \
+            && git diff --quiet FETCH_HEAD -- "$PINS"; then
+            echo "${BRANCH} already pins these releases."
+            exit 0
+          fi
+          title="Studio: update Lemonade and FastFlowLM pins ($(paste -sd ';' "$RUNNER_TEMP/changes.txt" | sed 's/;/, /g'))"
+          {
+            echo "The scheduled pin check found newer stable releases:"
+            echo
+            sed 's/^/- /' "$RUNNER_TEMP/changes.txt"
+            echo
+            echo "Every asset was downloaded, hashed and checked against the digest GitHub publishes."
+            echo "Studio installs that already enabled the NPU upgrade on first use once this ships."
+            echo
+            echo "Before merging: enable the NPU and chat with one model on a Ryzen AI machine,"
+            echo "on Windows and Linux if the Lemonade version moved. Close and reopen this PR to run CI."
+          } > "$RUNNER_TEMP/body.md"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git commit --quiet -m "$title" -- "$PINS"
+          git push --force "$remote" "HEAD:refs/heads/${BRANCH}"
+          number="$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --repo "$REPO" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh pr create --repo "$REPO" --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+          fi

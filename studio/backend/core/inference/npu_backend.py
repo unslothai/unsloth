@@ -300,12 +300,20 @@ class LemonadeNpuBackend:
             return None
         return marker.get("lemond") if isinstance(marker, dict) else None
 
+    def _upgrade_pending(self, binary: Optional[Path]) -> bool:
+        """Whether the NPU was enabled, but a Studio update has since moved the runtime's pins."""
+        return binary is None and self._validated_install() is not None
+
     def status(self) -> dict[str, Any]:
         hardware = self.hardware()
         binary = self._installed_lemond()
-        installed = binary is not None
-        ready = self._state == "ready" or (
-            self._state == "idle" and installed and self._validated_install() == str(binary)
+        # An enabled NPU stays enabled across a pin change: its first use upgrades the runtime.
+        upgrade_pending = self._state == "idle" and self._upgrade_pending(binary)
+        installed = binary is not None or upgrade_pending
+        ready = (
+            self._state == "ready"
+            or upgrade_pending
+            or (self._state == "idle" and installed and self._validated_install() == str(binary))
         )
         running = self._server is not None and self._server.is_alive()
         resident = self.resident()
@@ -349,6 +357,12 @@ class LemonadeNpuBackend:
             if self._server is not None and self._server.is_alive():
                 return self._server
             binary = self._installed_lemond()
+            if self._upgrade_pending(binary):
+                logger.info("Upgrading the NPU runtime to the Lemonade and FastFlowLM pins")
+                self.enable()
+                if self._server is not None and self._server.is_alive():
+                    return self._server
+                binary = self._installed_lemond()
             if binary is None:
                 raise NpuError("The NPU runtime is not installed. Enable it first.")
             if self._server is not None:

@@ -460,6 +460,83 @@ def test_readiness_survives_a_restart_only_after_validation(npu, monkeypatch):
     assert nb.LemonadeNpuBackend(root = npu.root).status()["ready"] is False
 
 
+class _PinsMoved(_Installer):
+    """A Studio update moved the pins: the old install no longer matches until install runs."""
+
+    def __init__(self, binary: Path) -> None:
+        super().__init__(binary)
+        self.current = False
+
+    def installed_lemond(self, root):
+        return self.binary if self.current else None
+
+    def install(
+        self,
+        root,
+        cancel = None,
+    ):
+        self.current = True
+        return super().install(root, cancel = cancel)
+
+
+def _move_the_pins(npu, monkeypatch) -> nb.LemonadeNpuBackend:
+    """Enable, then restart as a Studio update would, with the runtime's pins moved."""
+    npu.enable()
+    npu.shutdown()
+    moved = _PinsMoved(npu.installer.binary)
+    monkeypatch.setattr(nb, "_installer_module", lambda: moved)
+    restarted = nb.LemonadeNpuBackend(root = npu.root)
+    restarted.installer = moved
+    return restarted
+
+
+def test_an_enabled_npu_upgrades_on_first_use_after_the_pins_move(npu, monkeypatch):
+    restarted = _move_the_pins(npu, monkeypatch)
+    try:
+        # Still enabled, so the model list loads instead of asking to enable again.
+        status = restarted.status()
+        assert status["ready"] is True and status["runtime_installed"] is True
+        installs_before = len([r for r in _requests(restarted) if r["path"] == "/v1/install"])
+        assert [model.id for model in restarted.catalog()]
+        assert restarted.installer.installs == 1
+        installs = [r for r in _requests(restarted) if r["path"] == "/v1/install"]
+        assert len(installs) == installs_before + 1
+        assert restarted.status()["ready"] is True
+        # Upgraded once: later calls reuse the running, current runtime.
+        restarted.catalog()
+        assert restarted.installer.installs == 1
+    finally:
+        restarted.shutdown()
+    again = nb.LemonadeNpuBackend(root = npu.root)
+    assert again.status()["ready"] is True
+
+
+def test_an_upgrade_that_fails_validation_asks_to_try_again(npu, monkeypatch):
+    restarted = _move_the_pins(npu, monkeypatch)
+    try:
+        monkeypatch.setenv("FAKE_FLM_VALIDATE", '{"ready": false, "all_fw_ok": false}')
+        with pytest.raises(nb.NpuError, match = "firmware"):
+            restarted.catalog()
+        status = restarted.status()
+        assert status["state"] == "failed" and status["ready"] is False
+    finally:
+        restarted.shutdown()
+
+
+def test_a_runtime_never_enabled_is_not_installed_behind_the_owners_back(tmp_path, monkeypatch):
+    installer = _PinsMoved(_binary(tmp_path))
+    monkeypatch.setattr(nb, "_installer_module", lambda: installer)
+    monkeypatch.setattr(
+        nb, "detect_amd_npu", lambda: {"present": True, "supported": True, "family": "XDNA2"}
+    )
+    backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
+    assert backend.status()["ready"] is False
+    assert backend.status()["runtime_installed"] is False
+    with pytest.raises(nb.NpuError, match = "Enable it first"):
+        backend.catalog()
+    assert installer.installs == 0
+
+
 def test_a_failed_replacement_leaves_nothing_on_the_npu(npu, monkeypatch):
     monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM", "gemma3-4b-FLM"]')
     monkeypatch.setenv("FAKE_LEMOND_LOAD_FAILS_FOR", "gemma3-4b-FLM")
