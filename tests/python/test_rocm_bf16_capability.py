@@ -273,9 +273,7 @@ def test_cuda_ddp_common_dtype_reaches_gpu_probe(monkeypatch, common_dtype, expe
     assert fake.cuda.is_bf16_supported(including_emulation = False) is expected
 
 
-@pytest.mark.parametrize(
-    "common_dtype, expected", [("fp16", False), ("bf16", True), (None, True)]
-)
+@pytest.mark.parametrize("common_dtype, expected", [("fp16", False), ("bf16", True), (None, True)])
 def test_model_utils_cuda_constant_matches_ddp_dtype(monkeypatch, common_dtype, expected):
     """Exercise the model loader's own constant, not only _gpu_init's patched torch probe."""
     if common_dtype is None:
