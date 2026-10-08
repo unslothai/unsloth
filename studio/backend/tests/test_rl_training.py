@@ -394,3 +394,32 @@ def test_grpo_generation_batch_holds_whole_prompt_groups(monkeypatch, generation
         reward_specs = [spec],
     )
     assert kw["args"].generation_batch_size == expected
+
+
+def test_grpo_generation_batch_counts_every_process(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    fake = types.SimpleNamespace(
+        GRPOConfig = _FakeGRPOConfigWithGenBatch, GRPOTrainer = lambda **kw: kw
+    )
+    monkeypatch.setitem(sys.modules, "trl", fake)
+    spec = {
+        "name": "len",
+        "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+    }
+    kw = build_rl_trainer(
+        "grpo",
+        model = None,
+        tokenizer = None,
+        train_dataset = None,
+        eval_dataset = None,
+        config_args = {
+            "output_dir": "o",
+            "max_seq_length": 512,
+            "per_device_train_batch_size": 1,
+            "gradient_accumulation_steps": 1,
+        },
+        settings = {"num_generations": 3},
+        reward_specs = [spec],
+    )
+    # Global batch 2, three generations: the generation batch rounds up to 6.
+    assert kw["args"].generation_batch_size == 6

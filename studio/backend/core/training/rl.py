@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import os
 from typing import Any, Optional
 
 OBJECTIVES = ("sft", "dpo", "orpo", "grpo")
@@ -335,19 +336,24 @@ def build_rl_trainer(
         )
         num_generations = int(settings.get("num_generations") or 4)
         grpo_base = {**base, "max_prompt_length": max_prompt_length}
-        batch = int(grpo_base.get("per_device_train_batch_size") or 1)
+        # TRL's batches are global: per-device size x processes (WORLD_SIZE under a launcher).
+        try:
+            world = max(int(os.environ.get("WORLD_SIZE") or 1), 1)
+        except ValueError:
+            world = 1
+        batch = int(grpo_base.get("per_device_train_batch_size") or 1) * world
         per_step = batch * int(grpo_base.get("gradient_accumulation_steps") or 1)
         if per_step % num_generations:
             # TRL needs whole prompt groups per generation batch, which must also be a multiple of
-            # the batch: round batch x accumulation up to a multiple of both.
+            # the global batch: round batch x accumulation up to a multiple of both.
             group = batch * num_generations // math.gcd(batch, num_generations)
             grpo_base["generation_batch_size"] = -(-per_step // group) * group
         eval_batch = grpo_base.get("per_device_eval_batch_size")
         if eval_batch:
-            # TRL evaluates whole prompt groups: the eval batch must be a multiple of num_generations.
-            grpo_base["per_device_eval_batch_size"] = (
-                -(-int(eval_batch) // num_generations) * num_generations
-            )
+            # TRL evaluates whole prompt groups: the global eval batch must be a multiple of
+            # num_generations.
+            step = num_generations // math.gcd(world, num_generations)
+            grpo_base["per_device_eval_batch_size"] = -(-int(eval_batch) // step) * step
         args = trl.GRPOConfig(
             **_config_kwargs(trl.GRPOConfig, grpo_base),
             **variant_args,
