@@ -219,6 +219,98 @@ def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
     assert response.headers["content-type"] == "text/csv; charset=utf-8"
 
 
+@pytest.mark.parametrize(
+    "text, label, encoding",
+    [("a,😀\n", "utf-32", "utf-32"), ("a,Ç\n", "ibm437", "cp437")],
+)
+def test_raw_text_is_transcoded_from_non_whatwg_charsets(monkeypatch, text, label, encoding):
+    _fetch(
+        monkeypatch,
+        (None, text.encode(encoding), "text/plain"),
+        {"url": "https://example.com/x.txt", "charset": label},
+    )
+    response = _call(url = "https://example.com/x.txt")
+    assert response.body == text.encode("utf-8")
+    assert response.headers["content-type"] == "text/plain; charset=utf-8"
+
+
+@pytest.mark.parametrize(
+    "text, label, encoding",
+    [
+        ("<p>朱镕基 中央广播电视总台</p>", "gb2312", "gbk"),
+        ("<p>丸数字①の日本語</p>", "shift_jis", "cp932"),
+        ("<p>똠방각하 한국어</p>", "euc-kr", "cp949"),
+        ("<p>廣東話嘅中文</p>", "big5", "big5hkscs"),
+    ],
+)
+def test_a_page_decodes_as_browsers_read_its_label(monkeypatch, text, label, encoding):
+    page = f"<html><meta charset={label}>{text}</html>"
+    _fetch(
+        monkeypatch,
+        (None, page.encode(encoding), "text/html"),
+        {"url": "https://example.com/", "charset": label},
+    )
+    assert text in json.loads(_call().body)["html"]
+    assert browser_mod._decode_html(page.encode(encoding), None) == page
+
+
+def test_a_stray_byte_does_not_garble_a_labelled_page(monkeypatch):
+    body = "<p>नमस्ते दुनिया</p><p>हिन्दी ".encode("utf-8") + b"\xff" + " पाठ</p>".encode("utf-8")
+    _fetch(
+        monkeypatch, (None, body, "text/html"), {"url": "https://example.com/", "charset": "utf-8"}
+    )
+    html = json.loads(_call().body)["html"]
+    assert "<p>नमस्ते दुनिया</p><p>हिन्दी \ufffd पाठ</p>" in html
+    assert html.count("\ufffd") == 1
+
+
+def test_a_malformed_header_charset_does_not_fall_through_to_meta_or_utf8(monkeypatch):
+    body = b"<html><meta charset=utf-8><p>\xc2\x81</p></html>"
+    _fetch(
+        monkeypatch,
+        (None, body, "text/html"),
+        {"url": "https://example.com/", "charset": "shift_jis"},
+    )
+    html = json.loads(_call().body)["html"]
+    assert "<p>\uff82\ufffd</p>" in html
+    assert "\x81" not in html
+
+
+def test_a_commented_meta_charset_is_ignored(monkeypatch):
+    body = b"<!-- <meta charset=shift_jis> --><p>caf\xc3\xa9</p>"
+    _fetch(
+        monkeypatch,
+        (None, body, "text/html"),
+        {"url": "https://example.com/", "charset": None},
+    )
+    assert "<p>café</p>" in json.loads(_call().body)["html"]
+
+
+@pytest.mark.parametrize(
+    "body, charset",
+    [
+        (b"<html><p>caf\xc3\xa9</p></html>", "undefined"),
+        (b"<html><meta charset=undefined><p>caf\xc3\xa9</p></html>", None),
+    ],
+)
+def test_a_page_with_an_undecodable_charset_still_renders(monkeypatch, body, charset):
+    _fetch(
+        monkeypatch, (None, body, "text/html"), {"url": "https://example.com/", "charset": charset}
+    )
+    assert "<p>café</p>" in json.loads(_call().body)["html"]
+
+
+@pytest.mark.parametrize("charset", ["undefined", "idna"])
+def test_text_with_an_undecodable_charset_passes_through(monkeypatch, charset):
+    body = "a,café\n".encode("utf-8")
+    _fetch(
+        monkeypatch,
+        (None, body, "text/csv"),
+        {"url": "https://example.com/c.csv", "charset": charset},
+    )
+    assert _call(url = "https://example.com/c.csv").body == body
+
+
 def test_other_bodies_pass_through_untouched(monkeypatch):
     pdf = b"%PDF-1.7\n..."
     _fetch(monkeypatch, (None, pdf, "application/pdf"), {"url": "https://example.com/p.pdf"})
@@ -669,3 +761,122 @@ def test_a_redirected_module_is_not_cached(monkeypatch):
     for _ in range(2):
         assert "ready()" in browser_mod._inline_module_scripts(page, "https://example.com/")
     assert fetched == ["https://example.com/latest.js"] * 2
+
+
+def _serve(
+    monkeypatch,
+    *parts,
+    gap = 0,
+):
+    import socket
+
+    from core.inference import tools
+
+    server = socket.create_server(("127.0.0.1", 0))
+    server.settimeout(10)
+
+    def respond():
+        with server:
+            while True:
+                try:
+                    conn, _ = server.accept()
+                except OSError:
+                    return
+                with conn:
+                    conn.recv(65536)
+                    try:
+                        for part in parts:
+                            conn.sendall(part)
+                            time.sleep(gap)
+                    except OSError:
+                        pass
+
+    threading.Thread(target = respond, daemon = True).start()
+    monkeypatch.setattr(
+        tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["127.0.0.1"])
+    )
+    return f"http://example.com:{server.getsockname()[1]}/missing"
+
+
+def _error_response(
+    code,
+    body,
+    headers = None,
+):
+    headers = {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Length": str(len(body)),
+        **(headers or {}),
+    }
+    head = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+    return f"HTTP/1.1 {code} Not Found\r\n{head}\r\n".encode() + body
+
+
+_SITE_404 = b"<html><head><title>Page not found</title></head><body>SITE_404_PAGE</body></html>"
+
+
+def test_a_sites_own_error_page_is_shown_in_a_tab(monkeypatch):
+    from core.inference import tools
+
+    url = _serve(monkeypatch, _error_response(404, _SITE_404))
+    response = _call(url = url, error_page = True)
+    assert response.headers["x-unsloth-browser-kind"] == "html"
+    payload = json.loads(response.body)
+    assert payload["url"] == url
+    assert "SITE_404_PAGE" in payload["html"]
+    assert tools._fetch_page_text(url, timeout = 5) == "Failed to fetch URL: HTTP 404 Not Found"
+
+
+@pytest.mark.parametrize("request_fields", [{}, {"max_bytes": 256 * 1024}])
+def test_a_download_or_icon_of_an_error_page_fails(monkeypatch, request_fields):
+    url = _serve(monkeypatch, _error_response(404, _SITE_404))
+    with pytest.raises(HTTPException) as caught:
+        _call(url = url, **request_fields)
+    assert caught.value.status_code == 502
+    assert caught.value.detail == "Failed to fetch URL: HTTP 404 Not Found"
+
+
+def test_a_slow_error_page_stops_at_the_fetch_deadline(monkeypatch):
+    monkeypatch.setattr(browser_mod, "_FETCH_TIMEOUT_S", 1.5)
+    head = _error_response(404, b"<html>" + b"x" * 9)[:-9]
+    url = _serve(monkeypatch, head, *[b"x"] * 9, gap = 1)
+    started = time.monotonic()
+    with pytest.raises(HTTPException) as caught:
+        _call(url = url, error_page = True)
+    assert caught.value.status_code == 502
+    assert time.monotonic() - started < 1.8
+
+
+def test_an_error_that_is_not_a_page_fails_without_reading_it(monkeypatch):
+    monkeypatch.setattr(browser_mod, "_FETCH_TIMEOUT_S", 1.5)
+    head = _error_response(503, b"x" * 9, {"Content-Type": "application/octet-stream"})[:-9]
+    url = _serve(monkeypatch, head, *[b"x"] * 9, gap = 1)
+    started = time.monotonic()
+    with pytest.raises(HTTPException) as caught:
+        _call(url = url, error_page = True)
+    assert caught.value.detail == "Failed to fetch URL: HTTP 503 Not Found"
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.parametrize(
+    "code, body, headers, detail",
+    [
+        (404, b"", {}, "HTTP 404 Not Found"),
+        (404, b"no such page", {"Content-Type": "text/plain"}, "HTTP 404 Not Found"),
+        (
+            403,
+            b"<html>challenge</html>",
+            {"Server": "cloudflare"},
+            {"message": "Failed to fetch URL: HTTP 403 Not Found", "botCheck": True},
+        ),
+    ],
+)
+def test_error_pages_that_cannot_be_shown_stay_errors(monkeypatch, code, body, headers, detail):
+    url = _serve(monkeypatch, _error_response(code, body, headers))
+    with pytest.raises(HTTPException) as caught:
+        _call(url = url, error_page = True)
+    assert caught.value.status_code == 502
+    if isinstance(detail, dict):
+        assert caught.value.detail == detail
+    else:
+        assert caught.value.detail == f"Failed to fetch URL: {detail}"

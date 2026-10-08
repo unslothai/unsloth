@@ -4,6 +4,7 @@
 """Embedder concurrency tests: the fast tokenizer isn't thread-safe, so encode
 and token counting must be serialized (else threads panic "Already borrowed")."""
 
+import json
 import os
 import sys
 import threading
@@ -269,6 +270,7 @@ def test_picker_plans_embeddinggemma_on_llama_server(monkeypatch):
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+    monkeypatch.setattr(embeddings, "sentence_transformers_can_load", lambda *a, **k: True)
     effective = {"model": "org/previous-embedder"}
     monkeypatch.setattr(config, "effective_embedding_model", lambda: effective["model"])
     plan = embeddings.resolved_backend_for_model
@@ -791,6 +793,131 @@ def test_runtime_preflight_keeps_st_when_no_fallback_exists(monkeypatch):
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: False)
 
     assert embeddings.resolved_backend_for_model("org/embedder") == "sentence-transformers"
+
+
+def _st_folder(tmp_path, module_type, model_config):
+    import json
+
+    folder = tmp_path / "embedder"
+    folder.mkdir()
+    (folder / "modules.json").write_text(
+        json.dumps([{"idx": 0, "name": "0", "path": "", "type": module_type}])
+    )
+    (folder / "config.json").write_text(json.dumps(model_config))
+    return str(folder)
+
+
+@pytest.mark.parametrize(
+    "module_type, model_config, loadable",
+    [
+        ("sentence_transformers.models.Transformer", {"model_type": "bert"}, True),
+        # How a repo saved by sentence-transformers 6 names its modules (embeddinggemma-2).
+        (
+            "sentence_transformers.no_such_module.transformer.Transformer",
+            {"model_type": "bert"},
+            False,
+        ),
+        ("sentence_transformers.models.Transformer", {"model_type": "no_such_model_type"}, False),
+        # The loader never trusts remote code, so an auto_map does not make an unknown type loadable.
+        (
+            "sentence_transformers.models.Transformer",
+            {"model_type": "no_such_model_type", "auto_map": {}},
+            False,
+        ),
+    ],
+)
+def test_st_can_load_reads_modules_and_model_type(tmp_path, module_type, model_config, loadable):
+    pytest.importorskip("sentence_transformers")
+    pytest.importorskip("transformers")
+    assert (
+        embeddings.sentence_transformers_can_load(_st_folder(tmp_path, module_type, model_config))
+        is loadable
+    )
+
+
+@pytest.mark.parametrize(
+    "root_model_type,module_model_type,loadable",
+    [
+        ("bert", "no_such_model_type", False),
+        ("no_such_model_type", "bert", True),
+    ],
+)
+def test_st_can_load_reads_the_transformer_modules_config(
+    tmp_path, root_model_type, module_model_type, loadable
+):
+    pytest.importorskip("sentence_transformers")
+    pytest.importorskip("transformers")
+    folder = tmp_path / "embedder"
+    module = folder / "0_Transformer"
+    module.mkdir(parents = True)
+    (folder / "modules.json").write_text(
+        json.dumps(
+            [
+                {
+                    "idx": 0,
+                    "name": "0",
+                    "path": "0_Transformer",
+                    "type": "sentence_transformers.models.Transformer",
+                }
+            ]
+        )
+    )
+    (folder / "config.json").write_text(json.dumps({"model_type": root_model_type}))
+    (module / "config.json").write_text(json.dumps({"model_type": module_model_type}))
+
+    assert embeddings.sentence_transformers_can_load(str(folder)) is loadable
+
+
+def test_st_can_load_preserves_anonymous_hub_access(monkeypatch):
+    pytest.importorskip("sentence_transformers")
+    seen = []
+
+    def _read(name, filename, token):
+        seen.append((filename, token))
+        return None if filename == "modules.json" else {}
+
+    monkeypatch.setattr(embeddings, "_repo_json", _read)
+
+    assert embeddings.sentence_transformers_can_load("org/public", False) is True
+    assert seen == [("modules.json", False), ("config.json", False)]
+
+
+def test_st_can_load_without_the_files_keeps_the_plan(tmp_path):
+    assert embeddings.sentence_transformers_can_load(str(tmp_path)) is True
+
+
+def test_st_can_load_gives_up_on_a_stalled_hub(monkeypatch):
+    pytest.importorskip("sentence_transformers")
+    monkeypatch.setattr(embeddings, "_ST_LOAD_PREFLIGHT_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(embeddings, "_repo_json", lambda *_: time.sleep(1))
+
+    started = time.monotonic()
+    assert embeddings.sentence_transformers_can_load("org/stalled") is True
+    assert time.monotonic() - started < 0.5
+
+
+def test_model_st_cannot_open_is_planned_on_llama(monkeypatch):
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_forced_backends", {})
+    _shared_setup_4(monkeypatch)
+    monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
+    monkeypatch.setattr(
+        embeddings,
+        "sentence_transformers_can_load",
+        lambda model, token = None: model != "org/st6-model",
+    )
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+
+    assert embeddings.resolved_backend_for_model("org/st6-model") == "llama-server"
+    assert embeddings.resolved_backend_for_model("org/embedder") == "sentence-transformers"
+
+    # An explicit ST policy makes the runtime ignore a stored llama backend, so the plan must not promise one.
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "sentence-transformers")
+    assert embeddings.resolved_backend_for_model("org/st6-model") == "sentence-transformers"
+
+    monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
+    monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: False)
+    assert embeddings.resolved_backend_for_model("org/st6-model") == "sentence-transformers"
 
 
 def test_runtime_preflight_catches_a_fatal_torch_device_mismatch(monkeypatch):
