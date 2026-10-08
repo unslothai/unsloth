@@ -1043,6 +1043,7 @@ function tabDownload(tab: BrowserTab | undefined): BrowserDownload | undefined {
     ? {
         ...page,
         url: tab.displayUrl ?? (entry.kind === "web" ? entry.url : null),
+        temporary: entry.kind === "web" && entry.temporary === true,
       }
     : undefined;
 }
