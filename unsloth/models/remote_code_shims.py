@@ -95,8 +95,8 @@ def _is_remote_code(cls):
 
 
 def _name_input_embedding(cls, module):
-    # transformers 5's inherited accessor only looks up `_input_embed_layer` (`embed_tokens`); EXAONE 3.5 keeps `wte`.
-    if "get_input_embeddings" in cls.__dict__ or "_input_embed_layer" in cls.__dict__:
+    # transformers 5 ports drop the accessor; the inherited one finds only `embed_tokens` (EXAONE 3.5 keeps `wte`).
+    if "get_input_embeddings" in cls.__dict__:
         return False
     try:
         module.get_input_embeddings()
@@ -105,12 +105,17 @@ def _name_input_embedding(cls, module):
         pass
     for name in _EMBEDDING_ATTRIBUTES:
         if isinstance(getattr(module, name, None), torch.nn.Embedding):
-            cls._input_embed_layer = name
-            try:
-                return module.get_input_embeddings() is getattr(module, name)
-            except NotImplementedError:
-                del cls._input_embed_layer
-                return False
+
+            def get_input_embeddings(self):
+                return getattr(self, name)
+
+            def set_input_embeddings(self, value):
+                setattr(self, name, value)
+
+            cls.get_input_embeddings = get_input_embeddings
+            if "set_input_embeddings" not in cls.__dict__:
+                cls.set_input_embeddings = set_input_embeddings
+            return True
     return False
 
 

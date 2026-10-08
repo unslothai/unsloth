@@ -63,7 +63,7 @@ sys.modules.setdefault(WteModel.__module__, sys.modules[__name__])
 
 
 def _fresh_classes():
-    # The shim sets a class attribute: give each test its own classes.
+    # The shim patches the class: give each test its own classes.
     inner = type("WteModel", (WteModel,), {"__module__": WteModel.__module__})
     outer = type("WteForCausalLM", (WteForCausalLM,), {"__module__": WteForCausalLM.__module__})
 
@@ -120,7 +120,7 @@ def test_native_and_own_accessor_classes_are_left_alone():
         "NativeWte", (WteModel,), {"__module__": "transformers.models.fake.modeling_fake"}
     )
     apply_remote_code_shims(native(WteConfig()))
-    assert "_input_embed_layer" not in native.__dict__
+    assert "get_input_embeddings" not in native.__dict__
 
     own = type(
         "OwnAccessor",
@@ -128,4 +128,4 @@ def test_native_and_own_accessor_classes_are_left_alone():
         {"__module__": WteModel.__module__, "get_input_embeddings": lambda self: self.wte},
     )
     assert apply_remote_code_shims(own(WteConfig())) == []
-    assert "_input_embed_layer" not in own.__dict__
+    assert "set_input_embeddings" not in own.__dict__
