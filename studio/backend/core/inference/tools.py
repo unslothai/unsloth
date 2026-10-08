@@ -6664,6 +6664,13 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     func = func.value
                 if isinstance(func, (ast.Call, ast.Subscript)):
                     return True  # calling a call/subscript result is dynamic
+                # numpy.load(..., allow_pickle=True) unpickles object arrays like torch.load; only a literal False is safe.
+                if any(
+                    kw.arg == "allow_pickle"
+                    and not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
+                    for kw in node.keywords
+                ):
+                    return True
                 # A concrete write callable handed as an argument to any call escapes into a helper that can invoke it
                 # without a direct open()/writer site: the same bypass the map/starmap/reduce branches gate, but
                 # through a user-defined helper. A benign callable argument (run(len)) is unaffected.

@@ -2316,6 +2316,20 @@ def test_python_classifier(code, unsafe):
     assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
 
 
+@pytest.mark.parametrize(
+    "code, unsafe",
+    [
+        ("import numpy as np\nnp.load('a.npy')", False),
+        ("import numpy as np\nnp.load('a.npy', allow_pickle=False)", False),
+        ("import numpy as np\nnp.load('a.npy', allow_pickle=True)", True),
+        ("import numpy as np\nflag = True\nnp.load('a.npy', allow_pickle=flag)", True),
+        ("from numpy import load\nload('a.npz', allow_pickle=1)['x']", True),
+    ],
+)
+def test_python_classifier_numpy_allow_pickle(code, unsafe):
+    assert is_potentially_unsafe_tool_call("python", {"code": code}) is unsafe
+
+
 def test_builtin_readonly_tools_are_safe():
     assert is_potentially_unsafe_tool_call("web_search", {"query": "hi"}) is False
     assert is_potentially_unsafe_tool_call("search_knowledge_base", {}) is False

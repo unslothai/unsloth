@@ -1083,7 +1083,8 @@ const StreamdownBlock = memo((props: BlockProps) => (
   </MarkdownBlockBoundary>
 ));
 StreamdownBlock.displayName = "StreamdownBlock";
-const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
+// Only the inline wav the adapter writes; any other src would be fetched on render, like a remote image.
+const AUDIO_PLAYER_RE = /<audio-player\s+src="(data:audio\/[^"]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
 // textgen does. There is no time or length throttle. Incremental block parsing
