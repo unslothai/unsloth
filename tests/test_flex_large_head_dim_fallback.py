@@ -314,7 +314,6 @@ def _padded_masks():
 
 def _packed_position_ids():
     import torch
-
     return torch.arange(32).repeat(2).unsqueeze(0).expand(2, -1)
 
 
