@@ -2754,7 +2754,18 @@ function Test-LlamaBuildToolsMissing {
     if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $true }
     if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) { return $true }
     # A CUDA source build installs the Toolkit (several GB) when no nvcc is found.
-    if ($HasNvidiaDriverEvidence -and -not (Find-Nvcc)) { return $true }
+    $nvcc = if ($HasNvidiaDriverEvidence) { Find-Nvcc } else { $null }
+    if ($HasNvidiaDriverEvidence -and -not $nvcc) { return $true }
+    # Phase 4 upgrades a CMake too old for VS 2026 via winget.
+    if ($CmakeGenerator -match 'Visual Studio 18\b' -and -not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) { return $true }
+    # Resolve-CudaToolkit copies missing CUDA .targets into VS, elevating when denied.
+    $cudaRoot = if ($nvcc) { Split-Path (Split-Path $nvcc -Parent) -Parent } else { $null }
+    if ($cudaRoot -and $script:VsInstallPath) {
+        $extras = Join-Path $cudaRoot "extras\visual_studio_integration\MSBuildExtensions"
+        $custom = Get-VcBuildCustomizationsDir -VsInstallPath $script:VsInstallPath -Generator $CmakeGenerator
+        if ((Test-Path $extras) -and (Test-Path $custom) -and
+            -not (Get-ChildItem $custom -Filter "CUDA *.targets" -ErrorAction SilentlyContinue)) { return $true }
+    }
     return (-not $script:VsInstallPath) -and (-not (Find-VsBuildTools))
 }
 
@@ -10293,12 +10304,16 @@ if ($StageRoot -and $NeedLlamaSourceBuild) {
     Exit-SetupFailure "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 }
 
+# Asked before Phase 3.5: OpenSSL is a system install too.
+$script:LlamaBuildToolsDeclined = $NeedLlamaSourceBuild -and $script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and
+    -not (Test-LlamaBuildToolsInstallAllowed)
+
 # ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
 # ==========================================================================
 $OpenSslAvailable = $false
 
-if ($NeedLlamaSourceBuild) {
+if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
     $OpenSslRoots = @(
         'C:\Program Files\OpenSSL-Win64',
         'C:\Program Files\OpenSSL',
@@ -10393,12 +10408,7 @@ if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinke
     $CanReuseLlamaBuild = Test-LlamaTreeStillHealthy $LlamaCppDir
 }
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild
-$script:LlamaBuildToolsDeclined = $false
-if ($WillBuildLlamaFromSource -and $script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and
-    -not (Test-LlamaBuildToolsInstallAllowed)) {
-    $WillBuildLlamaFromSource = $false
-    $script:LlamaBuildToolsDeclined = $true
-}
+if ($script:LlamaBuildToolsDeclined -and -not $CanReuseLlamaBuild) { $WillBuildLlamaFromSource = $false }
 if ($WillBuildLlamaFromSource) {
     if (-not $HasGitForBuild) {
         # Phase 1 keeps git optional, so only the automatic fallback after a failed prebuilt

@@ -9,6 +9,7 @@ BeforeAll {
     . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-LlamaBuildToolsInstallAllowed')))
     . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-LlamaBuildToolsMissing')))
     . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-SetupConsoleHeadless')))
+    . ([scriptblock]::Create((Get-FunctionSource -Path $script:SetupPs1 -Name 'Get-VcBuildCustomizationsDir')))
     function Write-StudioLine { param([string]$Text, [string]$ForegroundColor) }
     $script:SetupText = Get-Content -LiteralPath $script:SetupPs1 -Raw
 }
@@ -83,6 +84,39 @@ Describe 'Test-LlamaBuildToolsMissing' {
         $script:VsInstallPath = $Vs
         Test-LlamaBuildToolsMissing | Should -Be $Expected
     }
+
+    It 'reports missing when CMake cannot drive the VS 2026 generator (<CanDrive>)' -ForEach @(
+        @{ CanDrive = $false; Expected = $true }, @{ CanDrive = $true; Expected = $false }
+    ) {
+        Mock Get-Command { [pscustomobject]@{ Name = $Name } } -ParameterFilter { $Name -in 'git', 'cmake' }
+        function Find-VsBuildTools { $null }
+        function Find-Nvcc { $null }
+        function Test-CmakeCanDriveGenerator { param($Generator) $CanDrive }
+        $HasNvidiaDriverEvidence = $false
+        $CmakeGenerator = 'Visual Studio 18 2026'
+        $script:VsInstallPath = 'C:\VS'
+        Test-LlamaBuildToolsMissing | Should -Be $Expected
+    }
+
+    It 'reports missing when VS lacks the CUDA integration Resolve-CudaToolkit would copy (<Targets>)' -ForEach @(
+        @{ Targets = $false; Expected = $true }, @{ Targets = $true; Expected = $false }
+    ) {
+        Mock Get-Command { [pscustomobject]@{ Name = $Name } } -ParameterFilter { $Name -in 'git', 'cmake' }
+        $cuda = Join-Path $TestDrive 'CUDA\v12.8'
+        $vs = Join-Path $TestDrive 'VS'
+        $null = New-Item -ItemType Directory -Force (Join-Path $cuda 'bin'), (Join-Path $cuda 'extras\visual_studio_integration\MSBuildExtensions')
+        $custom = Get-VcBuildCustomizationsDir -VsInstallPath $vs -Generator 'Visual Studio 17 2022'
+        Remove-Item -Recurse -Force $custom -ErrorAction SilentlyContinue
+        $null = New-Item -ItemType Directory -Force $custom
+        if ($Targets) { $null = New-Item -ItemType File (Join-Path $custom 'CUDA 12.8.targets') }
+        $nvccPath = Join-Path $cuda 'bin\nvcc.exe'
+        function Find-VsBuildTools { $null }
+        function Find-Nvcc { $nvccPath }
+        $HasNvidiaDriverEvidence = $true
+        $CmakeGenerator = 'Visual Studio 17 2022'
+        $script:VsInstallPath = $vs
+        Test-LlamaBuildToolsMissing | Should -Be $Expected
+    }
 }
 
 Describe 'only the automatic fallback is gated' {
@@ -99,6 +133,14 @@ Describe 'only the automatic fallback is gated' {
         $fatal = $script:SetupText.IndexOf('Exit-SetupFailure "llama.cpp setup did not produce a usable server"')
         $declined | Should -BeGreaterThan 0
         $declined | Should -BeLessThan $fatal
+    }
+
+    It 'decides consent before Phase 3.5 installs OpenSSL, and OpenSSL honours it' {
+        $decide = $script:SetupText.IndexOf('$script:LlamaBuildToolsDeclined = $NeedLlamaSourceBuild')
+        $openssl = $script:SetupText.IndexOf('ShiningLight.OpenSSL.Dev')
+        $decide | Should -BeGreaterThan 0
+        $decide | Should -BeLessThan $openssl
+        $script:SetupText | Should -Match ([regex]::Escape('if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {'))
     }
 
     It 'the gate checks the fallback flag before asking' {
