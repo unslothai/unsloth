@@ -223,7 +223,6 @@ test("the compaction notice uses the shared boundary/checkpoint predicate", () =
   // Replayed fits stay quiet; a new boundary or checkpoint is a new compaction.
   assert.match(THREAD, /const showsNotice = useAuiState/);
   assert.match(THREAD, /contextTruncation && showsNotice && !isEditing/);
-  // One pass per revision of the thread, not one walk per message per store write (#12552).
   assert.match(THREAD, /compactionNoticeMessageIds\(thread\.messages\)\.has\(messageId\)/);
   assert.match(DERIVED, /shouldShowCompactionNotice\(value, previousDropped\)/);
   // Walked in order, not against the preceding message: turns between two moves report

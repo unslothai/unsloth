@@ -21,7 +21,6 @@ import { type FC, useMemo } from "react";
 // fence is never stitched across a non-text part (tool call, source, reasoning).
 const PART_SEPARATOR = "\u0000";
 
-// Joined once per content array: every assistant message asks on every store write (#12552).
 const visibleTextBlob = memoOnArray(
   (content: ReadonlyArray<{ type: string; text?: unknown }>) =>
     content

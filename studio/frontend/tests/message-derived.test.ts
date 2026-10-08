@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Message-wide values computed once per revision (#12552). Selectors run on every store write, so
-// these caches are what keep a keystroke in a long thread from rescanning every message. What is
-// pinned here: the cached answer equals the uncached one, a new array is recomputed, and the
-// compaction notice set matches the per-message walk it replaced.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import {

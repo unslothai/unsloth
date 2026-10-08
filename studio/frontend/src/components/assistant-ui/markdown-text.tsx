@@ -1298,8 +1298,7 @@ const MarkdownTextImpl = () => {
   // cannot express, an edit that drops retained blocks without changing the tail.
   const messageId = useAuiState(({ message }) => message.id);
   // Read once here for every block below: see RenderHtmlToolPresenceContext.
-  // These four run on every store write for every text part, so each is computed once per
-  // parts array rather than per part per write (#12552, message-derived.ts).
+  // Cached per parts array: these run per text part on every store write (#12552).
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     partsHaveRenderableRenderHtmlTool(message.parts),
   );

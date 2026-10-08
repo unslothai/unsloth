@@ -371,8 +371,7 @@ function ReasoningCopyButton({
 
   const aui = useAui();
 
-  // Read at click time, not subscribed: as a selector this joined the group's whole reasoning on
-  // every store write (every keystroke, every streamed delta) to serve a button (#12552).
+  // Read on click: as a selector it joined all the reasoning on every store write (#12552).
   const handleCopy = useCallback(async () => {
     const reasoningText = aui
       .message()

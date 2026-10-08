@@ -7892,8 +7892,6 @@ const AssistantMessage: FC = () => {
   // matters is when MORE of the conversation fell out of view: the eviction boundary
   // rising above the last turn that reported one, or a checkpoint starting inside a tool
   // loop (which evicts without moving the boundary). Sticky replays stay quiet.
-  // One pass per revision of the thread, shared by every message: asked per message, the walk
-  // up to each one ran on every store write and was quadratic in the thread (#12552).
   const showsNotice = useAuiState(({ thread }) =>
     compactionNoticeMessageIds(thread.messages).has(messageId),
   );

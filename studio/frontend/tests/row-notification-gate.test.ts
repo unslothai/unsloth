@@ -8,8 +8,7 @@ import { createRowNotificationGate } from "../src/components/assistant-ui/row-no
 
 type State = Record<string, unknown>;
 
-// A stand-in for the assistant-ui client: enumerable scope accessors returning `{ getState }`,
-// one notification channel, and the thread state embedding its composer as the real one does.
+// Stand-in client: enumerable scopes with `getState`, one channel, the composer inside thread state.
 function fakeClient() {
   const messages: unknown[] = [
     { id: "m0" },
@@ -66,7 +65,6 @@ function fakeClient() {
   };
 }
 
-// One listener per row index, counting what each row heard.
 function subscribeRows(fake: ReturnType<typeof fakeClient>, count: number) {
   const gate = createRowNotificationGate(fake.client);
   const heard = Array.from({ length: count }, () => 0);
@@ -94,7 +92,6 @@ test("a keystroke reaches no row, any other composer or scope change reaches eve
   const fake = fakeClient();
   const rows = subscribeRows(fake, 4);
 
-  // Typing rebuilds composer, thread and thread-list states, with a fresh `queue: []`.
   fake.publish({
     composer: { ...fake.composer(), text: "h", isEmpty: false, queue: [] },
   });
@@ -193,7 +190,6 @@ test("a message added or removed reaches every row", () => {
 test("a fingerprint that throws reaches every row", () => {
   const fake = fakeClient();
   let broken = false;
-  // Enumerating the client is the one step outside the per-scope guards.
   const client = new Proxy(fake.client as object, {
     ownKeys(target) {
       if (broken) throw new Error("boom");

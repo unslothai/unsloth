@@ -1,41 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One keystroke or one streamed token must not cost a pass over the thread (#12552).
-// assistant-ui has one notification manager per client tree: every store write (`composer.setText`
-// per keystroke, every streamed delta) notifies every `useAuiState` subscriber, and each one re-runs
-// its selector. At 2,000 messages that is tens of thousands of selector runs per character or token,
-// and the UI stalls for hundreds of ms on a fast desktop and seconds on a laptop.
-// So each message row subscribes through a client whose `subscribe` delivers only the notifications
-// that can change that row:
-//   - Nothing but the thread composer's typed text changed: no row. Inside a message, `composer` is
-//     that message's EDIT composer, and nothing under a message reads the thread's.
-//   - Only `thread.messages` changed, same length: the rows from one before the first changed
-//     message onwards. Row selectors read their own message, earlier messages (the compaction
-//     notice, the parent id) or the reply right after them (research ownership, MessageRoot's
-//     last-pair check), never a message two or more rows later. A streamed delta changes only the
-//     last message, so it reaches the last two rows.
-//   - Anything else (another scope, another thread field, a message added or removed): every row.
-// A change visible only through scope methods would be dropped; in assistant-ui 0.12 methods change
-// only with the runtime, which changes `thread.messages` too, so re-check this on an upgrade. Reads
-// are not gated: a row that renders for any other reason still reads current state.
+// Every assistant-ui store write re-runs every row's selectors (#12552), so each row subscribes
+// through a client that drops what cannot change it: a thread-composer keystroke reaches no row; a
+// same-length `thread.messages` change reaches rows from one before the first changed message (row
+// selectors read their own, earlier, or the next message, never two ahead); anything else reaches all.
+// Assumes scope methods change only with `thread.messages` (assistant-ui 0.12): recheck on upgrade.
 
 import type { AssistantClient } from "@assistant-ui/react";
 
 type Listener = () => void;
 
 export interface RowFingerprint {
-  /** Every scope's state, except the thread composer's typed text and the rows' messages. */
   rest: unknown[];
-  /** The `thread.messages` the rows index into. */
   messages: readonly unknown[] | null;
 }
 
-// The composer fields a keystroke changes. Everything else on the composer is compared.
 const TYPED_COMPOSER_FIELDS = new Set(["text", "isEmpty"]);
 const EMPTY: readonly unknown[] = [];
-// Stands in for the rows' own messages array wherever a state embeds it, so it is compared once,
-// per index, rather than as part of `rest`.
 const ROW_MESSAGES = Symbol("row messages");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -67,8 +49,7 @@ function pushComposer(out: unknown[], composer: unknown): void {
   }
 }
 
-// Thread and thread-list states embed the composer, so a keystroke gives them a new identity
-// while every field but the composer keeps its own: compare those fields, not the container.
+// Thread and thread-list states embed the composer, so compare their fields, not the container.
 function pushState(
   out: unknown[],
   state: unknown,
@@ -118,17 +99,15 @@ export function rowFingerprint(client: AssistantClient): RowFingerprint {
     if (isRecord(thread) && Array.isArray(thread.messages))
       messages = thread.messages;
   } catch {
-    // No thread here: every row change then shows up in `rest` and reaches every row.
+    // No thread scope: every change lands in `rest` and reaches every row.
   }
   const rest: unknown[] = [];
-  // Scopes are enumerable accessor functions on the client and its parents.
   for (const key in client) {
     if (key === "subscribe" || key === "on") continue;
     let state: unknown;
     try {
       state = scopeState(client, key);
     } catch {
-      // A scope with no source here (none is mounted) has nothing a row could read.
       continue;
     }
     if (state === undefined) continue;
@@ -146,10 +125,6 @@ function sameValues(a: readonly unknown[], b: readonly unknown[]): boolean {
   return true;
 }
 
-/**
- * Which rows a notification must reach: `"none"`, `"all"`, or the lowest row index that must hear
- * it (every row from there on does).
- */
 export function rowsToNotify(
   last: RowFingerprint | null,
   next: RowFingerprint | null,
@@ -174,7 +149,6 @@ export function rowsToNotify(
 }
 
 export interface RowNotificationGate {
-  /** The client for row `index`, stable per index. */
   row(index: number): AssistantClient;
 }
 
@@ -192,11 +166,6 @@ function withSubscribe(
   return client;
 }
 
-/**
- * Row clients over `parent` whose `subscribe` delivers only the notifications that can change that
- * row (see the header). Everything else is inherited, so scopes, events and state reads are the
- * parent's own. The parent subscription is held only while a row is subscribed.
- */
 export function createRowNotificationGate(
   parent: AssistantClient,
 ): RowNotificationGate {
@@ -205,7 +174,7 @@ export function createRowNotificationGate(
   let release: (() => void) | null = null;
   let last: RowFingerprint | null = null;
 
-  // Fail open: a fingerprint that cannot be taken must never swallow a notification.
+  // Fail open: an unreadable state reaches every row.
   const fingerprint = (): RowFingerprint | null => {
     try {
       return rowFingerprint(parent);

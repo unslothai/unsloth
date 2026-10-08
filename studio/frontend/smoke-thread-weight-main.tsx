@@ -117,11 +117,8 @@ function userMarkdown(index: number): string {
  */
 type SeedOptions = {
   plainAssistants?: readonly number[] | "all";
-  /**
-   * Agent-shaped replies instead of the fenced body: `rounds` repetitions of reasoning, one
-   * tool call with its result, and a short answer, which is how a tool loop is stored (#12552).
-   * `compactionEvery` stamps a context truncation on every Nth reply, as Rolling Context does.
-   */
+  /** Tool-loop replies (#12552): `rounds` x reasoning, tool call, answer; a context truncation
+   *  on every `compactionEvery`th reply. */
   agent?: { rounds: number; compactionEvery?: number };
 };
 
@@ -213,8 +210,6 @@ function buildMessages(
 }
 
 // A run would need a backend. Seeding goes through `thread.import`, which does not use this.
-// `?stream=N` instead answers a sent message with N chunks of text 20ms apart, so the cost of
-// one streamed delta over a long thread can be measured without a backend (#12552).
 const STREAM_CHUNKS = Number(
   new URLSearchParams(window.location.search).get("stream") ?? "0",
 );
@@ -245,7 +240,6 @@ function ThreadWeightApi({
 
   useEffect(() => {
     const api = {
-      /** Send one prompt, which `?stream=N` answers with N chunks. */
       send(text: string): void {
         aui.thread().append({
           role: "user",
@@ -393,9 +387,7 @@ function ThreadWeightApi({
   return null;
 }
 
-// `?remote=1` wraps the local runtime in the remote thread list the app uses
-// (runtime-provider.tsx), with an attachments adapter, so the composer and thread
-// states carry the same scopes and fields a real chat does.
+// `?remote=1`: the remote thread list + attachments adapter the app uses, for the same scopes.
 const REMOTE = new URLSearchParams(window.location.search).get("remote") === "1";
 
 const MEMORY_THREAD_LIST: unstable_RemoteThreadListAdapter = {
@@ -405,7 +397,6 @@ const MEMORY_THREAD_LIST: unstable_RemoteThreadListAdapter = {
   unarchive: async () => {},
   delete: async () => {},
   initialize: async (threadId) => ({ remoteId: threadId, externalId: undefined }),
-  // An empty stream that closes, so a title request settles instead of hanging.
   generateTitle: async () =>
     new ReadableStream({ start: (controller) => controller.close() }) as never,
   fetch: async (threadId) => ({
@@ -422,7 +413,6 @@ function useSmokeLocalRuntime() {
   return useLocalRuntime(NEVER_RUNS, { adapters: { attachments: ATTACHMENTS } });
 }
 
-// One hook per component, so the choice between the two runtimes never changes hook order.
 function RemoteHarness(): ReactElement {
   const runtime = unstable_useRemoteThreadListRuntime({
     runtimeHook: useSmokeLocalRuntime,

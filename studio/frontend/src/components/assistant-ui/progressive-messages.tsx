@@ -533,8 +533,6 @@ export const ProgressiveMessages: FC<{
   ({ renderMessage, resetKey, viewportRef }) => {
     const count = useAuiState(({ thread }) => thread.messages.length);
     const mountWindow = useProgressiveMountWindow(count, resetKey, viewportRef);
-    // Each row subscribes through a client that hears only what can change it: no keystroke, and a
-    // streamed token only on the last rows. See row-notification-gate.ts.
     const aui = useAui();
     const gate = useMemo(() => createRowNotificationGate(aui), [aui]);
 

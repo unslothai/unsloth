@@ -14,16 +14,9 @@ function sameDeps(a: readonly unknown[], b: readonly unknown[]): boolean {
   return true;
 }
 
-/**
- * `useAuiState(({ message }) => select(message))`, re-running `select` only when the message's
- * state object or one of `deps` changed (#12552).
- *
- * Every store write runs every selector in the tree, and a write elsewhere (a composer keystroke,
- * another message streaming) hands this message back unchanged. A selector that walks the parts
- * paid that walk per write anyway; this pays it per revision of the message. `select` must read
- * nothing but `message` and `deps`. `equal` keeps the previous result when a recompute matches it,
- * for selectors returning a fresh array (the `useShallow` case).
- */
+/** `useAuiState(({ message }) => select(message))`, re-run only when the message state or `deps`
+ *  change (#12552). `select` must read nothing but `message` and `deps`; `equal` keeps the previous
+ *  result when a recompute matches it (the `useShallow` case). */
 export function useMessageMemo<T>(
   select: (message: MessageState) => T,
   deps: readonly unknown[],

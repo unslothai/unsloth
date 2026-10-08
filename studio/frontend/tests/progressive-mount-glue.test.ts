@@ -56,7 +56,6 @@ test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Mess
   // Upstream renders MessageByIndexProvider -> RenderChildrenWithAccessor -> children; this row map
   // renders MessageByIndexProvider -> children. Switching between the two on convergence would
   // change the element type at that position, so React would unmount and rebuild every message.
-  // Each row is keyed by index on its gate provider (row-notification-gate.ts).
   assert.match(
     GLUE,
     /<AuiProvider key=\{index\} value=\{gate\.row\(index\)\}>\s*<MessageByIndexProvider index=\{index\}>/,
@@ -315,7 +314,6 @@ test("the row map is memoized on the slot identity", () => {
     GLUE,
     /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage, gate\]\)/,
   );
-  // The gate is memoized on the client, so it adds no rebuild of its own.
   assert.match(
     GLUE,
     /const gate = useMemo\(\(\) => createRowNotificationGate\(aui\), \[aui\]\)/,
