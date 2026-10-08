@@ -28,7 +28,13 @@ from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
 from core.inference.stream_errors import stream_error_from_chunk
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
-from core.inference.tools import EMPTY_SEARCH_RESULTS, RAG_SOURCES_SENTINEL, execute_tool
+from core.inference.tools import (
+    EMPTY_SEARCH_RESULTS,
+    RAG_SOURCES_SENTINEL,
+    execute_tool,
+    is_high_risk_tool_call,
+    mcp_search_tools,
+)
 from core.inference.web_access_policy import check_url_access, website_policy_prompt
 from core.research.parsing import (
     _MAX_PREVIEW_LABELS,
@@ -1009,6 +1015,13 @@ def _split_rag_result(result: str) -> tuple[str, list[dict[str, Any]]]:
     return text.rstrip(), sources
 
 
+def _mcp_evidence(sources: list[dict]) -> str:
+    text = "\n\n".join(
+        f"{_document_source_citation(source)}\n{source.get('snippet') or ''}" for source in sources
+    )
+    return f"\n\nMCP tools:\n{text[:6000]}" if text else ""
+
+
 def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     """A step that gathered no evidence failed, whether the tool errored or simply matched nothing.
 
@@ -1312,6 +1325,61 @@ class ResearchSupervisor:
             "Relevant passages retrieved from the top results (already read):\n\n" + section,
             fetched,
         )
+
+    async def _search_mcp_tools(
+        self,
+        run: dict,
+        tools: list[dict],
+        query: str,
+        position: int,
+        tool_timeout: int,
+    ) -> list[dict]:
+        cancel_event = self._cancel_event(run["id"])
+        calls = [
+            (tool, {tool["argument"]: query})
+            for tool in tools
+            if not is_high_risk_tool_call(tool["name"], {tool["argument"]: query})
+        ]
+        results = await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    execute_tool,
+                    tool["name"],
+                    arguments,
+                    cancel_event = cancel_event,
+                    timeout = tool_timeout,
+                )
+                for tool, arguments in calls
+            ),
+            return_exceptions = True,
+        )
+        found = []
+        for (tool, _arguments), result in zip(calls, results):
+            text = (
+                strip_result_for_model(result, tool["name"]).strip()
+                if isinstance(result, str)
+                else ""
+            )
+            if not text or is_tool_error(text):
+                logger.warning(
+                    "research.mcp_search_failed run_id=%s tool=%s error=%s",
+                    run["id"],
+                    tool["name"],
+                    (text or str(result))[:200],
+                )
+                continue
+            found.append(
+                {
+                    "kind": "mcp",
+                    "chunkId": f"{tool['name']}:{position}",
+                    "documentId": tool["name"],
+                    "filename": f"{tool['serverName']} · {tool['tool']}",
+                    "page": None,
+                    "score": None,
+                    "snippet": text[:4000],
+                }
+            )
+        return found
 
     async def _check_worker_write(self, run_id: str, written: bool) -> None:
         if written:
@@ -2349,6 +2417,18 @@ class ResearchSupervisor:
                 max_auto_scrape = 0
         website_policy = run["config"].get("websitePolicy")
         policy_prompt = website_policy_prompt(website_policy)
+        selected_mcp = {
+            (item["serverId"], item["tool"]) for item in run["config"].get("mcpSources") or ()
+        }
+        mcp_tools = (
+            [
+                tool
+                for tool in await mcp_search_tools()
+                if (tool["serverId"], tool["tool"]) in selected_mcp
+            ]
+            if selected_mcp
+            else []
+        )
         notes: list[str] = []
         decision_notes: list[str] = []
         research_state: dict[str, Any] = {}
@@ -2436,14 +2516,18 @@ class ResearchSupervisor:
                 f"{item.get('filename') or 'Document'}: "
                 f"{item.get('text') or item.get('snippet') or ''}"
                 for item in accepted_rag_sources
+                if item.get("kind") != "mcp"
+            )
+            mcp_evidence = _mcp_evidence(
+                [item for item in accepted_rag_sources if item.get("kind") == "mcp"]
             )
             # An unscraped search persists no excerpt, so a completed step can come back with nothing in it.
-            if web_evidence or rag_evidence:
+            if web_evidence or rag_evidence or mcp_evidence:
                 completed_steps += 1
             title = str(step.get("title") or "Recovered research step")
             notes.append(
                 f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}\n\n"
-                f"Knowledge base:\n{rag_evidence}"
+                f"Knowledge base:\n{rag_evidence}{mcp_evidence}"
             )
             decision_notes.append(
                 f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}"
@@ -2617,6 +2701,7 @@ class ResearchSupervisor:
                 },
             )
             await self._check_worker_write(run["id"], seq is not None)
+            mcp_sources = []
             if action["action"] == "fetch":
                 fetched_urls.add(argument)
                 result = await asyncio.to_thread(
@@ -2647,6 +2732,10 @@ class ResearchSupervisor:
                         cancel_event = self._cancel_event(run["id"]),
                         timeout = tool_timeout,
                         rag_scope = run["config"]["ragScope"],
+                    )
+                if mcp_tools:
+                    mcp_sources = await self._search_mcp_tools(
+                        run, mcp_tools, argument, position, tool_timeout
                     )
             rag_result, rag_sources = _split_rag_result(rag_result)
             await self._check_active(run["id"])
@@ -2689,6 +2778,19 @@ class ResearchSupervisor:
                 # citation to them; gated on rag_sources so a text-only KB reply still passes through.
                 rag_result = ""
             rag_sources = accepted_rag_sources
+            for source in mcp_sources:
+                if len(sources) + len(document_sources) >= max_sources:
+                    break
+                written = await asyncio.to_thread(
+                    db.upsert_document_source,
+                    run["id"],
+                    position,
+                    source,
+                    self.worker_id,
+                )
+                await self._check_worker_write(run["id"], written)
+                document_sources.append({**source, "stepPosition": position})
+                rag_sources.append(source)
             step_sources = []
             for match in _URL_BLOCK.finditer(result if action["action"] == "search" else ""):
                 if len(sources) + len(document_sources) >= max_sources:
@@ -2739,10 +2841,13 @@ class ResearchSupervisor:
                     # Additive, not replace: see _merge_scraped_evidence for why replacing the snippets regressed
                     # accuracy.
                     result = _merge_scraped_evidence(result, scraped_section)
+            mcp_evidence = _mcp_evidence(
+                [source for source in rag_sources if source.get("kind") == "mcp"]
+            )
             note = (
                 f"### {action['title']} ({action['action']})\n"
                 f"Input: {argument}\nResult:\n{result[:12000]}\n\n"
-                f"Knowledge base:\n{rag_result[:6000]}"
+                f"Knowledge base:\n{rag_result[:6000]}{mcp_evidence}"
             )
             notes.append(note)
             decision_notes.append(

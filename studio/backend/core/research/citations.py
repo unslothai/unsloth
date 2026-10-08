@@ -20,7 +20,7 @@ from core.research.redaction import _escape_link_destination
 
 # Unrolled rather than (?:[^\[\]]+|\[[^\[\]]*\])* : that alternation backtracks catastrophically on
 # an unterminated "[Document:", and this runs on the event loop.
-_DOCUMENT_CITATION = re.compile(r"\[Document:[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
+_DOCUMENT_CITATION = re.compile(r"\[(?:Document|MCP):[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]")
 _MARKDOWN_LINK_START = re.compile(r"\[([^\]\n]+)\]\((https?://)")
 _SOURCES_HEADING = re.compile(
     r"^(?:#{1,6}\s+|\*\*)?"
@@ -348,6 +348,8 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
 
 def _document_source_citation(source: dict) -> str:
     filename = str(source.get("filename") or "Document")
+    if source.get("kind") == "mcp":
+        return f"[MCP: {filename}]"
     if source.get("page") is not None:
         return f"[Document: {filename}, p. {source['page']}]"
     return f"[Document: {filename}]"

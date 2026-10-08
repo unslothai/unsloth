@@ -4686,6 +4686,9 @@ export function createOpenAIStreamAdapter(
             ...(researchQuestion ? { question: researchQuestion } : {}),
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
+            ...(runtime.researchMcpSources.length
+              ? { mcpSources: runtime.researchMcpSources }
+              : {}),
             budgets: {
               modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
             },

@@ -31,7 +31,7 @@ export interface ResearchPlan {
 }
 
 export interface ResearchEvidenceSource {
-  kind: "knowledge_base";
+  kind: "knowledge_base" | "mcp";
   chunkId?: string | null;
   documentId?: string | null;
   filename: string;
@@ -97,12 +97,18 @@ export interface ResearchWebsitePolicy {
   blockedDomains: string[];
 }
 
+export interface ResearchMcpSource {
+  serverId: string;
+  tool: string;
+}
+
 export interface CreateResearchRunInput {
   threadId: string;
   userMessageId: string;
   assistantMessageId?: string;
   inferenceRequest: ResearchInferenceRequest;
   ragScope?: Record<string, unknown>;
+  mcpSources?: ResearchMcpSource[];
   budgets?: Partial<ResearchBudgets>;
   websitePolicy?: ResearchWebsitePolicy;
   instructions?: string;

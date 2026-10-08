@@ -17,13 +17,20 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { XIcon } from "lucide-react";
-import { type KeyboardEvent, useState } from "react";
+import { type KeyboardEvent, useEffect, useState } from "react";
+import {
+  listResearchMcpTools,
+  type ResearchMcpTool,
+} from "../api/mcp-servers-api";
 import {
   DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { MAX_RESEARCH_MODEL_TIMEOUT_SECONDS } from "../utils/mirrored-chat-settings";
-import type { ResearchWebsitePolicy } from "../types/research";
+import type {
+  ResearchMcpSource,
+  ResearchWebsitePolicy,
+} from "../types/research";
 
 // The field is in minutes; its ceiling is the seconds cap the backend enforces.
 const MAX_RESEARCH_MODEL_TIMEOUT_MINUTES = Math.floor(
@@ -144,6 +151,79 @@ function DomainList({
   );
 }
 
+function McpSourceList({
+  values,
+  onChange,
+}: {
+  values: ResearchMcpSource[];
+  onChange: (values: ResearchMcpSource[]) => void;
+}) {
+  const [tools, setTools] = useState<ResearchMcpTool[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    listResearchMcpTools()
+      .catch(() => [])
+      .then((found) => {
+        if (!cancelled) setTools(found);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const matches = (tool: ResearchMcpTool, value: ResearchMcpSource) =>
+    value.serverId === tool.serverId && value.tool === tool.tool;
+
+  return (
+    <div className="space-y-2">
+      <div>
+        <div className="text-sm font-medium">MCP search sources</div>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          Every research search also sends its query to the tools turned on
+          here.
+        </p>
+      </div>
+      {tools === null ? (
+        <p className="text-xs text-muted-foreground">Loading MCP tools…</p>
+      ) : tools.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No enabled MCP server has a search tool that takes a single query.
+        </p>
+      ) : (
+        tools.map((tool) => (
+          <label
+            key={`${tool.serverId}:${tool.tool}`}
+            className="flex cursor-pointer items-start justify-between gap-6"
+          >
+            <span className="min-w-0">
+              <span className="block break-words text-sm">
+                {tool.serverName} · {tool.tool}
+              </span>
+              {tool.description ? (
+                <span className="block line-clamp-2 text-xs text-muted-foreground">
+                  {tool.description}
+                </span>
+              ) : null}
+            </span>
+            <Switch
+              checked={values.some((value) => matches(tool, value))}
+              onCheckedChange={(checked) =>
+                onChange(
+                  checked
+                    ? [...values, { serverId: tool.serverId, tool: tool.tool }]
+                    : values.filter((value) => !matches(tool, value)),
+                )
+              }
+              aria-label={`Search with ${tool.serverName} ${tool.tool}`}
+            />
+          </label>
+        ))
+      )}
+    </div>
+  );
+}
+
 export function DeepResearchComposerButton({
   onConfigure,
 }: {
@@ -208,6 +288,10 @@ export function DeepResearchWebsiteAccessDialog({
   const setModelTimeoutSeconds = useChatRuntimeStore(
     (state) => state.setResearchModelTimeoutSeconds,
   );
+  const mcpSources = useChatRuntimeStore((state) => state.researchMcpSources);
+  const setMcpSources = useChatRuntimeStore(
+    (state) => state.setResearchMcpSources,
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -217,6 +301,8 @@ export function DeepResearchWebsiteAccessDialog({
           setPolicy={setPolicy}
           modelTimeoutSeconds={modelTimeoutSeconds}
           setModelTimeoutSeconds={setModelTimeoutSeconds}
+          mcpSources={mcpSources}
+          setMcpSources={setMcpSources}
           onClose={() => onOpenChange(false)}
         />
       ) : null}
@@ -229,15 +315,20 @@ function DeepResearchWebsiteAccessContent({
   setPolicy,
   modelTimeoutSeconds,
   setModelTimeoutSeconds,
+  mcpSources,
+  setMcpSources,
   onClose,
 }: {
   policy: ResearchWebsitePolicy;
   setPolicy: (policy: ResearchWebsitePolicy) => void;
   modelTimeoutSeconds: number;
   setModelTimeoutSeconds: (seconds: number) => void;
+  mcpSources: ResearchMcpSource[];
+  setMcpSources: (sources: ResearchMcpSource[]) => void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
+  const [mcpDraft, setMcpDraft] = useState<ResearchMcpSource[]>(mcpSources);
   const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
   // Unlimited has no minutes of its own, so turning the limit back on offers the default.
   const [timeoutMinutes, setTimeoutMinutes] = useState(
@@ -323,6 +414,7 @@ function DeepResearchWebsiteAccessContent({
           values={draft.blockedDomains}
           onChange={(blockedDomains) => setDraft({ ...draft, blockedDomains })}
         />
+        <McpSourceList values={mcpDraft} onChange={setMcpDraft} />
       </div>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>
@@ -331,6 +423,7 @@ function DeepResearchWebsiteAccessContent({
         <Button
           onClick={() => {
             setPolicy(draft);
+            setMcpSources(mcpDraft);
             const minutes = Number(timeoutMinutes);
             // The max attribute does not stop a typed value reaching here, and falling through to the default
             // would hand someone asking for a long run a short one.

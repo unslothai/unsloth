@@ -112,7 +112,10 @@ import {
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
 import type { MmprojFallbackReason } from "../types/api";
-import type { ResearchWebsitePolicy } from "../types/research";
+import type {
+  ResearchMcpSource,
+  ResearchWebsitePolicy,
+} from "../types/research";
 import {
   CHAT_GPU_MEMORY_MODE_KEY,
   CHAT_SPECULATIVE_TYPE_KEY,
@@ -134,6 +137,8 @@ export const CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY =
   "unsloth_chat_deep_research_website_policy";
 export const CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY =
   "unsloth_chat_deep_research_model_timeout";
+export const CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY =
+  "unsloth_chat_deep_research_mcp_sources";
 export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
   "unsloth_chat_collapse_html_artifacts";
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
@@ -245,6 +250,23 @@ function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
     };
   } catch {
     return DEFAULT_RESEARCH_WEBSITE_POLICY;
+  }
+}
+
+function loadResearchMcpSources(): ResearchMcpSource[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed: unknown = JSON.parse(
+      window.localStorage.getItem(CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY) || "[]",
+    );
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (item): item is ResearchMcpSource =>
+            typeof item?.serverId === "string" && typeof item?.tool === "string",
+        )
+      : [];
+  } catch {
+    return [];
   }
 }
 
@@ -2351,6 +2373,7 @@ type ChatRuntimeStore = {
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
   researchModelTimeoutSeconds: number;
+  researchMcpSources: ResearchMcpSource[];
   // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
   collapseHtmlArtifacts: boolean;
   allowArtifactNetworkAccess: boolean;
@@ -2648,6 +2671,7 @@ type ChatRuntimeStore = {
   setDeepResearchEnabled: (enabled: boolean) => void;
   setResearchWebsitePolicy: (policy: ResearchWebsitePolicy) => void;
   setResearchModelTimeoutSeconds: (seconds: number) => void;
+  setResearchMcpSources: (sources: ResearchMcpSource[]) => void;
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setSearchImages: (enabled: boolean) => void;
@@ -4158,6 +4182,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
   researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
+  researchMcpSources: loadResearchMcpSources(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
   allowArtifactNetworkAccess: loadBool(
     CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
@@ -5415,6 +5440,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         researchModelTimeoutSeconds: seconds,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
+    }),
+  setResearchMcpSources: (researchMcpSources) =>
+    set(() => {
+      persistSetting(
+        CHAT_DEEP_RESEARCH_MCP_SOURCES_KEY,
+        JSON.stringify(researchMcpSources),
+      );
+      return { researchMcpSources };
     }),
   setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
     set(() => {

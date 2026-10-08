@@ -24,7 +24,7 @@ from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
 from core.inference.providers import answers_decisions_only, provider_runs_local_tools
 from models.providers import MAX_JSON_SAFE_INTEGER
-from storage import providers_db
+from storage import mcp_servers_db, providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 from utils.current_date_prompt_settings import current_date_prompt_line
 
@@ -65,6 +65,12 @@ _DELTA_ONLY_EVENTS = {
 _EVENT_WAIT_EXECUTOR = ThreadPoolExecutor(max_workers = 32, thread_name_prefix = "research-events")
 
 
+class ResearchMcpSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+    serverId: str = Field(min_length = 1, max_length = 200)
+    tool: str = Field(min_length = 1, max_length = 500)
+
+
 class CreateResearchRun(BaseModel):
     model_config = ConfigDict(extra = "forbid")
     threadId: str
@@ -75,6 +81,7 @@ class CreateResearchRun(BaseModel):
     )
     inferenceRequest: dict[str, Any] = Field(default_factory = dict)
     ragScope: dict[str, Any] | None = None
+    mcpSources: list[ResearchMcpSource] = Field(default_factory = list, max_length = 20)
     budgets: dict[str, int] | None = None
     websitePolicy: dict[str, list[str]] | None = None
     instructions: str | None = Field(default = None, max_length = 32_000)
@@ -347,6 +354,11 @@ def _sanitize_config(
         non_scalar = any(isinstance(value, (dict, list, tuple)) for value in rag_scope.values())
         if unknown_rag or non_scalar or _contains_sensitive_key(rag_scope):
             raise HTTPException(status_code = 400, detail = "Unsupported or sensitive ragScope field")
+    mcp_sources = []
+    for source in payload.mcpSources:
+        server = mcp_servers_db.get_server(source.serverId)
+        if server and server.get("is_enabled") and source.model_dump() not in mcp_sources:
+            mcp_sources.append(source.model_dump())
     budgets = {
         "maxSteps": 12,
         "maxSources": 40,
@@ -394,6 +406,7 @@ def _sanitize_config(
         "model": model,
         "inferenceRequest": request,
         "ragScope": rag_scope,
+        **({"mcpSources": mcp_sources} if mcp_sources else {}),
         "budgets": budgets,
         "websitePolicy": website_policy,
         "instructions": (payload.instructions or "").strip(),

@@ -13872,6 +13872,49 @@ async def get_enabled_mcp_tools() -> list[dict]:
     return _mcp_listing(listed)
 
 
+def mcp_search_argument(name: str, tool: dict) -> str | None:
+    schema = _mcp_input_schema(tool)
+    required = schema.get("required") or []
+    properties = schema.get("properties") or {}
+    if len(required) != 1 or not isinstance(properties, dict):
+        return None
+    key = required[0]
+    prop = properties.get(key) if isinstance(key, str) else None
+    if not isinstance(prop, dict) or prop.get("type") != "string" or "enum" in prop:
+        return None
+    tool_name = _CAMEL_CASE_RE.sub("_", _MCP_TERM_SEPARATOR_RE.sub("_", _mcp_raw_tool_name(name)))
+    if _AUTO_UNSAFE_MCP_VERB_RE.search(tool_name) or is_high_risk_tool_call(name, {key: ""}):
+        return None
+    return key
+
+
+async def mcp_search_tools(include_stdio: bool = True) -> list[dict]:
+    await get_enabled_mcp_tools()
+    servers = _enabled_mcp_servers(await asyncio.to_thread(mcp_servers_db.list_servers))
+    if not include_stdio or not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
+    found = []
+    for server in servers:
+        for tool in get_cached_tools(server["id"]) or ():
+            raw_name = tool.get("name") if isinstance(tool, dict) else None
+            if not isinstance(raw_name, str) or not tool_visible_to(tool, "model"):
+                continue
+            name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
+            argument = mcp_search_argument(name, public_tool(server, tool))
+            if argument:
+                found.append(
+                    {
+                        "name": name,
+                        "serverId": server["id"],
+                        "serverName": server.get("display_name") or server["id"],
+                        "tool": raw_name,
+                        "description": tool.get("description") or "",
+                        "argument": argument,
+                    }
+                )
+    return found
+
+
 def mcp_tool_definition(server_id: str, tool_name: str) -> "dict | None":
     """Cache only: callers must not spawn a stdio subprocess or block on a probe."""
     tools = get_cached_tools(server_id) or ()

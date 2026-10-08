@@ -352,6 +352,21 @@ def list_mcp_servers(
     return [_row_to_response(row, include_headers = not no_credential) for row in rows]
 
 
+@router.get("/research-tools")
+async def list_research_search_tools(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+    no_credential: WithoutCredential = False,
+):
+    from core.inference.tools import mcp_search_tools
+
+    tools = await mcp_search_tools(include_stdio = not (via_api_key or no_credential))
+    return [
+        {key: tool[key] for key in ("serverId", "serverName", "tool", "description")}
+        for tool in tools
+    ]
+
+
 @router.post("/", response_model = McpServerResponse, status_code = 201)
 async def create_mcp_server(
     payload: McpServerCreate,
