@@ -30052,6 +30052,15 @@ class LlamaCppBackend:
                 # Memoed only when the load ends terminally, so a recovering fallback is not blocked.
                 _sched_abort_seen = False
 
+                def _end_load_terminally() -> None:
+                    # _raise_terminal_load_failure's cleanup, for the one stop inside
+                    # _spawn_and_wait (#12842), which runs before that helper is defined.
+                    if _sched_abort_seen and not _load_cancelled():
+                        LlamaCppBackend._record_sched_reserve_abort(binary, _abort_memo_model)
+                    if intent.cpu_fallback:
+                        self._cleanup_failed_cpu_fallback()
+                    self._vram_fraction_pending = None
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -30210,13 +30219,41 @@ class LlamaCppBackend:
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
                         # No fit retry reaches it, and the rung below needs this
                         # launch's argv. Whole buffer: it arrives with a backtrace.
-                        _capability_crash = (
-                            _tensor_capability_crash
-                            or self._is_kv_unified_refused("\n".join(self._stdout_lines))
-                            # #12842: no placement loads a kernel the driver cannot.
-                            or self._cuda_kernel_image_error("\n".join(self._stdout_lines))
-                            is not None
+                        _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
+                            "\n".join(self._stdout_lines)
                         )
+                        # #12842: no placement loads a kernel the driver cannot.
+                        _capability_crash = _capability_crash or (
+                            self._cuda_kernel_image_error("\n".join(self._stdout_lines)) is not None
+                        )
+                        # #12842: a recovery rung (one slot, flash-attn off, no drafter...)
+                        # can be the first launch to reach warm-up, and every later rung
+                        # keeps the same kernels. The unlabelled first launch still falls
+                        # through to the #7624 other-GPU respawn, and that respawn to the
+                        # terminal check after it.
+                        if (
+                            label
+                            and label != "-archfallback"
+                            and _startup_crashed
+                            and not _load_cancelled()
+                            and self._cuda_kernel_image_error("\n".join(self._stdout_lines))
+                            is not None
+                        ):
+                            _ki_rc = _crashed_proc.returncode
+                            self._kill_process()
+                            _end_load_terminally()
+                            raise RuntimeError(
+                                self._classify_llama_start_failure(
+                                    "\n".join(self._stdout_lines),
+                                    gguf_path,
+                                    self._model_identifier,
+                                    _ki_rc,
+                                    binary,
+                                    self._llama_log_path,
+                                    (self._api_key,),
+                                    self._extra_args,
+                                )
+                            )
                         if (
                             not _did_rocm_retry
                             and _startup_crashed
