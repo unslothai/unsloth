@@ -1105,13 +1105,9 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     assert folded == pytest.approx(model.decision_config["head_temperature"])
     assert "head_temperature" not in reloaded.decision_config
     assert reloaded.decision_config["temperature"] == model.decision_config["temperature"]
-    released, _ = reference.load_release_model(
-        str(tmp_path / "out"), device = device, dtype = torch.float32
-    )
     with torch.no_grad():
         trained, _ = model(batch["input_ids"], batch["attention_mask"], batch["records"])
         again, _ = reloaded(batch["input_ids"], batch["attention_mask"], batch["records"])
-        theirs = released(batch)[0]
     # bf16 reload rounding grows with the per-run logit scale, so the bound is relative (10 B200 runs
     # peaked at 1.6%); a fold left out or doubled is off by >= 20%.
     mask = trained > -1e3
@@ -1119,6 +1115,20 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
     error = (again.float()[mask] - expected).abs().max().item()
     scale = expected.abs().max().item()
     assert error <= 0.03 * scale + 0.05, (error, scale, folded)
+    try:
+        from triton.runtime.errors import OutOfResources
+    except ImportError:
+        OutOfResources = ()
+    no_reference = None
+    try:
+        released, _ = reference.load_release_model(
+            str(tmp_path / "out"), device = device, dtype = torch.float32
+        )
+        with torch.no_grad():
+            theirs = released(batch)[0]
+    except OutOfResources as exc:
+        # The float32 gated-delta kernel needs more shared memory than RDNA2's 64 KB.
+        theirs, no_reference = [], exc
     for row, z in enumerate(theirs):
         assert int(z.argmax()) == int(again[row, : len(z)].argmax()), (row, z, again[row, : len(z)])
     # predict() serves the same calibrated answer from memory, the merged reload and the adapters.
@@ -1136,6 +1146,10 @@ def test_clef_loads_scores_like_cloudflares_model_and_trains(clef_checkpoint, tm
             assert other[name]["type"] == ours[name]["type"]
             for key, value in (ours[name].get("probabilities") or {}).items():
                 assert other[name]["probabilities"][key] == pytest.approx(value, abs = 0.03)
+    if no_reference is not None:
+        pytest.skip(
+            reason = f"the float32 reference needs more shared memory than this GPU has: {no_reference}"
+        )
 
 
 @pytest.mark.skipif(not has_real_cuda(), reason = "the fast kernels need a CUDA device")

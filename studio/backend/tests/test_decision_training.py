@@ -817,3 +817,33 @@ def test_held_out_decisions_count_every_clef_question():
     laya = [{"row": 0}, {"row": 1}]
     clef = [{"row": 0, "labels": [0, 1, 2]}, {"row": 1, "labels": [1]}]
     assert (_decision_count(laya), _decision_count(clef)) == (2, 4)
+
+
+def test_the_best_held_out_step_is_kept(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.training import decision_trainer
+
+    model = torch.nn.Linear(2, 1)
+    warnings = []
+    keep = decision_trainer._keep_best(model, warnings.append)
+
+    def evaluate(step, loss):
+        with torch.no_grad():
+            model.weight.fill_(float(step))
+        keep.on_evaluate(None, SimpleNamespace(global_step = step), None, metrics = {"eval_loss": loss})
+
+    evaluate(1, 1.0)
+    evaluate(2, 0.4)
+    evaluate(3, 0.7)
+    evaluate(4, float("nan"))
+    assert keep.evaluated == 4
+    assert keep.restore(4) == 2 and float(model.weight[0, 0]) == 2.0 and warnings == []
+    evaluate(5, 0.1)
+    assert keep.restore(5) == 5 and float(model.weight[0, 0]) == 5.0
+    monkeypatch.setattr(decision_trainer, "KEEP_BEST_MAX_BYTES", 0)
+    keep = decision_trainer._keep_best(model, warnings.append)
+    evaluate(1, 1.0)
+    evaluate(2, 0.4)
+    assert keep.restore(5) == 5 and float(model.weight[0, 0]) == 2.0
+    assert len(warnings) == 1 and "last step is saved" in warnings[0]

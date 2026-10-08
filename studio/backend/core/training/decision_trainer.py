@@ -18,6 +18,7 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 EVAL_MAX = 2000
+KEEP_BEST_MAX_BYTES = 4 * 1024**3
 MIN_REPORTED_ITEMS = 50
 # The from-LM recipe's head rate (scripts/train_decision_from_lm.py --head-lr).
 FRESH_HEAD_LEARNING_RATE = 3e-4
@@ -35,6 +36,55 @@ class _Stopped(Exception):
 def _decision_count(items: list) -> int:
     # A Clef item holds every question of its row, as split_holdout counts them.
     return sum(len(item.get("labels", (None,))) for item in items)
+
+
+def _keep_best(model, warn: Callable[[str], None]):
+    """Keeps a CPU copy of the trainable weights at the lowest held-out loss (none past KEEP_BEST_MAX_BYTES)."""
+    from transformers import TrainerCallback
+
+    class KeepBest(TrainerCallback):
+        best = step = weights = evaluated = None
+        skipped = False
+
+        def on_evaluate(
+            self,
+            args,
+            state,
+            control,
+            metrics = None,
+            **kwargs,
+        ):
+            self.evaluated = state.global_step
+            loss = (metrics or {}).get("eval_loss")
+            if loss is None or not math.isfinite(loss) or self.skipped:
+                return
+            if self.best is not None and loss >= self.best:
+                return
+            params = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+            size = sum(p.numel() * p.element_size() for _, p in params)
+            if size > KEEP_BEST_MAX_BYTES:
+                self.skipped = True
+                warn(
+                    f"The trainable weights ({size / 1e9:.1f} GB) are too large to keep the best "
+                    "step in memory; the last step is saved."
+                )
+                return
+            self.best, self.step = float(loss), state.global_step
+            self.weights = {n: p.detach().to("cpu", copy = True) for n, p in params}
+
+        def restore(self, last_step: int) -> int:
+            """Restores the best weights if the run ended on a worse step; returns the saved step."""
+            if self.weights is None or self.step == last_step:
+                return last_step
+            import torch
+
+            with torch.no_grad():
+                for name, p in model.named_parameters():
+                    if name in self.weights:
+                        p.copy_(self.weights[name])
+            return self.step
+
+    return KeepBest()
 
 
 def _studio_validate(name: str, question) -> None:
@@ -472,6 +522,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     check_stop()
 
     _emit_output_dir(event_queue, output_dir)
+    keep_best = _keep_best(model, warn) if eval_items else None
     trainer = DecisionTrainer(
         model = model,
         args = TrainingArguments(**arguments),
@@ -486,7 +537,8 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
                 total_steps = total_steps,
                 training_start_time = time.time(),
                 should_stop = lambda: stop["requested"],
-            )
+            ),
+            *([keep_best] if keep_best is not None else []),
         ],
     )
     _drop_hf_stdout_callbacks(trainer)
@@ -494,6 +546,17 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     trainer.train()
     if stop["requested"] and not stop["save"]:
         raise _Stopped("Training cancelled")
+    kept_step = trainer.state.global_step
+    if keep_best is not None:
+        # Step evaluation can stop short of the last step: score it before comparing.
+        if keep_best.weights is not None and keep_best.evaluated != trainer.state.global_step:
+            trainer.evaluate()
+        kept_step = keep_best.restore(trainer.state.global_step)
+        if kept_step != trainer.state.global_step:
+            status(
+                f"Keeping step {kept_step}, the lowest held-out loss ({keep_best.best:.3f}); "
+                f"the run ended at step {trainer.state.global_step}."
+            )
 
     tuned_metrics = None
     if eval_items:
@@ -520,6 +583,7 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         or config.get("hf_dataset")
         or None,
         "steps": trainer.state.global_step,
+        "kept_step": kept_step,
         "epochs": round(trainer.state.epoch or 0, 2),
         "heldout_decisions": _decision_count(eval_items),
         "heldout_accuracy_base": base_metrics and round(base_metrics["accuracy"], 4),

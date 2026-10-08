@@ -3814,6 +3814,8 @@ def decision_layout(
         return None
     if clef_folder_kind(snapshot / prefix) is not None:
         return "clef"
+    if subfolder:
+        return "laya" if (snapshot / prefix / _LAYA_MARKER).is_file() else None
     # The Decision API caches only the checkpoint subfolder it serves.
     laya = (snapshot / _LAYA_MARKER, *snapshot.glob(f"*/{_LAYA_MARKER}"))
     return "laya" if any(path.is_file() for path in laya) else None

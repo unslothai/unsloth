@@ -278,10 +278,12 @@ def select(
     if reason is None:
         reason = request_gap(questions or {})
         if reason is None:
-            # Auto keeps a resident PyTorch Clef for text rather than reloading the model.
+            # Auto keeps a resident PyTorch Clef unless the device setting moved off the GPU.
+            from .catalog import clef_unavailable_reason
+
             resident = _loaded == checkpoint and _agent is not None
             if preference == "auto" and not images:
-                if resident:
+                if resident and clef_unavailable_reason(wait = False) is None:
                     return checkpoint, None
                 if (why := _auto_keeps_pytorch(checkpoint, native)) is not None:
                     return checkpoint, why
@@ -321,11 +323,11 @@ def _auto_keeps_pytorch(checkpoint: Checkpoint, native: Checkpoint) -> str | Non
     """Why Auto answers text on PyTorch although llama.cpp could: as before llama.cpp existed here."""
     from core.inference.gpu_arbiter import DECISIONS, current_owner
 
-    from .catalog import clef_unsupported_reason
+    from .catalog import clef_unavailable_reason
 
     if _loaded == native and _agent is not None:
         return None
-    if clef_unsupported_reason(wait = False) is not None:
+    if clef_unavailable_reason(wait = False) is not None:
         return None
     if _native_gpu() and current_owner() not in (None, DECISIONS):
         return "Another model is using the GPU."
@@ -345,14 +347,15 @@ def effective_backend(checkpoint) -> tuple[str | None, str | None]:
     return target.backend, reason
 
 
-def native_ready(checkpoint) -> bool:
-    """Whether llama.cpp could serve this Clef or GGUF entry here under the runtime setting."""
+def native_ready(checkpoint, backend: str | None = None) -> bool:
+    """Whether llama.cpp could serve this Clef or GGUF entry under `backend` (default: the setting)."""
     if not isinstance(checkpoint, Checkpoint) or checkpoint.layout == "laya":
         return False
     from utils.systemone_settings import get_backend
 
-    native = _native_target(checkpoint)
-    return get_backend() != "pytorch" and _native_unavailable(checkpoint, native) is None
+    if (backend or get_backend()) == "pytorch":
+        return False
+    return _native_unavailable(checkpoint, _native_target(checkpoint)) is None
 
 
 def input_modalities(checkpoint) -> list[str]:
@@ -1063,11 +1066,11 @@ def _misplaced() -> bool:
 def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
     if checkpoint.layout == "laya":
         return
-    from .catalog import clef_unsupported_reason
+    from .catalog import clef_unavailable_reason
 
     native = _is_native(checkpoint)
-    # llama.cpp also serves Clef on CPU, Metal or Vulkan; the PyTorch worker needs CUDA or ROCm.
-    if not native and (reason := clef_unsupported_reason()) is not None:
+    # llama.cpp also serves Clef on CPU, Metal or Vulkan; PyTorch needs CUDA/ROCm and the GPU setting.
+    if not native and (reason := clef_unavailable_reason()) is not None:
         raise Unavailable(400, "api_usage_error", reason)
     if (native and not _native_gpu()) or not _training_active():
         return
@@ -1741,14 +1744,14 @@ def _route(checkpoint: Checkpoint, state, questions, images) -> dict[str, Any]:
         return _decide(target, state, questions, images)
     except NativeContextOverflow as exc:
         # Auto answers on PyTorch only what its longer window can hold; at equal windows it would refuse too.
-        from .catalog import clef_unsupported_reason
+        from .catalog import clef_unavailable_reason
 
         if (
             get_backend() != "auto"
             or checkpoint.layout == GGUF
             or images
             or exc.limit >= MAX_LENGTH
-            or clef_unsupported_reason() is not None
+            or clef_unavailable_reason() is not None
         ):
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
         _fallback_reason = "The request is longer than the llama.cpp context."

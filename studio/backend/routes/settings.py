@@ -1530,7 +1530,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
     from core.systemone import catalog, laya_runtime
     from routes.systemone import MCP_PATH
 
-    clef_reason = catalog.clef_unsupported_reason(wait = False)
+    clef_reason = catalog.clef_unavailable_reason(wait = False)
     enabled = systemone_settings.get_enabled()
     runtime = laya_runtime.status()
     configured = catalog.default_checkpoint()
@@ -1556,9 +1556,11 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         enabled_locked = systemone_settings.enabled_locked(),
         model = model,
         model_locked = systemone_settings.model_locked(),
-        # llama.cpp defaults to the GPU when no device is stored; report where it actually runs.
+        # Clef defaults to the GPU when no device is stored; report where it runs.
         device = systemone_settings.clef_device()
         if effective == "llama.cpp"
+        else "gpu"
+        if getattr(configured, "layout", None) == "clef" and clef_reason is None
         else systemone_settings.get_device(),
         device_locked = systemone_settings.device_locked(),
         gpu_available = systemone_settings.gpu_available(),

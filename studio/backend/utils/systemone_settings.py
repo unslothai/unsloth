@@ -102,9 +102,14 @@ def get_device() -> str:
     return stored if stored in DEVICES else "cpu"
 
 
+def device_chosen() -> bool:
+    """Whether a device is stored or pinned; unset, Clef takes the GPU."""
+    return device_locked() or _owner_setting(DEVICE_KEY) in DEVICES
+
+
 def clef_device() -> str:
     """Where a llama.cpp Clef runs: the chosen device, else the GPU when there is one (CPU needs ~22 GB RAM)."""
-    if device_locked() or _owner_setting(DEVICE_KEY) in DEVICES:
+    if device_chosen():
         return get_device()
     return "gpu" if gpu_available() else "cpu"
 
@@ -134,9 +139,11 @@ def validate(
 ) -> dict[str, Any]:
     from core.systemone.catalog import (
         CHECKPOINTS,
+        CLEF_NEEDS_GPU_SETTING,
         decision_connections,
         fine_tune,
         parse_connection,
+        resolve,
     )
 
     values: dict[str, Any] = {}
@@ -185,6 +192,23 @@ def validate(
     local = parse_connection(name) is None and not llama_cpp_only(name)
     if serving and local and (reason := runtime_unavailable_reason()):
         raise ValueError(reason)
+    # PyTorch Clef has no CPU path: refuse a CPU device with it, or move an unsaid device to GPU.
+    active = enabled if enabled is not None else get_enabled()
+    if active and local:
+        from core.systemone.catalog import clef_unsupported_reason
+        from core.systemone.laya_runtime import native_ready
+
+        chosen = resolve(name)
+        wanted = device or (get_device() if device_chosen() else "gpu")
+        if (
+            getattr(chosen, "layout", None) == "clef"
+            and wanted != "gpu"
+            and clef_unsupported_reason(wait = False) is None
+            and not native_ready(chosen, backend)
+        ):
+            if device is not None or device_locked():
+                raise ValueError(CLEF_NEEDS_GPU_SETTING)
+            values[DEVICE_KEY] = "gpu"
     return values
 
 

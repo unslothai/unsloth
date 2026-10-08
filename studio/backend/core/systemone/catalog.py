@@ -281,6 +281,21 @@ def clef_unsupported_reason(wait: bool = True) -> str | None:
         return None
 
 
+CLEF_NEEDS_GPU_SETTING = (
+    "Clef models on the PyTorch runtime run on the GPU only, and the Decision API device is set "
+    "to CPU. Switch it to GPU, serve the model's GGUF through llama.cpp, or use a Laya model."
+)
+
+
+def clef_unavailable_reason(wait: bool = True) -> str | None:
+    """Why PyTorch Clef cannot serve: no GPU, or a CPU device chosen. Training uses clef_unsupported_reason."""
+    if (reason := clef_unsupported_reason(wait)) is not None:
+        return reason
+    from utils.systemone_settings import device_chosen, get_device
+
+    return None if not device_chosen() or get_device() == "gpu" else CLEF_NEEDS_GPU_SETTING
+
+
 def is_fine_tune_name(name: object) -> bool:
     return isinstance(name, str) and name.startswith(FINE_TUNE_PREFIXES)
 

@@ -341,7 +341,9 @@ def test_a_clef_fine_tune_serves_through_its_worker(home, client, clef):
     served = _clef_fine_tune(home, "clef_served_1")
     assert _listed(client) == [served]
     # The trainer's "Use in Decision API" names every run laya-ft:; the layout picks the prefix.
-    assert _put(client, enabled = True, model = "laya-ft:clef_served_1").status_code == 200
+    assert (
+        _put(client, enabled = True, model = "laya-ft:clef_served_1", device = "gpu").status_code == 200
+    )
     assert client.get("/api/settings/systemone").json()["model"] == served
 
     answer = _post(client).json()
@@ -498,7 +500,7 @@ def test_the_catalog_offers_the_stock_clef_models():
 @pytest.mark.parametrize("kind", ["mlx", "xpu", "cpu"])
 def test_clef_refuses_a_machine_without_an_nvidia_or_amd_gpu(home, client, clef, monkeypatch, kind):
     served = _clef_fine_tune(home, "clef_nogpu_1")
-    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _put(client, enabled = True, model = served, device = "gpu").status_code == 200
     _spoof_device(monkeypatch, kind)
 
     refused = _post(client)
@@ -519,7 +521,7 @@ def test_clef_refuses_a_machine_without_an_nvidia_or_amd_gpu(home, client, clef,
 @pytest.mark.parametrize("kind", ["cuda", "rocm"])
 def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kind):
     served = _clef_fine_tune(home, "clef_gpu_1")
-    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _put(client, enabled = True, model = served, device = "gpu").status_code == 200
     _spoof_device(monkeypatch, kind)
     assert _post(client).status_code == 200
     models = client.get("/api/settings/systemone").json()["models"]
@@ -529,6 +531,59 @@ def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kin
         for m in models
         if not m["llama_cpp_only"]
     )
+
+
+def test_clef_needs_the_decision_api_device_set_to_gpu(home, client, clef, monkeypatch):
+    served = _clef_fine_tune(home, "clef_cpu_1")
+    models = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
+    assert models[served]["available"] and models[served]["unavailable_reason"] is None
+    assert _put(client, device = "cpu").status_code == 200
+    models = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
+    for name in (served, "clef", "clef-flash"):
+        assert models[name]["available"] is False
+        assert models[name]["unavailable_reason"] == catalog.CLEF_NEEDS_GPU_SETTING
+    assert all(
+        m["available"]
+        for n, m in models.items()
+        if n.startswith("laya") and not m["llama_cpp_only"]
+    )
+    refused = _put(client, enabled = True, model = served, device = "cpu")
+    assert refused.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in refused.text
+    assert client.get("/api/settings/systemone").json()["device"] == "cpu"
+
+    # Device unsaid (Use in Decision API): the device moves to GPU with the model.
+    chosen = _put(client, enabled = True, model = served)
+    assert chosen.status_code == 200 and chosen.json()["device"] == "gpu"
+    assert _post(client).status_code == 200
+    models = client.get("/api/settings/systemone").json()["models"]
+    assert all(
+        m["available"] and m["unavailable_reason"] is None
+        for m in models
+        if not m["llama_cpp_only"]
+    )
+    back = _put(client, device = "cpu")
+    assert back.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in back.text
+    assert client.get("/api/settings/systemone").json()["device"] == "gpu"
+
+    # An env-pinned device bypasses the settings, so the runtime refuses on its own.
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_DEVICE", "cpu")
+    laya_runtime.unload()
+    refused = _post(client)
+    assert refused.status_code == 400
+    assert refused.json()["detail"]["message"] == catalog.CLEF_NEEDS_GPU_SETTING
+    assert len(clef.agents) == 1
+
+
+def test_clef_on_llama_cpp_keeps_a_cpu_device(home, client, clef, monkeypatch):
+    from core.systemone import native_worker
+
+    monkeypatch.setattr(native_worker, "resolve_binary", lambda: str(home / "llama-server"))
+    kept = _put(client, enabled = True, model = "clef", device = "cpu")
+    assert kept.status_code == 200 and kept.json()["device"] == "cpu"
+    chosen = _put(client, enabled = True, model = "clef")
+    assert chosen.status_code == 200 and chosen.json()["device"] == "cpu"
+    refused = _put(client, backend = "pytorch", device = "cpu")
+    assert refused.status_code == 400 and catalog.CLEF_NEEDS_GPU_SETTING in refused.text
 
 
 def test_a_failed_device_probe_does_not_refuse_clef(monkeypatch):
