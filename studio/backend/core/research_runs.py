@@ -1327,12 +1327,7 @@ class ResearchSupervisor:
         )
 
     async def _search_mcp_tools(
-        self,
-        run: dict,
-        tools: list[dict],
-        query: str,
-        position: int,
-        tool_timeout: int,
+        self, run: dict, tools: list[dict], query: str, position: int, tool_timeout: int
     ) -> list[dict]:
         cancel_event = self._cancel_event(run["id"])
         calls = [

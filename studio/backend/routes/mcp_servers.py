@@ -359,7 +359,6 @@ async def list_research_search_tools(
     no_credential: WithoutCredential = False,
 ):
     from core.inference.tools import mcp_search_tools
-
     tools = await mcp_search_tools(include_stdio = not (via_api_key or no_credential))
     return [
         {key: tool[key] for key in ("serverId", "serverName", "tool", "description")}

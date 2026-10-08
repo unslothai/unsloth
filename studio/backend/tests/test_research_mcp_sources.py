@@ -33,7 +33,13 @@ def notes_server(tmp_path, monkeypatch):
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
-        {"id": "thread-1", "title": "R", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+        {
+            "id": "thread-1",
+            "title": "R",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
     )
     studio_db.upsert_chat_message(
         {
@@ -63,7 +69,6 @@ def notes_server(tmp_path, monkeypatch):
 
 def test_research_lists_only_read_only_single_query_mcp_tools(notes_server):
     from routes.mcp_servers import list_research_search_tools
-
     tools = asyncio.run(list_research_search_tools(current_subject = "alice"))
 
     assert [(tool["serverName"], tool["tool"]) for tool in tools] == [
@@ -74,7 +79,6 @@ def test_research_lists_only_read_only_single_query_mcp_tools(notes_server):
 
 def test_research_drops_mcp_servers_the_account_does_not_have(notes_server):
     from routes.research_runs import CreateResearchRun, _sanitize_config
-
     config = _sanitize_config(
         CreateResearchRun(
             threadId = "thread-1",
