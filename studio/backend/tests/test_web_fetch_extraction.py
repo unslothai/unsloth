@@ -692,6 +692,41 @@ def test_fetch_page_text_propagates_fetch_errors(monkeypatch):
     )
 
 
+_WIKI_URL = "https://en.wikipedia.org/wiki/Python_(programming_language)"
+
+
+def _wiki_article(paragraphs):
+    body = "".join(
+        f'<p>Paragraph {i} links <a href="https://en.wikipedia.org/wiki/Some_Long_Article_Title_{i}">'
+        f'topic {i}</a>, <a href="/wiki/Another_Related_Page_{i}">a related page</a> and a note'
+        f'<sup><a href="#cite_note-{i}">[{i}]</a></sup>.</p>'
+        for i in range(paragraphs)
+    )
+    return (
+        f"<html><body><main><article>{body}"
+        "<p>Python 3.0 was released on 3 December 2008.</p>"
+        '<p>See <a href="https://www.python.org/doc/">the docs</a>.</p>'
+        "</article></main></body></html>"
+    )
+
+
+def test_long_page_spends_its_budget_on_text_not_links_into_the_site(monkeypatch):
+    out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(150), "text/html")
+    assert "Python 3.0 was released on 3 December 2008." in out
+    assert "topic 149, a related page and a note[149]." in out
+    assert "[the docs](https://www.python.org/doc/)" in out
+    assert "wikipedia.org" not in out
+    assert "/wiki/" not in out
+    assert "#cite_note" not in out
+
+
+def test_page_that_fits_keeps_its_links(monkeypatch):
+    out = _page_text(monkeypatch, _WIKI_URL, _wiki_article(3), "text/html")
+    assert "[topic 1](https://en.wikipedia.org/wiki/Some_Long_Article_Title_1)" in out
+    assert "[a related page](/wiki/Another_Related_Page_1)" in out
+    assert "[[1]](#cite_note-1)" in out
+
+
 def test_looks_like_html():
     assert _looks_like_html("<!DOCTYPE html><html></html>")
     assert _looks_like_html("\n  <HTML lang='en'>")

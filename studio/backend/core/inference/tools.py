@@ -16916,7 +16916,11 @@ def _fetch_page_text(
     # Convert HTML to Markdown with the builtin converter (no external deps).
     from ._html_to_md import html_to_markdown
 
-    return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
+    text = html_to_markdown(body, main_content = True)
+    # A page that fits keeps its same-site links for the model to follow.
+    if len(text) > max_chars:
+        text = html_to_markdown(body, main_content = True, page_url = url)
+    return _truncate_page_text(text, max_chars)
 
 
 def _search_failure_message(exc: BaseException, timeout: int) -> str:

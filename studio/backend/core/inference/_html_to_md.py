@@ -19,6 +19,7 @@ from __future__ import annotations
 import html
 import re
 from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
 __all__ = ["html_to_markdown"]
 
@@ -287,8 +288,10 @@ class _MarkdownRenderer(HTMLParser):
         self,
         scope_tags: frozenset[str] | None = None,
         strip_header: bool = False,
+        page_url: str | None = None,
     ):
         super().__init__(convert_charrefs = False)
+        self._site_host = urlsplit(page_url).hostname if page_url else None
         self._out: list[str] = []
         self._skip_depth: int = 0
 
@@ -489,7 +492,7 @@ class _MarkdownRenderer(HTMLParser):
         self._emit_as_heading = self._link_had_heading and not partial
         self._link_had_heading = False
         self._link_header_chars = 0
-        if href and text:
+        if href and text and not self._links_into_site(href):
             self._emit(f"[{text}]({href})")
         elif text:
             self._emit(text)
@@ -500,6 +503,15 @@ class _MarkdownRenderer(HTMLParser):
             frame.heading_chars += len(heading_text)
             # Preserved by hand, so tell the gate too or a title-only card reads as body prose.
             self._seg_heading_texts.append(heading_text)
+
+    def _links_into_site(self, href: str) -> bool:
+        if self._site_host is None:
+            return False
+        try:
+            parts = urlsplit(href)
+        except ValueError:
+            return False
+        return parts.scheme in ("", "http", "https") and parts.hostname in (None, self._site_host)
 
     # Tag handlers. Structural bookkeeping shared by every start tag (skip/hidden/scope).
     def _truncate_open_tags(self, index: int) -> None:
@@ -1052,9 +1064,11 @@ def _strip_boilerplate_lines(text: str) -> str:
 
 
 def _new_renderer(
-    source_html: str, scope_tags: frozenset[str] | None, strip_header: bool
+    source_html: str, scope_tags: frozenset[str] | None, strip_header: bool, page_url: str | None
 ) -> _MarkdownRenderer:
-    renderer = _MarkdownRenderer(scope_tags = scope_tags, strip_header = strip_header)
+    renderer = _MarkdownRenderer(
+        scope_tags = scope_tags, strip_header = strip_header, page_url = page_url
+    )
     renderer.feed(source_html)
     renderer.close()
     renderer.flush_pending()
@@ -1065,11 +1079,12 @@ def _render(
     source_html: str,
     scope_tags: frozenset[str] | None,
     strip_header: bool = False,
+    page_url: str | None = None,
 ) -> str:
-    return _cleanup("".join(_new_renderer(source_html, scope_tags, strip_header)._out))
+    return _cleanup("".join(_new_renderer(source_html, scope_tags, strip_header, page_url)._out))
 
 
-def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
+def _select_main_scope_render(source_html: str, tag: str, page_url: str | None) -> tuple[int, str]:
     """Length and boilerplate-stripped render of the largest single ``<tag>``
     subtree. Sizing candidates one at a time stops many tiny sibling cards from
     clearing the threshold together, and returning that one subtree keeps
@@ -1083,7 +1098,7 @@ def _select_main_scope_render(source_html: str, tag: str) -> tuple[int, str]:
     Nor may it dominate: the credit is capped at the retained render, so removed
     furniture can never be the majority of a score. Uncapped, a teaser with a
     1000 link header outranked a sibling holding five times its real text."""
-    renderer = _new_renderer(source_html, frozenset({tag}), strip_header = True)
+    renderer = _new_renderer(source_html, frozenset({tag}), True, page_url)
     dropped = renderer.scope_dropped
     heading_prose = renderer.scope_heading_prose
     best_len = 0
@@ -1161,7 +1176,12 @@ def _visible_len(line: str) -> int:
 _MIN_MAIN_CONTENT_CHARS = 200
 
 
-def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
+def html_to_markdown(
+    source_html: str,
+    *,
+    main_content: bool = False,
+    page_url: str | None = None,
+) -> str:
     """Convert HTML to Markdown (headings, links, emphasis, lists, tables, blockquotes, code, entities).
 
     ``<script>``, ``<style>``, and ``<head>`` are stripped entirely, as are
@@ -1172,13 +1192,17 @@ def html_to_markdown(source_html: str, *, main_content: bool = False) -> str:
     then ``<main>``, falling back to the whole document, reduce a link-only
     ``<header>`` to the heading it carries, and strip known boilerplate
     fragments from the result.
+
+    ``page_url`` renders links back into that page's site as plain text.
     """
     source_html = source_html.replace("\r\n", "\n").replace("\r", "\n")
     if main_content:
         for scope_tag in ("article", "main"):
             # Render only the chosen subtree so sibling <article>/<main> elements do not leak in.
-            length, rendered = _select_main_scope_render(source_html, scope_tag)
+            length, rendered = _select_main_scope_render(source_html, scope_tag, page_url)
             if length >= _MIN_MAIN_CONTENT_CHARS:
                 return rendered
-        return _strip_boilerplate_lines(_render(source_html, None, strip_header = True))
-    return _render(source_html, None)
+        return _strip_boilerplate_lines(
+            _render(source_html, None, strip_header = True, page_url = page_url)
+        )
+    return _render(source_html, None, page_url = page_url)
