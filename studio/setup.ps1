@@ -1364,10 +1364,7 @@ function Write-CudaDriverToolkitMismatch {
     substep "Or let Unsloth use the prebuilt CUDA bundle; it does not need the local toolkit." $Color
 }
 
-# ggml passes nvcc -compress-mode=size for toolkit >= 12.8, and nvcc documents that mode as
-# "not compatible with drivers released before CUDA Toolkit's 12.4 Release": such a driver
-# rejects every kernel with "device kernel image is invalid" (#12842). True only for a known
-# driver below 12.4; an unknown driver keeps ggml's default.
+# ggml's -compress-mode=size (toolkit >= 12.8) does not load on a driver below 12.4 (#12842).
 function Test-CudaDriverNeedsUncompressedFatbin {
     param([string]$DriverMaxCuda)
     if ($DriverMaxCuda -notmatch '^(\d+)\.(\d+)$') { return $false }

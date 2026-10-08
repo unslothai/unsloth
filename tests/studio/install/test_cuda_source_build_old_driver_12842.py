@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A llama.cpp CUDA source build must load on a driver older than CUDA 12.4 (#12842).
-
-ggml passes nvcc -compress-mode=size for toolkit >= 12.8, and nvcc documents that mode as
-"not compatible with drivers released before CUDA Toolkit's 12.4 Release": the driver
-rejects every kernel with "device kernel image is invalid". Both setup scripts must build
-uncompressed kernels for a known driver below 12.4 and keep ggml's default otherwise.
-Part one runs the decision helpers sliced out of setup.sh / setup.ps1; part two pins the
-wiring into the CUDA cmake arguments.
-"""
+"""#12842: a CUDA source build on a driver below CUDA 12.4 passes GGML_CUDA_COMPRESSION_MODE=none."""
 
 from __future__ import annotations
 
@@ -137,7 +129,6 @@ def test_setup_sh_wires_the_flag_into_the_cuda_build():
     block = SETUP_SH_TEXT[on : SETUP_SH_TEXT.index("_BUILD_DESC=", on)]
     assert '_cuda_driver_needs_uncompressed_fatbin "$_DRIVER_MAX_CUDA"' in block
     assert "-DGGML_CUDA_COMPRESSION_MODE=none" in block
-    # The driver version is read in the same branch, before the build arguments.
     assert SETUP_SH_TEXT.rindex('_DRIVER_MAX_CUDA="$(_cuda_driver_max_version)"', 0, on) > 0
 
 

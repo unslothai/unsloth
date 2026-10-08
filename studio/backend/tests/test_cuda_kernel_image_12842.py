@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""#12842: a CUDA llama.cpp build whose kernels the driver cannot load.
-
-A CUDA >= 12.8 build compresses its fatbin with -compress-mode, which drivers older
-than CUDA 12.4 cannot decode, so every kernel load returns "device kernel image is
-invalid". The crash used to walk the whole retry ladder (--fit on, one slot,
-flash-attn off, no drafter), five doomed restarts, and end on "Check that the GGUF
-file is valid and you have enough memory". Pinned here: the classification, the one
-spawn, and that the ROCm (#7624) spelling is untouched.
-
-Mock-based: no GPU, OS-neutral.
-"""
+"""#12842: a CUDA kernel-image crash stops at one launch; the ROCm (#7624) spelling does not."""
 
 from __future__ import annotations
 
@@ -33,7 +23,7 @@ from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E4
 
 _REAL_POPEN = subprocess.Popen
 
-# The tail from the issue (Windows A40, b11443-mix-d65395f cuda12 bundle).
+# From the issue (Windows A40, b11443-mix-d65395f cuda12 bundle).
 _ISSUE_TAIL = """\
 0.31.322.841 I sched_reserve:      CUDA0 compute buffer size = 13951.75 MiB
 0.31.323.945 I cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
@@ -51,7 +41,7 @@ _ROCM_TAIL = """\
 ROCm error: device kernel image is invalid
   current device: 0, in function ggml_cuda_compute_forward at ggml-cuda.cu:2367"""
 
-# 0xC0000409, what the issue's Windows child exited with; any non-zero code is a crash.
+# 0xC0000409, the issue's Windows exit code.
 _WIN_FAIL_FAST = 3221226505
 
 
@@ -107,7 +97,6 @@ class TestClassification:
 
     @staticmethod
     def _marker(tmp_path, monkeypatch, marker):
-        # The shape write_prebuilt_metadata produces: runtime_line, bundle_profile, host_profile.
         if marker is not None:
             (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
                 marker if isinstance(marker, str) else json.dumps(marker), encoding = "utf-8"
@@ -152,9 +141,6 @@ class TestClassification:
         assert LlamaCppBackend._cuda_install_driver_version(binary) is None
         msg = LlamaCppBackend._cuda_kernel_image_message("device kernel image is invalid", binary)
         assert "most likely too old" in msg and "supports CUDA" not in msg
-
-
-# ── The load path: one spawn, terminal error ─────────────────────────
 
 
 def _write_gguf(path: Path, architecture: str = "llama") -> Path:
@@ -244,7 +230,6 @@ class TestLoadStopsAtTheFirstCrash:
         assert len(spawns) == 1
 
     def test_rocm_crash_is_not_short_circuited(self, tmp_path):
-        # The ROCm spelling keeps whatever ladder it had; only the CUDA prefix stops it.
         backend, gguf = _backend(tmp_path, [0])
         spawns, _result, error = _crash_every_spawn(backend, gguf, _ROCM_TAIL, 134)
         assert error is None or "NVIDIA driver" not in error

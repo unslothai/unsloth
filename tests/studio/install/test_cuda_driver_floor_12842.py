@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""#12842: the CUDA prebuilts are toolkit 12.8+ builds whose device code ggml compresses with
--compress-mode=size, which a driver older than CUDA 12.4 cannot load ("device kernel image is
-invalid" on every kernel). Neither selector may hand a cuda12 bundle to such a driver, and a
-kept cuda12 install must stop counting as covering it."""
+"""#12842: no CUDA 12 prebuilt for a driver below CUDA 12.4 (compressed device code)."""
 
 from __future__ import annotations
 
@@ -191,8 +188,6 @@ def test_an_unknown_driver_is_not_gated_by_the_floor():
 
 @pytest.mark.parametrize("system", ["Windows", "Linux"])
 def test_a_driver_below_the_floor_stops_the_release_walk(monkeypatch, system):
-    # Every older release fails the same host-wide floor; walking back through them only
-    # spends GitHub API calls (one upstream asset listing per release on Windows).
     walked = []
 
     def releases(*_args, **_kwargs):
@@ -230,8 +225,6 @@ def _release_with_windows_cpu():
 
 
 class TestWindowsBelowTheFloorGetsTheCpuBundle:
-    # A Windows source build after a CUDA miss needs a toolkit the old driver can run,
-    # which winget rarely has, so setup would fail. The CPU bundle keeps loads working.
     def _choices(self, monkeypatch, driver):
         monkeypatch.setattr(m, "apply_approved_hashes", lambda attempts, _checksums: attempts)
         monkeypatch.setattr(m, "github_release_assets", lambda _repo, _tag: {})
@@ -249,13 +242,10 @@ class TestWindowsBelowTheFloorGetsTheCpuBundle:
         assert choices and all(c.install_kind == "windows-cuda" for c in choices)
 
     def test_a_cuda_11_driver_keeps_its_old_route(self, monkeypatch):
-        # Below CUDA 12 nothing changes: no prebuilt, so setup source-builds as before.
         assert self._choices(monkeypatch, (11, 8)) == []
 
 
 class TestTheSourceStageDoesNotKeepABrokenCudaPrebuilt:
-    # setup.sh asks --check-existing-install before skipping the rebuild. A cuda12 prebuilt
-    # still answers --version below the floor, so without this every update kept it.
     def _tree(self, tmp_path, marker):
         if marker is not None:
             (tmp_path / "UNSLOTH_PREBUILT_INFO.json").write_text(
@@ -284,9 +274,6 @@ class TestTheSourceStageDoesNotKeepABrokenCudaPrebuilt:
 
 
 class TestAStoredCudaChoiceBelowTheFloorFallsBackToDetection:
-    # A Studio settings choice of CUDA is stored and advisory. Below the floor Linux CUDA
-    # planning failed with PrebuiltFallback, which the advisory path does not catch, so the
-    # whole update (and the Desktop update waiting on it) failed instead of re-detecting.
     def _select(self, monkeypatch, driver):
         def no_plans(*_args, **_kwargs):
             raise m.PrebuiltFallback("no compatible Linux prebuilt asset was found")

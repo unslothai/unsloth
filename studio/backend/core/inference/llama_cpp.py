@@ -21063,8 +21063,6 @@ class LlamaCppBackend:
         if blocked is not None:
             return code_integrity_user_message(binary or "the llama.cpp runtime", blocked)
 
-        # Every kernel fails to load alike, so the memory / GGUF fallback below would
-        # send the user after the wrong cause (#12842).
         cuda_image_error = LlamaCppBackend._cuda_kernel_image_error(output)
         if cuda_image_error is not None:
             return LlamaCppBackend._cuda_kernel_image_message(cuda_image_error, binary, log_path)
@@ -22335,11 +22333,7 @@ class LlamaCppBackend:
         text = (output or "").lower()
         return any(marker in text for marker in cls._KERNEL_IMAGE_INVALID_MARKERS)
 
-    # The same failure from a CUDA build (#12842). ggml prefixes the error with
-    # GGML_CUDA_NAME, "ROCm" on a HIP build, so the #7624 crash never matches. Group 1
-    # is cudaErrorInvalidKernelImage (a fatbin the driver cannot decode: CUDA >= 12.8
-    # builds compress with -compress-mode, which drivers older than 12.4 cannot read)
-    # or cudaErrorNoKernelImageForDevice (no SASS or PTX for this GPU). Either way every
+    # #12842. A HIP build prints "ROCm error:", so the #7624 crash never matches. Every
     # kernel fails alike, so no fit, flash-attn, slot or drafter retry can help.
     _CUDA_KERNEL_IMAGE_RE = re.compile(
         r"\bCUDA error: (device kernel image is invalid|no kernel image is available for execution)",
@@ -22388,7 +22382,6 @@ class LlamaCppBackend:
             )
         driver = cls._cuda_install_driver_version(binary)
         if driver is not None and driver >= (12, 4):
-            # A driver new enough for compressed kernels: the build itself is broken.
             return (
                 'llama-server could not load its CUDA kernels ("device kernel image is '
                 f'invalid") although this NVIDIA driver supports CUDA {driver[0]}.{driver[1]}: '
@@ -30213,7 +30206,6 @@ class LlamaCppBackend:
                         _capability_crash = _tensor_capability_crash or self._is_kv_unified_refused(
                             "\n".join(self._stdout_lines)
                         )
-                        # #12842: no placement loads a kernel the driver cannot.
                         _capability_crash = _capability_crash or (
                             self._cuda_kernel_image_error("\n".join(self._stdout_lines)) is not None
                         )
@@ -31208,12 +31200,9 @@ class LlamaCppBackend:
                         )
                         healthy = _spawn_and_wait(cmd, label = "-archfallback")
 
-                # A CUDA build whose kernels this driver or GPU cannot load (#12842).
-                # The #7624 respawn above already had its chance at another device;
-                # every rung below (one slot, flash-attn off, no drafter, CPU projector)
-                # keeps the same kernels, so stop here with the real cause.
+                # #12842: after the #7624 respawn every rung below keeps the same kernels.
                 if not healthy and not _load_cancelled():
-                    # Whole buffer: a Linux abort can append a long debugger backtrace.
+                    # Whole buffer: a Linux abort appends a debugger backtrace.
                     _cuda_image_out = "\n".join(self._stdout_lines)
                     if self._cuda_kernel_image_error(_cuda_image_out) is not None:
                         _proc_snap_ki = self._process  # snapshot: re-reading races the teardown

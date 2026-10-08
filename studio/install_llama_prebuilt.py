@@ -3388,8 +3388,7 @@ def compatible_windows_runtime_lines(host: HostInfo) -> list[str]:
         return []
     major, _minor = host.driver_cuda_version
     # cuda12 app bundles are toolkit-12.8 builds with bundled runtime libs; CUDA
-    # minor-version compatibility runs them on a 12.x driver, same as Linux, but only
-    # from 12.4 on: their compressed device code does not load on an older one (#12842).
+    # minor-version compatibility runs them on a 12.x driver from 12.4 on (#12842).
     if major < _MIN_CUDA_MAJOR or driver_below_cuda_prebuilt_floor(host):
         return []
     return _cuda_runtime_lines_for_major(major)
@@ -4219,10 +4218,8 @@ def resolve_release_asset_choice(
             driver_below_cuda_prebuilt_floor(selection_host)
             and selection_host.driver_cuda_version[0] >= _MIN_CUDA_MAJOR
         ):
-            # #12842: no CUDA prebuilt loads on this driver, and the source build it would
-            # fall back to needs a toolkit the driver can run, which winget rarely offers,
-            # so setup would fail. The CPU bundle keeps GGUF inference working until the
-            # driver is updated; the next update then picks CUDA again.
+            # #12842: the Windows source fallback needs a toolkit this driver runs, which
+            # winget rarely offers, so setup would fail. CPU until the driver is updated.
             cpu_choice = published_asset_choice_for_kind(release, "windows-cpu")
             if cpu_choice is not None:
                 log(
@@ -7327,8 +7324,7 @@ def _fork_manifest_release_plans(
                 last_error = exc
                 if not allow_older_release_fallback:
                     raise
-                # The driver floor belongs to the host, not this release: every older
-                # release fails alike, so walking back only spends API calls (#12842).
+                # #12842: the floor is the host's, so every older release fails alike.
                 if (
                     (host.is_linux or host.is_windows)
                     and host.has_physical_nvidia
@@ -9629,8 +9625,7 @@ def reusable_existing_install(install_dir: Path, host: HostInfo) -> bool:
     """
     if not (install_dir / "UNSLOTH_PREBUILT_INFO.json").is_file():
         return True
-    # #12842: a CUDA prebuilt still answers --version on a driver below the floor but
-    # loads no kernel, and every update would keep it, so let the rebuild run.
+    # #12842: below the floor a CUDA prebuilt still answers --version but loads no kernel.
     marker = load_prebuilt_metadata(install_dir) or {}
     if marker_backend(marker) == "cuda" and driver_below_cuda_prebuilt_floor(host):
         return False
@@ -11190,9 +11185,7 @@ def select_backend_install(
             llama_tag, route.host, route.published_repo, route.published_release_tag
         )
     except PrebuiltFallback as exc:
-        # #12842: below the driver floor CUDA planning fails before the filter below, so
-        # a stored cuda choice must read as unavailable and fall back to detection
-        # rather than fail the whole update.
+        # #12842: a stored cuda choice must fall back to detection, not fail the update.
         if route.backend == "cuda" and driver_below_cuda_prebuilt_floor(route.host):
             raise BackendUnavailable(str(exc)) from exc
         raise

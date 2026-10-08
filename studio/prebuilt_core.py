@@ -151,11 +151,8 @@ _RATE_LIMIT_WAIT_CAP_SECONDS = 60.0
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
-# Oldest driver that loads our CUDA prebuilts. They are toolkit 12.8+ builds and ggml
-# compresses their device code with -compress-mode=size, which nvcc documents as "not
-# compatible with drivers released before CUDA Toolkit's 12.4 Release": an older driver
-# fails every kernel load with "device kernel image is invalid" (#12842). Minor-version
-# compatibility alone would accept any 12.x driver.
+# Toolkit 12.8+ prebuilts use nvcc -compress-mode=size, "not compatible with drivers released
+# before CUDA Toolkit's 12.4 Release" (nvcc docs): every kernel load fails (#12842).
 _COMPRESSED_FATBIN_MIN_DRIVER = (12, 4)
 
 # Blackwell floor is sm_100 (B100/B200 sm_100, B300/GB300 sm_103 below consumer

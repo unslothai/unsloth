@@ -1342,10 +1342,7 @@ _cuda_toolkit_major_gt_driver() {
     [ "$_toolkit_major" -gt "$_driver_major" ]
 }
 
-# ggml passes nvcc -compress-mode=size for toolkit >= 12.8, and nvcc documents that mode as
-# "not compatible with drivers released before CUDA Toolkit's 12.4 Release": such a driver
-# rejects every kernel with "device kernel image is invalid" (#12842). True only for a known
-# driver below 12.4; an unknown driver keeps ggml's default.
+# ggml's -compress-mode=size (toolkit >= 12.8) does not load on a driver below 12.4 (#12842).
 _cuda_driver_needs_uncompressed_fatbin() {
     _cuda_version_gt "12.4" "${1:-}"
 }
