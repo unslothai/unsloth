@@ -115,13 +115,8 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
-# Substrings in ddgs/primp/httpx failures when the HTTP/2 stack is reset mid-flight (#12638).
-_DDGS_TRANSPORT_RESET_MARKERS = (
-    "connection reset",
-    "connection error",
-    "h2 connection driver error",
-)
-_DDGS_TRANSPORT_FALLBACK_INSTALLED = False
+# ddgs reports an engine's transport failure as "<primp or httpx class>: <repr>".
+_DDGS_CONNECTION_ERRORS = ("ConnectError:", "RequestError:", "ReadError:", "RemoteProtocolError:")
 
 # Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
 # an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
@@ -16914,92 +16909,13 @@ def _fetch_page_text(
     return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
 
 
-def _is_ddgs_transport_reset(exc: BaseException) -> bool:
-    """True when ddgs/primp failed at the transport layer rather than returning empty results."""
-    message = f"{type(exc).__name__}: {exc}".lower()
-    return any(marker in message for marker in _DDGS_TRANSPORT_RESET_MARKERS)
-
-
-def _install_ddgs_transport_fallback() -> None:
-    """Retry ddgs HTTP clients over HTTP/1.1 when primp's HTTP/2 pool resets the connection.
-
-    ddgs 9.14.x routes DuckDuckGo through ``HttpClient2`` (httpx + HTTP/2) and other engines through
-    primp. Some networks accept HTTPS but reset HTTP/2 (see unslothai/unsloth#12638); curl/requests
-    over HTTP/1.1 still work. Installed once, lazily, before the first real ``DDGS`` search.
-    """
-    global _DDGS_TRANSPORT_FALLBACK_INSTALLED  # noqa: PLW0603
-    if _DDGS_TRANSPORT_FALLBACK_INSTALLED:
-        return
-    try:
-        import ddgs.http_client as ddgs_http_client
-    except ImportError:
-        return
-    _DDGS_TRANSPORT_FALLBACK_INSTALLED = True
-
-    _orig_primp_request = ddgs_http_client.HttpClient.request
-
-    def _primp_request_with_http1_fallback(self, *args, **kwargs):
-        try:
-            return _orig_primp_request(self, *args, **kwargs)
-        except Exception as exc:
-            if not _is_ddgs_transport_reset(exc):
-                raise
-            import primp
-
-            prior = self.client
-            proxy = getattr(prior, "proxy", None)
-            timeout = getattr(prior, "timeout", None)
-            self.client = primp.Client(
-                proxy = proxy,
-                timeout = timeout,
-                impersonate = "chrome_131",
-                impersonate_os = "linux",
-                http2_only = False,
-            )
-            try:
-                return _orig_primp_request(self, *args, **kwargs)
-            finally:
-                self.client = prior
-
-    ddgs_http_client.HttpClient.request = _primp_request_with_http1_fallback
-
-    try:
-        import ddgs.http_client2 as ddgs_http_client2
-    except ImportError:
-        return
-
-    _orig_ddg_init = ddgs_http_client2.HttpClient2.__init__
-
-    def _duckduckgo_client_prefers_http1(self, *args, **kwargs):
-        _orig_ddg_init(self, *args, **kwargs)
-        # DuckDuckGo's client defaults to HTTP/2 for fingerprinting; prefer HTTP/1.1 when h2 is blocked.
-        import httpx
-
-        from ddgs.http_client2 import _get_random_ssl_context
-
-        headers = kwargs.get("headers")
-        proxy = kwargs.get("proxy")
-        timeout = kwargs.get("timeout", 10)
-        verify = kwargs.get("verify", True)
-        self.client.close()
-        self.client = httpx.Client(
-            headers = headers,
-            proxy = proxy,
-            timeout = timeout,
-            verify = _get_random_ssl_context(verify = verify) if verify else False,
-            follow_redirects = False,
-            http2 = False,
-        )
-
-    ddgs_http_client2.HttpClient2.__init__ = _duckduckgo_client_prefers_http1
-
-
 def _search_failure_message(exc: BaseException, timeout: int) -> str:
     """Turn a ddgs exception into text the model and the UI can act on.
 
     ddgs raises for an empty sweep as well as for refusals, so an unclassified ``Search failed:
     {exc}`` reports nothing matched and every engine throttled us the same way. Matched by class
-    name because ddgs is imported lazily and tests stub the module.
+    name because ddgs is imported lazily and tests stub the module, and by message text where ddgs
+    has already flattened an engine's exception into a string.
 
     The RatelimitException arm is forward-looking: ddgs 9.14.4 defines the class but raises it
     nowhere, and no engine inspects the status code, so a throttled sweep parses to zero items and
@@ -17017,11 +16933,14 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     # Only the base exception, so a subclass that happens to quote the phrase stays an error.
     if name == "DDGSException" and _DDGS_EMPTY_SWEEP in str(exc):
         return EMPTY_SEARCH_RESULTS[0]
-    if _is_ddgs_transport_reset(exc):
+    # Reset text catches shapes with no transport class: primp's DecodeError, pre-1.0 RuntimeError.
+    if name == "DDGSException" and (
+        str(exc).startswith(_DDGS_CONNECTION_ERRORS) or "connection reset" in str(exc).lower()
+    ):
         return (
-            "Search failed: the search provider closed the HTTP/2 connection. "
-            "Studio retried over HTTP/1.1; if this persists, check VPN/firewall rules "
-            'or read a page directly with {"url": "<URL>"}.'
+            "Search failed: the connection to a search engine failed or was reset. If this keeps "
+            "happening, a VPN, proxy or firewall on this network may be blocking it; read a known "
+            'page directly with {"url": "<URL>"}.'
         )
     return f"Search failed: {exc}"
 
@@ -17230,7 +17149,6 @@ def _web_search(
         rejected_results = False
         wikipedia_fallback = False
         try:
-            _install_ddgs_transport_fallback()
             from ddgs import DDGS
             from ddgs.engines import ENGINES
 

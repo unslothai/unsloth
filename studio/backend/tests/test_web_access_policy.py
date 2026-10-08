@@ -336,6 +336,52 @@ def test_empty_sweep_is_reported_as_no_results_not_as_a_failure(monkeypatch):
     assert not is_tool_error(result)
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        # ddgs 9.14.4 shapes: primp reset mid-body, on send and refused; httpx reset (POSIX, then
+        # Windows), refused and dropped HTTP/2 stream. Last, a reset from the pre-1.0 primp that
+        # Python 3.9 resolves.
+        "DecodeError: DecodeError('error decoding response body > request or response body error "
+        "> error sending request > connection reset', None)",
+        "RequestError: RequestError('error sending request for url (https://e.test/)', 'https://e.test/')",
+        "ConnectError: ConnectError('error sending request for url (https://e.test/)', 'https://e.test/')",
+        "ReadError: ReadError('[Errno 54] Connection reset by peer')",
+        "ReadError: ReadError('[WinError 10054] An existing connection was forcibly closed by the "
+        "remote host')",
+        "ConnectError: ConnectError('[Errno 61] Connection refused')",
+        "RemoteProtocolError: RemoteProtocolError('Server disconnected')",
+        "RuntimeError: RuntimeError('error sending request for url (https://e.test/): client error "
+        "(SendRequest): Connection reset by peer (os error 54)')",
+    ],
+)
+def test_blocked_connection_points_at_the_network_not_the_exception(monkeypatch, error):
+    from ddgs.exceptions import DDGSException
+
+    result = _search_with_raising_ddgs(monkeypatch, DDGSException(error))
+    assert "connection to a search engine failed or was reset" in result
+    assert "Error(" not in result
+    assert is_tool_error(result) is True
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        # Not a transport failure, and a transport class name that ddgs did not put first.
+        "DecodeError: DecodeError('error decoding response body', None)",
+        "ValueError: ValueError('ConnectError: bad page')",
+    ],
+)
+def test_other_engine_failures_keep_their_own_text(monkeypatch, exc):
+    from ddgs.exceptions import DDGSException
+    assert _search_with_raising_ddgs(monkeypatch, DDGSException(exc)) == f"Search failed: {exc}"
+
+
+def test_connection_wording_is_only_for_ddgs_failures(monkeypatch):
+    result = _search_with_raising_ddgs(monkeypatch, RuntimeError("ConnectError: connection reset"))
+    assert result == "Search failed: ConnectError: connection reset"
+
+
 def _raise_if_search_backend(monkeypatch):
     def boom(*_args, **_kwargs):
         raise AssertionError("web_search backend must not run without query or url")
