@@ -81,7 +81,7 @@ export function SettingsRow({
                         app's other small glyphs follow. */}
                     <HugeiconsIcon
                       icon={InformationCircleIcon}
-                      className="size-[var(--ui-icon-size-sm)]"
+                      className="size-[var(--ui-icon-size-hint)]"
                     />
                   </button>
                 </TooltipTrigger>

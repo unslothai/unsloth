@@ -902,7 +902,7 @@ export function UsageExamples({
                           this matches. */}
                       <HugeiconsIcon
                         icon={InformationCircleIcon}
-                        className="size-[var(--ui-icon-size-sm)]"
+                        className="size-[var(--ui-icon-size-hint)]"
                       />
                     </button>
                   </TooltipTrigger>

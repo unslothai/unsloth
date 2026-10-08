@@ -413,6 +413,8 @@
 	/* Mirrors the size-3.5 rule applied inside popovers (see the icon block
 	   below), so widths that reserve room for those icons track them. */
 	--ui-icon-size-sm: calc(0.875rem * var(--ui-font-scale, 1));
+	/* Info "i" beside a settings label, a notch under the label text. */
+	--ui-icon-size-hint: calc(0.75rem * var(--ui-font-scale, 1));
 	/* Model picker header controls. Padding and gaps follow --ui-space-scale,
 	   icons and label follow --ui-font-scale, so reserve each separately. The
 	   trigger is 2.25rem of padding and gaps, two icons, then the label, plus
