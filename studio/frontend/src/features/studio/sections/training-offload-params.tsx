@@ -101,7 +101,7 @@ export function OffloadLayersParams(): ReactElement {
           tooltip={t("studio.params.offloadVramBudgetTooltip")}
         >
           {/* One box per training GPU, four to a line; empty uses the whole card. */}
-          <div className="flex max-w-[19.5rem] flex-wrap justify-end gap-1.5">
+          <div className="flex max-w-[22.25rem] flex-wrap justify-end gap-1.5">
             {cards.map((card) => (
               <Input
                 key={card.index}
@@ -121,7 +121,7 @@ export function OffloadLayersParams(): ReactElement {
                     e.target.value === "" || !(gb > 0) ? null : gb,
                   );
                 }}
-                className="w-[4.5rem] font-mono placeholder:font-sans"
+                className="w-[5.25rem] pl-3 pr-7 font-mono placeholder:font-sans"
               />
             ))}
           </div>
