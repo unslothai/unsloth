@@ -533,6 +533,72 @@ class LoraLike(nn.Module):
             return getattr(self.model, name)
 
 
+
+class _MeanDecoder(nn.Module):
+    def forward(self, input_ids = None, labels = None, **kwargs):
+        return CrossEntropyLoss()(input_ids.view(-1, 1), labels.view(-1))
+
+
+class CountedWithDelegatedMeanForCausalLM(HFStyle):
+    """Main loss divides by the count, an auxiliary mean is computed by a child receiving labels."""
+    def __init__(self):
+        super().__init__()
+        self.model = Backbone()
+        self.aux_decoder = _MeanDecoder()
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        logits = self.model(input_ids)
+        loss = self.loss_function(logits, labels, vocab_size=1, **kwargs)
+        return loss + self.aux_decoder(input_ids = logits, labels = labels)
+
+
+class MixedDelegatesForConditionalGeneration(HFStyle):
+    """One child divides by the count, another averages: not provably either."""
+    def __init__(self):
+        super().__init__()
+        self.model = Backbone()
+        self.decoder = _CountingDecoder()
+        self.aux_decoder = _MeanDecoder()
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        return self.decoder(input_ids = input_ids, labels = labels, **kwargs) + self.aux_decoder(input_ids = input_ids, labels = labels)
+
+
+class DelegatedPositionalSumForConditionalGeneration(HFStyle):
+    """reduction="sum" passed positionally must override the child's "mean" default."""
+    def __init__(self):
+        super().__init__()
+        self.model = Backbone()
+        self.text_decoder = _TextDecoder()
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        return self.text_decoder(input_ids, labels, "sum")
+
+
+def Dropping_forward(self, input_ids=None, labels=None, **kwargs):
+    return unsloth_fused_ce_loss(hidden_states=input_ids, labels=labels, n_items=kwargs.get("num_items_in_batch", None))
+
+
+class DroppingThinForConditionalGeneration(HFStyle):
+    """A thin class forward that never hands its **kwargs to the implementation."""
+    def __init__(self):
+        super().__init__()
+        self.model = Backbone()
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        return Dropping_forward(self, input_ids=input_ids, labels=labels)
+
+
+class OwnsModuleChildForCausalLM(nn.Module):
+    """A loss head whose backbone is `transformer` and which also owns a child named `module`."""
+    def __init__(self):
+        super().__init__()
+        self.transformer = Backbone()
+        self.module = Backbone()
+
+    def forward(self, input_ids=None, labels=None, **kwargs):
+        return self.loss_function(self.transformer(input_ids), labels, vocab_size=1, **kwargs)
+
 class PeftModelForCausalLM(nn.Module):
     def __init__(self, model):
         super().__init__()
@@ -951,3 +1017,47 @@ def test_the_dispatcher_reads_the_recorded_convention_through_a_training_wrapper
 
 def test_a_conditional_count_read_is_consuming(ns, mods):
     assert ns["_forward_consumes_num_items_in_batch"](mods.FallbackCountReadForCausalLM()) is True
+
+
+def test_a_counted_loss_beside_a_delegated_mean_is_undecided(ns, mods):
+    assert (
+        ns["_forward_consumes_num_items_in_batch"](mods.CountedWithDelegatedMeanForCausalLM())
+        is None
+    )
+
+
+def test_mixed_delegated_verdicts_are_undecided(ns, mods):
+    assert (
+        ns["_forward_consumes_num_items_in_batch"](mods.MixedDelegatesForConditionalGeneration())
+        is None
+    )
+
+
+def test_a_positional_reduction_overrides_the_delegate_default(ns, mods):
+    assert (
+        ns["_forward_consumes_num_items_in_batch"](
+            mods.DelegatedPositionalSumForConditionalGeneration()
+        )
+        is None
+    )
+
+
+def test_a_thin_forward_that_drops_kwargs_is_not_unwrapped(ns, mods):
+    assert (
+        ns["_forward_consumes_num_items_in_batch"](mods.DroppingThinForConditionalGeneration())
+        is False
+    )
+
+
+def test_a_child_named_module_is_not_walked_as_a_wrapper(ns, mods):
+    head = mods.OwnsModuleChildForCausalLM()
+    assert ns["_loss_kwargs_child"](head) is not head.module
+
+
+def test_a_compiled_wrapper_keeps_the_value_and_its_marker_together(ns, mods):
+    head = mods.StaleFlagForConditionalGeneration()
+    compiled = torch.compile(head, backend = "eager")
+    ns["apply_accepts_loss_kwargs_fix"](compiled)
+    inner = compiled._orig_mod.__dict__
+    assert inner["accepts_loss_kwargs"] is True and ns["_is_guess"](inner)
+    assert compiled.__dict__["accepts_loss_kwargs"] is True and ns["_is_guess"](compiled.__dict__)

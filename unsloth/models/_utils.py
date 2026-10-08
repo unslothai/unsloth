@@ -4996,7 +4996,7 @@ def _make_seq2seq_aware_get_batch_samples(original):
         # Seq2Seq labels are unshifted, so the causal labels[..., 1:] token count drops one per row and inflates the GA loss.
         if _head_counts_unshifted_labels(getattr(self, "model", None)):
             return _unsloth_get_batch_samples(self, *args, **kwargs)
-        if _is_seq2seq_lm_config(getattr(self.model, "config", None)):
+        if _is_seq2seq_lm_config(getattr(getattr(self, "model", None), "config", None)):
             return original(self, *args, **kwargs)
         return _unsloth_get_batch_samples(self, *args, **kwargs)
 
@@ -5190,6 +5190,8 @@ def _loss_kwargs_child(m):
     d = getattr(m, "__dict__", None) or {}
     modules = d.get("_modules") or {}
     for name in _LOSS_KWARGS_CHILDREN:
+        if name in _UNSLOTH_WRAPPED_MODULE_ATTRS and not _is_training_wrapper(m):
+            continue
         nxt = modules.get(name)
         if nxt is None:
             nxt = d.get(name)
@@ -5250,8 +5252,10 @@ def _shadow_accepts_loss_kwargs(model, value):
             continue
         if "accepts_loss_kwargs" in d and not _is_guess(d):
             continue
+        # Through __dict__: torch.compile's OptimizedModule forwards setattr to the inner module,
+        # which would part the value from its marker.
         try:
-            setattr(m, "accepts_loss_kwargs", value)
+            d["accepts_loss_kwargs"] = value
             d[_GUESSED_LOSS_KWARGS] = value
         except Exception:
             pass
@@ -5320,8 +5324,10 @@ def _pass_through_child(m, modules):
         tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(type(m).forward))))
     except Exception:
         return None
-    node = tree.body[0] if tree.body else None
-    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    node = next(
+        (n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None
+    )
+    if node is None:
         return None
     body = [
         s for s in node.body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))
@@ -5363,6 +5369,28 @@ def _pass_through_child(m, modules):
     return modules[func.attr] if forwards_count else None
 
 
+def _call_forwards_count(node, call):
+    """Does `call` hand on the count `node` received: its **kwargs, or its own num_items_in_batch?"""
+    kwarg = node.args.kwarg.arg if node.args.kwarg is not None else None
+    params = {a.arg for a in node.args.posonlyargs + node.args.args + node.args.kwonlyargs}
+    return any(
+        (
+            kw.arg is None
+            and kwarg is not None
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id == kwarg
+            and "num_items_in_batch" not in params
+        )
+        or (
+            kw.arg == "num_items_in_batch"
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id == "num_items_in_batch"
+            and "num_items_in_batch" in params
+        )
+        for kw in call.keywords
+    )
+
+
 def _forward_function_node(forward, depth = 0):
     try:
         forward = inspect.unwrap(forward)
@@ -5393,6 +5421,7 @@ def _forward_function_node(forward, depth = 0):
         and body[0].value.args
         and isinstance(body[0].value.args[0], ast.Name)
         and body[0].value.args[0].id == "self"
+        and _call_forwards_count(node, body[0].value)
     ):
         impl = namespace.get(body[0].value.func.id)
         if callable(impl):
@@ -5442,6 +5471,7 @@ def _local_assignments(node, nested):
 
 
 def _is_count_get(value):
+    # Any receiver: the compile cache reads the count off `__kwargs`, a locals() alias of **kwargs.
     if isinstance(value, ast.IfExp):
         return _is_count_get(value.body) and _is_count_get(value.orelse)
     return (
@@ -5714,9 +5744,10 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
             uncounted = True
 
     ce_kinds = _ce_reductions(node, namespace, subst)
+    named_children = getattr(head, "named_children", None)
     used = [
         sub
-        for name, sub in head.named_children()
+        for name, sub in (named_children() if callable(named_children) else ())
         if isinstance(sub, (torch.nn.CrossEntropyLoss, torch.nn.NLLLoss))
         and re.search(rf"\bself\.{re.escape(name)}\s*\(", source)
     ]
@@ -5736,10 +5767,9 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
             return None
         if via_loss_function and not _known_loss_function(head):
             return None
-        return True
-    if fused_without_count:
+    elif fused_without_count:
         return False
-    if uncounted:
+    elif uncounted:
         return False if _known_loss_function(head) else None
 
     delegates = []
@@ -5801,9 +5831,15 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
         for arg, default in zip(c_node.args.kwonlyargs, c_node.args.kw_defaults):
             if isinstance(default, ast.Constant):
                 c_subst[arg.arg] = default
+        for arg, value in zip(c_params, call.args):
+            c_subst.pop(arg, None)
+            if isinstance(value, ast.Constant):
+                c_subst[arg] = value
         for kw in call.keywords:
-            if kw.arg is not None and isinstance(kw.value, ast.Constant):
-                c_subst[kw.arg] = kw.value
+            if kw.arg is not None:
+                c_subst.pop(kw.arg, None)
+                if isinstance(kw.value, ast.Constant):
+                    c_subst[kw.arg] = kw.value
         if depth >= 2:
             verdicts.append(None)
             continue
@@ -5816,21 +5852,28 @@ def _classify_loss_forward(head, node, source, namespace, depth, labels_name, su
             verdict = False
         verdicts.append(verdict)
 
+    # A counted direct loss beside a delegated mean (an auxiliary loss computed elsewhere) is mixed.
+    if consumes:
+        return None if any(v is False for v in verdicts) else True
+    # A mean renormalised by a count it read is not provably a mean.
+    mean_verdict = None if count_names else False
     if (
         own_mean
         and not own_other
         and all(v is not False for v in verdicts)
         and not any(v is True for v in verdicts)
     ):
-        return False
+        return mean_verdict
     if verdicts:
+        if any(v is True for v in verdicts) and any(v is not True for v in verdicts):
+            return None
         if any(v is False for v in verdicts):
             return False
         if all(v is True for v in verdicts) and not (ce_kinds or used) and not tampered:
             return True
         return None
     if own_mean and not own_other:
-        return False
+        return mean_verdict
     if ce_kinds or used:
         return None
     return "no_loss"

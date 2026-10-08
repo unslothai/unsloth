@@ -61,6 +61,7 @@ _NAMES = {
     "_loss_kwargs_child",
     "_LOSS_HEAD_NAMES",
     "_loss_head",
+    "_call_forwards_count",
     "_forward_function_node",
     "_N_ITEMS_KEYWORDS",
     "_FUSED_LOSS_CALLEES",
