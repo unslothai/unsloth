@@ -111,13 +111,16 @@ def resolve_fork_release(repo: Optional[str], tag: Optional[str]) -> tuple[str, 
 
 
 def source_artifact(checksums: dict, release_tag: str) -> tuple[str, str]:
-    """(asset name, sha256) of the release's source archive: the tag-named one, else the
-    exact-commit one (``llama.cpp-source-commit-<source_commit>.tar.gz``) the installer accepts."""
+    """(asset name, sha256) of the release's source archive: tag-named, exact-commit
+    (``llama.cpp-source-commit-<source_commit>.tar.gz``) or upstream-tag-named, as the installer accepts."""
     artifacts = checksums.get("artifacts") or {}
     names = [source_asset_name(release_tag)]
     commit = checksums.get("source_commit")
     if isinstance(commit, str) and re.fullmatch(r"[0-9a-fA-F]{40}", commit):
         names.append(f"llama.cpp-source-commit-{commit.lower()}.tar.gz")
+    upstream = checksums.get("upstream_tag")
+    if isinstance(upstream, str) and upstream and upstream != release_tag:
+        names.append(source_asset_name(upstream))  # older releases name it after upstream_tag
     for name in names:
         entry = artifacts.get(name)
         digest = entry.get("sha256") if isinstance(entry, dict) else None

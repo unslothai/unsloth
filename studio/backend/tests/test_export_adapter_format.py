@@ -600,3 +600,27 @@ def test_gguf_converter_offline_without_revision_reuses_newest_fork_tree(monkeyp
     _fake_github(monkeypatch, {})
     backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
     assert calls[-1][0][1] == str(trees[-1] / "convert_lora_to_gguf.py")
+
+
+def test_gguf_converter_reads_legacy_upstream_named_source_archive(monkeypatch, tmp_path):
+    import hashlib
+
+    backend, adapter, calls = _converter_harness(monkeypatch, tmp_path, False)
+    tag = "b9000-mix-abc"
+    tarball = _fork_source_tarball(tag)
+    asset = "llama.cpp-source-b9000.tar.gz"
+    _fake_github(
+        monkeypatch,
+        {
+            "/llama-prebuilt-sha256.json": {
+                "release_tag": tag,
+                "upstream_tag": "b9000",
+                "artifacts": {asset: {"sha256": hashlib.sha256(tarball).hexdigest()}},
+            },
+            f"/{asset}": tarball,
+        },
+    )
+    backend._convert_peft_dir_to_gguf(adapter, "q8_0", None)
+    assert calls[-1][0][1] == str(
+        tmp_path / "home" / f"llama.cpp-source-{tag}" / "convert_lora_to_gguf.py"
+    )
