@@ -510,6 +510,7 @@ export const es = {
     },
   },
   common: {
+    duplicate: "Duplicar",
     cancel: "Cancelar",
     close: "Cerrar",
     delete: "Eliminar",
@@ -3449,6 +3450,11 @@ export const es = {
       readMore: "Leer más",
     },
     training: {
+      duplicateFailed: "No se pudo duplicar la ejecución",
+      duplicateDraftChanged:
+        "La configuración del entrenamiento cambió durante la carga. Vuelve a intentar duplicarla.",
+      duplicateNoModel:
+        "Esta ejecución no tiene una configuración de modelo guardada.",
       startTraining: "Iniciar entrenamiento",
       starting: "Iniciando...",
       loadingModel: "Cargando modelo...",

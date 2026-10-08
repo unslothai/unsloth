@@ -23990,6 +23990,30 @@ class LlamaCppBackend:
             # The canonical mode drives which drafter is downloaded, sized and
             # launched, so resolve it once before either branch can use it.
             _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
+            # #11308: DFlash2 + --split-mode tensor aborts at startup (ggml-org/llama.cpp#27819) and the
+            # route falls back to layer split, so Auto prefers a loadable MTP sidecar on tensor instead.
+            # _estimate_gguf_required_gb mirrors this.
+            _auto_tensor_split = _spec_canon == "auto" and _effective_tensor_parallel(
+                extra_args, tensor_parallel
+            )
+
+            def _auto_dflash_blocked_by_tensor() -> bool:
+                if (
+                    _auto_tensor_split
+                    and mtp_draft_path
+                    and not _extra_args_mtp_draft_path(extra_args, env = _child_spec_env(extra_args))
+                ):
+                    try:
+                        from utils.models.gguf_metadata import read_gguf_nextn_predict_layers
+                        return bool(
+                            _launch_caps(binary).get("mtp_token")
+                            and not (read_gguf_nextn_predict_layers(model_path) or 0) > 0
+                            and _mtp_drafter_loads_standalone(mtp_draft_path)
+                        )
+                    except Exception:
+                        return False
+                return False
+
             _unloadable_mtp_draft_path: Optional[str] = None
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
@@ -24101,6 +24125,7 @@ class LlamaCppBackend:
                     if (
                         not dflash_draft_path
                         and _spec_canon in ("auto", "dflash")
+                        and not _auto_dflash_blocked_by_tensor()
                         and not self._dspark_wins_auto(
                             binary = binary,
                             dspark_draft_path = dspark_draft_path,
@@ -24152,7 +24177,15 @@ class LlamaCppBackend:
                 and not _extra_args_set_spec_type(extra_args)
             ):
                 try:
-                    if _launch_caps(binary).get("supports_dflash"):
+                    if not _launch_caps(binary).get("supports_dflash"):
+                        pass
+                    elif _auto_dflash_blocked_by_tensor():
+                        logger.info(
+                            "Auto: DFlash sidecar available but tensor split is on; "
+                            "keeping tensor split with the MTP drafter "
+                            "(llama.cpp cannot run DFlash2 with --split-mode tensor yet)."
+                        )
+                    else:
                         _spec_canon = "dflash"
                         logger.info("Auto: DFlash sidecar available, using draft-dflash.")
                 except Exception as exc:
@@ -32662,6 +32695,33 @@ class LlamaCppBackend:
             except OSError:
                 return False
         return (self._hf_variant or "").lower() == (intent.hf_variant or "").lower()
+
+    def components_match_intent(self, intent: GgufLoadIntent) -> bool:
+        """``_runtime_matches_intent`` minus capacity and placement: same weights and components."""
+        if intent.force_reload or not self.matches_load_source(intent):
+            return False
+        requested = self.requested_extra_args
+        # Inherited extras would carry the resident's adapters and drafters unnamed by the caller.
+        if intent.extra_args_inherited and requested:
+            return False
+        extras = requested if intent.extra_args_inherited else intent.extra_args
+        if tuple(extras or ()) != tuple(requested or ()):
+            return False
+        if (self._chat_template_override or None) != (intent.chat_template_override or None):
+            return False
+        if not self._is_diffusion and (
+            bool(self._disable_vision) != bool(intent.disable_vision)
+            or self._requested_reasoning_budget
+            != resolve_reasoning_budget(extras, intent.reasoning_budget)
+            or self._requested_reasoning_budget_message
+            != resolve_reasoning_budget_message(extras, intent.reasoning_budget_message)
+        ):
+            return False
+        if _extra_args_set_spec_type(extras):
+            return self._requested_spec_mode is None
+        return (_canonicalize_spec_mode(intent.speculative_type) or "auto") == (
+            self._requested_spec_mode or "auto"
+        )
 
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]

@@ -33,7 +33,7 @@ import {
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
-import { requiredAssetKind } from "./required-assets";
+import { assetLabel } from "./required-assets";
 
 function createOrderedJobKeysSelector(): (state: {
   jobs: Record<string, ManagedDownload>;
@@ -86,12 +86,9 @@ function repoLabel(repoId: string): string {
   return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
 }
 
-/** True for a companion repo a staged media pick needs (text encoder, VAE, configs), false for the
- *  model file itself and for every plain download. */
+/** True for a companion repo a staged media pick needs (text encoder, VAE, configs). */
 function isRequiredAssetJob(job: ManagedDownload): boolean {
-  if (!job.variant?.startsWith("@")) {
-    return false;
-  }
+  if (!job.variant?.startsWith("@")) return false;
   // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
   // can be a curated single .safetensors and companion repos carry .safetensors too, so the
   // extension decides nothing. The old guess stays for jobs persisted before the flag existed,
@@ -102,20 +99,19 @@ function isRequiredAssetJob(job: ManagedDownload): boolean {
   return !isModelFile;
 }
 
-/** Name a companion by what its files are, so a second download after Run does not read as the
- *  model being fetched again. */
-function requiredAssetSuffix(files: readonly string[] | undefined): string {
-  return ` · ${requiredAssetKind(files) ?? "Required assets"}`;
-}
-
 const REQUIRED_ASSET_NOTE =
-  "Required to run this model. Downloaded once and shared by every quant.";
+  "Required to run this model. Downloaded once, shared across compatible variants.";
 
 function variantSuffix(job: ManagedDownload): string {
   if (job.variant?.startsWith("@")) {
-    return isRequiredAssetJob(job)
-      ? requiredAssetSuffix(job.scopedFiles)
-      : " · Model file";
+    return ` · ${
+      isRequiredAssetJob(job)
+        ? assetLabel(
+            { repoId: job.repoId, files: job.scopedFiles, bytes: 0 },
+            "Required assets",
+          )
+        : "Model file"
+    }`;
   }
   return job.variant ? ` · ${job.variant}` : "";
 }
@@ -137,25 +133,6 @@ function StatusLine({ job }: { job: ManagedDownload }) {
   }
   if (job.error) {
     return <span className="text-status-warning">{job.error}</span>;
-  }
-  return null;
-}
-
-/** The drafter file a presented companion transfers, or what a media pick's companion is for. */
-function RowDetail({ job }: { job: ManagedDownload }) {
-  if (job.presentation) {
-    return (
-      <div className="truncate text-ui-10p5 text-muted-foreground">
-        {job.presentation.filename}
-      </div>
-    );
-  }
-  if (isRequiredAssetJob(job)) {
-    return (
-      <div className="text-ui-10p5 text-muted-foreground">
-        {REQUIRED_ASSET_NOTE}
-      </div>
-    );
   }
   return null;
 }
@@ -222,7 +199,15 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           </TooltipContent>
         </Tooltip>
       </div>
-      <RowDetail job={job} />
+      {job.presentation ? (
+        <div className="truncate text-ui-10p5 text-muted-foreground">
+          {job.presentation.filename}
+        </div>
+      ) : isRequiredAssetJob(job) ? (
+        <div className="text-ui-10p5 text-muted-foreground">
+          {REQUIRED_ASSET_NOTE}
+        </div>
+      ) : null}
       {active ? (
         <DownloadProgressBar
           progress={progress}
@@ -333,7 +318,7 @@ export function DownloadManagerPanel({
               <DownloadRow key={jobKey} jobKey={jobKey} />
             ))}
             {queued.map((entry, i) => <li key={`${entry.planId}:${i}`} className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
-              <span className="truncate text-ui-12p5 font-medium">{entry.repoId}<span className="text-muted-foreground">{entry.checkpoint !== false ? " · Model file" : requiredAssetSuffix(entry.files)}</span></span>
+              <span className="truncate text-ui-12p5 font-medium">{entry.repoId}<span className="text-muted-foreground"> · {entry.checkpoint !== false ? "Model file" : assetLabel(entry, "Required assets")}</span></span>
               <span className="text-ui-11 text-muted-foreground">{entry.checkpoint !== false ? "Queued" : `Queued · ${REQUIRED_ASSET_NOTE}`}</span>
             </li>)}
           </ul>

@@ -115,6 +115,15 @@ EMPTY_SEARCH_RESULTS = (
 )
 # ddgs signals an empty sweep by raising rather than returning [].
 _DDGS_EMPTY_SWEEP = "No results found"
+# Not "connection error": DNS failures and refused connections are not resets (#12638).
+_DDGS_RESET_MARKERS = (
+    "connection reset",
+    "h2 connection driver error",
+    "server disconnected",
+    "broken pipe",
+    "forcibly closed",  # Windows WSAECONNRESET (10054)
+)
+_DDGS_HTTP1_RETRY_LOCK = threading.Lock()
 
 # Tier 2 is only asked when tier 1 found nothing. Naming is the only way ddgs reaches an engine, so
 # an engine in neither tier (yandex, bing, the mullvad_* mirrors) is never contacted.
@@ -13978,7 +13987,10 @@ def execute_tool(
             "arguments to save room, not content, so nothing ran. Write the actual content "
             "out in full."
         )
-    effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
+    # By type, not `is _TIMEOUT_UNSET`: see `_request_context_tokens`.
+    effective_timeout = (
+        timeout if timeout is None or isinstance(timeout, (int, float)) else _EXEC_TIMEOUT
+    )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -16259,6 +16271,15 @@ def _loaded_context_tokens() -> int | None:
     return None
 
 
+def _request_context_tokens() -> int | None:
+    """The request's window (an int, or None = unknowable: never probed), else the process probe. By type, not
+    `is _UNSET_CONTEXT_TOKENS`: an `execute_tool` held across a reload stores the old sentinel (#11384)."""
+    scoped = _REQUEST_CONTEXT_TOKENS.get()
+    if scoped is None or isinstance(scoped, int):
+        return scoped
+    return _loaded_context_tokens()
+
+
 def _result_char_budget(cap: int) -> int:
     """`cap`, lowered to what the serving window can actually hold. Shared by fetched pages and by
     terminal/python results, because the failure is the same: a fixed character cap has no
@@ -16267,10 +16288,7 @@ def _result_char_budget(cap: int) -> int:
     that does not fit and the request goes irreducible. Measured live on a 5120-token window:
     7043 and 6684 token requests refused, both on the code tools, whose 16,000-character cap is
     about 4,000 tokens on its own."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return cap
     # Clamped to `cap` on the way out, not only on the way in. The floor keeps a result worth reading when the WINDOW
@@ -16298,10 +16316,7 @@ def _page_char_budget() -> int:
     Above roughly an 11k window this returns the old constant unchanged, so only the models that
     cannot afford a whole page are affected.
     """
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     if not ctx:
         return _MAX_PAGE_CHARS
     return max(_MIN_PAGE_CHARS, min(_MAX_PAGE_CHARS, int(ctx * 4 * _PAGE_CONTEXT_SHARE)))
@@ -16323,10 +16338,7 @@ def _request_result_room() -> int | None:
 
 def _window_context_tokens() -> int | None:
     """The window this request is served by, or None when it cannot be read."""
-    scoped = _REQUEST_CONTEXT_TOKENS.get()
-    # An explicit 0/None means asked, and unknowable (external provider), and must NOT fall through to the probe. Only
-    # an absent value keeps the process-global read.
-    ctx = _loaded_context_tokens() if scoped is _UNSET_CONTEXT_TOKENS else scoped
+    ctx = _request_context_tokens()
     return ctx if ctx else None
 
 
@@ -16997,6 +17009,122 @@ def _install_yahoo_layout_parser(text_engines) -> None:
     text_engines["yahoo"] = _Yahoo
 
 
+def _is_connection_reset(exc) -> bool:
+    return any(marker in f"{type(exc).__name__}: {exc}".lower() for marker in _DDGS_RESET_MARKERS)
+
+
+def _ddgs_http1_replay(args, kwargs, config):
+    import httpx
+
+    verify = config["verify"]
+    if isinstance(verify, str):
+        verify = ssl.create_default_context(cafile = verify)
+    with httpx.Client(
+        headers = config["headers"],
+        cookies = config["cookies"],
+        proxy = config["proxy"],
+        timeout = config["timeout"],
+        verify = verify,
+        follow_redirects = config["follow_redirects"],
+        http1 = True,
+        http2 = False,
+    ) as client:
+        resp = client.request(*args, **kwargs)
+        resp.read()
+        return resp
+
+
+def _install_ddgs_http1_retry() -> None:
+    """Replay a ddgs request once over plain HTTP/1.1 after a connection reset (#12638): primp has
+    no HTTP/1.1-only mode. Successful requests are untouched; wraps each class once; never raises."""
+    try:
+        import inspect
+
+        from ddgs import http_client
+        from ddgs.exceptions import DDGSException
+
+        def _wrapper(response_cls):
+            # ddgs 9.14's primp Response wraps the raw response; 9.8.0's and HttpClient2's take fields.
+            if "status_code" not in inspect.signature(response_cls).parameters:
+                return response_cls
+            return lambda resp: response_cls(
+                status_code = resp.status_code, content = resp.content, text = resp.text
+            )
+
+        targets = [(http_client.HttpClient, _wrapper(http_client.Response), True)]
+        try:
+            from ddgs import http_client2
+        except ImportError:
+            http_client2 = None
+        if http_client2 is not None and hasattr(http_client2, "HttpClient2"):
+            # HttpClient2 does not follow redirects; primp does.
+            targets.append((http_client2.HttpClient2, _wrapper(http_client2.Response), False))
+
+        with _DDGS_HTTP1_RETRY_LOCK:
+            for cls, wrap, follow_redirects in targets:
+                if cls.__dict__.get("_unsloth_http1_retry"):
+                    continue
+                _wrap_ddgs_client(
+                    cls, wrap, follow_redirects, inspect.signature(cls.__init__), DDGSException
+                )
+    except Exception:  # noqa: BLE001 - the retry is a hardening layer, never a reason to fail a search
+        logger.debug("ddgs HTTP/1.1 retry not installed", exc_info = True)
+
+
+def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) -> None:
+    orig_init, orig_request = cls.__init__, cls.request
+
+    @functools.wraps(orig_init)
+    def __init__(self, *args, **kwargs):
+        orig_init(self, *args, **kwargs)
+        try:
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            config = dict(bound.arguments)
+            config.pop("self", None)  # no client -> config -> client cycle
+            self._unsloth_http1_config = config
+        except TypeError:
+            pass
+
+    @functools.wraps(orig_request)
+    def request(self, *args, **kwargs):
+        start = time.monotonic()
+        try:
+            return orig_request(self, *args, **kwargs)
+        except Exception as exc:
+            config = getattr(self, "_unsloth_http1_config", None)
+            if config is None or not _is_connection_reset(exc):
+                raise
+            timeout = config.get("timeout")
+            if timeout:
+                timeout -= time.monotonic() - start
+                if timeout <= 0:
+                    raise
+            client = getattr(self, "client", None)
+            # httpx's jar only: primp 0.15 (ddgs 9.8.0) get_cookies aborts the process on a miss.
+            cookies = getattr(client, "cookies", None)
+            # httpx may lack primp's zstd decoder, so let it pick accept-encoding.
+            session = getattr(client, "headers", None) or {}
+            headers = {k: v for k, v in dict(session).items() if k.lower() != "accept-encoding"}
+            replay = {
+                "headers": headers,
+                "cookies": cookies,
+                "proxy": config.get("proxy"),
+                "timeout": timeout,
+                "verify": config.get("verify", True),
+                "follow_redirects": follow_redirects,
+            }
+            try:
+                return wrap(_ddgs_http1_replay(args, kwargs, replay))
+            except Exception as retry_exc:
+                raise ddgs_exception(
+                    f"{exc}; HTTP/1.1 retry failed: {type(retry_exc).__name__}: {retry_exc}"
+                ) from retry_exc
+
+    cls.__init__, cls.request = __init__, request
+    cls._unsloth_http1_retry = True
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -17142,6 +17270,7 @@ def _web_search(
 
             text_engines = ENGINES.get("text") or {}
             _install_yahoo_layout_parser(text_engines)
+            _install_ddgs_http1_retry()
             engine_tiers = _resolve_engine_tiers(text_engines)
             if not engine_tiers:
                 raise RuntimeError("no approved search engine is available.")
@@ -17321,6 +17450,7 @@ def _image_search(
         from .web_access_policy import scope_search_query
     except Exception as e:
         return _search_failure_message(e, timeout)
+    _install_ddgs_http1_retry()
     if not callable(getattr(DDGS, "images", None)):
         return "Image search is unavailable in this install."
 

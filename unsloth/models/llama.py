@@ -54,6 +54,7 @@ from .loader_utils import (
     requested_device_map,
     resolve_unsloth_device_map,
     resolve_auto_block_swap,
+    sync_load_when_quantizing,
     warn_if_bitsandbytes_quantized_nothing,
 )
 from ..utils.packing import (
@@ -3167,16 +3168,17 @@ class FastLlamaModel:
                         else:
                             setattr(model_config, _cfg_key, _cfg_val)
                 try:
-                    model = AutoModelForSequenceClassification.from_pretrained(
-                        model_name,
-                        config = model_config,
-                        device_map = device_map,
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                        attn_implementation = preferred_attn_impl,
-                        revision = revision,
-                        **kwargs,
-                    )
+                    with sync_load_when_quantizing(kwargs.get("quantization_config"), model_config):
+                        model = AutoModelForSequenceClassification.from_pretrained(
+                            model_name,
+                            config = model_config,
+                            device_map = device_map,
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            attn_implementation = preferred_attn_impl,
+                            revision = revision,
+                            **kwargs,
+                        )
                 finally:
                     disarm_fp8_to_nf4(model_config)
                 # Defensive: ensure the task head is in a floating dtype, guarding against any path leaving it
@@ -3247,30 +3249,34 @@ class FastLlamaModel:
                     if (_modelopt_rewritten or _fp8_to_nf4) and user_config is None:
                         move_config_overrides_onto_config(model_config, kwargs)
                     try:
+                        with sync_load_when_quantizing(
+                            kwargs.get("quantization_config"), model_config
+                        ):
+                            model = AutoModelForCausalLM.from_pretrained(
+                                model_name,
+                                config = model_config,
+                                device_map = device_map,
+                                token = token,
+                                trust_remote_code = trust_remote_code,
+                                attn_implementation = preferred_attn_impl,
+                                revision = revision,
+                                **kwargs,
+                            )
+                    finally:
+                        # The load deep-copied the config; give the caller's object its fp8 block back.
+                        disarm_fp8_to_nf4(model_config)
+                else:
+                    with sync_load_when_quantizing(kwargs.get("quantization_config"), model_config):
                         model = AutoModelForCausalLM.from_pretrained(
                             model_name,
-                            config = model_config,
                             device_map = device_map,
                             token = token,
+                            max_position_embeddings = max_position_embeddings,
                             trust_remote_code = trust_remote_code,
                             attn_implementation = preferred_attn_impl,
                             revision = revision,
                             **kwargs,
                         )
-                    finally:
-                        # The load deep-copied the config; give the caller's object its fp8 block back.
-                        disarm_fp8_to_nf4(model_config)
-                else:
-                    model = AutoModelForCausalLM.from_pretrained(
-                        model_name,
-                        device_map = device_map,
-                        token = token,
-                        max_position_embeddings = max_position_embeddings,
-                        trust_remote_code = trust_remote_code,
-                        attn_implementation = preferred_attn_impl,
-                        revision = revision,
-                        **kwargs,
-                    )
                 warn_if_bitsandbytes_quantized_nothing(
                     model, kwargs.get("quantization_config", None), model_name
                 )

@@ -7786,7 +7786,7 @@ exit 0
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
-            $psi.Arguments = "-c `"$Code`""
+            $psi.Arguments = "-I -c `"$Code`""
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
@@ -8125,7 +8125,7 @@ exit 0
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
             # Dist metadata, not "import torch": a broken DLL would drop the pin (as in install.sh).
-            $psi.Arguments = '-c "import importlib.metadata as m; print(m.version(''torch''))"'
+            $psi.Arguments = '-I -c "import importlib.metadata as m; print(m.version(''torch''))"'
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
@@ -8212,7 +8212,7 @@ exit 0
             if ($SkipTorch) {
                 & $OldPy -c "import sys; print(sys.executable)" 2>$null | Out-Null
             } else {
-                & $OldPy -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
+                & $OldPy -I -c "import torch; A = torch.ones((2,2)); B = A + A" 2>$null | Out-Null
             }
             $legacyOk = ($LASTEXITCODE -eq 0)
         } catch { $legacyOk = $false }
@@ -10902,7 +10902,7 @@ main()
     function New-UnslothTorchOverridesFile {
         param([string]$PythonExe)
         if ($SkipTorch) { return $null }
-        $pins = & $PythonExe -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
+        $pins = & $PythonExe -I -c "from importlib.metadata import version, PackageNotFoundError`nfor _p in ('torch', 'torchvision', 'torchaudio'):`n    try:`n        print(_p + '==' + version(_p))`n    except PackageNotFoundError:`n        pass" 2>$null
         $lines = @($pins | Where-Object { $_ -match '^torch' })
         if ($lines.Count -eq 0 -or $lines[0] -notmatch '^torch==') { return $null }
         # --overrides replaces any UV_OVERRIDE env file, so fold caller files in, minus their trio.

@@ -601,6 +601,7 @@ export const sv = {
     },
   },
   common: {
+    duplicate: "Duplicera",
     cancel: "Avbryt",
     close: "Stäng",
     delete: "Ta bort",
@@ -3615,6 +3616,11 @@ export const sv = {
       readMore: "Läs mer",
     },
     training: {
+      duplicateFailed: "Det gick inte att duplicera körningen",
+      duplicateDraftChanged:
+        "Träningsinställningarna ändrades under inläsningen. Försök duplicera igen.",
+      duplicateNoModel:
+        "Den här körningen har ingen sparad modellkonfiguration.",
       startTraining: "Starta träning",
       starting: "Startar ...",
       loadingModel: "Läser in modell ...",

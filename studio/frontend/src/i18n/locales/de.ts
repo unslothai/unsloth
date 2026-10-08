@@ -511,6 +511,7 @@ export const de = {
     },
   },
   common: {
+    duplicate: "Duplizieren",
     cancel: "Abbrechen",
     close: "Schließen",
     delete: "Löschen",
@@ -3454,6 +3455,11 @@ export const de = {
       readMore: "Mehr erfahren",
     },
     training: {
+      duplicateFailed: "Lauf konnte nicht dupliziert werden",
+      duplicateDraftChanged:
+        "Die Trainingseinstellungen haben sich beim Laden geändert. Duplizieren Sie den Lauf erneut.",
+      duplicateNoModel:
+        "Für diesen Lauf ist keine Modellkonfiguration gespeichert.",
       startTraining: "Training starten",
       starting: "Wird gestartet...",
       loadingModel: "Modell wird geladen...",

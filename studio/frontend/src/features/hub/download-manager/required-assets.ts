@@ -32,11 +32,12 @@ export function formatDownloadBytes(bytes: number): string {
   if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
   return `${Math.ceil(bytes / 1e3)} KB`;
 }
-/** What a companion's files are, from their weights, or null when none can be named. */
-export function requiredAssetKind(
-  files: readonly string[] | undefined,
-): string | null {
-  const weights = (files ?? []).filter((f) =>
+export function assetLabel(
+  entry: PlannedDownloadEntry,
+  fallback: string = entry.repoId.split("/").pop() || "Required files",
+): string {
+  const files = entry.files ?? [];
+  const weights = files.filter((f) =>
     /\.(safetensors|gguf|bin|pt|pth|ckpt)$/i.test(f),
   );
   const encoder = weights.some((f) => /text_encoder|clip|t5|qwen.*vl/i.test(f));
@@ -44,13 +45,7 @@ export function requiredAssetKind(
   if (encoder && decoder) return "Encoder & decoder";
   if (encoder) return "Text encoder";
   if (decoder) return "Decoder & configuration";
-  return null;
-}
-export function assetLabel(entry: PlannedDownloadEntry): string {
-  return (
-    requiredAssetKind(entry.files) ??
-    (entry.repoId.split("/").pop() || "Required files")
-  );
+  return fallback;
 }
 
 /** Preserve dependency order while presenting and transferring checkpoints first. */
