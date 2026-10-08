@@ -4174,6 +4174,7 @@ class FastBaseModel:
     ):
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
         prefetch_depth = prefetch_depth_arg(kwargs)
+        reject_alora(model, kwargs.get("alora_invocation_tokens"))
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
             print("Unsloth: Full finetuning is enabled, so .get_peft_model has no effect")
             # Full finetuning still compiles, so a stray pre-train forward can poison the cache; install the detector here too (idempotent).
@@ -4588,6 +4589,7 @@ class FastBaseModel:
         tokenizer = None,
         float32_mixed_precision = None,
     ):
+        reject_alora(model)
         full_finetuning = os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1"
 
         if type(float32_mixed_precision) is bool:
