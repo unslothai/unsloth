@@ -132,7 +132,10 @@ _TOOL_TRUNCATED = (
     "output limit."
 )
 
-_TOOL_CHOICE_NONE = "Unsloth did not execute this tool call because tool_choice was set to 'none'."
+_TOOL_CHOICE_NONE = (
+    "Unsloth did not execute this tool call because tool calls are turned off for this request "
+    '(tool_choice is "none").'
+)
 
 # Card text for a call the controller skipped. The client already painted a card from the provider's own tool_calls
 # delta, so it needs a short result; the long model-facing nudge stays in the conversation.
@@ -1547,41 +1550,30 @@ async def stream_with_studio_tools(
                     continue
                 turn.text.append(span)
                 yield _sse({"choices": [{"index": 0, "delta": {"content": span}}]})
+        # Truncation first: half-written arguments are never shown, whatever tool_choice said.
+        unrun_reason = None
         if truncated:
-            # The other half of the same problem. A call the provider streamed as a tool_calls delta was relayed as it
-            # arrived, so the client already has a card for it, and refusing to run it leaves that card open for the
-            # rest of the response. Close it the way every other unrun call is closed. Structured only: a healed call
-            # was never streamed, and the span released just above is what tells the user about that one. Through
+            unrun_reason = _TOOL_TRUNCATED
+        elif tool_choice == "none":
+            unrun_reason = _TOOL_CHOICE_NONE
+        if unrun_reason is not None:
+            # A call the provider streamed as a tool_calls delta was relayed as it arrived, so the client already has
+            # a card for it, and refusing to run it leaves that card open for the rest of the response. Close it the
+            # way every other unrun call is closed. Structured only: a healed call was never streamed, the span
+            # released just above tells the user about a truncated one, and "none" promotes none at all. Through
             # `calls`, which never executes anything: it is what mints the card id for a call the provider gave none,
             # and the client drew its card under that same spelling. Reading the slots directly left every id-less
             # call out, so the card the deltas painted spun for the rest of the response. Calls it drops -- nameless,
             # or a fork whose object never closed -- have no card of ours to close either.
             for raw_call in turn.calls(used_call_ids, painted_card_ids):
-                truncated_id = (
-                    raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
-                )
+                unrun_id = raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
                 name = raw_call["function"]["name"]
                 for card_line in _unrun_call_card(
                     tool_name = name,
-                    tool_call_id = truncated_id,
-                    # The arguments are cut off mid-write, so there is nothing well formed to show; the result says
-                    # what happened.
-                    arguments = {},
-                    result = _TOOL_TRUNCATED,
-                    provenance = _unrun_provenance(name, round_id + 1),
-                ):
-                    yield card_line
-        if tool_choice == "none" and not truncated:
-            # A provider may ignore tool_choice; its structured delta has already reached the client.
-            # Close the announced card without executing the call or adding a tool result to model history.
-            for raw_call in turn.calls(used_call_ids, painted_card_ids):
-                refused_id = raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
-                name = raw_call["function"]["name"]
-                for card_line in _unrun_call_card(
-                    tool_name = name,
-                    tool_call_id = refused_id,
-                    arguments = raw_call.get("arguments"),
-                    result = _TOOL_CHOICE_NONE,
+                    tool_call_id = unrun_id,
+                    # Cut off mid-write, there is nothing well formed to show; the result says what happened.
+                    arguments = {} if truncated else raw_call.get("arguments"),
+                    result = unrun_reason,
                     provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
@@ -1589,11 +1581,7 @@ async def stream_with_studio_tools(
         # one. Withdrawing the catalog on the way out is not enough on its own: Deep Research sets "none" exactly so
         # the scraped web text in its prompts cannot reach python or terminal, so a naive or compromised endpoint
         # echoing a call back must not be able to execute it here.
-        calls = (
-            []
-            if (truncated or tool_choice == "none")
-            else turn.calls(used_call_ids, painted_card_ids)
-        )
+        calls = [] if unrun_reason is not None else turn.calls(used_call_ids, painted_card_ids)
         if not calls:
             # The badge clears between iterations, and this turn is over too. Without it a turn whose only call was
             # refused never reaches the empty status below, so the client keeps the card it drew for that call open
