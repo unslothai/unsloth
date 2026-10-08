@@ -473,6 +473,8 @@ def test_a_wildcard_listener_with_a_full_backlog_is_not_a_free_port():
     # A listener that has stopped accepting still owns the port. Windows drops the SYN instead of
     # refusing it, so the probe's connect times out the same way it does on a free port; the listener
     # table is what tells the two apart.
+    # The table comes from psutil, which studio.txt alone does not install.
+    pytest.importorskip("psutil")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("0.0.0.0", 0))
         listener.listen(0)
