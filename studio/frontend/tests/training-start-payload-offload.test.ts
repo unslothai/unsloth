@@ -85,7 +85,6 @@ test("offload needs a CUDA or ROCm card that is not a unified-memory APU", () =>
   // A ROCm APU alone (Strix Halo) has no separate pool; beside a discrete card it does.
   assert.equal(offloadHardwareSupported(sys("rocm", [true])), false);
   assert.equal(offloadHardwareSupported(sys("rocm", [true, false])), true);
-  // Unknown until /api/system answers.
   assert.equal(offloadHardwareSupported(null), true);
   assert.equal(offloadHardwareSupported({ ...sys("cpu", []), status: "pending" }), true);
   // A hidden setting is sent off too, so a saved Count cannot fail the run.

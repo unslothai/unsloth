@@ -82,7 +82,7 @@ export function offloadHardwareSupported(
   return devices.length === 0 || devices.some((device) => device.unified_memory !== true);
 }
 
-/** The offload fields, sent off whenever `offloadSupported` is false (the controls are hidden then). */
+/** The offload fields, sent off wherever the controls are hidden. */
 export function offloadPayload(
   config: Pick<
     TrainingConfigState,
