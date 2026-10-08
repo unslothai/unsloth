@@ -216,3 +216,9 @@ def test_a_zero_vram_loader_changing_its_own_runtime_still_replaces(monkeypatch,
     monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
     with pytest.raises(ReachedReplacement):
         load(accounts["bob"], n_parallel = 4)
+
+
+def test_a_retired_loader_is_not_seeded_back(strict, accounts):
+    access.retire_resident_shares(accounts["bob"].account_id)
+    assert load(accounts["alice"]).status == "already_loaded"
+    assert access._resident_sharers["chat"] == {accounts["alice"].account_id}
