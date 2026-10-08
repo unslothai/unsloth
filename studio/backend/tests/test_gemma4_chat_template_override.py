@@ -332,6 +332,24 @@ def test_closed_tool_turn_reopens_the_model_turn(tpl):
     )
 
 
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_consecutive_assistant_content_keeps_its_separator(tpl):
+    messages = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "first"},
+        {"role": "assistant", "content": "second"},
+    ]
+    assert "first\nsecond<turn|>" in _render_with(tpl, messages)
+
+
+@pytest.mark.parametrize("tpl", [BUNDLED, EDGE])
+def test_completed_tool_turn_continuation_keeps_its_separator(tpl):
+    messages = _convo_with_prior_tool_reasoning()[:-1]
+    messages[1]["content"] = "Let me check."
+    messages.append({"role": "assistant", "content": "The answer is 42."})
+    assert "Let me check.\nThe answer is 42.<turn|>" in _render_with(tpl, messages)
+
+
 def test_enable_thinking_gates_think_token():
     assert "<|think|>" in _render([{"role": "user", "content": "hi"}], enable_thinking = True)
     assert "<|think|>" not in _render([{"role": "user", "content": "hi"}], enable_thinking = False)

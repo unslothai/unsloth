@@ -369,6 +369,7 @@
         {%- if ns.prev_message_type == 'tool_call' and not ns_tr_out.flag -%}
             {{- '<|tool_response>' -}}
         {%- elif continues_into_next -%}
+            {{- '\n' -}}
         {%- elif not (ns_tr_out.flag and not has_content and not next_nt.found) -%}
             {{- '<turn|>\n' -}}
             {%- set ns.prev_message_type = None -%}
