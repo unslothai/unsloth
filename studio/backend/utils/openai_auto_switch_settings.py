@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import threading
@@ -442,12 +443,6 @@ def normalize_model_override(
     if payload.get("engine") in ("vllm", "sglang"):
         entry["engine"] = payload["engine"]
 
-    if payload.get("llama_cpp_config") is not None:
-        from core.inference.llama_custom_config import parse_config_source
-
-        # A broken custom configuration must not silently become a managed load.
-        entry["llama_cpp_config"] = parse_config_source(payload["llama_cpp_config"]).to_wire()
-
     extra_args = payload.get("llama_extra_args")
     if isinstance(extra_args, (list, tuple)) and extra_args:
         entry["llama_extra_args"] = [str(arg) for arg in extra_args]
@@ -529,6 +524,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
 
+    if _coerce_bool(payload.get("mlx_int8_prefill")):
+        entry["mlx_int8_prefill"] = True
+
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
         entry["disable_vision"] = True
@@ -570,7 +568,34 @@ def normalize_model_override(
             if index_kind and index_kind != LEGACY_GPU_INDEX_KIND:
                 entry["gpu_index_kind"] = index_kind
 
+    tensor_split = normalize_tensor_split(payload.get("tensor_split"), gpu_ids)
+    if tensor_split is not None and entry.get("gpu_ids") == list(gpu_ids):
+        entry["tensor_split"] = tensor_split
+
     return entry
+
+
+def normalize_tensor_split(value: Any, gpu_ids: Any) -> Optional[list[float]]:
+    """Keep a finite positive ratio only with its unmodified ordered GPU IDs."""
+    if not isinstance(gpu_ids, (list, tuple)) or len(gpu_ids) < 2:
+        return None
+    if any(
+        isinstance(gid, bool) or not isinstance(gid, int) or not 0 <= gid <= MAX_GPU_ID
+        for gid in gpu_ids
+    ):
+        return None
+    if len(set(gpu_ids)) != len(gpu_ids):
+        return None
+    if not isinstance(value, (list, tuple)) or len(value) != len(gpu_ids):
+        return None
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 for v in value):
+        return None
+    try:
+        total = sum(value)
+        valid = all(math.isfinite(v) for v in value) and math.isfinite(total) and total > 0
+    except OverflowError:
+        return None
+    return list(value) if valid else None
 
 
 def stored_gpu_index_kind(override: Mapping[str, Any]) -> str:
@@ -608,16 +633,6 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
 
-    if is_gguf and override.get("llama_cpp_config") is not None:
-        from core.inference.llama_custom_config import parse_config_source
-
-        custom = parse_config_source(override["llama_cpp_config"])
-        kwargs["llama_cpp_config"] = custom.to_wire()
-        if custom.mode == "custom":
-            if override.get("disable_vision") is not None:
-                kwargs["disable_vision"] = override["disable_vision"]
-            return kwargs
-
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:
         kwargs["max_seq_length"] = max_seq_length
@@ -644,6 +659,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("tensor_parallel", "tensor_parallel"),
         ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
+        ("mlx_int8_prefill", "mlx_int8_prefill"),
     ):
         if override.get(source) is not None:
             kwargs[target] = override[source]
@@ -668,6 +684,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["n_cpu_moe"] = override["n_cpu_moe"]
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
+            tensor_split = normalize_tensor_split(override.get("tensor_split"), override["gpu_ids"])
+            if tensor_split is not None:
+                kwargs["tensor_split"] = tensor_split
 
     if kwargs.get("llama_extra_args"):
         # One entry can hold a pass-through flag AND the field it shadows, and llama.cpp's last-wins parse would hand the load the stale flag, so the /load stripper (_resolve_inherited_extra_args) is imported, not mirrored. The settings page has no control for flags, so a save carries the stored ones over (routes/settings.py); the allow-list this module stays out of is validate_extra_args.
@@ -951,7 +970,7 @@ def set_model_override(
         fill_absent_fields = fill_absent_fields,
         coupled_fields = (
             # The pin and its index space are one value: filling the qualifier onto ids this browser did not write relabels them.
-            ("gpu_ids", "gpu_index_kind"),
+            ("gpu_ids", "gpu_index_kind", "tensor_split"),
             ("mlx_kv_quant", "mlx_kv_bits"),
         ),
     )

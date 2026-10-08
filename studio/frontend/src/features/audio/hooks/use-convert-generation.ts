@@ -39,7 +39,10 @@ import {
 } from "../tools/select";
 import type { AudioHostState } from "./audio-host-state";
 import type { AudioSourceStatus } from "./audio-source-state";
-import { REFERENCE_EXPIRED_MESSAGE } from "./audio-source-state";
+import {
+  CONVERT_EXPIRED_MESSAGE,
+  REFERENCE_EXPIRED_MESSAGE,
+} from "./audio-source-state";
 import type { AudioGallery } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
 import { showRunResult } from "./use-clone-generation";
@@ -404,6 +407,8 @@ export function useConvertGeneration({
         controller.signal,
       );
       updateGenerationPhase("finishing");
+      // The side is remembered across runs; a new result is what the user asked for.
+      useAudioConvertStore.getState().setCompareSide("converted");
       await showRunResult({
         response,
         text: `${sourceSelection.name} → ${
@@ -420,14 +425,25 @@ export function useConvertGeneration({
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
         // Only the expired-upload 404: a deleted clip or voice says otherwise and leaves uploads alone.
+        const expiredRole =
+          error instanceof AudioApiError && error.status === 404
+            ? error.message === CONVERT_EXPIRED_MESSAGE.source
+              ? "source"
+              : error.message === CONVERT_EXPIRED_MESSAGE.target
+                ? "target"
+                : error.message === REFERENCE_EXPIRED_MESSAGE
+                  ? "both"
+                  : null
+            : null;
         const gone =
-          error instanceof AudioApiError &&
-          error.status === 404 &&
-          error.message === REFERENCE_EXPIRED_MESSAGE
-            ? [sourceSelection, targetSelection].filter(
+          expiredRole === null
+            ? []
+            : [
+                ...(expiredRole !== "target" ? [sourceSelection] : []),
+                ...(expiredRole !== "source" ? [targetSelection] : []),
+              ].filter(
                 (item): item is AudioSourceSelection => item?.kind === "input",
-              )
-            : [];
+              );
         if (gone.length > 0) {
           setExpiredIds((previous) => {
             const next = new Set(previous);

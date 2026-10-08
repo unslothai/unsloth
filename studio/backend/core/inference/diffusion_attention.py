@@ -31,6 +31,7 @@ Best-effort: an unavailable backend falls back to the diffusers default. torch/d
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import threading
@@ -247,13 +248,19 @@ def warn_if_sdpa_math_only(target: Any, logger: Any = None) -> bool:
 
 
 def select_attention_backend(
-    target: Any, requested: Optional[str], *, speed_active: bool
+    target: Any,
+    requested: Optional[str],
+    *,
+    speed_active: bool,
+    family: Any = None,
+    speed_unset: bool = False,
 ) -> Optional[str]:
     """The dispatcher backend name to apply, or None to leave the diffusers default.
 
     An explicit alias is honored (apply falls back if its kernel is unavailable). ``auto``
     upgrades to cuDNN on NVIDIA CUDA only when a speed profile is active (so ``off`` stays
-    bit-identical); elsewhere returns None (native)."""
+    bit-identical), and to verified ROCm flash for ``ROCM_AUTO_FLASH_FAMILIES`` on gfx11 unless speed is
+    explicitly ``off``; elsewhere returns None (native)."""
     alias = normalize_attention_backend(requested)
     if alias != ATTN_AUTO:
         backend = _ALIASES[alias]
@@ -281,7 +288,20 @@ def select_attention_backend(
         return "_native_cudnn"
     if speed_active and ROCM_AUTO_FLASH and _is_cuda_rocm(target) and _rocm_flash_attn_runs(target):
         return "flash"
+    if (speed_active or speed_unset) and _rocm_auto_flash(target, family):
+        return "flash"
     return None
+
+
+def auto_attention_reason(engaged: Optional[str]) -> str:
+    """Status reason for an ``auto`` pick that engaged ``engaged`` (None = native)."""
+    if not engaged:
+        return "diffusers default"
+    if "cudnn" in engaged:
+        return "cuDNN fused attention upgrade"
+    if engaged == "flash":
+        return "verified ROCm flash attention"
+    return f"{engaged} attention upgrade"
 
 
 def _is_cuda_rocm(target: Any) -> bool:
@@ -290,6 +310,51 @@ def _is_cuda_rocm(target: Any) -> bool:
 
 # ``auto`` -> verified ROCm flash under a speed profile. Off: gfx1151 gains over AOTriton SDPA were too small/narrow.
 ROCM_AUTO_FLASH = False
+# Also with speed unset (the UI default). gfx1151 klein 1024^2: 7.37-7.40 s vs SDPA 8.04-8.09 s, LPIPS 0.008.
+# FLUX.1 measured LPIPS 0.048 vs SDPA (over the 0.02 bar): stays native.
+ROCM_AUTO_FLASH_FAMILIES = frozenset({"flux.2-klein"})
+ROCM_AUTO_FLASH_ARCHES = ("gfx11",)
+
+
+def _rocm_gfx_arch(target: Any) -> str:
+    try:
+        import torch
+        from utils.hardware.hardware import _props_gfx_arch
+
+        device = torch.device(
+            _indexed_cuda_device(
+                str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+            )
+        )
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        return _props_gfx_arch(torch.cuda.get_device_properties(index))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _flash_attn_installed() -> bool:
+    """Without importing it, so an ``auto`` load on a card without flash_attn logs nothing."""
+    import sys
+
+    if "flash_attn" in sys.modules:
+        return sys.modules["flash_attn"] is not None
+    try:
+        import importlib.util
+        return importlib.util.find_spec("flash_attn") is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _rocm_auto_flash(target: Any, family: Any) -> bool:
+    if not _is_cuda_rocm(target):
+        return False
+    name = family if isinstance(family, str) else getattr(family, "name", None)
+    if name not in ROCM_AUTO_FLASH_FAMILIES:
+        return False
+    if not _rocm_gfx_arch(target).startswith(ROCM_AUTO_FLASH_ARCHES):
+        return False
+    return _flash_attn_installed() and _rocm_flash_attn_runs(target)
+
 
 # Max abs error of the probe's flash_attn output against an fp32 reference (bf16 eps is ~4e-3).
 _ROCM_FLASH_PROBE_TOL = 2e-2
@@ -573,7 +638,7 @@ _SAGE_OP_LOCK = threading.Lock()
 
 
 def _sage_custom_op(sage_fn: Any, op_name: str = _SAGE_OP_NAME) -> Optional[Any]:
-    """An opaque ``torch.library`` op around diffusers' sage function (NHD), or None."""
+    """An opaque ``torch.library`` op around a diffusers attention function (NHD), or None. Used for Sage and FA4."""
     with _SAGE_OP_LOCK:
         slot = _SAGE_OPS.setdefault(op_name, {})
         if "op" in slot:
@@ -712,9 +777,16 @@ def _note_fa4_reroute(reason: str) -> None:
     _note_reroute("FlashAttention 4", reason, _FA4_ROUTED, _FA4_ROUTED_LOGGED)
 
 
+# The hub FA4 launch (CuTe DSL, tvm-ffi) breaks a fullgraph compile 5 times per Flux block: keep it opaque, like Sage.
+_FA4_OP_NAME = "unsloth_studio::flash_4_hub_attention_nhd"
+
+
 def _install_fa4_dispatch_guard() -> bool:
     return _install_dispatch_guard(
-        "flash_4_hub", lambda *a: _fa4_reroute_reason(*a), _note_fa4_reroute
+        "flash_4_hub",
+        lambda *a: _fa4_reroute_reason(*a),
+        _note_fa4_reroute,
+        lambda fn: _sage_custom_op(fn, _FA4_OP_NAME),
     )
 
 
@@ -1881,6 +1953,15 @@ def _set_hunyuan_null_mask(module: Any, enabled: bool) -> None:
             setattr(attn, _NULL_ATTN_FLAG, enabled)
 
 
+def _hunyuan_null_mask_state(module: Any) -> bool:
+    """The null-mask flag this call's pre-hook set (read by the graph layer as part of its key)."""
+    for blk in getattr(module, "transformer_blocks", []):
+        attn = getattr(blk, "attn", None)
+        if attn is not None:
+            return bool(getattr(attn, _NULL_ATTN_FLAG, False))
+    return False
+
+
 def _null_mask_processor_cls():
     """Build (once, lazily) a HunyuanVideo15AttnProcessor2_0 subclass whose ``__call__`` runs
     attn_mask=None when the DiT is flagged (padding already removed by the pre-hook); otherwise it
@@ -2003,6 +2084,61 @@ def _trim_stream(states, mask):
     return states, mask, all_valid
 
 
+_TRIM_MEMO_ATTR = "_unsloth_trim_memo"
+
+
+def _trim_plan(module: Any, kwargs: dict) -> dict:
+    """The trim decisions for this call's image / mask tensors: the host reads (``_trim_stream``'s) made once per
+    set of inputs. A pipeline hands the SAME prompt tensors to every step, so a step after the first reuses the plan
+    and makes no host wait (a CUDA-graph replay of the step then runs without one). Keyed on the tensors themselves,
+    held here, and their version counters, so new or edited inputs plan afresh."""
+    import torch
+
+    names = ("image_embeds", "encoder_attention_mask", "encoder_attention_mask_2")
+    srcs = tuple(kwargs.get(n) for n in names)
+    # An inference tensor (renders run under torch.inference_mode) has no version counter and reading one raises;
+    # it is keyed on identity alone. It cannot be written outside inference mode, and the pipeline hands every step
+    # the encoder's own outputs, which nothing edits in place.
+    versions = tuple(
+        ("inference" if t.is_inference() else t._version) if torch.is_tensor(t) else None
+        for t in srcs
+    )
+    memo = module.__dict__.setdefault(_TRIM_MEMO_ATTR, [])
+    for held, held_versions, plan in memo:
+        if held_versions == versions and all(a is b for a, b in zip(held, srcs)):
+            return plan
+    image = srcs[0]
+    plan = {
+        "t2v": bool(image is not None and image.numel() > 0 and bool(torch.all(image == 0).item()))
+    }
+    for name, mask in zip(names[1:], srcs[1:]):
+        if mask is None or not torch.is_tensor(mask) or mask.dim() != 2:
+            plan[name] = (None, True)
+            continue
+        mb = mask.bool()
+        keep = mb.any(dim = 0)  # column valid for at least one batch element
+        index = None
+        if not bool(keep.all()):
+            index = keep.nonzero().squeeze(1)
+            mb = mb.index_select(1, index)
+        # vacuously True for a 0-length stream, fine for an unused secondary stream (byt5 in t2v)
+        plan[name] = (index, bool(mb.all().item()))
+    memo.insert(0, (srcs, versions, plan))
+    del memo[4:]  # the CFG branches of one render
+    return plan
+
+
+def _apply_trim(states: Any, mask: Any, decided: tuple) -> tuple:
+    """``_trim_stream`` with its decisions already made: the same columns, gathered on the device."""
+    if states is None or mask is None or mask.dim() != 2:
+        return states, mask, True
+    index, all_valid = decided
+    if index is not None:
+        states = states.index_select(1, index)
+        mask = mask.index_select(1, index)
+    return states, mask, all_valid
+
+
 def _hunyuan_trim_pre_hook(module, args, kwargs):
     """Eager forward pre-hook: strip padded text tokens so the joint attention runs fused.
 
@@ -2032,8 +2168,9 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
     try:
         null_ok = True
 
+        plan = _trim_plan(module, kwargs)
         image = kwargs.get("image_embeds")
-        if image is not None and image.numel() > 0 and bool(torch.all(image == 0).item()):
+        if plan["t2v"]:
             # All-zero image == "no image" (t2v). Emptying the token axis removes the 729 padded image tokens; is_t2v
             # stays True in forward (all() of empty is vacuously True).
             kwargs["image_embeds"] = image[:, :0]
@@ -2048,7 +2185,7 @@ def _hunyuan_trim_pre_hook(module, args, kwargs):
             if skey not in kwargs:
                 null_ok = null_ok and not required
                 continue
-            states, mask, all_valid = _trim_stream(kwargs.get(skey), kwargs.get(mkey))
+            states, mask, all_valid = _apply_trim(kwargs.get(skey), kwargs.get(mkey), plan[mkey])
             kwargs[skey] = states
             kwargs[mkey] = mask
             null_ok = null_ok and all_valid
@@ -2139,6 +2276,8 @@ def install_hunyuan_attention_trim(
             continue
         # installation and every idle period start in the conservative state
         _set_hunyuan_null_mask(dit, False)
+        # The flag picks the attention branch inside the forward, so a CUDA graph keys on it (diffusion_cuda_graph).
+        dit._unsloth_graph_key_extra = functools.partial(_hunyuan_null_mask_state, dit)
         if getattr(dit, "_unsloth_trim_hook", None) is None:
             pre_handle = None
             try:

@@ -35,6 +35,8 @@ import {
   type SeparateGeneration,
 } from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
+import { STEM_SEND_TARGETS } from "../send-targets";
+import { saveAudio } from "../save-audio";
 import {
   SEPARATE_MAX_SECONDS,
   separatePresentation,
@@ -271,34 +273,16 @@ export function SeparateFooter({
   );
 }
 
-function saveBlob(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+function downloadGroup(group: SeparationGroup) {
+  // Each stem is fetched when the zip reaches it, so a long song never holds every stem at once.
+  const files = group.stems.map((clip) => ({
+    name: stemFileName(group.title, stemLabel(clip.role ?? "")),
+    blob: () => fetchAudioBlob(clip.url),
+  }));
+  return saveAudio(stemZipName(group.title), null, () => zipStems(files));
 }
 
-async function downloadGroup(group: SeparationGroup) {
-  try {
-    // Each stem is fetched when the zip reaches it, so a long song never holds every stem at once.
-    const files = group.stems.map((clip) => ({
-      name: stemFileName(group.title, stemLabel(clip.role ?? "")),
-      blob: () => fetchAudioBlob(clip.url),
-    }));
-    saveBlob(await zipStems(files), stemZipName(group.title));
-  } catch {
-    toast.error("Could not download the stems.");
-  }
-}
-
-const SEND_TARGETS: readonly SendTarget[] = [
-  { id: "transcribe", workflow: "transcribe", label: "Transcribe" },
-  { id: "clone", workflow: "clone", label: "Clone (as reference)" },
-];
-
-/** Keyed by group so each one starts from its own clock. */
+/** keyed by group so each mixer starts from its own clock. */
 function SelectedSeparation({
   group,
   autoFocus,
@@ -343,18 +327,16 @@ function SelectedSeparation({
         stems={stems}
         autoFocus={autoFocus}
         active={active}
-        sendTargets={SEND_TARGETS}
+        sendTargets={STEM_SEND_TARGETS}
         onDownloadStem={(clipId) => {
           const clip = group.stems.find((item) => item.id === clipId);
           const src = sources.srcById[clipId];
           if (!clip || !src) return;
-          const anchor = document.createElement("a");
-          anchor.href = src;
-          anchor.download = stemFileName(
-            group.title,
-            stemLabel(clip.role ?? ""),
+          void saveAudio(
+            stemFileName(group.title, stemLabel(clip.role ?? "")),
+            src,
+            () => fetchAudioBlob(clip.url),
           );
-          anchor.click();
         }}
         onDownloadAll={() => void downloadGroup(group)}
         onSend={(target, clipId) => {
@@ -392,6 +374,7 @@ export function SeparateOutput({
   fallbackClip,
   handleDownloadFallbackClip,
   handleDeleteClip,
+  handleDeleteGroup,
   handleArchiveClip,
   handleTogglePin,
   handleClearGallery,
@@ -410,6 +393,7 @@ export function SeparateOutput({
   | "fallbackClip"
   | "handleDownloadFallbackClip"
   | "handleDeleteClip"
+  | "handleDeleteGroup"
   | "handleArchiveClip"
   | "handleTogglePin"
   | "hasMore"
@@ -478,7 +462,16 @@ export function SeparateOutput({
     if (last) await handleArchiveClip(last.id);
   };
   const deleteGroup = async (group: SeparationGroup) => {
-    for (const clip of group.stems) await handleDeleteClip(clip.id);
+    // A clip saved without a run is a group of one.
+    const groupId = group.stems[0]?.group_id;
+    if (!groupId) {
+      for (const clip of group.stems) await handleDeleteClip(clip.id);
+      return;
+    }
+    await handleDeleteGroup(
+      groupId,
+      group.stems.map((clip) => clip.id),
+    );
   };
 
   return (

@@ -204,12 +204,12 @@ const ROWS: Row[] = [
     mlxRequest: 32768,
     transformersRequest: 32768,
     note:
-      "Not a future record: STORAGE_SCHEMA_VERSION is 8, so v4 is a v4-client record " +
+      "Not a future record: STORAGE_SCHEMA_VERSION is 9, so v4 is a v4-client record " +
       "and reads normally.",
   },
   {
-    name: "version 9 (genuinely future)",
-    raw: { version: 9, customContextLength: 32768 },
+    name: "version 11 (genuinely future)",
+    raw: { version: 11, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -330,7 +330,7 @@ test("a patched pin round-trips through storage on both backends", () => {
 test("both pin shapes are stamped version 1, so neither is distinguishable by version", () => {
   assert.equal(stampedVersion({ customContextLength: 32768 }), 1);
   assert.equal(stampedVersion({ maxSeqLength: 32768 }), 1);
-  // The current client's forwards guard is `version > 8`, and v1 invites any client
+  // The current client's forwards guard is `version > 10`, and v1 invites any client
   // back to v1 to rewrite the record.
   assert.equal(
     stage({ version: 1, customContextLength: 32768 }).remembered,
@@ -350,6 +350,14 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
   );
   assert.equal(
     stage({ version: 9, customContextLength: 32768 }).remembered,
+    true,
+  );
+  assert.equal(
+    stage({ version: 10, customContextLength: 32768 }).remembered,
+    true,
+  );
+  assert.equal(
+    stage({ version: 11, customContextLength: 32768 }).remembered,
     false,
   );
 });
@@ -360,6 +368,15 @@ test("a stored mlxKvQuant stamps a version older builds refuse", () => {
   assert.equal(stampedVersion({ mlxKvQuant: "4" }), 7);
   assert.equal(stampedVersion({ loadMode: "mmap" }), 5);
   assert.equal(stampedVersion({ mlxKvQuant: "tq-4", loadMode: "mmap" }), 7);
+});
+
+test("int8 prefill defaults off, and only an enabled one stamps v9", () => {
+  assert.equal(normalizePerModelConfig({ version: 8 }).mlxInt8Prefill, false);
+  assert.equal(normalizePerModelConfig({ mlxInt8Prefill: "true" }).mlxInt8Prefill, false);
+  assert.equal(isDefaultConfig({ ...DEFAULT_PER_MODEL_CONFIG, mlxInt8Prefill: true }), false);
+  assert.equal(stampedVersion({ mlxInt8Prefill: false, mlxKvQuant: "4" }), 7);
+  assert.equal(stampedVersion({ mlxInt8Prefill: true }), 9);
+  assert.equal(stage({ mlxInt8Prefill: true }).config.mlxInt8Prefill, true);
 });
 
 

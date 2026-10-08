@@ -1088,7 +1088,7 @@ def test_local_mtp_warning_uses_backend_source_metadata():
     # Both GGUF responses report it: the status poll and the already_loaded
     # dedup reply. Either one re-deriving it reintroduces the flip.
     assert route.count("is_local_model = _loaded_is_local_model(") >= 2
-    assert "backend.active_model_name and is_local_path(backend.active_model_name)" in route
+    assert "is_local_model = bool(_active and is_local_path(_active))" in route
 
 
 def test_fixed_layer_gguf_pins_displayed_context():
@@ -1569,10 +1569,7 @@ def test_forget_settings_is_not_locked_by_unloadable_extra_args():
     """Forget only deletes, so invalid saved llama args must not lock it: the args gates
     apply to a save only."""
     gate = " ".join(_save_button_gate().split())
-    assert re.search(
-        r"\(remember && \((?:\([^()]*\) \|\| )?\(!extraArgsLoadable && !sharedExtraArgsCleared\) \|\|",
-        gate,
-    ), gate
+    assert "(remember && ((!extraArgsLoadable && !sharedExtraArgsCleared) ||" in gate, gate
     assert "sharedExtraArgsRefused || extraArgsHydrating))" in gate, gate
 
 

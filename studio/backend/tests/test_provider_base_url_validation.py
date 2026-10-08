@@ -128,6 +128,47 @@ def test_dns_alias_of_a_metadata_address_is_refused(url, monkeypatch):
         validate_provider_base_url(url)
 
 
+_REAL_GETADDRINFO = socket.getaddrinfo
+
+
+def _for_test_hosts(fake):
+    """Answer this file's `.example` hosts with `fake`, and every other lookup for real.
+
+    socket.getaddrinfo is patched process-wide, so a lookup from any other thread in the worker (a
+    client another test left running, a background refresh) also lands in the fake. The tests that
+    count calls then read one too many: `assert 33 == 32` in test_stalled_lookups_do_not_pile_up
+    and `assert 3 == 2` in test_a_timed_out_lookup_is_not_remembered, both seen in CI. Routing by
+    host keeps the count to the lookups the code under test made, and stops the fakes from making
+    an unrelated caller sleep 30 s.
+    """
+
+    def route(host, port, *args, **kwargs):
+        if isinstance(host, str) and host.endswith(".example"):
+            return fake(host, port, *args, **kwargs)
+        return _REAL_GETADDRINFO(host, port, *args, **kwargs)
+
+    return route
+
+
+def test_a_lookup_from_another_thread_is_not_counted(monkeypatch):
+    """The routing the counting tests rely on: a concurrent lookup for some other host goes to the
+    real resolver and never reaches the fake."""
+    import threading
+
+    calls = []
+
+    def _record(host, port, *args, **kwargs):
+        calls.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", _for_test_hosts(_record))
+    other = threading.Thread(target = lambda: socket.getaddrinfo("localhost", 80))
+    other.start()
+    other.join(5)
+    assert validate_provider_base_url("https://route.example/v1") == "https://route.example/v1"
+    assert calls == ["route.example"]
+
+
 def test_dns_alias_verdict_is_cached(monkeypatch):
     """Repeat validation of the same host does not re-resolve it."""
     calls = []
@@ -136,7 +177,7 @@ def test_dns_alias_verdict_is_cached(monkeypatch):
         calls.append(host)
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
-    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    monkeypatch.setattr(socket, "getaddrinfo", _for_test_hosts(_record))
     for _ in range(3):
         assert validate_provider_base_url("https://gw.example/v1") == "https://gw.example/v1"
     assert len(calls) == 1
@@ -151,7 +192,7 @@ def test_the_opt_in_path_shares_the_one_lookup(monkeypatch):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
     monkeypatch.setenv(BLOCK_PRIVATE_ENV, "1")
-    monkeypatch.setattr(socket, "getaddrinfo", _record)
+    monkeypatch.setattr(socket, "getaddrinfo", _for_test_hosts(_record))
     assert validate_provider_base_url("https://gw.example/v1") == "https://gw.example/v1"
     assert len(calls) == 1
 
@@ -228,7 +269,7 @@ def test_the_opt_in_path_does_not_re_resolve_after_a_timeout(monkeypatch):
         _time.sleep(0.2)
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
 
-    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    monkeypatch.setattr(socket, "getaddrinfo", _for_test_hosts(_slow))
     assert validate_provider_base_url("https://slowdns.example/v1") == "https://slowdns.example/v1"
     assert len(calls) == 2
 
@@ -295,7 +336,7 @@ def test_a_timed_out_lookup_is_not_remembered(monkeypatch):
         _time.sleep(30)
         return []
 
-    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    monkeypatch.setattr(socket, "getaddrinfo", _for_test_hosts(_slow))
     for _ in range(2):
         assert validate_provider_base_url("http://slow.example/v1") == "http://slow.example/v1"
     assert len(calls) == 2
@@ -351,7 +392,7 @@ def test_stalled_lookups_do_not_pile_up(monkeypatch):
         _time.sleep(30)
         return []
 
-    monkeypatch.setattr(socket, "getaddrinfo", _slow)
+    monkeypatch.setattr(socket, "getaddrinfo", _for_test_hosts(_slow))
     for n in range(_providers._DNS_MAX_IN_FLIGHT + 5):
         url = f"http://slow{n}.example/v1"
         assert validate_provider_base_url(url) == url

@@ -10,7 +10,11 @@ import type {
   S3Config,
   TrainingMethod,
 } from "@/types/training";
-import type { BackendModelConfig } from "../api/models-api";
+import type {
+  BackendModelConfig,
+  DecisionCheckpoint,
+  DecisionLayout,
+} from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
@@ -66,6 +70,16 @@ export interface TrainingConfigState {
   modelKnownCached: boolean;
   modelLocalPath: string | null;
   modelFormat: ModelInventoryFormat | null;
+  modelSubfolder: string | null;
+  decisionCheckpoints: DecisionCheckpoint[] | null;
+  // The user's choice to train a text or vision LLM as a decision model.
+  trainAsDecision: boolean;
+  /** "laya" for Laya, "clef" for Cloudflare Clef, "llm" for an LLM trained as a decision model; the last two take QLoRA. */
+  decisionLayout: DecisionLayout | null;
+  settingsBeforeDecision: {
+    trainingMethod: TrainingMethod;
+    datasetStreaming: boolean;
+  } | null;
   projectName: string;
   trainingMethod: TrainingMethod;
   trainingMethodProvenance: TrainingMethodProvenance;
@@ -193,6 +207,8 @@ export interface TrainingConfigActions {
     dataset: string,
     localPath: string | null,
   ) => void;
+  setModelSubfolder: (subfolder: string | null) => void;
+  setTrainAsDecision: (value: boolean) => void;
   setProjectName: (value: string) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;

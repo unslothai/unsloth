@@ -35,6 +35,7 @@ from routes.inference import (
     _estimate_gguf_required_gb,
     _guard_chat_load_against_training,
     _llama_runtime_fields,
+    _load_keeps_a_projector,
     _LoadPlacement,
 )
 
@@ -759,6 +760,125 @@ def test_a_remote_projector_of_unknown_kind_is_charged_to_the_guard(tmp_path):
         _estimate_gguf_required_gb(config, disable_vision = True)
 
     assert seen.get("include_mmproj") is True
+
+
+def test_the_training_guard_charges_a_hand_added_repo_root_projector(tmp_path):
+    """A hand-added projector is charged though the listing cannot see it."""
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\x00" * (3 * MIB))
+    seen = {}
+
+    def fake_companions(
+        repo,
+        *,
+        hf_token,
+        include_mmproj,
+        local_mmproj_bytes = 0,
+        **kw,
+    ):
+        seen["local_mmproj_bytes"] = local_mmproj_bytes
+        # What the real helper returns when the repo lists no projector of its own.
+        return max(int(local_mmproj_bytes), 0)
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_local_mmproj_file = str(projector),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "unsloth/some-vl-GGUF",
+        gguf_variant = "UD-Q4_K_XL",
+        is_vision = True,
+    )
+    variant = SimpleNamespace(quant = "UD-Q4_K_XL", size_bytes = 4 * GIB)
+
+    with (
+        patch("routes.inference._remote_gguf_companion_bytes", fake_companions),
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            lambda *a, **k: ([variant], False),
+        ),
+    ):
+        charged = _estimate_gguf_required_gb(config)
+
+    assert seen.get("local_mmproj_bytes") == 3 * MIB
+    assert charged is not None and charged > 4 * GIB / (1024**3)
+
+
+@pytest.mark.parametrize(
+    "kwargs,accepts_image,charged,label",
+    [
+        ({}, True, True, "no switch charges it"),
+        ({"disable_vision": True}, True, False, "the switch suppresses an image tower"),
+        ({"disable_vision": True}, False, True, "an audio encoder survives the switch"),
+        ({"llama_extra_args": ["--no-mmproj"]}, True, False, "the extras opt-out resolves none"),
+    ],
+)
+def test_the_guard_asks_the_local_projector_whether_the_launch_opens_it(
+    tmp_path, kwargs, accepts_image, charged, label
+):
+    """A local projector the Vision switch suppresses is not charged."""
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\x00" * (3 * MIB))
+    seen = {}
+
+    def fake_companions(
+        repo,
+        *,
+        hf_token,
+        include_mmproj,
+        local_mmproj_bytes = 0,
+        **kw,
+    ):
+        seen["local_mmproj_bytes"] = local_mmproj_bytes
+        return max(int(local_mmproj_bytes), 0)
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_local_mmproj_file = str(projector),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "unsloth/some-vl-GGUF",
+        gguf_variant = "UD-Q4_K_XL",
+        is_vision = True,
+    )
+    variant = SimpleNamespace(quant = "UD-Q4_K_XL", size_bytes = 4 * GIB)
+    import utils.models.gguf_metadata as _meta
+
+    with (
+        patch("routes.inference._remote_gguf_companion_bytes", fake_companions),
+        patch.object(_meta, "mmproj_accepts_image", lambda _p: accepts_image),
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            lambda *a, **k: ([variant], False),
+        ),
+    ):
+        _estimate_gguf_required_gb(config, **kwargs)
+
+    assert seen.get("local_mmproj_bytes") == (3 * MIB if charged else 0), label
+
+
+def test_gpu_ownership_reads_the_remote_configs_own_projector(tmp_path):
+    """A suppressed local image tower does not claim the GPU."""
+    projector = tmp_path / "mmproj-F16.gguf"
+    projector.write_bytes(b"\x00" * MIB)
+    config = SimpleNamespace(
+        is_vision = True,
+        gguf_mmproj_file = None,
+        gguf_local_mmproj_file = str(projector),
+    )
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: True):
+        assert _load_keeps_a_projector(config, disable_vision = True) is False
+        assert _load_keeps_a_projector(config, disable_vision = False) is True
+
+    # An audio encoder has no image tower to drop, so the switch leaves it loaded.
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: False):
+        assert _load_keeps_a_projector(config, disable_vision = True) is True
 
 
 def _ambient_mmproj(tmp_path, monkeypatch):
@@ -1922,7 +2042,6 @@ def test_managed_caller_may_resend_the_resident_same_model_paths(monkeypatch):
         model_identifier = "m.gguf",
         hf_variant = None,
         extra_args = ("--lora", "/owner/a.gguf"),
-        llama_cpp_config = None,
     )
     routes = _managed_with_owner(monkeypatch, intent = intent)
     routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "m.gguf")
@@ -1931,7 +2050,6 @@ def test_managed_caller_may_resend_the_resident_same_model_paths(monkeypatch):
         model_identifier = "/hf/hub/models--unsloth--B-GGUF/snapshots/abc/B-Q4_K_M.gguf",
         hf_variant = None,
         extra_args = ("--lora", "/owner/a.gguf"),
-        llama_cpp_config = None,
     )
     monkeypatch.setattr(
         routes, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = snapshot)
@@ -1960,7 +2078,6 @@ def test_resident_paths_need_a_real_cache_snapshot_and_follow_an_omitted_variant
         model_identifier = str(hub / "models--unsloth--B-GGUF/snapshots/abc/B-Q4_K_M.gguf"),
         hf_variant = "Q4_K_M",
         extra_args = ("--lora", "/owner/a.gguf"),
-        llama_cpp_config = None,
     )
     routes = _managed_with_owner(monkeypatch, intent = intent)
     # The same repo, by id or by its real cache path, with the variant omitted or named.
@@ -2009,7 +2126,6 @@ def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path)
             model_identifier = resident,
             hf_variant = "Q4_K_M",
             extra_args = ("--lora", "/owner/a.gguf"),
-            llama_cpp_config = None,
         ),
     )
     routes = _managed_with_owner(monkeypatch)
@@ -2024,33 +2140,3 @@ def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path)
     fake = str(tmp_path / "ws/models--unsloth--B-GGUF/snapshots/x/B-Q4_K_M.gguf")
     with pytest.raises(HTTPException):
         routes._resolve_inherited_extra_args(LoadRequest(model_path = fake), config, fake, None)
-
-
-def test_managed_caller_may_resend_the_owners_custom_config(monkeypatch):
-    import asyncio
-    from fastapi import HTTPException
-    from types import SimpleNamespace
-    from models.inference import LoadRequest
-
-    owner_ini = {
-        "version": 1,
-        "mode": "custom",
-        "ini": "chat-template-file = /owner/t.jinja\n",
-        "section": None,
-    }
-    routes = _managed_with_owner(monkeypatch, {"m.gguf": {"llama_cpp_config": owner_ini}})
-    compiled = SimpleNamespace(argv = ("--chat-template-file", "/owner/t.jinja"))
-    backend = SimpleNamespace(prepare_custom_config = lambda intent: compiled, last_load_intent = None)
-    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: backend)
-    monkeypatch.setattr(routes, "_classify_diffusion_gguf", lambda config: False)
-    config = SimpleNamespace(is_gguf = True, identifier = "m.gguf")
-    request = LoadRequest(model_path = "m.gguf", llama_cpp_config = owner_ini)
-    got = asyncio.run(
-        routes._preflight_custom_llama_config(request, config, caller_sent_custom = True)
-    )
-    assert got is compiled
-    edited = dict(owner_ini, ini = "chat-template-file = /owner/t.jinja\nctx-size = 4096\n")
-    request = LoadRequest(model_path = "m.gguf", llama_cpp_config = edited)
-    with pytest.raises(HTTPException) as err:
-        asyncio.run(routes._preflight_custom_llama_config(request, config, caller_sent_custom = True))
-    assert err.value.status_code == 403

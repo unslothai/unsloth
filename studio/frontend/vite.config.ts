@@ -24,13 +24,13 @@ function smokeModuleDelay(): Plugin {
   };
 }
 
-// https://vite.dev/config/
 export default defineConfig({
+  // concurrent browser checks use separate dependency optimizer caches.
+  cacheDir: process.env.VITE_TEST_CACHE_DIR || "node_modules/.vite",
   // Reasoning's highlighter loads only the grammar it needs in its module worker.
   worker: { format: "es" },
   plugins: [react(), tailwindcss(), smokeModuleDelay()],
-  // Keep an unrelated PostCSS config in an ancestor directory from leaking
-  // into Unsloth installs. Tailwind is provided by its dedicated Vite plugin.
+  // prevent ancestor PostCSS configs from leaking into installs; Tailwind uses its Vite plugin.
   css: {
     postcss: {
       plugins: [],

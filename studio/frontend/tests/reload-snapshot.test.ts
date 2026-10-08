@@ -1415,7 +1415,7 @@ test("carries live form state, except what sensitive fields hide", () => {
     /AttachmentPreviewDialog[\s\S]*?redactFromReload/,
   );
   for (const dialog of [
-    "AttachmentImageDialog",
+    "ImageGalleryDialog",
     "AttachmentTextDialog",
     "AttachmentAudioDialog",
   ]) {

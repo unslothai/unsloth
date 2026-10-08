@@ -18,6 +18,7 @@ import json
 import subprocess
 import tempfile
 import threading
+import uuid
 import wave
 from contextlib import contextmanager
 from dataclasses import replace
@@ -65,6 +66,7 @@ from core.inference.stt_sidecar import (
     _downloaded_file_bytes,
     _HF_COMMIT_SHA,
     _prepare_stt_cache_for_http,
+    _remember_completed_download,
     _training_active,
     normalize_whisper_language,
 )
@@ -181,13 +183,20 @@ def resolve_audio_cpp_stt_model(
     try:
         require_runnable(found, "asr")
     except AudioCppModelError as exc:
+        # cached rows omit absent quants, so callers treat a selected missing quant as downloadable.
+        if not network and (variant or ref_variant):
+            row = resolve(base, None, hf_token, network = False)
+            if row is not None and row.task == "asr" and row.unsupported is None:
+                raise SttModelNotDownloadedError(
+                    f"STT model '{base}' ({variant or ref_variant}) is not downloaded. Download "
+                    "it in Settings, then Voice, before loading it."
+                ) from exc
         raise SttModelIdError(str(exc)) from exc
     return found
 
 
 def resolve_audio_cpp_stt_model_id(model: Optional[str]) -> str:
-    """The name dictation reports for ``model``: a legacy key stays that key (Settings compares
-    against it), anything else becomes its row id."""
+    """keeps legacy keys for Settings comparisons; all other names become row ids."""
     if model is None or not str(model).strip():
         return DEFAULT_AUDIO_CPP_STT_MODEL
     base, variant = split_variant_ref(str(model).strip())
@@ -300,6 +309,8 @@ class _AudioCppDownloadState:
         self._thread: Optional[threading.Thread] = None
         self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
+        self._download_id: Optional[str] = None
+        self._completed_download_ids: list[str] = []
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._etag: Optional[str] = None
@@ -313,10 +324,16 @@ class _AudioCppDownloadState:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
             # Callers track the row they picked; a variant pick arrives folded in as ``row:variant``.
-            row = split_variant_ref(self._model_id)[0] if self._model_id else None
+            base, variant = split_variant_ref(self._model_id) if self._model_id else (None, None)
+            ref = parse_identifier(base)
+            row = base
+            variant = variant or (ref.variant_hint if ref is not None else None)
             snapshot = {
                 "downloading": downloading,
                 "model": row if downloading else None,
+                "download_id": self._download_id,
+                "completed_download_ids": list(self._completed_download_ids),
+                "variant": variant if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
                 "cancelled_model": row if self._cancelled else None,
@@ -333,10 +350,36 @@ class _AudioCppDownloadState:
         snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
         return snapshot
 
-    def cancel(self) -> bool:
+    def cancel(
+        self,
+        model_id: Optional[str] = None,
+        download_id: Optional[str] = None,
+    ) -> bool:
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
                 return False
+            if self._download_id in self._completed_download_ids:
+                return False
+            if download_id is not None:
+                if self._download_id != download_id:
+                    return False
+            elif model_id is not None:
+                active_base, active_variant = split_variant_ref(self._model_id or "")
+                expected_base, expected_variant = split_variant_ref(model_id)
+                active_ref = parse_identifier(active_base)
+                expected_ref = parse_identifier(expected_base)
+                active_row = active_ref.id if active_ref is not None else ""
+                expected_row = expected_ref.id if expected_ref is not None else ""
+                active_variant = active_variant or (
+                    active_ref.variant_hint if active_ref is not None else None
+                )
+                expected_variant = expected_variant or (
+                    expected_ref.variant_hint if expected_ref is not None else None
+                )
+                if active_row.lower() != expected_row.lower() or (
+                    expected_variant is not None and active_variant != expected_variant
+                ):
+                    return False
             self._cancelled = True
             process = self._process
         if process is not None and process.poll() is None:
@@ -364,7 +407,7 @@ class _AudioCppDownloadState:
         self,
         model_id: str,
         hf_token: Optional[str] = None,
-    ) -> None:
+    ) -> str:
         model_id = str(model_id or DEFAULT_AUDIO_CPP_STT_MODEL).strip()
         resolve_audio_cpp_stt_model_id(model_id)
         hub_cache = _capture_stt_hub_cache()
@@ -372,7 +415,7 @@ class _AudioCppDownloadState:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
                     if not self._cancelled:
-                        return
+                        return str(self._download_id)
                     raise SttModelIdError(
                         f"'{model_id}' is still cancelling; try again in a moment."
                     )
@@ -381,6 +424,7 @@ class _AudioCppDownloadState:
                     "wait for it to finish."
                 )
             self._model_id = model_id
+            self._download_id = uuid.uuid4().hex
             self._error = None
             self._total_bytes = None
             self._etag = None
@@ -395,6 +439,7 @@ class _AudioCppDownloadState:
             )
             self._thread = thread
             thread.start()
+            return str(self._download_id)
 
     def _run(self, model_id: str, hf_token: Optional[str], hub_cache: Path) -> None:
         registry = None
@@ -463,6 +508,12 @@ class _AudioCppDownloadState:
                 from core.inference.audio_cpp_models import forget
 
                 forget(model.id)
+                with self._lock:
+                    _remember_completed_download(
+                        self._completed_download_ids,
+                        self._download_id,
+                        cancelled = self._cancelled,
+                    )
                 return
             with self._lock:
                 if cancelled or process.returncode < 0:
@@ -488,17 +539,18 @@ class _AudioCppDownloadState:
 _download_state = _AudioCppDownloadState()
 
 
-def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> None:
+def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -> str:
     model = get_audio_cpp_stt_sidecar().keep_loaded_variant(model)
-    _download_state.start(str(model or DEFAULT_AUDIO_CPP_STT_MODEL).strip(), hf_token)
+    return _download_state.start(str(model or DEFAULT_AUDIO_CPP_STT_MODEL).strip(), hf_token)
 
 
 def download_status() -> dict:
     return _download_state.status()
 
 
-def cancel_model_download() -> bool:
-    return _download_state.cancel()
+def cancel_model_download(model: Optional[str] = None, download_id: Optional[str] = None) -> bool:
+    requested = str(model).strip() if model is not None else None
+    return _download_state.cancel(requested, download_id)
 
 
 def _launches_on_cpu(entry: AudioCppModel, force_cpu: bool) -> bool:
@@ -664,12 +716,7 @@ class AudioCppSttSidecar:
 
     @contextmanager
     def update_maintenance(self) -> Iterator[bool]:
-        """Block new loads while the managed audio.cpp tree is replaced.
-
-        The runtime is pinned in source and replaced only by setup, which runs while Studio is
-        stopped, so nothing calls this today. It is kept so an in-app updater can reuse the
-        whisper.cpp update flow unchanged.
-        """
+        """Block new loads while utils.audio_cpp_update replaces the managed audio.cpp tree."""
         self._update_in_progress = True
         try:
             with self._lock:
@@ -727,6 +774,7 @@ class AudioCppSttSidecar:
         self,
         entry: AudioCppModel,
         on_phase: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
         from core.inference import audio_cpp_backend
 
@@ -739,7 +787,9 @@ class AudioCppSttSidecar:
         _notify(on_phase, "downloading_aligner")
         try:
             aligner = audio_cpp_backend._resolve_companion(entry, QWEN3_ALIGNER, network = True)
-            audio_cpp_backend.AudioCppBackend._download_missing(aligner, None)
+            audio_cpp_backend.AudioCppBackend._download_missing(aligner, None, cancel_event)
+        except AudioCppRequestCancelledError:
+            raise SttTranscriptionCancelledError("Transcription cancelled.") from None
         except Exception as exc:  # noqa: BLE001 - every failure reads the same to the user
             reason = sanitize_runtime_detail(str(exc)) or type(exc).__name__
             logger.warning("audio.cpp: timestamp aligner download failed: %s", reason)
@@ -808,7 +858,7 @@ class AudioCppSttSidecar:
             model_path = self._ensure_model_downloaded(entry)
             served = entry
             if aligned:
-                self._ensure_aligner_downloaded(entry, on_phase)
+                self._ensure_aligner_downloaded(entry, on_phase, request_cancel_event)
                 served = self._with_aligner(entry)
             cancel_event = (
                 request_cancel_event if request_cancel_event is not None else threading.Event()
@@ -887,11 +937,13 @@ class AudioCppSttSidecar:
         self,
         model: Optional[str],
         on_phase: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> None:
-        """Runs before the load so a 1.1 GB download holds neither the load lock nor dictation."""
+        """Runs before the load so a 1.1 GB download holds neither the load lock nor dictation.
+        Takes the request's cancel event: this is the call that does the first download."""
         entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         if entry.family in _ALIGNED_FAMILIES:
-            self._ensure_aligner_downloaded(entry, on_phase)
+            self._ensure_aligner_downloaded(entry, on_phase, cancel_event)
 
     def transcribe_path(
         self,

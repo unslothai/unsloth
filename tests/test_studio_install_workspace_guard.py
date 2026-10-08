@@ -12,8 +12,6 @@ from pathlib import Path
 import pytest
 from unsloth_pwsh_runner import run_pwsh
 
-from unsloth_pwsh_runner import run_pwsh
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
 INSTALL_PS1 = REPO_ROOT / "install.ps1"

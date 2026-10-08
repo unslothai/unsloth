@@ -114,9 +114,13 @@ test("the dialog commits on Enter and on the chord", () => {
     DIALOG,
     /if \(e\.key === "Enter" && \(e\.metaKey \|\| e\.ctrlKey\)\) \{\n\s*e\.preventDefault\(\);\n\s*void save\(\);/,
   );
+  const nameInput = DIALOG.slice(
+    DIALOG.indexOf("<input"),
+    DIALOG.indexOf("autoFocus={true}"),
+  );
   assert.match(
-    DIALOG,
-    /onKeyDown=\{\(e\) => \{\n\s*if \(e\.key === "Enter"\) \{\n\s*e\.preventDefault\(\);\n(?:\s*\/\/.*\n)*\s*e\.stopPropagation\(\);\n\s*void save\(\);/,
+    nameInput,
+    /if \(e\.key === "Enter"\) \{\n\s*e\.preventDefault\(\);\n(?:\s*\/\/.*\n)*\s*e\.stopPropagation\(\);\n\s*void save\(\);/,
   );
 });
 

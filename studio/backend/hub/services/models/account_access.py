@@ -25,6 +25,7 @@ from huggingface_hub import HfApi, constants as hf_constants
 
 from auth import policy
 from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+from storage.studio_db import connect_studio_db
 from utils.paths import storage_roots
 from utils.paths.storage_roots import project_workspaces_root, studio_db_path, workspace_root
 
@@ -678,7 +679,7 @@ def model_grants() -> set[str]:
     if not path.is_file():
         return set()
     try:
-        with closing(sqlite3.connect(str(path))) as conn:
+        with closing(connect_studio_db(path)) as conn:
             row = conn.execute(
                 "SELECT value_json FROM app_settings WHERE key = 'model_grants'"
             ).fetchone()
@@ -709,7 +710,7 @@ def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
 
 
 def _write_grant(path: Path, key: str) -> None:
-    with closing(sqlite3.connect(str(path), timeout = 5.0)) as conn, conn:
+    with closing(connect_studio_db(path, timeout = 5.0)) as conn, conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS app_settings (key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)"
         )
@@ -886,6 +887,46 @@ def require_media_references(request) -> None:
             raise HTTPException(status_code = 404, detail = "Model not found")
         elif Path(request.model_path).is_absolute():
             require_model_access(str(Path(request.model_path) / path))
+    for reference in media_component_file_references(request):
+        if reference is None:
+            raise HTTPException(status_code = 404, detail = "Model not found")
+        require_model_access(reference)
+
+
+def media_component_file_references(request) -> list[str | None]:
+    """What each supplied text-encoder / VAE file loads: a resolved local path or the Hub ``owner/repo``. None for a
+    relative path with no local ``model_path`` to resolve against. Mirrors ``parse_component_file``."""
+    supplied = getattr(request, "text_encoder_file", None)
+    supplied = [supplied] if isinstance(supplied, str) else list(supplied or ())
+    vae_file = getattr(request, "vae_file", None)
+    if isinstance(vae_file, str) and vae_file:
+        supplied.append(vae_file)
+    root = None
+    try:
+        model_path = Path(str(getattr(request, "model_path", "") or "")).expanduser()
+        if model_path.is_absolute():
+            root = model_path if model_path.is_dir() else model_path.parent
+    except OSError:
+        root = None
+    references: list[str | None] = []
+    for reference in supplied:
+        if not isinstance(reference, str) or not reference.strip():
+            continue
+        spec = reference.strip()
+        path = Path(spec).expanduser()
+        if path.is_absolute():
+            references.append(str(path.resolve()))
+            continue
+        local = root / path if root is not None else None
+        if local is not None and (
+            spec.startswith(".") or "\\" in spec or len(path.parts) < 3 or local.is_file()
+        ):
+            references.append(str(local.resolve()))
+        elif local is None and (spec.startswith(".") or "\\" in spec or len(path.parts) < 3):
+            references.append(None)
+        else:
+            references.append("/".join(spec.replace("\\", "/").split("/")[:2]))
+    return references
 
 
 def resident_components(status: dict, modality: str | None = None) -> list[str]:

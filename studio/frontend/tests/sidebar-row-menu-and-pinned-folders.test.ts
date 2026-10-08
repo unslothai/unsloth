@@ -278,10 +278,11 @@ test("the walk reads the rows in the order Pinned draws them", () => {
     ["folder-1", "folder-2", "pin-1", "proj-1", "recent-1"],
   );
   // The sidebar publishes Pinned in its drawn order, folders and chats interleaved with each open
-  // folder's chats under its row, and leaves the section's own chats to projectItems.
+  // folder's chats under its row (pinned pages have none), and leaves the section's own chats to
+  // projectItems.
   assert.match(
     APP_SIDEBAR,
-    /const pinnedSectionChatItems = useMemo\(\n\s*\(\) =>\n\s*chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(\(row\) =>\n\s*row\.kind === "project"\n\s*\? folderChatItems\(true, \[row\.project\]\)\n\s*: \[row\.item\],/,
+    /const pinnedSectionChatItems = useMemo\(\n\s*\(\) =>\n\s*chatListsOnScreen && pinnedOpen\n\s*\? pinnedRows\.flatMap\(\(row\) =>\n\s*row\.kind === "project"\n\s*\? folderChatItems\(true, \[row\.project\]\)\n\s*: row\.kind === "chat"\n\s*\? \[row\.item\]\n\s*: \[\],/,
   );
   // The walk reads pinnedItems then projectItems, so the two are every section above Recents in
   // the order the user dragged them into, split at Pinned.

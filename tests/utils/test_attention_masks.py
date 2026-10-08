@@ -378,6 +378,8 @@ def test_real_xformers_packed_mask_validates_on_each_device():
 def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
     seq_info = _make_seq_info([3, 2])
     sliding_window = 2
+    # Dense-mask path (UNSLOTH_SDPA_PACKED_SEGMENTS=0).
+    monkeypatch.setattr(attention_dispatch, "_SDPA_PACKED_SEGMENTS", False)
 
     original_builder = attention_dispatch.build_sdpa_packed_attention_mask
     captured = {}
