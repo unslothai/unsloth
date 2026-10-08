@@ -1137,7 +1137,8 @@ function ZoomControl({ tab }: { tab: BrowserTab | undefined }) {
 }
 
 async function takeScreenshot(tab: BrowserTab, page: HTMLElement, t: ReturnType<typeof useT>): Promise<void> {
-  const temporary = useChatRuntimeStore.getState().incognito;
+  const shown = currentEntry(tab);
+  const temporary = useChatRuntimeStore.getState().incognito || (shown.kind === "web" && shown.temporary === true);
   let blob: Blob | null;
   try {
     blob = await screenshotPage(tab, page);
