@@ -11,8 +11,7 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart";
 import type { ChartConfig } from "@/components/ui/chart";
-import type { RlMetricPoint } from "@/features/training";
-import { rlChartKeys } from "@/features/training/lib/rl-chart-keys";
+import { type RlMetricPoint, rlChartKeys } from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
 import { type ReactElement, useMemo } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";

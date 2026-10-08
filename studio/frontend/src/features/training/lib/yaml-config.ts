@@ -193,8 +193,15 @@ export function parseYamlRlSettings(text: string): YamlRlSettings {
       out[key] = value;
     }
   };
-  set("rlBeta", numOrNull(r.beta));
-  set("rlMaxPromptLength", numOrNull(r.max_prompt_length));
+  // Out-of-range values are dropped, matching the backend's TrainingStartRequest bounds.
+  const inRange = (v: unknown, lo: number, hi: number, loOpen = false) => {
+    const n = numOrNull(v);
+    return n == null || (n <= hi && (loOpen ? n > lo : n >= lo))
+      ? n
+      : undefined;
+  };
+  set("rlBeta", inRange(r.beta, 0, 10));
+  set("rlMaxPromptLength", inRange(r.max_prompt_length, 16, Infinity));
   if (objective !== "grpo") {
     return out;
   }
@@ -204,11 +211,23 @@ export function parseYamlRlSettings(text: string): YamlRlSettings {
   );
   set(
     "grpoNumGenerations",
-    isNum(r.num_generations) ? r.num_generations : undefined,
+    isNum(r.num_generations) &&
+      r.num_generations >= 2 &&
+      r.num_generations <= 16
+      ? r.num_generations
+      : undefined,
   );
-  set("grpoMaxCompletionLength", numOrNull(r.max_completion_length));
-  set("grpoTemperature", isNum(r.temperature) ? r.temperature : undefined);
-  set("grpoEpsilonHigh", numOrNull(r.epsilon_high));
+  set(
+    "grpoMaxCompletionLength",
+    inRange(r.max_completion_length, 16, Infinity),
+  );
+  set(
+    "grpoTemperature",
+    isNum(r.temperature) && r.temperature > 0 && r.temperature <= 2
+      ? r.temperature
+      : undefined,
+  );
+  set("grpoEpsilonHigh", inRange(r.epsilon_high, 0, 1, true));
   if (typeof r.mask_truncated_completions === "boolean") {
     out.grpoMaskTruncatedCompletions = r.mask_truncated_completions;
   }
@@ -222,7 +241,15 @@ export function parseYamlRlSettings(text: string): YamlRlSettings {
     out.grpoRewards = r.rewards.flatMap((item) => {
       const x = item as Record<string, unknown> | null;
       return x && typeof x.name === "string" && x.name
-        ? [{ name: x.name, weight: isNum(x.weight) ? x.weight : 1 }]
+        ? [
+            {
+              name: x.name,
+              weight:
+                isNum(x.weight) && x.weight >= -10 && x.weight <= 10
+                  ? x.weight
+                  : 1,
+            },
+          ]
         : [];
     });
   }

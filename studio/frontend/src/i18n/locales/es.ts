@@ -3262,6 +3262,7 @@ export const es = {
             "Este conjunto de datos parece contener imágenes, que no se pueden transmitir.",
           audioDataset:
             "Este conjunto de datos parece contener audio, que no se puede transmitir.",
+          rlObjective: "El streaming aún no es compatible con DPO, ORPO ni GRPO.",
           appleSilicon:
             "El streaming todavía no es compatible con Apple Silicon (MLX).",
         },

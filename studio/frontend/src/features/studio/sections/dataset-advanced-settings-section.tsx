@@ -34,6 +34,7 @@ export function DatasetAdvancedSettingsSection() {
     setDatasetSliceStart,
     setDatasetStreaming,
     trainOnCompletions,
+    trainingObjective,
   } = useTrainingConfigStore(
     useShallow((state) => ({
       datasetEvalSplit: state.datasetEvalSplit,
@@ -56,6 +57,8 @@ export function DatasetAdvancedSettingsSection() {
       setDatasetSliceStart: state.setDatasetSliceStart,
       setDatasetStreaming: state.setDatasetStreaming,
       trainOnCompletions: state.trainOnCompletions,
+      trainingObjective:
+        state.modelType === "decision" ? "sft" : state.trainingObjective,
     })),
   );
   const streamingBlockers = getDatasetStreamingBlockers({
@@ -71,6 +74,7 @@ export function DatasetAdvancedSettingsSection() {
     isVisionModel,
     maxSteps,
     trainOnCompletions,
+    trainingObjective,
   });
   const isStreamingSupported = streamingBlockers.length === 0;
 

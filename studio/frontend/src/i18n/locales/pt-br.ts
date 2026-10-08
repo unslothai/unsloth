@@ -3238,6 +3238,7 @@ export const ptBR = {
             "Este dataset parece conter imagens e não pode ser usado em streaming.",
           audioDataset:
             "Este dataset parece conter áudio e não pode ser usado em streaming.",
+          rlObjective: "O streaming ainda não é compatível com DPO, ORPO ou GRPO.",
           appleSilicon:
             "O streaming ainda não é compatível com Apple Silicon (MLX).",
         },

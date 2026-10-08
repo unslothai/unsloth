@@ -3182,6 +3182,7 @@ export const ja = {
             "このデータセットには画像が含まれているように見えるため、ストリーミングできません。",
           audioDataset:
             "このデータセットには音声が含まれているように見えるため、ストリーミングできません。",
+          rlObjective: "DPO、ORPO、GRPO ではストリーミングはまだサポートされていません。",
           appleSilicon:
             "Apple Silicon (MLX) ではストリーミングをまだサポートしていません。",
         },

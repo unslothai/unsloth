@@ -3205,6 +3205,7 @@ export const ko = {
             "이 데이터셋에는 이미지가 포함된 것으로 보여 스트리밍할 수 없습니다.",
           audioDataset:
             "이 데이터셋에는 오디오가 포함된 것으로 보여 스트리밍할 수 없습니다.",
+          rlObjective: "DPO, ORPO, GRPO에서는 아직 스트리밍을 지원하지 않습니다.",
           appleSilicon:
             "Apple Silicon(MLX)에서는 아직 스트리밍을 지원하지 않습니다.",
         },

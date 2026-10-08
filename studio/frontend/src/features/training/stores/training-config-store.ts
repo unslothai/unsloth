@@ -565,6 +565,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             };
             const restoreStreaming =
               !isDecision &&
+              get().trainingObjective === "sft" &&
               settingsBeforeDecision?.datasetStreaming === true &&
               nextStreamingState.datasetSource === "huggingface" &&
               nextStreamingState.maxSteps > 0;
@@ -1623,7 +1624,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const state = get();
           if (state.trainingObjective === trainingObjective) return;
           // CPT is its own objective; the selector disables RL for it, this keeps the store honest.
-          if (state.trainingMethod === "cpt" && trainingObjective !== "sft") {
+          if (
+            (state.trainingMethod === "cpt" ||
+              state.modelType === "decision") &&
+            trainingObjective !== "sft"
+          ) {
             return;
           }
           const patch: Partial<TrainingConfigState> = { trainingObjective };

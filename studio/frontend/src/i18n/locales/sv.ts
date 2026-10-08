@@ -3432,6 +3432,7 @@ export const sv = {
             "Den här datauppsättningen verkar innehålla bilder, som inte kan strömmas.",
           audioDataset:
             "Den här datauppsättningen verkar innehålla ljud, som inte kan strömmas.",
+          rlObjective: "Strömning stöds ännu inte för DPO, ORPO eller GRPO.",
           appleSilicon: "Strömning stöds inte på Apple Silicon (MLX) ännu.",
         },
         options: {

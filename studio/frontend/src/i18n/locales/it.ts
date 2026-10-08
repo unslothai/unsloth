@@ -3315,6 +3315,7 @@ export const it = {
             "Questo dataset sembra contenere immagini, che non possono essere trasmesse in streaming.",
           audioDataset:
             "Questo dataset sembra contenere audio, che non può essere trasmesso in streaming.",
+          rlObjective: "Lo streaming non è ancora supportato per DPO, ORPO o GRPO.",
           appleSilicon:
             "Lo streaming non è ancora supportato su Apple Silicon (MLX).",
         },

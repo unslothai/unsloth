@@ -16,15 +16,13 @@ import {
   previewCell,
   useRlWorkspaceStore,
   useTrainingConfigStore,
-} from "@/features/training";
-import {
   RL_REQUIRED_ROLES,
   RL_ROLES,
   type RlObjective,
   type RlRole,
   missingRlRoles,
   resolveRlMapping,
-} from "@/features/training/lib/rl-roles";
+} from "@/features/training";
 import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
@@ -171,7 +169,8 @@ export function RlDatasetRoles({
 
   // Reload on remount and on dataset changes, so roles survive leaving the page.
   useEffect(() => {
-    loadColumns();
+    // Deferred so loadColumns' state resets run in a callback, not the effect body.
+    void Promise.resolve().then(loadColumns);
   }, [loadColumns]);
 
   // Drop roles from another objective and fill the rest from column names.

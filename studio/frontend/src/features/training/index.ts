@@ -71,6 +71,14 @@ export {
 } from "./api/rewards-api";
 export type { RewardRecord } from "./api/rewards-api";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
+export { rlChartKeys } from "./lib/rl-chart-keys";
+export {
+  RL_REQUIRED_ROLES,
+  RL_ROLES,
+  missingRlRoles,
+  resolveRlMapping,
+} from "./lib/rl-roles";
+export type { RlObjective, RlRole } from "./lib/rl-roles";
 export {
   formatScore,
   readRewardHead,

@@ -187,14 +187,14 @@ export function buildTrainingStartPayload(
     objective,
     rl_beta: isRl ? config.rlBeta : null,
     rl_max_prompt_length: isRl ? config.rlMaxPromptLength : null,
-    grpo_num_generations: config.grpoNumGenerations,
+    grpo_num_generations: objective === "grpo" ? config.grpoNumGenerations : 4,
     grpo_max_completion_length:
       objective === "grpo" ? config.grpoMaxCompletionLength : null,
-    grpo_temperature: config.grpoTemperature,
+    grpo_temperature: objective === "grpo" ? config.grpoTemperature : 1,
     rl_system_prompt:
       objective === "grpo" ? config.grpoSystemPrompt.trim() || null : null,
-    grpo_enable_thinking: config.grpoEnableThinking,
-    grpo_variant: config.grpoVariant,
+    grpo_enable_thinking: objective === "grpo" && config.grpoEnableThinking,
+    grpo_variant: objective === "grpo" ? config.grpoVariant : "dapo",
     grpo_mask_truncated_completions:
       objective === "grpo" && config.grpoMaskTruncatedCompletions,
     grpo_epsilon_high: objective === "grpo" ? config.grpoEpsilonHigh : null,

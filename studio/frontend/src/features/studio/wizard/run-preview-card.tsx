@@ -487,12 +487,14 @@ export function RunPreviewCard({
             </>
           }
         />
-        {trainingObjective !== "sft" && trainingMethod !== "cpt" && (
-          <MetaRow
-            label={t("rl.objective.label")}
-            value={t(`rl.objective.${trainingObjective}`)}
-          />
-        )}
+        {trainingObjective !== "sft" &&
+          trainingMethod !== "cpt" &&
+          !isDecision && (
+            <MetaRow
+              label={t("rl.objective.label")}
+              value={t(`rl.objective.${trainingObjective}`)}
+            />
+          )}
         <MetaRow label={t("studio.preview.length")} value={lengthLabel} />
         <MetaRow
           label={t("studio.preview.batch")}
