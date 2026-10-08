@@ -36,7 +36,7 @@ from core.inference.tools import (
 )
 from loggers import get_logger
 
-# Same embedders as the canvas shell.
+# same embedders as the canvas shell.
 from routes.inference import _ARTIFACT_PREVIEW_FRAME_ANCESTORS as _FRAME_ANCESTORS
 
 logger = get_logger(__name__)
@@ -1105,7 +1105,7 @@ class BrowserFetchRequest(BaseModel):
     url: str = Field(..., min_length = 1, max_length = 8192)
     method: Literal["GET", "POST"] = "GET"
     body: Optional[str] = Field(default = None, max_length = 1024 * 1024)
-    # Smaller cap for favicons, so an icon can't be 50 MB.
+    # favicon callers can lower the 50 MB fetch cap.
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
 
 
@@ -1116,7 +1116,7 @@ _BOMS = (
 )
 
 
-# A header can name UTF-16; a <meta> naming it means UTF-8, as the shared table has it.
+# headers may name UTF-16; meta labels map it to UTF-8 through the shared table.
 _HEADER_CODECS = {
     **_WHATWG_CHARSET_CODECS,
     **dict.fromkeys(
@@ -1133,7 +1133,7 @@ def _codec(label: Optional[str], table: dict = _HEADER_CODECS) -> Optional[str]:
 
 
 def _decode_html(raw: bytes, charset: Optional[str]) -> str:
-    # A byte order mark wins over any declared charset, as in browsers.
+    # byte order marks override declared charsets, matching browsers.
     for bom, codec in _BOMS:
         if raw.startswith(bom):
             return raw.decode(codec, errors = "replace")
@@ -1147,7 +1147,7 @@ def _decode_html(raw: bytes, charset: Optional[str]) -> str:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         pass
-    # As browsers do: U+FFFD for bad bytes in a labelled page, windows-1252 for an unlabelled one.
+    # browsers use U+FFFD for bad bytes in labelled pages and windows-1252 for unlabelled pages.
     return raw.decode("cp1252", errors = "replace")
 
 
@@ -1158,7 +1158,7 @@ def _attr(match: "re.Match[str] | None") -> Optional[str]:
 
 
 def _join(base: str, href: str) -> Optional[str]:
-    """``urljoin``, or None for an address it cannot parse (``http://[bad``)."""
+    """return None when ``urljoin`` cannot parse an address such as ``http://[bad``."""
     try:
         return urljoin(base, href.strip())
     except ValueError:
@@ -1495,7 +1495,7 @@ def _build_response(
         ("json", "xml", "javascript")
     )
     if textual and codec and codec != "utf-8":
-        # Text in another encoding goes out as UTF-8, the encoding the response is labelled with.
+        # transcode text to UTF-8 to match the response label.
         body = body.decode(codec, errors = "replace").encode("utf-8")
     return Response(
         content = body,
@@ -1503,7 +1503,7 @@ def _build_response(
         headers = {
             KIND_HEADER: "raw",
             URL_HEADER: quote(final_url, safe = ":/?#[]@!$&'()*+,;=%~"),
-            # Never rendered on Studio's origin.
+            # never rendered on Studio's origin
             "Content-Security-Policy": "sandbox",
             **({NAME_HEADER: quote(name, safe = "")} if (name := _attachment_name(meta)) else {}),
         },
