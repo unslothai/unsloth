@@ -204,8 +204,13 @@ def PatchRL(FastLanguageModel):
         with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
             FastLanguageModel.for_inference(model)
 
+            # PPO's PolicyAndValueWrapper has no generate(); TRL generates through its .policy.
+            generating_model = unwrapped_model
+            if not hasattr(generating_model, "generate"):
+                generating_model = getattr(unwrapped_model, "policy", unwrapped_model)
+
             # .clone is required because inference_mode is forced here; no_grad would have been the better choice.
-            original_generate = unwrapped_model.generate
+            original_generate = generating_model.generate
 
             def generate_with_clone(*args, **kwargs):
                 out = original_generate(*args, **kwargs)
@@ -213,12 +218,12 @@ def PatchRL(FastLanguageModel):
                     return out.clone()
                 return out
 
-            unwrapped_model.generate = generate_with_clone
+            generating_model.generate = generate_with_clone
 
             try:
                 yield unwrapped_model
             finally:
-                unwrapped_model.generate = original_generate
+                generating_model.generate = original_generate
                 FastLanguageModel.for_training(
                     model,
                     use_gradient_checkpointing = use_gradient_checkpointing,
@@ -2036,6 +2041,32 @@ def _backport_vision_dataset_gate(RLTrainer_source):
     return RLTrainer_source
 
 
+def _patch_ppo_policy_value_wrapper(module):
+    # TRL < 1.0 copies is_gradient_checkpointing onto PolicyAndValueWrapper without the toggles
+    # unwrap_model_for_generation then calls on it; same fix as huggingface/trl#5245.
+    wrapper = getattr(module, "PolicyAndValueWrapper", None)
+    if wrapper is None:
+        trainer_class = getattr(module, "PPOTrainer", None)
+        wrapper = getattr(
+            sys.modules.get(getattr(trainer_class, "__module__", "")),
+            "PolicyAndValueWrapper",
+            None,
+        )
+    if wrapper is None or hasattr(wrapper, "gradient_checkpointing_disable"):
+        return
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        self.policy.gradient_checkpointing_enable(**kwargs)
+        self.is_gradient_checkpointing = True
+
+    def gradient_checkpointing_disable(self):
+        self.policy.gradient_checkpointing_disable()
+        self.is_gradient_checkpointing = False
+
+    wrapper.gradient_checkpointing_enable = gradient_checkpointing_enable
+    wrapper.gradient_checkpointing_disable = gradient_checkpointing_disable
+
+
 def _patch_trl_rl_trainers(trainer_file = "grpo_trainer"):
     # Defensive wrapper matching patch_trl_rl_trainers()'s try/except, so direct callers do not see exceptions from the impl on TRL versions that rename or move classes.
     try:
@@ -2059,6 +2090,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     except Exception as error:
         logger.info(f"Unsloth: Could not import trl.trainer.{trainer_file}: {error}")
         return
+
+    if trainer_file == "ppo_trainer":
+        _patch_ppo_policy_value_wrapper(trainer)
 
     name = [
         x
