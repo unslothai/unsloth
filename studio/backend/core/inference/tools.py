@@ -6181,6 +6181,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
     # Module names bound to a pickle-backed loader (import torch as t), so t.load(...) is still gated as a
     # code-executing deserialize.
     load_module_aliases = set(_AUTO_UNSAFE_PY_LOAD_MODULES)
+    # Names bound to a load function (from numpy import load as read; loader = np.load), so its positional or
+    # splatted allow_pickle is still gated.
+    load_fn_aliases = {"load"}
     # Names bound to the builtin getattr (g = getattr), so a dynamic lookup aliased through it still fails closed.
     getattr_aliases = {"getattr"}
     # Names bound to functools.partial, so a partial that wraps open/a writer fails closed when it is called.
@@ -6313,6 +6316,9 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 elif alias.name == "fileinput":
                     fileinput_aliases.add(alias.asname or "fileinput")
         elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == "load":
+                    load_fn_aliases.add(alias.asname or "load")
             if node.module == "operator":
                 for alias in node.names:
                     if alias.name == "methodcaller":
@@ -6364,6 +6370,10 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                 assign_targets = node.targets
             targets = [t.id for t in assign_targets if isinstance(t, ast.Name)]
             attr_targets = [t.attr for t in assign_targets if isinstance(t, ast.Attribute)]
+            if (isinstance(value, ast.Name) and value.id in load_fn_aliases) or (
+                isinstance(value, ast.Attribute) and value.attr == "load"
+            ):
+                load_fn_aliases.update(targets)  # loader = np.load
             if isinstance(value, ast.Name) and value.id in open_aliases:
                 open_aliases.update(targets)
                 attr_open_aliases.update(attr_targets)  # box.f = open
@@ -6674,8 +6684,11 @@ def _python_is_potentially_unsafe(code: str) -> bool:
                     kw.arg == "allow_pickle" and not _is_literal_false(kw.value)
                     for kw in node.keywords
                 ) or (
-                    (func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None))
-                    == "load"
+                    (
+                        func.attr == "load"
+                        if isinstance(func, ast.Attribute)
+                        else getattr(func, "id", None) in load_fn_aliases
+                    )
                     and (
                         (len(node.args) >= 3 and not _is_literal_false(node.args[2]))
                         or any(isinstance(arg, ast.Starred) for arg in node.args)

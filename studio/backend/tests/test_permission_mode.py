@@ -2329,6 +2329,10 @@ def test_python_classifier(code, unsafe):
         ("import numpy as np\nnp.load('a.npy', **{'allow_pickle': True})", True),
         ("import numpy as np\nargs = ('a.npy', None, True)\nnp.load(*args)", True),
         ("import json\njson.load(open('a.json'))", False),
+        ("from numpy import load as read\nread('a.npy', None, True)", True),
+        ("import numpy as np\nloader = np.load\nloader('a.npy', None, True)", True),
+        ("import numpy as np\nloader = np.load\nloader(*('a.npy', None, True))", True),
+        ("import numpy as np\nloader = np.load\nloader('a.npy')", False),
     ],
 )
 def test_python_classifier_numpy_allow_pickle(code, unsafe):
