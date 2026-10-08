@@ -403,8 +403,7 @@ export function useHubDatasetSearch(
     modelType?: HubModelType | null;
     accessToken?: string;
     enabled?: boolean;
-    /** Hold new requests without hiding what is already on screen. `enabled`
-     *  means "this tab is showing", and returns [] when false. */
+    /** pauses new requests while retaining visible results; `enabled` clears results when false. */
     paused?: boolean;
     sortBy?: DatasetSortKey;
     sortDirection?: DatasetSortDirection;
