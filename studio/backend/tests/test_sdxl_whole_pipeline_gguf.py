@@ -79,6 +79,23 @@ def test_partial_sdxl_gguf_is_not_a_whole_pipeline(tmp_path, shapes):
     assert dc.whole_pipeline_gguf_family(str(path)) is None
 
 
+def test_legacy_sd_cpp_text_encoder_layout_is_refused_up_front(tmp_path):
+    from core.inference.diffusion import get_diffusion_backend
+
+    legacy = {
+        k.replace("conditioner.embedders.0.transformer.", "cond_stage_model.transformer.").replace(
+            "conditioner.embedders.1.model.", "cond_stage_model.1.transformer.text_model."
+        ): v
+        for k, v in _SHAPES.items()
+    }
+    path = _write_gguf(tmp_path / "stable-diffusion-xl-base-1.0-Q4_0.gguf", legacy)
+    assert dc.whole_pipeline_gguf_family(str(path)) is None
+    with pytest.raises(ValueError, match = "also carries the text encoders and VAE"):
+        get_diffusion_backend().validate_load_request(
+            str(tmp_path), gguf_filename = "stable-diffusion-xl-base-1.0-Q4_0.gguf", model_kind = "gguf"
+        )
+
+
 def test_whole_pipeline_safetensors_still_reports_its_layout(tmp_path):
     # The flag rides on CheckpointInfo for every format; a .safetensors path never takes the GGUF route.
     header = {k: {"dtype": "F16", "shape": v, "data_offsets": [0, 0]} for k, v in _SHAPES.items()}

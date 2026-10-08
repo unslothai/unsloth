@@ -202,7 +202,9 @@ _DIT_PREFIXES = (
     "",
 )
 
-_BUNDLED_TEXT_ENCODER_TOPS = frozenset({"conditioner", "cond_stage_model", "text_encoders"})
+# Not cond_stage_model: older stable-diffusion.cpp converts keep SDXL's second encoder there in HF CLIP
+# names, which diffusers reads as the first encoder, so the load would fail after eviction.
+_BUNDLED_TEXT_ENCODER_TOPS = frozenset({"conditioner", "text_encoders"})
 _BUNDLED_VAE_TOPS = frozenset({"first_stage_model", "vae"})
 
 _LORA_RE = re.compile(

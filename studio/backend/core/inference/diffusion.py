@@ -3239,8 +3239,9 @@ class DiffusionBackend:
         ):
             raise ValueError(
                 f"'{fam.name}' checkpoints are whole-pipeline single files, so a GGUF loads only when it "
-                f"also carries the text encoders and VAE (a stable-diffusion.cpp convert of the "
-                f"checkpoint, on disk). Load the .safetensors checkpoint, or such a GGUF, instead."
+                f"also carries the text encoders and VAE under the checkpoint's own tensor names (a current "
+                f"stable-diffusion.cpp convert of the checkpoint, on disk). Load the .safetensors checkpoint, or "
+                f"such a GGUF, instead."
             )
         # A multi-denoiser family (Ideogram 4) has no transformer-only path; reject before eviction
         if kind in ("gguf", "single_file") and fam.pipeline_only:
