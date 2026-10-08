@@ -261,16 +261,7 @@ export function SandboxTab() {
           data-settings-label={t("settings.sandbox.description")}
           className="text-xs text-muted-foreground"
         >
-          {t("settings.sandbox.description")}{" "}
-          <a
-            href={SANDBOX_DOCS_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
-          >
-            {t("settings.sandbox.readDocs")}
-          </a>
-          .
+          {t("settings.sandbox.description")}
         </p>
       </header>
       <PermissionsSection />

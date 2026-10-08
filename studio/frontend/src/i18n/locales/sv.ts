@@ -1275,7 +1275,6 @@ export const sv = {
         "Om verktygsanrop för Python och Terminal körs i en OS-sandlåda på den här datorn.",
       docs: "Dokumentation",
       docsLabel: "Öppna dokumentationen för sandlådan",
-      readDocs: "Läs dokumentationen för sandlådan",
       toolsSection: "Den här datorn",
       refresh: "Uppdatera",
       python: "Python",
@@ -2440,6 +2439,7 @@ export const sv = {
         "Det gick inte att läsa in alla kvantiseringar. Kommandot använder det tillgängliga modellvärdet.",
       generatedCommand: "Genererat kommando",
       docs: "Dokumentation",
+      docsLabel: "Öppna dokumentationen för unsloth start",
       agentDocs: "Öppna installationsdokumentation för {agent}",
       copyGeneratedCommand: "Kopiera genererat kommando",
       automaticSettingsNote:

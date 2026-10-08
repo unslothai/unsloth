@@ -1169,7 +1169,6 @@ export const de = {
       description: "Ob Python- und Terminal-Tool-Aufrufe auf diesem Computer in einer OS-Sandbox laufen.",
       docs: "Dokumentation",
       docsLabel: "Sandbox-Dokumentation öffnen",
-      readDocs: "Sandbox-Dokumentation lesen",
       toolsSection: "Dieser Computer",
       refresh: "Aktualisieren",
       python: "Python",
@@ -2295,6 +2294,7 @@ export const de = {
         "Es konnten nicht alle Quantisierungen geladen werden. Der Befehl verwendet den verfügbaren Modellwert.",
       generatedCommand: "Generierter Befehl",
       docs: "Dokumentation",
+      docsLabel: "Dokumentation zu unsloth start öffnen",
       agentDocs: "Einrichtungsdokumentation zu {agent} öffnen",
       copyGeneratedCommand: "Generierten Befehl kopieren",
       // English is the baseline until translated: the three-part sentence is assembled around an

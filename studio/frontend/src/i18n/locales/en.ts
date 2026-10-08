@@ -1248,7 +1248,6 @@ export const en = {
       description: "Whether Python and Terminal tool calls run inside an OS sandbox on this computer.",
       docs: "Docs",
       docsLabel: "Open the sandbox docs",
-      readDocs: "Read the sandbox docs",
       toolsSection: "This computer",
       refresh: "Refresh",
       python: "Python",
@@ -2342,6 +2341,7 @@ export const en = {
         "Couldn't load all quantizations. The command will use the available model value.",
       generatedCommand: "Generated command",
       docs: "Docs",
+      docsLabel: "Open the unsloth start docs",
       agentDocs: "Open {agent} setup docs",
       copyGeneratedCommand: "Copy generated command",
       automaticSettingsNote:

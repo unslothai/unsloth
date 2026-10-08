@@ -1163,7 +1163,6 @@ export const zhCN = {
       description: "Python 和终端工具调用是否在此计算机上的系统沙箱中运行。",
       docs: "文档",
       docsLabel: "打开沙盒文档",
-      readDocs: "阅读沙盒文档",
       toolsSection: "此计算机",
       refresh: "刷新",
       python: "Python",
@@ -2230,6 +2229,7 @@ export const zhCN = {
         "无法加载全部量化版本。命令将使用可用的模型值。",
       generatedCommand: "生成的命令",
       docs: "文档",
+      docsLabel: "打开 unsloth start 文档",
       agentDocs: "打开 {agent} 的配置文档",
       copyGeneratedCommand: "复制生成的命令",
       // English is the baseline until translated: the three-part sentence is assembled around an

@@ -1247,7 +1247,6 @@ export const he = {
         "האם קריאות לכלי Python ו-Terminal רצות בתוך ארגז חול של מערכת ההפעלה במחשב זה.",
       docs: "תיעוד",
       docsLabel: "פתח את תיעוד ארגז החול",
-      readDocs: "קרא את תיעוד ארגז החול",
       toolsSection: "מחשב זה",
       refresh: "רענון",
       python: "Python",
@@ -2362,6 +2361,7 @@ export const he = {
         "לא ניתן לטעון את כל הקוונטיזציות. הפקודה תשתמש בערך המודל הזמין.",
       generatedCommand: "פקודה שנוצרה",
       docs: "תיעוד",
+      docsLabel: "פתח את התיעוד של unsloth start",
       agentDocs: "פתח תיעוד הגדרה של {agent}",
       copyGeneratedCommand: "העתק פקודה שנוצרה",
       automaticSettingsNote:

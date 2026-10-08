@@ -1169,7 +1169,6 @@ export const fr = {
       description: "Indique si les appels d'outils Python et Terminal s'exécutent dans un bac à sable du système sur cet ordinateur.",
       docs: "Documentation",
       docsLabel: "Ouvrir la documentation du sandbox",
-      readDocs: "Lire la documentation du sandbox",
       toolsSection: "Cet ordinateur",
       refresh: "Actualiser",
       python: "Python",
@@ -2293,6 +2292,7 @@ export const fr = {
         "Impossible de charger toutes les quantifications. La commande utilisera la valeur de modèle disponible.",
       generatedCommand: "Commande générée",
       docs: "Documentation",
+      docsLabel: "Ouvrir la documentation de unsloth start",
       agentDocs: "Ouvrir la documentation de configuration de {agent}",
       copyGeneratedCommand: "Copier la commande générée",
       // English is the baseline until translated: the three-part sentence is assembled around an

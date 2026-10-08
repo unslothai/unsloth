@@ -1125,7 +1125,6 @@ export const it = {
       description: "Indica se le chiamate agli strumenti Python e Terminale vengono eseguite in una sandbox del sistema su questo computer.",
       docs: "Documentazione",
       docsLabel: "Apri la documentazione della sandbox",
-      readDocs: "Leggi la documentazione della sandbox",
       toolsSection: "Questo computer",
       refresh: "Aggiorna",
       python: "Python",
@@ -2254,6 +2253,7 @@ export const it = {
         "Impossibile caricare tutte le quantizzazioni. Il comando userà il valore del modello disponibile.",
       generatedCommand: "Comando generato",
       docs: "Documentazione",
+      docsLabel: "Apri la documentazione di unsloth start",
       agentDocs: "Apri la documentazione di configurazione di {agent}",
       copyGeneratedCommand: "Copia il comando generato",
       // English is the baseline until translated: the three-part sentence is assembled around an

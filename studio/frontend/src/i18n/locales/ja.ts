@@ -1167,7 +1167,6 @@ export const ja = {
       description: "このコンピューターで Python とターミナルのツール呼び出しを OS サンドボックス内で実行するかどうか。",
       docs: "ドキュメント",
       docsLabel: "サンドボックスのドキュメントを開く",
-      readDocs: "サンドボックスのドキュメントを読む",
       toolsSection: "このコンピューター",
       refresh: "更新",
       python: "Python",
@@ -2244,6 +2243,7 @@ export const ja = {
         "すべての量子化を読み込めませんでした。コマンドには取得できたモデル名を使用します。",
       generatedCommand: "生成されたコマンド",
       docs: "ドキュメント",
+      docsLabel: "unsloth start のドキュメントを開く",
       agentDocs: "{agent} のセットアップドキュメントを開く",
       copyGeneratedCommand: "生成されたコマンドをコピー",
       // English is the baseline until translated: the three-part sentence is assembled around an

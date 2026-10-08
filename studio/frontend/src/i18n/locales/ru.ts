@@ -1167,7 +1167,6 @@ export const ru = {
       description: "Выполняются ли вызовы инструментов Python и терминала в песочнице ОС на этом компьютере.",
       docs: "Документация",
       docsLabel: "Открыть документацию по песочнице",
-      readDocs: "Читать документацию по песочнице",
       toolsSection: "Этот компьютер",
       refresh: "Обновить",
       python: "Python",
@@ -2271,6 +2270,7 @@ export const ru = {
         "Не удалось загрузить все квантизации. Команда использует доступное значение модели.",
       generatedCommand: "Сформированная команда",
       docs: "Документация",
+      docsLabel: "Открыть документацию по unsloth start",
       agentDocs: "Открыть документацию по настройке {agent}",
       copyGeneratedCommand: "Копировать сформированную команду",
       // English is the baseline until translated: the three-part sentence is assembled around an

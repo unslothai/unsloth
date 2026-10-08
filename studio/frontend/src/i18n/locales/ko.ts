@@ -1165,7 +1165,6 @@ export const ko = {
       description: "이 컴퓨터에서 Python 및 터미널 도구 호출을 OS 샌드박스 안에서 실행할지 여부입니다.",
       docs: "문서",
       docsLabel: "샌드박스 문서 열기",
-      readDocs: "샌드박스 문서 읽기",
       toolsSection: "이 컴퓨터",
       refresh: "새로 고침",
       python: "Python",
@@ -2260,6 +2259,7 @@ export const ko = {
         "양자화 목록을 불러오지 못했습니다. 명령은 사용 가능한 모델 값을 사용합니다.",
       generatedCommand: "생성된 명령",
       docs: "문서",
+      docsLabel: "unsloth start 문서 열기",
       agentDocs: "{agent} 설정 문서 열기",
       copyGeneratedCommand: "생성된 명령 복사",
       automaticSettingsNote:

@@ -1168,7 +1168,6 @@ export const hi = {
       description: "क्या इस कंप्यूटर पर Python और टर्मिनल टूल कॉल OS सैंडबॉक्स के अंदर चलती हैं।",
       docs: "दस्तावेज़",
       docsLabel: "सैंडबॉक्स दस्तावेज़ खोलें",
-      readDocs: "सैंडबॉक्स दस्तावेज़ पढ़ें",
       toolsSection: "यह कंप्यूटर",
       refresh: "रीफ़्रेश करें",
       python: "Python",
@@ -2267,6 +2266,7 @@ export const hi = {
         "सभी क्वांटाइज़ेशन लोड नहीं हो सके। कमांड उपलब्ध मॉडल मान का उपयोग करेगा।",
       generatedCommand: "बनाया गया कमांड",
       docs: "दस्तावेज़",
+      docsLabel: "unsloth start दस्तावेज़ खोलें",
       agentDocs: "{agent} के सेटअप दस्तावेज़ खोलें",
       copyGeneratedCommand: "बनाया गया कमांड कॉपी करें",
       // English is the baseline until translated: the three-part sentence is assembled around an

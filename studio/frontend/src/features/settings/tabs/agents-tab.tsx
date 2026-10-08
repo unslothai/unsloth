@@ -1268,12 +1268,24 @@ export function AgentsTab() {
     <div className="settings-page">
       {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
-        <h1
-          data-settings-label={t("settings.agents.title")}
-          className="text-xl font-semibold font-heading"
-        >
-          {t("settings.agents.title")}
-        </h1>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h1
+            data-settings-label={t("settings.agents.title")}
+            className="text-xl font-semibold font-heading"
+          >
+            {t("settings.agents.title")}
+          </h1>
+          <a
+            href={DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={t("settings.agents.docsLabel")}
+            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {t("settings.agents.docs")}
+            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+          </a>
+        </div>
         <p
           data-settings-label={t("settings.agents.description")}
           className="text-xs text-muted-foreground"
@@ -1297,16 +1309,7 @@ export function AgentsTab() {
         >
           unsloth start
         </a>{" "}
-        {t("settings.agents.intro")}{" "}
-        <a
-          href={DOCS_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
-        >
-          {t("settings.agents.readDocs")}
-        </a>
-        .
+        {t("settings.agents.intro")}
       </p>
 
       {/* Shared track + pill selector. The legend is sr-only: the two shell

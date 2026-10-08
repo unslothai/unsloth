@@ -1165,7 +1165,6 @@ export const ar = {
       description: "ما إذا كانت استدعاءات أدوات Python والطرفية تعمل داخل وضع حماية نظام التشغيل على هذا الكمبيوتر.",
       docs: "التوثيق",
       docsLabel: "فتح توثيق وضع الحماية",
-      readDocs: "قراءة توثيق وضع الحماية",
       toolsSection: "هذا الكمبيوتر",
       refresh: "تحديث",
       python: "Python",
@@ -2264,6 +2263,7 @@ export const ar = {
         "تعذّر تحميل جميع أنواع التكميم. سيستخدم الأمر قيمة النموذج المتاحة.",
       generatedCommand: "الأمر المُنشأ",
       docs: "التوثيق",
+      docsLabel: "فتح توثيق unsloth start",
       agentDocs: "فتح توثيق إعداد {agent}",
       copyGeneratedCommand: "نسخ الأمر المُنشأ",
       // English is the baseline until translated: the three-part sentence is assembled around an

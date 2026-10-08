@@ -1167,7 +1167,6 @@ export const ptBR = {
       description: "Indica se as chamadas de ferramentas de Python e Terminal rodam dentro de um sandbox do sistema neste computador.",
       docs: "Documentação",
       docsLabel: "Abrir a documentação do sandbox",
-      readDocs: "Leia a documentação do sandbox",
       toolsSection: "Este computador",
       refresh: "Atualizar",
       python: "Python",
@@ -2277,6 +2276,7 @@ export const ptBR = {
         "Não foi possível carregar todas as quantizações. O comando usará o valor de modelo disponível.",
       generatedCommand: "Comando gerado",
       docs: "Documentação",
+      docsLabel: "Abrir a documentação do unsloth start",
       agentDocs: "Abrir a documentação de configuração do {agent}",
       copyGeneratedCommand: "Copiar comando gerado",
       // English is the baseline until translated: the three-part sentence is assembled around an
