@@ -512,3 +512,32 @@ test("a native page begun beside a temporary chat keeps it through a redirect an
     stop();
   }
 });
+
+test("a new address asked for beside a temporary chat stays temporary when its native load starts after it", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const stop = startNativeViews();
+  const g = globalThis as { nativeViewListener?: (event: { payload: unknown }) => void; nativeViewVisits?: unknown };
+  try {
+    useBrowserStore.getState().openUrl("https://example.info/", { newTab: true });
+    await frame();
+    const tabId = useBrowserStore.getState().activeTabId as string;
+    const visits: { url: string; temporary: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    load("https://example.info/", true);
+    load("https://example.info/", false);
+    useChatRuntimeStore.getState().setIncognito(true);
+    useBrowserStore.getState().navigate(tabId, { url: "https://example.info/private" });
+    useChatRuntimeStore.getState().setIncognito(false);
+    load("https://example.info/private", true);
+    load("https://example.info/private", false);
+    assert.deepEqual(visits, [
+      { url: "https://example.info/", temporary: false },
+      { url: "https://example.info/private", temporary: true },
+    ]);
+  } finally {
+    useChatRuntimeStore.getState().setIncognito(false);
+    stop();
+  }
+});

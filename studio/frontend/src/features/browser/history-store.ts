@@ -137,8 +137,9 @@ export const useBrowserHistoryStore = create<BrowserHistoryState>()(
           const icons = kept.length < state.history.length ? iconsFor(history, state.icons) : state.icons;
           return { history, icons };
         }),
-      recordDownload: (item, temporary = false) => {
-        if (!useBrowserPrefsStore.getState().saveDownloadHistory || temporary || useChatRuntimeStore.getState().incognito) {
+      recordDownload: (item, temporary) => {
+        // Callers that took the state when the download began pass it; the rest go by the chat shown now.
+        if (!useBrowserPrefsStore.getState().saveDownloadHistory || (temporary ?? useChatRuntimeStore.getState().incognito)) {
           if (item.nativeId) forgetNativeDownloads([item.nativeId]);
           return undefined;
         }

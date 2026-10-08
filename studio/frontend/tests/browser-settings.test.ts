@@ -201,6 +201,15 @@ test("Save link as from a temporary chat stays unlisted when its fetch lands aft
   }
 });
 
+test("a download begun beside a normal chat is listed though it lands while a temporary chat is shown", () => {
+  const history = useBrowserHistoryStore.getState();
+  history.clearDownloads();
+  useChatRuntimeStore.getState().setIncognito(true);
+  history.recordDownload(download, false);
+  useChatRuntimeStore.getState().setIncognito(false);
+  assert.equal(useBrowserHistoryStore.getState().downloads.length, 1);
+});
+
 test("shortening how long history is kept drops older visits at once", () => {
   const now = Date.now();
   useBrowserPrefsStore.getState().setHistoryRetentionDays(0);
