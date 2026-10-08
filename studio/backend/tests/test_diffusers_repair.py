@@ -23,6 +23,7 @@ import utils.diffusers_repair as dr  # noqa: E402
 _REAL_PEER_HOLDS_PASS = dr._peer_holds_pass
 _REAL_INSTALLER_WOULD_SKIP = dr._installer_would_skip
 _REAL_LOADED_REPLACEABLE = dr._loaded_replaceable_modules
+_REAL_MAIN_PIN_ACTIVE = dr._main_pin_active
 
 
 class _Dist:
@@ -40,8 +41,11 @@ def _reset(monkeypatch):
     monkeypatch.delenv(dr.DISABLE_ENV_VAR, raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(dr, "_peer_holds_pass", lambda: False)
-    monkeypatch.setattr(dr, "_installer_would_skip", lambda: False)
+    monkeypatch.setattr(dr, "_installer_would_skip", lambda *a, **k: False)
     monkeypatch.setattr(dr, "_loaded_replaceable_modules", lambda: [])
+    # The git-main route, as when diffusers-main.txt carries an uncommented commit. The shipped
+    # file pins nothing (release mode), which the tests at the end of this file cover.
+    monkeypatch.setattr(dr, "_main_pin_active", lambda: True)
 
 
 def _installed_diffusers(monkeypatch, direct_url):
@@ -437,3 +441,58 @@ def test_the_installer_exposes_the_repair_flag():
     source = dr._INSTALLER.read_text(encoding = "utf-8")
     assert '["--repair-diffusers-main"]' in source
     assert '["--prefetch-diffusers-main"]' in source
+
+
+# Release mode: the SHIPPED diffusers-main.txt pins nothing, so the target is diffusers-pin.txt.
+
+
+def _release_mode(monkeypatch, installed):
+    import importlib.metadata
+
+    monkeypatch.setattr(dr, "_main_pin_active", _REAL_MAIN_PIN_ACTIVE)
+    monkeypatch.setattr(dr, "_installer_would_skip", _REAL_INSTALLER_WOULD_SKIP)
+    real_version = importlib.metadata.version
+    monkeypatch.setattr(
+        importlib.metadata,
+        "version",
+        lambda name: installed if name == "diffusers" else real_version(name),
+    )
+
+
+def test_the_shipped_main_pin_is_inactive():
+    assert _REAL_MAIN_PIN_ACTIVE() is False
+
+
+@pytest.mark.parametrize("installed", ["0.41.0", "0.41.0.dev0"])
+def test_a_current_release_starts_nothing(monkeypatch, installed):
+    _release_mode(monkeypatch, installed)
+    _installed_diffusers(monkeypatch, None)  # an index install, which main mode would repair
+    monkeypatch.setattr(dr, "_run_installer", lambda *a, **k: pytest.fail("started a repair"))
+    lines = []
+    assert dr.repair_diffusers_before_imports(lines.append) is False and lines == []
+
+
+@pytest.mark.parametrize("env", [{}, {"UNSLOTH_DIFFUSERS_MAIN": "0"}])
+def test_a_release_behind_the_pin_is_repaired_without_a_prefetch(monkeypatch, env):
+    """UNSLOTH_DIFFUSERS_MAIN=0 asks for the release, which is what this installs."""
+    _release_mode(monkeypatch, "0.40.0")
+    # An old git-main failure must not strand the PyPI release.
+    _manifest(monkeypatch, {"diffusers_main_repair": "failed"})
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    flags = []
+    monkeypatch.setattr(
+        dr, "_run_installer", lambda flag, timeout: flags.append(flag) or (dr._INSTALLED, "")
+    )
+    assert dr.repair_diffusers_before_imports() is True
+    assert flags == ["--repair-diffusers-main"]
+
+
+def test_release_mode_honours_the_autorepair_opt_out_and_its_own_failure(monkeypatch):
+    _release_mode(monkeypatch, "0.40.0")
+    monkeypatch.setattr(dr, "_run_installer", lambda *a, **k: pytest.fail("started a repair"))
+    _manifest(monkeypatch, {"diffusers_release_repair": "failed"})
+    assert dr.repair_diffusers_before_imports() is False
+    _manifest(monkeypatch, {})
+    monkeypatch.setenv(dr.DISABLE_ENV_VAR, "1")
+    assert dr.repair_diffusers_before_imports() is False
