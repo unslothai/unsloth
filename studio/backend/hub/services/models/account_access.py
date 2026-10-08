@@ -268,8 +268,16 @@ def join_resident(modality: str) -> None:
     if not policy.installation_has_managed_accounts():
         return
     require_live_account()
+    from core.inference import gpu_arbiter
+
+    # A resident loaded before the first managed account has no sharers yet: seed its loader,
+    # or the joiner would be the sole sharer and its unload a teardown of the loader's model.
+    loader = gpu_arbiter.owner_account() if gpu_arbiter.current_owner() == modality else None
     with _sharers_lock:
-        _resident_sharers.setdefault(modality, set()).add(current_account_id())
+        sharers = _resident_sharers.setdefault(modality, set())
+        if not sharers and loader is not None:
+            sharers.add(loader)
+        sharers.add(current_account_id())
 
 
 def release_shared_resident(modality: str) -> bool:

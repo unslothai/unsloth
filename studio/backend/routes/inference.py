@@ -18275,7 +18275,18 @@ async def _load_model_impl(
                 == tuple(request._gguf_companion_roots)
                 and getattr(llama_backend, "_openai_gguf_companion_state", ())
                 == gguf_companion_state
-                and llama_backend.adopt_load_intent_if_matched(intent)
+                and (
+                    llama_backend.adopt_load_intent_if_matched(intent)
+                    # Status hid this resident from the caller (#12365), so a capacity or
+                    # placement mismatch is its defaults, not a reconfiguration: join at the
+                    # resident's runtime, adopting nothing. Apply (force_reload) and different
+                    # components (template, extras, vision, drafter) still replace.
+                    or (
+                        replacing
+                        and account_access.resident_hidden("chat", llama_backend.model_identifier)
+                        and llama_backend.components_match_intent(intent)
+                    )
+                )
                 and getattr(llama_backend, "_audio_probed", True)
             ):
                 return None

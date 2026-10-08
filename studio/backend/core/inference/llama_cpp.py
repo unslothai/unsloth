@@ -32663,6 +32663,36 @@ class LlamaCppBackend:
                 return False
         return (self._hf_variant or "").lower() == (intent.hf_variant or "").lower()
 
+    def components_match_intent(self, intent: GgufLoadIntent) -> bool:
+        """Same weights and caller-authored components; capacity and placement may differ.
+
+        Another account joining the resident (#12365) never saw its context, slots, cache, batch or
+        GPU placement, so those may differ. What changes the output or loads extra files may not:
+        the chat template, the extras (``--lora``, drafters), vision, speculative mode and the
+        reasoning budget, all compared the way ``_runtime_matches_intent`` compares them.
+        """
+        if intent.force_reload or not self.matches_load_source(intent):
+            return False
+        requested = self.requested_extra_args
+        extras = requested if intent.extra_args_inherited else intent.extra_args
+        if tuple(extras or ()) != tuple(requested or ()):
+            return False
+        if (self._chat_template_override or None) != (intent.chat_template_override or None):
+            return False
+        if not self._is_diffusion and (
+            bool(self._disable_vision) != bool(intent.disable_vision)
+            or self._requested_reasoning_budget
+            != resolve_reasoning_budget(extras, intent.reasoning_budget)
+            or self._requested_reasoning_budget_message
+            != resolve_reasoning_budget_message(extras, intent.reasoning_budget_message)
+        ):
+            return False
+        if _extra_args_set_spec_type(extras):
+            return self._requested_spec_mode is None
+        return (_canonicalize_spec_mode(intent.speculative_type) or "auto") == (
+            self._requested_spec_mode or "auto"
+        )
+
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
     ) -> Optional[bool]:
