@@ -268,15 +268,23 @@ def join_resident(modality: str) -> None:
     if not policy.installation_has_managed_accounts():
         return
     require_live_account()
-    from core.inference import gpu_arbiter
-
     # No sharers yet (loaded pre-accounts): seed the loader so the joiner's unload keeps it.
-    loader = gpu_arbiter.owner_account() if gpu_arbiter.current_owner() == modality else None
+    loader = _resident_loader(modality)
     with _sharers_lock:
         sharers = _resident_sharers.setdefault(modality, set())
         if not sharers and loader is not None:
             sharers.add(loader)
         sharers.add(current_account_id())
+
+
+def _resident_loader(modality: str) -> str | None:
+    """The publish record (zero-VRAM residents drop the GPU claim), else the GPU claim."""
+    recorded = _resident_accounts.get(modality)
+    if recorded is not None:
+        return recorded[0]
+    from core.inference import gpu_arbiter
+
+    return gpu_arbiter.owner_account() if gpu_arbiter.current_owner() == modality else None
 
 
 def release_shared_resident(modality: str) -> bool:
@@ -381,9 +389,7 @@ def joins_resident_runtime(modality: str, reference: str | None = None) -> bool:
         return True
     if not managed_account() or not resident_shared_with(modality, current_account_id()):
         return False
-    from core.inference import gpu_arbiter
-
-    return gpu_arbiter.owner_account() != current_account_id()
+    return _resident_loader(modality) != current_account_id()
 
 
 def hidden_resident_response():

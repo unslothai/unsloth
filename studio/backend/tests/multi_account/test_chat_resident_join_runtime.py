@@ -208,3 +208,11 @@ def test_inherited_extras_do_not_join_a_resident_with_extras(strict, accounts):
     with pytest.raises(ReachedReplacement):
         load(accounts["alice"])
     assert accounts["alice"].account_id not in access._resident_sharers["chat"]
+
+
+def test_a_zero_vram_loader_changing_its_own_runtime_still_replaces(monkeypatch, strict, accounts):
+    # A zero-VRAM resident drops the CHAT claim; the loader comes from the publish record.
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setattr(gpu_arbiter, "_owner_account", None)
+    with pytest.raises(ReachedReplacement):
+        load(accounts["bob"], n_parallel = 4)
