@@ -265,11 +265,13 @@ def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
     ``sdxl`` files are read, so chat GGUFs never pay for a second header parse."""
     try:
         from core.inference.diffusion_content import whole_pipeline_gguf_family
+
         family = whole_pipeline_gguf_family(str(path))
         if family is None:
             return None
         from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family
+
         buildable = family_buildable_here(detect_family("", override = family), model_kind = "gguf")
     except Exception:
         return None

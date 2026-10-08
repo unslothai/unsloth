@@ -3213,8 +3213,10 @@ class DiffusionBackend:
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
         # A family whose single file IS the whole pipeline loads a GGUF only when it carries the whole pipeline too
         # (stable-diffusion.cpp ``convert`` of a checkpoint); a denoiser-only GGUF has no companions to pair with.
-        if kind == "gguf" and fam.single_file_is_pipeline and not _whole_pipeline_gguf_pick(
-            repo_id, gguf_filename
+        if (
+            kind == "gguf"
+            and fam.single_file_is_pipeline
+            and not _whole_pipeline_gguf_pick(repo_id, gguf_filename)
         ):
             raise ValueError(
                 f"'{fam.name}' checkpoints are whole-pipeline single files, so a GGUF loads only when it "
@@ -7136,7 +7138,9 @@ class DiffusionBackend:
                                     getattr(pipe, fam.denoiser_attr), dtype, logger
                                 )
                             else:
-                                pipe = pipeline_cls.from_single_file(single_file_path, **sf_pipe_kwargs)
+                                pipe = pipeline_cls.from_single_file(
+                                    single_file_path, **sf_pipe_kwargs
+                                )
                         else:
                             # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
                             sf_kwargs: dict[str, Any] = {

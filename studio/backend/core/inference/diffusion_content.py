@@ -581,7 +581,6 @@ def whole_pipeline_gguf_family(path: Optional[str]) -> Optional[str]:
         return None
     try:
         from .diffusion_families import detect_family
-
         fam = detect_family("", override = info.family)
     except Exception:  # noqa: BLE001 - no registry: not a pick this module can vouch for
         return None

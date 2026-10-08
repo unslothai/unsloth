@@ -30,7 +30,11 @@ _UNET = {k: v for k, v in _SHAPES.items() if k.startswith("model.diffusion_model
 _NO_VAE = {k: v for k, v in _SHAPES.items() if not k.startswith("first_stage_model.")}
 
 
-def _write_gguf(path: Path, shapes: dict, arch: str | None = None) -> Path:
+def _write_gguf(
+    path: Path,
+    shapes: dict,
+    arch: str | None = None,
+) -> Path:
     """A GGUF header with ``shapes`` and, like sd.cpp's convert, no metadata unless ``arch`` is given."""
 
     def s(text):
@@ -58,7 +62,12 @@ def test_fixture_is_the_three_part_sd_cpp_layout():
 def test_whole_pipeline_gguf_is_an_sdxl_checkpoint(tmp_path):
     path = _write_gguf(tmp_path / "RealVisXL_V4.0-q8_0.gguf", _SHAPES)
     info = dc.inspect_checkpoint(str(path))
-    assert (info.role, info.family, info.page, info.whole_pipeline) == ("dit", "sdxl", "image", True)
+    assert (info.role, info.family, info.page, info.whole_pipeline) == (
+        "dit",
+        "sdxl",
+        "image",
+        True,
+    )
     assert dc.whole_pipeline_gguf_family(str(path)) == "sdxl"
 
 
@@ -92,7 +101,9 @@ def test_denoiser_only_sdxl_gguf_keeps_its_old_classification(tmp_path):
 
 
 def test_llm_gguf_classification_is_unchanged(tmp_path):
-    path = _write_gguf(tmp_path / "Qwen3-0.6B-Q8_0.gguf", {"token_embd.weight": [151936, 1024]}, "qwen3")
+    path = _write_gguf(
+        tmp_path / "Qwen3-0.6B-Q8_0.gguf", {"token_embd.weight": [151936, 1024]}, "qwen3"
+    )
     assert cc._gguf_file_task(path, ()) == "text-generation"
     # An arch-less GGUF that is not a diffusion checkpoint falls back exactly as before.
     other = _write_gguf(tmp_path / "mystery.gguf", {"blk.0.attn_q.weight": [8, 8]})
@@ -123,7 +134,6 @@ def test_comfy_checkpoints_layout_validates_too(tmp_path):
 @pytest.mark.parametrize("shapes", [_UNET, _NO_VAE], ids = ["unet_only", "no_vae"])
 def test_validation_refuses_a_partial_sdxl_gguf_precisely(tmp_path, shapes):
     from core.inference.diffusion import get_diffusion_backend
-
     _write_gguf(tmp_path / "sdxl_unet-q8_0.gguf", shapes)
     with pytest.raises(ValueError, match = "also carries the text encoders and VAE"):
         get_diffusion_backend().validate_load_request(
@@ -133,16 +143,22 @@ def test_validation_refuses_a_partial_sdxl_gguf_precisely(tmp_path, shapes):
 
 def test_validation_refuses_a_hub_sdxl_gguf(tmp_path):
     from core.inference.diffusion import get_diffusion_backend
-
     with pytest.raises(ValueError, match = "on disk"):
         get_diffusion_backend().validate_load_request(
-            "someone/sdxl-gguf", gguf_filename = "sdxl-q8_0.gguf", model_kind = "gguf", family_override = "sdxl"
+            "someone/sdxl-gguf",
+            gguf_filename = "sdxl-q8_0.gguf",
+            model_kind = "gguf",
+            family_override = "sdxl",
         )
 
 
 def test_the_load_branch_routes_whole_pipeline_ggufs_to_the_bundle_loader():
-    src = (Path(__file__).parents[1] / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
-    branch = src[src.index('elif kind in ("single_file", "gguf") and fam.single_file_is_pipeline:') :]
+    src = (Path(__file__).parents[1] / "core" / "inference" / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    branch = src[
+        src.index('elif kind in ("single_file", "gguf") and fam.single_file_is_pipeline:') :
+    ]
     branch = branch[: branch.index("\n                        else:\n")]
     assert "load_whole_pipeline_gguf(" in branch
     assert "_dequantize_gguf_outside_linears(" in branch
@@ -205,7 +221,11 @@ def test_bundle_loader_redirects_only_its_own_file(monkeypatch):
         Pipe,
         Unet,
         "/m/RealVisXL_V4.0-q8_0.gguf",
-        {"config": "stabilityai/stable-diffusion-xl-base-1.0", "local_files_only": True, "torch_dtype": "bf16"},
+        {
+            "config": "stabilityai/stable-diffusion-xl-base-1.0",
+            "local_files_only": True,
+            "torch_dtype": "bf16",
+        },
         dtype = "bf16",
     )
     assert out == "PIPE"
