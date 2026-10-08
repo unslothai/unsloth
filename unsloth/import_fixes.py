@@ -5157,9 +5157,8 @@ def patch_bitsandbytes_paged_optimizer_resume():
                 if not state:
                     continue
                 for key, value in state.items():
+                    # No is_paged check: torch.save keeps that attribute, so a loaded host copy still claims it.
                     if key not in non_castable or not isinstance(value, torch.Tensor):
-                        continue
-                    if getattr(value, "is_paged", False):
                         continue
                     buffer = None
                     if move_to_device and key in ("state1", "state2") and p.device.type != "cpu":

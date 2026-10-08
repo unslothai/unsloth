@@ -60,15 +60,24 @@ _RUNNER = textwrap.dedent(
 
     resumed_params = [torch.nn.Parameter(p.detach().clone()) for p in params]
     resumed = Optim(resumed_params, lr = 1e-2)
+    managed = bnb.functional.GlobalPageManager.get_instance().paged_tensors
+
+    def is_managed(t):
+        return any(t is m for m in managed)
+
+    def paged(o, p):
+        return {k: is_managed(o.state[p][k]) for k in ("state1", "state2") if k in o.state[p]}
+
+    def placed(o, p):  # every tensor is managed or on the parameter's device, as in a fresh run
+        return all(is_managed(v) or v.device == p.device for v in o.state[p].values() if torch.is_tensor(v))
+
     torch.cuda.synchronize(); before_load = torch.cuda.memory_allocated()
     resumed.load_state_dict(saved)
     torch.cuda.synchronize(); load_cuda_bytes = torch.cuda.memory_allocated() - before_load
-    after_load = {k: bool(getattr(resumed.state[resumed_params[0]][k], "is_paged", False)) for k in ("state1", "state2") if k in resumed.state[resumed_params[0]]}
+    after_load = paged(resumed, resumed_params[0])
+    placed_after_load = all(placed(resumed, p) for p in resumed_params)
     for g in grads[2:]:
         step(opt, params, g); step(resumed, resumed_params, g)
-
-    def paged(o, p):
-        return {k: bool(getattr(o.state[p][k], "is_paged", False)) for k in ("state1", "state2") if k in o.state[p]}
 
     state_bytes = sum(v.numel() * v.element_size() for k, v in opt.state[params[0]].items() if k in ("state1", "state2"))
     print(json.dumps({
@@ -76,6 +85,7 @@ _RUNNER = textwrap.dedent(
         "load_cuda_bytes": load_cuda_bytes,
         "fresh_paged": paged(opt, params[0]),
         "after_load_paged": after_load,
+        "placed_after_load": placed_after_load,
         "resumed_paged": paged(resumed, resumed_params[0]),
         "resumed_small_paged": paged(resumed, resumed_params[1]),
         "max_abs_diff": max((a - b).abs().max().item() for a, b in zip(params, resumed_params)),
@@ -115,6 +125,7 @@ def test_resumed_paged_optimizer_state_stays_paged(optim_name):
     # Paged from the load on, so the first resumed forward and backward never hold it in the
     # CUDA allocator (a fresh run has no state there yet), and never staged there whole either.
     assert fixed["after_load_paged"] == fixed["resumed_paged"] == fixed["fresh_paged"]
+    assert fixed["placed_after_load"]
     assert fixed["load_cuda_bytes"] < fixed["state_bytes"] // 4
     assert not any(fixed["resumed_small_paged"].values())
     # Resuming continues the same trajectory as never stopping.
@@ -125,4 +136,5 @@ def test_non_paged_optimizer_untouched():
     base = _run("base", "AdamW8bit")
     fixed = _run("fixed", "AdamW8bit")
     assert base == fixed
+    assert fixed["placed_after_load"]
     assert not any(fixed["resumed_paged"].values())
