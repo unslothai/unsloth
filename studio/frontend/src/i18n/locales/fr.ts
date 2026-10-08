@@ -3464,7 +3464,6 @@ export const fr = {
       offloadVramBudgetTooltip: "La VRAM maximale que cet entraînement peut utiliser. Auto décharge assez de couches pour rester en dessous, et deux entraînements peuvent partager une carte. Vide utilise toute la carte.",
       offloadWholeCard: "toute la carte",
       offloadVramBudgetGpu: "Budget VRAM GPU {index} (Gio)",
-      offloadVramBudgetPerGpuTooltip: "La VRAM maximale que cet entraînement peut utiliser sur {name}. Auto décharge assez de couches pour rester sous le budget de chaque carte. Vide utilise toute la carte.",
       prefetchDepth: "Profondeur de préchargement",
       prefetchDepthTooltip: "Nombre de couches déchargées copiées avant celle qui s'exécute. Auto commence à 1 et ne garde une réserve plus profonde que si elle réduit l'attente des copies de façon mesurable.",
       offloadPanelTitle: "Couches déchargées",

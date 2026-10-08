@@ -3387,7 +3387,6 @@ export const ko = {
       offloadVramBudgetTooltip: "이 학습이 쓸 수 있는 최대 VRAM입니다. 자동은 그 안에 맞도록 레이어를 오프로드하고, 두 학습이 카드 하나를 나눠 쓸 수 있습니다. 비우면 카드 전체를 씁니다.",
       offloadWholeCard: "카드 전체",
       offloadVramBudgetGpu: "GPU {index} VRAM 예산 (GiB)",
-      offloadVramBudgetPerGpuTooltip: "이 학습이 {name}에서 쓸 수 있는 최대 VRAM입니다. 자동은 카드마다 예산 안에 맞도록 레이어를 오프로드합니다. 비우면 카드 전체를 씁니다.",
       prefetchDepth: "프리페치 깊이",
       prefetchDepthTooltip: "실행 중인 레이어보다 먼저 복사할 오프로드 레이어 수입니다. 자동은 1에서 시작해 복사 대기가 실제로 줄 때만 깊게 유지합니다.",
       offloadPanelTitle: "오프로드된 레이어",

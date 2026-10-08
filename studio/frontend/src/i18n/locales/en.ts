@@ -3458,7 +3458,6 @@ export const en = {
       offloadVramBudgetTooltip: "The most VRAM this run may use. Auto offloads enough layers to fit under it, and two runs can share one card by each taking part of it. Empty uses the whole card.",
       offloadWholeCard: "whole card",
       offloadVramBudgetGpu: "GPU {index} VRAM budget (GiB)",
-      offloadVramBudgetPerGpuTooltip: "The most VRAM this run may use on {name}. Auto offloads enough layers to fit under each card's own budget. Empty uses the whole card.",
       prefetchDepth: "Prefetch depth",
       prefetchDepthTooltip: "How many offloaded layers are copied ahead of the one running. Auto starts at 1 and keeps a deeper pool only while it measurably cuts waiting on copies.",
       offloadPanelTitle: "Offloaded layers",

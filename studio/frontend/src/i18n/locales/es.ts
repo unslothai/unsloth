@@ -3449,7 +3449,6 @@ export const es = {
       offloadVramBudgetTooltip: "La VRAM máxima que puede usar este entrenamiento. Auto descarga las capas necesarias para caber, y dos entrenamientos pueden compartir una tarjeta. Vacío usa toda la tarjeta.",
       offloadWholeCard: "toda la tarjeta",
       offloadVramBudgetGpu: "Presupuesto de VRAM GPU {index} (GiB)",
-      offloadVramBudgetPerGpuTooltip: "La VRAM máxima que puede usar este entrenamiento en {name}. Auto descarga las capas necesarias para caber en el presupuesto de cada tarjeta. Vacío usa toda la tarjeta.",
       prefetchDepth: "Profundidad de precarga",
       prefetchDepthTooltip: "Cuántas capas descargadas se copian antes de la que se ejecuta. Auto empieza en 1 y solo mantiene más si reduce de forma medible la espera de copias.",
       offloadPanelTitle: "Capas descargadas",

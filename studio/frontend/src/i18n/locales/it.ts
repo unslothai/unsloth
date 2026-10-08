@@ -3457,7 +3457,6 @@ export const it = {
       offloadVramBudgetTooltip: "La VRAM massima che questo addestramento può usare. Auto scarica abbastanza livelli per restare sotto, e due addestramenti possono condividere una scheda. Vuoto usa tutta la scheda.",
       offloadWholeCard: "tutta la scheda",
       offloadVramBudgetGpu: "Budget VRAM GPU {index} (GiB)",
-      offloadVramBudgetPerGpuTooltip: "La VRAM massima che questo addestramento può usare su {name}. Auto scarica abbastanza livelli per restare sotto il budget di ogni scheda. Vuoto usa tutta la scheda.",
       prefetchDepth: "Profondità di prefetch",
       prefetchDepthTooltip: "Quanti livelli scaricati vengono copiati prima di quello in esecuzione. Auto parte da 1 e tiene una riserva più profonda solo se riduce in modo misurabile l'attesa delle copie.",
       offloadPanelTitle: "Livelli scaricati",

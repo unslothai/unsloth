@@ -3348,7 +3348,6 @@ export const ja = {
       offloadVramBudgetTooltip: "この学習が使えるVRAMの上限です。自動はその範囲に収まるようにオフロードし、2つの学習で1枚のカードを分け合えます。空欄ならカード全体を使います。",
       offloadWholeCard: "カード全体",
       offloadVramBudgetGpu: "GPU {index} のVRAM予算 (GiB)",
-      offloadVramBudgetPerGpuTooltip: "{name} でこの学習が使えるVRAMの上限です。自動は各カードの予算に収まるようにオフロードします。空欄ならカード全体を使います。",
       prefetchDepth: "プリフェッチ深度",
       prefetchDepthTooltip: "実行中の層より先にコピーするオフロード層の数です。自動は1から始め、コピー待ちが実際に減る場合だけ深くします。",
       offloadPanelTitle: "オフロード層",

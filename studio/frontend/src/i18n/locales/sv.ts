@@ -3614,7 +3614,6 @@ export const sv = {
       offloadVramBudget: "VRAM-budget (GiB)",
       offloadVramBudgetTooltip: "Det mesta VRAM den här körningen får använda. Auto avlastar tillräckligt många lager för att hålla sig under det, och två körningar kan dela ett kort genom att ta varsin del. Tomt använder hela kortet.",
       offloadVramBudgetGpu: "VRAM-budget för GPU {index} (GiB)",
-      offloadVramBudgetPerGpuTooltip: "Det mesta VRAM den här körningen får använda på {name}. Auto avlastar tillräckligt många lager för att hålla sig under varje korts egen budget. Tomt använder hela kortet.",
       offloadWholeCard: "hela kortet",
       prefetchDepth: "Förhämtningsdjup",
       prefetchDepthTooltip: "Hur många avlastade lager som kopieras i förväg före det som körs. Auto börjar på 1 och behåller en djupare pool bara så länge den mätbart minskar väntan på kopior.",

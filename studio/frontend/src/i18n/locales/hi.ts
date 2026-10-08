@@ -3403,7 +3403,6 @@ export const hi = {
       offloadVramBudgetTooltip: "यह रन अधिकतम कितना VRAM इस्तेमाल कर सकता है। ऑटो इसके भीतर रहने लायक परतें ऑफ़लोड करता है, और दो रन एक कार्ड बाँट सकते हैं। खाली छोड़ने पर पूरा कार्ड।",
       offloadWholeCard: "पूरा कार्ड",
       offloadVramBudgetGpu: "GPU {index} VRAM बजट (GiB)",
-      offloadVramBudgetPerGpuTooltip: "यह रन {name} पर अधिकतम कितना VRAM इस्तेमाल कर सकता है। ऑटो हर कार्ड के अपने बजट में रहने लायक परतें ऑफ़लोड करता है। खाली छोड़ने पर पूरा कार्ड।",
       prefetchDepth: "प्रीफ़ेच गहराई",
       prefetchDepthTooltip: "चल रही परत से पहले कितनी ऑफ़लोड परतें कॉपी हों। ऑटो 1 से शुरू होता है और गहरा पूल तभी रखता है जब वह कॉपी का इंतज़ार सच में घटाए।",
       offloadPanelTitle: "ऑफ़लोड परतें",

@@ -3313,7 +3313,6 @@ export const zhCN = {
       offloadVramBudgetTooltip: "本次训练最多可使用的显存。自动会卸载足够的层以保持在此之下，两次训练也可以分享同一张显卡。留空则使用整张显卡。",
       offloadWholeCard: "整张显卡",
       offloadVramBudgetGpu: "GPU {index} 显存预算 (GiB)",
-      offloadVramBudgetPerGpuTooltip: "本次训练在 {name} 上最多可使用的显存。自动会卸载足够的层，使每张显卡都保持在各自的预算之下。留空则使用整张显卡。",
       prefetchDepth: "预取深度",
       prefetchDepthTooltip: "在当前层之前提前复制的卸载层数量。自动从 1 开始，只有在确实减少复制等待时才加深。",
       offloadPanelTitle: "卸载的层",

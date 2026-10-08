@@ -3420,7 +3420,6 @@ export const ptBR = {
       offloadVramBudgetTooltip: "A VRAM máxima que este treino pode usar. Auto descarrega camadas suficientes para caber, e dois treinos podem dividir uma placa. Vazio usa a placa inteira.",
       offloadWholeCard: "placa inteira",
       offloadVramBudgetGpu: "Orçamento de VRAM GPU {index} (GiB)",
-      offloadVramBudgetPerGpuTooltip: "A VRAM máxima que este treino pode usar em {name}. Auto descarrega camadas suficientes para caber no orçamento de cada placa. Vazio usa a placa inteira.",
       prefetchDepth: "Profundidade de pré-busca",
       prefetchDepthTooltip: "Quantas camadas descarregadas são copiadas antes da que está rodando. Auto começa em 1 e só mantém mais se reduzir de forma mensurável a espera por cópias.",
       offloadPanelTitle: "Camadas descarregadas",

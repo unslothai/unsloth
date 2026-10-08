@@ -95,34 +95,38 @@ export function OffloadLayersParams(): ReactElement {
           )}
         </div>
       </ParamsRow>
-      {mode === "auto" &&
-        cards.map((card) => (
-          <ParamsRow
-            key={card.index}
-            label={t("studio.params.offloadVramBudgetGpu", { index: card.index })}
-            tooltip={t("studio.params.offloadVramBudgetPerGpuTooltip", { name: card.name })}
-          >
-            <Input
-              type="number"
-              inputMode="decimal"
-              min={1}
-              max={card.memoryTotalGb > 0 ? card.memoryTotalGb : undefined}
-              step={0.5}
-              title={card.name}
-              aria-label={t("studio.params.offloadVramBudgetGpu", { index: card.index })}
-              placeholder={t("studio.params.offloadWholeCard")}
-              value={store.offloadVramGbPerDevice[String(card.index)] ?? ""}
-              onChange={(e) => {
-                const gb = Number(e.target.value);
-                store.setOffloadVramGbForDevice(
-                  card.index,
-                  e.target.value === "" || !(gb > 0) ? null : gb,
-                );
-              }}
-              className="w-36 font-mono placeholder:font-sans"
-            />
-          </ParamsRow>
-        ))}
+      {mode === "auto" && cards.length > 0 && (
+        <ParamsRow
+          label={t("studio.params.offloadVramBudget")}
+          tooltip={t("studio.params.offloadVramBudgetTooltip")}
+        >
+          {/* One box per training GPU, four to a line; empty uses the whole card. */}
+          <div className="flex max-w-[19.5rem] flex-wrap justify-end gap-1.5">
+            {cards.map((card) => (
+              <Input
+                key={card.index}
+                type="number"
+                inputMode="decimal"
+                min={1}
+                max={card.memoryTotalGb > 0 ? card.memoryTotalGb : undefined}
+                step={0.5}
+                title={card.name}
+                aria-label={t("studio.params.offloadVramBudgetGpu", { index: card.index })}
+                placeholder={t("studio.params.offloadPanelCard", { index: card.index })}
+                value={store.offloadVramGbPerDevice[String(card.index)] ?? ""}
+                onChange={(e) => {
+                  const gb = Number(e.target.value);
+                  store.setOffloadVramGbForDevice(
+                    card.index,
+                    e.target.value === "" || !(gb > 0) ? null : gb,
+                  );
+                }}
+                className="w-[4.5rem] font-mono placeholder:font-sans"
+              />
+            ))}
+          </div>
+        </ParamsRow>
+      )}
       {mode === "auto" && cards.length === 0 && (
         <ParamsRow
           label={t("studio.params.offloadVramBudget")}
