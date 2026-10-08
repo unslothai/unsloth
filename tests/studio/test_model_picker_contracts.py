@@ -2137,7 +2137,8 @@ def test_staged_downloads_use_one_actionable_download_surface():
 
     panel = _read("features/hub/download-manager/download-manager-panel.tsx")
     assert 'job.variant?.startsWith("@")' in panel
-    assert '"Model file" : "Required assets"' in panel
+    assert '"Model file"' in panel
+    assert "assetLabel(" in panel and '"Required assets"' in panel
 
 
 def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension():
