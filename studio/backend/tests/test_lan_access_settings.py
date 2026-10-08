@@ -30,6 +30,10 @@ import utils.host_policy as host_policy  # noqa: E402
 import utils.lan_access_settings as lan_settings  # noqa: E402
 from storage import studio_db  # noqa: E402
 
+# captured before the autouse fixture swaps in the dict stand-in
+_REAL_GET_APP_SETTING = studio_db.get_app_setting
+_REAL_UPSERT_APP_SETTINGS = studio_db.upsert_app_settings
+
 
 def _app(**over):
     state = SimpleNamespace(
@@ -194,6 +198,31 @@ def test_a_corrupt_saved_selection_reads_as_automatic_but_refuses_to_start(
     with pytest.raises(RuntimeError, match = "lan_access_addresses_unavailable"):
         lan_settings.start_lan_access(app)
     # failing open here would bind the public addresses the user excluded
+    assert calls == []
+
+
+def test_an_undecodable_saved_selection_refuses_to_start(monkeypatch):
+    # the real store: get_app_setting answers undecodable JSON with its fallback, which must not mean Automatic
+    monkeypatch.setattr(studio_db, "get_app_setting", _REAL_GET_APP_SETTING)
+    key = lan_settings.LAN_ACCESS_ADDRESSES_KEY
+    assert lan_settings._read_lan_access_addresses(strict = True) is None
+    _REAL_UPSERT_APP_SETTINGS({key: None})
+    assert lan_settings._read_lan_access_addresses(strict = True) is None
+    calls = []
+    monkeypatch.setattr(
+        lan_access, "start_lan_listener", lambda *args: calls.append(args) or ("10.0.0.7",)
+    )
+    app = _app(lan_access_loop = SimpleNamespace(is_closed = lambda: False, is_running = lambda: True))
+    for corrupt in ('["192.168.1.24"', ""):
+        conn = studio_db.get_connection()
+        try:
+            conn.execute("UPDATE app_settings SET value_json = ? WHERE key = ?", (corrupt, key))
+            conn.commit()
+        finally:
+            conn.close()
+        assert lan_settings.get_lan_access_addresses() is None
+        with pytest.raises(RuntimeError, match = "lan_access_addresses_invalid"):
+            lan_settings.start_lan_access(app)
     assert calls == []
 
 

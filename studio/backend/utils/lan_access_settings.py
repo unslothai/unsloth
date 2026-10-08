@@ -25,6 +25,7 @@ LAST_LAN_ACCESS_PORT = 8908
 # ``None`` is Automatic: every detected address, public ones included, as before this setting existed
 LAN_ACCESS_ADDRESSES_KEY = "lan_access_addresses"
 _MAX_LAN_ACCESS_ADDRESSES = 64
+_UNREADABLE = object()
 
 
 _management_lock = threading.RLock()
@@ -274,11 +275,20 @@ def _read_lan_access_addresses(*, strict: bool) -> Optional[tuple[str, ...]]:
     """The saved selection. Strict reads come from a start, which must fail closed: falling back to Automatic on an
     unreadable selection would bind the very public addresses the user excluded."""
     try:
-        from storage.studio_db import get_app_setting
-        stored = get_app_setting(LAN_ACCESS_ADDRESSES_KEY, None)
+        from storage.studio_db import get_app_setting, get_app_settings
+        stored = get_app_setting(LAN_ACCESS_ADDRESSES_KEY, _UNREADABLE)
+        # the fallback also answers an undecodable row; only a missing row is Automatic
+        if stored is _UNREADABLE and LAN_ACCESS_ADDRESSES_KEY not in get_app_settings(
+            [LAN_ACCESS_ADDRESSES_KEY]
+        ):
+            stored = None
     except Exception as exc:
         if strict:
             raise RuntimeError("lan_access_addresses_unavailable") from exc
+        return None
+    if stored is _UNREADABLE:
+        if strict:
+            raise RuntimeError("lan_access_addresses_invalid")
         return None
     try:
         return normalize_lan_access_addresses(stored)
