@@ -97,6 +97,73 @@ def test_estimate_matches_transformers_sliding_window():
     assert need == _real_static_cache_bytes(config, 1, 110, torch.bfloat16)
 
 
+def test_estimate_matches_transformers_sliding_window_without_layer_types():
+    """Mistral style: a sliding_window and no layer_types makes every layer sliding."""
+    _require_early_initialization()
+    from transformers import MistralConfig
+
+    config = MistralConfig(
+        hidden_size = 256,
+        num_attention_heads = 8,
+        num_key_value_heads = 2,
+        num_hidden_layers = 4,
+        intermediate_size = 512,
+        vocab_size = 1000,
+        sliding_window = 16,
+    )
+    input_ids = torch.zeros(1, 10, dtype = torch.long)
+    need = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 100})
+    assert need == _real_static_cache_bytes(config, 1, 110, torch.bfloat16)
+
+
+def test_estimate_uses_mla_key_and_value_dims():
+    from transformers import DeepseekV3Config
+
+    config = DeepseekV3Config(
+        hidden_size = 256,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        num_hidden_layers = 3,
+        qk_nope_head_dim = 48,
+        qk_rope_head_dim = 16,
+        v_head_dim = 32,
+        vocab_size = 1000,
+    )
+    input_ids = torch.zeros(1, 10, dtype = torch.long)
+    need = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 90})
+    assert need == 1 * 4 * (48 + 16 + 32) * 2 * 100 * 3
+
+
+def test_estimate_default_length_adds_the_prompt():
+    """transformers turns a default max_length of 20 into 20 new tokens after the prompt."""
+    config = _llama_config()
+    model = _model(config)
+    model.generation_config.max_length = None
+    input_ids = torch.zeros(1, 500, dtype = torch.long)
+    assert _static_cache_bytes(model, input_ids, {}) == _static_cache_bytes(
+        model, input_ids, {"max_new_tokens": 20}
+    )
+
+
+def test_estimate_default_length_capped_at_context():
+    config = _llama_config(max_position_embeddings = 4096)
+    model = _model(config)
+    model.generation_config.max_length = 4096
+    input_ids = torch.zeros(1, 500, dtype = torch.long)
+    assert _static_cache_bytes(model, input_ids, {}) == _static_cache_bytes(
+        model, torch.zeros(1, 1, dtype = torch.long), {"max_new_tokens": 4095}
+    )
+
+
+def test_estimate_uses_the_compile_decode_bucket(monkeypatch):
+    config = _llama_config()
+    input_ids = torch.zeros(1, 1, dtype = torch.long)
+    plain = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 1024})
+    monkeypatch.setattr(vision, "_compiles_decode", lambda model: True)
+    bucketed = _static_cache_bytes(_model(config), input_ids, {"max_new_tokens": 1024})
+    assert bucketed * 1025 == plain * 2048
+
+
 def test_estimate_counts_beams_and_previous_length():
     config = _llama_config()
     model = _model(config)
@@ -170,6 +237,19 @@ def test_unmeasured_placements_keep_static(fake_cuda, model_kwargs):
     )
 
 
+def test_xpu_device_is_measured(monkeypatch):
+    xpu = types.SimpleNamespace(
+        mem_get_info = lambda device = None: (0, 80 * GB),
+        memory_reserved = lambda device = None: 0,
+        memory_allocated = lambda device = None: 0,
+    )
+    monkeypatch.setattr(torch, "xpu", xpu, raising = False)
+    monkeypatch.setattr(vision.logger, "warning_once", lambda *a, **k: None)
+    ids = torch.zeros(1, 1, dtype = torch.long)
+    model = _model(_llama_config(), device = "xpu")
+    assert _static_cache_does_not_fit(model, ids, {"max_new_tokens": 4095})
+
+
 def test_probe_failure_keeps_static(fake_cuda, monkeypatch):
     def boom(device = None):
         raise RuntimeError("no device")
@@ -188,7 +268,8 @@ def _tiny_generate(monkeypatch, free_bytes):
     from transformers import GenerationConfig, LlamaForCausalLM
 
     torch.manual_seed(0)
-    model = LlamaForCausalLM(_llama_config()).to("cuda", torch.bfloat16).eval()
+    dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    model = LlamaForCausalLM(_llama_config()).to("cuda", dtype).eval()
     model.generation_config = GenerationConfig(max_length = 4096, pad_token_id = 0)
     model._old_generate = model.generate
     model.generate = types.MethodType(vision.unsloth_base_fast_generate, model)

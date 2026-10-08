@@ -1428,41 +1428,54 @@ def _dynamic_cache_choice(kwargs):
 def _static_cache_bytes(model, input_ids, kwargs):
     """Bytes the static KV cache transformers preallocates for this call, or None when it cannot
     be sized. Worst case length (prompt + max_new_tokens), whatever length the reply turns out."""
+    from transformers import StaticCache
+
     config = model.config
     if getattr(config, "is_encoder_decoder", False) or kwargs.get("past_key_values") is not None:
         return None
     text_config = config.get_text_config(decoder = True)
     generation_config = kwargs.get("generation_config") or model.generation_config
+    prompt = input_ids.shape[1]
     max_new_tokens = kwargs.get(
         "max_new_tokens", getattr(generation_config, "max_new_tokens", None)
     )
     if max_new_tokens is not None:
-        length = input_ids.shape[1] + max_new_tokens
+        length = prompt + max_new_tokens
     else:
-        length = kwargs.get("max_length", getattr(generation_config, "max_length", None))
+        # Upper bound of _prepare_generated_length: a default max_length counts new tokens.
+        max_length = kwargs.get("max_length", getattr(generation_config, "max_length", None))
+        max_length = 20 if max_length is None else max_length
+        length = max_length + prompt
+        max_positions = getattr(text_config, "max_position_embeddings", None)
+        if type(max_positions) is int and max_length <= max_positions:
+            length = min(length, max_positions)
     if type(length) is not int:
         return None
     length = max(length, getattr(model, "_previous_max_cache_length", -1))
+    if _compiles_decode(model):
+        length = _decode_cache_bucket(length)
     copies = max(
         kwargs.get("num_beams", getattr(generation_config, "num_beams", 1)) or 1,
         kwargs.get("num_return_sequences", getattr(generation_config, "num_return_sequences", 1))
         or 1,
     )
+    # transformers' own layer plan: sliding / chunked windows, shared-KV and linear layers.
+    layers = StaticCache(config = text_config, max_cache_len = length).layers
+    tokens = sum(
+        layer.max_cache_len
+        for layer in layers
+        if type(getattr(layer, "max_cache_len", None)) is int
+    )
     n_heads = text_config.num_attention_heads
     kv_heads = getattr(text_config, "num_key_value_heads", None) or n_heads
     head_dim = getattr(text_config, "head_dim", None) or text_config.hidden_size // n_heads
-    window = getattr(text_config, "sliding_window", None)
-    layer_types = getattr(text_config, "layer_types", None) or (
-        ["full_attention"] * text_config.num_hidden_layers
-    )
-    tokens = 0
-    for layer_type in layer_types:
-        if layer_type in ("sliding_attention", "chunked_attention") and type(window) is int:
-            tokens += min(length, window)
-        elif layer_type == "full_attention":
-            tokens += length
+    # MLA (DeepSeek) caches keys of nope + rope dims and values of v_head_dim.
+    nope = getattr(text_config, "qk_nope_head_dim", None)
+    rope = getattr(text_config, "qk_rope_head_dim", None)
+    key_dim = nope + rope if type(nope) is int and type(rope) is int else head_dim
+    value_dim = getattr(text_config, "v_head_dim", None) or head_dim
     itemsize = torch.empty((), dtype = model.dtype).element_size()
-    return 2 * input_ids.shape[0] * copies * kv_heads * head_dim * itemsize * tokens
+    return input_ids.shape[0] * copies * kv_heads * (key_dim + value_dim) * itemsize * tokens
 
 
 def _static_cache_does_not_fit(model, input_ids, kwargs):
@@ -1470,7 +1483,8 @@ def _static_cache_does_not_fit(model, input_ids, kwargs):
     left; the rest is for prefill activations and logits. Fails open: unknown keeps static."""
     try:
         device = model.device
-        if device.type != "cuda":
+        backend = {"cuda": torch.cuda, "xpu": getattr(torch, "xpu", None)}.get(device.type)
+        if backend is None:
             return False
         device_map = getattr(model, "hf_device_map", None)
         if isinstance(device_map, dict) and len(set(map(str, device_map.values()))) > 1:
@@ -1478,12 +1492,12 @@ def _static_cache_does_not_fit(model, input_ids, kwargs):
         need = _static_cache_bytes(model, input_ids, kwargs)
         if need is None:
             return False
-        free = torch.cuda.mem_get_info(device)[0]
+        free = backend.mem_get_info(device)[0]
         if need <= free // 2:
             return False
         # memory_stats costs ~70 us a call, so blocks the allocator holds unused are only
         # counted when the driver's free memory alone is not enough.
-        free += torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+        free += backend.memory_reserved(device) - backend.memory_allocated(device)
     except Exception:
         return False
     if need <= free // 2:
