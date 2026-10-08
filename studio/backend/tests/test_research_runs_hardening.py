@@ -258,9 +258,7 @@ def test_document_citation_regex_does_not_backtrack_catastrophically():
 
 
 def test_citation_title_strips_brackets_for_catalog_and_citation():
-    # Search titles routinely carry a bracketed prefix ("[PDF] ..."), and the prompt tells the
-    # model to copy the catalog title verbatim into the link label, where a bracket makes the
-    # citation unmatchable. Catalog and citation writer share this helper so they agree.
+    # brackets make verbatim link labels unmatchable; catalog and citation paths share this helper.
     assert (
         _citation_title({"title": "[PDF] Annual Report 2024"}, "https://x/a")
         == "PDF Annual Report 2024"
@@ -290,9 +288,7 @@ def test_citation_title_with_an_escaped_pipe_keeps_its_backslash_and_its_row():
 
 
 def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
-    # Budgeting only the evidence cannot prevent an overflow: at a small context the
-    # untrimmable scaffolding (system prompt, plan, source catalogs) is already several times
-    # the window, and the old floor added 1500 chars on top of that.
+    # fixed scaffolding can exceed a small context before any trimmable evidence is added.
     monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: None)
     assert research_runs._prompt_char_budget(4096) is None
     assert research_runs._trimmable_budget(None, 99_999, 500) == 500
@@ -300,7 +296,6 @@ def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
     monkeypatch.setattr(research_runs, "_loaded_context_length", lambda _inf = None: 16384)
     total = research_runs._prompt_char_budget(4096)
     assert total == int((16384 - 4096) * research_runs._SYNTHESIS_EVIDENCE_CHARS_PER_TOKEN)
-    # A trimmable section never exceeds what is left, and never goes negative.
     assert research_runs._trimmable_budget(total, 0, 1_000) == 1_000
     assert research_runs._trimmable_budget(total, total - 10, 1_000) == 10
     assert research_runs._trimmable_budget(total, total + 5_000, 1_000) == 0
