@@ -55,7 +55,6 @@ def isolate_runtime_and_stub_audio_decoder(monkeypatch, tmp_path):
         "_decode_audio_bounded",
         lambda audio, cancel_event = None: np.zeros(16000, dtype = np.float32),
     )
-    # Unit tests never exec a binary for its --help; tests of the probe itself call it directly.
     monkeypatch.setattr(ggml_module, "_supports_request_path", lambda binary: True)
 
 

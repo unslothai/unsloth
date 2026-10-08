@@ -732,8 +732,7 @@ _REQUEST_PATH_SUPPORT: dict[tuple[str, int], bool] = {}
 
 
 def _supports_request_path(binary: str) -> bool:
-    """Whether ``binary`` accepts ``--request-path`` (cached per binary and mtime). An older user-supplied
-    whisper-server exits on an unknown flag, so it is launched without one instead."""
+    """Whether ``binary`` accepts ``--request-path``; an older user-supplied whisper-server exits on it."""
     try:
         key = (binary, os.stat(binary).st_mtime_ns)
     except OSError:
@@ -741,7 +740,7 @@ def _supports_request_path(binary: str) -> bool:
     cached = _REQUEST_PATH_SUPPORT.get(key)
     marker = _whisper_install_marker(binary) if cached is None else None
     if marker is not None and marker.get("published_repo") == "unslothai/whisper.cpp":
-        # Our whisper.cpp releases always have the flag; skip the ~0.6 s --help probe. Custom repos are probed.
+        # Every unslothai/whisper.cpp release has the flag: skip the ~0.6 s --help probe.
         cached = _REQUEST_PATH_SUPPORT[key] = True
     if cached is None:
         try:
@@ -782,7 +781,7 @@ class GgmlSttSidecar:
         self._load_state_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
-        # Random path prefix every whisper-server route sits under, so a web page cannot reach the loopback server.
+        # Secret route prefix: a web page that finds the loopback port cannot reach whisper-server.
         self._route = ""
         self._model_id: Optional[str] = None
         # --no-gpu at the user's request, tracked because it varies per request.
