@@ -211,6 +211,10 @@ def _reset_gpu_query_cache():
         if hw is not None and hasattr(hw, "_last_good_visible_info"):
             with hw._last_good_visible_lock:
                 hw._last_good_visible_info.clear()
+        amd = sys.modules.get("utils.hardware.amd")
+        if amd is not None and hasattr(amd, "_hip_id_map_lock"):
+            with amd._hip_id_map_lock:
+                amd._hip_id_map_cache = None
 
     _reset()
     yield

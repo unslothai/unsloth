@@ -8,6 +8,7 @@ import { DownloadCancelledError, downloadFile, isDownloadCancelled } from "@/lib
 import { toast } from "@/lib/toast";
 import { fileNameFromUrl, isWebUrl, safeDownloadName, withBaseUrl } from "./address";
 import { type BrowserPage, fetchBrowserPage } from "./api";
+import { abandonDownload, beginDownload, finishDownload } from "./download-activity";
 import { approveDownload } from "./download-approval-queue";
 import { isDangerousDownload } from "./download-safety";
 import { useBrowserHistoryStore } from "./history-store";
@@ -95,11 +96,16 @@ async function writeDownload(
   const name = safeDownloadName(download.name);
   let saved: SavedNativeDownload | null = null;
   let picked: SaveHandle | null = null;
+  const key = `save:${Date.now().toString(36)}:${Math.random().toString(36).slice(2)}`;
+  beginDownload(key, name);
   try {
     if (isTauri) {
       // The app keeps the path so Download history can reveal it.
       saved = await saveNativeDownload(blob, name, useBrowserPrefsStore.getState().askWhereToSave, url);
-      if (!saved) return;
+      if (!saved) {
+        abandonDownload(key);
+        return;
+      }
     } else {
       picked = target === undefined ? await pickSaveTarget(name) : target;
       if (picked) {
@@ -111,13 +117,23 @@ async function writeDownload(
       }
     }
   } catch (error) {
+    abandonDownload(key);
     if (!isDownloadCancelled(error)) toast.error(error instanceof Error ? error.message : String(error));
     return;
   }
-  const item = { name: saved?.name || picked?.name || name, url, size: blob.size, contentType, nativeId: saved?.id };
-  useBrowserHistoryStore.getState().recordDownload(item, temporary);
+  const savedName = saved?.name || picked?.name || name;
+  const item = { name: savedName, url, size: blob.size, contentType, nativeId: saved?.id };
+  const historyId = useBrowserHistoryStore.getState().recordDownload(item, temporary);
+  // Open uses the saved file when the app kept it; only otherwise does this session hold the bytes.
+  const shown = finishDownload(
+    key,
+    { name: savedName, size: blob.size, contentType, url, nativeId: saved?.id, historyId, failed: false },
+    saved && historyId ? undefined : { blob, name: savedName, contentType },
+  );
   if (saved?.marked === false) {
-    toast.warning(translate("browser.native.notMarked", { name: saved.name || name }, getLocale()));
+    toast.warning(translate("browser.native.notMarked", { name: savedName }, getLocale()));
+  } else if (!shown) {
+    toast.success(translate("browser.downloads.complete", {}, getLocale()), { description: savedName });
   }
 }
 

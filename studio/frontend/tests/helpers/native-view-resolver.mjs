@@ -25,9 +25,22 @@ const STUBS = {
     export const clearNativeBrowsingData = async () => {};
   `),
   "./favicon": stub("export const proxiedFavicon = async () => null;"),
-  "./native-downloads": stub("export const decideNativeDownload = async () => {};"),
+  // globalThis.nativeViewDownloadsButton puts a Downloads button on screen; calls land in nativeViewActivity.
+  "./download-activity": stub(`
+    const buttons = () => (globalThis.nativeViewDownloadsButton ? 1 : 0);
+    const active = {};
+    const log = (call, key) => void (globalThis.nativeViewActivity ??= []).push(call + " " + key);
+    export const useDownloadActivity = { getState: () => ({ buttons: buttons(), active: { ...active } }) };
+    export const beginDownload = (key, name) => (log("begin", key), (active[key] = name));
+    export const abandonDownload = (key) => (log("abandon", key), delete active[key]);
+    export const finishDownload = (key) => (log("finish", key), delete active[key], buttons() > 0);
+  `),
+  // globalThis.nativeViewDecide runs inside the decide call, as the app's events can.
+  "./native-downloads": stub(
+    "export const decideNativeDownload = async (...args) => { globalThis.nativeViewDecide?.(...args); };",
+  ),
   "./download-approval-queue": stub(
-    "export const approveDownload = async () => globalThis.nativeViewApprove ?? false; export const downloadSiteOf = () => '';",
+    "export const approveDownload = async () => Boolean(globalThis.nativeViewApprove); export const downloadSiteOf = () => '';",
   ),
   "./history-store": stub(
     "const seen = (entry, temporary) => void (globalThis.nativeViewSeen ??= []).push(temporary ? { ...entry, temporary } : entry);" +
