@@ -1315,3 +1315,39 @@ def test_the_loader_pins_on_the_placement_being_unchosen_not_on_it_being_a_strin
                 f"loader.py:{lineno}: an explicit device_map='cpu' is a str too, so this guard "
                 f"moves the load onto the rank's GPU"
             )
+
+
+# ------------------------------------------------- a model one card holds stays on one card
+
+
+class _SizedPlan(_Plan):
+    def __init__(
+        self,
+        total_gib,
+        budget_gib = 14.4,
+        headroom_gib = 0.5,
+    ):
+        super().__init__({"model.layers.0": 0, "lm_head": 1})
+        self.raw_budgets = {0: int(budget_gib * 2**30), 1: int(budget_gib * 2**30)}
+        self.total_weight_bytes = int(total_gib * 2**30)
+        self.headroom_bytes = int(headroom_gib * 2**30)
+        self.load_transient_by_device = {}
+
+
+@pytest.mark.parametrize("total_gib", [1.2, 6.2, 9.7])  # Qwen3-0.6B, DeepSeek-OCR, Gemma 3n fp32
+def test_a_model_that_fits_one_card_is_not_split(total_gib, capsys):
+    ns = _load(planner = lambda name, **kw: _SizedPlan(total_gib))
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == "sequential"
+    assert "fits on one GPU" in capsys.readouterr().out
+
+
+def test_a_model_too_big_for_one_card_is_still_planned():
+    plan = _SizedPlan(13.0)
+    ns = _load(planner = lambda name, **kw: plan)
+    assert ns["resolve_unsloth_device_map"]("unsloth", "m") == plan.device_map
+
+
+def test_balanced_still_splits_a_small_model():
+    plan = _SizedPlan(1.2)
+    ns = _load(planner = lambda name, **kw: plan)
+    assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m") == plan.device_map
