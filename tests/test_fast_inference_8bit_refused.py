@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""load_in_8bit = True with fast_inference = True must refuse before vLLM starts.
-
-Both loaders hand load_vllm `use_bitsandbytes = load_in_4bit`, and Unsloth has no
-8-bit vLLM path, so an 8-bit request silently came up as a 16-bit vLLM engine
-(and a prequantized 8-bit checkpoint reached vLLM's bnb loader on its own).
-"""
+"""fast_inference + bnb 8-bit must refuse before vLLM starts (it silently ran 16-bit)."""
 
 import ast
 from pathlib import Path
@@ -48,8 +43,7 @@ def test_caller_bitsandbytes_8bit_config_is_refused():
 
 
 def test_prequantized_8bit_checkpoint_is_refused():
-    # A -bnb-8bit style repo: the flag is off (load_in_4bit defaults on), the
-    # checkpoint's own config is what makes it 8-bit.
+    # Flag off; the checkpoint's own config makes it 8-bit.
     with pytest.raises(NotImplementedError):
         refuse_fast_inference_load_in_8bit(False, _config(BNB_8BIT_CHECKPOINT))
 
@@ -114,12 +108,11 @@ def test_every_vllm_load_is_gated_before_the_engine(path, class_name):
     assert len(guards) == 1, f"{path}: missing the 8-bit fast_inference refusal"
     guard = guards[0]
     assert guard.lineno < loads[0].lineno
-    # Fed the resolved flag, the checkpoint config and the caller's config.
     args = [ast.unparse(arg) for arg in guard.args]
     assert args[0] == "load_in_8bit"
     assert args[1] == "model_config"
     assert "quantization_config" in args[2]
-    # Same branch as load_vllm: walk up to the If that holds both.
+    # Same If branch as load_vllm.
     parents = {}
     for node in ast.walk(function):
         for child in ast.iter_child_nodes(node):
