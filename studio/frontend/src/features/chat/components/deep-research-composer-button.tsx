@@ -176,9 +176,6 @@ function McpSourceList({
       (found) => {
         if (cancelled) return;
         setTools(found);
-        onChange((current) =>
-          current.filter((value) => found.some((tool) => matches(tool, value))),
-        );
       },
       () => {
         if (!cancelled) setTools([]);
@@ -187,9 +184,9 @@ function McpSourceList({
     return () => {
       cancelled = true;
     };
-  }, [onChange]);
-  const availableValues = values.filter((value) =>
-    tools?.some((tool) => matches(tool, value)),
+  }, []);
+  const unavailableValues = values.filter(
+    (value) => tools !== null && !tools.some((tool) => matches(tool, value)),
   );
 
   return (
@@ -227,16 +224,16 @@ function McpSourceList({
               checked={values.some((value) => matches(tool, value))}
               disabled={
                 !values.some((value) => matches(tool, value)) &&
-                availableValues.length >= MAX_RESEARCH_MCP_SOURCES
+                values.length >= MAX_RESEARCH_MCP_SOURCES
               }
               onCheckedChange={(checked) =>
                 onChange(
                   checked
                     ? [
-                        ...availableValues,
+                        ...values,
                         { serverId: tool.serverId, tool: tool.tool },
                       ].slice(0, MAX_RESEARCH_MCP_SOURCES)
-                    : availableValues.filter(
+                    : values.filter(
                         (value) => !matches(tool, value),
                       ),
                 )
@@ -246,6 +243,31 @@ function McpSourceList({
           </label>
         ))
       )}
+      {unavailableValues.map((value) => (
+        <div
+          key={`${value.serverId}:${value.tool}`}
+          className="flex items-start justify-between gap-6"
+        >
+          <span className="min-w-0 break-words text-sm">
+            {value.serverId} · {value.tool}
+            <span className="block text-xs text-muted-foreground">
+              Currently unavailable. Selection kept until you remove it.
+            </span>
+          </span>
+          <button
+            type="button"
+            className="text-sm text-muted-foreground hover:text-foreground"
+            aria-label={`Remove unavailable source ${value.serverId} ${value.tool}`}
+            onClick={() =>
+              onChange(values.filter((item) =>
+                item.serverId !== value.serverId || item.tool !== value.tool,
+              ))
+            }
+          >
+            Remove
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
