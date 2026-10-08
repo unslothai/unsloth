@@ -546,15 +546,20 @@ export function DiffusionTrainPanel({
   // The run whose Resume request is in flight, so its button alone shows the pending label.
   const [resumingJobId, setResumingJobId] = useState<string | null>(null);
 
+  // only the newest request may set state: an older one settling late must not undo it.
+  const infoRequestId = useRef(0);
   const refreshInfo = useCallback(async (): Promise<DiffusionTrainingInfo | null> => {
+    const requestId = ++infoRequestId.current;
     setInfoLoadState("loading");
     try {
       const i = await getDiffusionTrainingInfo();
-      setInfo(i);
-      setInfoLoadState("loaded");
+      if (requestId === infoRequestId.current) {
+        setInfo(i);
+        setInfoLoadState("loaded");
+      }
       return i;
     } catch {
-      setInfoLoadState("failed");
+      if (requestId === infoRequestId.current) setInfoLoadState("failed");
       return null;
     }
   }, []);

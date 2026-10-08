@@ -79,12 +79,16 @@ test("the new-set form waits for the set list before it uploads", () => {
 
 test("a failed initial or stale set-list request can be retried without enabling uploads", () => {
   const refresh = source.slice(
-    source.indexOf("const refreshInfo"),
+    source.indexOf("const infoRequestId"),
     source.indexOf("// On first activation"),
   );
   assert.match(refresh, /setInfoLoadState\("loading"\)/);
   assert.match(refresh, /setInfoLoadState\("loaded"\)/);
-  assert.match(refresh, /catch \{\s+setInfoLoadState\("failed"\)/);
+  assert.match(
+    refresh,
+    /catch \{\s+if \(requestId === infoRequestId\.current\) setInfoLoadState\("failed"\)/,
+  );
+  assert.match(refresh, /if \(requestId === infoRequestId\.current\) \{\s+setInfo\(i\);/);
 
   const form = source.slice(source.indexOf("{uploadMode ? ("));
   const newSet = form.slice(0, form.indexOf(") : ("));
