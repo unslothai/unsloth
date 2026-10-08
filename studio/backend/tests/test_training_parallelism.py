@@ -26,9 +26,7 @@ def test_auto_parallelism_rejects_explicit_gpu_ids():
         request(parallelism_mode = "auto", gpu_ids = [0])
 
 
-@pytest.mark.parametrize(
-    "gpu_ids, expected_mode", [([1], "single"), ([0, 2], "model_parallel")]
-)
+@pytest.mark.parametrize("gpu_ids, expected_mode", [([1], "single"), ([0, 2], "model_parallel")])
 def test_legacy_gpu_selection_infers_placement_not_ddp(gpu_ids, expected_mode):
     config = request(gpu_ids = gpu_ids)
     assert config.parallelism_mode == expected_mode
