@@ -520,6 +520,68 @@ def test_llm_output_scans_skip_decision_outputs(studio_home):
     assert [name for name, _, _ in scan_checkpoints(str(root))] == ["llama_merged_1"]
 
 
+def test_export_checkpoint_list_includes_decision_runs(studio_home):
+    from routes import models as models_routes
+    from utils.models.checkpoints import list_preview_targets
+    from utils.paths import outputs_root
+
+    root = outputs_root()
+    laya = _fake_output(root, "laya_done_1")
+    (laya / "rl_agent_config.json").write_text(
+        json.dumps({"encoder": "answerdotai/ModernBERT-base", "training": {"base": "laya-tiny"}}),
+        encoding = "utf-8",
+    )
+    _fake_output(root, "laya_half_2", complete = False)
+    clef = root / "clef_merged_3"
+    clef.mkdir()
+    for name in ("config.json", "joint_head_config.json", "joint_head.safetensors"):
+        (clef / name).write_text("{}", encoding = "utf-8")
+
+    app = FastAPI()
+    app.include_router(models_routes.router, prefix = "/api/models")
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    response = TestClient(app).get("/api/models/checkpoints", params = {"outputs_dir": str(root)})
+    assert response.status_code == 200, response.text
+    listed = {m["name"]: m for m in response.json()["models"]}
+    assert sorted(listed) == ["clef_merged_3", "laya_done_1"]
+    assert listed["laya_done_1"]["base_model"] == "laya-tiny"
+    assert listed["laya_done_1"]["checkpoints"][0]["path"] == str(laya)
+    # Chat preview still lists only what chat can load.
+    assert [t["run"] for t in list_preview_targets(str(root))] == ["clef_merged_3"]
+
+
+def test_model_config_offers_an_llm_as_a_decision_model(studio_home):
+    import asyncio
+
+    from routes.models import get_model_config
+    from utils.models.model_config import load_llm_decision_defaults
+
+    llm = studio_home / "llm"
+    llm.mkdir()
+    config = {
+        "model_type": "llama",
+        "architectures": ["LlamaForCausalLM"],
+        "hidden_size": 64,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "vocab_size": 64,
+    }
+    (llm / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (llm / "model.safetensors").write_bytes(b"x")
+
+    def fetch(**kwargs):
+        return asyncio.run(
+            get_model_config(model_name = str(llm), hf_token = None, current_subject = "tester", **kwargs)
+        )
+
+    plain = fetch()
+    assert plain.model_type == "text" and plain.decision_layout is None
+    decision = fetch(as_decision = True)
+    assert decision.model_type == "decision" and decision.is_decision is True
+    assert decision.decision_layout == "llm" and decision.decision_checkpoints is None
+    assert decision.config == load_llm_decision_defaults()
+
+
 def test_model_config_classifies_a_local_laya_folder(base):
     import asyncio
 
@@ -776,6 +838,8 @@ def test_the_best_held_out_step_is_kept(monkeypatch):
     evaluate(3, 0.7)
     # A diverged evaluation never becomes the best step.
     evaluate(4, float("nan"))
+    # The run scores its last step before restoring when step-based evaluation ended between evaluations.
+    assert keep.evaluated == 4
     assert keep.restore(4) == 2 and float(model.weight[0, 0]) == 2.0 and warnings == []
     # A run that ends on its best step keeps what it has.
     evaluate(5, 0.1)

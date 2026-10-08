@@ -919,6 +919,11 @@ def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None
         account_access.require_model_access(reference, repo_type)
 
 
+def _is_decision_checkpoint(request: TrainingStartRequest) -> bool:
+    # A Laya or Clef checkpoint, not an LLM that is trained with a new decision head.
+    return bool(request.is_decision) and request.decision_layout != "llm"
+
+
 def _reject_untrainable_model_request(
     request: TrainingStartRequest,
     actual_model_repo_id: Optional[str] = None,
@@ -1043,7 +1048,7 @@ def _reject_untrainable_model_request(
                 )
 
         refuse_unauthorized_cache(has_cached_model)
-        if request.is_decision:
+        if _is_decision_checkpoint(request):
             from core.systemone import laya_runtime
             from core.systemone.catalog import Checkpoint
 
@@ -1086,7 +1091,7 @@ def _reject_untrainable_model_request(
             # A decision checkpoint is checked at its subfolder below, whatever the repo root holds.
             remote_format = (
                 None
-                if request.is_decision
+                if _is_decision_checkpoint(request)
                 else _remote_untrainable_model_format(
                     request.model_name,
                     hf_token,
@@ -1115,7 +1120,7 @@ def _reject_untrainable_model_request(
             )
         else:
             if remote_format is None:
-                if request.is_decision and not is_decision_model(
+                if _is_decision_checkpoint(request) and not is_decision_model(
                     request.model_name, hf_token, subfolder = request.model_subfolder
                 ):
                     raise _training_start_error(
@@ -1135,7 +1140,7 @@ def _reject_untrainable_model_request(
                 "training_remote_model_adapter_only",
                 "Adapter models are inference-only and cannot be trained as base models.",
             )
-    if request.is_decision:
+    if _is_decision_checkpoint(request):
         folder = path / request.model_subfolder if request.model_subfolder else path
         if not is_decision_model(str(folder)):
             raise _training_start_error(
@@ -1143,7 +1148,8 @@ def _reject_untrainable_model_request(
                 "training_local_model_not_decision",
                 "The selected model is not a decision checkpoint: Laya needs "
                 "rl_agent_config.json, model.safetensors, encoder/ and tokenizer/, and Clef "
-                "needs config.json, joint_head.safetensors and joint_head_config.json.",
+                "needs joint_head.safetensors and joint_head_config.json beside config.json "
+                "(or LoRA adapters).",
             )
         return _ModelPreflightResult(model_name, model_local_path, None)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
@@ -1265,12 +1271,25 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
         hf_token_arg(request.hf_token, allow_ambient_token = via_api_key is not True),
         subfolder = request.model_subfolder,
     )
-    if layout == "clef":
+    # A subfolder or a catalog repo still means Laya, so an uncached Laya checkpoint is not loaded as an LLM.
+    llm = (
+        layout is None
+        and request.model_subfolder is None
+        and request.model_name not in {c.source for c in CHECKPOINTS.values()}
+    )
+    if layout == "clef" or llm:
         from core.systemone.catalog import clef_unsupported_reason
+        from utils.hardware import hardware
 
+        # Runs before _validate_training_platform: name the MLX limit, not a missing GPU.
+        if hardware.get_device() == hardware.DeviceType.MLX:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Decision model training is not supported for MLX training yet.",
+            )
         if (reason := clef_unsupported_reason()) is not None:
             raise HTTPException(status_code = 400, detail = reason)
-        request.decision_layout = "clef"
+        request.decision_layout = "llm" if llm else "clef"
         if request.model_subfolder is not None:
             raise HTTPException(
                 status_code = 400,
@@ -1282,9 +1301,13 @@ def _validate_decision_request(request: TrainingStartRequest, via_api_key: bool 
                 detail = "Decision models train with plain LoRA, so DoRA and LoftQ are not "
                 "available for them.",
             )
-        defaults = load_model_defaults(request.model_name)
-        if defaults == load_model_defaults("default"):
-            defaults = load_model_defaults(CLEF_DEFAULTS_REPO)
+        if llm:
+            from utils.models.model_config import load_llm_decision_defaults
+            defaults = load_llm_decision_defaults()
+        else:
+            defaults = load_model_defaults(request.model_name)
+            if defaults == load_model_defaults("default"):
+                defaults = load_model_defaults(CLEF_DEFAULTS_REPO)
         for section in ("training", "lora", "logging"):
             for key, value in (defaults.get(section) or {}).items():
                 if key in unset:
@@ -4370,16 +4393,17 @@ async def get_diffusion_dataset_image(
     def make_thumb() -> Path:
         from PIL import Image
 
+        from core.inference.mcp_images import flattened_rgb
+
         thumbs_dir = folder / _THUMBS_DIRNAME
         thumbs_dir.mkdir(exist_ok = True)
-        # Key on the full filename, not the stem: two images sharing a stem would collide on one cache file and the
-        # mtime-newer entry would be served for both.
-        thumb_path = thumbs_dir / f"{image_path.name}_{size}.jpg"
+        # use the full filename because same-stem images would otherwise share a cache entry
+        thumb_path = thumbs_dir / f"{image_path.name}_{size}_w.jpg"
         src_mtime = image_path.stat().st_mtime
         if thumb_path.is_file() and thumb_path.stat().st_mtime >= src_mtime:
             return thumb_path
         with Image.open(image_path) as im:
-            im = im.convert("RGB")
+            im = flattened_rgb(im, background = (255, 255, 255))
             im.thumbnail((size, size), Image.LANCZOS)
             im.save(thumb_path, format = "JPEG", quality = 85)
         return thumb_path

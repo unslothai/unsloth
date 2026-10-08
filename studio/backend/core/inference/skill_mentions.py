@@ -9,6 +9,9 @@ import hashlib
 import re
 import uuid
 
+from markdown_it import MarkdownIt
+from markdown_it.rules_inline.backticks import backtick
+
 from core.inference.skills import SkillError, list_skills, read_skill_instructions
 from state.tool_approvals import (
     abort_tool_decision,
@@ -22,33 +25,87 @@ _TOKEN = re.compile(r"(?<!\S)@([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)(?=$|\s|[.,;
 _MAX_LOAD_BYTES = 32_000
 
 
+def _record_inline_code(state, silent: bool) -> bool:
+    start, count = state.pos, len(state.tokens)
+    matched = backtick(state, silent)
+    if (
+        matched
+        and not silent
+        # The image rule re-enters with alt text, whose offsets address another string.
+        and state.src is state.env.get("source")
+        and len(state.tokens) > count
+        and state.tokens[-1].type == "code_inline"
+    ):
+        state.env["spans"].append((start, state.pos))
+    return matched
+
+
+_MENTION_MARKDOWN = MarkdownIt("commonmark").disable("inline")
+_MENTION_MARKDOWN.inline.ruler.at("backticks", _record_inline_code)
+
+
+# Each kind runs to the end of the text when unclosed, naming itself through its group.
+_QUOTE_KINDS = {
+    "double": r'"(?:\\.|[^"])*(?:"|(?P<double>\Z))',
+    "curly_double": r"“(?:\\.|[^”])*(?:”|(?P<curly_double>\Z))",
+    # A quote mark between word characters is an apostrophe, never a delimiter.
+    "curly_single": r"‘(?:\\.|(?<=\w)’(?=\w)|[^’])*(?:’|(?P<curly_single>\Z))",
+    "single": r"(?<!\w)'(?:\\.|(?<=\w)'(?=\w)|[^'])*(?:'|(?P<single>\Z))",
+}
+
+
+def _mask_quoted(text: str) -> str:
+    kinds = dict(_QUOTE_KINDS)
+    parts, end = [], 0
+    while kinds:
+        match = re.compile("|".join(kinds.values()), re.DOTALL).search(text, end)
+        if match is None:
+            break
+        if match.lastgroup:
+            # No later opener of this kind can close either; retrying each one is quadratic.
+            del kinds[match.lastgroup]
+            continue
+        parts.extend((text[end : match.start()], " "))
+        end = match.end()
+    return "".join(parts) + text[end:]
+
+
 def mentioned_skill_names(text: str) -> list[str]:
     """Only prose outside code, Markdown blockquotes, and balanced quotation spans."""
-    lines = []
-    fence = None
-    for line in text.splitlines(keepends = True):
-        stripped = line.lstrip()
-        marker = re.match(r"(`{3,}|~{3,})", stripped)
-        if marker and marker[1][0] == "`" and "`" in stripped[len(marker[1]) :]:
-            marker = None  # CommonMark: a backtick fence line has no other backticks; inline span.
-        if marker:
-            if fence is None:
-                fence = (marker[1][0], len(marker[1]))
-            elif (
-                marker[1][0] == fence[0]
-                and len(marker[1]) >= fence[1]
-                and not stripped[len(marker[1]) :].strip()
-            ):
-                fence = None
-            lines.append("\n")
-        elif fence or stripped.startswith(">") or line.startswith(("    ", "\t")):
-            lines.append("\n")
-        else:
-            lines.append(line)
-    text = "".join(lines)
-    # (?<!\w)' so the apostrophe in didn't is not an opening quote.
-    text = re.sub(r"(`+).*?\1", " ", text, flags = re.DOTALL)
-    text = re.sub(r'"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)\'[^\']*\'', " ", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    tokens = _MENTION_MARKDOWN.parse(text)
+    lines = text.split("\n")
+    masked_lines = set()
+    for token in tokens:
+        if not token.map:
+            continue
+        if token.type in ("blockquote_open", "fence", "code_block"):
+            masked_lines.update(range(*token.map))
+        elif token.type == "paragraph_open":
+            # User text is shown unrendered, so a reply typed right under a quote reads as its
+            # own line even though CommonMark folds it into the quote as a lazy continuation.
+            masked_lines.difference_update(
+                number
+                for number in range(token.map[0] + 1, token.map[1])
+                if not lines[number].lstrip().startswith(">")
+            )
+    text = "\n".join(
+        " " * len(line) if number in masked_lines else line for number, line in enumerate(lines)
+    )
+    offsets = [0, *(match.end() for match in re.finditer("\n", text)), len(text)]
+    spans = []
+    for token in tokens:
+        if token.type == "inline" and token.map:
+            start, end = (offsets[number] for number in token.map)
+            source = text[start:end]
+            env = {"source": source, "spans": []}
+            _MENTION_MARKDOWN.inline.parse(source, _MENTION_MARKDOWN, env, [])
+            spans.extend((start + first, start + last) for first, last in env["spans"])
+    parts, end = [], 0
+    for start, stop in sorted(spans):
+        parts.extend((text[end:start], " "))
+        end = stop
+    text = _mask_quoted("".join(parts) + text[end:])
     return list(dict.fromkeys(match[1] for match in _TOKEN.finditer(text)))
 
 
@@ -129,11 +186,9 @@ def load_mentioned_skills(
             finally:
                 abort_tool_decision(slot, approval_id)
             if verdict != "allow":
-                yield {
-                    **event,
-                    "status": "unavailable",
-                    "detail": "Skill not loaded: approval was denied, expired, or cancelled.",
-                }
+                detail = f"Skill @{name} not loaded: approval was denied, expired, or cancelled."
+                _append_system(messages, detail)
+                yield {**event, "status": "unavailable", "detail": detail}
                 continue
         yield {**event, "status": "loading"}
         try:

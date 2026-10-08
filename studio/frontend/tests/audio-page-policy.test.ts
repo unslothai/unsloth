@@ -10,6 +10,7 @@ import {
   MINIMAX_MUSIC_MAX_FRAMES,
   MINIMAX_MUSIC_MAX_SECONDS,
   audioGenerationPresentation,
+  audioRuntimeNoticeMode,
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
@@ -846,4 +847,35 @@ test("trained speech checkpoints are offered only on Speak and Music", () => {
     host,
     /ttsWorkflow !== "speak" && ttsWorkflow !== "music"\s*\?\s*\[\]\s*:\s*trainedTtsModels\.filter\(/,
   );
+});
+
+test("the outdated-runtime notice offers the in-app update only to the owner", () => {
+  const mode = (isOwner: boolean, offered: boolean, applying = false, checked = true) =>
+    audioRuntimeNoticeMode({ isOwner, offered, applying, checked });
+  assert.equal(mode(true, true), "update");
+  // A running job, started here or from the update card.
+  assert.equal(mode(true, true, true), "updating");
+  assert.equal(mode(true, false, true), "updating");
+  // A skipped offer (checks disabled, no bundle, no installer) or an older backend.
+  assert.equal(mode(true, false), "cli");
+  // Before the status loads the offer is unknown: no CLI instruction yet.
+  assert.equal(mode(true, false, false, false), "checking");
+  assert.equal(mode(false, false, false, false), "ask_owner");
+  // POST /api/llama/update is owner-only.
+  assert.equal(mode(false, true), "ask_owner");
+  assert.equal(mode(false, false, true), "ask_owner");
+});
+
+// The card, or another tab, can run the update without this notice's own click,
+// so the page refreshes from the followed job or from the offer disappearing,
+// and stays on "updating" until that refresh has re-read the runtime.
+test("the outdated-runtime notice refreshes the page however the update ran", () => {
+  const notice = readSrc("features/audio/components/audio-runtime-update-notice.tsx");
+  assert.match(notice, /const offerWithdrawn = wasOffered\.current && !offered;/);
+  assert.match(
+    notice,
+    /if \(followedJob\.current \|\| offerWithdrawn\) \{\s*followedJob\.current = false;\s*setRefreshing\(true\);\s*void onUpdated\(\)\.finally\(\(\) => setRefreshing\(false\)\);/,
+  );
+  assert.match(notice, /applying: applying \|\| refreshing,/);
+  assert.doesNotMatch(notice, /toast\.success\([^;]*;\s*onUpdated\(\)/);
 });

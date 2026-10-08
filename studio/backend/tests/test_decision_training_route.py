@@ -3,6 +3,7 @@
 
 import asyncio
 import importlib.util
+import json
 import os
 import sys
 import threading
@@ -373,17 +374,88 @@ def test_a_local_checkpoint_is_checked_at_its_subfolder(route, tmp_path):
     assert refused.value.detail["code"] == "training_local_model_not_decision"
 
 
-def test_a_local_llm_is_not_trained_as_a_decision_model(route, tmp_path):
-    llm = tmp_path / "llm"
-    llm.mkdir()
-    (llm / "config.json").write_text("{}", encoding = "utf-8")
-    (llm / "model.safetensors").write_bytes(b"x")
+def _llm_folder(folder: Path) -> Path:
+    folder.mkdir(parents = True)
+    config = {"model_type": "llama", "architectures": ["LlamaForCausalLM"], "hidden_size": 64}
+    (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (folder / "model.safetensors").write_bytes(b"x")
+    return folder
 
+
+def test_a_local_llm_is_only_a_decision_checkpoint_when_validated_as_an_llm(route, tmp_path):
+    llm = _llm_folder(tmp_path / "llm")
+
+    # A caller's layout claim is not what makes an LLM pass: its validated layout is.
     with pytest.raises(HTTPException) as refused:
-        route._reject_untrainable_model_request(_request(model_name = str(llm)))
-
+        route._reject_untrainable_model_request(
+            _request(model_name = str(llm), decision_layout = "laya")
+        )
     assert refused.value.status_code == 400
     assert refused.value.detail["code"] == "training_local_model_not_decision"
+
+
+def test_an_llm_trains_as_a_decision_model_with_a_new_clef_head(route, device, tmp_path):
+    from utils.models.model_config import load_llm_decision_defaults
+
+    llm = _llm_folder(tmp_path / "llm")
+    request = _request(model_name = str(llm), decision_layout = "laya")
+    route._validate_decision_request(request)
+    assert request.decision_layout == "llm"
+    assert route._reject_untrainable_model_request(request).model_name == str(llm.resolve())
+
+    config = _started_config(route, _request(model_name = str(llm), load_in_4bit = True))
+    recipe = load_llm_decision_defaults()
+    assert config["decision_layout"] == "llm"
+    # QLoRA works for an LLM, unlike Laya.
+    assert config["load_in_4bit"] is True
+    assert float(config["learning_rate"]) == float(recipe["training"]["learning_rate"])
+    assert config["max_seq_length"] == recipe["training"]["max_seq_length"]
+    assert (config["batch_size"], config["gradient_accumulation_steps"]) == (
+        recipe["training"]["batch_size"],
+        recipe["training"]["gradient_accumulation_steps"],
+    )
+    assert (config["lora_r"], config["lora_alpha"]) == (
+        recipe["lora"]["lora_r"],
+        recipe["lora"]["lora_alpha"],
+    )
+
+    full = _request(model_name = str(llm), training_type = "Full Finetuning")
+    route._validate_decision_request(full)
+    assert full.learning_rate == route._DECISION_FULL_FINETUNING_LR
+
+    with pytest.raises(HTTPException) as refused:
+        route._validate_decision_request(_request(model_name = str(llm), use_dora = True))
+    assert "DoRA" in refused.value.detail
+
+
+def test_a_laya_subfolder_or_catalog_repo_never_becomes_an_llm_run(route, device):
+    from utils.models import model_config
+
+    # Offline or without access the layout is unknown; a subfolder or Laya's repo still means Laya.
+    with patch.object(model_config, "decision_layout", return_value = None):
+        for request in (
+            _request(model_name = "org/decisions", model_subfolder = "multilingual"),
+            _request(model_name = LAYA_REPO, model_subfolder = "multilingual"),
+            _request(model_name = LAYA_REPO),
+        ):
+            route._validate_decision_request(request)
+            assert request.decision_layout == "laya", request.model_name
+
+
+@pytest.mark.parametrize("kind", ["cpu", "xpu"])
+def test_llm_decision_training_needs_an_nvidia_or_amd_gpu(route, device, tmp_path, kind):
+    from core.systemone.catalog import CLEF_NEEDS_GPU
+
+    device(kind)
+    with pytest.raises(HTTPException) as refused:
+        route._validate_decision_request(_request(model_name = str(_llm_folder(tmp_path / "l"))))
+    assert (refused.value.status_code, refused.value.detail) == (400, CLEF_NEEDS_GPU)
+
+
+def test_a_plain_request_carries_no_decision_layout(route):
+    request = _request(is_decision = False, model_name = "org/llm", decision_layout = "llm")
+    route._validate_decision_request(request)
+    assert request.decision_layout is None
 
 
 def test_a_hub_checkpoint_downloads_under_the_stall_watchdog(monkeypatch, tmp_path):
@@ -432,6 +504,10 @@ def test_a_hub_checkpoint_downloads_under_the_stall_watchdog(monkeypatch, tmp_pa
 
     events.clear()
     worker._download_decision_checkpoint(queue, {"model_name": str(tmp_path)})
+    # An LLM that gets a new head downloads through FastModel in the trainer.
+    worker._download_decision_checkpoint(
+        queue, {"model_name": "unsloth/Qwen3.5-0.8B", "decision_layout": "llm"}
+    )
     assert events == [] and len(downloads) == 1
 
 

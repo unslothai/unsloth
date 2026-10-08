@@ -123,10 +123,28 @@ test("the status maps to camelCase and keeps the saved and effective values apar
       grantsLockedByEnvironment: false,
       hostPrepMissing: ["prepare-null-device"],
       prepareRepeatsAfterRestart: true,
+      // An older server does not say which MXC tier runs.
+      builtinContainer: null,
     },
     setup: null,
     checkedAt: 12,
   });
+});
+
+test("the built-in container verdict reaches the tab", async () => {
+  for (const builtin of [true, false, null]) {
+    const { api } = loadApi(() =>
+      json({
+        ...WINDOWS_STATUS,
+        windows: { ...WINDOWS_STATUS.windows, builtin_container: builtin },
+      }),
+    );
+    const status = await api.loadSandboxStatus(false, "fallback");
+    assert.equal(
+      (status.windows as { builtinContainer: boolean | null }).builtinContainer,
+      builtin,
+    );
+  }
 });
 
 test("the setup plan and per-tool remediation reach the tab", async () => {

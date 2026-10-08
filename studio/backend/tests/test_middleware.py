@@ -306,6 +306,17 @@ class TestMaxBodyMiddleware:
                 f"/api/browser{path}".startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
             ), path
 
+    def test_auth_posts_are_capped_before_auth(self, main_module):
+        # login / refresh / desktop-login are reachable without a session.
+        from routes.auth import router
+
+        posts = [route.path for route in router.routes if "POST" in route.methods]
+        assert posts
+        for path in posts:
+            assert any(
+                f"/api/auth{path}".startswith(p) for p in main_module._BODY_PROTECTED_PREFIXES
+            ), path
+
     def test_diffusion_dataset_json_subroutes_keep_default_cap(self, main_module):
         # The exact-path passthrough must NOT sweep in the JSON sub-routes under the same prefix: a prefix match would let a large
         # caption/import body bypass the default JSON cap and be buffered up to the far larger upload limit.

@@ -6,7 +6,8 @@ first generation**. It does not depend on a model calling `read_skill`. This loa
 instructions, not referenced resources, scripts, or skill creation. Existing
 account discovery, capability, tool selection and permission policy still apply.
 Ask mode waits for the ordinary scoped read approval; Auto permits this read-only
-operation. A denied/failed load is shown as unavailable, not successful.
+operation. A denied/failed load is shown as unavailable, not successful, and the
+model is told the named skill was not loaded; a denied skill is never read.
 
 ## Intent contract
 
@@ -18,7 +19,11 @@ used. Inline/fenced/indented Markdown code, blockquotes, balanced quotation span
 email addresses, URL/path suffixes, and assistant/history mentions do not load
 instructions. Unquoted pasted prose is indistinguishable from typed prose and
 uses the same contract. Use quotation marks or code formatting when discussing a
-mention literally. This is deliberately not a Markdown plugin/runtime.
+mention literally. Code and blockquotes follow CommonMark block structure, with one
+exception: user text is shown unrendered, so a line typed directly under a quote
+without its own `>` is a reply, not quoted text. A backslash-escaped quote mark does
+not end a quotation span, and an apostrophe inside a word is not a quote mark. This
+is deliberately not a Markdown plugin/runtime.
 
 ## Context and evidence
 
