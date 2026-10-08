@@ -113,6 +113,15 @@ def _resolve_inventory_handle(value: str) -> str:
     return resolve_inventory_handle(value)
 
 
+def _normalized_reward_name(name: str) -> str:
+    # The library lookup's normalisation, so EXACT-ANSWER and exact-answer count as one reward.
+    from core.training.rewards import RewardError, normalize_reward_name
+    try:
+        return normalize_reward_name(name)
+    except RewardError:
+        return name
+
+
 class RewardSelection(BaseModel):
     """One library reward enabled for a GRPO run, with its weight in the summed reward."""
 
@@ -763,9 +772,9 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(f"{objective.upper()} does not support dataset streaming yet.")
         if objective == "grpo" and not self.grpo_rewards:
             raise ValueError("GRPO needs at least one reward.")
-        if objective == "grpo" and len({r.name for r in self.grpo_rewards}) != len(
-            self.grpo_rewards
-        ):
+        if objective == "grpo" and len(
+            {_normalized_reward_name(r.name) for r in self.grpo_rewards}
+        ) != len(self.grpo_rewards):
             raise ValueError("Each GRPO reward can only be selected once.")
         return self
 

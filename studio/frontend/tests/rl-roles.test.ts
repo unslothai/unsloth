@@ -7,9 +7,8 @@ import test from "node:test";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { missingRlRoles, resolveRlMapping } = await import(
-  "../src/features/training/lib/rl-roles.ts"
-);
+const { missingRlRoles, resolveRlMapping } =
+  await import("../src/features/training/lib/rl-roles.ts");
 
 test("GSM8K columns auto-map for GRPO", () => {
   assert.deepEqual(resolveRlMapping("grpo", ["question", "answer"], {}), {
@@ -35,5 +34,25 @@ test("explicit roles win over name matching, and a stale column is ignored", () 
   assert.deepEqual(
     resolveRlMapping("orpo", ["prompt", "chosen", "good", "bad"], mapping),
     { good: "chosen", bad: "rejected", prompt: "prompt" },
+  );
+});
+
+test("GRPO reward reference columns must come from the dataset", async () => {
+  const { missingRewardColumns } =
+    await import("../src/features/training/lib/rl-roles.ts");
+  assert.deepEqual(missingRewardColumns(["answer"], ["question"], {}), [
+    "answer",
+  ]);
+  assert.deepEqual(
+    missingRewardColumns(["answer"], ["question", "solution"], {}),
+    [],
+  );
+  assert.deepEqual(
+    missingRewardColumns(["answer"], ["question", "gold"], { gold: "answer" }),
+    [],
+  );
+  assert.deepEqual(
+    missingRewardColumns(["unit", "answer"], ["question", "answer"], {}),
+    ["unit"],
   );
 });

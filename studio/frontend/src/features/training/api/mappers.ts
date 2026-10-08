@@ -86,6 +86,8 @@ export function buildTrainingStartPayload(
   const s3Config = buildS3PayloadConfig(config);
   const objective = isCpt ? "sft" : effectiveTrainingObjective(config);
   const isRl = objective !== "sft";
+  // SFT-only toggles keep their stored value while RL is selected; the payload drops them.
+  const datasetStreaming = !isRl && config.datasetStreaming;
   // RL rows carry their own roles (prompt, answer, chosen, ...), not the chat-role mapping.
   const roleMapping = isRl ? config.rlRoleMapping : config.datasetManualMapping;
   const customFormatMapping: Record<string, unknown> | undefined =
@@ -126,14 +128,13 @@ export function buildTrainingStartPayload(
       config.approvedRemoteCodeFingerprint ?? null,
     hf_dataset: hfDataset,
     dataset_known_cached:
-      hfDataset && !config.datasetStreaming ? config.datasetKnownCached : false,
+      hfDataset && !datasetStreaming ? config.datasetKnownCached : false,
     dataset_local_path:
-      hfDataset && !config.datasetStreaming ? config.datasetLocalPath : null,
+      hfDataset && !datasetStreaming ? config.datasetLocalPath : null,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
-    dataset_streaming:
-      hfDataset && !isDecision ? config.datasetStreaming : false,
+    dataset_streaming: hfDataset && !isDecision ? datasetStreaming : false,
     dataset_slice_start: parseSliceValue(config.datasetSliceStart),
     dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: localDatasets,
@@ -163,7 +164,7 @@ export function buildTrainingStartPayload(
     // that. Guarded by tests/training-start-payload-grad-norm.test.ts.
     max_grad_value: null,
     random_seed: config.randomSeed,
-    packing: isEmbedding || isDecision ? false : config.packing,
+    packing: isEmbedding || isDecision || isRl ? false : config.packing,
     // Laya's recipe needs torch AdamW; Clef keeps its recipe's (8-bit) optimizer.
     optim:
       isDecision && config.decisionLayout !== "clef"

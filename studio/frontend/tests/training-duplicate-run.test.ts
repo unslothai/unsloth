@@ -271,3 +271,12 @@ test("switching to an RL objective and back restores the model's SFT learning ra
   store.getState().setTrainingObjective("sft");
   assert.equal(store.getState().learningRate, 2e-5);
 });
+
+test("trying an RL objective keeps the SFT-only toggles for the next SFT run", () => {
+  store.getState().reset();
+  store.setState({ trainOnCompletions: true, packing: true });
+  store.getState().setTrainingObjective("dpo");
+  store.getState().setTrainingObjective("sft");
+  assert.equal(store.getState().trainOnCompletions, true);
+  assert.equal(store.getState().packing, true);
+});

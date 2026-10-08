@@ -32,7 +32,12 @@ import {
 import { checkDecisionDatasetColumns } from "./decision-dataset";
 import { shouldUseVisionDatasetCheck } from "./fresh-dataset-check";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
-import { effectiveTrainingObjective, missingRlRoles } from "./rl-roles";
+import {
+  effectiveTrainingObjective,
+  missingRewardColumns,
+  missingRlRoles,
+} from "./rl-roles";
+import { listRewards } from "../api/rewards-api";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import { createTrainingStartInputIdentity } from "./training-start-inputs";
@@ -408,21 +413,32 @@ async function prepareSelectedDataset(
   const objective = effectiveTrainingObjective(attempt.config);
   if (objective !== "sft" && attempt.config.trainingMethod !== "cpt") {
     // RL reads Column roles, not the chat-role mapping.
-    const missing = missingRlRoles(
+    const missing: string[] = missingRlRoles(
       objective,
       check.columns,
       attempt.config.rlRoleMapping,
-    );
+    ).map((role) => translate(`rl.dataset.role.${role}`));
+    if (objective === "grpo" && missing.length === 0) {
+      // Rewards read their compare_to column; without it every row scores "missing".
+      const selected = new Set(attempt.config.grpoRewards.map((r) => r.name));
+      const compareTo = (await listRewards().catch(() => []))
+        .filter((r) => selected.has(r.name) && !r.shadowed)
+        .map((r) => r.rule?.compare_to)
+        .filter((c): c is string => typeof c === "string");
+      for (const column of missingRewardColumns(
+        compareTo,
+        check.columns,
+        attempt.config.rlRoleMapping,
+      )) {
+        missing.push(
+          column === "answer" ? translate("rl.dataset.role.answer") : column,
+        );
+      }
+    }
     if (missing.length === 0) {
       return true;
     }
-    toast.error(
-      translate("rl.dataset.missing", {
-        roles: missing
-          .map((role) => translate(`rl.dataset.role.${role}`))
-          .join(", "),
-      }),
-    );
+    toast.error(translate("rl.dataset.missing", { roles: missing.join(", ") }));
     return attempt.cancel();
   }
   if (!needsManualMapping(attempt.config, check, isVlm, isAudio)) {

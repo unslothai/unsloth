@@ -350,3 +350,12 @@ def test_grpo_keeps_a_reward_column_named_like_a_preference_role():
     ds = Dataset.from_list([{"question": "2+2?", "answer": "4", "chosen": "x"}])
     out, _ = format_rl_dataset(ds, "grpo", keep_columns = ("chosen",))
     assert out[0]["chosen"] == "x"
+
+
+def test_grpo_duplicate_rewards_are_matched_after_normalising():
+    with pytest.raises(ValidationError, match = "only be selected once"):
+        TrainingStartRequest(
+            **BASE,
+            objective = "grpo",
+            grpo_rewards = [{"name": "exact-answer"}, {"name": "EXACT-ANSWER"}],
+        )

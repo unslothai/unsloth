@@ -1656,12 +1656,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     LR_DEFAULT_LORA)
                 : RL_LEARNING_RATES[trainingObjective];
           }
-          if (trainingObjective !== "sft") {
-            // TRL formats these rows itself; SFT-only toggles would be silently ignored.
-            patch.trainOnCompletions = false;
-            patch.packing = false;
-            patch.datasetStreaming = false;
-          }
           setUserEdit(patch);
         },
         setRlBeta: (rlBeta) => setUserEdit({ rlBeta }),

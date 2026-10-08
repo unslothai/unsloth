@@ -2745,6 +2745,7 @@ async def stream_training_progress(
             progress: Optional[Any] = None,
             grad_norm_override: Optional[float] = None,
             eval_loss_override: Optional[float] = None,
+            rl_metrics_override: Optional[dict] = None,
         ) -> TrainingProgress:
             total = max(total_steps, 0)
             if step < 0 or total == 0:
@@ -2762,7 +2763,10 @@ async def stream_training_progress(
             eval_loss = eval_loss_override
             if eval_loss is None and progress:
                 eval_loss = getattr(progress, "eval_loss", None)
-            rl_metrics = getattr(progress, "rl_metrics", None) if progress else None
+            if rl_metrics_override is not None:
+                rl_metrics = rl_metrics_override or None
+            else:
+                rl_metrics = getattr(progress, "rl_metrics", None) if progress else None
 
             return TrainingProgress(
                 job_id = job_id,
@@ -2811,6 +2815,12 @@ async def stream_training_progress(
                     getattr(backend, "grad_norm_history", []),
                 )
             }
+            # Each replayed step carries its own RL numbers, not the latest ones.
+            rl_by_step = {
+                entry["step"]: {k: v for k, v in entry.items() if k != "step"}
+                for entry in getattr(backend, "rl_metric_history", [])
+                if isinstance(entry, dict) and "step" in entry
+            }
             for i, step_val in enumerate(backend.step_history):
                 if not is_current_job():
                     return
@@ -2832,6 +2842,7 @@ async def stream_training_progress(
                         epoch_replay,
                         progress = tp_replay,
                         grad_norm_override = grad_norm_by_step.get(step_val),
+                        rl_metrics_override = rl_by_step.get(step_val, {}),
                     )
                     if not is_current_job():
                         return

@@ -94,3 +94,18 @@ export function missingRlRoles(
   );
   return RL_REQUIRED_ROLES[objective].filter((role) => !mapped.has(role));
 }
+
+/** compare_to columns of the selected GRPO rewards that the dataset cannot supply. The worker
+ * renames the answer role's column to "answer"; any other name must be a dataset column. */
+export function missingRewardColumns(
+  compareTo: readonly string[],
+  columns: readonly string[],
+  mapping: Record<string, string>,
+): string[] {
+  const hasAnswer = Object.values(
+    resolveRlMapping("grpo", columns, mapping),
+  ).includes("answer");
+  return [...new Set(compareTo)].filter((column) =>
+    column === "answer" ? !hasAnswer : !columns.includes(column),
+  );
+}

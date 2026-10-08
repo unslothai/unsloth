@@ -44,6 +44,10 @@ test("GRPO sends RL roles instead of chat roles, plus its rewards", () => {
       ...BASE,
       trainingObjective: "grpo",
       trainOnCompletions: true,
+      packing: true,
+      datasetSource: "huggingface",
+      dataset: "org/data",
+      datasetStreaming: true,
       rlBeta: 0.04,
       grpoRewards: [{ name: "exact-answer", weight: 2 }],
     },
@@ -57,6 +61,8 @@ test("GRPO sends RL roles instead of chat roles, plus its rewards", () => {
   assert.deepEqual(payload.grpo_rewards, [{ name: "exact-answer", weight: 2 }]);
   assert.equal(payload.rl_beta, 0.04);
   assert.equal(payload.train_on_completions, false);
+  assert.equal(payload.packing, false);
+  assert.equal(payload.dataset_streaming, false);
   assert.equal(payload.grpo_variant, "dapo");
   assert.equal(payload.grpo_enable_thinking, false);
   assert.match(payload.rl_system_prompt ?? "", /<reasoning>/);
