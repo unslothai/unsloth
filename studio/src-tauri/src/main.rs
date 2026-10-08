@@ -3,6 +3,8 @@
 mod app_layout;
 mod app_menu;
 mod browser_capture;
+#[cfg(target_os = "macos")]
+mod browser_context_downloads;
 mod browser_downloads;
 mod browser_proxy;
 mod browser_webview;
