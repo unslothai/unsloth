@@ -41,7 +41,6 @@ from utils.paths import (
 )
 from core.inference import get_inference_backend
 from core.export import q4nx
-from utils import llama_cpp_source
 from utils.paths.path_utils import any_not_appledouble_metadata, drop_appledouble_metadata
 
 # GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
@@ -1934,6 +1933,7 @@ class ExportBackend:
             )
 
         from unsloth_zoo import llama_cpp as _zoo_llama_cpp
+        from utils import llama_cpp_source
 
         default_dir = os.path.normpath(_zoo_llama_cpp.LLAMA_CPP_DEFAULT_DIR)
         source_dir = os.path.join(os.path.dirname(default_dir), "llama.cpp-source")
