@@ -27,14 +27,6 @@
       "reason": "Loads the installed torchao package file it is stubbing around, located via find_spec."
     },
     {
-      "file": "studio/backend/core/export/export.py",
-      "rule": "unpinned-code-fetch",
-      "sink": "git-clone-unpinned",
-      "digest": "f7dadd837277bc8d",
-      "count": 1,
-      "reason": "Known residual: clones llama.cpp for convert_lora_to_gguf.py at the bundled release tag when known (--branch tag), else upstream master, the same upstream trust as installing llama.cpp; pinning is a separate change."
-    },
-    {
       "file": "studio/backend/core/export/worker.py",
       "rule": "trust-remote-code",
       "sink": "assignment",

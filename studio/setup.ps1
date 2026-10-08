@@ -2760,6 +2760,69 @@ function Find-VsBuildTools {
     return $null
 }
 
+# Same ceiling Resolve-CudaToolkit reads: nvidia-smi, else the driver library.
+function Get-LlamaDriverMaxCuda {
+    $smi = ""
+    if ($NvidiaSmiExe -and (Get-Command Invoke-NvidiaSmiBounded -ErrorAction SilentlyContinue)) {
+        try { $smi = Invoke-NvidiaSmiBounded $NvidiaSmiExe } catch { }
+    }
+    if ($smi -match "CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)") { return "$($Matches[1]).$($Matches[2])" }
+    if (Get-Command Get-NvidiaLibraryInventory -ErrorAction SilentlyContinue) {
+        $inv = Get-NvidiaLibraryInventory
+        if ($inv) { return "$($inv.CudaMajor).$($inv.CudaMinor)" }
+    }
+    return $null
+}
+
+function Get-NvccMajor {
+    param([string]$Nvcc)
+    try { if ((& $Nvcc --version 2>&1 | Out-String) -match 'release\s+(\d+)\.') { return [int]$Matches[1] } } catch { }
+    return $null
+}
+
+function Test-LlamaBuildToolsMissing {
+    if ($null -eq (Get-Command git -ErrorAction SilentlyContinue)) { return $true }
+    if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) { return $true }
+    # A CUDA source build installs the Toolkit (several GB) when no nvcc is found.
+    $nvccExe = $null
+    if ($HasNvidiaDriverEvidence) {
+        # A toolkit newer than the driver is rejected by Resolve-CudaToolkit, which then installs one.
+        $max = Get-LlamaDriverMaxCuda
+        $nvccExe = if ($max) { Find-Nvcc -MaxVersion $max } else { $null }
+        if (-not $nvccExe) {
+            $nvccExe = Find-Nvcc
+            $major = if ($nvccExe -and $max) { Get-NvccMajor $nvccExe } else { $null }
+            if ($max -and ($null -eq $major -or $major -gt [int]$max.Split('.')[0])) { $nvccExe = $null }
+        }
+    }
+    if ($HasNvidiaDriverEvidence -and -not $nvccExe) { return $true }
+    # Phase 4 upgrades a CMake too old for VS 2026 via winget.
+    if ($CmakeGenerator -match 'Visual Studio 18\b' -and -not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) { return $true }
+    # Resolve-CudaToolkit copies missing CUDA .targets into VS, elevating when denied.
+    $cudaRoot = if ($nvccExe) { Split-Path (Split-Path $nvccExe -Parent) -Parent } else { $null }
+    if ($cudaRoot -and $script:VsInstallPath) {
+        $extras = Join-Path $cudaRoot "extras\visual_studio_integration\MSBuildExtensions"
+        $custom = Get-VcBuildCustomizationsDir -VsInstallPath $script:VsInstallPath -Generator $CmakeGenerator
+        if ((Test-Path $extras) -and (Test-Path $custom) -and
+            -not (Get-ChildItem $custom -Filter "CUDA *.targets" -ErrorAction SilentlyContinue)) { return $true }
+    }
+    return (-not $script:VsInstallPath) -and (-not (Find-VsBuildTools))
+}
+
+function Test-SetupConsoleHeadless {
+    return (-not [Environment]::UserInteractive) -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected
+}
+
+# A failed prebuilt is not consent to a multi-GB toolchain. No prompt (#8040): headless runs
+# outside Desktop keep installing; a terminal or Desktop opts in via UNSLOTH_INSTALL_BUILD_TOOLS.
+function Test-LlamaBuildToolsInstallAllowed {
+    $opt = "$env:UNSLOTH_INSTALL_BUILD_TOOLS".Trim().ToLowerInvariant()
+    if ($opt -in @("1", "true", "yes")) { return $true }
+    if ($opt -in @("0", "false", "no")) { return $false }
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
+    return (Test-SetupConsoleHeadless)
+}
+
 # Deferred from Phase 1 so the prebuilt path never pays for the multi-GB install.
 function Ensure-BuildToolsForLlamaSourceBuild {
     # CMake
@@ -4987,6 +5050,7 @@ if ($LongPathsEnabled) {
     step "long paths" "disabled; already asked earlier in this update" "Yellow"
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
+    Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
     Write-StudioLine "   Requesting admin access to fix..." -ForegroundColor Yellow
     try {
         $proc = Start-Process -FilePath "reg.exe" `
@@ -5050,10 +5114,8 @@ if (-not $HasGit) {
     if ($gitNeeded -and $StageRoot) {
         Exit-SetupFailure "Background staging cannot install Git; retry with the foreground updater."
     }
-    # Optional here; the first pass already tried and the installer prompts for UAC.
-    if ($env:UNSLOTH_SETUP_RERUN -eq '1' -and -not $gitNeeded) {
-        step "git" "not found; already tried earlier in this update" "Yellow"
-    } elseif ($gitNeeded -or -not $StageRoot) {
+    # Only when something here clones: a machine-wide Git install is not ours to add otherwise.
+    if ($gitNeeded) {
         Write-StudioLine "Git not found -- attempting install via winget..." -ForegroundColor Yellow
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
@@ -9676,6 +9738,7 @@ $ErrorActionPreference = $script:PrevEAP_T5
 # Reuse the managed path resolved and preflighted before phase 1.
 if (-not (Test-Path -LiteralPath $UnslothHome)) { [System.IO.Directory]::CreateDirectory($UnslothHome) | Out-Null }
 $NeedLlamaSourceBuild = $false
+$script:LlamaSourceBuildIsFallback = $false
 $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
 # Every host installs the fork's app-* prebuilts; ggml-org artifacts are no longer the default.
@@ -10114,6 +10177,7 @@ if ($LocalLlamaCppLinked) {
             # which this script cannot see -- exits 5 above instead.
             substep "Prebuilt llama.cpp path unavailable or failed validation -- falling back to source build" "Yellow"
             $NeedLlamaSourceBuild = $true
+            $script:LlamaSourceBuildIsFallback = $true
             }
         } else {
             step "llama.cpp" "prebuilt helper failed unexpectedly" "Red"
@@ -10279,12 +10343,16 @@ if ($StageRoot -and $NeedLlamaSourceBuild) {
     Exit-SetupFailure "Background staging cannot install system build tools for llama.cpp; retry with the foreground updater."
 }
 
+# Asked before Phase 3.5: OpenSSL is a system install too.
+$script:LlamaBuildToolsDeclined = $NeedLlamaSourceBuild -and $script:LlamaSourceBuildIsFallback -and (Test-LlamaBuildToolsMissing) -and
+    -not (Test-LlamaBuildToolsInstallAllowed)
+
 # ==========================================================================
 #  PHASE 3.5: Install OpenSSL dev (for HTTPS support in llama-server)
 # ==========================================================================
 $OpenSslAvailable = $false
 
-if ($NeedLlamaSourceBuild) {
+if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
     $OpenSslRoots = @(
         'C:\Program Files\OpenSSL-Win64',
         'C:\Program Files\OpenSSL',
@@ -10301,6 +10369,9 @@ if ($NeedLlamaSourceBuild) {
     if ($OpenSslRoot) {
         $OpenSslAvailable = $true
         substep "OpenSSL dev found at $OpenSslRoot"
+    } elseif ($script:LlamaSourceBuildIsFallback -and -not (Test-LlamaBuildToolsInstallAllowed)) {
+        # Optional for the build, so it is skipped rather than declining the whole build.
+        substep "OpenSSL dev not found; building without HTTPS (UNSLOTH_INSTALL_BUILD_TOOLS=1 installs it)" "Yellow"
     } else {
         Write-StudioLine ""
         substep "installing OpenSSL dev (for HTTPS in llama-server)..."
@@ -10379,6 +10450,7 @@ if ($CanReuseLlamaBuild -and $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinke
     $CanReuseLlamaBuild = Test-LlamaTreeStillHealthy $LlamaCppDir
 }
 $WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and -not $CanReuseLlamaBuild
+if ($script:LlamaBuildToolsDeclined -and -not $CanReuseLlamaBuild) { $WillBuildLlamaFromSource = $false }
 if ($WillBuildLlamaFromSource) {
     if (-not $HasGitForBuild) {
         # Phase 1 keeps git optional, so only the automatic fallback after a failed prebuilt
@@ -10419,6 +10491,13 @@ if ($LocalLlamaCppLinked) {
     # $CanReuseLlamaBuild above, so refusing here also planned the toolchain.
     Write-StudioLine ""
     step "llama.cpp" "already built"
+} elseif ($script:LlamaBuildToolsDeclined) {
+    Write-StudioLine ""
+    step "llama.cpp" "build skipped (build tools not installed)" "Yellow"
+    substep "The prebuilt download failed, and a source build needs Git, CMake and Visual Studio Build Tools." "Yellow"
+    substep "GGUF inference and export will not be available." "Yellow"
+    substep "To install them and build from source, set UNSLOTH_INSTALL_BUILD_TOOLS=1 and re-run setup." "Yellow"
+    $script:LlamaCppDegraded = $true
 } elseif (-not $HasGitForBuild) {
     # Before cmake: the toolchain install is skipped without git, so cmake may be missing
     # purely as a consequence. Degrade rather than abort; the opt-in source triggers already
@@ -11014,6 +11093,8 @@ if ($script:LlamaCppDegraded -and $env:SKIP_STUDIO_BASE -eq "1") {
         [Console]::Out.WriteLine("[TAURI:PROGRESS] llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds")
         [Console]::Out.WriteLine("[TAURI:DIAG] llama_cpp=unavailable")
         [Console]::Out.Flush()
+    } elseif ($script:LlamaBuildToolsDeclined) {
+        step "llama.cpp" "unavailable; GGUF inference is disabled until the build tools are installed" "Yellow"
     } else {
         Exit-SetupFailure "llama.cpp setup did not produce a usable server"
     }

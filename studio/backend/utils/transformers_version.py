@@ -3808,6 +3808,15 @@ def _ensure_venv_llmcompressor_exists() -> bool:
         )
         return False
 
+    # llmcompressor is a git+ requirement, and uv / pip shell out to git for it.
+    from utils.git_tool import GitUnavailable, ensure_git, with_git_on_path
+
+    try:
+        git_dir = ensure_git()
+    except GitUnavailable as exc:
+        logger.error("Cannot provision llm-compressor-main shadow: %s", exc)
+        return False
+
     logger.warning(
         "Provisioning llm-compressor-main shadow at %s (one-time, ~a few hundred MB, no torch) ...",
         _VENV_LLMCOMPRESSOR_DIR,
@@ -3846,8 +3855,11 @@ def _ensure_venv_llmcompressor_exists() -> bool:
             text = True,
             encoding = "utf-8",
             errors = "replace",
-            env = utf8_child_env(
-                get_hf_cache_paths().child_env(child_env_without_native_path_secret())
+            env = with_git_on_path(
+                utf8_child_env(
+                    get_hf_cache_paths().child_env(child_env_without_native_path_secret())
+                ),
+                git_dir,
             ),
             **_windows_hidden_subprocess_kwargs(),
         )
