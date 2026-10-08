@@ -113,10 +113,18 @@ test("leaving Chat and coming back keeps a new chat's pages open", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   // outside Chat, activeThreadId is cleared and restored, so ?new uses the first shown thread id.
   assert.match(page, /if \(search\.new && activeThreadId === null\) \{\s*newChatIdentityBlankedRef\.current = search\.new;/);
-  assert.match(page, /newChatIdentityBlankedRef\.current === search\.new &&\s*newChatRef\.current\?\.nonce !== search\.new\s*\) \{/);
+  assert.match(page, /if \(search\.new && activeThreadId && newChatIdentityBlankedRef\.current === search\.new\) \{/);
   assert.match(page, /view\.newThreadNonce === newChat\.nonce \? newChat\.threadId : null;/);
   const key = page.slice(page.indexOf("const shownChatKey ="), page.indexOf("closeChatPages();"));
   assert.match(key, /view\.threadId \?\? newChatShownId \?\? activeThreadId/);
+});
+
+test("a new chat deleted while Chat is hidden re-latches onto its replacement thread", () => {
+  const page = read("../src/features/chat/chat-page.tsx");
+  const identity = page.slice(page.indexOf("const newChatIdentityBlankedRef"), page.indexOf("const modelOperationInProgress"));
+  // ThreadNewChatSwitch starts a fresh thread under the same nonce when the recorded one is tombstoned.
+  assert.match(identity, /newChatRef\.current = \{ nonce: search\.new, threadId: activeThreadId \};\s*newChatIdentityBlankedRef\.current = null;/);
+  assert.doesNotMatch(identity, /newChatRef\.current\?\.nonce !== search\.new/);
 });
 
 test("Back and Forward cannot assign an outgoing local thread to an incoming new-chat nonce", () => {

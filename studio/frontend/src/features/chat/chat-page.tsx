@@ -2876,14 +2876,11 @@ export function ChatPage({
   if (search.new && activeThreadId === null) {
     newChatIdentityBlankedRef.current = search.new;
   }
+  // re-latch after every blank: a nonce whose chat was deleted while hidden comes back on a fresh thread.
   const newChatRef = useRef<{ nonce: string; threadId: string } | null>(null);
-  if (
-    search.new &&
-    activeThreadId &&
-    newChatIdentityBlankedRef.current === search.new &&
-    newChatRef.current?.nonce !== search.new
-  ) {
+  if (search.new && activeThreadId && newChatIdentityBlankedRef.current === search.new) {
     newChatRef.current = { nonce: search.new, threadId: activeThreadId };
+    newChatIdentityBlankedRef.current = null;
   }
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
