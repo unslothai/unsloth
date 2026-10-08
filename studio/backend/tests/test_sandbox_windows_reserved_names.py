@@ -173,7 +173,9 @@ def test_git_bash_redirect_to_nul_does_not_refuse_the_session(tmp_path):
 
     bash = tools._windows_bash()
     if bash is None:
-        pytest.skip("no trusted Git Bash on this host")
+        pytest.skip(
+            reason = "no trusted Git Bash: Studio runs the Terminal on cmd.exe, where > nul is the device"
+        )
     workdir = tmp_path / "work"
     workdir.mkdir()
     planted = str(workdir / "nul")
