@@ -7565,13 +7565,29 @@ def _expanded_user_path(value) -> Path:
         return Path(os.path.expanduser(str(value)))
 
 
-def _write_direct_stream_key(key: str) -> "Path":
-    """Store the direct-streaming key where only the server user can read it."""
+def _llama_server_api_key_enabled() -> bool:
+    """Launch llama-server with a per-launch API key; UNSLOTH_LLAMA_SERVER_API_KEY=0 opts out unless direct streaming
+    (UNSLOTH_DIRECT_STREAM=1) needs the key."""
+    return (
+        os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1"
+        or os.getenv("UNSLOTH_LLAMA_SERVER_API_KEY", "1") != "0"
+    )
+
+
+def _write_direct_stream_key(key: str, previous: "Optional[Path]" = None) -> "Path":
+    """Store the llama-server key where only the server user can read it.
+
+    One file per backend, so two backends starting together never overwrite each other's key before the child reads
+    it; ``previous`` (this backend's file) is rewritten in place on a relaunch."""
+    import secrets as _secrets
+
     from utils.paths.storage_roots import auth_root
 
     directory = auth_root()
     directory.mkdir(parents = True, exist_ok = True)
-    path = directory / "llama_api_key"
+    path = (
+        previous if previous is not None else directory / f"llama_api_key_{_secrets.token_hex(8)}"
+    )
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding = "utf-8") as handle:
         handle.write(key)
@@ -7920,6 +7936,7 @@ class LlamaCppBackend:
         self._llama_log_path: Optional[Path] = None
         self._cancel_event = threading.Event()
         self._api_key: Optional[str] = None
+        self._api_key_file: Optional[Path] = None
         self._slot_save_dir: Optional[str] = None
         self._slot_save_binary: Optional[tuple[str, int]] = None
         # (gguf_identity, launch_fingerprint) snapshotted at load, so a later slot
@@ -8045,8 +8062,7 @@ class LlamaCppBackend:
 
     @property
     def _auth_headers(self) -> "Optional[dict[str, str]]":
-        """Bearer header matching the --api-key direct-stream mode uses, else
-        None (so unauthenticated llama-server calls don't get a spurious 401)."""
+        """Bearer header for the child's per-launch --api-key, else None (key disabled)."""
         return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
 
     @property
@@ -28428,14 +28444,15 @@ class LlamaCppBackend:
                                 "device is virtualised."
                             )
 
-                # Option C: --api-key for direct client access when enabled
+                # A per-launch --api-key, so a web page the user has open cannot drive the loopback server (it sends
+                # permissive CORS).
                 import secrets as _secrets
 
-                if os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
+                if _llama_server_api_key_enabled():
                     self._api_key = _secrets.token_urlsafe(32)
                     # Through a file, not argv: a command line is readable by every process of this Unix user, and the auth directory is not.
-                    cmd.extend(["--api-key-file", str(_write_direct_stream_key(self._api_key))])
-                    logger.info("llama-server started with --api-key-file for direct streaming")
+                    self._api_key_file = _write_direct_stream_key(self._api_key, self._api_key_file)
+                    cmd.extend(["--api-key-file", str(self._api_key_file)])
                 else:
                     self._api_key = None
 
@@ -31884,7 +31901,9 @@ class LlamaCppBackend:
                         from core.inference.llama_stats import maybe_start_stats_logger
                         if self._stats_logger is not None:
                             self._stats_logger.stop()
-                        self._stats_logger = maybe_start_stats_logger(self.base_url, logger)
+                        self._stats_logger = maybe_start_stats_logger(
+                            self.base_url, logger, headers = self._auth_headers
+                        )
                     except Exception as e:
                         logger.debug(f"engine-stats logger not started: {e}")
                 else:
@@ -32741,6 +32760,10 @@ class LlamaCppBackend:
             _was_resident = self._process is not None
             self._kill_process()
             self._cleanup_cpu_fallback_runtime()
+            if self._api_key_file is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(self._api_key_file)
+                self._api_key_file = None
             # The one unload line: routes/inference.py logged a second, differently named.
             if _was_resident:
                 logger.info(f"Unloaded GGUF model: {self._model_identifier}")
@@ -35083,9 +35106,8 @@ class LlamaCppBackend:
         """llama-server's ``/props``, or None when it cannot be read."""
         url = f"{self.base_url}/props"
         try:
-            # /props is not one of llama-server's public endpoints, so under
-            # UNSLOTH_DIRECT_STREAM=1 (which launches the child with --api-key)
-            # an unauthenticated read 401s: the context readback silently keeps
+            # /props is not one of llama-server's public endpoints, so with the
+            # child's --api-key an unauthenticated read 401s: the context readback silently keeps
             # the requested -c, and video reads as unsupported on a model that
             # supports it. None when there is no child key, which is httpx's
             # default and what every other call site here relies on.
