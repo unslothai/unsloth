@@ -166,6 +166,7 @@ test("defaults follow ComfyUI's official templates for the same model", () => {
     ["black-forest-labs/FLUX.1-Kontext-dev", { steps: 20, guidance: 2.5 }],
     ["black-forest-labs/FLUX.2-dev", { steps: 20, guidance: 4 }],
     ["Qwen/Qwen-Image-Edit-2511", { steps: 40, guidance: 4 }],
+    ["Qwen/Qwen-Image-Edit-2509", { steps: 20, guidance: 4 }],
     ["Qwen/Qwen-Image-2512", { steps: 50, guidance: 4 }],
     ["Qwen/Qwen-Image", { steps: 20, guidance: 4 }],
     ["Tongyi-MAI/Z-Image-Turbo", { steps: 8, guidance: 0 }],
@@ -175,5 +176,15 @@ test("defaults follow ComfyUI's official templates for the same model", () => {
     ["ideogram-ai/ideogram-4-fp8", { steps: 20, guidance: 7 }],
   ] as const) {
     assert.deepEqual(defaultsFor(id), want, id);
+  }
+});
+
+test("every Qwen-Image-Layered spelling the backend accepts gets its 20 / 2.5 recipe", () => {
+  for (const id of [
+    "unsloth/Qwen-Image-Layered-GGUF",
+    "local/qwen_image_layered",
+    "local/qwenimagelayered-q4",
+  ]) {
+    assert.deepEqual(defaultsFor(id), { steps: 20, guidance: 2.5 }, id);
   }
 });

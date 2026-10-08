@@ -421,7 +421,7 @@ def train_precision_modes() -> tuple[list[str], str]:
     recommended = "nf4"
     try:
         import torch
-        if native_bf16_supported():
+        if flow_bf16_trainable():
             modes.append("bf16")
             # ROCm capability values are gfx versions, not the NVIDIA SM levels checked below.
             torchao_ok = has_functional_torchao() and not torch_is_rocm()
@@ -631,17 +631,37 @@ def native_bf16_supported() -> bool:
     ``torch.cuda.is_bf16_supported()`` defaults to counting EMULATED bf16, which every pre-Ampere
     CUDA card (T4 / V100 / RTX 20xx) reports as supported even though the DiT trainer needs real
     Ampere-or-newer bf16. Gate NVIDIA on compute capability major >= 8 instead, the same #6658
-    fix the inference device resolver already uses; ROCm has no such quirk. Never raises. Shared
-    by the /info modes, the start preflight, and the trainer guard so all three stay in sync."""
+    fix the inference device resolver already uses; ROCm by gfx arch (``rocm_bf16_supported``).
+    Never raises. The flow trainers' admission is ``flow_bf16_trainable``."""
     try:
         import torch
 
         if not torch.cuda.is_available():
             return False
-        is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
-        if is_rocm:
-            return bool(torch.cuda.is_bf16_supported())
+        from core.inference.rocm_bf16 import is_rocm_torch, rocm_bf16_supported
+
+        if is_rocm_torch(torch):
+            return rocm_bf16_supported(torch)
         return torch.cuda.get_device_capability()[0] >= 8
+    except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
+        return False
+
+
+def flow_bf16_trainable() -> bool:
+    """Whether the bf16-only flow trainers (DiT, MiniMax-H3; no fp16 path) may run on this GPU. ROCm targets
+    without native bf16 (RDNA2-and-older / Vega) still run bf16 through fp32 emulation, slowly, so they stay
+    admitted as before the arch gate; only pre-Ampere NVIDIA and ``UNSLOTH_STUDIO_ROCM_BF16=0`` are refused. Never raises."""
+    if native_bf16_supported():
+        return True
+    try:
+        import torch
+        from core.inference.rocm_bf16 import rocm_bf16_forced_off
+
+        if rocm_bf16_forced_off():
+            return False
+        return bool(
+            torch.cuda.is_available() and torch_is_rocm() and torch.cuda.is_bf16_supported()
+        )
     except Exception:  # noqa: BLE001 -- no torch / probe failure -> treat as unsupported
         return False
 
@@ -714,7 +734,7 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
         return None
     try:
         import torch
-        if torch.cuda.is_available() and not native_bf16_supported():
+        if torch.cuda.is_available() and not flow_bf16_trainable():
             return (
                 "This trainer requires a bfloat16-capable GPU (Ampere or newer); this CUDA "
                 "device does not support bf16. Train the DiT families on a newer GPU."

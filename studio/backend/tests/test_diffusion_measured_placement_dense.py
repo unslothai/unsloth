@@ -163,6 +163,14 @@ def test_every_budget_fits_measured_need(klein_pipe, budget):
     assert kept + KLEIN_HEADROOM + dm.DEFAULT_BASE_OVERHEAD_MIB <= budget
 
 
+def test_dense_dit_never_takes_the_whole_resident_tier(klein_pipe):
+    """The whole-resident tier's slack was measured on the int8 route; a dense DiT keeps the partial room."""
+    new = _refine(klein_pipe, _flat_plan(11000, 13400))
+    assert "resident_dit_slack_mib" not in new.estimates
+    assert "encode_resident_transformer_mib" not in new.estimates
+    assert int(new.resident_transformer_mib or 0) < 7393
+
+
 def test_dense_request_extra_releases_for_oversized(monkeypatch):
     for name in ENVS:
         monkeypatch.delenv(name, raising = False)

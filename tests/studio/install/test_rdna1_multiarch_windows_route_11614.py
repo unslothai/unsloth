@@ -57,6 +57,11 @@ class TestPackageSpecs:
         """A nightly tag (rocmX.Y.ZaYYYYMMDD) moves under users."""
         assert re.fullmatch(r"rocm\d+\.\d+\.\d+", stack_mod._ROCM_MULTIARCH_TAG)
 
+    def test_the_pin_avoids_the_windows_build_with_broken_fused_attention(self):
+        """rocm7.14.1 Windows wheels ship an AOTriton 0.12 runtime with 0.13 kernel images, so every
+        flash / memory-efficient SDPA call fails with hipErrorInvalidValue (ROCm/TheRock#7992, #7315)."""
+        assert stack_mod._ROCM_MULTIARCH_TAG != "rocm7.14.1"
+
     def test_the_pin_sits_inside_the_windows_torch_window(self):
         """install.ps1 applies torch<2.12.0 everywhere else on Windows."""
         major, minor, _ = (int(x) for x in stack_mod._ROCM_MULTIARCH_TORCH_VERSION.split("."))
@@ -306,6 +311,43 @@ class TestTheWindowsRepairSiteRunsForRdna1:
         assert pip_try.call_count == installs
         if installs:
             assert "torch[device-gfx1010]" in " ".join(str(a) for a in pip_try.call_args.args)
+
+    @pytest.mark.parametrize(
+        "installed,installs",
+        [("2.11.0+rocm7.14.1", 1), ("2.11.0+rocm7.14.0", 0), ("2.11.0+ROCm7.14.1", 1)],
+    )
+    def test_a_build_with_broken_fused_attention_is_replaced(
+        self, installed, installs, monkeypatch
+    ):
+        # Standalone `studio update` on a venv from the old rocm7.14.1 pin: the device packs are
+        # there, so only the build tag says it must move to the current pin.
+        from unittest.mock import MagicMock, patch
+
+        _mark = stack_mod._TORCH_PROBE_MARKER
+        probe = MagicMock(returncode = 0, stdout = _mark + installed + "|7.14.60850|" + chr(10))
+        pip_try = MagicMock(return_value = True)
+        monkeypatch.setattr(stack_mod, "_TORCH_RUNTIME_PROBE", None)
+        monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_WINDOWS_MULTIARCH_MIRROR", raising = False)
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", True),
+            patch.object(stack_mod, "IS_MACOS", False),
+            patch.object(stack_mod, "_TORCH_BACKEND", ""),
+            patch.object(stack_mod, "_explicit_rocm_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_explicit_unknown_family_torch_index_url", return_value = None),
+            patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
+            patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = "gfx1151"),
+            patch.object(stack_mod, "_multiarch_device_pack_installed", return_value = True),
+            patch.object(stack_mod, "_install_bnb_windows_rocm", return_value = True),
+            patch.object(stack_mod, "pip_install_try", pip_try),
+            patch("subprocess.run", return_value = probe),
+        ):
+            stack_mod._ensure_rocm_torch()
+        assert pip_try.call_count == installs
+        if installs:
+            assert f"torch[device-gfx1151]==2.11.0+{stack_mod._ROCM_MULTIARCH_TAG}" in " ".join(
+                str(a) for a in pip_try.call_args.args
+            )
 
     def test_the_device_pack_check_needs_torch_and_torchvision_packs(self, monkeypatch):
         from importlib import metadata

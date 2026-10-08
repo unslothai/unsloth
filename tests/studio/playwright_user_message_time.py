@@ -147,14 +147,37 @@ async def check(url):
             # Long dates, translations and font scaling must fit the viewport;
             # Copy/Edit/Fork/Delete and branch targets must retain their size.
             layouts = []
-            for width, locale, scale in [
-                (375, "en", ".9375"),
-                (320, "en", ".9375"),
-                (375, "ru", "1.25"),
-                (320, "ar", "1.25"),
+            # (viewport width, locale, UI font scale, browser Interface Scale, narrow count)
+            for width, locale, scale, interface, *narrow in [
+                (375, "en", ".9375", 1),
+                # UI font size 12px, the minimum (UI_FONT_SIZE_RANGE): --ui-space-scale is 0.8 here, so a
+                # target sized as a multiple of it drops under 24px.
+                (375, "en", ".75", 1),
+                (320, "en", ".9375", 1),
+                (375, "ru", "1.25", 1),
+                (320, "ar", "1.25", 1),
+                # The browser's 50% Interface Scale, its floor, at the smallest font: every token shrinks,
+                # so a target clamped at 24px reaches past the gap and over its neighbour.
+                (375, "en", ".75", 0.5),
+                # 200% Interface Scale at the smallest font: the target grows past the box above and below,
+                # and once the picker wraps onto its own row that reaches across the row gap.
+                (375, "en", ".75", 2),
+                (320, "en", ".75", 2),
+                # A narrow custom chat font at the smallest UI font, where each chevron's target reaches
+                # furthest toward the count: the two must still not meet over it.
+                (375, "en", ".75", 1, "narrow count"),
             ]:
                 await page.set_viewport_size({"width": width, "height": 650})
                 await page.goto(f"{url}?branches&locale={locale}&scale={scale}")
+                if narrow:
+                    await page.add_style_tag(
+                        content = ".aui-user-branch-picker > span { font-size: 2px !important; }"
+                    )
+                if interface != 1:
+                    await page.evaluate(
+                        "s => document.documentElement.style.setProperty('--ui-interface-scale', s)",
+                        str(interface),
+                    )
                 await page.locator(".aui-user-message-root").hover(position = {"x": 4, "y": 4})
                 await page.locator("time").wait_for()
                 await page.evaluate("document.fonts.ready")
@@ -162,16 +185,71 @@ async def check(url):
                   const viewport = document.querySelector('.aui-thread-viewport').getBoundingClientRect();
                   const rects = [...document.querySelectorAll('.aui-user-message-footer button')].map(e => {
                     const r = e.getBoundingClientRect();
-                    return {x:r.x, right:r.right, width:r.width, timestamp:e.classList.contains('aui-user-message-time-trigger')};
+                    // The target is the box plus a positioned ::before, if the control extends it with one.
+                    let t = {x:r.x, right:r.right, y:r.y, bottom:r.bottom};
+                    const before = getComputedStyle(e, '::before');
+                    if (before.content !== 'none' && before.position === 'absolute') {
+                      const left = r.x + e.clientLeft, top = r.y + e.clientTop;
+                      t = {
+                        x: Math.min(t.x, left + parseFloat(before.left)),
+                        right: Math.max(t.right, left + e.clientWidth - parseFloat(before.right)),
+                        y: Math.min(t.y, top + parseFloat(before.top)),
+                        bottom: Math.max(t.bottom, top + e.clientHeight - parseFloat(before.bottom)),
+                      };
+                    }
+                    // The middle of every edge of the target has to reach this control when pressed, not
+                    // whatever is painted over it there. Not the corners: hit testing follows a round
+                    // control's border-radius.
+                    const missed = [];
+                    for (const [fx, fy] of [[0.5, 0.5], [0, 0.5], [1, 0.5], [0.5, 0], [0.5, 1]]) {
+                      const px = t.x + 0.5 + fx * (t.right - t.x - 1), py = t.y + 0.5 + fy * (t.bottom - t.y - 1);
+                      const hit = document.elementFromPoint(px, py);
+                      if (!hit || hit.closest('button') !== e) missed.push([px, py, hit && hit.className]);
+                    }
+                    const cs = getComputedStyle(e);
+                    return {...t, width:t.right - t.x, height:t.bottom - t.y, missed,
+                      box:{width:r.width, height:r.height, padding:[cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft]},
+                      chevron:e.classList.contains('aui-branch-chevron-btn'),
+                      timestamp:e.classList.contains('aui-user-message-time-trigger')};
                   });
                   return {left:viewport.left, right:viewport.right, rects};
                 }""")
                 for rect in geometry["rects"]:
                     assert rect["x"] >= geometry["left"] - 1, geometry
                     assert rect["right"] <= geometry["right"] + 1, geometry
+                    assert not rect["missed"], (
+                        "part of this target does not reach it",
+                        rect,
+                        geometry,
+                    )
                     if not rect["timestamp"]:
-                        assert rect["width"] >= 24, geometry
-                layouts.append({"width": width, "locale": locale, "scale": scale})
+                        # 24 CSS px at the user's chosen Interface Scale, like browser zoom.
+                        assert rect["width"] >= 24 * interface - 0.01, geometry
+                        assert rect["height"] >= 24 * interface - 0.01, geometry
+                    if rect["chevron"]:
+                        # The visible box is what draws the focus ring: square and unpadded keeps the ring
+                        # a circle centred on the glyph, however far the target reaches past it.
+                        box = rect["box"]
+                        assert abs(box["width"] - box["height"]) <= 0.01, rect
+                        assert set(box["padding"]) == {"0px"}, rect
+                # No two targets share pixels: in an overlap the later one in the DOM wins the
+                # click, so a press on the edge of one control would trigger its neighbour.
+                # A narrow or large layout wraps the picker onto its own row, so compare boxes, not x alone.
+                rects = geometry["rects"]
+                for i, a in enumerate(rects):
+                    for b in rects[i + 1 :]:
+                        overlap_x = min(a["right"], b["right"]) - max(a["x"], b["x"])
+                        overlap_y = min(a["bottom"], b["bottom"]) - max(a["y"], b["y"])
+                        assert overlap_x <= 0.01 or overlap_y <= 0.01, (a, b, geometry)
+                layouts.append(
+                    {
+                        "width": width,
+                        "locale": locale,
+                        "scale": scale,
+                        "interface": interface,
+                        "narrow": bool(narrow),
+                    }
+                )
 
             # Invalid or synthetic timestamps leave the controls usable.
             for query in ["invalid", "estimated"]:

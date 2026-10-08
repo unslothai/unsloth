@@ -12,6 +12,7 @@ partition key.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -874,7 +875,13 @@ def search_dense(
             ).fetchall()
             kept[s] = _drop_incompatible(
                 conn,
-                [(r["chunk_id"], 1.0 - r["distance"]) for r in rows],
+                # A NaN vector written by an fp16 embedder reads back as a NULL distance: skip it, or the
+                # subtraction raises and the whole retrieval fails.
+                [
+                    (r["chunk_id"], 1.0 - r["distance"])
+                    for r in rows
+                    if r["distance"] is not None and math.isfinite(r["distance"])
+                ],
                 embedding_model,
                 untagged,
             )

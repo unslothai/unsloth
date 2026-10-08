@@ -6,9 +6,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-// A Pinned row carried in the model picker lifts as a copy under the pointer, as a sidebar chat
-// does, through the same helpers so the two never drift. Every tab (Chat, Images, Audio, Video)
-// draws its picker with HubModelPicker, so they all carry rows this way.
+// Pinned picker rows lift through the sidebar's helpers so the two never drift.
 
 const HOOK = readSrc("features/model-picker/components/model-selector/use-pinned-row-drag.ts");
 const SIDEBAR = readSrc("features/chat/hooks/use-sidebar-drag.ts");
@@ -19,7 +17,6 @@ test("the sidebar's lift, follow and cue helpers are shared", () => {
   for (const name of ["liftCopy", "placeGhost", "placeCue"]) {
     assert.match(SIDEBAR, new RegExp(`export function ${name}\\(`), name);
   }
-  // The sidebar still lifts its rows through the shared copy.
   assert.match(SIDEBAR, /liftCopy\(face, pressY, view, ROW_GHOST_CLASS, GHOST_DROPPED_ATTRS\)/);
 });
 
@@ -29,7 +26,6 @@ test("a carried Pinned row lifts a copy that follows the pointer", () => {
     /started = true;\n\s*scroller\.current = scrollerOf\(row\);\n\s*ghost\.current = liftCopy\(\n\s*faceOf\(row\),/,
   );
   assert.match(HOOK, /if \(ghost\.current\) placeGhost\(ghost\.current, at\.y\);/);
-  // A picture only: never an option the list's keys, the drop hit test or a tooltip finds.
   for (const attr of ['"id"', "SCOPE_ATTR", "KEY_ATTR", '"data-model-picker-option"', '"data-state"']) {
     assert.match(HOOK, new RegExp(`GHOST_DROPPED_ATTRS = \\[[^\\]]*${attr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`), attr);
   }
@@ -45,7 +41,6 @@ test("every copy is a faintly frosted shade darker than the list it came from", 
   assert.ok(dark, "shared ghost look in dark mode");
   assert.match(light[1], /background: color-mix\(in oklab, color-mix\(in oklab, var\(--row-ghost-surface\), black 4%\) 62%, transparent\);/);
   assert.match(dark[1], /background: color-mix\(in oklab, color-mix\(in oklab, var\(--row-ghost-surface\), black 22%\) 62%, transparent\);/);
-  // Faint blur, so what is underneath stays readable.
   assert.match(light[1], /\bbackdrop-filter: blur\(0\.5px\) saturate\(1\.05\);/);
   assert.match(light[1], /0 0 0 1px rgb\(0 0 0 \/ 0\.06\)/);
   assert.match(dark[1], /0 0 0 1px rgb\(255 255 255 \/ 0\.045\)/);
@@ -69,9 +64,7 @@ test("every way a drag ends takes the copy down, and a drop settles into place",
 });
 
 test("the copy sits on its own pill for every Pinned row kind", () => {
-  // A Connected row's ml-4 is not part of the pill the copy is sized to, so it must not carry over.
   assert.match(CSS, /\.model-picker-row-ghost > \* \{\n[^}]*margin: 0;/);
-  // A fine-tuned row nests its pill in a keyed wrapper; the drag lifts the marked pill instead.
   assert.match(HOOK, /const ROW_FACE_ATTR = "data-pinned-row-face";/);
   assert.match(HOOK, /const faceOf = \(row: Element\): HTMLElement =>\n\s*row\.querySelector<HTMLElement>\(`\[\$\{ROW_FACE_ATTR\}\]`\) \?\?/);
   assert.match(

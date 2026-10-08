@@ -104,6 +104,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
+import { Switch } from "@/components/ui/switch";
 import { useSidebar } from "@/components/ui/sidebar";
 import { NegativePromptField } from "@/components/negative-prompt-field";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
@@ -147,6 +148,7 @@ import {
 } from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
+import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload } from "@/features/hub/download-manager";
 import { isTauri } from "@/lib/api-base";
@@ -252,12 +254,11 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
-  // ComfyUI's templates for the same models. Wan2.2-T2V-A14B: 20 steps at CFG 3.5, before the generic Wan key.
+  // T2V-A14B before the generic Wan key.
   { match: "a14b", steps: 20, guidance: 3.5 },
   { match: "wan2.2-14b", steps: 20, guidance: 3.5 },
-  // Wan2.2-TI2V-5B: 20 steps at CFG 5. The backend supplies the fps per family.
+  // The backend supplies the fps per family.
   { match: "wan", steps: 20, guidance: 5 },
-  // HunyuanVideo-1.5 runs 20 steps; guidance 6 matches the guider the repo ships.
   { match: "hunyuanvideo", steps: 20, guidance: 6 },
 ];
 
@@ -385,15 +386,8 @@ function clipMeta(video: GalleryVideo): string {
   return `${secs} · ${video.width}×${video.height}`;
 }
 
-function genStepLabel(p: VideoGenerateProgress): string {
-  if (p.phase === "decode") return "Decoding video and audio…";
-  if (p.phase === "export") return "Encoding video…";
-  // Text encoding and the first-step warmup run before the first scheduler tick, so step 0 means
-  // "working, not denoising yet" - up to a minute at 720p.
-  if (p.step === 0) return "Preparing (text encoding + warmup)…";
-  const base = p.total > 0 ? `Denoising step ${p.step}/${p.total}` : "Denoising…";
-  const eta = p.eta_seconds != null ? formatEta(p.eta_seconds) : "";
-  return eta ? `${base} · ~${eta}` : base;
+function genStepLabel(p: VideoGenerateProgress, hasAudio: boolean): string {
+  return generatePhaseLabel(p, { hasAudio, formatEta });
 }
 
 // The chat tab's model-load toast styling, reused verbatim so the video load toast is identical.
@@ -1035,6 +1029,9 @@ function VideoGenerator({
   const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
     "unsloth_video_advanced_open",
   );
+  // Live latent preview while denoising, on by default: only the opt-out is stored.
+  const [livePreviewOff, setLivePreviewOff] = usePersistedToggle("unsloth_video_live_preview_off");
+  const livePreview = !livePreviewOff;
   // Advanced (load-time) options; "auto"/"off" map to the backend defaults. "Reapply" reloads with new values.
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
@@ -1211,6 +1208,9 @@ function VideoGenerator({
     [videos, selectedId],
   );
   const selectedSrc = selected ? srcById[selected.id] : undefined;
+  // The in-flight clip's live first-frame preview, when the backend streams one and the toggle is on.
+  const livePreviewSrc =
+    busy === "generating" && livePreview ? (genStep?.preview ?? undefined) : undefined;
   const [viewer, setViewer] = useState<{ id: string; from: Playback } | null>(null);
   const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
   const viewerPositioned = useRef(false);
@@ -1262,6 +1262,10 @@ function VideoGenerator({
     }
     return FALLBACK_RESOLUTION_PRESETS;
   }, [status?.defaults?.resolution_presets]);
+  const livePreviewPreset = resolutionPresets[resolutionIdx] ?? resolutionPresets[0];
+  const livePreviewBox = livePreviewPreset
+    ? { maxWidth: livePreviewPreset[0], maxHeight: livePreviewPreset[1] }
+    : undefined;
 
   const frameStep = status?.defaults?.frame_step ?? FALLBACK_FRAME_STEP;
   const frameOffset = status?.defaults?.frame_offset ?? FALLBACK_FRAME_OFFSET;
@@ -2471,13 +2475,7 @@ function VideoGenerator({
         }
         setGenStep((prev) => {
           if (!p.active) return null;
-          if (
-            prev &&
-            prev.step === p.step &&
-            prev.phase === p.phase &&
-            prev.eta_seconds === p.eta_seconds
-          )
-            return prev;
+          if (prev && sameGenerateProgress(prev, p)) return prev;
           return p;
         });
       } catch {
@@ -3478,6 +3476,7 @@ function VideoGenerator({
           canPickAudioFlowShift && audioFlowShift != null && audioFlowShift !== defaultAudioFlowShift
             ? audioFlowShift
             : undefined,
+        live_preview: livePreview,
       });
     } catch (err) {
       if (!isMounted.current) return;
@@ -3492,6 +3491,7 @@ function VideoGenerator({
     }
     startGenPoll();
   }, [
+    livePreview,
     prompt,
     negativePrompt,
     guidance,
@@ -3587,7 +3587,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -3619,7 +3619,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per clip. Static skip extrapolates every other middle step on a fixed schedule (12+ steps) and keeps the compile and CUDA graph; Wan2.2 A14B, LTX-2 and MiniMax-H3 run uncached. Never picked by Auto."
+        hint="Static skip extrapolates middle steps on a fixed schedule (12+ steps) and keeps the compile and CUDA graph; Wan2.2 A14B and LTX-2 run uncached. Auto uses it for text-to-video (no keyframes or references), at or above the step count it was measured at, on Wan2.2 TI2V 5B on every speed tier but Off/Eager, and on HunyuanVideo 1.5 and MiniMax-H3 on Max only. First-Block-Cache reuses the transformer tail across steps (larger quality cost); Auto turns it on for other many-step models on Max only. UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 stops Auto from picking Static skip."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}
@@ -3630,6 +3630,17 @@ function VideoGenerator({
           ["static", "Static skip"],
         ]}
       />
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          Live preview
+          <InfoHint>Show a rough preview of the first frame while the clip denoises. Costs no measurable speed and never changes the final video.</InfoHint>
+        </span>
+        <Switch
+          checked={livePreview}
+          onCheckedChange={(on) => setLivePreviewOff(!on)}
+          aria-label="Live preview"
+        />
+      </div>
       <LoadedBuildSummary status={status} />
     </>
   );
@@ -3847,6 +3858,7 @@ function VideoGenerator({
 
           <Field label="Prompt">
             <Textarea
+              data-type-to-activate="prompt"
               rows={4}
               placeholder={exampleDismissed ? undefined : VIDEO_EXAMPLE_PROMPT}
               value={prompt}
@@ -4439,7 +4451,17 @@ function VideoGenerator({
             </MediaViewer>
           )}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6">
-            {selected && selectedSrc ? (
+            {livePreviewSrc ? (
+              // Live latent preview of the first frame, scaled up to the clip size (aspect from the
+              // preview itself). The finished clip replaces it.
+              <img
+                src={livePreviewSrc}
+                alt="Live preview of the first frame being generated"
+                data-testid="video-live-preview"
+                style={livePreviewBox}
+                className="size-full object-contain shadow-sm"
+              />
+            ) : selected && selectedSrc ? (
               <>
                 {/* autoPlay + muted + playsInline so it plays inline without a gesture; controls let the user
                     scrub. onEnded replays up to 3 total plays, reset per selection. */}
@@ -4556,7 +4578,7 @@ function VideoGenerator({
               <div
                 className={cn(
                   "pointer-events-none absolute flex justify-center px-4",
-                  selectedSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
+                  selectedSrc || livePreviewSrc ? "inset-x-0 bottom-4" : "inset-0 items-center",
                 )}
               >
                 <div className="w-72 max-w-full rounded-xl bg-background/85 p-3 shadow-lg ring-1 ring-border backdrop-blur">
@@ -4569,7 +4591,7 @@ function VideoGenerator({
                         ? (genStep.step / genStep.total) * 100
                         : null
                     }
-                    progressLabel={genStep ? genStepLabel(genStep) : null}
+                    progressLabel={genStep ? genStepLabel(genStep, Boolean(status?.has_audio)) : null}
                   />
                 </div>
               </div>
@@ -4590,8 +4612,12 @@ function VideoGenerator({
               {/* In-progress generation: a placeholder tile at the front so past clips stay browsable while
                   the new one renders. */}
               {busy === "generating" && (
-                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center rounded-[10px] bg-muted/50 ring-2 ring-primary/30">
-                  <Spinner className="size-5 text-muted-foreground" />
+                <div className="flex size-16 shrink-0 animate-pulse items-center justify-center overflow-hidden rounded-[10px] bg-muted/50 ring-2 ring-primary/30">
+                  {livePreviewSrc ? (
+                    <img src={livePreviewSrc} alt="" className="size-full object-cover" />
+                  ) : (
+                    <Spinner className="size-5 text-muted-foreground" />
+                  )}
                 </div>
               )}
               {/* The card is a wrapper, not a button: the actions menu must be the select button's SIBLING,

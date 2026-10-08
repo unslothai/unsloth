@@ -1481,17 +1481,27 @@ def _detect_hardware_locked() -> DeviceType:
                 print(f"Hardware detected: XPU -- {device_name} ({reason})")
                 return DEVICE
 
-        # Reuse the guarded answer: a raising second is_available() would skip the XPU branch below.
+        # reuse guarded result because another is_available() exception would skip XPU fallback
         if not cuda_unavailable:
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
             try:
                 device_name = torch.cuda.get_device_properties(0).name
             except Exception as e:
-                logger.debug("CUDA device 0 property probe failed: %s", e)
+                # failed CUDA init can make later PyTorch calls segfault, so log the cause
+                from utils.allocator_conf import ALLOCATOR_CONF_ENV_VARS
+
+                allocator_conf = {
+                    name: os.environ[name] for name in ALLOCATOR_CONF_ENV_VARS if name in os.environ
+                }
+                logger.error(
+                    "CUDA device 0 property probe failed: %r (allocator config: %s)",
+                    e,
+                    allocator_conf or "unset",
+                )
                 device_name = "<unavailable>"
 
-            # Distinguish ROCm from CUDA for display only (DeviceType stays CUDA). AMD SDK wheels do not set torch.version.hip, so fall back to __version__.
+            # AMD SDK wheels omit torch.version.hip; ROCm label uses __version__; DEVICE stays CUDA
             _hip_ver = getattr(torch.version, "hip", None)
             if _hip_ver is not None or "rocm" in torch.__version__.lower():
                 IS_ROCM = True
@@ -4690,6 +4700,16 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     try:
         numeric_ids = [int(value) for value in tokens]
     except ValueError:
+        # nvidia-smi indices are PCI order, so they only name the same cards a numeric mask written back to a child would under PCI_BUS_ID (#8873).
+        if not _is_rocm_spec and os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID":
+            from . import nvidia
+            resolved_ids = nvidia.resolve_uuid_mask(cuda_visible)
+            if resolved_ids is not None:
+                return {
+                    "raw": cuda_visible,
+                    "numeric_ids": resolved_ids,
+                    "supports_explicit_gpu_ids": True,
+                }
         return {
             "raw": cuda_visible,
             "numeric_ids": None,
@@ -6028,8 +6048,13 @@ def _nvidia_inference_devices() -> list[Dict[str, Any]]:
         return []
     if allowed is not None:
         # visible_ordinal is the child's numbering, which follows the mask's order.
-        order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
-        rows.sort(key = lambda row: order.index(row["index"]))
+        try:
+            order = [int(x) for x in os.environ["CUDA_VISIBLE_DEVICES"].split(",") if x.strip()]
+        except ValueError:
+            order = nvidia.resolve_uuid_mask(os.environ["CUDA_VISIBLE_DEVICES"].strip()) or []
+        rows.sort(
+            key = lambda row: order.index(row["index"]) if row["index"] in order else len(order)
+        )
     usage = nvidia.get_visible_gpu_utilization([row["index"] for row in rows])
     usage_by_index = {d.get("index"): d for d in usage.get("devices") or []}
     devices = []

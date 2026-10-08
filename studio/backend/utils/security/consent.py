@@ -94,9 +94,16 @@ def _config_has_auto_map(
     # Every nesting level, not just the top: a composite model declares auto_map on a
     # sub-config, and the loader resolves it from there, so a top-level-only read
     # returned "ships no remote code" for a repo whose code the load would run.
-    if not any(config_declares_auto_map(cfg or {}) for cfg in configs):
+    if not any(
+        config_declares_auto_map(cfg or {}) or _config_declares_model_file(cfg) for cfg in configs
+    ):
         return False
     return True
+
+
+def _config_declares_model_file(cfg) -> bool:
+    """MLX loaders exec a config's ``model_file`` like an ``auto_map`` entry."""
+    return isinstance(cfg, dict) and bool(cfg.get("model_file"))
 
 
 def _is_direct_gguf_file_ref(model_name: str) -> bool:
