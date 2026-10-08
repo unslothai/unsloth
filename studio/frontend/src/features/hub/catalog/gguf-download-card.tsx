@@ -304,7 +304,6 @@ function GgufVariantSizeLabel({
   );
 }
 
-/** Partial tag for a cached GGUF whose companions Run would still download. */
 function CompanionsPendingTag({
   companionBytes,
   compact = false,

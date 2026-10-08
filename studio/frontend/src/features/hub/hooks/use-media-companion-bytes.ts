@@ -105,7 +105,7 @@ export function ggufVariantFootprint(
   };
 }
 
-/** A cached GGUF that Run would still fetch companions for is not ready to run (#11637). */
+/** Cached, but Run would still fetch companions (#11637). */
 export function awaitsCompanions(
   downloaded: boolean | undefined,
   footprint: GgufVariantFootprint | null,
@@ -113,7 +113,7 @@ export function awaitsCompanions(
   return Boolean(downloaded) && (footprint?.companionBytes ?? 0) > 0;
 }
 
-/** Stores a group's plan result; null (nothing left to fetch) drops a stale entry. */
+/** null (nothing left to fetch) drops the group's stale entry. */
 export function withCompanionBytes(
   previous: ReadonlyMap<string, number>,
   key: string,
@@ -126,8 +126,7 @@ export function withCompanionBytes(
   return next;
 }
 
-/** Companion bytes by group. Plans again on inventory changes, so a companion download
- *  finishing (here or from Run) clears the Partial badge without remounting the card. */
+/** Companion bytes by group; re-planned on inventory changes so Partial clears in place. */
 export function useMediaCompanionBytes(
   page: MediaStudioPage | undefined,
   repoId: string,

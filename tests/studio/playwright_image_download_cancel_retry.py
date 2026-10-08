@@ -494,7 +494,6 @@ def main() -> None:
         companion_row = page.locator(".hub-download-panel").filter(has_text = COMPANION_REPO)
         companion_row.wait_for(state = "visible", timeout = 10_000)
         panel_text = companion_row.inner_text()
-        # text_encoder/ + vae/ companions are named by assetLabel, not the generic fallback.
         assert "Encoder & decoder" in panel_text
         assert "@diffusion" not in panel_text
         if not CHECKPOINT_CACHED:
