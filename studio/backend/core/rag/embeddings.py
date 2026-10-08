@@ -867,6 +867,10 @@ def _plan_prefers_llama_server(model: str) -> bool:
     """
     if model.strip().rstrip("/").lower() not in _LLAMA_SERVER_PREFERRED_MODELS:
         return False
+    # Settings resolves the model in effect for its status, and the runtime serves an unrecorded one on the
+    # hardware default, so planning it elsewhere would offer a download the runtime never opens.
+    if model == config.effective_embedding_model():
+        return False
     # A pinned GGUF repo would serve other weights under this name, and an explicit device setting already
     # chose where torch runs.
     if config.gguf_repo_is_explicit() or config.embed_device_preference() != "auto":

@@ -269,6 +269,8 @@ def test_picker_plans_embeddinggemma_on_llama_server(monkeypatch):
     monkeypatch.delenv("RAG_EMBED_GGUF_REPO", raising = False)
     monkeypatch.setattr(embeddings, "sentence_transformers_runtime_available", lambda: True)
     monkeypatch.setattr(embeddings, "_llama_server_runtime_available", lambda: True)
+    effective = {"model": "org/previous-embedder"}
+    monkeypatch.setattr(config, "effective_embedding_model", lambda: effective["model"])
     plan = embeddings.resolved_backend_for_model
 
     assert plan("unsloth/embeddinggemma-300m") == "llama-server"
@@ -279,6 +281,10 @@ def test_picker_plans_embeddinggemma_on_llama_server(monkeypatch):
     assert embeddings._resolve_auto_for_model("unsloth/embeddinggemma-300m") == (
         "sentence-transformers"
     )
+    # The model in effect without a record runs on that default, and its Settings status must say so.
+    effective["model"] = "unsloth/embeddinggemma-300m"
+    assert plan("unsloth/embeddinggemma-300m") == "sentence-transformers"
+    effective["model"] = "org/previous-embedder"
 
     # A model saved on sentence-transformers keeps the space its documents were indexed in.
     stored["backend"] = "sentence-transformers"
