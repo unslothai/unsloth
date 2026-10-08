@@ -1652,6 +1652,18 @@ def _training_vram_budget_fraction(
     return min(current, budget * 1024**3 / denominator_bytes)
 
 
+def _with_vram_budget_hint(config: dict, message: str) -> str:
+    """Point a run that does not fit at its own VRAM budget, the one cause the generic advice omits."""
+    budget = config.get("offload_vram_gb")
+    lower = (message or "").lower()
+    if not budget or not any(k in lower for k in ("out of memory", "out of vram", "does not fit")):
+        return message
+    return (
+        f"{message}\nThis run is capped at a {budget:g} GiB VRAM budget. Raise or clear the "
+        "VRAM budget under Training Hyperparameters > Memory."
+    )
+
+
 def _allocator_divides_by_props_total(torch_version: str | None) -> bool:
     """Whether ``set_per_process_memory_fraction`` scales ``props.total_memory``. c10's
     ``CUDACachingAllocator::setMemoryFraction`` caps at ``fraction * device_prop.totalGlobalMem``
@@ -4588,7 +4600,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             if trainer.should_stop:
                 event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             else:
-                error_msg = trainer.training_progress.error or "Failed to load model"
+                error_msg = _with_vram_budget_hint(
+                    config, trainer.training_progress.error or "Failed to load model"
+                )
                 event_queue.put(
                     {
                         "type": "error",
@@ -4682,7 +4696,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 event_queue.put(
                     {
                         "type": "error",
-                        "error": trainer.training_progress.error or "Failed to prepare model",
+                        "error": _with_vram_budget_hint(
+                            config, trainer.training_progress.error or "Failed to prepare model"
+                        ),
                         "stack": "",
                         "ts": time.time(),
                     }
@@ -4833,7 +4849,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             event_queue.put(
                 {
                     "type": "error",
-                    "error": _oom_msg,
+                    "error": _with_vram_budget_hint(config, _oom_msg),
                     "stack": traceback.format_exc(limit = 20),
                     "ts": time.time(),
                 }
