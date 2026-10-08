@@ -358,8 +358,9 @@ function ModelStatusChips({
             sideOffset={6}
             className="tooltip-compact max-w-xs"
           >
-            The default engine cannot load this format. Choose vLLM as the
-            Inference engine in this model's run settings.
+            The default engine cannot load this format. After downloading, open
+            it from the chat model picker and choose vLLM as the Inference
+            engine in its run settings.
             {unslothSupport.reason && (
               <span className="mt-1 block text-ui-10p5 font-normal text-white/75">
                 {unslothSupport.reason}

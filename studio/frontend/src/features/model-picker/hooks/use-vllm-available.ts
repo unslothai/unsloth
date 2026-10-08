@@ -5,7 +5,8 @@ import { useSyncExternalStore } from "react";
 import { listEngines, vllmHostSupported } from "../api/engines";
 
 // One request shared by every catalog row, not a poller per row. The backend answers "Checking
-// for a supported NVIDIA GPU." while its first driver probe runs, so that answer is re-asked.
+// for a supported NVIDIA GPU." while its first driver probe runs (up to a minute on a loaded
+// host), and a read can fail while it restarts, so both are re-asked for about two minutes.
 let available = false;
 let started = false;
 let retries = 0;
@@ -17,18 +18,22 @@ function publish(next: boolean) {
   for (const listener of listeners) listener();
 }
 
+function retry() {
+  if (retries >= 24) return;
+  retries += 1;
+  setTimeout(() => void refresh(), 5000);
+}
+
 async function refresh() {
   try {
     const engines = await listEngines();
     publish(vllmHostSupported(engines));
     const vllm = engines.find((engine) => engine.engine === "vllm");
-    if (vllm?.unsupported_reason?.startsWith("Checking") && retries < 10) {
-      retries += 1;
-      setTimeout(() => void refresh(), 3000);
-    }
+    if (vllm?.unsupported_reason?.startsWith("Checking")) retry();
   } catch {
-    // An older backend without /api/engines, or a failed read: keep today's labels.
-    publish(false);
+    // An older backend without /api/engines stays false (today's labels); a passing failure
+    // keeps the last answer.
+    retry();
   }
 }
 

@@ -290,7 +290,17 @@ export function classifyUnslothSupport({
   if (formatKey) {
     const label = FORMAT_TAG_LABEL[formatKey] ?? `${formatKey.toUpperCase()} weights`;
     const reason = `Detected ${label}.`;
-    if (vllmAvailable && VLLM_FORMAT_KEYS.has(formatKey)) {
+    // Only when AWQ / GPTQ is the sole format objection: tag order must not decide it.
+    if (
+      vllmAvailable &&
+      !isGguf &&
+      VLLM_FORMAT_KEYS.has(formatKey) &&
+      !detectUnsupportedFormatKey(
+        modelId,
+        lowerTags,
+        new Set([...formatTags].filter((tag) => !VLLM_FORMAT_KEYS.has(tag))),
+      )
+    ) {
       return { status: "unsupported", reason, supportedIn: "vllm" };
     }
     return { status: "unsupported", reason };

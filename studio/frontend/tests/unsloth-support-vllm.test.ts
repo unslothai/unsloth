@@ -108,3 +108,17 @@ test("a host counts once the backend says vLLM can run there, installed or not",
   assert.equal(vllmHostSupported([engine({ engine: "sglang" })]), false);
   assert.equal(vllmHostSupported([]), false);
 });
+
+test("the vLLM label for AWQ / GPTQ tags does not depend on tag order or GGUF names", () => {
+  for (const tags of [["awq", "mlx"], ["mlx", "awq"], ["gptq", "onnx"]]) {
+    assert.deepEqual(
+      classifyUnslothSupport({ modelId: "owner/model", tags, deviceType: "cuda", vllmAvailable: true }),
+      classifyUnslothSupport({ modelId: "owner/model", tags, deviceType: "cuda" }),
+      JSON.stringify(tags),
+    );
+  }
+  assert.equal(
+    classifyUnslothSupport({ modelId: "owner/Llama-3-8B-AWQ-GGUF", deviceType: "cuda", vllmAvailable: true }).supportedIn,
+    undefined,
+  );
+});
