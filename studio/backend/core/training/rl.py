@@ -344,8 +344,7 @@ def build_rl_trainer(
         batch = int(grpo_base.get("per_device_train_batch_size") or 1) * world
         per_step = batch * int(grpo_base.get("gradient_accumulation_steps") or 1)
         if per_step % num_generations:
-            # TRL needs whole prompt groups per generation batch, which must also be a multiple of
-            # the global batch: round batch x accumulation up to a multiple of both.
+            # TRL wants a generation batch divisible by both the global batch and num_generations.
             group = batch * num_generations // math.gcd(batch, num_generations)
             grpo_base["generation_batch_size"] = -(-per_step // group) * group
         prompts = grpo_base.get("generation_batch_size", per_step) // num_generations
@@ -362,8 +361,7 @@ def build_rl_trainer(
             )
         eval_batch = grpo_base.get("per_device_eval_batch_size")
         if eval_batch:
-            # TRL evaluates whole prompt groups: the global eval batch must be a multiple of
-            # num_generations.
+            # TRL evaluates whole prompt groups: global eval batch % num_generations == 0.
             step = num_generations // math.gcd(world, num_generations)
             grpo_base["per_device_eval_batch_size"] = -(-int(eval_batch) // step) * step
         args = trl.GRPOConfig(

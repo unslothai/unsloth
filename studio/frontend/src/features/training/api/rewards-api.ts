@@ -29,7 +29,6 @@ async function readJson<T>(res: Response): Promise<T> {
         detail = body.detail;
       }
     } catch {
-      // Non-JSON error body: keep the status code.
     }
     throw new Error(detail);
   }

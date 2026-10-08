@@ -1968,8 +1968,7 @@ async def start_training(
                     status_code = 409,
                     detail = "The GRPO rewards do not match the source run.",
                 )
-            # Resolved here, under the caller's account, and stored with the run: later edits to a
-            # library reward do not change what this run says it trained with.
+            # Stored with the run, so later library edits never change what it says it trained with.
             try:
                 for selection in request.grpo_rewards:
                     spec = stored_specs.get(selection.name) or get_reward(selection.name)

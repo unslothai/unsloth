@@ -333,7 +333,6 @@ export function RewardsSection(): ReactElement {
     }
   }, [rewards, completion, reference]);
 
-  // Score live, a beat after the last edit.
   useEffect(() => {
     const timer = window.setTimeout(runPreview, 350);
     return () => window.clearTimeout(timer);

@@ -4673,8 +4673,7 @@ class UnslothTrainer:
                 batch_size = training_args.get("batch_size", 2)
                 grad_accum = training_args.get("gradient_accumulation_steps", 4)
                 if objective == "grpo":
-                    # Unsloth may resize the batch to fit num_generations, and each prompt becomes
-                    # num_generations rows, so count from the trainer's own args.
+                    # Unsloth may resize the batch for num_generations: read the trainer's args.
                     rl_args = self.trainer.args
                     num_samples = grpo_completion_rows(num_samples, rl_args)
                     batch_size = rl_args.per_device_train_batch_size

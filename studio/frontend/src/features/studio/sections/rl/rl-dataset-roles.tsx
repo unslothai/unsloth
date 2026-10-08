@@ -138,8 +138,7 @@ export function RlDatasetRoles({
     if (!datasetName) {
       return;
     }
-    // Picking a dataset changes the split a moment later; a reply for the old split
-    // ("Bad split: train") must not land on top of the newer one.
+    // The split changes just after the dataset: a reply for the old one must not land last.
     const request = ++latestRequest.current;
     const epoch = getAuthSessionEpoch();
     const current = () =>

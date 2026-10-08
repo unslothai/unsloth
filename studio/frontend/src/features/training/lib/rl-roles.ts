@@ -22,7 +22,6 @@ export function rlObjectiveSupported(s: {
   );
 }
 
-/** The objective a run will actually use. */
 export function effectiveTrainingObjective(s: {
   modelType: string | null;
   isEmbeddingModel?: boolean;

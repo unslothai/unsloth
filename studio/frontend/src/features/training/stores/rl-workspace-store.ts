@@ -23,7 +23,6 @@ export const useRlWorkspaceStore = create<RlWorkspaceState>()((set) => ({
   library: [],
   libraryError: null,
   refreshLibrary: async () => {
-    // A reply that outlives a sign-out belongs to the previous account.
     const epoch = getAuthSessionEpoch();
     try {
       const library = await listRewards();
