@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Git on demand for the few features that need it (pip/uv ``git+`` installs).
-
-The installer no longer installs Git machine-wide, so a feature that needs it asks here when it
-runs. A working Git on PATH is used as is. On Windows a missing one is fetched once as Git for
-Windows' portable MinGit into the Studio home: no admin prompt, no winget, nothing outside the
-Studio tree, and only child processes see it on PATH. Elsewhere Git cannot be installed without
-root, so the caller gets an error saying how to install it.
-"""
+"""Git on demand for ``git+`` installs. A working system Git is used as is; on Windows a missing one
+is fetched once as portable MinGit into the Studio home (no admin, no winget) and put on the child's
+PATH only. Elsewhere installing Git needs root, so callers get an error with instructions."""
 
 from __future__ import annotations
 
@@ -102,11 +97,8 @@ def _download_mingit(flavor: str, target: Path) -> None:
 
 
 def ensure_git(*, allow_download: bool = True) -> Optional[str]:
-    """Make Git available to child processes.
-
-    Returns None when Git on PATH already works, else the directory to prepend to a child's PATH.
-    Raises GitUnavailable when Git is missing and cannot be provided here.
-    """
+    """None when Git on PATH works, else a dir to prepend to a child's PATH (Windows MinGit).
+    Raises GitUnavailable when Git is missing and cannot be provided here."""
     exe = shutil.which("git")
     if exe and _git_works(exe):
         return None
